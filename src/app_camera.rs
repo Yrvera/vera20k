@@ -6,7 +6,11 @@
 //! Three frames meet in this file and mixing them is the classic bug here:
 //! * **World pixels** — what `terrain::iso_to_screen` / `terrain::lepton_to_screen`
 //!   produce. `camera_x`/`camera_y` live in this frame and name the world point
-//!   drawn at window pixel `(0, 0)`.
+//!   drawn at window pixel `(0, 0)`. Within world pixels there are two anchors
+//!   that differ by half a tile: `iso_to_screen` gives a cell's *tile* corner,
+//!   while an entity standing on that cell is drawn on the cell's diamond
+//!   centre. `cell_centre_world_point` converts the first into the second and
+//!   is what every camera move targets.
 //! * **Window pixels** — `render_width()` × `render_height()`, cursor position,
 //!   sidebar width. The batch shader maps `screen = (world - camera) * zoom`, so
 //!   converting a window-pixel extent into world pixels is a divide by `zoom`.
@@ -732,17 +736,22 @@ pub(crate) fn tactical_viewport_width_px(render_w: u32, spec: SidebarChromeLayou
 ///
 /// gamemd's camera-set builds the cell-centre lepton coordinate `(cell << 8) +
 /// 0x80` on both axes and projects it. VERA's reproduction of that same point is
-/// `util::lepton::lepton_to_screen` at the cell centre, which equals
-/// `iso_to_screen + (30, 0)`: X shifts by half a tile because `iso_to_screen`
-/// anchors the NW corner of the tile's diamond bounding box, while Y already
-/// carries the `+15` from the cell-centre projection.
+/// `util::lepton::lepton_to_screen` at the cell centre, which is the centre of
+/// the cell's diamond: `iso_to_screen + (TILE_WIDTH/2, TILE_HEIGHT/2)`. Both
+/// half-tiles are needed because `iso_to_screen` anchors the north-west corner
+/// of the tile's diamond bounding box, and the projected cell coordinate sits
+/// half a tile east and half a tile south of it.
 ///
-/// There is deliberately **no** `+TILE_HEIGHT/2` here. That would be the centre
-/// of the tile diamond, which is not the projected cell coordinate and is 15 px
-/// below where the entity path puts a unit.
+/// Keeping this identical to the entity projection is the whole contract:
+/// centring on a cell has to put a unit standing there at the tactical centre,
+/// and `centring_lands_a_unit_on_that_cell_at_the_tactical_centre` fails the
+/// moment the two drift apart.
 pub(crate) fn cell_centre_world_point(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let (nw_x, nw_y) = terrain::iso_to_screen(rx, ry, z);
-    (nw_x + terrain::TILE_WIDTH / 2.0, nw_y)
+    (
+        nw_x + terrain::TILE_WIDTH / 2.0,
+        nw_y + terrain::TILE_HEIGHT / 2.0,
+    )
 }
 
 pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
@@ -846,17 +855,27 @@ mod tests {
         }
     }
 
+    /// The centring target IS the tile diamond's centre, because that is where
+    /// gamemd projects a cell's coordinate and therefore where it draws a unit
+    /// standing on that cell.
+    ///
+    /// This test previously asserted the opposite — that the target was the tile
+    /// row, 15 px above the diamond centre — and it was right about the *code*
+    /// and wrong about the *engine*: the entity projection it was checked
+    /// against was itself half a tile high, so both sides agreed on the wrong
+    /// row. With the entity anchor now on the diamond centre, the target follows
+    /// it there. The invariant the pair really encodes is the assertion below
+    /// that the two are equal; the literals are the hand-walked fixture.
     #[test]
-    fn centring_target_is_the_projected_cell_coordinate_not_the_tile_diamond_centre() {
+    fn centring_target_is_the_tile_diamond_centre_where_a_unit_stands() {
         // Hand-walked fixture: cell (10, 10) at ground level.
-        //   iso_to_screen           = (30*(10-10) - 30, 15*(10+10) + 15) = (-30, 315)
-        //   projected cell coord    = iso_to_screen + (30, 0)            = (0, 315)
-        // The tile diamond's centre would be (0, 330); that is 15 px below the
-        // unit and is NOT what gamemd centres on.
-        assert_eq!(cell_centre_world_point(10, 10, 0), (0.0, 315.0));
+        //   iso_to_screen        = (30*(10-10) - 30, 15*(10+10) + 15) = (-30, 315)
+        //   diamond centre       = iso_to_screen + (30, 15)           = (  0, 330)
+        assert_eq!(cell_centre_world_point(10, 10, 0), (0.0, 330.0));
         assert_eq!(
             cell_centre_world_point(10, 10, 0),
-            entity_world_point(10, 10, 0)
+            entity_world_point(10, 10, 0),
+            "centring on a cell must target exactly where a unit on it is drawn"
         );
 
         let camera = tactical_camera_top_left(
@@ -867,7 +886,7 @@ mod tests {
             1.0,
         );
         // Tactical rect is 1024 - 168 = 856 wide, so its centre is x = 428.
-        assert_eq!(camera, (-428.0, -69.0));
+        assert_eq!(camera, (-428.0, -54.0));
         // Guard against the pre-fix behaviour, which anchored on the window
         // centre and put the target 84 px east of the tactical centre.
         assert_ne!(camera.0, 0.0 - WINDOW_W / 2.0);
@@ -898,13 +917,16 @@ mod tests {
         }
     }
 
+    /// Half a tile on **both** axes from the tile corner — the Y half is the one
+    /// that used to be missing, which put every camera move 15 px north of the
+    /// unit it was supposed to centre on.
     #[test]
-    fn cell_centre_shifts_only_in_x_from_the_tile_corner() {
+    fn cell_centre_shifts_half_a_tile_on_both_axes_from_the_tile_corner() {
         for (rx, ry, z) in [(0_u16, 0_u16, 0_u8), (5, 9, 2), (63, 1, 0)] {
             let (nw_x, nw_y) = terrain::iso_to_screen(rx, ry, z);
             let (cx, cy) = cell_centre_world_point(rx, ry, z);
             assert_eq!(cx - nw_x, terrain::TILE_WIDTH / 2.0);
-            assert_eq!(cy - nw_y, 0.0);
+            assert_eq!(cy - nw_y, terrain::TILE_HEIGHT / 2.0);
         }
     }
 

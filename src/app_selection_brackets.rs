@@ -138,7 +138,14 @@ fn is_visible(
 /// Compute the 8 corners of a building's isometric bounding box in screen space.
 ///
 /// Returns `(ground_corners, roof_corners)` where each is `[FL, FR, BL, BR]`.
-/// Coordinates are absolute screen pixels (entity screen pos + foundation offset).
+///
+/// `sx`/`sy` must be the **plain entity anchor** — the projection of the
+/// building's own coordinate, i.e. the diamond centre of its north-west
+/// footprint cell. It is deliberately *not* the building's art anchor: gamemd
+/// builds this cuboid from the foundation-centre coordinate (`GetCoords`), on a
+/// draw path that reads the object coordinate directly and never consults the
+/// render-coordinate override the art takes. Applying that override here would
+/// float the whole box half a tile above the footprint it encloses.
 fn compute_box_corners(
     sx: f32,
     sy: f32,
@@ -146,9 +153,13 @@ fn compute_box_corners(
     fh: f32,
     z_screen: f32,
 ) -> ([ScreenPt; 4], [ScreenPt; 4]) {
-    // Foundation center offset from entity screen position (NW corner cell center).
-    // Raw lepton offset: (fw-1)*128, (fh-1)*128.
-    // Projected: cx = sx + (fw-fh)*15, cy = sy + 7.5*(fw+fh) - 15.
+    // From Location (leptons): the foundation centre sits ((fw-1)*128, (fh-1)*128)
+    // from the north-west cell centre. Projected through the isometric transform
+    // (dx_px = 30*(dx-dy)/256, dy_px = 15*(dx+dy)/256) that is:
+    //   cx = sx + (fw - fh)*15
+    //   cy = sy + (fw + fh)*7.5 - 15
+    // The trailing -15 is the `-1` on each axis of that lepton offset, NOT a
+    // correction between the tile and entity frames.
     let cx = sx + (fw - fh) * 15.0;
     let cy = sy + (fw + fh) * 7.5 - 15.0;
 

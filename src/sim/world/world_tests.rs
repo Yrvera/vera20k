@@ -1077,10 +1077,13 @@ fn test_spawn_sets_position_and_facing() {
         assert_eq!(e.position.ry, 40);
         assert_eq!(e.facing, 64);
         assert_eq!(sim.interner.resolve(e.type_ref), "HTNK");
-        // lepton_to_screen = CoordsToClient(cell_center) = (30*(30-40), 15*(30+40)+15) = (-300, 1065)
+        // A spawned unit is drawn on its cell's diamond centre:
+        //   x = 30*(30-40) = -300,  y = 15*(30+40) + 15 + 15 = 1080
+        // (the trailing +15s are VERA's constant world-row bias and the
+        // half-tile drop from the tile row down to the diamond centre).
         let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
         assert!((sx - (-300.0)).abs() < 0.1);
-        assert!((sy - 1065.0).abs() < 0.1);
+        assert!((sy - 1080.0).abs() < 0.1);
     }
 }
 

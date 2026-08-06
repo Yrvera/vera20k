@@ -18,7 +18,6 @@ use crate::app_render::draw_plan_lowering::{
 };
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
-use crate::map::terrain::TILE_HEIGHT;
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::DrawState;
 use crate::render::sprite_atlas::ShpSpriteKey;
@@ -125,7 +124,18 @@ pub(crate) fn build_shp_instances(
         ) {
             continue;
         }
-        let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
+        // Buildings are the one class gamemd draws off its own render-coordinate
+        // virtual rather than the plain object coordinate; everything below this
+        // point — body, bib, anims, turret, and the row they sort on — wants that
+        // lifted anchor. See `locomotor_visual::BUILDING_ART_LIFT_PX`.
+        let (sx, sy) = {
+            let anchor = crate::render::locomotor_visual::screen_position(entity);
+            if entity.category == EntityCategory::Structure {
+                crate::render::locomotor_visual::building_art_anchor(anchor.0, anchor.1)
+            } else {
+                anchor
+            }
+        };
         let interp_z = pos.z;
         if !in_view(sx, sy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
@@ -260,11 +270,11 @@ pub(crate) fn build_shp_instances(
         let band = entity_draw_band(entity);
         let base_depth: f32 = match entity.category {
             EntityCategory::Structure => {
-                // Building render coords use (Location.X - 128, Location.Y - 128) — the
-                // NW cell origin, not center. YSort = X + Y from those coords. In screen
-                // space the -128 lepton shift equals -TILE_HEIGHT/2 on iso_row.
-                // Our iso_to_screen bakes in +TILE_HEIGHT/2, so subtract it.
-                compute_sprite_depth(state, sy - TILE_HEIGHT / 2.0, interp_z)
+                // `sy` already carries the render-coordinate lift, so it *is* the
+                // NW footprint cell's tile row — the row gamemd's YSort (X + Y
+                // off the render coords) reduces to. A building therefore sorts
+                // on its own cell rather than one iso row north of it.
+                compute_sprite_depth(state, sy, interp_z)
             }
             _ => {
                 // The drawn row carries this body's height lift; the sort key
@@ -335,10 +345,9 @@ pub(crate) fn build_shp_instances(
                     // per-pixel ramp it lays over the sprite cancels the
                     // walker's own per-row step, so every pixel of a building
                     // ends up carrying that one bottom-row value. The sort key
-                    // is a different quantity — the NW cell origin, shifted
-                    // half a tile — and using it here would put the stamp
-                    // north of every bracket corner, so nothing would ever
-                    // clip.
+                    // is a different quantity — the north-west footprint cell's
+                    // tile row — and using it here would put the stamp north of
+                    // every bracket corner, so nothing would ever clip.
                     bucket.push(SpriteInstance {
                         depth: compute_sprite_depth(
                             state,

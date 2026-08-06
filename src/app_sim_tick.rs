@@ -1691,8 +1691,10 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         );
     }
     // Place the foundation with cursor cell as the top-left corner.
-    // The building sprite is anchored to iso_to_screen(rx, ry) — same as the first
-    // diamond cell — so the preview and the placed building always align.
+    // The building sprite is anchored on the north-west footprint cell's tile row
+    // — the entity anchor with the render-coordinate lift taken off — and
+    // `build_ghost_sprite` derives the preview from the same helper, so the
+    // preview and the placed building always align.
     let (rx, ry) = screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,

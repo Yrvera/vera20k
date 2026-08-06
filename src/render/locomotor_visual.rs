@@ -59,6 +59,17 @@
 //! airborne. Kirovs, Harriers, Rocketeers, Nighthawks, every jumpjet, every
 //! paradrop and every missile in flight.
 //!
+//! ## Two anchors, half a tile apart
+//!
+//! [`screen_position`] is the entity anchor: the projection of the object's own
+//! coordinate, which lands on the centre of the cell's diamond. That is where
+//! gamemd draws every class — units, infantry, aircraft, animations,
+//! projectiles — and it is half a tile below the row a cell's tile art starts
+//! on (`map::terrain::iso_to_screen`).
+//!
+//! Buildings are the single exception, and [`BUILDING_ART_LIFT_PX`] is that
+//! exception's whole content.
+//!
 //! ## Dependency rules
 //! - Part of render/ — reads sim/ state read-only and writes none of it.
 //! - sim/ NEVER depends on render/, so nothing here may be called from sim/.
@@ -205,41 +216,47 @@ pub fn height_lift_px(entity: &GameEntity) -> f32 {
 /// This is the one place that answers the question. Everything that draws an
 /// entity, brackets it, hangs a health bar over it or anchors an effect to it
 /// goes through here, so they cannot drift apart.
+///
+/// A building's *art* is the single exception, and it is a strict addition on
+/// top of this answer rather than a second one: see [`building_art_anchor`].
 pub fn screen_position(entity: &GameEntity) -> (f32, f32) {
     let (sx, sy) = ground_screen_position(&entity.position);
     (sx, sy - height_lift_px(entity))
 }
 
-// A HALF-TILE TRAP, measured 2026-08-05. Do not "fix" a building's draw
-// position here on its own — it was tried and it made things worse.
-//
-// gamemd really does give buildings their own answer to "where do I draw": of
-// every class, only `BuildingClass` overrides that virtual, and its override
-// takes half a cell off both coordinate axes, moving the anchor from the centre
-// of the north-west footprint cell to that cell's corner. Equal steps on both
-// axes cancel horizontally and come to exactly half a tile up.
-//
-// That is a true statement about gamemd and applying it here still broke the
-// picture, because the frame underneath it is already wrong by the same amount
-// in the other direction. Measured, relative rows for one cell:
-//
-//     layer            gamemd              VERA
-//     terrain tile     box top             box top          agrees
-//     ore / overlay    diamond centre      diamond centre   agrees
-//     unit / vehicle   diamond centre      HALF A TILE UP   wrong
-//     building         box top             box top          agrees
-//
-// So buildings and terrain were already right relative to each other, and the
-// broken layer is the units — drawn half a tile north of the ground they stand
-// on. Adding the building shift on top double-counted it and left every
-// building floating.
-//
-// The real fix is to move the ENTITY anchor down half a tile to the cell's
-// diamond centre, in `util::lepton::lepton_to_screen` and its `terrain` twin,
-// after which this override becomes correct and necessary. That moves every
-// unit on the map and several constants that bridge the entity and tile frames
-// depend on the current relation, so it is its own piece of work.
+/// How far up a building's art sits from the entity anchor, in screen pixels.
+///
+/// gamemd gives buildings their own answer to "where do I draw": of every
+/// class, only `BuildingClass` overrides that virtual, and its override takes
+/// half a cell off **both** coordinate axes — a pure `-128, -128` lepton step,
+/// applied before the projection. Equal steps on the two axes cancel
+/// horizontally and come to exactly half a tile up, moving the anchor from the
+/// centre of the north-west footprint cell to that cell's tile row. There is no
+/// X term and there must never be one.
+///
+/// This is the *whole* difference between a building's draw point and every
+/// other class's, and it is only correct on top of an entity anchor that sits
+/// on the cell's diamond centre — which is what
+/// [`crate::util::lepton::lepton_to_screen`] returns. Applying this shift while
+/// the entity anchor was still on the tile row double-counted it and left every
+/// building floating half a tile above its foundation; that was tried and
+/// reverted before the anchor was moved. The two belong together.
+///
+/// It applies to the building's **art** only — body, bib, overlay anims, voxel
+/// turret, and the depth those sort on. It does not apply to selection
+/// brackets, health pips, occupant pips or sensor rings: gamemd builds those
+/// from the foundation-centre coordinate (the `GetCoords` virtual), reached on
+/// a path that never consults the render-coordinate override, so they belong on
+/// the plain entity anchor.
+pub const BUILDING_ART_LIFT_PX: f32 = crate::map::terrain::TILE_HEIGHT / 2.0;
 
+/// A building's art anchor, given its plain entity anchor.
+///
+/// One owner for [`BUILDING_ART_LIFT_PX`] so the placement ghost and the
+/// building it previews cannot drift apart.
+pub fn building_art_anchor(sx: f32, sy: f32) -> (f32, f32) {
+    (sx, sy - BUILDING_ART_LIFT_PX)
+}
 
 /// The isometric projection alone, with no height lift applied.
 ///
@@ -270,6 +287,52 @@ mod tests {
         loco.altitude = SimFixed::from_num(altitude);
         entity.locomotor = Some(loco);
         entity
+    }
+
+    /// The whole reason this half-tile keeps going wrong, pinned on one cell.
+    ///
+    /// Three layers share cell (10, 4) at ground level, and gamemd puts them in
+    /// exactly this relation:
+    ///
+    /// ```text
+    ///   layer                    row              relative to the tile box top
+    ///   terrain tile / overlay   box top-left     (0, 0)
+    ///   unit / infantry / anim   diamond centre   (+30, +15)
+    ///   building art             box top edge     (+30,   0)
+    /// ```
+    ///
+    /// A unit stands in the *middle* of its tile; a building's art starts on the
+    /// same row the tile art does. Get either wrong and every unit on the map is
+    /// drawn half a tile off the ground it walks on — which is what this pins
+    /// against. The absolute numbers carry VERA's constant world-row bias (see
+    /// `util::lepton::WORLD_ROW_BIAS_PX`); the *relation* is what matters and is
+    /// what a player sees.
+    #[test]
+    fn the_three_world_layers_sit_where_gamemd_puts_them() {
+        use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
+
+        const RX: u16 = 10;
+        const RY: u16 = 4;
+
+        let (box_x, box_y) = terrain::iso_to_screen(RX, RY, 0);
+        assert_eq!((box_x, box_y), (150.0, 225.0), "tile bounding-box top-left");
+
+        let unit = GameEntity::test_default(1, "MTNK", "Americans", RX, RY);
+        let (unit_x, unit_y) = screen_position(&unit);
+        assert_eq!(
+            (unit_x - box_x, unit_y - box_y),
+            (TILE_WIDTH / 2.0, TILE_HEIGHT / 2.0),
+            "a unit stands on its cell's diamond centre, not the box top"
+        );
+
+        let (art_x, art_y) = building_art_anchor(unit_x, unit_y);
+        assert_eq!(
+            (art_x - box_x, art_y - box_y),
+            (TILE_WIDTH / 2.0, 0.0),
+            "a building's art anchor drops back onto the tile row — and the \
+             half-cell shift is Y-only, so X must not move"
+        );
+        assert_eq!(art_x, unit_x, "the building shift has no X term");
     }
 
     #[test]

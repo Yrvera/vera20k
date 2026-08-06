@@ -444,8 +444,9 @@ mod tests {
         let (_, ground_y) = ground_screen_position(&beag.position);
         let (_, drawn_y) = screen_position(&beag);
 
-        // Cell (40, 40) at ground level projects to row 15*(40+40)+15.
-        assert_eq!(ground_y, 1215.0);
+        // Cell (40, 40) at ground level: an entity is drawn on its diamond
+        // centre, row 15*(40+40) + 15 + 15.
+        assert_eq!(ground_y, 1230.0);
         // The stock flight level lifts the drawing 216 px — ~14 iso rows.
         assert_eq!(ground_y - drawn_y, 216.0);
         assert_eq!(ground_sort_row(&beag, drawn_y), ground_y);
@@ -478,8 +479,10 @@ mod tests {
         );
         let (_, drawn_y) = screen_position(&beag);
 
-        // A building's key row is its NW cell origin: 15*(35+35)+15 - 30/2.
-        let building_row: f32 = 1050.0;
+        // A building's key row is its NW cell's tile row — the entity anchor
+        // (15*(35+35) + 15 + 15) with the render-coordinate lift of 30/2 taken
+        // back off.
+        let building_row: f32 = 1065.0;
         let building_depth =
             compute_sprite_depth_params(MAP_ORIGIN_Y, MAP_WORLD_HEIGHT, building_row, 0);
 

@@ -226,14 +226,24 @@ pub struct TerrainGrid {
     pub anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
 }
 
-/// Convert isometric cell coordinates to screen-space pixel position.
+/// Convert isometric cell coordinates to screen-space pixel position — **the
+/// tile frame**.
 ///
-/// Returns the top-left corner of the tile's diamond bounding box.
-/// The original engine passes cell CENTER coords to its coordinate transform
-/// for tile positioning, placing the tile NW corner at the diamond center's
-/// screen Y:
+/// Returns the top-left corner of the tile's diamond bounding box, which is the
+/// point the original's terrain and overlay loops blit from:
 ///   X = 30*(rx-ry) - 30
 ///   Y = 15*(rx+ry) + 15 - z*15
+///
+/// This is *not* where an entity standing on the cell is drawn. An entity is
+/// drawn on the cell's diamond centre, `iso_to_screen + (TILE_WIDTH/2,
+/// TILE_HEIGHT/2)` — see `util::lepton::lepton_to_screen`. Callers that want to
+/// place something on the middle of a cell rather than on its tile art must add
+/// that half-tile themselves, as the smudge, sparkle and target-line paths do.
+///
+/// The `+ TILE_HEIGHT/2` in Y is a constant bias VERA carries on every world
+/// layer relative to the original's absolute tactical pixel; it is invisible
+/// because the camera absorbs it, but it must not be removed here alone — see
+/// `util::lepton::WORLD_ROW_BIAS_PX`.
 pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let sx: f32 = (rx as f32 - ry as f32) * TILE_WIDTH / 2.0 - TILE_WIDTH / 2.0;
     let sy: f32 = (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0
@@ -241,13 +251,20 @@ pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     (sx, sy)
 }
 
-/// Convert lepton-world coords to screen pixels with sub-cell precision.
+/// Convert absolute lepton-world coords to screen pixels with sub-cell
+/// precision — **the entity frame**, the absolute-lepton twin of
+/// `util::lepton::lepton_to_screen`.
 ///
-/// 256 leptons = 1 cell. Returns the cell-center screen position so callers
-/// can apply per-sprite anchor offsets without re-doing iso math.
+/// 256 leptons = 1 cell. A coordinate on a cell centre (`cell*256 + 128`)
+/// projects to that cell's diamond centre, i.e. `iso_to_screen +
+/// (TILE_WIDTH/2, TILE_HEIGHT/2)` — half a tile below the tile art's own row,
+/// exactly as the original projects an object's coordinate.
 ///
 ///   X = (cell_x - cell_y) * TILE_WIDTH/2 + sub_offset_x
 ///   Y = (cell_x + cell_y) * TILE_HEIGHT/2 + TILE_HEIGHT/2 + sub_offset_y - z_lift
+///
+/// The two projections agree at every sub-cell value;
+/// `matching_lepton_projections_agree` pins it so they cannot drift apart.
 ///
 /// Negative coords use `div_euclid` / `rem_euclid` so a particle drifting
 /// just outside the map's NW corner stays on the correct cell.

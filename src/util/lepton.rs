@@ -33,6 +33,41 @@ const SCREEN_X_PER_LEPTON: f32 = 60.0 / 256.0;
 /// = 30.0 / 256.0 = 0.1171875
 const SCREEN_Y_PER_LEPTON: f32 = 30.0 / 256.0;
 
+/// Screen-X step per cell along either isometric axis — half a tile width.
+///
+/// `map::terrain` names the same number `TILE_WIDTH / 2`; it is spelled out here
+/// rather than imported because `util/` takes no dependency on other game
+/// modules.
+const SCREEN_X_PER_CELL_STEP: f32 = 30.0;
+
+/// Screen-Y step per cell along either isometric axis — half a tile height.
+const SCREEN_Y_PER_CELL_STEP: f32 = 15.0;
+
+/// Screen-Y offset every VERA world layer carries relative to the original's
+/// absolute tactical pixel.
+///
+/// The original starts a cell's tile bounding box on row `15*(rx+ry)`; VERA's
+/// `map::terrain::iso_to_screen` starts it half a tile lower and the entity
+/// projection here carries the identical term, so the *relation* between the
+/// layers — the only thing a player can see — matches. Being constant across
+/// every layer it is absorbed by the camera and is invisible.
+///
+/// It is load-bearing that both helpers carry it: pulling the tile helper down
+/// to the original's absolute row without pulling this one down in the same
+/// edit re-opens the half-tile bug this constant was added to close.
+const WORLD_ROW_BIAS_PX: f32 = 15.0;
+
+/// Distance from the top of a cell's tile bounding box down to the centre of
+/// its diamond — half a tile.
+///
+/// This is the entire difference between the tile frame and the entity frame.
+/// The original draws a unit, an infantryman, an aircraft and an animation on
+/// the diamond centre, and starts tile and overlay art on the box top.
+const CELL_DIAMOND_CENTRE_DROP_PX: f32 = 15.0;
+
+/// Screen-Y lift per whole terrain height level, for the entity projection.
+const SCREEN_Y_PER_HEIGHT_LEVEL: f32 = 15.0;
+
 // ---------------------------------------------------------------------------
 // Infantry sub-cell lepton positions (RA2 canonical)
 // ---------------------------------------------------------------------------
@@ -195,17 +230,37 @@ pub fn lepton_sub_to_screen_offset(sub_x: SimFixed, sub_y: SimFixed) -> (f32, f3
     (screen_dx, screen_dy)
 }
 
-/// Compute full screen position from cell coordinates + sub-cell lepton offset + elevation.
+/// Where an entity standing at these lepton coordinates is drawn — **the entity
+/// frame**, the projection of the object's own coordinate.
 ///
-/// This is an extended version of `iso_to_screen(rx, ry, z)` that adds sub-cell precision.
-/// When sub_x = sub_y = 128 (cell center), the result matches `iso_to_screen()` exactly.
+/// ```text
+///   screenX = 30*(rx - ry)                       (the cell-centre +128s cancel in X - Y)
+///   screenY = 15*(rx + ry) + 15 + 15 - z*15      (bias + half-tile drop)
+/// ```
+///
+/// At the cell centre (`sub_x = sub_y = 128`) this lands on the **centre of the
+/// cell's diamond**, which is half a tile *below* the row
+/// `map::terrain::iso_to_screen` starts that cell's tile art on. That gap is
+/// deliberate and is what the original does: it draws every class on the
+/// object's own coordinate and starts tile art on the box top, so a unit's feet
+/// meet the middle of the tile it stands on rather than its northern vertex.
+///
+/// `map::terrain::lepton_to_screen` is the absolute-lepton twin of this
+/// function and produces the identical point; `matching_lepton_projections_agree`
+/// pins that.
+///
+/// **Buildings are the one class that does not draw here.** The original gives
+/// `BuildingClass` its own render-coordinate virtual which takes half a cell off
+/// both axes, moving its anchor back onto the tile row of its north-west
+/// footprint cell. That shift is owned by
+/// `render::locomotor_visual::BUILDING_ART_LIFT_PX`, not by this function —
+/// every other consumer here wants the plain projection.
 pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u8) -> (f32, f32) {
-    // Isometric projection formula:
-    //   screenX = 30*(rx - ry)         (cell center +128 cancels in X-Y)
-    //   screenY = 15*(rx + ry) + 15    (+15 from sub-cell 128+128 projection)
-    let base_sx: f32 = (rx as f32 - ry as f32) * 30.0;
-    let base_sy: f32 =
-        (rx as f32 + ry as f32) * 15.0 + 15.0 - f32::from(z as i8) * 15.0;
+    let base_sx: f32 = (rx as f32 - ry as f32) * SCREEN_X_PER_CELL_STEP;
+    let base_sy: f32 = (rx as f32 + ry as f32) * SCREEN_Y_PER_CELL_STEP
+        + WORLD_ROW_BIAS_PX
+        + CELL_DIAMOND_CENTRE_DROP_PX
+        - f32::from(z as i8) * SCREEN_Y_PER_HEIGHT_LEVEL;
     // Sub-cell offset from center
     let (offset_x, offset_y) = lepton_sub_to_screen_offset(sub_x, sub_y);
     (base_sx + offset_x, base_sy + offset_y)
@@ -269,31 +324,32 @@ mod tests {
         assert_eq!(ground_height_leptons(0xff, 1, 1, 0), Ok(-102));
     }
 
+    /// The property under test is the sign extension of the raw level byte:
+    /// `0xff` must read as level −1 and lift by one 15 px step, not as level
+    /// 255. That is the **15 px delta** between the two readings, and it is
+    /// unchanged by where the projection's base row sits. Both absolute values
+    /// moved down half a tile when the entity anchor was moved onto the cell's
+    /// diamond centre; the delta did not.
     #[test]
     fn gsi_04_03b_lepton_projection_sign_extends_raw_level() {
-        let (_, sy_zero) = lepton_to_screen(
-            0,
-            0,
-            CELL_CENTER_LEPTON,
-            CELL_CENTER_LEPTON,
-            0,
-        );
-        let (_, sy_minus_one) = lepton_to_screen(
-            0,
-            0,
-            CELL_CENTER_LEPTON,
-            CELL_CENTER_LEPTON,
-            0xff,
-        );
-        assert_eq!(sy_zero, 15.0);
-        assert_eq!(sy_minus_one, 30.0);
+        let (_, sy_zero) = lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0);
+        let (_, sy_minus_one) =
+            lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0xff);
+        assert_eq!(sy_zero, 30.0);
+        assert_eq!(sy_minus_one, 45.0);
+        assert_eq!(sy_minus_one - sy_zero, 15.0, "one level is one 15 px step");
     }
 
+    /// An entity standing on a cell is drawn on that cell's **diamond centre**,
+    /// half a tile east and half a tile south of where the tile art starts.
+    ///
+    /// This is the relation the original has and the one VERA got wrong: the
+    /// entity projection used to return the tile's bounding-box top, so every
+    /// unit, infantryman and aircraft was drawn half a tile north of the ground
+    /// it stood on. Pinned as an exact half-tile on **both** axes so a future
+    /// edit cannot quietly collapse the two frames back together.
     #[test]
-    fn cell_center_is_iso_plus_half_tile() {
-        // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 0).
-        // Both iso and lepton Y include +15 from cell center projection.
-        // X differs by +30 (tile NW corner vs CoordsToClient north vertex).
+    fn cell_centre_is_the_tile_diamond_centre() {
         for rx in [0u16, 5, 10, 50] {
             for ry in [0u16, 3, 10, 50] {
                 for z in [0u8, 2, 4] {
@@ -301,22 +357,49 @@ mod tests {
                     let (actual_sx, actual_sy) =
                         lepton_to_screen(rx, ry, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, z);
                     assert!(
-                        (actual_sx - (corner_sx + 30.0)).abs() < 0.01,
-                        "X mismatch at ({}, {}, z={}): expected {}, got {}",
-                        rx,
-                        ry,
-                        z,
-                        corner_sx + 30.0,
-                        actual_sx,
+                        (actual_sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 0.01,
+                        "X at ({rx}, {ry}, z={z}): expected {}, got {actual_sx}",
+                        corner_sx + terrain::TILE_WIDTH / 2.0,
                     );
                     assert!(
-                        (actual_sy - corner_sy).abs() < 0.01,
-                        "Y mismatch at ({}, {}, z={}): expected {}, got {}",
+                        (actual_sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 0.01,
+                        "Y at ({rx}, {ry}, z={z}): expected {}, got {actual_sy}",
+                        corner_sy + terrain::TILE_HEIGHT / 2.0,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two lepton projections are the same transform written twice — this
+    /// one takes cell + sub-cell, `map::terrain`'s takes absolute leptons — and
+    /// they must agree at every sub-cell value, not just at the centre.
+    ///
+    /// They disagreed by exactly half a tile before the entity anchor was fixed,
+    /// which is why particles (on the terrain twin) and units (on this one) sat
+    /// on different rows over the same ground. Pinned so they cannot part again.
+    #[test]
+    fn matching_lepton_projections_agree() {
+        for (rx, ry) in [(0u16, 0u16), (10, 4), (7, 19), (63, 1)] {
+            for sub_x in [0i32, 64, 128, 192, 255] {
+                for sub_y in [0i32, 64, 128, 192, 255] {
+                    let (ax, ay) = lepton_to_screen(
                         rx,
                         ry,
-                        z,
-                        corner_sy,
-                        actual_sy,
+                        SimFixed::from_num(sub_x),
+                        SimFixed::from_num(sub_y),
+                        0,
+                    );
+                    let (bx, by) = terrain::lepton_to_screen(glam::IVec3::new(
+                        i32::from(rx) * 256 + sub_x,
+                        i32::from(ry) * 256 + sub_y,
+                        0,
+                    ));
+                    assert!(
+                        (ax - bx).abs() < 0.01 && (ay - by).abs() < 0.01,
+                        "cell ({rx},{ry}) sub ({sub_x},{sub_y}): util {:?} vs terrain {:?}",
+                        (ax, ay),
+                        (bx, by),
                     );
                 }
             }

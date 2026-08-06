@@ -1324,11 +1324,12 @@ mod tests {
             5,
             true,
         );
-        // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15)
+        // An entity is drawn on its cell's diamond centre, half a tile east and
+        // half a tile south of that cell's tile corner.
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
         let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
-        assert!((sx - (corner_sx + 30.0)).abs() < 0.01);
-        assert!((sy - corner_sy).abs() < 0.01);
+        assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 0.01);
+        assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 0.01);
     }
 }
 
