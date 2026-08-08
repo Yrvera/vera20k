@@ -128,7 +128,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Spawn pick re-anchors the opening view, so the camera bookmarks are
     // re-seeded with it — the same "all four slots hold the starting view"
     // state gamemd's scenario load leaves behind.
-    crate::app_camera::seed_view_bookmarks_from_current_view(state);
+    state.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
 
     // Reset timing for clean InGame start.
     state.frame_pacer.reset_for_immediate_frame();

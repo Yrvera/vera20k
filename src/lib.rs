@@ -78,6 +78,7 @@ pub mod skirmish_scenarios;
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
 pub mod app_types;
+pub mod app_hotkeys;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
 // Extracted from app.rs to keep the orchestrator under 600 lines.

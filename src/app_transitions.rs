@@ -176,13 +176,16 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;
-    // Map load hands over a world anchor point; the camera top-left needs the
-    // scaled sidebar width and the live zoom, both of which only exist here.
+    // Map load hands over a world anchor point; the transition applies the
+    // active tactical rectangle and live zoom.
+    let (tactical_width, tactical_height) = crate::app_camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let (camera_x, camera_y) = crate::app_camera::tactical_camera_top_left(
         (result.camera_anchor_x, result.camera_anchor_y),
-        state.render_width() as f32,
-        state.render_height() as f32,
-        state.sidebar_layout_spec.sidebar_width,
+        tactical_width as f32,
+        tactical_height as f32,
         state.zoom_level,
     );
     state.camera_x = camera_x;
@@ -237,15 +240,14 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         ));
     }
     state.minimap_dragging = false;
-    state.middle_mouse_panning = false;
     state.tactical_mouse = Default::default();
     state.keys_held.clear();
-    let tactical_w = crate::app_camera::tactical_viewport_width_px(
+    let (tactical_width, tactical_height) = crate::app_camera::tactical_viewport_size_px(
         state.render_width(),
-        state.sidebar_layout_spec,
-    ) as f32;
-    state.cursor_x = tactical_w * 0.5;
-    state.cursor_y = state.render_height() as f32 * 0.5;
+        state.render_height(),
+    );
+    state.cursor_x = tactical_width as f32 * 0.5;
+    state.cursor_y = tactical_height as f32 * 0.5;
 
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.

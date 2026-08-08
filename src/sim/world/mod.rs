@@ -912,6 +912,13 @@ impl Simulation {
         &self.substrate.entities
     }
 
+    /// Current ObjectClass registration order used by the tactical layer.
+    /// Presentation code may sort registered objects into LayerClass order,
+    /// but must not reconstruct equal-key ordering from EntityStore keys.
+    pub(crate) fn tactical_registration_order(&self) -> &[u64] {
+        self.substrate.logic.as_slice()
+    }
+
     /// Mutable entity-store access for above-sim callers.
     pub fn entities_mut(&mut self) -> &mut EntityStore {
         &mut self.substrate.entities

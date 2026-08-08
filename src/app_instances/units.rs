@@ -8,7 +8,7 @@
 
 use super::helpers::{
     EntityDrawBand, apply_bridge_depth_bias, compute_sprite_depth, entity_draw_band,
-    ground_sort_row, in_view, is_entity_visible_for_local_owner, is_under_bridge_render_state,
+    ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::map::entities::EntityCategory;
@@ -201,15 +201,15 @@ pub(crate) fn build_unit_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    for entity in sim
-        .entities()
-        .values()
-        .filter(|e| e.is_voxel && !e.lifecycle.in_limbo)
-    {
-        // Skip entities inside a transport — they are hidden from the map.
-        if entity.passenger_role.is_inside_transport() {
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    for stable_id in encounter_order {
+        let Some(entity) = sim.entities().get(stable_id) else {
+            continue;
+        };
+        if !entity.is_voxel {
             continue;
         }
+        // Common visibility, passenger, limbo, and DrawState admission is shared below.
         let pos = &entity.position;
         let owner_str = sim.interner.resolve(entity.owner);
         // Honor display_type_override (set by the dock sub-FSM during Unloading)
@@ -219,16 +219,23 @@ pub(crate) fn build_unit_instances(
             .display_type_override
             .map(|id| sim.interner.resolve(id))
             .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
-        if !is_entity_visible_for_local_owner(
-            local_owner.as_deref(),
-            &sim.fog,
-            pos,
+        let hc: HouseColorIndex = state
+            .house_color_map
+            .get(owner_str)
+            .copied()
+            .unwrap_or_default();
+        let Some(draw_decision) = tactical_entity_render_admission(
+            entity,
             owner_str,
-            ignore_visibility,
+            local_owner.as_deref(),
             local_owner_id,
-        ) {
+            &sim.fog,
+            ignore_visibility,
+            sim.session.binary_frame,
+            house_color_to_remap_row(hc),
+        ) else {
             continue;
-        }
+        };
         // Render slope comes from the locomotor's cached previous/current
         // slope during gamemd's 3-frame transition, then falls back to the
         // stable terrain slope path.
@@ -236,19 +243,6 @@ pub(crate) fn build_unit_instances(
         let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
         let interp_z = pos.z;
         if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 120.0) {
-            continue;
-        }
-        let hc: HouseColorIndex = state
-            .house_color_map
-            .get(owner_str)
-            .copied()
-            .unwrap_or_default();
-        let draw_decision = DrawState::for_entity(
-            entity,
-            sim.session.binary_frame,
-            house_color_to_remap_row(hc),
-        );
-        if !draw_decision.visible {
             continue;
         }
         let draw_state = draw_decision.state;

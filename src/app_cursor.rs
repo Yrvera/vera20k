@@ -15,17 +15,19 @@ use crate::app_types::{
 use crate::sim::combat;
 
 pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFeedbackKind> {
-    if state.middle_mouse_panning {
-        return Some(CursorFeedbackKind::Pan);
+    // The active band is the outermost pixel of the whole window, including
+    // the sidebar. It wins even when that pixel overlaps a sidebar/minimap hit.
+    if let Some((dir, blocked)) = crate::app_camera::edge_scroll_cursor_state(state) {
+        return Some(if blocked {
+            CursorFeedbackKind::ScrollBlocked(dir)
+        } else {
+            CursorFeedbackKind::Scroll(dir)
+        });
     }
     if state.minimap_dragging || is_cursor_over_minimap(state) {
         // Show the minimap-specific Move cursor when hovering over the minimap
         // (reference §7.4 — MiniFrame/MiniCount for the Move cursor = frames 42–51).
         return Some(CursorFeedbackKind::MinimapMove);
-    }
-    // Edge-scroll arrows override everything else (except minimap above).
-    if let Some(dir) = edge_scroll_direction(state) {
-        return Some(CursorFeedbackKind::Scroll(dir));
     }
     if current_sidebar_view_hit(state) {
         return None;
@@ -71,7 +73,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             CursorFeedbackKind::SellMode(valid)
         });
     }
-    let selected = crate::app_input::selected_stable_ids_sorted(sim.entities());
+    let selected = crate::app_input::selected_stable_ids_in_order(state);
     if selected.is_empty() {
         return None;
     }
@@ -721,7 +723,7 @@ fn select_best_for_action(
 /// Map a game-state cursor intent to the visual CursorId to display.
 /// Returns None for feedback kinds that use procedural visuals instead of a software cursor
 /// (e.g. building placement preview).
-/// Alias mappings live here: Pan→Move, Guard→Select, FriendlyUnit→Select, etc.
+/// Alias mappings live here: FriendlyUnit→Select, etc.
 pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorId> {
     match kind {
         CursorFeedbackKind::FriendlyUnit | CursorFeedbackKind::FriendlyStructure => {
@@ -731,7 +733,6 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         // cursor, which is what VERA used to show while guard mode was armed.
         CursorFeedbackKind::Guard => Some(CursorId::GuardArea),
         CursorFeedbackKind::Move => Some(CursorId::Move),
-        CursorFeedbackKind::Pan => Some(CursorId::Pan),
         CursorFeedbackKind::AttackMove => Some(CursorId::AttackMove),
         CursorFeedbackKind::EnemyUnit | CursorFeedbackKind::EnemyStructure => {
             Some(CursorId::Attack)
@@ -745,6 +746,7 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::Invalid => Some(CursorId::NoMove),
         CursorFeedbackKind::PlaceValid | CursorFeedbackKind::PlaceInvalid => None,
         CursorFeedbackKind::Scroll(dir) => Some(scroll_dir_to_cursor_id(dir)),
+        CursorFeedbackKind::ScrollBlocked(dir) => Some(blocked_scroll_dir_to_cursor_id(dir)),
         CursorFeedbackKind::MinimapMove => Some(CursorId::MinimapMove),
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
@@ -774,6 +776,19 @@ fn scroll_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
         ScrollDir::SW => CursorId::ScrollSW,
         ScrollDir::W => CursorId::ScrollW,
         ScrollDir::NW => CursorId::ScrollNW,
+    }
+}
+
+fn blocked_scroll_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
+    match dir {
+        ScrollDir::N => CursorId::NoMoveN,
+        ScrollDir::NE => CursorId::NoMoveNE,
+        ScrollDir::E => CursorId::NoMoveE,
+        ScrollDir::SE => CursorId::NoMoveSE,
+        ScrollDir::S => CursorId::NoMoveS,
+        ScrollDir::SW => CursorId::NoMoveSW,
+        ScrollDir::W => CursorId::NoMoveW,
+        ScrollDir::NW => CursorId::NoMoveNW,
     }
 }
 
@@ -895,35 +910,6 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
             rect.w,
             rect.h,
         )
-}
-
-/// Screen margin (pixels from window edge) that triggers edge-scroll cursors.
-/// Must match EDGE_SCROLL_MARGIN in app_sim_tick.rs.
-const EDGE_SCROLL_MARGIN: f32 = 10.0;
-
-/// Return the edge-scroll direction (if any) based on cursor proximity to window edges.
-/// Diagonal corners are detected by combining horizontal and vertical proximity.
-fn edge_scroll_direction(state: &AppState) -> Option<ScrollDir> {
-    let sw = state.render_width() as f32;
-    let sh = state.render_height() as f32;
-    let sidebar_x = sw - state.sidebar_layout_spec.sidebar_width;
-    let x = state.cursor_x;
-    let y = state.cursor_y;
-    let near_left = x < EDGE_SCROLL_MARGIN;
-    let near_right = x < sidebar_x && x > sidebar_x - EDGE_SCROLL_MARGIN;
-    let near_top = y < EDGE_SCROLL_MARGIN;
-    let near_bottom = y > sh - EDGE_SCROLL_MARGIN;
-    match (near_left, near_right, near_top, near_bottom) {
-        (true, _, true, _) => Some(ScrollDir::NW),
-        (_, true, true, _) => Some(ScrollDir::NE),
-        (true, _, _, true) => Some(ScrollDir::SW),
-        (_, true, _, true) => Some(ScrollDir::SE),
-        (_, _, true, _) => Some(ScrollDir::N),
-        (_, _, _, true) => Some(ScrollDir::S),
-        (true, _, _, _) => Some(ScrollDir::W),
-        (_, true, _, _) => Some(ScrollDir::E),
-        _ => None,
-    }
 }
 
 pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
@@ -1338,7 +1324,7 @@ mod tests {
 #[cfg(test)]
 mod cursor_animation_tests {
     use super::CursorAnimation;
-    use crate::app_types::{CursorFeedbackKind, CursorId};
+    use crate::app_types::{CursorFeedbackKind, CursorId, ScrollDir};
 
     /// Retail interval for every animated cursor row: rate 4 x 16 ms.
     const INTERVAL_MS: u64 = 64;
@@ -1429,6 +1415,22 @@ mod cursor_animation_tests {
         assert_ne!(
             super::cursor_id_for_feedback(CursorFeedbackKind::Harvest),
             Some(CursorId::AttackMove)
+        );
+    }
+
+    #[test]
+    fn item82_allowed_and_blocked_scroll_feedback_use_directional_rows() {
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::Scroll(ScrollDir::NE)),
+            Some(CursorId::ScrollNE),
+        );
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::ScrollBlocked(ScrollDir::NE)),
+            Some(CursorId::NoMoveNE),
+        );
+        assert_eq!(
+            super::cursor_id_for_feedback(CursorFeedbackKind::ScrollBlocked(ScrollDir::S)),
+            Some(CursorId::NoMoveS),
         );
     }
 }

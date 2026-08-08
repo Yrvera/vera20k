@@ -742,7 +742,10 @@ fn compute_wall_autofill_cells(
 pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances {
     let view = current_sidebar_view(state);
     let minimap_rect = active_minimap_screen_rect(state);
-    let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
+    let (tactical_w, tactical_h) = crate::app_camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
@@ -772,8 +775,8 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
             Some(mm) => mm.build_viewport_rect_in_rect(
                 state.camera_x,
                 state.camera_y,
-                sw / z,
-                sh / z,
+                tactical_w as f32 / z,
+                tactical_h as f32 / z,
                 minimap_rect.x,
                 minimap_rect.y,
                 minimap_rect.w,

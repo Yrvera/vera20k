@@ -1386,6 +1386,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
         }
+        crate::app_input::reconcile_selection_order_after_sim(state);
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
         // app-owned transactions in native emission order for state that has a
         // direct attachment or retained audio handle.

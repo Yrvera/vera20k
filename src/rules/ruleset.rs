@@ -222,6 +222,9 @@ pub struct DamageFireHealthRatio {
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
+    /// Edge-scroll speed scale from `[AudioVisual] ScrollMultiplier=`.
+    /// Stock YR uses `.07`; this is app-facing presentation state.
+    pub scroll_multiplier: f64,
     /// Per-tick Spark gravity AND hover-bob amplitude, from `[AudioVisual]
     /// Gravity=` (NOT `[General]` — stock rulesmd.ini defines it under
     /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
@@ -784,6 +787,7 @@ fn parse_paradrop_list(
 impl Default for GeneralRules {
     fn default() -> Self {
         Self {
+            scroll_multiplier: 0.07,
             gravity: 3,
             veteran_sight: 0,
             leptons_per_sight_increase: 0,
@@ -1287,6 +1291,9 @@ impl GeneralRules {
             .get_f64("ConditionYellowSparkingProbability")
             .unwrap_or(0.01);
         Self {
+            scroll_multiplier: audio_visual
+                .and_then(|s| s.get_f64("ScrollMultiplier"))
+                .unwrap_or(defaults.scroll_multiplier),
             condition_red_sparking_probability: condition_red_spark_prob,
             condition_yellow_sparking_probability: condition_yellow_spark_prob,
             condition_red_spark_threshold: damage_spark_spawn_threshold(condition_red_spark_prob),
@@ -3423,6 +3430,17 @@ MutateWarhead=MyMutate\n\
         // A [General] Gravity is ignored (the engine reads it in ReadAudioVisual).
         let misplaced = GeneralRules::from_ini(&IniFile::from_str("[General]\nGravity=9\n"));
         assert_eq!(misplaced.gravity, 3);
+    }
+
+    #[test]
+    fn item82_scroll_multiplier_parses_from_audio_visual_with_stock_default() {
+        assert_eq!(GeneralRules::default().scroll_multiplier, 0.07);
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n[AudioVisual]\nScrollMultiplier=.125\n",
+        ));
+        assert_eq!(parsed.scroll_multiplier, 0.125);
+        let absent = GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\n"));
+        assert_eq!(absent.scroll_multiplier, 0.07);
     }
 
     #[test]

@@ -159,7 +159,7 @@ const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
     (CursorId::NoMoveSW, 15, 1, 0, CursorHotspot::LeftBottom),
     (CursorId::NoMoveW, 16, 1, 0, CursorHotspot::LeftMiddle),
     (CursorId::NoMoveNW, 17, 1, 0, CursorHotspot::TopLeft),
-    // --- 4-way scroll arrow for middle-mouse pan ---
+    // --- Preserved retail 4-way pan asset ---
     (CursorId::Pan, 385, 1, 0, CursorHotspot::CenterMiddle),
     // --- Sell / repair mode ---
     (

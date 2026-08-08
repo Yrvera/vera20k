@@ -9,11 +9,27 @@
 
 use crate::app::AppState;
 use crate::app_target_lines::TargetLineState;
+use crate::rules::ini_parser::IniFile;
 use crate::ui::shell::in_game_options_state::InGameOptionsState;
 use crate::ui::shell::modal::ModalResult;
 
 const RA2MD_INI_FILENAME: &str = "RA2MD.INI";
 const OPTIONS_SECTION: &str = "Options";
+
+/// Read `[Options] ScrollRate` from the retail user settings file. Missing,
+/// negative, or malformed values return `None` so startup keeps the constructor
+/// default; non-negative native integers fit the current unsigned state.
+pub(crate) fn read_scroll_rate_from_ra2md(ra2_dir: &std::path::Path) -> Option<u32> {
+    let bytes = std::fs::read(ra2_dir.join(RA2MD_INI_FILENAME)).ok()?;
+    let ini = IniFile::from_bytes(&bytes).ok()?;
+    scroll_rate_from_ini(&ini)
+}
+
+fn scroll_rate_from_ini(ini: &IniFile) -> Option<u32> {
+    let raw = ini.section(OPTIONS_SECTION)?.get("ScrollRate")?;
+    let value = raw.trim().parse::<i32>().ok()?;
+    u32::try_from(value).ok()
+}
 
 /// Result code for a normal Back close (every close button -> result 1, which
 /// persists). result 2 (game ended while the dialog was open) would skip persist;
@@ -41,12 +57,8 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
     apply_target_lines(&mut state.target_lines, &state.in_game_options);
-    // ScrollRate now has a live consumer: the edge auto-scroll ramp
-    // (app_camera.rs) reads `in_game_options.scroll_rate` every frame to floor
-    // the speed-table index, so nothing has to be pushed from here. The
-    // round-trip is NOT closed — the startup read-back of `[Options] ScrollRate`
-    // from RA2MD.INI is still missing, so a persisted value does not survive a
-    // restart. That gap predates this consumer.
+    // ScrollRate is read at startup and consumed directly by the camera each
+    // frame, so nothing has to be pushed from this close path.
     // The remaining three are persist-only — no existing Rust consumer reads them, and
     // none is fabricated here (Task 8 grep, 2026-06-16):
     //   ToolTips    -> the tooltip service (app_tooltips.rs) has no enable gate to flip.
@@ -107,6 +119,22 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item82_scroll_rate_reads_retail_value_and_rejects_missing_or_malformed() {
+        let retail = IniFile::from_str("[Options]\nScrollRate=4\n");
+        assert_eq!(scroll_rate_from_ini(&retail), Some(4));
+
+        let absent = IniFile::from_str("[Options]\nGameSpeed=1\n");
+        assert_eq!(scroll_rate_from_ini(&absent), None);
+
+        let malformed = IniFile::from_str("[Options]\nScrollRate=fast\n");
+        assert_eq!(scroll_rate_from_ini(&malformed), None);
+
+        let negative = IniFile::from_str("[Options]\nScrollRate=-1\n");
+        assert_eq!(scroll_rate_from_ini(&negative), None);
+        assert_eq!(InGameOptionsState::default().scroll_rate, 3);
+    }
 
     #[test]
     fn persist_gate_writes_only_on_result_one() {

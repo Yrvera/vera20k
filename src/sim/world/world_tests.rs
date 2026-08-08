@@ -2691,7 +2691,7 @@ fn test_select_command_replaces_previous_selection() {
 }
 
 #[test]
-fn test_select_command_deduplicates_and_sorts_ids() {
+fn test_select_command_deduplicates_without_reordering_payload() {
     let mut sim: Simulation = Simulation::new();
     sim.spawn_from_map(
         &[
@@ -2778,7 +2778,7 @@ fn declare_selection_gate_houses(sim: &mut Simulation) {
 }
 
 #[test]
-fn test_select_command_rejects_ai_owned_entity() {
+fn item83_final_select_allows_caller_admitted_nonlocal_entity() {
     let mut sim: Simulation = Simulation::new();
     let rules = selection_gate_test_rules();
     let heights = empty_heights();
@@ -2803,13 +2803,7 @@ fn test_select_command_rejects_ai_owned_entity() {
     let _ = sim.advance_tick(&[select], Some(&rules), &heights, None, None, 33);
 
     assert!(sim.substrate.entities.get(mine).is_some_and(|e| e.selected));
-    assert!(
-        !sim.substrate
-            .entities
-            .get(theirs)
-            .is_some_and(|e| e.selected),
-        "an AI-owned object is refused before the ObjectClass gates run"
-    );
+    assert!(sim.substrate.entities.get(theirs).is_some_and(|e| e.selected));
 }
 
 #[test]
@@ -2841,6 +2835,61 @@ fn test_select_command_rejects_limbo_object() {
             .is_some_and(|e| e.selected),
         "an in-limbo object has no map presence to select"
     );
+}
+
+#[test]
+fn item83_fresh_selection_rejects_warp_out_but_keeps_preexisting_selection() {
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+
+    let mut sim = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    let tank = sim
+        .spawn_object("MTNK", "Americans", 20, 22, 0, &rules, &heights)
+        .expect("spawn MTNK");
+    let wingman = sim
+        .spawn_object("MTNK", "Americans", 21, 22, 0, &rules, &heights)
+        .expect("spawn second MTNK");
+    assert!(sim.try_select_object(tank, Some(&rules)));
+    sim.substrate.entities.get_mut(tank).unwrap().teleport_state = Some(TeleportState {
+        phase: TeleportPhase::Relocate,
+        target_rx: 30,
+        target_ry: 30,
+        being_warped_ticks: 0,
+    });
+
+    assert!(
+        sim.substrate.entities.get(tank).unwrap().selected,
+        "entering warp-out does not retroactively remove an existing selection"
+    );
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Select {
+            entity_ids: vec![tank, wingman],
+            additive: true,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    ));
+    assert!(sim.substrate.entities.get(tank).unwrap().selected);
+    assert!(sim.substrate.entities.get(wingman).unwrap().selected);
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Select {
+            entity_ids: vec![wingman],
+            additive: false,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    ));
+    assert!(
+        !sim.substrate.entities.get(tank).unwrap().selected,
+        "an ordinary replacement still deselects an omitted warp-out member"
+    );
+    assert!(!sim.try_select_object(tank, Some(&rules)));
 }
 
 #[test]

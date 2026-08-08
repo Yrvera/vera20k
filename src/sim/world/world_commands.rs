@@ -5,7 +5,7 @@
 //!
 //! Dependency rules: same as sim/ (depends on rules/, map/; never render/ui/audio/net).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::Simulation;
 use crate::map::houses::are_houses_friendly;
@@ -131,10 +131,7 @@ impl Simulation {
     ) -> bool {
         match cmd {
             Command::Select { entity_ids, .. } => {
-                let mut snapshot = entity_ids.clone();
-                snapshot.sort_unstable();
-                snapshot.dedup();
-                self.apply_selection_snapshot(&snapshot, rules)
+                self.apply_selection_snapshot(entity_ids, rules)
             }
             Command::Move {
                 entity_id,
@@ -1811,18 +1808,25 @@ impl Simulation {
 
     /// Replace the current selection with exactly the given stable entity IDs.
     ///
-    /// Mirrors gamemd's replace-selection flow: clear the whole group first, then
-    /// run each requested object through `ObjectClass::Select`, which decides on
-    /// its own whether the object may join.
+    /// Mirrors gamemd's mutation flow: omitted old members are deselected,
+    /// requested old members retain their existing admission, and only genuinely
+    /// new members run through `ObjectClass::Select`. This distinction matters
+    /// for an already-selected Chrono unit in warp-out: warp blocks a fresh
+    /// selection, but does not retroactively remove an existing one.
     fn apply_selection_snapshot(&mut self, stable_ids: &[u64], rules: Option<&RuleSet>) -> bool {
-        // Deselect all via EntityStore.
+        let requested: BTreeSet<u64> = stable_ids.iter().copied().collect();
+        // Deselect only omitted old members. Requested old members remain set,
+        // so the final-admission gates below are never reapplied to them.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         for &id in &keys {
-            if let Some(e) = self.substrate.entities.get_mut(id) {
+            if !requested.contains(&id)
+                && let Some(e) = self.substrate.entities.get_mut(id)
+            {
                 e.selected = false;
             }
         }
-        // Select the requested IDs.
+        // Iterate the original payload, not the membership set: source order is
+        // authoritative even though this sim layer stores only selected bits.
         for &stable_id in stable_ids {
             self.try_select_object(stable_id, rules);
         }
@@ -1832,20 +1836,11 @@ impl Simulation {
     /// `TechnoClass::Select` then `ObjectClass::Select` — commit one object into
     /// the selection group.
     ///
-    /// Returns whether the object joined. A unit or building never reaches the
-    /// ObjectClass gates directly: `TechnoClass::Select` runs first and refuses
-    /// outright when the owning house is not a human player, which is what keeps
-    /// enemy AI armour and civilian props out of a band-box swept across a
-    /// fight. gamemd lets a per-object override byte bypass that refusal; the
-    /// byte's meaning is UNCHECKED and no VERA field models it. Note also that
-    /// gamemd's human-player test has two forms — a per-house pair of flags, and
-    /// a strict identity test against the local player — and which one a YR
-    /// skirmish takes is UNCHECKED; VERA implements the per-house form, so the
-    /// gate admits any human house rather than only the command issuer.
-    ///
-    /// Then the ObjectClass gates reject, in this order, an object that is in
-    /// limbo (it has no map presence to select), one that is already selected
-    /// (the group holds no duplicates), and one whose type answers no to
+    /// Caller-specific TechnoClass paths own their owner gate: bandbox and
+    /// TypeSelect admit only the local house, while an ordinary click may pass
+    /// a discovered nonlocal object. The final ObjectClass gates reject an
+    /// object that is dead, in limbo, already selected, leaving through a
+    /// chrono warp, or whose type answers no to
     /// `CanBeSelected` — i.e. `Selectable=no`, which is how the scripted
     /// paradrop/spy planes stay out of the player's hands. Without rules loaded
     /// the type answer is unknown, and the type default is yes.
@@ -1853,17 +1848,14 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
-        // A house that was never declared — bare test sims, unowned map props —
-        // is treated as human, so this only fires on a house known to be AI.
-        // Same convention `credits_entry_for_owner` uses for missing houses.
-        if self
-            .houses
-            .get(&entity.owner)
-            .is_some_and(|house| !house.is_human)
+        if !entity.lifecycle.object_alive
+            || entity.lifecycle.in_limbo
+            || entity.selected
+            || entity
+                .teleport_state
+                .as_ref()
+                .is_some_and(|teleport| teleport.warp_out_active())
         {
-            return false;
-        }
-        if entity.lifecycle.in_limbo || entity.selected {
             return false;
         }
         let type_ref = entity.type_ref;

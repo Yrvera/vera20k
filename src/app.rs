@@ -12,7 +12,8 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app_init::MapMenuEntry;
@@ -266,6 +267,10 @@ pub(crate) struct AppState {
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
+    pub(crate) hotkey_bindings: crate::app_hotkeys::HotkeyBindings,
+    pub(crate) hotkey_modifiers: ModifiersState,
+    /// Hybrid held/tap state for the retail TypeSelect command.
+    pub(crate) type_select: crate::app_types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
     /// Previous complete client surface, retained for input-time screenshot parity.
@@ -361,11 +366,6 @@ pub(crate) struct AppState {
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
-    /// True while middle-mouse button is held for fast camera panning.
-    pub(crate) middle_mouse_panning: bool,
-    /// Cursor position when middle-mouse pan started (screen pixels).
-    pub(crate) middle_mouse_anchor_x: f32,
-    pub(crate) middle_mouse_anchor_y: f32,
     /// Animated radar chrome — plays 33-frame open/close animation when radar gained/lost.
     pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
     /// Requested-versus-resolved atlas identity used to construct `radar_anim`.
@@ -422,6 +422,14 @@ pub(crate) struct AppState {
     pub(crate) software_cursor: Option<app_render::SoftwareCursor>,
     /// Selection drag state — tracks mouse drag for box-select.
     pub(crate) selection_state: SelectionState,
+    /// Player-side `g_CurrentObjects` order. Selection commands update this
+    /// immediately; the post-sim reconciliation removes lifecycle departures.
+    pub(crate) selection_order: Vec<u64>,
+    /// A queued selection command has not yet reached the simulation tick.
+    pub(crate) selection_order_pending: bool,
+    /// Existing selection paths speak by default; held TypeSelect batches
+    /// temporarily suppress and restore this latch.
+    pub(crate) selection_voice_enabled: bool,
     /// A* pathfinding grid — walkability data from terrain.
     pub(crate) path_grid: Option<PathGrid>,
     /// Sequence definitions per entity type for animation ticking.
@@ -3674,7 +3682,6 @@ impl ApplicationHandler for App {
                     // inhibited until the player right-clicks again.
                     state.tactical_mouse = Default::default();
                     state.selection_state.cancel_drag();
-                    state.middle_mouse_panning = false;
                     state.minimap_dragging = false;
                 }
                 Self::set_window_active(state, active);
@@ -3684,6 +3691,13 @@ impl ApplicationHandler for App {
                 // not; see the `Resized` arm above.
                 Self::set_window_hidden(state, occluded);
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                // Native's paused input capture admits Escape only and does not
+                // mutate the recorded keyboard state for other input.
+                if !state.paused {
+                    state.hotkey_modifiers = modifiers.state();
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // ESC always reaches the handler when in-game (even when paused)
@@ -3691,6 +3705,7 @@ impl ApplicationHandler for App {
                     let is_escape: bool =
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
                     let in_game: bool = state.screen == GameScreen::InGame;
+                    let paused_at_event = in_game && state.paused;
 
                     if crate::app_shell_transition::blocks_shell_input(state) {
                         return;
@@ -3751,6 +3766,13 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    if !crate::app_hotkeys::input_admitted_while_paused(
+                        paused_at_event,
+                        &event.logical_key,
+                    ) {
+                        return;
+                    }
+
                     if Self::native_skirmish_shell_active(state)
                         && event.state.is_pressed()
                         && !is_escape
@@ -3770,20 +3792,51 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    let key_without_modifiers = event.key_without_modifiers();
+                    let binding_key = crate::app_hotkeys::binding_logical_key(
+                        &event.logical_key,
+                        &key_without_modifiers,
+                        event.location,
+                    );
+                    let hotkey_resolution = state.hotkey_bindings.resolve_event(
+                        binding_key,
+                        event.location,
+                        state.hotkey_modifiers,
+                    );
                     if in_game && (is_escape || !egui_consumed) {
-                        if event.state.is_pressed() && !event.repeat {
-                            if code == KeyCode::KeyN {
-                                crate::app_loading::clear_match_startup_state(state);
-                            }
-                            app_input::handle_hotkey_pressed(state, code);
+                        let type_select_consumed = app_input::handle_type_select_key_edge(
+                            state,
+                            hotkey_resolution,
+                            code,
+                            event.state,
+                            event.repeat,
+                        );
+                        if event.state.is_pressed() && !event.repeat && !type_select_consumed {
+                            app_input::handle_hotkey_pressed(state, hotkey_resolution, code);
                         }
                     }
-                    // Track held keys only when not paused.
-                    if in_game && !egui_consumed {
+                    // A key received by the paused capture changes no held-key
+                    // state, including the Escape press that closes it.
+                    if in_game && !paused_at_event && !egui_consumed {
                         if event.state.is_pressed() {
-                            state.keys_held.insert(code);
+                            if let Some(scroll_key) =
+                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
+                            {
+                                state.keys_held.insert(scroll_key);
+                            } else if crate::app_hotkeys::physical_scroll_key(code).is_none() {
+                                state.keys_held.insert(code);
+                            }
                         } else {
+                            // A release always clears a previously admitted
+                            // scroll flag, even if NumLock or bindings changed
+                            // while the key was held.
                             state.keys_held.remove(&code);
+                            if let Some(scroll_key) =
+                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
+                                    .or_else(|| crate::app_hotkeys::physical_scroll_key(code))
+                            {
+                                state.keys_held.remove(&scroll_key);
+                            }
                         }
                     }
                 }
@@ -3937,7 +3990,8 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if !egui_consumed
-                    && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
+                    && (state.screen == GameScreen::SpawnPick
+                        || (state.screen == GameScreen::InGame && !state.paused))
                 {
                     // Every wheel notch scrolls the active build strip by one
                     // row, wherever the cursor is. gamemd routes the wheel
@@ -4314,6 +4368,16 @@ impl App {
         let startup_software_cursor = startup_asset_manager.as_ref().and_then(|assets| {
             crate::render::cursor_atlas::build_software_cursor(&gpu, &batch_renderer, assets)
         });
+        let hotkey_bindings =
+            crate::app_hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
+        let saved_scroll_rate = game_config
+            .as_ref()
+            .and_then(|config| {
+                crate::app_options_persist::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
+            })
+            .unwrap_or_else(|| {
+                crate::ui::shell::in_game_options_state::InGameOptionsState::default().scroll_rate
+            });
 
         let mut state = AppState {
             random_map_generation: None,
@@ -4364,6 +4428,9 @@ impl App {
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
+            hotkey_bindings,
+            hotkey_modifiers: ModifiersState::empty(),
+            type_select: crate::app_types::TypeSelectInputState::default(),
             retail_screenshot_requested: false,
             retail_screenshot_frame_cache: Default::default(),
             egui,
@@ -4408,9 +4475,6 @@ impl App {
             quit_cascade: None,
             minimap: None,
             minimap_dragging: false,
-            middle_mouse_panning: false,
-            middle_mouse_anchor_x: 0.0,
-            middle_mouse_anchor_y: 0.0,
             radar_anim: None,
             radar_animation_source: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
@@ -4434,6 +4498,9 @@ impl App {
             bit_font,
             software_cursor: startup_software_cursor,
             selection_state: SelectionState::new(),
+            selection_order: Vec::new(),
+            selection_order_pending: false,
+            selection_voice_enabled: true,
             loaded_map_source: None,
             loaded_map_hash: None,
             path_grid: None,
@@ -4516,6 +4583,7 @@ impl App {
             ),
             in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
                 game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                scroll_rate: saved_scroll_rate,
                 ..Default::default()
             },
             in_game_options_anchor: None,
@@ -5221,6 +5289,8 @@ impl App {
         }
         state.window_active = active;
         state.keys_held.clear();
+        state.hotkey_modifiers = ModifiersState::empty();
+        state.type_select.clear_held();
         if active {
             // The deactivated span must not buy a catch-up frame: forget the
             // pacing window so exactly one frame runs immediately, then normal

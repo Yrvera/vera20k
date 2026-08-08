@@ -22,6 +22,12 @@ const MESSAGE_RGB_SYSTEM: [f32; 3] = [1.0, 1.0, 1.0];
 /// Mission/trigger text lifetime — preserves the pre-A5 banner's 4 s
 /// (the native trigger-text timeout is untraced; deferred item).
 const MISSION_TEXT_TIMEOUT_MS: u64 = 4_000;
+/// `0xF0` native 16 ms timer buckets.
+const TYPE_SELECT_MESSAGE_TIMEOUT_MS: u64 = 3_840;
+/// Native falls back to runtime color-scheme 3. Rust stores the undoubled
+/// `[Colors]` entry index, so that scheme is entry 1.
+const TYPE_SELECT_FALLBACK_SCHEME_ENTRY: crate::rules::house_colors::HouseColorIndex =
+    crate::rules::house_colors::HouseColorIndex(3 / 2);
 
 /// Pause-adjusted message `now` (contract §4.2 step 8 / §4.3): the wall clock
 /// minus every paused span. ALL message deadlines and expiry checks use this
@@ -55,6 +61,71 @@ pub(crate) fn post_system_message(state: &mut AppState, text: &str) {
             .and_then(|r| r.general.incoming_message_sound.clone());
         crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
     }
+}
+
+/// Post the localized, silent HUD result of one executed TypeSelect tap.
+pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
+    sync_view(state);
+    let now = message_now_ms(state);
+    let rgb = type_select_message_rgb(
+        crate::app_commands::preferred_local_owner_name(state).as_deref(),
+        &state.house_color_map,
+        state.rules.as_ref().map(|rules| &rules.house_color_ramps),
+    );
+    let font = &state.bit_font;
+    let measure = |s: &str| font.text_width(s) as i32;
+    let outcome = add_type_select_feedback(
+        &mut state.message_list,
+        state.csf.as_ref(),
+        csf_key,
+        rgb,
+        now,
+        &measure,
+    );
+    debug_assert!(!outcome.play_sound, "TypeSelect feedback is a silent message add");
+}
+
+fn add_type_select_feedback(
+    list: &mut crate::ui::messages::MessageList,
+    csf: Option<&crate::assets::csf_file::CsfFile>,
+    csf_key: &str,
+    rgb: [f32; 3],
+    now_ms: u64,
+    measure: &dyn Fn(&str) -> i32,
+) -> crate::ui::messages::AddOutcome {
+    let text = csf
+        .map(|table| table.text(csf_key))
+        .unwrap_or(std::borrow::Cow::Borrowed(csf_key));
+    list.add_message(
+        &crate::ui::messages::MessagePost {
+            prefix: None,
+            text: text.as_ref(),
+            rgb,
+            timeout_ms: Some(TYPE_SELECT_MESSAGE_TIMEOUT_MS),
+            silent: true,
+        },
+        now_ms,
+        measure,
+    )
+}
+
+fn type_select_message_rgb(
+    local_owner: Option<&str>,
+    house_colors: &crate::map::houses::HouseColorMap,
+    ramps: Option<&crate::rules::house_colors::HouseColorRamps>,
+) -> [f32; 3] {
+    let Some(ramps) = ramps else {
+        return MESSAGE_RGB_SYSTEM;
+    };
+    let scheme = local_owner
+        .and_then(|owner| house_colors.get(owner).copied())
+        .unwrap_or(TYPE_SELECT_FALLBACK_SCHEME_ENTRY);
+    let color = ramps.ramp(scheme)[0];
+    [
+        color.r as f32 / 255.0,
+        color.g as f32 / 255.0,
+        color.b as f32 / 255.0,
+    ]
 }
 
 /// Per-frame: feed the pause edge into the clock, then (unpaused, in-game)
@@ -111,4 +182,99 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_csf(label: &str, value: &str) -> crate::assets::csf_file::CsfFile {
+        let encoded_value: Vec<u8> = value
+            .encode_utf16()
+            .flat_map(|unit| unit.to_le_bytes())
+            .map(|byte| !byte)
+            .collect();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x4353_4620u32.to_le_bytes());
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0x4C42_4C20u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&(label.len() as u32).to_le_bytes());
+        data.extend_from_slice(label.as_bytes());
+        data.extend_from_slice(&0x5354_5220u32.to_le_bytes());
+        data.extend_from_slice(&(value.encode_utf16().count() as u32).to_le_bytes());
+        data.extend_from_slice(&encoded_value);
+        crate::assets::csf_file::CsfFile::from_bytes(&data).expect("item83 CSF fixture")
+    }
+
+    #[test]
+    fn item83_type_select_feedback_resolves_csf_into_one_real_silent_message_row() {
+        let csf = test_csf("msg:selacrossscreen", "Lokalisierte Bildschirmauswahl");
+        let mut list = crate::ui::messages::MessageList::new(3, 0, 6, 1_000);
+        let rgb = [0.25, 0.5, 0.75];
+        let now_ms = 1_200;
+        let measure = |text: &str| text.chars().count() as i32 * 8;
+
+        let outcome = add_type_select_feedback(
+            &mut list,
+            Some(&csf),
+            "MSG:SelAcrossScreen",
+            rgb,
+            now_ms,
+            &measure,
+        );
+
+        assert_eq!(outcome.added, 1);
+        assert!(!outcome.play_sound, "silent=1 suppresses IncomingMessage");
+        assert_eq!(list.messages().len(), 1);
+        let row = &list.messages()[0];
+        assert_eq!(row.text, "Lokalisierte Bildschirmauswahl");
+        assert_eq!(row.rgb, rgb);
+        assert_eq!(row.deadline_ms, Some(now_ms + 3_840));
+    }
+
+    #[test]
+    fn item83_type_select_feedback_uses_local_scheme_color_zero_and_runtime_three_fallback() {
+        use crate::rules::color_scheme::ColorSchemeEntry;
+        use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
+
+        let ramps = HouseColorRamps::from_schemes(&[
+            ColorSchemeEntry {
+                name: "LightGold".into(),
+                hsv: [25, 255, 255],
+            },
+            ColorSchemeEntry {
+                name: "Gold".into(),
+                hsv: [43, 239, 255],
+            },
+            ColorSchemeEntry {
+                name: "DarkBlue".into(),
+                hsv: [153, 214, 212],
+            },
+        ]);
+        let mut house_colors = crate::map::houses::HouseColorMap::new();
+        house_colors.insert("Americans".into(), HouseColorIndex(2));
+        let normalized = |index| {
+            let color = ramps.ramp(index)[0];
+            [
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+            ]
+        };
+
+        assert_eq!(
+            type_select_message_rgb(Some("Americans"), &house_colors, Some(&ramps)),
+            normalized(HouseColorIndex(2))
+        );
+        assert_eq!(
+            type_select_message_rgb(None, &house_colors, Some(&ramps)),
+            normalized(HouseColorIndex(1)),
+            "runtime scheme 3 addresses undoubled Colors entry 1"
+        );
+    }
 }
