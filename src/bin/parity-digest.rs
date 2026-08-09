@@ -66,10 +66,13 @@ fn build_simulation() -> Simulation {
 
     for (index, (owner, side)) in [("Americans", 0u8), ("Russians", 1u8)].iter().enumerate() {
         let owner_id = sim.interner.intern(owner);
-        sim.houses.insert(
-            owner_id,
-            HouseState::new(owner_id, *side, None, index == 0, 10_000, 10),
-        );
+        let mut house = HouseState::new(owner_id, *side, None, index == 0, 10_000, 10);
+        // The structures below are raw-inserted without lifecycle registration, so
+        // the defeat scan would read both houses as owning nothing and resolve the
+        // match on tick 1, freezing the committed-tick counter. Passive houses are
+        // exempt from defeat evaluation, keeping every tick committable.
+        house.multiplay_passive = true;
+        sim.houses.insert(owner_id, house);
 
         let type_ref = sim.interner.intern("GACNST");
         let base_x = 10 + (index as u16) * 20;
