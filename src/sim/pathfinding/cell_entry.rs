@@ -29,6 +29,9 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::{self, HouseAllianceMap};
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+use crate::sim::cell_rect::{
+    IsClearToMoveResult, LiveCellPassabilityQuery, evaluate_live_cell_passability,
+};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::bump_crush;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -190,13 +193,10 @@ pub fn evaluate_can_enter_cell(ctx: CanEnterCellContext<'_>) -> CanEnterCellResu
     match ctx.terrain_layer {
         MovementLayer::Ground => evaluate_ground_cell_entry(ctx),
         MovementLayer::Bridge => {
-            if ctx.path_grid.is_some_and(|grid| {
+            let bridge_walkable = ctx.path_grid.is_some_and(|grid| {
                 grid.is_walkable_on_layer(ctx.target.0, ctx.target.1, MovementLayer::Bridge)
-            }) {
-                CanEnterCellResult::Clear
-            } else {
-                CanEnterCellResult::HardBlocked
-            }
+            });
+            evaluate_shared_cell_leaf(ctx, bridge_walkable)
         }
         // Air and underground locomotors are admitted by their dedicated
         // locomotion state machines, not this ground/bridge terrain slice.
@@ -208,12 +208,11 @@ fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResul
     let (x, y) = ctx.target;
 
     if let Some(movement_zone) = ctx.movement_zone.filter(|zone| zone.is_water_mover()) {
-        return ctx
+        let land_passable = ctx
             .resolved_terrain
             .and_then(|terrain| terrain.cell(x, y))
-            .is_some_and(|cell| is_water_surface_cell_passable(cell, movement_zone))
-            .then_some(CanEnterCellResult::Clear)
-            .unwrap_or(CanEnterCellResult::HardBlocked);
+            .is_some_and(|cell| is_water_surface_cell_passable(cell, movement_zone));
+        return evaluate_shared_cell_leaf(ctx, land_passable);
     }
 
     let grid_ok = ctx.path_grid.map_or(true, |grid| {
@@ -224,28 +223,92 @@ fn evaluate_ground_cell_entry(ctx: CanEnterCellContext<'_>) -> CanEnterCellResul
                 grid.is_walkable(x, y)
             }
     });
-    if !grid_ok {
-        return CanEnterCellResult::HardBlocked;
-    }
-
-    if let Some(speed_type) = ctx.speed_type.or_else(|| {
+    let speed_type = ctx.speed_type.or_else(|| {
         if ctx.terrain_costs.is_some() {
             None
         } else {
             ctx.movement_zone.map(|zone| zone.speed_type())
         }
-    }) {
-        if let Some(terrain) = ctx.resolved_terrain {
-            let Some(cell) = terrain.cell(x, y) else {
-                return CanEnterCellResult::HardBlocked;
-            };
-            if !speed_type_allows_cell(cell, speed_type) {
-                return CanEnterCellResult::HardBlocked;
-            }
-        }
+    });
+    let speed_passable = speed_type.is_none_or(|speed_type| {
+        ctx.resolved_terrain
+            .and_then(|terrain| terrain.cell(x, y))
+            .is_none_or(|cell| speed_type_allows_cell(cell, speed_type))
+    });
+    let terrain_cost_passable = terrain_cost_result(ctx.terrain_costs, x, y).is_clear();
+
+    evaluate_shared_cell_leaf(ctx, grid_ok && speed_passable && terrain_cost_passable)
+}
+
+fn evaluate_shared_cell_leaf(
+    ctx: CanEnterCellContext<'_>,
+    land_passable: bool,
+) -> CanEnterCellResult {
+    let structural_bridge = ctx
+        .path_grid
+        .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
+        .is_some_and(|cell| cell.has_structural_bridge())
+        || ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
+            .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let bridge_transition = ctx
+        .path_grid
+        .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
+        .is_some_and(|cell| cell.is_bridge_transition_cell())
+        || ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
+            .is_some_and(|cell| cell.is_bridge_transition_cell());
+    if bridge_transition || (ctx.terrain_layer == MovementLayer::Bridge && !structural_bridge) {
+        // Native `IsClearToMove` receives an integer level, not the engine's
+        // path-layer enum. A bridgehead can carry Ground while an already-on-
+        // bridge mover remains at deck height, so guessing base/base+4 here
+        // rejects the proved Body->Ramp->Ground transition. Until +0x1AC
+        // threads its numeric path height, retain the prior structural gate.
+        return if land_passable {
+            CanEnterCellResult::Clear
+        } else {
+            CanEnterCellResult::HardBlocked
+        };
     }
 
-    terrain_cost_result(ctx.terrain_costs, x, y)
+    let Some(speed_type) = ctx
+        .speed_type
+        .or_else(|| ctx.movement_zone.map(|zone| zone.speed_type()))
+    else {
+        return if land_passable {
+            CanEnterCellResult::Clear
+        } else {
+            CanEnterCellResult::HardBlocked
+        };
+    };
+    let movement_zone = ctx.movement_zone.unwrap_or(MovementZone::Normal);
+    let result = evaluate_live_cell_passability(LiveCellPassabilityQuery {
+        target: ctx.target,
+        speed_type,
+        movement_zone,
+        // FootClass +0x1AC owns zone calculation outside the shared Cell leaf.
+        requested_zone: None,
+        actual_zone: 0,
+        requested_layer: Some(ctx.terrain_layer),
+        ignore_infantry: false,
+        ignore_vehicles: false,
+        land_passable,
+        path_grid: ctx.path_grid,
+        resolved_terrain: ctx.resolved_terrain,
+        // Object-list and raw occupation classification remain the later
+        // class-specific +0x1AC arms and must not be collapsed into terrain.
+        raw_occupation: None,
+    });
+    if matches!(
+        result,
+        IsClearToMoveResult::Clear { .. } | IsClearToMoveResult::ClearWinged
+    ) {
+        CanEnterCellResult::Clear
+    } else {
+        CanEnterCellResult::HardBlocked
+    }
 }
 
 fn terrain_cost_result(

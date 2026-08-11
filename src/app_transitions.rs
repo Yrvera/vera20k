@@ -169,6 +169,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.bridge_height_map = result.bridge_height_map;
     state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
     state.lighting_grid = result.lighting_grid;
+    state.applied_lighting_sources.clear();
+    state.applied_lighting_profile = None;
+    state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+    state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
     state.path_grid = result.path_grid;
@@ -195,14 +199,20 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                 state.in_game_options.detail_level,
             );
             let fingerprint = view.fingerprint;
+            let profile = view.profile;
+            let detail_level = view.detail_level;
+            let point_lights = view.point_lights.clone();
             let grid = crate::app_init::build_lighting_grid_from_view(terrain, &view);
-            Some((fingerprint, grid))
+            Some((fingerprint, profile, detail_level, point_lights, grid))
         }
         _ => None,
     };
-    if let Some((fingerprint, grid)) = initial_lighting {
+    if let Some((fingerprint, profile, detail_level, point_lights, grid)) = initial_lighting {
         state.lighting_grid = grid;
         state.last_lighting_view_fingerprint = Some(fingerprint);
+        state.applied_lighting_profile = Some(profile);
+        state.applied_lighting_detail_level = detail_level;
+        state.applied_lighting_sources = point_lights;
     }
     // Map load hands over a world anchor point; the transition applies the
     // active tactical rectangle and live zoom.

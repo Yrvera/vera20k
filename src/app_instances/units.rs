@@ -15,7 +15,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
-use crate::render::draw_state::DrawState;
+use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::unit_atlas::{
     UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
@@ -215,13 +215,23 @@ pub(crate) fn build_unit_instances(
         // Honor display_type_override (set by the dock sub-FSM during Unloading)
         // so the miner renders as its UnloadingClass model (HORV/CMON) while
         // depositing ore. Mirrors gamemd's TypeClass+0x6B8 swap at draw time.
-        let type_str: &str = entity
-            .display_type_override
+        let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
+        let type_str: &str = active_disguise
+            .and_then(|state| state.disguise_type)
             .map(|id| sim.interner.resolve(id))
+            .or_else(|| {
+                entity
+                    .display_type_override
+                    .map(|id| sim.interner.resolve(id))
+            })
             .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
+        let remap_owner = active_disguise
+            .and_then(|state| state.disguised_as_house)
+            .map(|id| sim.interner.resolve(id))
+            .unwrap_or(owner_str);
         let hc: HouseColorIndex = state
             .house_color_map
-            .get(owner_str)
+            .get(remap_owner)
             .copied()
             .unwrap_or_default();
         let Some(draw_decision) = tactical_entity_render_admission(
@@ -233,6 +243,13 @@ pub(crate) fn build_unit_instances(
             ignore_visibility,
             sim.session.binary_frame,
             house_color_to_remap_row(hc),
+            ObserverDrawContext {
+                owner_is_allied: local_owner.as_deref().is_some_and(|observer| {
+                    crate::map::houses::is_allied_with(&sim.house_alliances, observer, owner_str)
+                }),
+                detects_cloak: local_owner_id
+                    .is_some_and(|observer| sim.fog.has_sensor_for_house(observer, pos.rx, pos.ry)),
+            },
         ) else {
             continue;
         };

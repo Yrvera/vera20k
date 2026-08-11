@@ -471,6 +471,16 @@ pub(crate) struct AppState {
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
     pub(crate) lighting_grid: CellLightGrid,
+    /// Complete source list behind the visible grid. Retained so source
+    /// transitions can enumerate only old/new affected areas.
+    pub(crate) applied_lighting_sources: Vec<crate::map::lighting::PointLight>,
+    /// Exact ScenarioClass profile behind the visible grid.
+    pub(crate) applied_lighting_profile: Option<crate::map::lighting::LightingProfileUnits>,
+    /// Native detail mask behind the visible grid.
+    pub(crate) applied_lighting_detail_level: u32,
+    /// YR LightSourceClass-style sampled records. The active grid changes only
+    /// after the complete pending refresh has gathered.
+    pub(crate) pending_lighting_refresh: Option<crate::map::lighting::DeferredCellLightRefresh>,
     /// Complete derived light-view fingerprint applied to `lighting_grid`.
     /// App view-state only — never serialized or hashed.
     pub(crate) last_lighting_view_fingerprint: Option<u64>,
@@ -4538,6 +4548,10 @@ impl App {
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
+            applied_lighting_sources: Vec::new(),
+            applied_lighting_profile: None,
+            applied_lighting_detail_level: 2,
+            pending_lighting_refresh: None,
             last_lighting_view_fingerprint: None,
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),

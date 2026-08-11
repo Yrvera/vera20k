@@ -85,6 +85,7 @@ pub(crate) fn tactical_entity_render_admission(
     ignore_visibility: bool,
     current_frame: u32,
     remap_row: u32,
+    observer: crate::render::draw_state::ObserverDrawContext,
 ) -> Option<crate::render::draw_state::DrawDecision> {
     if entity.lifecycle.in_limbo
         || entity.passenger_role.is_inside_transport()
@@ -99,8 +100,12 @@ pub(crate) fn tactical_entity_render_admission(
     {
         return None;
     }
-    let decision =
-        crate::render::draw_state::DrawState::for_entity(entity, current_frame, remap_row);
+    let decision = crate::render::draw_state::DrawState::for_entity(
+        entity,
+        current_frame,
+        remap_row,
+        observer,
+    );
     decision.visible.then_some(decision)
 }
 
@@ -181,6 +186,22 @@ fn compose_tactical_screen_entity_encounter_order(
                         ignore_visibility,
                         current_frame,
                         0,
+                        crate::render::draw_state::ObserverDrawContext {
+                            owner_is_allied: local_owner.is_some_and(|observer| {
+                                crate::map::houses::is_allied_with(
+                                    &sim.house_alliances,
+                                    observer,
+                                    owner,
+                                )
+                            }),
+                            detects_cloak: local_owner_id.is_some_and(|observer| {
+                                fog.has_sensor_for_house(
+                                    observer,
+                                    entity.position.rx,
+                                    entity.position.ry,
+                                )
+                            }),
+                        },
                     )
                     .is_some()
                 };
@@ -518,6 +539,7 @@ mod tests {
                 ignore_visibility,
                 0,
                 0,
+                crate::render::draw_state::ObserverDrawContext::default(),
             )
             .is_some()
         };

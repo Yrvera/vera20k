@@ -227,6 +227,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         toggle_power: false,
         powered: false,
         can_disguise: false,
+        disguise_when_still: false,
         wall: false,
         to_overlay: None,
         unsellable: false,
@@ -234,6 +235,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         selectable: true,
         light_visibility: 0,
         light_intensity: 0.0,
+        has_spotlight: false,
         light_red_tint: 1.0,
         light_green_tint: 1.0,
         light_blue_tint: 1.0,
@@ -433,4 +435,15 @@ fn drive_piggyback_restores_primary_teleport_only_after_not_moving() {
     assert_eq!(state.active_kind(), LocomotorKind::Teleport);
     assert_eq!(state.effective_kind(), LocomotorKind::Teleport);
     assert!(state.is_primary_active());
+}
+
+#[test]
+fn drive_piggyback_refuses_an_unstashed_active_drive() {
+    let obj = make_obj(LocomotorKind::Teleport, ObjectCategory::Vehicle);
+    let mut state = LocomotorState::from_object_type(&obj, 1500);
+    state.kind = LocomotorKind::Drive;
+
+    assert!(!state.begin_drive_piggyback_for_teleporter());
+    assert_eq!(state.kind, LocomotorKind::Drive);
+    assert!(state.piggyback.is_none());
 }

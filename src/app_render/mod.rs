@@ -276,6 +276,8 @@ fn upload_to_gpu(
     // PixelFX water/ore sparkles — drawn after the ground object pass.
     // Empty when graphics.extra_animations is off.
     pool.upload(&state.gpu, "cell_sparkles", &world.cell_sparkles);
+    pool.upload(&state.gpu, "weapon_waves", &world.weapon_waves);
+    pool.upload(&state.gpu, "spotlight_type16", &world.spotlight_type16);
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, page_inst) in world.particle_paged.iter().enumerate() {
         if i < PARTICLE_KEYS.len() {

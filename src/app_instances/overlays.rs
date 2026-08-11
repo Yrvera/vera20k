@@ -17,11 +17,11 @@ use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{BlitPolicy, RenderZPolicy, SpriteEncoding};
-use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_frame_source_alpha};
+use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_translucency_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
-use crate::sim::projectile::{Projectile, ProjectileCoord};
+use crate::sim::projectile::ProjectileCoord;
 use crate::util::fixed_math::SimFixed;
 
 use super::helpers::{
@@ -199,8 +199,8 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
     }
 }
 
-/// Build damage-fire sprites from authoritative sim-owned animation slots.
-pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+/// Build ordinary scheduler-owned `AnimClass` sprites.
+pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
@@ -212,74 +212,83 @@ pub(crate) fn build_damage_fire_instances(state: &AppState, paged: &mut [Vec<Spr
         state.render_width() as f32 / z2,
         state.render_height() as f32 / z2,
     );
-    for entity in sim.entities().values() {
-        for anim_id in entity.damage_fire_anim_ids.iter().flatten() {
-            let Some(anim) = sim.anim(*anim_id).filter(|anim| !anim.runtime.inactive) else {
-                continue;
-            };
-            let Ok(frame) = u16::try_from(anim.runtime.current_frame) else {
-                continue;
-            };
-            let (center_x, center_y, rx, ry, z) = anim_world_render_coords(anim.world_coord);
-            if !in_view(
-                center_x, center_y, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0,
-            ) {
-                continue;
-            }
-            let tint = state.lighting_grid.anim_tint_at(
-                (rx, ry),
-                state
-                    .art_registry
-                    .as_ref()
-                    .and_then(|a| a.anim_runtime_config(sim.interner.resolve(anim.type_id))),
-            );
-            let type_name: &str = sim.interner.resolve(anim.type_id);
-            let key = ShpSpriteKey {
-                type_id: type_name.to_string(),
-                facing: 0,
-                frame,
-                house_color: HouseColorIndex(0),
-            };
-            let Some(entry) = atlas.get(&key) else {
-                continue;
-            };
-            // BURN-S/M/L carry a fixed `Translucency=25`, so their source
-            // weight is 3/4 regardless of frame; the frame-count argument only
-            // matters for `Translucent=yes` types that never bound their SHP.
-            let alpha: f32 = anim_instance_alpha(
-                state
-                    .art_registry
-                    .as_ref()
-                    .and_then(|a| a.anim_runtime_config(type_name)),
-                anim.runtime.current_frame,
-                i32::from(
-                    sim.effect_frame_counts
-                        .get(&anim.type_id)
-                        .copied()
-                        .unwrap_or(0),
-                ),
-            );
-            let (origin_y, world_height) = state
-                .terrain_grid
-                .as_ref()
-                .map(|grid| (grid.origin_y, grid.world_height))
-                .unwrap_or((0.0, 1.0));
-            let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
-            paged[entry.page as usize].push(SpriteInstance {
-                position: [center_x + entry.offset_x, center_y + entry.offset_y],
-                size: entry.pixel_size,
-                uv_origin: entry.uv_origin,
-                uv_size: entry.uv_size,
-                depth: apply_shape_z_adjust(
-                    fire_depth,
-                    anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
-                    world_height,
-                ),
-                tint,
-                alpha,
-                ..Default::default()
-            });
+    for (_, anim) in sim.anims() {
+        if anim.runtime.inactive {
+            continue;
         }
+        let type_name: &str = sim.interner.resolve(anim.type_id);
+        let config = state
+            .art_registry
+            .as_ref()
+            .and_then(|registry| registry.anim_runtime_config(type_name));
+        if !crate::sim::anim_class::anim_draw_detail_visible(
+            crate::sim::anim_class::AnimDrawDetailInput {
+                // No authoritative draw-rate degradation producer exists yet.
+                frame_rate_below_minimum: false,
+                type_detail_level: config.map_or(0, |value| value.detail_level),
+                game_detail_level: state.in_game_options.detail_level as i32,
+                hidden: anim.draw_runtime.hidden,
+                special_hidden: anim.draw_runtime.special_hidden,
+                // The native special-hide type bit remains an explicit residual.
+                type_special_hide: false,
+            },
+        ) {
+            continue;
+        }
+        let Ok(frame) = u16::try_from(anim.runtime.current_frame) else {
+            continue;
+        };
+        let (center_x, center_y, rx, ry, z) = anim_world_render_coords(anim.world_coord);
+        if !in_view(
+            center_x, center_y, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0,
+        ) {
+            continue;
+        }
+        let tint = state.lighting_grid.anim_tint_at((rx, ry), config);
+        let key = ShpSpriteKey {
+            type_id: type_name.to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        };
+        let Some(entry) = atlas.get(&key) else {
+            continue;
+        };
+        let Some(alpha) = anim_instance_alpha_with_flags(
+            config,
+            anim.draw_flags,
+            anim.runtime.current_frame,
+            i32::from(
+                sim.effect_frame_counts
+                    .get(&anim.type_id)
+                    .copied()
+                    .unwrap_or(0),
+            ),
+            state.in_game_options.detail_level as i32,
+            anim.draw_runtime,
+        ) else {
+            continue;
+        };
+        let (origin_y, world_height) = state
+            .terrain_grid
+            .as_ref()
+            .map(|grid| (grid.origin_y, grid.world_height))
+            .unwrap_or((0.0, 1.0));
+        let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
+        paged[entry.page as usize].push(SpriteInstance {
+            position: [center_x + entry.offset_x, center_y + entry.offset_y],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth: apply_shape_z_adjust(
+                fire_depth,
+                anim.z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
+                world_height,
+            ),
+            tint,
+            alpha,
+            ..Default::default()
+        });
     }
 }
 
@@ -295,9 +304,45 @@ fn anim_instance_alpha(
     current_frame: i32,
     shp_frame_count: i32,
 ) -> f32 {
-    config
-        .map(|c| anim_frame_source_alpha(c, current_frame, shp_frame_count))
-        .unwrap_or(1.0)
+    anim_instance_alpha_with_flags(
+        config,
+        0,
+        current_frame,
+        shp_frame_count,
+        2,
+        crate::sim::anim_class::AnimDrawRuntime::default(),
+    )
+    .unwrap_or(0.0)
+}
+
+fn anim_instance_alpha_with_flags(
+    config: Option<&AnimTypeRuntimeConfig>,
+    base_flags: u32,
+    current_frame: i32,
+    shp_frame_count: i32,
+    game_detail_level: i32,
+    draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
+) -> Option<f32> {
+    let result = crate::sim::anim_class::anim_translucency_selection(
+        crate::sim::anim_class::AnimTranslucencyInput {
+            base_flags,
+            forced_translucent: draw_runtime.forced_translucent,
+            forced_uses_75: draw_runtime.forced_uses_75,
+            translucency_detail_level: config.map_or(0, |value| value.translucency_detail_level),
+            // Draw-time detail is presentation state and does not enter simulation.
+            game_detail_level,
+            translucent_ramp: config.is_some_and(|value| value.translucent),
+            current_frame,
+            frame_count: config
+                .and_then(|value| value.raw_shp_frame_count)
+                .unwrap_or(shp_frame_count),
+            explicit_translucency: config.map_or(0, |value| value.translucency),
+            instance_ramp: i32::from(draw_runtime.translucency_ramp),
+        },
+    );
+    result
+        .draw
+        .then(|| anim_translucency_source_alpha(result.flags))
 }
 
 /// SHP header frame count for an animation type, as the translucency resolver
@@ -821,17 +866,6 @@ fn projectile_authoritative_screen_position(
     Some((screen_x, screen_y, rx, ry, z))
 }
 
-fn authoritative_projectile_frame(projectile: &Projectile, frame_count: u16) -> u16 {
-    if frame_count == 0 {
-        return 0;
-    }
-    let facing = crate::sim::movement::facing_from_delta(
-        projectile.last_target_position.x - projectile.position.x,
-        projectile.last_target_position.y - projectile.position.y,
-    );
-    (((u32::from(facing) * u32::from(frame_count)) / 256) as u16).min(frame_count.saturating_sub(1))
-}
-
 /// Build visible persistent shots from `Simulation::projectiles`.
 ///
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
@@ -883,7 +917,11 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         let key = ShpSpriteKey {
             type_id: image.to_string(),
             facing: 0,
-            frame: authoritative_projectile_frame(projectile, frame_count),
+            frame: if frame_count == 0 {
+                0
+            } else {
+                u16::from(crate::sim::projectile::projectile_shp_frame(projectile)) % frame_count
+            },
             house_color: HouseColorIndex(0),
         };
         let Some(entry) = atlas.get(&key) else {
@@ -963,6 +1001,36 @@ pub(crate) fn build_projectile_visual_instances(
             ..Default::default()
         });
     }
+}
+
+/// Build persistent WaveClass polygon edges from simulation registration state.
+pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstance> {
+    let mut instances = Vec::new();
+    let Some(sim) = state.simulation.as_ref() else {
+        return instances;
+    };
+    let observer = crate::app_commands::preferred_local_owner(state)
+        .as_deref()
+        .and_then(|owner| sim.interner.get(owner));
+    for wave in crate::app_fire_effects::build_weapon_wave_visuals(sim, observer) {
+        let projected: Vec<[f32; 2]> = crate::render::wave_geometry::draw_order(wave.geometry)
+            .into_iter()
+            .map(|point| {
+                let (x, y) = crate::map::terrain::lepton_to_screen(glam::IVec3::new(
+                    point.x, point.y, point.z,
+                ));
+                [x, y]
+            })
+            .collect();
+        instances.extend(crate::render::wave_geometry::build_wave_instances(
+            &projected, wave.tint, 1.0, 0.00045,
+        ));
+    }
+    // Live BuildingLightRuntime producers are intentionally not lowered here:
+    // native DrawExtras first uses SpotlightClass type 16's zero-blend
+    // shape-blitter/light-mask path, which this renderer does not yet expose.
+    // A white quad or alpha approximation would invent visible behavior.
+    instances
 }
 
 /// Emit one sprite instance per active parachute anim, anchored at the

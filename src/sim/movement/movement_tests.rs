@@ -3076,6 +3076,9 @@ fn make_drive_loco_for_test() -> crate::sim::movement::locomotor::LocomotorState
         slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
         powered: true,
         piggyback: None,
+        runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+            LocomotorKind::Drive,
+        ),
         layer: MovementLayer::Ground,
         phase: GroundMovePhase::Idle,
         air_phase: AirMovePhase::Landed,
@@ -3792,6 +3795,9 @@ fn make_drive_loco(layer: MovementLayer) -> LocomotorState {
         slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
         powered: true,
         piggyback: None,
+        runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+            LocomotorKind::Drive,
+        ),
         layer,
         phase: GroundMovePhase::Idle,
         air_phase: AirMovePhase::Landed,

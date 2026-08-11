@@ -62,6 +62,13 @@ pub(crate) struct ProjectileVisual {
     pub elapsed_ms: u32,
 }
 
+/// One persistent WaveClass draw resolved from simulation-owned registration state.
+#[derive(Debug, Clone)]
+pub(crate) struct WeaponWaveVisual {
+    pub geometry: crate::render::wave_geometry::WaveGeometryInput,
+    pub tint: [f32; 3],
+}
+
 impl ProjectileVisual {
     pub(crate) fn progress(&self) -> f32 {
         if self.duration_ms == 0 {
@@ -482,6 +489,65 @@ fn build_projectile_visuals(
     visuals
 }
 
+pub(crate) fn build_weapon_wave_visuals(
+    sim: &Simulation,
+    observer: Option<crate::sim::intern::InternedId>,
+) -> Vec<WeaponWaveVisual> {
+    sim.waves
+        .iter()
+        .filter_map(|(_, wave)| {
+            let (kind, wave_type) = match wave.wave_type {
+                0 => (
+                    crate::render::wave_geometry::WaveGeometryKind::NonMagnetic,
+                    0,
+                ),
+                3 => (crate::render::wave_geometry::WaveGeometryKind::Magnetic, 3),
+                // Types 1/2 use the fixed laser rasterizer, which the current
+                // white-pixel beam backend does not emulate.
+                _ => return None,
+            };
+            let cell = |point: crate::sim::projectile::ProjectileCoord| {
+                let rx = u16::try_from(point.x.div_euclid(256)).ok()?;
+                let ry = u16::try_from(point.y.div_euclid(256)).ok()?;
+                Some((rx, ry))
+            };
+            if let Some(observer) = observer {
+                let (source_rx, source_ry) = cell(wave.source)?;
+                let (target_rx, target_ry) = cell(wave.target)?;
+                let source_fogged = !sim.fog.is_cell_revealed(observer, source_rx, source_ry);
+                let target_fogged = !sim.fog.is_cell_revealed(observer, target_rx, target_ry);
+                if !wave.visible_through_fog(
+                    sim.session.game_options.fog_of_war,
+                    source_fogged,
+                    target_fogged,
+                ) {
+                    return None;
+                }
+            }
+            Some(WeaponWaveVisual {
+                geometry: crate::render::wave_geometry::WaveGeometryInput {
+                    kind,
+                    wave_type,
+                    a: crate::render::wave_geometry::WavePoint {
+                        x: wave.source.x,
+                        y: wave.source.y,
+                        z: wave.source.z,
+                    },
+                    b: crate::render::wave_geometry::WavePoint {
+                        x: wave.target.x,
+                        y: wave.target.y,
+                        z: wave.target.z,
+                    },
+                },
+                // Sonic and Magnetron sample the destination framebuffer;
+                // they never select a house remap. The current sprite batch
+                // has no framebuffer-distortion input, so it remains neutral.
+                tint: [1.0, 1.0, 1.0],
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[SimFireEvent]) {
     let (flashes, sounds, projectiles) = {
         let Some(sim) = state.simulation.as_ref() else {
@@ -681,6 +747,28 @@ mod tests {
             }
             other => panic!("unexpected sound event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn persistent_sonic_wave_produces_geometry() {
+        let (mut sim, _rules, _art, _events) = fire_effect_fixture();
+        sim.waves.spawn(crate::sim::wave::Wave::new(
+            0,
+            crate::sim::projectile::ProjectileCoord::new(10 * 256, 10 * 256, 0),
+            crate::sim::projectile::ProjectileCoord::new(14 * 256, 11 * 256, 0),
+        ));
+
+        let waves = build_weapon_wave_visuals(&sim, None);
+        assert_eq!(waves.len(), 1);
+        assert_eq!(waves[0].geometry.wave_type, 0);
+        assert_eq!(
+            waves[0].geometry.kind,
+            crate::render::wave_geometry::WaveGeometryKind::NonMagnetic
+        );
+        assert_eq!(
+            crate::render::wave_geometry::draw_order(waves[0].geometry).len(),
+            6
+        );
     }
 
     #[test]

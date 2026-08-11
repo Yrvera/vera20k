@@ -308,8 +308,12 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // they move with the same measured authority correction as the current hash.
 // Record/replay equality and the Scenario-only stream shift remain the guards
 // against nondeterminism or cross-stream routing.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x4131_2E34_C32D_2E05;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6E66_D719_42D6_5912;
+// Re-baselined 2026-08-11 for the v69 combined serialized/hash substrate. The
+// exact Scenario/Main/MapGen stream tuple below remains byte-identical and the
+// record/replay comparison remains exact, proving this shift is composition,
+// not RNG routing or committed simulation behavior.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xF836_1EE2_4497_4C3A;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F16_2026_F611_DDF3;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -423,7 +427,7 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x6E66_D719_42D6_5912;
 /// Re-baselined 2026-08-11 with `FINAL_STREAM_STATES` after the harness gained
 /// its production OverlayGrid/Tiberium authority. The changed miner/resource
 /// state is replay-identical and the stream movement is Scenario-only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x4E93_EB3C_034F_F9DE;
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCB59_4C79_FDEE_2CEE;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

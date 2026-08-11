@@ -465,6 +465,9 @@ mod tests {
             slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
             powered: true,
             piggyback: None,
+            runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+                LocomotorKind::Fly,
+            ),
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Cruising,

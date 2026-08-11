@@ -103,6 +103,13 @@ pub fn launch(
         ry: target_ry,
     });
 
+    // YR linked-aircraft paradrop dispatch derives its facing from edge*2 << 13.
+    let launch_facing_word = crate::sim::aircraft::runtime_contract::paradrop_edge_facing_word(
+        waypoint_edge_idx.into(),
+        false,
+    );
+    let launch_facing = (launch_facing_word >> 8) as u8;
+
     // Spawn one PDPLANE per (inf_type, num) entry.
     let mut spawned_any = false;
     for (inf_type_name, num) in list {
@@ -111,6 +118,7 @@ pub fn launch(
             rules,
             owner,
             edge_cell,
+            launch_facing,
             target_rx,
             target_ry,
             &inf_type_name,
@@ -127,6 +135,7 @@ fn spawn_pdplane(
     rules: &RuleSet,
     owner: InternedId,
     edge_cell: (u16, u16),
+    launch_facing: u8,
     target_rx: u16,
     target_ry: u16,
     inf_type: &str,
@@ -141,7 +150,7 @@ fn spawn_pdplane(
         &owner_str,
         edge_cell.0,
         edge_cell.1,
-        /*facing*/ 0,
+        launch_facing,
         /*z*/ 0,
         rules,
     ) {

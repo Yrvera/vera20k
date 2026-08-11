@@ -66,7 +66,7 @@ use crate::sim::house_state::HouseState;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
-use crate::sim::movement::drop_pod_movement::{self, DropPodLanding};
+use crate::sim::movement::drop_pod_movement;
 use crate::sim::movement::group_destination;
 use crate::sim::movement::homing_movement;
 use crate::sim::movement::locomotor::MovementLayer;
@@ -85,7 +85,11 @@ use crate::sim::pathfinding::terrain_speed;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
 use crate::sim::power_system::{self, PowerState};
 use crate::sim::production::{self, ProductionState};
-use crate::sim::projectile::{Projectile, ProjectileCoord};
+use crate::sim::projectile::{
+    Projectile, ProjectileBridgeCrossing, ProjectileCellObstacle, ProjectileCollisionResponse,
+    ProjectileCoord, projectile_bridge_crossing, projectile_cell_obstacle,
+    projectile_slope_reflect,
+};
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
 use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
@@ -114,20 +118,28 @@ struct ActiveVisionStructures {
 /// port rather than being guessed from cell levels.
 fn projectile_collides_at(
     terrain: Option<&ResolvedTerrainGrid>,
+    occupancy: &OccupancyGrid,
+    entities: &EntityStore,
+    interner: &crate::sim::intern::StringInterner,
+    house_alliances: &HouseAllianceMap,
     overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     projectile: &Projectile,
     candidate: ProjectileCoord,
-) -> bool {
+) -> Option<ProjectileCollisionResponse> {
     let policy = projectile.collision;
-    if !policy.level_non_water && !policy.subject_to_walls {
-        return false;
+    if !policy.level_non_water && !policy.subject_to_walls && !policy.native_cell_collision {
+        return None;
     }
     let Ok(rx) = u16::try_from(candidate.x.div_euclid(256)) else {
-        return policy.level_non_water;
+        return policy
+            .level_non_water
+            .then_some(ProjectileCollisionResponse::TargetZClamp(candidate));
     };
     let Ok(ry) = u16::try_from(candidate.y.div_euclid(256)) else {
-        return policy.level_non_water;
+        return policy
+            .level_non_water
+            .then_some(ProjectileCollisionResponse::TargetZClamp(candidate));
     };
 
     if policy.level_non_water
@@ -135,13 +147,95 @@ fn projectile_collides_at(
             .and_then(|grid| grid.cell(rx, ry))
             .is_some_and(|cell| cell.is_water)
     {
-        return true;
+        return Some(ProjectileCollisionResponse::TargetZClamp(candidate));
     }
-    policy.subject_to_walls
-        && overlay_grid
-            .and_then(|grid| grid.cell(rx, ry).overlay_id)
-            .and_then(|overlay_id| overlay_registry.and_then(|registry| registry.flags(overlay_id)))
-            .is_some_and(|flags| flags.wall)
+    // `ConnectsToOverlay` is currently represented only by the parsed wall
+    // connectivity family; no unrelated overlay flag is substituted.
+    let overlay_connected = overlay_grid
+        .and_then(|grid| grid.cell(rx, ry).overlay_id)
+        .and_then(|overlay_id| overlay_registry.and_then(|registry| registry.flags(overlay_id)))
+        .is_some_and(|flags| flags.wall);
+    if policy.subject_to_walls && overlay_connected {
+        return Some(ProjectileCollisionResponse::TargetZClamp(candidate));
+    }
+    if !policy.native_cell_collision {
+        return None;
+    }
+
+    // Named location: `BulletClass::Update @ 0x004674ae..0x00467778`.
+    let candidate_cell = terrain.and_then(|grid| grid.cell(rx, ry))?;
+    let floor_z = crate::sim::cell_kernel::cell_floor_height(
+        candidate_cell.level,
+        candidate_cell.slope_type,
+        candidate.x,
+        candidate.y,
+    )
+    .ok()?;
+    let previous_rx = u16::try_from(projectile.position.x / 256).ok();
+    let previous_ry = u16::try_from(projectile.position.y / 256).ok();
+    let previous_has_bridge = previous_rx
+        .zip(previous_ry)
+        .and_then(|(x, y)| terrain.and_then(|grid| grid.cell(x, y)))
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let candidate_has_bridge = candidate_cell.bridge_facts.has_structural_bridge();
+    let bridge_surface =
+        floor_z.saturating_add(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS);
+    let crossing = if previous_has_bridge || candidate_has_bridge {
+        projectile_bridge_crossing(projectile.position.z, candidate.z, bridge_surface)
+    } else {
+        ProjectileBridgeCrossing::None
+    };
+
+    let building_id = occupancy.first_building_on_layer(rx, ry, MovementLayer::Ground);
+    let building_is_target = matches!(projectile.target, crate::sim::projectile::ProjectileTarget::Entity(id) if Some(id) == building_id);
+    let target_owner = match projectile.target {
+        crate::sim::projectile::ProjectileTarget::Entity(id) => entities.get(id).map(|e| e.owner),
+        crate::sim::projectile::ProjectileTarget::Cell(_) => None,
+    };
+    let building_owner = building_id.and_then(|id| entities.get(id)).map(|e| e.owner);
+    let allied = target_owner
+        .zip(building_owner)
+        .is_some_and(|(target, building)| {
+            let target = interner.resolve(target).to_ascii_uppercase();
+            let building = interner.resolve(building).to_ascii_uppercase();
+            target == building
+                || house_alliances
+                    .get(&target)
+                    .is_some_and(|allies| allies.contains(&building))
+        });
+    // The two raw Building exemptions have closed predicates but no represented
+    // runtime producer yet. Keeping them false is an explicit residual, not a
+    // guessed mapping to an unrelated ObjectType flag.
+    let obstacle = projectile_cell_obstacle(
+        candidate.z,
+        floor_z,
+        building_id,
+        overlay_connected,
+        building_is_target,
+        false,
+        false,
+        allied,
+    );
+    if crossing == ProjectileBridgeCrossing::None && obstacle == ProjectileCellObstacle::None {
+        return None;
+    }
+
+    let impact_z = if crossing == ProjectileBridgeCrossing::None {
+        floor_z
+    } else {
+        bridge_surface
+    };
+    let impact = ProjectileCoord::new(candidate.x, candidate.y, impact_z);
+    match projectile.target {
+        crate::sim::projectile::ProjectileTarget::Entity(_) => {
+            Some(ProjectileCollisionResponse::TargetZClamp(impact))
+        }
+        crate::sim::projectile::ProjectileTarget::Cell(_) => {
+            let velocity =
+                projectile_slope_reflect(projectile.velocity, candidate_cell.slope_type)?;
+            Some(ProjectileCollisionResponse::SlopeMatrixReflect { impact, velocity })
+        }
+    }
 }
 
 /// Result of one deterministic simulation tick.
@@ -522,6 +616,9 @@ pub struct Simulation {
     /// the render-side fire-event approximation.
     #[serde(default)]
     pub projectiles: crate::sim::projectile::ProjectileStore,
+    /// Persistent WaveClass registrations. They have their own logic lifetime;
+    /// this is not a one-frame weapon-fire presentation list.
+    pub waves: crate::sim::wave::WaveStore,
     /// Hookless-test adapter retained for old fixture callsites. Production
     /// combat and superweapons commit smudges inline, so this remains empty and
     /// never persists across ticks.
@@ -1078,6 +1175,7 @@ impl Simulation {
         logic_order: &[u64],
         fire_suppressed: &BTreeSet<u64>,
         projectile_detonations: &[crate::sim::projectile::ProjectileDetonation],
+        wave_damage_events: &[crate::sim::wave::WaveDamageEvent],
     ) -> crate::sim::combat::CombatTickResult {
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
@@ -1127,6 +1225,7 @@ impl Simulation {
                 logic_order,
                 fire_suppressed,
                 projectile_detonations,
+                wave_damage_events,
                 Some(&mut radiation),
                 &missile_detonations,
                 &mut scenario_rng,
@@ -1546,6 +1645,7 @@ impl Simulation {
             fire_events: Vec::new(),
             invulnerability_impact_effects: Vec::new(),
             projectiles: crate::sim::projectile::ProjectileStore::new(),
+            waves: crate::sim::wave::WaveStore::new(),
             pending_smudge_requests: Vec::new(),
             bale_events: Vec::new(),
             bunker_wall_events: Vec::new(),
@@ -3019,9 +3119,8 @@ impl Simulation {
     /// Find houses with at least one native-eligible SpySat provider. This is
     /// the House-rung edge detector; consumers read the persisted house latch.
     fn collect_spy_sat_candidate_owners(&self, rules: &RuleSet) -> BTreeSet<InternedId> {
-        let selling = crate::sim::mission::MissionId::from_known(
-            crate::sim::mission::MissionType::Selling,
-        );
+        let selling =
+            crate::sim::mission::MissionId::from_known(crate::sim::mission::MissionType::Selling);
         let mut active = BTreeSet::new();
         let mut scanned_houses = BTreeSet::new();
         for &owner in self.session.house_order.iter().chain(self.houses.keys()) {
@@ -3114,19 +3213,11 @@ impl Simulation {
             } else {
                 // Synthetic fixtures without production terrain retain the
                 // rectangular fallback owned by the visibility subsystem.
-                vision::apply_spy_sat(
-                    &mut self.fog,
-                    &effects.spy_sat_owners,
-                    &self.interner,
-                );
+                vision::apply_spy_sat(&mut self.fog, &effects.spy_sat_owners, &self.interner);
             }
         }
         if !effects.gap_generators.is_empty() {
-            vision::apply_gap_generators(
-                &mut self.fog,
-                &effects.gap_generators,
-                &self.interner,
-            );
+            vision::apply_gap_generators(&mut self.fog, &effects.gap_generators, &self.interner);
         }
     }
 
@@ -4056,16 +4147,15 @@ impl Simulation {
             // object the whole live-object turn.  Capture before the leaf:
             // successful finalization clears the payload but must still skip
             // every ordinary locomotor tail and the second mission checkpoint.
-            let tube_active_at_entry = sim.substrate.entities.get(stable_id).is_some_and(
-                |entity| {
+            let tube_active_at_entry =
+                sim.substrate.entities.get(stable_id).is_some_and(|entity| {
                     !entity.dying
                         && matches!(
                             entity.category,
                             EntityCategory::Unit | EntityCategory::Infantry
                         )
                         && entity.low_bridge_tube_state.is_some()
-                },
-            );
+                });
             let was_structure = sim
                 .substrate
                 .entities
@@ -4168,7 +4258,7 @@ impl Simulation {
                     sim.session.tick,
                 ));
             sim.tick_tunnel_locomotor_one(stable_id, path_grid);
-            sim.tick_drop_pod_locomotor_one(stable_id);
+            sim.tick_drop_pod_locomotor_one(stable_id, path_grid);
             let _ = homing_movement::tick_homing_movement(
                 &mut sim.substrate.entities,
                 &one,
@@ -4322,6 +4412,7 @@ impl Simulation {
             // the cliff). Parity review verified the obstruction sampling against
             // the original (mirror table + the +2 offset); default on, as in YR.
             reveal_by_height: rules.map_or(true, |r| r.general.reveal_by_height),
+            fog_of_war: self.session.game_options.fog_of_war,
         };
         self.refresh_fog(path_grid, &vision_config, rules);
 
@@ -4442,11 +4533,19 @@ impl Simulation {
             // YR BulletClass::AI: existing bullets advance before this frame's
             // newly accepted weapon fire, so a spawn cannot move recursively.
             let overlay_grid = self.overlay_grid.as_ref();
+            let occupancy = &self.substrate.occupancy;
+            let entities = &self.substrate.entities;
+            let interner = &self.interner;
+            let house_alliances = &self.house_alliances;
             let projectile_detonations = self
                 .projectiles
                 .advance(&projectile_targets, |projectile, candidate| {
                     projectile_collides_at(
                         terrain,
+                        occupancy,
+                        entities,
+                        interner,
+                        house_alliances,
                         overlay_grid,
                         overlay_registry,
                         projectile,
@@ -4454,6 +4553,56 @@ impl Simulation {
                     )
                 })
                 .detonations;
+            // `WaveClass::Update` runs through LogicClass on later frames;
+            // newly constructed waves below are therefore not recursively
+            // decremented in their firing frame.
+            let sonic_damage_requests = self.waves.advance();
+            let mut wave_damage_events = Vec::new();
+            // Named locations: `WaveClass::Update @ 0x00760f50` then
+            // `WaveClass::DamageArea @ 0x0075f330`. Preserve wave, recorded-cell,
+            // and selected Cell object-list order without sorting or deduplication.
+            for request in sonic_damage_requests {
+                for cell in request.recorded_cells {
+                    let layer = self
+                        .resolved_terrain
+                        .as_ref()
+                        .and_then(|terrain| terrain.cell(cell.rx, cell.ry))
+                        .map(|terrain_cell| {
+                            if crate::sim::cell_kernel::selects_infantry_bridge_layer(
+                                terrain_cell.bridge_facts.has_structural_bridge(),
+                                terrain_cell.level,
+                                request.wave_z,
+                            ) {
+                                MovementLayer::Bridge
+                            } else {
+                                MovementLayer::Ground
+                            }
+                        })
+                        .unwrap_or(MovementLayer::Ground);
+                    let Some(occupancy) = self.substrate.occupancy.get(cell.rx, cell.ry) else {
+                        continue;
+                    };
+                    for occupant in occupancy.iter_layer(layer) {
+                        if occupant.entity_id == request.payload.firer_id {
+                            continue;
+                        }
+                        let Some(entity) = self.substrate.entities.get(occupant.entity_id) else {
+                            continue;
+                        };
+                        if !entity.is_alive() || entity.dying || entity.lifecycle.in_limbo {
+                            continue;
+                        }
+                        wave_damage_events.push(crate::sim::wave::WaveDamageEvent {
+                            wave_id: request.wave_id,
+                            target_id: occupant.entity_id,
+                            payload: request.payload,
+                        });
+                    }
+                    // Wall-overlay and cliff mutation are proven DamageArea tails,
+                    // but remain explicit residuals until their per-wave producer
+                    // inputs are represented; do not approximate them here.
+                }
+            }
             let combat_result = self.tick_combat_with_fatal_lifecycle(
                 rules,
                 overlay_registry,
@@ -4461,6 +4610,7 @@ impl Simulation {
                 &logic_order,
                 &tube_turn_owned_ids,
                 &projectile_detonations,
+                &wave_damage_events,
             );
             for projectile in combat_result.projectile_spawns.iter().copied() {
                 self.projectiles.spawn(projectile);
@@ -4495,11 +4645,7 @@ impl Simulation {
                 .copied()
                 .filter(|id| !tube_turn_owned_ids.contains(id))
                 .collect::<Vec<_>>();
-            crate::sim::spawn_manager::tick_spawn_managers(
-                self,
-                rules,
-                &ordinary_logic_order,
-            );
+            crate::sim::spawn_manager::tick_spawn_managers(self, rules, &ordinary_logic_order);
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids
@@ -4629,6 +4775,61 @@ impl Simulation {
                     start_sound_id: None,
                     start_sound_emitted: false,
                 });
+            }
+            // `WaveClass::Ctor @ 0x75e950` registers Sonic (0) and Magnetron
+            // (3) effects persistently. The CellClass damage vector for type 0
+            // remains a separate, explicit handoff in `WaveStore::advance`.
+            for event in &combat_result.fire_events {
+                let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id)) else {
+                    continue;
+                };
+                let wave_type = if weapon.is_sonic {
+                    0
+                } else if weapon.is_mag_beam {
+                    3
+                } else {
+                    continue;
+                };
+                let target = match event.target {
+                    crate::sim::combat::TargetKind::Entity(id) => {
+                        let Some(entity) = self.substrate.entities.get(id) else {
+                            continue;
+                        };
+                        ProjectileCoord::new(
+                            i32::from(entity.position.rx) * 256
+                                + entity.position.sub_x.to_num::<i32>(),
+                            i32::from(entity.position.ry) * 256
+                                + entity.position.sub_y.to_num::<i32>(),
+                            i32::from(entity.position.z)
+                                * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                        )
+                    }
+                    crate::sim::combat::TargetKind::Cell(rx, ry) => ProjectileCoord::new(
+                        i32::from(rx) * 256 + 128,
+                        i32::from(ry) * 256 + 128,
+                        0,
+                    ),
+                };
+                let source = ProjectileCoord::new(
+                    i32::from(event.origin_snapshot.rx) * 256
+                        + event.origin_snapshot.sub_x.to_num::<i32>(),
+                    i32::from(event.origin_snapshot.ry) * 256
+                        + event.origin_snapshot.sub_y.to_num::<i32>(),
+                    i32::from(event.origin_snapshot.z)
+                        * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                );
+                let mut wave = crate::sim::wave::Wave::new(wave_type, source, target);
+                if let Some(warhead) = weapon.warhead.as_deref() {
+                    wave = wave.with_damage_payload(crate::sim::wave::WaveDamagePayload {
+                        firer_id: event.attacker_id,
+                        base_damage: weapon.damage,
+                        warhead: self.interner.intern(warhead),
+                    });
+                }
+                // `WaveClass::UpdateCells @ 0x007610f0` is the remaining exact
+                // producer seam. Do not synthesize a Bresenham/supercover list;
+                // an empty vector makes that residual explicit and deterministic.
+                self.waves.spawn(wave);
             }
             // Collect fire events for render-side muzzle flash / projectile origin.
             self.invulnerability_impact_effects
@@ -4881,6 +5082,10 @@ impl Simulation {
             entity.tunnel_state = Some(state);
             if let Some(locomotor) = entity.locomotor.as_mut() {
                 locomotor.layer = context.layer;
+                locomotor.runtime_payload =
+                    crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload::Tunnel(
+                        Some(state),
+                    );
             }
             if context.abort_motion_called {
                 entity.movement_target = None;
@@ -4906,6 +5111,9 @@ impl Simulation {
         {
             if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                 entity.tunnel_state = None;
+                if let Some(locomotor) = entity.locomotor.as_mut() {
+                    locomotor.runtime_payload = crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload::Tunnel(None);
+                }
             }
         }
     }
@@ -4915,7 +5123,106 @@ impl Simulation {
     /// Drop pods retain no cell-list membership while descending. On the
     /// terminal frame this performs one atomic choice: unlimbo and mark the
     /// target, or zero health and enqueue the common crush teardown.
-    fn tick_drop_pod_locomotor_one(&mut self, stable_id: u64) {
+    fn drop_pod_virtual_unlimbo_admitted(
+        &self,
+        stable_id: u64,
+        target: (u16, u16),
+        path_grid: Option<&PathGrid>,
+    ) -> bool {
+        use crate::sim::cell_rect::{
+            IsClearToMoveResult, LiveCellPassabilityQuery, evaluate_live_cell_passability,
+        };
+        use crate::sim::pathfinding::cell_entry::{
+            CanEnterCellContext, CanEnterLayerContext, CellEntryResult, TerrainCheckResult,
+            TerrainEntryMode, check_terrain_with_layers,
+            classify_occupied_cell_with_layers_and_ignored_and_occupation, evaluate_can_enter_cell,
+        };
+
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return false;
+        };
+        let category = entity.category;
+        let owner = entity.owner;
+        let regular_crusher = entity.regular_crusher;
+        let omni_crusher = entity.omni_crusher;
+        let locomotor = entity.locomotor.as_ref();
+        let movement_zone = locomotor.map_or(Default::default(), |state| state.movement_zone);
+        let speed_type = locomotor.map_or(Default::default(), |state| state.speed_type);
+        let locomotor_kind = locomotor.map_or(
+            crate::rules::locomotor_type::LocomotorKind::Drive,
+            |state| state.effective_kind(),
+        );
+        let cost_grid = self.terrain_costs.get(&speed_type);
+
+        // Named location: ObjectClass::Unlimbo's virtual Foot +0x1AC gate.
+        // DropPod itself never substitutes a direct list-emptiness predicate.
+        let land_passable = evaluate_can_enter_cell(CanEnterCellContext {
+            target,
+            terrain_layer: MovementLayer::Ground,
+            movement_zone: Some(movement_zone),
+            speed_type: Some(speed_type),
+            path_grid,
+            resolved_terrain: self.resolved_terrain.as_ref(),
+            terrain_costs: cost_grid,
+            bypass_grid: false,
+            mode: TerrainEntryMode::SpawnLike,
+            is_infantry: category == EntityCategory::Infantry,
+        })
+        .is_clear();
+        let cell_clear = evaluate_live_cell_passability(LiveCellPassabilityQuery {
+            target,
+            speed_type,
+            movement_zone,
+            requested_zone: None,
+            actual_zone: 0,
+            requested_layer: Some(MovementLayer::Ground),
+            ignore_infantry: false,
+            ignore_vehicles: false,
+            land_passable,
+            path_grid,
+            resolved_terrain: self.resolved_terrain.as_ref(),
+            raw_occupation: Some(&self.substrate.raw_cell_occupation),
+        });
+        if !matches!(
+            cell_clear,
+            IsClearToMoveResult::Clear { .. } | IsClearToMoveResult::ClearWinged
+        ) {
+            return false;
+        }
+
+        let layers = CanEnterLayerContext::single(MovementLayer::Ground);
+        match check_terrain_with_layers(
+            target,
+            layers,
+            category,
+            path_grid,
+            cost_grid,
+            &self.substrate.occupancy,
+        ) {
+            TerrainCheckResult::Clear => true,
+            TerrainCheckResult::Impassable => false,
+            TerrainCheckResult::NeedsBlockerCheck => matches!(
+                classify_occupied_cell_with_layers_and_ignored_and_occupation(
+                    target,
+                    layers,
+                    stable_id,
+                    movement::bump_crush::CrushCapability::new(regular_crusher, omni_crusher,),
+                    self.interner.resolve(owner),
+                    locomotor_kind,
+                    false,
+                    None,
+                    &self.substrate.occupancy,
+                    &self.substrate.cell_occupation,
+                    &self.substrate.entities,
+                    &self.house_alliances,
+                    &self.interner,
+                ),
+                CellEntryResult::Clear
+            ),
+        }
+    }
+
+    fn tick_drop_pod_locomotor_one(&mut self, stable_id: u64, path_grid: Option<&PathGrid>) {
         let Some(state) = self
             .substrate
             .entities
@@ -4934,17 +5241,8 @@ impl Simulation {
             self.remove_entity_occupancy(stable_id);
         }
 
-        let reaches_ground = state.altitude <= state.descent_speed;
-        let landing = reaches_ground.then(|| {
-            if self.substrate.occupancy.is_empty_on_layer(
-                state.target_rx,
-                state.target_ry,
-                MovementLayer::Ground,
-            ) {
-                DropPodLanding::UnlimboSucceeded
-            } else {
-                DropPodLanding::Blocked
-            }
+        let landing = drop_pod_movement::landing_from_virtual_unlimbo(&state, |target, _facing| {
+            self.drop_pod_virtual_unlimbo_admitted(stable_id, target, path_grid)
         });
         let result = {
             let entity = self
@@ -4958,6 +5256,16 @@ impl Simulation {
                 .expect("drop pod state remained attached during its Process visit");
             drop_pod_movement::process_drop_pod_state(state, landing)
         };
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            if let (Some(state), Some(locomotor)) =
+                (entity.drop_pod_state.as_ref(), entity.locomotor.as_mut())
+            {
+                locomotor.runtime_payload =
+                    crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload::DropPod(
+                        Some(state.clone()),
+                    );
+            }
+        }
 
         match result.outcome {
             rocket_movement::SpecialMovementOutcome::Continue => {}
@@ -4977,6 +5285,7 @@ impl Simulation {
                     entity.position.exact_z_leptons = None;
                     if let Some(locomotor) = entity.locomotor.as_mut() {
                         locomotor.layer = MovementLayer::Ground;
+                        locomotor.runtime_payload = crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload::DropPod(None);
                     }
                     entity.drop_pod_state = None;
                 }
@@ -4985,6 +5294,9 @@ impl Simulation {
             rocket_movement::SpecialMovementOutcome::Abort => {
                 if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                     entity.health.current = 0;
+                    if let Some(locomotor) = entity.locomotor.as_mut() {
+                        locomotor.runtime_payload = crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload::DropPod(None);
+                    }
                 }
                 self.pending_lifecycle_requests
                     .push(LifecycleRequest::Uninit {

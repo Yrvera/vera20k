@@ -130,6 +130,13 @@ pub struct WarheadType {
     pub culling: bool,
     /// Spy disguise warhead. Offset +0x17B.
     pub makes_disguise: bool,
+    /// Ordered BulletClass detonation predicates whose effect bodies remain
+    /// explicit unsupported runtime branches.
+    pub electric_assault: bool,
+    pub bomb_disarm: bool,
+    pub nuke_maker: bool,
+    /// Native WarheadType byte `+0x14f`; parser-key identity remains unproven.
+    pub raw_335: bool,
 
     // --- Int fields ---
     /// EMP duration in frames. Offset +0x170.
@@ -227,6 +234,10 @@ impl WarheadType {
             radiation: section.get_bool("Radiation").unwrap_or(false),
             culling: section.get_bool("Culling").unwrap_or(false),
             makes_disguise: section.get_bool("MakesDisguise").unwrap_or(false),
+            electric_assault: section.get_bool("ElectricAssault").unwrap_or(false),
+            bomb_disarm: section.get_bool("BombDisarm").unwrap_or(false),
+            nuke_maker: section.get_bool("NukeMaker").unwrap_or(false),
+            raw_335: false,
 
             // Int fields — all default 0
             em_effect: section.get_i32("EMEffect").unwrap_or(0),

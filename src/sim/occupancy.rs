@@ -18,7 +18,6 @@ use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
-use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// UnitClass vehicle-occupation bit in both CellClass occupation planes.
 pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
@@ -165,37 +164,27 @@ pub(crate) fn cell_list_layer_for_entity(entity: &GameEntity) -> Option<Movement
 /// the northwest quadrant both select bit 0, while the other quadrants select
 /// bits 2, 3, and 4.
 pub(crate) fn infantry_raw_occupation_mask(sub_x: SimFixed, sub_y: SimFixed) -> u8 {
-    const CELL_LEPTON_MASK: i32 = 0xff;
-    const CELL_CENTER: i32 = 128;
-    const CENTER_RADIUS: i64 = 60;
-
-    let dx = (sub_x.to_num::<i32>() & CELL_LEPTON_MASK) - CELL_CENTER;
-    let dy = (sub_y.to_num::<i32>() & CELL_LEPTON_MASK) - CELL_CENTER;
-    let squared = X87Chop53::load_i32(dx * dx + dy * dy);
-    let root_bits = sqrt_approx_f32(squared)
-        .expect("intra-cell squared distance is finite and representable as f32");
-    let root = X87Chop53::load_f32(root_bits)
-        .expect("intra-cell approximate distance is finite and normal or zero");
-    let radius =
-        X87Chop53::ftol_i64(root).expect("intra-cell approximate distance fits a signed integer");
-    let sub_cell = if radius < CENTER_RADIUS {
-        0
-    } else {
-        let quadrant = u8::from(dx > 0) | (u8::from(dy > 0) << 1);
-        if quadrant == 0 { 0 } else { quadrant + 1 }
-    };
+    let sub_cell =
+        crate::sim::cell_kernel::infantry_preferred_spot(crate::sim::cell_kernel::CellQueryPoint {
+            x: sub_x.to_num::<i32>(),
+            y: sub_y.to_num::<i32>(),
+        });
     1 << sub_cell
 }
 
 /// One cell's two independent raw occupation bytes.
 ///
-/// These bytes are authoritative state. They deliberately carry no owner or
-/// reference-count information: producers OR their mask when marking and clear
-/// that mask destructively when unmarking.
+/// These bytes and infantry owner identities are authoritative state. Bit
+/// producers still use native destructive OR/clear semantics; owner identity is
+/// the separate `InfantryOwnerIndex`/`AltInfantryOwnerIndex` projection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct RawCellOccupation {
     ground: u8,
     deck: u8,
+    #[serde(default)]
+    ground_infantry_owner: Option<u64>,
+    #[serde(default)]
+    deck_infantry_owner: Option<u64>,
 }
 
 /// Sparse canonical storage for the raw ground/deck occupation bytes.
@@ -229,6 +218,34 @@ impl RawCellOccupationGrid {
         self.cells.get(&(rx, ry)).map_or(0, |cell| cell.ground)
     }
 
+    pub(crate) fn ground_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
+        self.cells
+            .get(&(rx, ry))
+            .and_then(|cell| cell.ground_infantry_owner)
+    }
+
+    /// Native: `InfantryClass::Mark` writes the selected owner index after
+    /// setting the quadrant bit.
+    pub(crate) fn mark_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: u64) {
+        if mask == 0 {
+            return;
+        }
+        let cell = self.cells.entry((rx, ry)).or_default();
+        cell.ground |= mask;
+        cell.ground_infantry_owner = Some(owner);
+    }
+
+    /// Native: `InfantryClass::Unmark` resets the selected owner only after
+    /// functional subcells 2..4 are all clear. Bits 0/1 do not retain it.
+    pub(crate) fn clear_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8) {
+        self.update_and_prune(rx, ry, |cell| {
+            cell.ground &= !mask;
+            if cell.ground & 0x1C == 0 {
+                cell.ground_infantry_owner = None;
+            }
+        });
+    }
+
     /// The active bridge-avoidance consumer treats every nonzero ground byte as
     /// occupied, including the consumer-visible bit without an active producer.
     pub(crate) fn ground_is_occupied(&self, rx: u16, ry: u16) -> bool {
@@ -249,11 +266,38 @@ impl RawCellOccupationGrid {
         self.cells.get(&(rx, ry)).map_or(0, |cell| cell.deck)
     }
 
+    pub(crate) fn deck_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
+        self.cells
+            .get(&(rx, ry))
+            .and_then(|cell| cell.deck_infantry_owner)
+    }
+
+    pub(crate) fn mark_deck_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: u64) {
+        if mask == 0 {
+            return;
+        }
+        let cell = self.cells.entry((rx, ry)).or_default();
+        cell.deck |= mask;
+        cell.deck_infantry_owner = Some(owner);
+    }
+
+    pub(crate) fn clear_deck_infantry(&mut self, rx: u16, ry: u16, mask: u8) {
+        self.update_and_prune(rx, ry, |cell| {
+            cell.deck &= !mask;
+            if cell.deck & 0x1C == 0 {
+                cell.deck_infantry_owner = None;
+            }
+        });
+    }
+
     fn update_and_prune(&mut self, rx: u16, ry: u16, update: impl FnOnce(&mut RawCellOccupation)) {
         let key = (rx, ry);
         let should_remove = self.cells.get_mut(&key).is_some_and(|cell| {
             update(cell);
-            cell.ground == 0 && cell.deck == 0
+            cell.ground == 0
+                && cell.deck == 0
+                && cell.ground_infantry_owner.is_none()
+                && cell.deck_infantry_owner.is_none()
         });
         if should_remove {
             self.cells.remove(&key);
@@ -265,10 +309,19 @@ impl RawCellOccupationGrid {
     }
 
     /// Canonical coordinate-key iteration used by the deterministic hash.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (u16, u16, u8, u8)> + '_ {
-        self.cells
-            .iter()
-            .map(|(&(rx, ry), cell)| (rx, ry, cell.ground, cell.deck))
+    pub(crate) fn entries(
+        &self,
+    ) -> impl Iterator<Item = (u16, u16, u8, u8, Option<u64>, Option<u64>)> + '_ {
+        self.cells.iter().map(|(&(rx, ry), cell)| {
+            (
+                rx,
+                ry,
+                cell.ground,
+                cell.deck,
+                cell.ground_infantry_owner,
+                cell.deck_infantry_owner,
+            )
+        })
     }
 }
 
@@ -1091,6 +1144,15 @@ impl CellOccupancy {
     pub fn count_on(&self, layer: MovementLayer) -> usize {
         self.occupants.iter().filter(|o| o.layer == layer).count()
     }
+
+    /// Snapshot one selected native Cell object list before callbacks mutate it.
+    /// Native: `CellClass::ScatterContent` saves head-to-tail pointers first,
+    /// then dispatches that saved order.
+    pub fn snapshot_layer(&self, layer: MovementLayer) -> Vec<u64> {
+        self.iter_layer(layer)
+            .map(|occupant| occupant.entity_id)
+            .collect()
+    }
 }
 
 /// Persistent per-cell occupancy index, owned by `ObjectSubstrate`.
@@ -1327,6 +1389,34 @@ impl OccupancyGrid {
         self.cells.get(&(rx, ry))
     }
 
+    /// First BuildingClass identity on a selected native list, preserving
+    /// literal list order. Projectile collision supplies `Ground` because
+    /// `CellClass::GetBuilding` never selects `AltObject`.
+    pub fn first_building_on_layer(&self, rx: u16, ry: u16, layer: MovementLayer) -> Option<u64> {
+        self.get(rx, ry)?
+            .iter_layer(layer)
+            .find(|occupant| occupant.is_building)
+            .map(|occupant| occupant.entity_id)
+    }
+
+    /// Typed Cell query over a selected native list. The caller owns the native
+    /// scenario-ready gate; this method owns only literal head-to-tail traversal.
+    pub fn first_category_on_layer(
+        &self,
+        rx: u16,
+        ry: u16,
+        layer: MovementLayer,
+        category: EntityCategory,
+        entities: &crate::sim::entity_store::EntityStore,
+    ) -> Option<u64> {
+        self.get(rx, ry)?.iter_layer(layer).find_map(|occupant| {
+            entities
+                .get(occupant.entity_id)
+                .is_some_and(|entity| entity.category == category)
+                .then_some(occupant.entity_id)
+        })
+    }
+
     /// Check if a cell has no occupants on a given layer.
     pub fn is_empty_on_layer(&self, rx: u16, ry: u16, layer: MovementLayer) -> bool {
         self.cells
@@ -1410,6 +1500,24 @@ mod tests {
         assert!(grid.ground_is_occupied(7, 9));
         assert_eq!(grid.ground_bits(9, 7), 0);
         assert!(!grid.ground_is_occupied(9, 7));
+    }
+
+    #[test]
+    fn infantry_owner_indices_follow_selected_plane_and_functional_bits() {
+        let mut grid = RawCellOccupationGrid::new();
+        grid.mark_ground_infantry(7, 9, 1 << 2, 41);
+        grid.mark_ground_infantry(7, 9, 1 << 3, 42);
+        grid.mark_deck_infantry(7, 9, 1 << 4, 99);
+
+        assert_eq!(grid.ground_bits(7, 9) & 0x1C, 0x0C);
+        assert_eq!(grid.ground_infantry_owner(7, 9), Some(42));
+        assert_eq!(grid.deck_infantry_owner(7, 9), Some(99));
+
+        grid.clear_ground_infantry(7, 9, 1 << 3);
+        assert_eq!(grid.ground_infantry_owner(7, 9), Some(42));
+        grid.clear_ground_infantry(7, 9, 1 << 2);
+        assert_eq!(grid.ground_infantry_owner(7, 9), None);
+        assert_eq!(grid.deck_infantry_owner(7, 9), Some(99));
     }
 
     #[test]
@@ -1776,6 +1884,74 @@ mod tests {
             .map(|o| o.entity_id)
             .collect();
         assert_eq!(ids, vec![2, 1, 100]);
+    }
+
+    #[test]
+    fn ordered_queries_select_exact_layer_and_first_matching_category() {
+        let mut entities = crate::sim::entity_store::EntityStore::new();
+        let mut ground_aircraft =
+            crate::sim::game_entity::GameEntity::test_default(10, "ORCA", "Allies", 5, 5);
+        ground_aircraft.category = EntityCategory::Aircraft;
+        let mut ground_building =
+            crate::sim::game_entity::GameEntity::test_default(20, "GAPOWR", "Allies", 5, 5);
+        ground_building.category = EntityCategory::Structure;
+        let mut deck_building =
+            crate::sim::game_entity::GameEntity::test_default(30, "GAPOWR", "Allies", 5, 5);
+        deck_building.category = EntityCategory::Structure;
+        entities.insert(ground_aircraft);
+        entities.insert(ground_building);
+        entities.insert(deck_building);
+
+        let mut grid = OccupancyGrid::new();
+        grid.add(
+            5,
+            5,
+            20,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            10,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        grid.add(
+            5,
+            5,
+            30,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+
+        assert_eq!(
+            grid.first_category_on_layer(
+                5,
+                5,
+                MovementLayer::Ground,
+                EntityCategory::Aircraft,
+                &entities,
+            ),
+            Some(10)
+        );
+        assert_eq!(
+            grid.first_building_on_layer(5, 5, MovementLayer::Ground),
+            Some(20)
+        );
+        assert_eq!(
+            grid.first_building_on_layer(5, 5, MovementLayer::Bridge),
+            Some(30)
+        );
+        assert_eq!(
+            grid.get(5, 5)
+                .unwrap()
+                .snapshot_layer(MovementLayer::Ground),
+            vec![10, 20]
+        );
     }
 
     #[test]

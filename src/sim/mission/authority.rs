@@ -327,7 +327,7 @@ impl UnitReadyWorld for LiveUnitWorld<'_> {
         // The per-cell occupant list already keeps the gamemd insertion order
         // (non-buildings prepend, buildings append); take the first Building
         // in that stored order — no sort, no rebuilt candidate list.
-        for occupant in &cell.occupants {
+        for occupant in cell.iter_layer(crate::sim::movement::locomotor::MovementLayer::Ground) {
             let Some(entity) = self.sim.substrate.entities.get(occupant.entity_id) else {
                 continue;
             };

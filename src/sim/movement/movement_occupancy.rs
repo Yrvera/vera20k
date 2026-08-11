@@ -706,11 +706,9 @@ pub(super) fn handle_deferred_occupancy(
             let eligibility = bump_crush::ScatterEligibility::from_rules(rules);
             // The entering-cell scatter walks the whole selected cell list, not
             // just the crushable subset, and it runs before any kill filter.
-            let cell_occupants: Vec<u64> = occupancy.get(nx, ny).map_or_else(Vec::new, |occ| {
-                occ.iter_layer(object_list_layer)
-                    .map(|occupant| occupant.entity_id)
-                    .collect()
-            });
+            let cell_occupants = occupancy
+                .get(nx, ny)
+                .map_or_else(Vec::new, |occ| occ.snapshot_layer(object_list_layer));
             let victims = match bump_crush::classify_drive_crush_phase(
                 bump_crush::DriveCrushPhase::FullyInCell,
                 &victims,

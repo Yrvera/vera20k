@@ -29,6 +29,138 @@ const FLAG_GAP_COVERED: u8 = 0x04;
 /// each tick). Terrain renders half-bright fog rather than black.
 const FLAG_GAP_FOG: u8 = 0x08;
 
+/// Serialized CellClass visibility fields for one owner/cell projection.
+///
+/// The renderer continues to consume the compact `OwnerVisibility::cells`
+/// bitmap. This state preserves the native transition contract underneath it:
+/// signed shroud counters, the split CellClass flag words, and the two signed
+/// occlusion caches. It is kept per owner because VERA's visibility authority
+/// is per house, while the retail CellClass helpers read the current player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellVisibilityRuntime {
+    /// CellClass +0x130. `-1` is the native inactive sentinel.
+    pub shroud_counter: i32,
+    /// CellClass +0x134 upper clamp for `shroud_counter`.
+    pub gap_shroud_counter: i32,
+    /// CellClass +0x12C: ground visible (`0x08`) and ground cache open (`0x10`).
+    pub alt_flags: u8,
+    /// CellClass +0x140 visibility/fog transition flags.
+    pub flags: u32,
+    /// CellClass +0x120 ground occlusion cache.
+    pub visibility: i8,
+    /// CellClass +0x121 fog/air occlusion cache.
+    pub foggedness: i8,
+}
+
+impl Default for CellVisibilityRuntime {
+    fn default() -> Self {
+        Self {
+            shroud_counter: -1,
+            gap_shroud_counter: i32::MAX,
+            alt_flags: 0,
+            flags: 0,
+            visibility: 0,
+            foggedness: 0,
+        }
+    }
+}
+
+/// Ordered side-effect boundary of the native map-cell visibility update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellVisibilityEvent {
+    /// TacticalClass::RegisterCellAsVisible: the redraw invalidation boundary.
+    RegisterCellAsVisible,
+    /// MapClass::RevealCheck, always before an eligible clean-fog operation.
+    RevealCheck,
+    /// CellClass::CleanFog on the first mapped/fog-display transition only.
+    CleanFog,
+}
+
+impl CellVisibilityRuntime {
+    const ALT_GROUND_VISIBLE: u8 = 0x08;
+    const ALT_GROUND_OPEN: u8 = 0x10;
+    const FLAG_FOG_OPEN: u32 = 0x01;
+    const FLAG_MAPPED: u32 = 0x02;
+    const FLAG_SHROUD_POSITIVE: u32 = 0x20;
+    const FLAG_TRANSIENT: u32 = 0x40;
+    const FLAG_FOGGED_OBJECT_SNAPSHOT: u32 = 0x400000;
+
+    fn set_fogged_object_snapshot(&mut self, present: bool) {
+        if present {
+            self.flags |= Self::FLAG_FOGGED_OBJECT_SNAPSHOT;
+        } else {
+            self.flags &= !Self::FLAG_FOGGED_OBJECT_SNAPSHOT;
+        }
+    }
+
+    /// Native `CellClass::IncreaseShroudCounter`: no redraw side effect.
+    pub fn increase_shroud_counter(&mut self) {
+        let old = self.shroud_counter;
+        if self.shroud_counter == -1 {
+            self.shroud_counter = 0;
+        }
+        self.shroud_counter = self.shroud_counter.saturating_add(1);
+        self.shroud_counter = self.shroud_counter.min(self.gap_shroud_counter);
+        if old <= 0 && self.shroud_counter > 0 {
+            self.flags |= Self::FLAG_SHROUD_POSITIVE;
+        }
+    }
+
+    /// Native `CellClass::ReduceShroudCounter`, including the `1 -> -1` edge.
+    /// Counter mutation itself deliberately emits no redraw event.
+    pub fn reduce_shroud_counter(&mut self) {
+        if self.shroud_counter == 1 {
+            self.shroud_counter = 0;
+        }
+        self.shroud_counter = self.shroud_counter.saturating_sub(1);
+        if self.shroud_counter > 0 {
+            return;
+        }
+        if self.alt_flags & (Self::ALT_GROUND_VISIBLE | Self::ALT_GROUND_OPEN)
+            == (Self::ALT_GROUND_VISIBLE | Self::ALT_GROUND_OPEN)
+        {
+            self.flags &= !Self::FLAG_SHROUD_POSITIVE;
+        } else {
+            self.alt_flags |= Self::ALT_GROUND_VISIBLE | Self::ALT_GROUND_OPEN;
+        }
+    }
+
+    /// Native `CellClass::Unshroud` flag projection; it is not a traversal.
+    pub fn unshroud(&mut self) {
+        self.alt_flags |= Self::ALT_GROUND_VISIBLE | Self::ALT_GROUND_OPEN;
+        if self.shroud_counter > 0 {
+            self.flags |= Self::FLAG_SHROUD_POSITIVE;
+        }
+    }
+
+    /// Apply the full MapCell-style projection. The event callback makes the
+    /// `RevealCheck`-before-`CleanFog` order explicit without coupling sim to
+    /// renderer invalidation or the unported fogged-object render records.
+    pub fn map_visible(&mut self, fog_of_war: bool, mut emit: impl FnMut(CellVisibilityEvent)) {
+        let had_mapped = self.flags & Self::FLAG_MAPPED != 0;
+        let before = *self;
+
+        self.flags = (self.flags & !(Self::FLAG_MAPPED | Self::FLAG_TRANSIENT)) | Self::FLAG_MAPPED;
+        self.increase_shroud_counter();
+        self.alt_flags |= Self::ALT_GROUND_VISIBLE | Self::ALT_GROUND_OPEN;
+        self.visibility = -1;
+        self.flags |= Self::FLAG_FOG_OPEN;
+        self.foggedness = -1;
+
+        if *self != before {
+            emit(CellVisibilityEvent::RegisterCellAsVisible);
+            emit(CellVisibilityEvent::RevealCheck);
+        }
+        if !had_mapped && fog_of_war {
+            // CellClass::CleanFog clears the snapshot bit before freeing the
+            // shared footprint records; the record store is intentionally not
+            // represented until its owner/link lifetime has a Rust authority.
+            self.flags &= !Self::FLAG_FOGGED_OBJECT_SNAPSHOT;
+            emit(CellVisibilityEvent::CleanFog);
+        }
+    }
+}
+
 /// RA2 hard-caps effective sight at 10 cells. Going past 10 was a crash
 /// in the original engine — we clamp to this limit for compatibility.
 pub const MAX_SIGHT_RANGE: u16 = 10;
@@ -148,6 +280,16 @@ pub struct OwnerVisibility {
     cells: Vec<u8>,
     width: u16,
     height: u16,
+    /// CellClass-like transition state aligned with `cells`. Old snapshots
+    /// deserialize this as empty and are expanded lazily before the next tick.
+    #[serde(default)]
+    cell_runtime: Vec<CellVisibilityRuntime>,
+    /// Number of current-frame visibility contributors per cell. This lets the
+    /// next recompute apply the same number of native counter reductions that
+    /// this frame admitted; it is serialized because a snapshot can occur
+    /// between visibility rebuilds.
+    #[serde(default)]
+    visibility_marks: Vec<u16>,
 }
 
 impl Default for OwnerVisibility {
@@ -156,6 +298,8 @@ impl Default for OwnerVisibility {
             cells: Vec::new(),
             width: 0,
             height: 0,
+            cell_runtime: Vec::new(),
+            visibility_marks: Vec::new(),
         }
     }
 }
@@ -168,6 +312,8 @@ impl OwnerVisibility {
             cells: vec![0u8; len],
             width,
             height,
+            cell_runtime: vec![CellVisibilityRuntime::default(); len],
+            visibility_marks: vec![0; len],
         }
     }
 
@@ -206,7 +352,16 @@ impl OwnerVisibility {
 
     /// Mark a cell as both visible and revealed.
     pub fn mark_visible(&mut self, rx: u16, ry: u16) {
+        self.mark_visible_with_fog_of_war(rx, ry, true);
+    }
+
+    /// Same as [`Self::mark_visible`], with the scenario fog rule carried to
+    /// the CellClass first-map transition.
+    pub fn mark_visible_with_fog_of_war(&mut self, rx: u16, ry: u16, fog_of_war: bool) {
         if let Some(i) = self.index(rx, ry) {
+            self.ensure_cell_runtime();
+            self.cell_runtime[i].map_visible(fog_of_war, |_| {});
+            self.visibility_marks[i] = self.visibility_marks[i].saturating_add(1);
             self.cells[i] |= FLAG_VISIBLE | FLAG_REVEALED;
         }
     }
@@ -215,7 +370,19 @@ impl OwnerVisibility {
     /// Called each tick by `recompute_owner_visibility_in_place` so existing
     /// grids can be reused without reallocation.
     pub fn clear_all_visible(&mut self) {
-        for cell in &mut self.cells {
+        self.ensure_cell_runtime();
+        for ((cell, runtime), marks) in self
+            .cells
+            .iter_mut()
+            .zip(&mut self.cell_runtime)
+            .zip(&mut self.visibility_marks)
+        {
+            if *cell & FLAG_VISIBLE != 0 {
+                for _ in 0..(*marks).max(1) {
+                    runtime.reduce_shroud_counter();
+                }
+            }
+            *marks = 0;
             *cell &= !(FLAG_VISIBLE | FLAG_GAP_COVERED | FLAG_GAP_FOG);
         }
     }
@@ -239,6 +406,53 @@ impl OwnerVisibility {
     /// Return the raw cells slice for deterministic hashing.
     pub fn cells_raw(&self) -> &[u8] {
         &self.cells
+    }
+
+    /// Serialized CellClass-style visibility state, in the same row-major
+    /// order as `cells`, for deterministic hashing and snapshot inspection.
+    pub fn cell_runtime_raw(&self) -> &[CellVisibilityRuntime] {
+        &self.cell_runtime
+    }
+
+    /// Current-frame counter contributions aligned with [`Self::cells_raw`].
+    pub fn visibility_marks_raw(&self) -> &[u16] {
+        &self.visibility_marks
+    }
+
+    fn set_fogged_object_snapshot(&mut self, rx: u16, ry: u16, present: bool) {
+        let Some(index) = self.index(rx, ry) else {
+            return;
+        };
+        self.ensure_cell_runtime();
+        self.cell_runtime[index].set_fogged_object_snapshot(present);
+    }
+
+    fn ensure_cell_runtime(&mut self) {
+        if self.cell_runtime.len() != self.cells.len() {
+            self.cell_runtime
+                .resize(self.cells.len(), CellVisibilityRuntime::default());
+        }
+        if self.visibility_marks.len() != self.cells.len() {
+            self.visibility_marks.resize(self.cells.len(), 0);
+        }
+    }
+
+    fn resized_preserving_state(&self, width: u16, height: u16) -> Self {
+        let mut expanded = Self::new(width, height);
+        for ry in 0..self.height.min(height) {
+            for rx in 0..self.width.min(width) {
+                let old = ry as usize * self.width as usize + rx as usize;
+                let new = ry as usize * width as usize + rx as usize;
+                expanded.cells[new] = self.cells[old];
+                if let Some(runtime) = self.cell_runtime.get(old) {
+                    expanded.cell_runtime[new] = *runtime;
+                }
+                if let Some(marks) = self.visibility_marks.get(old) {
+                    expanded.visibility_marks[new] = *marks;
+                }
+            }
+        }
+        expanded
     }
 
     pub fn width(&self) -> u16 {
@@ -293,6 +507,23 @@ impl OwnerVisibility {
     }
 }
 
+/// Stable Rust identity for one native FoggedObjectClass allocation.
+pub type FoggedObjectId = u64;
+
+/// Shared frozen-building footprint ownership. Rendering payload is
+/// deliberately absent until `FreezeInFog`'s draw-record fields are closed;
+/// this record only represents the proven cross-cell lifetime contract.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FoggedObjectFootprintRecord {
+    pub id: FoggedObjectId,
+    /// VERA's per-house projection of native `CurrentPlayer` fog state.
+    pub viewer: InternedId,
+    pub source_entity_id: u64,
+    /// Occupy-list order, with the anchor already applied and invalid cells
+    /// omitted by the caller that owns map bounds.
+    pub occupied_cells: Vec<(u16, u16)>,
+}
+
 /// Global fog/shroud state keyed by owner name.
 ///
 /// Stores per-owner visibility grids plus a lazily-computed merged grid for
@@ -314,9 +545,265 @@ pub struct FogState {
     /// (after each `build_merged_for()` call). Used by the fog mask renderer
     /// and minimap to skip redundant updates when fog hasn't changed.
     pub generation: u64,
+    /// Native CellClass::FoggedObjects vectors, keyed by viewer and cell. IDs
+    /// may be shared across every cell in one building footprint.
+    #[serde(default)]
+    pub fogged_object_cells: BTreeMap<(InternedId, u16, u16), Vec<FoggedObjectId>>,
+    /// Owning allocation table for shared fogged-object IDs.
+    #[serde(default)]
+    pub fogged_objects: BTreeMap<FoggedObjectId, FoggedObjectFootprintRecord>,
+    /// Allocation cursor for the Rust-stable counterpart of native pointers.
+    #[serde(default)]
+    pub next_fogged_object_id: FoggedObjectId,
+    /// Native signed-word SensorsOfHouses counters, row-major per house.
+    #[serde(default)]
+    pub sensors_by_house: BTreeMap<InternedId, Vec<i16>>,
+    /// Native CellClass::CloakedByHouses words, row-major by cell. House
+    /// selection uses the original x86-masked bit index (`h & 31`).
+    #[serde(default)]
+    pub cloaked_by_houses: Vec<u32>,
 }
 
 impl FogState {
+    /// Insert one shared frozen-building footprint record. Named location:
+    /// `BuildingClass::FreezeInFog` installs the same FoggedObjectClass pointer
+    /// into every occupy-list cell, not one allocation per cell.
+    pub fn insert_fogged_object_footprint(
+        &mut self,
+        viewer: InternedId,
+        receiver_cell: (u16, u16),
+        source_entity_id: u64,
+        occupied_cells: Vec<(u16, u16)>,
+    ) -> FoggedObjectId {
+        let id = self.next_fogged_object_id.max(1);
+        self.next_fogged_object_id = id.wrapping_add(1);
+        let record = FoggedObjectFootprintRecord {
+            id,
+            viewer,
+            source_entity_id,
+            occupied_cells,
+        };
+        for &(rx, ry) in &record.occupied_cells {
+            self.fogged_object_cells
+                .entry((viewer, rx, ry))
+                .or_default()
+                .push(id);
+        }
+        self.fogged_objects.insert(id, record);
+        if self.width > 0 && self.height > 0 {
+            self.by_owner
+                .entry(viewer)
+                .or_insert_with(|| OwnerVisibility::new(self.width, self.height))
+                .set_fogged_object_snapshot(receiver_cell.0, receiver_cell.1, true);
+        }
+        id
+    }
+
+    /// Clear one cell's vector in native reverse order. Each shared record is
+    /// first unlinked by exact ID from all footprint cells, then returned to
+    /// the caller in destruction/invalidation order. Other empty vectors stay
+    /// allocated, matching `CellClass::ClearFoggedObjects @ 0x004802D0`.
+    pub fn clear_fogged_objects_at(
+        &mut self,
+        viewer: InternedId,
+        rx: u16,
+        ry: u16,
+    ) -> Vec<FoggedObjectFootprintRecord> {
+        if let Some(vis) = self.by_owner.get_mut(&viewer) {
+            vis.set_fogged_object_snapshot(rx, ry, false);
+        }
+        let Some(mut ids) = self.fogged_object_cells.remove(&(viewer, rx, ry)) else {
+            return Vec::new();
+        };
+        let mut removed = Vec::with_capacity(ids.len());
+        while let Some(id) = ids.pop() {
+            let Some(record) = self.fogged_objects.remove(&id) else {
+                continue;
+            };
+            for &(record_rx, record_ry) in &record.occupied_cells {
+                if (record_rx, record_ry) == (rx, ry) {
+                    continue;
+                }
+                if let Some(cell_ids) = self
+                    .fogged_object_cells
+                    .get_mut(&(viewer, record_rx, record_ry))
+                {
+                    cell_ids.retain(|candidate| *candidate != id);
+                }
+            }
+            removed.push(record);
+        }
+        removed
+    }
+
+    /// Recreate CellClass sensor storage for current map bounds. Sensor
+    /// producers can then use add/remove calls without owning visibility maps.
+    pub fn reset_sensor_counts(&mut self) {
+        self.sensors_by_house.clear();
+    }
+
+    /// Recreate the serialized CellClass cloak-owner words for current map
+    /// bounds without inventing a cloak-generator mask producer.
+    pub fn reset_cloaked_by_houses(&mut self) {
+        self.cloaked_by_houses.clear();
+        self.cloaked_by_houses
+            .resize(usize::from(self.width) * usize::from(self.height), 0);
+    }
+
+    /// Native `CellClass::SetCloakedByHouse @ 0x00487110`.
+    pub fn set_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
+        let Some(word) = self.cloak_word_mut(rx, ry) else {
+            return false;
+        };
+        let bit = 1_u32 << (u32::from(house_index) & 31);
+        let changed = *word & bit == 0;
+        *word |= bit;
+        changed
+    }
+
+    /// Native `CellClass::ClearCloakedByHouse @ 0x00487130`.
+    pub fn clear_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
+        let Some(word) = self.cloak_word_mut(rx, ry) else {
+            return false;
+        };
+        let bit = 1_u32 << (u32::from(house_index) & 31);
+        let changed = *word & bit != 0;
+        *word &= !bit;
+        changed
+    }
+
+    /// Native `CellClass::IsSensedByHouse @ 0x004870B0`; the pinned label is
+    /// stale and this tests cloak-generator ownership, not sensor coverage.
+    pub fn is_cloaked_by_house(&self, house_index: u8, rx: u16, ry: u16) -> bool {
+        let Some(word) = self.cloak_word(rx, ry) else {
+            return false;
+        };
+        let bit = 1_u32 << (u32::from(house_index) & 31);
+        word & bit != 0
+    }
+
+    fn cloak_word(&self, rx: u16, ry: u16) -> Option<u32> {
+        if rx >= self.width || ry >= self.height {
+            return None;
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        self.cloaked_by_houses.get(index).copied()
+    }
+
+    fn cloak_word_mut(&mut self, rx: u16, ry: u16) -> Option<&mut u32> {
+        if rx >= self.width || ry >= self.height {
+            return None;
+        }
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        if self.cloaked_by_houses.len() != cell_count {
+            self.reset_cloaked_by_houses();
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        self.cloaked_by_houses.get_mut(index)
+    }
+
+    /// Native `FootClass::Sensors_AddAt @ 0x004DE7B0`: outer-Y/inner-X strict
+    /// circle and signed-word increment. Returned cells are the exact ordered
+    /// boundary where native forces resident objects through virtual `+0x420`.
+    pub fn sensors_add_at(
+        &mut self,
+        house: InternedId,
+        center: (u16, u16),
+        radius: u16,
+    ) -> Vec<(u16, u16)> {
+        self.update_sensor_circle(house, center, radius, true)
+    }
+
+    /// Paired `FootClass::Sensors_RemoveAt @ 0x004DE940` decrement walk.
+    pub fn sensors_remove_at(
+        &mut self,
+        house: InternedId,
+        center: (u16, u16),
+        radius: u16,
+    ) -> Vec<(u16, u16)> {
+        self.update_sensor_circle(house, center, radius, false)
+    }
+
+    fn update_sensor_circle(
+        &mut self,
+        house: InternedId,
+        center: (u16, u16),
+        radius: u16,
+        add: bool,
+    ) -> Vec<(u16, u16)> {
+        let radius = i32::from(radius);
+        if radius <= 0 || self.width == 0 || self.height == 0 {
+            return Vec::new();
+        }
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        let counters = self
+            .sensors_by_house
+            .entry(house)
+            .or_insert_with(|| vec![0; cell_count]);
+        if counters.len() != cell_count {
+            counters.clear();
+            counters.resize(cell_count, 0);
+        }
+        let mut touched = Vec::new();
+        for dy in -radius..radius {
+            for dx in -radius..radius {
+                if dx * dx + dy * dy >= radius * radius {
+                    continue;
+                }
+                let cell_x = i32::from(center.0) + dx;
+                let cell_y = i32::from(center.1) + dy;
+                if cell_x < 0
+                    || cell_y < 0
+                    || cell_x >= i32::from(self.width)
+                    || cell_y >= i32::from(self.height)
+                {
+                    continue;
+                }
+                let rx = cell_x as u16;
+                let ry = cell_y as u16;
+                let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+                if add {
+                    counters[index] = counters[index].wrapping_add(1);
+                } else if counters[index] > 0 {
+                    counters[index] = counters[index].wrapping_sub(1);
+                } else {
+                    continue;
+                }
+                touched.push((rx, ry));
+            }
+        }
+        touched
+    }
+
+    pub fn has_sensor_for_house(&self, house: InternedId, rx: u16, ry: u16) -> bool {
+        if rx >= self.width || ry >= self.height {
+            return false;
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        self.sensors_by_house
+            .get(&house)
+            .and_then(|counters| counters.get(index))
+            .is_some_and(|count| *count > 0)
+    }
+
+    /// Native `CellClass::DrawObjectsCloaked`: no observer-mode bypass.
+    pub fn draw_objects_cloaked(
+        &self,
+        current_player: Option<InternedId>,
+        object_owner: InternedId,
+        object_owner_index: u8,
+        rx: u16,
+        ry: u16,
+    ) -> bool {
+        let Some(current_player) = current_player else {
+            return false;
+        };
+        if !self.is_cloaked_by_house(object_owner_index, rx, ry) {
+            return false;
+        }
+        current_player == object_owner || !self.has_sensor_for_house(current_player, rx, ry)
+    }
+
     /// Build a merged visibility grid for the given owner and all their allies.
     /// Call once per tick (or when the local owner changes). Subsequent calls
     /// to `is_cell_visible`, `is_cell_revealed`, and edge mask methods will
@@ -584,9 +1071,7 @@ impl FogState {
             .entry(owner)
             .or_insert_with(|| OwnerVisibility::new(w, h));
         if state.width() < w || state.height() < h {
-            let mut expanded = OwnerVisibility::new(w, h);
-            expanded.merge_all_flags_from(state);
-            *state = expanded;
+            *state = state.resized_preserving_state(w, h);
         }
         state.mark_visible(rx, ry);
     }
@@ -604,6 +1089,9 @@ pub struct VisionConfig {
     /// When true, terrain 4+ levels above the viewer at the midpoint blocks sight.
     /// Default true (the standard RA2/YR setting).
     pub reveal_by_height: bool,
+    /// Scenario `FogOfWar=` governs the first-map `CleanFog` transition. It
+    /// does not change the compact visibility bitmap's existing semantics.
+    pub fog_of_war: bool,
 }
 
 impl Default for VisionConfig {
@@ -612,6 +1100,7 @@ impl Default for VisionConfig {
             veteran_sight_bonus: 0,
             leptons_per_sight_increase: 0,
             reveal_by_height: true,
+            fog_of_war: false,
         }
     }
 }
@@ -667,6 +1156,10 @@ pub fn recompute_owner_visibility_in_place(
     // First tick or dimension change: recreate all grids (cold path).
     if fog.width != width || fog.height != height {
         fog.by_owner.clear();
+        fog.fogged_object_cells.clear();
+        fog.fogged_objects.clear();
+        fog.next_fogged_object_id = 0;
+        fog.reset_sensor_counts();
         fog.width = width;
         fog.height = height;
     } else {
@@ -734,6 +1227,7 @@ pub fn recompute_owner_visibility_in_place(
             effective,
             height_leptons,
             config.reveal_by_height,
+            config.fog_of_war,
             height_grid,
             width,
             height,
@@ -791,6 +1285,7 @@ fn reveal_radius_into(
     range: u16,
     viewer_height_leptons: i32,
     reveal_by_height: bool,
+    fog_of_war: bool,
     height_grid: Option<&[u8]>,
     width: u16,
     height: u16,
@@ -840,7 +1335,7 @@ fn reveal_radius_into(
                     }
                 }
             }
-            vis.mark_visible(rx as u16, ry as u16);
+            vis.mark_visible_with_fog_of_war(rx as u16, ry as u16, fog_of_war);
         }
     }
 }
@@ -996,7 +1491,7 @@ pub fn reveal_radius(
     // Fire-reveal events don't use height-based LOS (matches gamemd), and the
     // event carries no height of its own, so the centre is unshifted.
     reveal_radius_into(
-        vis, center_rx, center_ry, range, 0, false, None, width, height,
+        vis, center_rx, center_ry, range, 0, false, true, None, width, height,
     );
 }
 

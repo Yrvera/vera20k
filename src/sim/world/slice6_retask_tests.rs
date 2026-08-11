@@ -155,8 +155,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // Re-measured 2026-08-11 after the integrated GSI-04 authority changes. All
 // three probes moved together, so this is state-content/behavior drift rather
 // than a live-schema-only fold; values are from the same current-tree run.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x2356_0CA4_7ECF_5CBC;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x38D9_6DD7_70D9_2014;
+// Re-baselined 2026-08-11 after the v69 merge folded the serialized projectile
+// collision, Wave, Cell infantry-owner, fog/sensor, and cloak-owner substrates
+// into every hash schema. This fixture does not exercise those producers; the
+// shift is the intentional explicit-zero/empty composition change.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x12A2_84A0_B3DF_1BF1;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x62B2_F6DC_98FC_AB46;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -236,7 +240,7 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x38D9_6DD7_70D9_2014;
 /// schema/behaviour split for all three of this fixture's constants is written
 /// out at `SLICE6_PRE_LIFECYCLE_V28_HASH`.
 // Current-schema value from the same 2026-08-11 measurement above.
-const SLICE6_BASELINE_HASH: u64 = 0x8DBA_B968_0A0A_550D;
+const SLICE6_BASELINE_HASH: u64 = 0x4CA9_2817_C656_735C;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

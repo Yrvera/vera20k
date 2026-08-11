@@ -379,6 +379,10 @@ pub struct GeneralRules {
     /// Whether the attack cursor appears on a disguised Spy (AttackCursorOnDisguise= in [General]).
     /// Default false (vanilla RA2). When false, a disguised Spy does not show the attack cursor.
     pub attack_cursor_on_disguise: bool,
+    /// `[General] DefaultMirageDisguises=` selection pool, in source order.
+    pub default_mirage_disguises: Vec<String>,
+    /// `[General] InfantryBlinkDisguiseTime=` reveal duration in frames.
+    pub infantry_blink_disguise_time: u32,
     /// Whether the attack cursor appears on trees/terrain
     /// (`TreeTargeting=` in `[CombatDamage]`).
     /// Default false in vanilla RA2.
@@ -929,6 +933,8 @@ impl Default for GeneralRules {
                 Some("BRUTDIE".to_string()),
             ],
             attack_cursor_on_disguise: false,
+            default_mirage_disguises: Vec::new(),
+            infantry_blink_disguise_time: 0,
             tree_targeting: false,
             condition_yellow: 0.5,
             condition_yellow_x1000: 500,
@@ -1578,6 +1584,16 @@ impl GeneralRules {
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
             attack_cursor_on_disguise: general.get_bool("AttackCursorOnDisguise").unwrap_or(false),
+            default_mirage_disguises: general
+                .get_list("DefaultMirageDisguises")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| value.to_ascii_uppercase())
+                .collect(),
+            infantry_blink_disguise_time: general
+                .get_i32("InfantryBlinkDisguiseTime")
+                .unwrap_or(0)
+                .max(0) as u32,
             tree_targeting: combat_damage
                 .and_then(|section| section.get_bool("TreeTargeting"))
                 .unwrap_or(false),
@@ -2396,6 +2412,86 @@ impl RuleSet {
                     .or_insert_with(|| ProjectileType::from_ini_section(&canonical, section, None));
             } else {
                 log::trace!("Projectile '{}' referenced but has no section", proj_id);
+            }
+        }
+
+        // ShrapnelWeapon is a ProjectileType-owned weapon reference, so it is
+        // discovered only after the first projectile pass. Follow that graph
+        // to closure before runtime detonation; otherwise an otherwise valid
+        // child weapon/projectile pair silently disappears from live Shrapnel.
+        loop {
+            let mut nested_weapon_ids: Vec<String> = projectiles
+                .values()
+                .filter_map(|projectile| projectile.shrapnel_weapon.clone())
+                .filter(|weapon_id| {
+                    !weapons
+                        .keys()
+                        .any(|existing| existing.eq_ignore_ascii_case(weapon_id))
+                })
+                .collect();
+            nested_weapon_ids.sort_by_key(|id| id.to_ascii_uppercase());
+            nested_weapon_ids.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+            if nested_weapon_ids.is_empty() {
+                break;
+            }
+
+            let mut nested_projectile_ids = Vec::new();
+            let mut inserted_weapon = false;
+            for weapon_id in nested_weapon_ids {
+                let Some(section) = ini.section(&weapon_id) else {
+                    log::trace!("Shrapnel weapon '{}' has no section", weapon_id);
+                    continue;
+                };
+                let canonical = section.name.clone();
+                let weapon = WeaponType::from_ini_section(&canonical, section);
+                if let Some(warhead) = &weapon.warhead {
+                    warhead_ids.insert(warhead.clone());
+                }
+                if let Some(projectile) = &weapon.projectile {
+                    nested_projectile_ids.push(projectile.clone());
+                }
+                weapons.insert(canonical, weapon);
+                inserted_weapon = true;
+            }
+
+            if !inserted_weapon {
+                break;
+            }
+
+            for projectile_id in nested_projectile_ids {
+                if projectiles
+                    .keys()
+                    .any(|existing| existing.eq_ignore_ascii_case(&projectile_id))
+                {
+                    continue;
+                }
+                let Some(section) = ini.section(&projectile_id) else {
+                    log::trace!("Shrapnel projectile '{}' has no section", projectile_id);
+                    continue;
+                };
+                let canonical = section.name.clone();
+                projectiles.insert(
+                    canonical.clone(),
+                    ProjectileType::from_ini_section(&canonical, section, None),
+                );
+            }
+        }
+
+        // The initial warhead pass precedes ProjectileType-owned weapon
+        // discovery. Allocate any newly referenced child warheads now.
+        for warhead_id in &warhead_ids {
+            if warheads
+                .keys()
+                .any(|existing| existing.eq_ignore_ascii_case(warhead_id))
+            {
+                continue;
+            }
+            if let Some(section) = ini.section(warhead_id) {
+                let canonical = section.name.clone();
+                warheads.insert(
+                    canonical.clone(),
+                    WarheadType::from_ini_section(&canonical, section),
+                );
             }
         }
 

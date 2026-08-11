@@ -396,6 +396,29 @@ pub fn reduce_tiberium(
     };
     let current = view.overlay_data;
 
+    // `CellClass::ReduceTiberium` @ 0x00480A80 calls
+    // `TiberiumClass::RegisterForGrowth` @ 0x007235A0 at density 11 first.
+    // Its `< 11` admission makes this live call a deliberate no-op: no queue
+    // entry and no Scenario RNG draw are produced before the reduction.
+    if current == 11
+        && let (Some(grid), Some(registry), Some(types), Some(rng)) = (
+            ctx.overlay_grid.as_deref(),
+            ctx.overlay_registry,
+            ctx.tiberium_types,
+            ctx.rng.as_deref_mut(),
+        )
+    {
+        let _ = ctx.ore_growth_state.add_native_growth_queue_cell(
+            grid,
+            registry,
+            types,
+            cell.0,
+            cell.1,
+            ctx.binary_frame,
+            rng,
+        );
+    }
+
     // Native partial predicate is signed `amount < current + 1`. This makes a
     // density-11 request of 11 leave the overlay present at density zero, while
     // 12 clears it. A positive request against data zero takes the full path.
@@ -1054,9 +1077,9 @@ SpreadPercentage=.06
         assert!(sim.production.resource_nodes.is_empty());
         let expected_hash = sim.state_hash();
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_09_packed.map", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 65);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 69);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v65 packed-map snapshot")
+            .expect("v69 packed-map snapshot")
             .sim;
         assert_eq!(restored.state_hash(), expected_hash);
         let restored_grid = restored
@@ -1208,6 +1231,55 @@ SpreadPercentage=.06
         assert_eq!(reduce_tiberium(&mut ctx, (4, 4), 0).removed_amount, 0);
         assert_eq!(reduce_tiberium(&mut ctx, (4, 4), -3).removed_amount, 0);
         assert_eq!(overlay.cell(4, 4).overlay_data, 6);
+    }
+
+    #[test]
+    fn gsi_04_09_max_density_reduction_runs_the_growth_admission_without_rng() {
+        let (overlay_registry, tiberium_types) = native_tiberium_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut nodes = BTreeMap::new();
+        let mut overlay = OverlayGrid::new(8, 8);
+        overlay.place_overlay(4, 4, tib01, 11);
+        let mut growth = OreGrowthState::new(8, 8);
+        growth.reset_native_tiberium_classes(tiberium_types.len(), 0);
+        let mut rng = SimRng::new(0x480a80);
+        let expected_rng = rng.clone();
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut nodes,
+            overlay_grid: Some(&mut overlay),
+            ore_growth_state: &mut growth,
+            overlay_registry: Some(&overlay_registry),
+            tiberium_types: Some(&tiberium_types),
+            resolved_terrain: None,
+            source_object_cells: None,
+            rng: Some(&mut rng),
+            binary_frame: 42,
+            spread_enabled: false,
+            radar_dirty_cells: None,
+            radar_dirty_generation: None,
+            tactical_dirty_cells: None,
+        };
+
+        let outcome = reduce_tiberium(&mut ctx, (4, 4), 11);
+
+        assert_eq!(outcome.removed_amount, 11);
+        assert!(!outcome.fully_removed);
+        assert_eq!(overlay.cell(4, 4).overlay_data, 0);
+        assert!(
+            growth.native_tiberium_state().classes[0]
+                .growth_heap
+                .is_empty()
+        );
+        assert!(
+            growth.native_tiberium_state().classes[0]
+                .growth_bitmap
+                .is_empty()
+        );
+        assert_eq!(
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "the density-11 RegisterForGrowth call rejects before its priority RNG draw"
+        );
     }
 
     #[test]

@@ -823,8 +823,9 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         crate::app_chute_anim::tick_parachute_anims(state);
     }
 
-    // Refresh the complete derived light view after committed simulation work.
-    refresh_dynamic_lighting(state);
+    // Refresh changed point-light producers after the sim step. The queued
+    // Cell refresh itself remains all-gathered-before-commit.
+    refresh_cell_lighting(state);
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
@@ -1531,11 +1532,16 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     frame_committed
 }
 
-/// Per-frame complete light-view refresh. Rebuilds only when the selected
-/// scenario profile, ambient scalar, detail-gated lamps, or radiation changes.
-/// Render-only: never touches sim state or the deterministic hash.
-fn refresh_dynamic_lighting(state: &mut AppState) {
-    let (fingerprint, new_grid) = {
+/// Samples pending light records backward and swaps the completed grid forward,
+/// matching YR `LightSourceClass::UpdateLightConverts`' all-gathered-before-commit
+/// boundary. This is app-local renderer state, never deterministic simulation state.
+const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
+
+/// Per-frame point-light refresh. A changed producer set schedules a deferred
+/// Cell light refresh; the visible grid remains stable until every replacement
+/// cell has been sampled.
+fn refresh_cell_lighting(state: &mut AppState) {
+    let changed_view = {
         let (Some(sim), Some(rules), Some(terrain)) = (
             state.simulation.as_ref(),
             state.rules.as_ref(),
@@ -1550,14 +1556,76 @@ fn refresh_dynamic_lighting(state: &mut AppState) {
             state.in_game_options.detail_level,
         );
         if state.last_lighting_view_fingerprint == Some(view.fingerprint) {
-            return;
+            None
+        } else {
+            let profile_changed = state.applied_lighting_profile != Some(view.profile)
+                || state.applied_lighting_detail_level != view.detail_level;
+            let affected_cells = if profile_changed {
+                terrain
+                    .iter()
+                    .map(|cell| ((cell.rx, cell.ry), cell.level))
+                    .collect()
+            } else {
+                // Source identity is not projected into PointLight. Enumerate
+                // the union of old and new source areas so identical colocated
+                // sources and multiplicity changes cannot disappear in a set diff.
+                let mut seen = std::collections::BTreeSet::new();
+                let mut cells = Vec::new();
+                for source in state
+                    .applied_lighting_sources
+                    .iter()
+                    .chain(view.point_lights.iter())
+                {
+                    for record in crate::map::lighting::point_light_area_cells(
+                        source,
+                        terrain.width(),
+                        terrain.height(),
+                        |rx, ry| terrain.cell(rx, ry).map(|cell| cell.level),
+                    ) {
+                        if seen.insert(record.0) {
+                            cells.push(record);
+                        }
+                    }
+                }
+                cells
+            };
+            Some((view, affected_cells))
         }
-        let fingerprint = view.fingerprint;
-        let grid = crate::app_init::build_lighting_grid_from_view(terrain, &view);
-        (fingerprint, grid)
     };
-    state.last_lighting_view_fingerprint = Some(fingerprint);
-    state.lighting_grid = new_grid;
+
+    if let Some((view, affected_cells)) = changed_view {
+        // A new queued source flushes the old batch before its area is enumerated.
+        if let Some(mut pending) = state.pending_lighting_refresh.take() {
+            pending.gather_all();
+            let committed = pending.commit_into(&mut state.lighting_grid);
+            debug_assert!(committed);
+        }
+        state.last_lighting_view_fingerprint = Some(view.fingerprint);
+        state.applied_lighting_profile = Some(view.profile);
+        state.applied_lighting_detail_level = view.detail_level;
+        state.applied_lighting_sources = view.point_lights.clone();
+        state.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
+            crate::map::lighting::DeferredCellLightRefresh::new_with_profile(
+                affected_cells,
+                view.profile,
+                view.detail_level,
+                view.point_lights,
+            )
+        });
+    }
+
+    let completed = state
+        .pending_lighting_refresh
+        .as_mut()
+        .is_some_and(|pending| pending.gather(CELL_LIGHT_GATHER_BUDGET));
+    if completed {
+        let pending = state
+            .pending_lighting_refresh
+            .take()
+            .expect("completed lighting refresh remains installed");
+        let committed = pending.commit_into(&mut state.lighting_grid);
+        debug_assert!(committed, "completed lighting refresh commits atomically");
+    }
 }
 
 fn begin_fire_effect_batch(pending: &mut Vec<SimFireEvent>) {

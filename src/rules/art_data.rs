@@ -222,6 +222,11 @@ pub struct AnimTypeRuntimeConfig {
     /// Raw `MakeInfantry=` index. Native defaults to -1 and treats every
     /// other value as enabling the AnimClass cell-occupation lifecycle.
     pub make_infantry: i32,
+    pub bouncer: bool,
+    pub spawns: Option<String>,
+    pub spawn_count: i32,
+    pub running_frames: i32,
+    pub detail_level: i32,
     pub next: Option<String>,
     pub bounce_anim: Option<String>,
     pub expire_anim: Option<String>,
@@ -566,6 +571,11 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         tiberium_spread_radius: section.get_i32("TiberiumSpreadRadius").unwrap_or(0),
         tiberium_spawn_type: parse_anim_ref(section, "TiberiumSpawnType"),
         make_infantry: section.get_i32("MakeInfantry").unwrap_or(-1),
+        bouncer: section.get_bool("Bouncer").unwrap_or(false),
+        spawns: parse_anim_ref(section, "Spawns"),
+        spawn_count: section.get_i32("SpawnCount").unwrap_or(0),
+        running_frames: section.get_i32("RunningFrames").unwrap_or(0),
+        detail_level: section.get_i32("DetailLevel").unwrap_or(0),
         next: section.get("Next").map(|s| s.trim().to_ascii_uppercase()),
         bounce_anim: parse_anim_ref(section, "BounceAnim"),
         expire_anim: parse_anim_ref(section, "ExpireAnim"),

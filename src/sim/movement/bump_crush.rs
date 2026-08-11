@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::sim::cell_kernel::{self, CellQueryPoint};
 use crate::sim::pathfinding::{BlockerNeighborCounts, EntityBlockEntry, LayeredEntityBlockMap};
 
 use crate::map::entities::EntityCategory;
@@ -23,7 +24,7 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::{CellOccupancy, OccupancyGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SimFixed, fixed_distance};
+use crate::util::fixed_math::SimFixed;
 
 /// Functional infantry sub-cell positions. The original engine uses sub-cells
 /// 2 (NE), 3 (SW), 4 (SE) — three corners of the isometric diamond. Sub-cells
@@ -34,41 +35,14 @@ pub const FUNCTIONAL_SUB_CELLS: [u8; 3] = [2, 3, 4];
 /// Maximum infantry that can share one cell (one per functional sub-cell spot).
 pub const MAX_INFANTRY_PER_CELL: usize = 3;
 
-/// Preference order tables for infantry sub-cell placement.
-/// Indexed by quadrant result (0-4). Each entry lists 4 sub-cell indices to try.
-/// The placement loop skips indices 0 and 1, so effective choices are from {2, 3, 4}.
-const SUBCELL_PREFERENCE: [[u8; 4]; 5] = [
-    [1, 2, 3, 4], // quadrant 0 (center/NW) — not used directly, random table instead
-    [0, 2, 3, 4], // quadrant 1 (dead — GetSubCell never returns 1)
-    [0, 1, 4, 3], // quadrant 2 (NE) — effective: 4, then 3
-    [0, 1, 4, 2], // quadrant 3 (SW) — effective: 4, then 2
-    [0, 2, 3, 1], // quadrant 4 (SE) — effective: 2, then 3
-];
-
-/// Random rotation tables for sub-cell placement.
-/// When quadrant is 0 (center/NW), one of these 4 rotations is picked randomly.
-const SUBCELL_RANDOM_ROTATIONS: [[u8; 4]; 4] =
-    [[1, 2, 3, 4], [2, 3, 4, 1], [3, 4, 1, 2], [4, 1, 2, 3]];
-
 /// Determine which sub-cell quadrant a lepton position falls in.
 ///
 /// Returns: 0 (center/NW), 2 (NE), 3 (SW), 4 (SE). Never returns 1.
 fn get_subcell_quadrant(sub_x: SimFixed, sub_y: SimFixed) -> u8 {
-    let center: SimFixed = SimFixed::from_num(128);
-    let cx: SimFixed = sub_x - center;
-    let cy: SimFixed = sub_y - center;
-    let dist: SimFixed = fixed_distance(cx, cy);
-    if dist < SimFixed::from_num(60) {
-        return 0;
-    }
-    let mut bits: u8 = if sub_x > center { 1 } else { 0 };
-    if sub_y > center {
-        bits |= 2;
-    }
-    if bits == 0 {
-        return 0; // NW quadrant → merged with center
-    }
-    bits + 1
+    cell_kernel::infantry_preferred_spot(CellQueryPoint {
+        x: sub_x.to_num::<i32>(),
+        y: sub_y.to_num::<i32>(),
+    })
 }
 
 /// The 8 directional offsets in isometric cell coordinates (dx, dy).
@@ -413,36 +387,17 @@ pub fn allocate_sub_cell_with_preference(
         return None;
     }
 
-    let is_occupied = |spot: u8| -> bool {
-        let in_stale: bool = infantry.iter().any(|&(_, s)| s == spot);
-        let in_reserved: bool = reserved.is_some_and(|v| v.contains(&spot));
-        in_stale || in_reserved
-    };
-
     let quadrant: u8 = get_subcell_quadrant(sub_x, sub_y);
-
-    // Fast-path: if the quadrant maps directly to a functional sub-cell and it's free,
-    // use it without consulting the preference table.
-    if quadrant >= 2 && !is_occupied(quadrant) {
-        return Some(quadrant);
-    }
-
-    // Select preference list: random rotation for center/NW, fixed table otherwise.
-    let pref: &[u8; 4] = if quadrant == 0 {
-        let rotation: usize = rng.next_range_u32(4) as usize;
-        &SUBCELL_RANDOM_ROTATIONS[rotation]
-    } else {
-        &SUBCELL_PREFERENCE[quadrant as usize]
-    };
-
-    // Search preference list, skipping indices 0 and 1 (matching original engine).
-    for &spot in pref {
-        if spot >= 2 && !is_occupied(spot) {
-            return Some(spot);
-        }
-    }
-
-    None
+    let occupied_mask = infantry
+        .iter()
+        .fold(0u8, |mask, &(_, spot)| mask | (1 << spot))
+        | reserved
+            .into_iter()
+            .flatten()
+            .fold(0u8, |mask, &spot| mask | (1 << spot));
+    // YR CellClass::FindInfantrySubposition draws only for the center/NW path.
+    let random_row = (quadrant == 0).then(|| rng.next_range_u32(4) as u8);
+    cell_kernel::select_infantry_subcell(quadrant, occupied_mask, false, random_row)
 }
 
 /// Sub-cell placement for a mover whose mission carries placement priority.
@@ -967,8 +922,8 @@ pub fn classify_drive_crush_phase(
             }
         }
     }
-    selected.sort_unstable();
-    selected.dedup();
+    // Native `CellClass::ScatterContent` dispatches its selected-list snapshot
+    // forward. Sorting by stable id here would erase Cell list authority.
     match (phase, selected.is_empty()) {
         (_, true) => DriveCrushOutcome::None,
         (DriveCrushPhase::EnteringCell, false) => DriveCrushOutcome::Scatter { blockers: selected },
@@ -1847,7 +1802,7 @@ mod tests {
 
         let outcome = classify_drive_crush_phase(
             DriveCrushPhase::EnteringCell,
-            &[2, 3],
+            &[3, 2],
             &entities,
             1,
             &crate::map::houses::HouseAllianceMap::new(),
@@ -1861,7 +1816,7 @@ mod tests {
         assert_eq!(
             outcome,
             DriveCrushOutcome::Scatter {
-                blockers: vec![2, 3]
+                blockers: vec![3, 2]
             }
         );
     }

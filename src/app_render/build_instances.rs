@@ -62,6 +62,10 @@ pub(super) struct WorldInstances {
     /// PixelFX water/ore sparkles — 1-pixel cell dots emitted per frame.
     /// Empty when graphics.extra_animations is false.
     pub cell_sparkles: Vec<SpriteInstance>,
+    /// Persistent WaveClass bucket-3 registrations lowered to white-pixel instances.
+    pub weapon_waves: Vec<SpriteInstance>,
+    /// SpotlightClass type-16 masks with authoritative child-light coordinates.
+    pub spotlight_type16: Vec<SpriteInstance>,
 }
 
 /// Debug visualization overlays (toggled by hotkeys at runtime).
@@ -299,8 +303,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
-    // Damage fires Y-sort with buildings (Layer 2).
-    app_instances::build_damage_fire_instances(state, &mut shp_paged);
+    // Scheduler-owned AnimClass objects Y-sort with buildings (Layer 2).
+    app_instances::build_anim_class_instances(state, &mut shp_paged);
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
     // In-flight projectile sprites (e.g. Guardian GI DRAGON missile).
@@ -349,6 +353,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         );
     }
 
+    let weapon_waves = app_instances::build_weapon_wave_instances(state);
+
+    // Named residual: BuildingLightRuntime currently records the parent/target
+    // relation but not SpotlightClass's evolving child coordinate and angle.
+    // Drawing at the parent would invent visible semantics, so the exact live
+    // destination-factor path stays empty until that authoritative input exists.
+    let spotlight_type16 = Vec::new();
+
     WorldInstances {
         terrain,
         overlay,
@@ -370,6 +382,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
+        weapon_waves,
+        spotlight_type16,
     }
 }
 

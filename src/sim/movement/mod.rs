@@ -85,7 +85,9 @@ pub use facing_class::FacingClass;
 // Gated to match its only consumer (the debug/test S1 shadow) so release builds
 // carry no unused re-export.
 #[cfg(any(test, debug_assertions))]
-pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_shell};
+pub(crate) use drive_locomotion::{
+    DriveProcessOutcome, drive_locomotor_is_moving, process_drive_locomotion_shell,
+};
 
 // Re-export command functions so callers can use `movement::issue_move_command` etc.
 pub(crate) use movement_commands::issue_move_command_with_layered;

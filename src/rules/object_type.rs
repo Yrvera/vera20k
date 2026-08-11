@@ -861,6 +861,8 @@ pub struct ObjectType {
     /// Parsed from `CanDisguise=yes` in rules.ini. Enables `Disguise` cursor
     /// when the selected Spy hovers over an eligible enemy infantry target.
     pub can_disguise: bool,
+    /// `DisguiseWhenStill=` — UnitClass idle Mirage disguise lifecycle gate.
+    pub disguise_when_still: bool,
 
     /// Whether this building is a wall segment (Wall=yes in rules.ini).
     /// Wall buildings render as overlays (auto-tiled connectivity frames),
@@ -910,6 +912,8 @@ pub struct ObjectType {
     pub light_green_tint: f32,
     /// Blue channel tint for emitted light (LightBlueTint= in rules.ini). Default 1.0.
     pub light_blue_tint: f32,
+    /// `HasSpotlight=` — owns a map-presence-bound BuildingLight child.
+    pub has_spotlight: bool,
 
     // -- TechnoType particle effects --
     // String fields below hold unresolved particle-system section names; ID
@@ -1400,6 +1404,7 @@ impl ObjectType {
                 .get_bool("Powered")
                 .unwrap_or(category == ObjectCategory::Building),
             can_disguise: section.get_bool("CanDisguise").unwrap_or(false),
+            disguise_when_still: section.get_bool("DisguiseWhenStill").unwrap_or(false),
             wall: section.get_bool("Wall").unwrap_or(false),
             to_overlay: None,
             unsellable: section.get_bool("Unsellable").unwrap_or(false),
@@ -1426,6 +1431,7 @@ impl ObjectType {
             light_red_tint: section.get_light_f32("LightRedTint").unwrap_or(1.0),
             light_green_tint: section.get_light_f32("LightGreenTint").unwrap_or(1.0),
             light_blue_tint: section.get_light_f32("LightBlueTint").unwrap_or(1.0),
+            has_spotlight: section.get_bool("HasSpotlight").unwrap_or(false),
 
             // TechnoType particle effects
             natural_particle_system: section

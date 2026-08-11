@@ -1070,6 +1070,7 @@ fn stamp_building_cell_profile(
         return;
     };
     ge.foundation = obj.foundation.clone();
+    ge.spotlight_capable = obj.has_spotlight;
     if ge.category == EntityCategory::Structure {
         ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
         ge.base_reservation_spacing = obj.base_reservation_spacing;

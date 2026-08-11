@@ -14,6 +14,7 @@ pub mod attack_mission;
 pub mod drop_payload;
 pub mod idle_mode;
 pub mod paradrop_mission;
+pub mod runtime_contract;
 
 use serde::{Deserialize, Serialize};
 
@@ -160,6 +161,7 @@ pub fn tick_aircraft_missions(
     struct MissionSnap {
         id: u64,
         mission: AircraftMission,
+        release_tail: Option<runtime_contract::AircraftReleaseTail>,
     }
 
     let snapshots: Vec<MissionSnap> = sim
@@ -180,6 +182,7 @@ pub fn tick_aircraft_missions(
             Some(MissionSnap {
                 id: e.stable_id,
                 mission: mission.clone(),
+                release_tail: e.aircraft_release_tail,
             })
         })
         .collect();
@@ -205,6 +208,8 @@ pub fn tick_aircraft_missions(
         paradrop_try_drop: bool,
         paradrop_payload_count_pre: u8,
         paradrop_silent_despawn: bool,
+        release_tail: Option<runtime_contract::AircraftReleaseTail>,
+        clear_attack_target: bool,
     }
 
     let mut mutations: Vec<MissionMutation> = Vec::new();
@@ -226,6 +231,8 @@ pub fn tick_aircraft_missions(
             paradrop_try_drop: false,
             paradrop_payload_count_pre: 0,
             paradrop_silent_despawn: false,
+            release_tail: snap.release_tail,
+            clear_attack_target: false,
         };
 
         match &snap.mission {
@@ -277,19 +284,52 @@ pub fn tick_aircraft_missions(
                 has_fired,
                 is_strafe,
             } => {
-                let result = attack_mission::tick_attack_state(
-                    &sim.substrate.entities,
-                    rules,
-                    &sim.interner,
-                    snap.id,
-                    *sub_state,
-                    *has_fired,
-                    *is_strafe,
-                );
-                m.new_mission = result.new_mission;
-                m.ammo_delta = result.ammo_delta;
-                m.fire_at = result.fire_at;
-                m.move_to = result.move_to;
+                if *sub_state == 1 && m.release_tail.is_some() {
+                    let mut tail = m.release_tail.expect("checked above");
+                    tail.consume_final_release();
+                    m.release_tail = Some(tail);
+                    // Native frames 369 -> 370: the last release enters
+                    // state 10 with the target still retained.
+                    m.new_mission = AircraftMission::Attack {
+                        sub_state: 10,
+                        has_fired: *has_fired,
+                        is_strafe: false,
+                    };
+                } else if *sub_state == 10
+                    && m.release_tail.is_some_and(|tail| tail.clear_target_next)
+                {
+                    let mut tail = m.release_tail.expect("checked above");
+                    tail.clear_target();
+                    m.release_tail = Some(tail);
+                    // Native frames 370 -> 371: state 10 persists while the
+                    // target clears; completion remains latched.
+                    m.clear_attack_target = true;
+                    m.new_mission = AircraftMission::Attack {
+                        sub_state: 10,
+                        has_fired: *has_fired,
+                        is_strafe: false,
+                    };
+                } else {
+                    let result = attack_mission::tick_attack_state(
+                        &sim.substrate.entities,
+                        rules,
+                        &sim.interner,
+                        snap.id,
+                        *sub_state,
+                        *has_fired,
+                        *is_strafe,
+                    );
+                    m.new_mission = result.new_mission;
+                    m.ammo_delta = result.ammo_delta;
+                    m.fire_at = result.fire_at;
+                    m.move_to = result.move_to;
+                    if result.fire_at.is_some()
+                        && matches!(&m.new_mission, AircraftMission::Attack { sub_state: 1, .. })
+                    {
+                        m.release_tail =
+                            Some(runtime_contract::AircraftReleaseTail::after_final_release());
+                    }
+                }
 
                 // Dive bombing: when in attack states 3-4, lower altitude to 1/3 cruise.
                 if matches!(*sub_state, 3 | 4) {
@@ -475,11 +515,17 @@ pub fn tick_aircraft_missions(
                             .object(type_str)
                             .map(|o| o.number_of_docks.max(1))
                             .unwrap_or(1);
-                        if let Some(reserved_pad) = sim.production.airfield_docks.try_reserve(
-                            *airfield_id,
-                            snap.id,
-                            max_slots,
-                        ) {
+                        // Native AircraftClass::IsCellOccupied reaches the
+                        // unconditional Winged Cell leaf first; dock ownership
+                        // and first-free pad reservation remain this wrapper's
+                        // meaningful admission gates.
+                        if runtime_contract::aircraft_landing_cell_leaf_clear()
+                            && let Some(reserved_pad) = sim.production.airfield_docks.try_reserve(
+                                *airfield_id,
+                                snap.id,
+                                max_slots,
+                            )
+                        {
                             m.new_mission = AircraftMission::Docking {
                                 airfield_id: *airfield_id,
                                 sub_state: 1,
@@ -649,6 +695,10 @@ pub fn tick_aircraft_missions(
             }
         }
 
+        if !matches!(&m.new_mission, AircraftMission::Attack { .. }) {
+            m.release_tail = None;
+        }
+
         mutations.push(m);
     }
 
@@ -665,6 +715,11 @@ pub fn tick_aircraft_missions(
 
         if let Some(entity) = sim.substrate.entities.get_mut(m.id) {
             entity.aircraft_mission = Some(m.new_mission.clone());
+            entity.aircraft_release_tail = m.release_tail;
+
+            if m.clear_attack_target {
+                entity.attack_target = None;
+            }
 
             if m.ammo_delta != 0 {
                 if let Some(ref mut ammo) = entity.aircraft_ammo {

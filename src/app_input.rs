@@ -1637,6 +1637,10 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             state.rules.as_ref(),
             state.in_game_options.detail_level,
         );
+        state.pending_lighting_refresh = None;
+        state.applied_lighting_sources.clear();
+        state.applied_lighting_profile = None;
+        state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
         state.last_lighting_view_fingerprint = None;
     }
 
