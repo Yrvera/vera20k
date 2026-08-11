@@ -4,14 +4,18 @@
 //! and pending-delete transitions.  Upper-layer work is emitted as ordered data;
 //! this module never depends on render, UI, sidebar, audio, or net.
 
+use std::collections::BTreeSet;
+
 use crate::map::entities::EntityCategory;
+use crate::sim::cell_rect::{CellRect, canonical_cell_coord, scan_cell_rect};
 use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::occupancy::{
     BUILDING_OCCUPATION_BIT, CellListInsertion, OBJECT_OCCUPATION_BIT, VEHICLE_OCCUPATION_BIT,
-    cell_list_layer_for_entity, entity_occupancy_cells, infantry_raw_occupation_mask,
+    air_spatial_bucket_index, air_spatial_tracks_entity, cell_list_layer_for_entity,
+    entity_occupancy_cells, infantry_raw_occupation_mask,
 };
 use crate::sim::passenger::PassengerRole;
 use crate::util::fixed_math::SimFixed;
@@ -23,6 +27,33 @@ pub(crate) enum PlacementEvidence {
     RejectedEarly,
     MarkFailed,
     MarkSucceeded,
+}
+
+fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i32) -> CellRect {
+    let (width, height) = crate::rules::foundation::foundation_dimensions(foundation);
+    CellRect::new(
+        i32::from(rx).wrapping_sub(spacing),
+        i32::from(ry).wrapping_sub(spacing),
+        i32::from(width).wrapping_add(spacing.wrapping_mul(2)),
+        i32::from(height).wrapping_add(spacing.wrapping_mul(2)),
+    )
+}
+
+pub(super) fn building_base_reservation_repair_rect(
+    rx: u16,
+    ry: u16,
+    foundation_width: u16,
+    foundation_height: u16,
+    spacing: i32,
+) -> CellRect {
+    let twice_spacing = spacing.wrapping_mul(2);
+    let five_times_spacing = spacing.wrapping_mul(5);
+    CellRect::new(
+        i32::from(rx).wrapping_sub(twice_spacing),
+        i32::from(ry).wrapping_sub(twice_spacing),
+        i32::from(foundation_width).wrapping_add(five_times_spacing),
+        i32::from(foundation_height).wrapping_add(five_times_spacing),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,13 +119,17 @@ pub(crate) enum LifecycleTestEvent {
     RevealCoordinatesCommitted,
     MarkPut,
     RawOccupationListLinked,
+    HiddenOccupationEntered,
+    BaseReservationMarked,
     RawOccupationMarked,
     CellMarked,
     RevealDisplayBoundary,
     LogicAppended,
     LogicMembershipSet,
     ConcealDeselected,
+    BaseReservationCleared,
     RawOccupationListUnlinked,
+    HiddenOccupationExited,
     RawOccupationCleared,
     ConcealUnmarked,
     ConcealDisplayBoundary,
@@ -135,6 +170,18 @@ pub(crate) enum LifecycleTestEvent {
     UninitAliveCleared {
         stable_id: u64,
     },
+    PostMortemKillBookkeeping {
+        stable_id: u64,
+    },
+    PostMortemRadioBreakCompleted {
+        stable_id: u64,
+    },
+    PostMortemDeselected {
+        stable_id: u64,
+    },
+    PostMortemDestroyNotifyBoundary {
+        stable_id: u64,
+    },
     /// One visited listener of the live-detach targeting sweep, in the order
     /// the sweep visited it. Recorded for every listener that was pointed at
     /// the detaching object, so a test can pin the descending walk.
@@ -158,6 +205,16 @@ impl Simulation {
     #[cfg(test)]
     pub(crate) fn trace_lifecycle_for_test(&mut self, event: LifecycleTestEvent) {
         self.lifecycle_test_events.push(event);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifecycle_test_events_for_test(&self) -> &[LifecycleTestEvent] {
+        &self.lifecycle_test_events
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_lifecycle_test_events_for_test(&mut self) {
+        self.lifecycle_test_events.clear();
     }
 
     fn current_reveal_position(&self, stable_id: u64) -> Option<RevealPosition> {
@@ -376,6 +433,7 @@ impl Simulation {
             entity.position.rx = request.position.rx;
             entity.position.ry = request.position.ry;
             entity.position.z = request.position.z;
+            entity.position.exact_z_leptons = None;
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
         }
@@ -402,6 +460,8 @@ impl Simulation {
                 logic_registered: false,
             };
         }
+        self.refresh_waypoint_edge_from_committed_structure(stable_id);
+        self.mark_building_base_reservation(stable_id);
         self.lifecycle_outputs
             .push(LifecycleOutput::RevealDisplay { stable_id });
         #[cfg(test)]
@@ -413,6 +473,28 @@ impl Simulation {
             false
         };
         RevealOutcome::Revealed { logic_registered }
+    }
+
+    /// Refresh the owning house's navigation edge from a live, map-committed
+    /// structure. Launch base-center authority remains the assigned start cell.
+    pub(crate) fn refresh_waypoint_edge_from_committed_structure(&mut self, stable_id: u64) {
+        let Some(bounds) = self.playfield_bounds else {
+            return;
+        };
+        let Some((owner, anchor)) = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.category == EntityCategory::Structure
+                && entity.determines_waypoint_edge
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.lifecycle.cell_marked)
+                .then_some((entity.owner, (entity.position.rx, entity.position.ry)))
+        }) else {
+            return;
+        };
+        let edge = crate::sim::house_state::determine_waypoint_edge(anchor, bounds);
+        if let Some(house) = self.houses.get_mut(&owner) {
+            house.waypoint_edge = edge;
+        }
     }
 
     fn mark_entity_put(&mut self, stable_id: u64) {
@@ -431,6 +513,8 @@ impl Simulation {
         };
         let insertion = CellListInsertion::from_category(entity.category);
         let category = entity.category;
+        let foundation = entity.foundation.clone();
+        let hidden_profile = entity.building_hidden_occupancy;
         let current_cell = (entity.position.rx, entity.position.ry);
         let raw_position = RevealPosition {
             rx: entity.position.rx,
@@ -440,7 +524,36 @@ impl Simulation {
             sub_y: entity.position.sub_y,
         };
         let inside_transport = entity.passenger_role.is_inside_transport();
+        let air_spatial_bucket =
+            (!inside_transport && air_spatial_tracks_entity(entity)).then(|| {
+                air_spatial_bucket_index(
+                    entity.position.rx,
+                    entity.position.ry,
+                    self.session.map_width,
+                    self.session.map_height,
+                )
+            });
         let order = self.substrate.next_occupancy_enter_order.next();
+
+        if category == EntityCategory::Structure {
+            let (width, height) = crate::rules::foundation::foundation_dimensions(&foundation);
+            let mut intersections = Vec::with_capacity(usize::from(width) * usize::from(height));
+            for dy in 0..height {
+                for dx in 0..width {
+                    let Some(rx) = current_cell.0.checked_add(dx) else {
+                        continue;
+                    };
+                    let Some(ry) = current_cell.1.checked_add(dy) else {
+                        continue;
+                    };
+                    intersections.push((rx, ry));
+                }
+            }
+            if let Some(smudge_grid) = self.smudge_grid.as_mut() {
+                smudge_grid.clear_intersecting_footprints(&intersections);
+            }
+            self.flush_smudge_dirty();
+        }
 
         if !inside_transport {
             if let Some(layer) = layer {
@@ -458,6 +571,20 @@ impl Simulation {
                 ) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListLinked);
+                    if category == EntityCategory::Structure
+                        && layer == crate::sim::movement::locomotor::MovementLayer::Ground
+                        && hidden_profile.is_some_and(|profile| {
+                            self.substrate.hidden_occupation.enter_building(
+                                current_cell,
+                                &foundation,
+                                profile,
+                                Some((self.session.map_width, self.session.map_height)),
+                            )
+                        })
+                    {
+                        #[cfg(test)]
+                        self.trace_lifecycle_for_test(LifecycleTestEvent::HiddenOccupationEntered);
+                    }
                     if self.mark_common_raw_occupation(category, &cells, raw_position) {
                         #[cfg(test)]
                         self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
@@ -475,6 +602,17 @@ impl Simulation {
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.occupancy_enter_order = order;
+            match air_spatial_bucket {
+                Some(bucket) if entity.air_spatial_bucket != Some(bucket) => {
+                    entity.air_spatial_bucket = Some(bucket);
+                    entity.air_spatial_enter_order = order;
+                }
+                Some(_) => {}
+                None => {
+                    entity.air_spatial_bucket = None;
+                    entity.air_spatial_enter_order = 0;
+                }
+            }
             entity.lifecycle.cell_marked = true;
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.current_occupation_cleared = false;
@@ -484,7 +622,153 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::CellMarked);
     }
 
+    pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {
+        // Map entities are intentionally revealed before the launch HouseClass
+        // array exists; the one-time post-registration rebuild owns that case.
+        if self.session.house_order.is_empty() {
+            return None;
+        }
+        let index = self
+            .session
+            .house_order
+            .iter()
+            .position(|registered| *registered == owner)
+            .and_then(|index| i32::try_from(index).ok());
+        debug_assert!(
+            index.is_some(),
+            "base-reservation owner must be present in ScenarioSession.house_order"
+        );
+        index
+    }
+
+    fn mark_building_base_reservation(&mut self, stable_id: u64) -> bool {
+        let Some((owner, rect)) = self.base_reservation_writer(stable_id) else {
+            return false;
+        };
+        let Some(house_index) = self.base_reservation_house_index(owner) else {
+            return false;
+        };
+        self.substrate.base_reservations.reserve_rect(
+            self.resolved_terrain.as_ref(),
+            rect,
+            house_index,
+        );
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationMarked);
+        true
+    }
+
+    fn base_reservation_writer(&self, stable_id: u64) -> Option<(InternedId, CellRect)> {
+        let entity = self.substrate.entities.get(stable_id)?;
+        let spacing = entity.base_reservation_spacing?;
+        (entity.category == EntityCategory::Structure
+            && entity.lifecycle.object_alive
+            && !entity.lifecycle.in_limbo
+            && entity.lifecycle.cell_marked
+            && cell_list_layer_for_entity(entity)
+                == Some(crate::sim::movement::locomotor::MovementLayer::Ground))
+        .then(|| {
+            (
+                entity.owner,
+                building_base_reservation_rect(
+                    entity.position.rx,
+                    entity.position.ry,
+                    &entity.foundation,
+                    spacing,
+                ),
+            )
+        })
+    }
+
+    fn clear_building_base_reservation_and_repair(&mut self, stable_id: u64) -> bool {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return false;
+        };
+        let Some(spacing) = entity.base_reservation_spacing else {
+            return false;
+        };
+        if entity.category != EntityCategory::Structure
+            || !entity.lifecycle.cell_marked
+            || cell_list_layer_for_entity(entity)
+                != Some(crate::sim::movement::locomotor::MovementLayer::Ground)
+        {
+            return false;
+        }
+        let owner = entity.owner;
+        let rect = building_base_reservation_rect(
+            entity.position.rx,
+            entity.position.ry,
+            &entity.foundation,
+            spacing,
+        );
+        let (foundation_width, foundation_height) =
+            crate::rules::foundation::foundation_dimensions(&entity.foundation);
+        let repair_rect = building_base_reservation_repair_rect(
+            entity.position.rx,
+            entity.position.ry,
+            foundation_width,
+            foundation_height,
+            spacing,
+        );
+        let Some(house_index) = self.base_reservation_house_index(owner) else {
+            return false;
+        };
+
+        self.substrate.base_reservations.clear_rect(
+            self.resolved_terrain.as_ref(),
+            rect,
+            house_index,
+        );
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::BaseReservationCleared);
+
+        // The native repair scan happens while this building is still linked in
+        // the ground object lists. Gather stable identities first, then re-run
+        // each neighbor's own exact writer without holding a grid borrow.
+        let mut repair_ids = BTreeSet::new();
+        scan_cell_rect(repair_rect, |x, y| {
+            if let Some((rx, ry)) = canonical_cell_coord(x, y)
+                && self
+                    .resolved_terrain
+                    .as_ref()
+                    .is_none_or(|terrain| terrain.cell(rx, ry).is_some())
+                && let Some(cell) = self.substrate.occupancy.get(rx, ry)
+            {
+                repair_ids.extend(
+                    cell.iter_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
+                        .map(|occupant| occupant.entity_id),
+                );
+            }
+            true
+        });
+        repair_ids.remove(&stable_id);
+        for neighbor_id in repair_ids {
+            self.mark_building_base_reservation(neighbor_id);
+        }
+        true
+    }
+
+    /// New-game-only rebuild after the launch house array reaches final order.
+    /// Snapshot restore intentionally never calls this: serialized masks and the
+    /// shared dummy mask are authoritative.
+    pub(crate) fn rebuild_base_reservations_for_new_game(&mut self) {
+        self.substrate.base_reservations.reset();
+        let entity_ids = self
+            .substrate
+            .entities
+            .values()
+            .map(|entity| entity.stable_id)
+            .collect::<Vec<_>>();
+        for stable_id in entity_ids {
+            self.mark_building_base_reservation(stable_id);
+        }
+    }
+
     fn unmark_entity_remove(&mut self, stable_id: u64) -> bool {
+        self.unmark_entity_remove_impl(stable_id, true)
+    }
+
+    fn unmark_entity_remove_impl(&mut self, stable_id: u64, clear_air_spatial: bool) -> bool {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
@@ -494,6 +778,8 @@ impl Simulation {
         let cells = entity_occupancy_cells(entity);
         let layer = cell_list_layer_for_entity(entity);
         let category = entity.category;
+        let foundation = entity.foundation.clone();
+        let hidden_profile = entity.building_hidden_occupancy;
         let current_cell = (entity.position.rx, entity.position.ry);
         let raw_position = RevealPosition {
             rx: entity.position.rx,
@@ -534,6 +820,20 @@ impl Simulation {
             {
                 #[cfg(test)]
                 self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListUnlinked);
+                if category == EntityCategory::Structure
+                    && layer == crate::sim::movement::locomotor::MovementLayer::Ground
+                    && hidden_profile.is_some_and(|profile| {
+                        self.substrate.hidden_occupation.exit_building(
+                            current_cell,
+                            &foundation,
+                            profile,
+                            Some((self.session.map_width, self.session.map_height)),
+                        )
+                    })
+                {
+                    #[cfg(test)]
+                    self.trace_lifecycle_for_test(LifecycleTestEvent::HiddenOccupationExited);
+                }
                 if self.clear_common_raw_occupation(category, &cells, raw_position) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
@@ -550,11 +850,51 @@ impl Simulation {
         }
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.cell_marked = false;
+            if clear_air_spatial {
+                entity.air_spatial_bucket = None;
+                entity.air_spatial_enter_order = 0;
+            }
             if let Some(drive) = entity.drive_locomotion.as_mut() {
                 drive.current_occupation_cleared = true;
             }
         }
         true
+    }
+
+    /// Mirror the native air-vector move producer: retain vector position while
+    /// the object stays in one bucket, otherwise remove from the old vector and
+    /// append to the destination vector's tail.
+    fn sync_air_spatial_membership(&mut self, stable_id: u64) {
+        let desired_bucket = self.substrate.entities.get(stable_id).and_then(|entity| {
+            (entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.lifecycle.cell_marked
+                && !entity.passenger_role.is_inside_transport()
+                && air_spatial_tracks_entity(entity))
+            .then(|| {
+                air_spatial_bucket_index(
+                    entity.position.rx,
+                    entity.position.ry,
+                    self.session.map_width,
+                    self.session.map_height,
+                )
+            })
+        });
+        let current_bucket = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .and_then(|entity| entity.air_spatial_bucket);
+        if current_bucket == desired_bucket {
+            return;
+        }
+        let enter_order = desired_bucket
+            .map(|_| self.substrate.next_occupancy_enter_order.next())
+            .unwrap_or(0);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.air_spatial_bucket = desired_bucket;
+            entity.air_spatial_enter_order = enter_order;
+        }
     }
 
     /// Test/fixture helper retained at the transaction boundary.  It is
@@ -592,7 +932,7 @@ impl Simulation {
                     })
             });
         if transact_fly {
-            self.remove_entity_occupancy(stable_id);
+            self.unmark_entity_remove_impl(stable_id, false);
         }
 
         let stats = crate::sim::movement::air_movement::tick_air_movement(
@@ -610,6 +950,7 @@ impl Simulation {
         {
             self.add_entity_occupancy(stable_id);
         }
+        self.sync_air_spatial_membership(stable_id);
         stats
     }
 
@@ -845,6 +1186,7 @@ impl Simulation {
         if entity.lifecycle.in_limbo {
             return ConcealOutcome::AlreadyConcealed;
         }
+        self.clear_building_base_reservation_and_repair(stable_id);
         crate::sim::radio::broadcast_break(self, stable_id);
         self.object_conceal(stable_id)
     }
@@ -935,6 +1277,73 @@ impl Simulation {
         }
     }
 
+    /// ObjectClass's exact-zero callback transaction for an eligible
+    /// `CausesDelayKill` building. Active gamemd runs the routed kill callback
+    /// and virtual Destroy/reference notification before TechnoClass arms the
+    /// timer and restores Alive/Health=1. This deliberately does not call
+    /// UnInit, Limbo, release owned counts, or enqueue physical deletion.
+    pub(crate) fn postmortem_exact_zero_callbacks(
+        &mut self,
+        stable_id: u64,
+        killer_owner: Option<InternedId>,
+        rules: &crate::rules::ruleset::RuleSet,
+    ) {
+        let Some((owner, category, dont_score, type_ref, veterancy)) =
+            self.substrate.entities.get(stable_id).map(|target| {
+                (
+                    target.owner,
+                    target.category,
+                    target.dont_score,
+                    target.type_ref,
+                    target.veterancy,
+                )
+            })
+        else {
+            return;
+        };
+
+        debug_assert_eq!(
+            self.substrate
+                .entities
+                .get(stable_id)
+                .map(|target| target.health.current),
+            Some(0),
+            "PostMortem Object callbacks run at exact zero"
+        );
+        if !dont_score {
+            let award = crate::sim::combat::score_award_for_victim(
+                rules.object(self.interner.resolve(type_ref)),
+                veterancy,
+            );
+            self.record_match_kill_and_loss(owner, category, killer_owner, award);
+        }
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PostMortemKillBookkeeping { stable_id });
+
+        // BuildingClass::Destroy broadcasts BREAK before entering the common
+        // ObjectClass::Destroy body. The per-building native factory pointer has
+        // no Rust representation; eligible stock barrels have none.
+        crate::sim::radio::broadcast_break(self, stable_id);
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PostMortemRadioBreakCompleted {
+            stable_id,
+        });
+
+        // ObjectClass::Destroy(1) unconditionally deselects before broadcasting
+        // pointer expiry. It leaves Logic/occupancy/liveness intact.
+        if let Some(target) = self.substrate.entities.get_mut(stable_id) {
+            target.selected = false;
+        }
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PostMortemDeselected { stable_id });
+
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PostMortemDestroyNotifyBoundary {
+            stable_id,
+        });
+        self.notify_pointer_expired(stable_id);
+    }
+
     pub(crate) fn apply_lifecycle_request(&mut self, request: LifecycleRequest) {
         match request {
             LifecycleRequest::Uninit {
@@ -979,6 +1388,14 @@ impl Simulation {
             }
             self.uninit(passenger_id);
         }
+    }
+
+    /// TechnoClass fatal-receiver passenger rung. The native death helper
+    /// enters only after carried objects have completed their own authoritative
+    /// UnInit transactions; the carrier itself remains represented for its
+    /// DeathWeapon and category-specific UnInit that follows.
+    pub(crate) fn purge_carried_passengers_for_fatal(&mut self, carrier_id: u64) {
+        self.uninit_carried_passengers(carrier_id);
     }
 
     fn nav_ref_targets_expired(target: &NavTargetRef, expired_id: u64) -> bool {
@@ -1271,6 +1688,12 @@ impl Simulation {
             homing.expire_object_target(expired_id, expired_cell, expired_is_high_flying);
         }
 
+        if let Some(pending) = listener.pending_c4_detonation.as_mut()
+            && pending.source_entity_id == Some(expired_id)
+        {
+            pending.source_entity_id = None;
+        }
+
         // Deliberately retain last_attacker_id. Native retaliation reads the
         // dying object through the deferred-delete window; it is not one of
         // the proactively-cleared target roles above.
@@ -1347,6 +1770,14 @@ impl Simulation {
                 // drops a destroyed wing target, so without it a Carrier keeps
                 // sending its Hornets at a corpse.
                 crate::sim::spawn_manager::notify_pointer_expired(self, listener_id, expired_id);
+                if let Some(manager) = self
+                    .substrate
+                    .entities
+                    .get_mut(listener_id)
+                    .and_then(|entity| entity.capture_manager.as_mut())
+                {
+                    manager.pointer_expired(expired_id);
+                }
             } else if is_anim {
                 self.expire_anim_owner_reference(listener_id, expired_id);
             } else if is_particle {
@@ -1463,6 +1894,16 @@ impl Simulation {
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
         let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
+        if let Some(system) = particle_system.as_ref()
+            && let Some(owner_id) = system.owner_entity
+            && let Some(owner) = self.substrate.entities.get_mut(owner_id)
+            && owner.damage_smoke_system_id == Some(stable_id)
+        {
+            // Native pointer expiry clears TechnoClass +0x310 only when the
+            // marked system physically leaves object storage. Keeping the
+            // identity through retirement prevents same-frame duplicates.
+            owner.damage_smoke_system_id = None;
+        }
         debug_assert!(
             usize::from(entity.is_some())
                 + usize::from(anim.is_some())

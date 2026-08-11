@@ -13,7 +13,7 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::object_type::ObjectCategory;
+use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::components::{
@@ -232,13 +232,13 @@ impl Simulation {
                 }
             }
 
-            if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
-                ge.foundation = obj.foundation.clone();
-            }
+            stamp_building_cell_profile(&mut ge, obj);
             // TechnoClass::Init_Managers for map-placed parents.
             if let Some(ruleset) = rules
                 && let Some(obj) = ruleset.object(&map_ent.type_id)
             {
+                ge.capture_manager =
+                    crate::sim::capture_manager::init_capture_manager(obj, ruleset);
                 ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
                     obj,
                     ruleset,
@@ -472,9 +472,10 @@ impl Simulation {
             };
         }
 
-        ge.foundation = obj.foundation.clone();
+        stamp_building_cell_profile(&mut ge, Some(obj));
         // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
         // resolves. Children are created right after placement, below.
+        ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
         ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
             obj,
             rules,
@@ -622,6 +623,10 @@ impl Simulation {
                 cargo: crate::sim::passenger::PassengerCargo::new(obj.max_number_occupants, 1),
             };
         }
+
+        stamp_building_cell_profile(&mut ge, Some(obj));
+
+        ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
 
         let stable_id = self.create_limbo(ge);
         self.commit_spawn_harvest_mission(stable_id);
@@ -1055,4 +1060,19 @@ fn undeploy_unit_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16,
 /// lifecycle authority, which deliberately holds no `RuleSet` borrow.
 fn stamp_scoring_flags(ge: &mut GameEntity, obj: Option<&crate::rules::object_type::ObjectType>) {
     ge.dont_score = obj.is_some_and(|o| o.dont_score);
+}
+
+fn stamp_building_cell_profile(
+    ge: &mut GameEntity,
+    obj: Option<&crate::rules::object_type::ObjectType>,
+) {
+    let Some(obj) = obj else {
+        return;
+    };
+    ge.foundation = obj.foundation.clone();
+    if ge.category == EntityCategory::Structure {
+        ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
+        ge.base_reservation_spacing = obj.base_reservation_spacing;
+        ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+    }
 }
