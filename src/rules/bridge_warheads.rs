@@ -1,4 +1,4 @@
-//! `[CombatDamage]` bridge-specific warhead references.
+//! `[CombatDamage]` fixed warhead references used by bridge/combat routing.
 //!
 //! Bridge damage gating + collapse fallout cite two specific warhead names by
 //! [CombatDamage] key:
@@ -6,6 +6,8 @@
 //!   Apply_area_damage (gamemd Rules+0xFF0).
 //! - C4Warhead: used as the killing warhead in BlowUpBridge ground-occupant
 //!   force_kill (gamemd Rules+0xFA8).
+//! - CrushWarhead: admits the source object to Apply_area_damage's ground
+//!   receiver list even when its ObjectType has DamageSelf=no (Rules+0xFAC).
 //!
 //! Stored as raw INI strings here; resolved to interned `WarheadId`s at world
 //! init time when the warhead registry is populated.
@@ -27,6 +29,8 @@ pub struct BridgeWarheads {
     /// `[CombatDamage] C4Warhead=` (default `"Super"`).
     /// Used as killing warhead in bridge-collapse ground kill.
     pub c4_name: String,
+    /// `[CombatDamage] CrushWarhead=` (default `"Crush"`). Distinct from C4.
+    pub crush_name: String,
 }
 
 impl Default for BridgeWarheads {
@@ -34,6 +38,7 @@ impl Default for BridgeWarheads {
         Self {
             ion_cannon_name: "IonCannonWH".to_string(),
             c4_name: "Super".to_string(),
+            crush_name: "Crush".to_string(),
         }
     }
 }
@@ -46,6 +51,7 @@ impl BridgeWarheads {
             ion_cannon_name: read_name(section, "IonCannonWarhead")
                 .unwrap_or(default.ion_cannon_name),
             c4_name: read_name(section, "C4Warhead").unwrap_or(default.c4_name),
+            crush_name: read_name(section, "CrushWarhead").unwrap_or(default.crush_name),
         }
     }
 }
@@ -67,16 +73,19 @@ mod tests {
         let bw = BridgeWarheads::default();
         assert_eq!(bw.ion_cannon_name, "IonCannonWH");
         assert_eq!(bw.c4_name, "Super");
+        assert_eq!(bw.crush_name, "Crush");
     }
 
     #[test]
     fn parses_keys_from_combat_damage_section() {
-        let ini =
-            IniFile::from_str("[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\n");
+        let ini = IniFile::from_str(
+            "[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\nCrushWarhead=CustomCrush\n",
+        );
         let section = ini.section("CombatDamage").unwrap();
         let bw = BridgeWarheads::from_ini_section(section);
         assert_eq!(bw.ion_cannon_name, "CustomIon");
         assert_eq!(bw.c4_name, "CustomC4");
+        assert_eq!(bw.crush_name, "CustomCrush");
     }
 
     #[test]
@@ -86,5 +95,6 @@ mod tests {
         let bw = BridgeWarheads::from_ini_section(section);
         assert_eq!(bw.ion_cannon_name, "IonCannonWH");
         assert_eq!(bw.c4_name, "Super");
+        assert_eq!(bw.crush_name, "Crush");
     }
 }
