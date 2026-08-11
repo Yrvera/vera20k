@@ -21,11 +21,11 @@ use crate::map::bridge_facts::{
     BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_DIRECTION_ZERO,
     BRIDGE_FLAG_STRUCTURAL,
 };
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{BridgeDirection, ResolvedTerrainGrid};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{
-    Axis, BridgeCellRole, BridgeDamageContext, BridgeDamageEvent, BridgeRuntimeState, DamageState,
-    DispatchPath, StateOutcome,
+    Axis, BridgeCellRole, BridgeDamageContext, BridgeDamageEvent, BridgeOverlayProjectionOp,
+    BridgeRuntimeCell, BridgeRuntimeState, DamageState, DispatchPath, StateOutcome,
 };
 use crate::sim::world::Simulation;
 use crate::sim::{intern::InternedId, rng::SimRng};
@@ -60,6 +60,15 @@ pub(crate) fn apply_bridge_damage_events(
     rules: &RuleSet,
     events: &[BridgeDamageEvent],
 ) -> bool {
+    apply_bridge_damage_events_with_overlay_registry(sim, rules, events, None)
+}
+
+pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    events: &[BridgeDamageEvent],
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
     if events.is_empty() {
         return false;
     }
@@ -73,6 +82,7 @@ pub(crate) fn apply_bridge_damage_events(
     // Run dispatch loop with split borrows: bridge_state &mut, terrain &,
     // rng &mut. Outcomes are collected for the cascade phase below.
     let outcomes: Vec<StateOutcome> = run_dispatch_loop(sim, events, bridge_strength);
+    project_pending_low_bridge_overlay_writes(sim, overlay_registry);
 
     // Aggregate destroyed cells + the subset receiving BlowUpBridge from
     // the dispatcher's outcomes. BTreeSet keeps deterministic order for
@@ -126,6 +136,7 @@ pub(crate) fn apply_bridge_damage_events(
 
     // Cascade Step 4: rim refresh (HIGH §11.9). Stub today — see helper.
     update_adjacent_bridges(sim, &rim_cells);
+    project_pending_low_bridge_overlay_writes(sim, overlay_registry);
 
     // Cascade Step 5: TriggerEvent 31 broadcast (HIGH §11.3). No-op on
     // skirmish; hook stub for future campaign / map-trigger support.
@@ -167,6 +178,15 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
     sim: &mut Simulation,
     rules: &RuleSet,
     hut_center: (u16, u16),
+) -> bool {
+    dispatch_bridge_collapse_from_hut_with_overlay_registry(sim, rules, hut_center, None)
+}
+
+pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    hut_center: (u16, u16),
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     let scan: Vec<(u16, u16)> = hut_destroy_5x5_scan(hut_center).collect();
     let family = choose_hut_bridge_family(sim, &scan);
@@ -230,6 +250,7 @@ pub(crate) fn dispatch_bridge_collapse_from_hut(
         &outcomes,
         fallback_zones_dirty,
         fallback_adjacent_dirty_anchor,
+        overlay_registry,
     )
 }
 
@@ -309,6 +330,7 @@ fn apply_hut_bridge_execution(
     outcomes: &[StateOutcome],
     extra_zones_dirty: bool,
     extra_adjacent_dirty_anchor: Option<(u16, u16)>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) -> bool {
     if outcomes.is_empty() && !extra_zones_dirty && extra_adjacent_dirty_anchor.is_none() {
         return false;
@@ -346,11 +368,13 @@ fn apply_hut_bridge_execution(
     }
     any_zones_dirty |= extra_zones_dirty;
 
+    project_pending_low_bridge_overlay_writes(sim, overlay_registry);
     let c4_inf_death = c4_inf_death(rules, sim);
     for &(rx, ry) in &blow_up_cells {
         blow_up_bridge_cell_fallout(sim, rules, rx, ry, c4_inf_death);
     }
     update_adjacent_bridges(sim, &rim_cells);
+    project_pending_low_bridge_overlay_writes(sim, overlay_registry);
     notify_bridge_span_collapse(sim, &destroyed_set);
     refresh_bridge_zones_if_dirty(sim, any_zones_dirty);
 
@@ -1136,8 +1160,11 @@ fn update_adjacent_bridges(sim: &mut Simulation, rim_cells: &BTreeSet<(u16, u16)
             if !stub_now {
                 continue;
             }
-            if let Some(c) = bridge_state.cell_mut(walk_x as u16, walk_y as u16) {
-                c.overlay_byte = 0xFF;
+            if bridge_state.cell(walk_x as u16, walk_y as u16).is_some() {
+                let _ = bridge_state.write_overlay_byte(walk_x as u16, walk_y as u16, 0xFF);
+                let c = bridge_state
+                    .cell_mut(walk_x as u16, walk_y as u16)
+                    .expect("bridge stub existed before overlay write");
                 c.damage_state = DamageState::Healthy { variant: 0 };
                 c.bridge_group_id = None;
                 c.deck_present = false;
@@ -1157,6 +1184,116 @@ fn update_adjacent_bridges(sim: &mut Simulation, rim_cells: &BTreeSet<(u16, u16)
 /// order.
 fn notify_bridge_span_collapse(sim: &mut Simulation, cells: &BTreeSet<(u16, u16)>) {
     let _ = (sim, cells);
+}
+
+/// Select the ground-level bridge surface from map/deck facts, never from the
+/// numeric overlay band: urban low bridges share bytes with elevated bridges.
+fn is_low_surface_bridge_cell(
+    bridge_cell: &BridgeRuntimeCell,
+    terrain_cell: &crate::map::resolved_terrain::ResolvedTerrainCell,
+) -> bool {
+    if let Some(layer) = terrain_cell.bridge_layer.as_ref() {
+        return layer.direction == BridgeDirection::Low;
+    }
+    terrain_cell.bridge_facts.family == crate::map::bridge_facts::BridgeStampFamily::None
+        && terrain_cell.bridge_facts.overlay_id.is_some()
+        && bridge_cell.deck_level == terrain_cell.level
+}
+
+fn project_low_bridge_overlay_ops(
+    sim: &mut Simulation,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ops: Vec<BridgeOverlayProjectionOp>,
+) {
+    let mut terrain_changed = false;
+    for op in ops {
+        let (rx, ry) = match op {
+            BridgeOverlayProjectionOp::Write { rx, ry, .. }
+            | BridgeOverlayProjectionOp::Recalc { rx, ry } => (rx, ry),
+        };
+        let low_surface = sim
+            .bridge_state
+            .as_ref()
+            .and_then(|state| state.cell(rx, ry))
+            .zip(
+                sim.resolved_terrain
+                    .as_ref()
+                    .and_then(|terrain| terrain.cell(rx, ry)),
+            )
+            .is_some_and(|(bridge_cell, terrain_cell)| {
+                is_low_surface_bridge_cell(bridge_cell, terrain_cell)
+            });
+        if !low_surface {
+            continue;
+        }
+
+        match op {
+            BridgeOverlayProjectionOp::Write { overlay_byte, .. } => {
+                if let Some(overlay_grid) = sim.overlay_grid.as_mut() {
+                    let _ = overlay_grid.write_bridge_overlay_identity(rx, ry, overlay_byte);
+                }
+            }
+            BridgeOverlayProjectionOp::Recalc { .. } => {
+                let Some(registry) = overlay_registry else {
+                    continue;
+                };
+                if let (Some(overlay_grid), Some(terrain)) =
+                    (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
+                {
+                    terrain_changed |= crate::sim::overlay_grid::recalc_overlay_passability(
+                        overlay_grid,
+                        terrain,
+                        registry,
+                        rx,
+                        ry,
+                    );
+                }
+            }
+        }
+    }
+
+    if terrain_changed && let Some(terrain) = sim.resolved_terrain.as_ref() {
+        sim.terrain_costs =
+            crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(terrain);
+    }
+}
+
+pub(crate) fn project_pending_low_bridge_overlay_writes(
+    sim: &mut Simulation,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
+    let ops = sim
+        .bridge_state
+        .as_mut()
+        .map(BridgeRuntimeState::take_overlay_projection_ops)
+        .unwrap_or_default();
+    project_low_bridge_overlay_ops(sim, overlay_registry, ops);
+}
+
+/// Reconcile serialized low-bridge authority with the fresh map-derived
+/// terrain cache. This also repairs older saves whose OverlayGrid identity
+/// still contains the load-time Road overlay after a terminal collapse.
+pub(crate) fn reconcile_low_bridge_surface_after_cache_load(
+    sim: &mut Simulation,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+) {
+    let ops = sim.bridge_state.as_mut().map(|state| {
+        let _ = state.take_overlay_projection_ops();
+        state
+            .iter_cells()
+            .flat_map(|((rx, ry), cell)| {
+                [
+                    BridgeOverlayProjectionOp::Write {
+                        rx,
+                        ry,
+                        overlay_byte: cell.overlay_byte,
+                    },
+                    BridgeOverlayProjectionOp::Recalc { rx, ry },
+                ]
+            })
+            .collect()
+    });
+    project_low_bridge_overlay_ops(sim, Some(overlay_registry), ops.unwrap_or_default());
 }
 
 /// Zone graph refresh. Per HIGH §12.8: walker emits `zones_dirty=true`
@@ -1378,6 +1515,7 @@ fn drop_in_bridge_deck_entities(sim: &mut Simulation, rx: u16, ry: u16) {
             entity.bridge_occupancy = None;
             entity.on_bridge = false;
             entity.position.z = ground_level;
+            entity.position.exact_z_leptons = None;
             entity.movement_target = None;
             if let Some(ref mut loco) = entity.locomotor {
                 loco.layer = MovementLayer::Ground;
@@ -1612,6 +1750,299 @@ mod tests {
             }
         }
         ResolvedTerrainGrid::from_cells(6, 6, cells)
+    }
+
+    fn gsi_04_13_stock_low_registry() -> crate::map::overlay_types::OverlayTypeRegistry {
+        use std::fmt::Write as _;
+
+        let mut ini = String::from("[OverlayTypes]\n");
+        for id in 0..=101u8 {
+            let name = if (74..=101).contains(&id) {
+                format!("LOBRDG{:02}", id - 73)
+            } else {
+                format!("FILL{id:03}")
+            };
+            let _ = writeln!(ini, "{id}={name}");
+        }
+        ini.push_str(
+            "[Road]\nFoot=100%\nTrack=100%\nWheel=100%\n\
+             [Rough]\nFoot=100%\nTrack=100%\nWheel=100%\n",
+        );
+        for variant in 1..=26u8 {
+            let _ = writeln!(
+                ini,
+                "[LOBRDG{variant:02}]\nLand=Road\nNoUseTileLandType=yes"
+            );
+        }
+        for variant in 27..=28u8 {
+            let _ = writeln!(ini, "[LOBRDG{variant:02}]\nLand=Road\nNoUseTileLandType=no");
+        }
+        crate::map::overlay_types::OverlayTypeRegistry::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(&ini),
+            None,
+        )
+    }
+
+    fn gsi_04_13_low_cell(
+        ry: u16,
+        road_speed: SpeedCostProfile,
+        rough_speed: SpeedCostProfile,
+    ) -> ResolvedTerrainCell {
+        use crate::rules::terrain_rules::LandType;
+
+        let mut bridge_facts = crate::map::bridge_facts::BridgeCellFacts::default();
+        bridge_facts.overlay_id = Some(0x4A);
+        ResolvedTerrainCell {
+            rx: 0,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: true,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: LandType::Road.as_index(),
+            yr_cell_land_type: LandType::Road.as_index(),
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Road,
+            speed_costs: road_speed,
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: true,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: crate::map::resolved_terrain::zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: LandType::Rough.as_index(),
+            base_yr_cell_land_type: LandType::Rough.as_index(),
+            base_terrain_class: TerrainClass::Rough,
+            base_speed_costs: rough_speed,
+            build_blocked: true,
+            has_bridge_deck: true,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: Some(crate::map::resolved_terrain::BridgeLayer {
+                overlay_id: 0x4A,
+                overlay_name: "LOBRDG01".to_owned(),
+                deck_level: 0,
+                direction: BridgeDirection::Low,
+            }),
+            bridge_facts,
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn gsi_04_13_assert_ground_surface(sim: &Simulation, expected_land: u8) {
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let terrain = sim.resolved_terrain.as_ref().expect("terrain");
+        let path = crate::sim::pathfinding::PathGrid::from_resolved_terrain_with_bridges(
+            terrain,
+            sim.bridge_state.as_ref(),
+        );
+        for ry in 0..3 {
+            let cell = terrain.cell(0, ry).expect("low bridge cell");
+            assert_eq!(cell.land_type, expected_land, "land at y={ry}");
+            assert_eq!(
+                cell.yr_cell_land_type, expected_land,
+                "CellClass land at y={ry}"
+            );
+            if expected_land == crate::rules::terrain_rules::LandType::Road.as_index() {
+                assert_eq!(cell.terrain_class, TerrainClass::Road);
+                assert!(cell.is_road);
+                assert!(!cell.is_rough);
+            } else {
+                assert_eq!(cell.terrain_class, TerrainClass::Rough);
+                assert!(cell.is_rough);
+                assert!(!cell.is_road);
+                assert_eq!(cell.speed_costs, cell.base_speed_costs);
+            }
+            assert!(!cell.is_elevated_bridge_cell(), "low bridge at y={ry}");
+            assert!(path.is_walkable_on_layer(0, ry, MovementLayer::Ground));
+            assert!(!path.is_walkable_on_layer(0, ry, MovementLayer::Bridge));
+        }
+        assert!(terrain.tube_facts().is_empty());
+        assert!(
+            sim.bridge_state
+                .as_ref()
+                .expect("bridge state")
+                .endpoint_records()
+                .is_empty(),
+            "stock low surface has no synthetic BridgeZone record"
+        );
+    }
+
+    #[test]
+    fn gsi_04_13_urban_low_uses_deck_facts_not_high_numeric_overlay_band() {
+        let mut runtime = seed_bridge_cell(0xCD);
+        runtime.deck_level = 0;
+        let mut terrain =
+            gsi_04_13_low_cell(0, SpeedCostProfile::default(), SpeedCostProfile::default());
+        terrain.bridge_facts.overlay_id = Some(0xCD);
+        terrain
+            .bridge_layer
+            .as_mut()
+            .expect("bridge layer")
+            .overlay_id = 0xCD;
+
+        assert!(is_low_surface_bridge_cell(&runtime, &terrain));
+        terrain
+            .bridge_layer
+            .as_mut()
+            .expect("bridge layer")
+            .direction = BridgeDirection::EastWest;
+        assert!(!is_low_surface_bridge_cell(&runtime, &terrain));
+    }
+
+    #[test]
+    fn gsi_04_13_stock_low_strip_recalc_collapse_repair_and_cache_reconcile() {
+        use crate::rules::locomotor_type::SpeedType;
+        use crate::rules::terrain_rules::LandType;
+
+        let registry = gsi_04_13_stock_low_registry();
+        let road_speed = registry
+            .flags(0x4A)
+            .and_then(|flags| flags.land_speed_costs)
+            .expect("LOBRDG01 Road profile");
+        let rough_speed = SpeedCostProfile {
+            foot: Some(100),
+            track: Some(100),
+            wheel: Some(100),
+            ..SpeedCostProfile::default()
+        };
+        let terrain = ResolvedTerrainGrid::from_cells(
+            1,
+            3,
+            (0..3)
+                .map(|ry| gsi_04_13_low_cell(ry, road_speed, rough_speed))
+                .collect(),
+        );
+        let bridge_state = BridgeRuntimeState::from_resolved_terrain(&terrain, true, 1);
+        let preserved_owner = test_intern("GSI0413OWNER");
+        let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::new(1, 3);
+        for ry in 0..3 {
+            overlay_grid.place_overlay(0, ry, 0x4A, 0xA0 + ry as u8);
+            overlay_grid.cell_mut(0, ry).wall_owner = Some(preserved_owner);
+        }
+
+        let mut sim = Simulation::new();
+        sim.terrain_costs =
+            crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(&terrain);
+        sim.resolved_terrain = Some(terrain);
+        sim.bridge_state = Some(bridge_state);
+        sim.overlay_grid = Some(overlay_grid);
+        gsi_04_13_assert_ground_surface(&sim, LandType::Road.as_index());
+
+        let first = {
+            let terrain = sim.resolved_terrain.as_ref().expect("terrain");
+            sim.bridge_state
+                .as_mut()
+                .expect("bridge state")
+                .destroy_bridge_low(0, 1, terrain)
+        };
+        assert!(matches!(first, StateOutcome::Absorbed));
+        project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
+        gsi_04_13_assert_ground_surface(&sim, LandType::Road.as_index());
+        for ry in 0..3 {
+            let overlay = sim.overlay_grid.as_ref().expect("overlay grid").cell(0, ry);
+            assert_eq!(overlay.overlay_id, Some(0x50));
+            assert_eq!(overlay.overlay_data, 0xA0 + ry as u8);
+            assert_eq!(overlay.wall_owner, Some(preserved_owner));
+        }
+
+        let second = {
+            let terrain = sim.resolved_terrain.as_ref().expect("terrain");
+            sim.bridge_state
+                .as_mut()
+                .expect("bridge state")
+                .destroy_bridge_low(0, 1, terrain)
+        };
+        let StateOutcome::Collapsed { zones_dirty, .. } = second else {
+            panic!("second stock low hit must reach terminal collapse");
+        };
+        assert!(zones_dirty);
+        project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
+        refresh_bridge_zones_if_dirty(&mut sim, zones_dirty);
+        gsi_04_13_assert_ground_surface(&sim, LandType::Rough.as_index());
+        assert_eq!(
+            sim.terrain_costs
+                .get(&SpeedType::Track)
+                .expect("Track costs")
+                .cost_at(0, 1),
+            100,
+            "terminal low bridge uses the restored TMP Rough speed"
+        );
+        for ry in 0..3 {
+            let overlay = sim.overlay_grid.as_ref().expect("overlay grid").cell(0, ry);
+            assert_eq!(overlay.overlay_id, Some(0x64));
+            assert_eq!(overlay.overlay_data, 0xA0 + ry as u8);
+            assert_eq!(overlay.wall_owner, Some(preserved_owner));
+        }
+
+        // A loaded save receives the pristine map cache again. Reconcile the
+        // serialized bridge owner before movement can observe stale Road.
+        for ry in 0..3 {
+            let cell = sim
+                .resolved_terrain
+                .as_mut()
+                .expect("terrain")
+                .cell_mut(0, ry)
+                .expect("low bridge cell");
+            cell.land_type = LandType::Road.as_index();
+            cell.yr_cell_land_type = LandType::Road.as_index();
+            cell.terrain_class = TerrainClass::Road;
+            cell.speed_costs = road_speed;
+            cell.is_rough = false;
+            cell.is_road = true;
+            let _ = sim
+                .overlay_grid
+                .as_mut()
+                .expect("overlay grid")
+                .write_bridge_overlay_identity(0, ry, 0x4A);
+        }
+        let stale = sim.resolved_terrain.as_ref().expect("terrain");
+        sim.terrain_costs =
+            crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(stale);
+        reconcile_low_bridge_surface_after_cache_load(&mut sim, &registry);
+        gsi_04_13_assert_ground_surface(&sim, LandType::Rough.as_index());
+
+        let repair = {
+            let terrain = sim.resolved_terrain.as_ref().expect("terrain");
+            let bridge_state = sim.bridge_state.as_mut().expect("bridge state");
+            bridge_state.repair_bridge_from_engineer_scan(&[(0, 1)], &mut sim.mapgen_rng, terrain)
+        };
+        assert!(repair.zones_dirty);
+        project_pending_low_bridge_overlay_writes(&mut sim, Some(&registry));
+        refresh_bridge_zones_if_dirty(&mut sim, repair.zones_dirty);
+        gsi_04_13_assert_ground_surface(&sim, LandType::Road.as_index());
+        for ry in 0..3 {
+            let overlay = sim.overlay_grid.as_ref().expect("overlay grid").cell(0, ry);
+            assert!(matches!(overlay.overlay_id, Some(0x4A..=0x4D)));
+            assert_eq!(overlay.overlay_data, 0xA0 + ry as u8);
+            assert_eq!(overlay.wall_owner, Some(preserved_owner));
+        }
     }
 
     /// Build a Drive locomotor on the Bridge layer (mimics `high=true` spawn).
