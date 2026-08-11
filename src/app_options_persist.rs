@@ -25,10 +25,27 @@ pub(crate) fn read_scroll_rate_from_ra2md(ra2_dir: &std::path::Path) -> Option<u
     scroll_rate_from_ini(&ini)
 }
 
+/// Read and native-clamp `[Options] DetailLevel` from the retail settings file.
+/// Malformed or missing values keep the constructor default at the caller.
+pub(crate) fn read_detail_level_from_ra2md(ra2_dir: &std::path::Path) -> Option<u32> {
+    let bytes = std::fs::read(ra2_dir.join(RA2MD_INI_FILENAME)).ok()?;
+    let ini = IniFile::from_bytes(&bytes).ok()?;
+    detail_level_from_ini(&ini)
+}
+
 fn scroll_rate_from_ini(ini: &IniFile) -> Option<u32> {
     let raw = ini.section(OPTIONS_SECTION)?.get("ScrollRate")?;
     let value = raw.trim().parse::<i32>().ok()?;
     u32::try_from(value).ok()
+}
+
+fn detail_level_from_ini(ini: &IniFile) -> Option<u32> {
+    let raw = ini.section(OPTIONS_SECTION)?.get("DetailLevel")?;
+    let value = raw.trim().parse::<i32>().ok()?;
+    Some(value.clamp(
+        0,
+        crate::ui::shell::in_game_options_state::OPTIONS_DETAIL_MAX as i32,
+    ) as u32)
 }
 
 /// Result code for a normal Back close (every close button -> result 1, which
@@ -59,10 +76,10 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     apply_target_lines(&mut state.target_lines, &state.in_game_options);
     // ScrollRate is read at startup and consumed directly by the camera each
     // frame, so nothing has to be pushed from this close path.
-    // The remaining three are persist-only — no existing Rust consumer reads them, and
-    // none is fabricated here (Task 8 grep, 2026-06-16):
+    // The remaining two are persist-only; no render behavior is fabricated:
     //   ToolTips    -> the tooltip service (app_tooltips.rs) has no enable gate to flip.
-    //   DetailLevel -> hidden in 0xBBB; no render-detail consumer exists.
+    // DetailLevel is consumed directly by the per-frame lighting refresh, so
+    // it needs no close-time push beyond the stored option changing.
     //   ShowHidden  -> a debug byte with no standard consumer.
 }
 
@@ -134,6 +151,26 @@ mod tests {
         let negative = IniFile::from_str("[Options]\nScrollRate=-1\n");
         assert_eq!(scroll_rate_from_ini(&negative), None);
         assert_eq!(InGameOptionsState::default().scroll_rate, 3);
+    }
+
+    #[test]
+    fn gsi_04_20_detail_level_reads_retail_value_and_clamps() {
+        assert_eq!(
+            detail_level_from_ini(&IniFile::from_str("[Options]\nDetailLevel=1\n")),
+            Some(1)
+        );
+        assert_eq!(
+            detail_level_from_ini(&IniFile::from_str("[Options]\nDetailLevel=-4\n")),
+            Some(0)
+        );
+        assert_eq!(
+            detail_level_from_ini(&IniFile::from_str("[Options]\nDetailLevel=9\n")),
+            Some(2)
+        );
+        assert_eq!(
+            detail_level_from_ini(&IniFile::from_str("[Options]\nDetailLevel=medium\n")),
+            None
+        );
     }
 
     #[test]
