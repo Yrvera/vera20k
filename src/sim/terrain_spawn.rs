@@ -405,9 +405,9 @@ fn try_spawn_ore(
         && ore_growth_state.is_some()
         && tiberium_types.is_some();
     let new_cell_admission = if native_placement_context {
-        resolved_terrain.zip(live_context).map(|(terrain, objects)| {
-            NewTiberiumAdmission::runtime(terrain, path_grid, objects)
-        })
+        resolved_terrain
+            .zip(live_context)
+            .map(|(terrain, objects)| NewTiberiumAdmission::runtime(terrain, path_grid, objects))
     } else {
         Some(NewTiberiumAdmission::compatibility_without_native_context(
             resolved_terrain,
@@ -530,10 +530,7 @@ fn live_object_context<'a>(
     interner: Option<&'a StringInterner>,
 ) -> Option<TiberiumPlacementObjectContext<'a>> {
     Some(TiberiumPlacementObjectContext::new(
-        entities?,
-        occupancy?,
-        rules?,
-        interner?,
+        entities?, occupancy?, rules?, interner?,
     ))
 }
 
@@ -1571,6 +1568,7 @@ SpreadPercentage=.06
         let mut sim = Simulation::new();
         sim.interner = crate::sim::intern::test_interner();
         sim.input_delay_ticks = 0;
+        sim.resolved_terrain = Some(resolved_grid(64, 64));
         sim.substrate.entities.insert(attacker);
         assert!(matches!(
             sim.reveal(1),
@@ -1578,7 +1576,10 @@ SpreadPercentage=.06
         ));
 
         let constructed = construct_terrain_objects(&mut sim, &terrain_objects, &rules, false);
-        assert_eq!(constructed, 1, "the [Terrain] entry constructs a live object");
+        assert_eq!(
+            constructed, 1,
+            "the [Terrain] entry constructs a live object"
+        );
         let stable_id = sim.production.terrain_object_cells[&(10, 5)];
         assert_eq!(sim.production.terrain_objects[&stable_id].health, 200);
         assert_eq!(sim.production.terrain_occupation_bits[&(10, 5)], 4);
@@ -1738,9 +1739,7 @@ SpreadPercentage=.06
         ];
         let source_masks = [[0u8, 1, 2, 4, 7], [7u8, 4, 2, 1, 0]];
 
-        for (snow_theater, selected_masks) in
-            [(false, source_masks[0]), (true, source_masks[1])]
-        {
+        for (snow_theater, selected_masks) in [(false, source_masks[0]), (true, source_masks[1])] {
             let mut sim = Simulation::new();
             for object in &objects {
                 sim.substrate
