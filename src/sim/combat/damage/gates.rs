@@ -3,7 +3,7 @@
 //!
 //! Order verified against TechnoClass::ReceiveDamage (0x00701900): the armor
 //! divides + min-1 run FIRST (in the caller), then these gates in the order
-//! below. TypeImmune -> WarpingOut -> ForceShield -> Bunker -> Radiation ->
+//! below. TypeImmune -> IronCurtain/ForceShield -> WarpingOut -> Bunker -> Radiation ->
 //! Psychic -> Poison -> AffectsAllies -> Psychedelic (each short-circuits).
 
 use super::{DamageGate, ImmunityInputs};
@@ -16,12 +16,13 @@ pub(crate) fn evaluate_gates(g: &ImmunityInputs) -> DamageGate {
     if g.attacker_present && g.type_immune {
         return DamageGate::Nullified;
     }
-    // 2. WarpingOut.
-    if g.warping_out {
-        return DamageGate::Nullified;
+    // 2. Active IronCurtain/ForceShield. This precedes WarpingOut and has a
+    // distinct combat-light side effect at the receiver callsite.
+    if g.invulnerable {
+        return DamageGate::Invulnerable;
     }
-    // 3. ForceShield / invuln (IronCurtain/ForceShield).
-    if g.force_shield {
+    // 3. WarpingOut silently nullifies only when invulnerability did not win.
+    if g.warping_out {
         return DamageGate::Nullified;
     }
     // 4. Bunker/garrison-link block (target bunkered AND warhead lacks
@@ -42,13 +43,13 @@ pub(crate) fn evaluate_gates(g: &ImmunityInputs) -> DamageGate {
         return DamageGate::Nullified;
     }
     // 8. !AffectsAllies && attacker present && allied (AffectsAllies default true).
-    if !g.affects_allies && g.attacker_present && g.is_allied {
+    if !g.affects_allies && g.attacker_present && g.attacker_is_allied {
         return DamageGate::Nullified;
     }
     // 9. Psychedelic/MindControl: allied -> 0; psionics-immune -> 0; building ->
     //    0; else MindControlled (0 HP, return-code-1 marker).
     if g.psychedelic {
-        if g.is_allied || g.psionics_immune || g.target_is_building {
+        if g.source_house_is_allied || g.psionics_immune || g.target_is_building {
             return DamageGate::Nullified;
         }
         return DamageGate::MindControlled;
@@ -94,7 +95,7 @@ mod tests {
         // AffectsAllies default true: an allied hit still passes.
         let g = ImmunityInputs {
             attacker_present: true,
-            is_allied: true,
+            attacker_is_allied: true,
             ..base()
         };
         assert_eq!(evaluate_gates(&g), DamageGate::Pass);
@@ -104,7 +105,7 @@ mod tests {
     fn affects_allies_off_blocks_ally() {
         let g = ImmunityInputs {
             attacker_present: true,
-            is_allied: true,
+            attacker_is_allied: true,
             affects_allies: false,
             ..base()
         };
@@ -112,13 +113,14 @@ mod tests {
     }
 
     #[test]
-    fn force_shield_zeroes() {
+    fn invulnerability_is_distinct_and_precedes_warping() {
         assert_eq!(
             evaluate_gates(&ImmunityInputs {
-                force_shield: true,
+                invulnerable: true,
+                warping_out: true,
                 ..base()
             }),
-            DamageGate::Nullified
+            DamageGate::Invulnerable
         );
     }
 

@@ -17,8 +17,8 @@
 //! legacy 1000). The attacker mult chain (`fire_damage`) was redesigned from the
 //! verified Fire_At stages. See each submodule for the inline citations.
 //!
-//! This is the additive (shadow) service — it is NOT yet wired into the live
-//! apply sites. The authoritative cutover (and its hash bump) is deferred.
+//! Ordered Apply_area_damage records use the receiver service live. Legacy
+//! direct/radiation routes still arrive as precomputed damage amounts.
 
 pub(crate) mod attacker;
 pub(crate) mod gates;
@@ -92,13 +92,18 @@ impl Default for CombatMods {
 /// ReceiveDamage 0x00701900): the armor divides run first, then these gates.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ImmunityInputs {
+    /// Concrete receiver ABI flag. It skips Techno defender transforms and
+    /// the Object damage kernel/Immune gate, while later warhead gates retain
+    /// their independently verified behavior.
+    pub ignore_defenses: bool,
     pub attacker_present: bool,
     /// type+0xc8c set AND same WhatAmI AND same owner.
     pub type_immune: bool,
-    /// vtable+0x160 warping out.
+    /// vtable+0x1d4 warping out.
     pub warping_out: bool,
-    /// vtable+0x1d4 (IronCurtain/ForceShield).
-    pub force_shield: bool,
+    /// vtable+0x160 active IronCurtain/ForceShield, after the native
+    /// positive-sign and `ignoreDefenses` admission checks.
+    pub invulnerable: bool,
     /// Bunker/garrison link blocks the hit (target in bunker AND warhead does
     /// NOT PenetratesBunker). NOT a wall check.
     pub bunker_blocked: bool,
@@ -110,8 +115,10 @@ pub(crate) struct ImmunityInputs {
     pub poison_immune: bool,
     /// Warhead AffectsAllies (warhead+0x179, default TRUE).
     pub affects_allies: bool,
-    /// Attacker IsAlliedWith target owner.
-    pub is_allied: bool,
+    /// Attacker owner IsAlliedWith target owner (AffectsAllies operand).
+    pub attacker_is_allied: bool,
+    /// Target owner IsAlliedWith sourceHouse (Psychedelic operand).
+    pub source_house_is_allied: bool,
     /// Warhead Psychedelic/MindControl (warhead+0x16d).
     pub psychedelic: bool,
     /// Target ImmuneToPsionics.
@@ -125,6 +132,8 @@ pub(crate) struct TargetDamageView {
     pub armor: ArmorClass,
     pub strength: i32,
     pub current_hp: i32,
+    /// ObjectType `Immune=` entry gate in ObjectClass::ReceiveDamage.
+    pub object_immune: bool,
     pub is_building: bool,
     pub can_c4: bool,
 }
@@ -135,6 +144,9 @@ pub(crate) enum DamageGate {
     Pass,
     /// Short-circuit to 0 HP delta, no state change.
     Nullified,
+    /// Active IronCurtain/ForceShield short-circuit. Kept distinct because
+    /// TechnoClass emits its transient combat-light before returning.
+    Invulnerable,
     /// 0 HP delta, return-code-1 marker (damaged, no HP) — mind control.
     MindControlled,
 }
@@ -154,5 +166,22 @@ pub(crate) enum DamageState {
 pub(crate) struct DamageOutcome {
     /// > 0 = damage to subtract; < 0 = heal.
     pub hp_delta: i32,
+    /// Final signed value left in ObjectClass's `int *damage` packet. This is
+    /// normally the HP delta, but an ObjectType `Immune=` early return leaves
+    /// the transformed incoming value intact while applying no health change.
+    /// TechnoClass uses this exact value for House anger feedback.
+    pub post_object_damage: Option<i32>,
     pub state: DamageState,
+    /// Accepted `Psychedelic=yes` receiver value. TechnoClass stores this
+    /// signed distance-zero kernel result as its berserk timer and returns
+    /// before ObjectClass mutates HP.
+    pub psychedelic_value: Option<i32>,
+    /// Exact ECX argument passed to `FUN_0048A620` for an IC/FS block:
+    /// post-defender-transform damage shifted left once with x86 wrapping.
+    pub invulnerability_impact_damage: Option<i32>,
+    /// True iff the concrete Techno receiver delegated to ObjectClass and
+    /// returned through TechnoClass's surviving-object postlude. The native
+    /// hostile-hit latch lives in that postlude, so a zero HP delta can still
+    /// be observable while an early Techno gate or Psychedelic return cannot.
+    pub reached_survivor_postlude: bool,
 }
