@@ -440,11 +440,11 @@ impl AssetManager {
         self.mount_named_archive(name, true).map(|_| ())
     }
 
-    /// Replace retail's one active theater archive group.
+    /// Retail provenance: theater archive-group lifecycle — `Init_Theater` @ `0x005349C0`.
     ///
-    /// `Init_Theater @ 0x005349C0` destroys the previous group, appends the
-    /// new group's named archives, and does nothing when the theater identity
-    /// is unchanged.
+    /// The previous group is destroyed, every optional slot is attempted in
+    /// caller order, successful slots are retained, and an unchanged theater
+    /// identity is a no-op.
     pub fn activate_theater_archives(
         &mut self,
         theater_name: &str,
@@ -476,8 +476,14 @@ impl AssetManager {
         }
 
         for &name in archive_names {
-            if self.mount_named_archive(name, false)? {
-                self.active_theater_archives.push(name.to_string());
+            match self.mount_named_archive(name, false) {
+                Ok(true) => self.active_theater_archives.push(name.to_string()),
+                Ok(false) => {}
+                Err(err) => {
+                    log::warn!(
+                        "Theater {theater_name}: skipping optional archive {name}: {err}"
+                    );
+                }
             }
         }
         self.active_theater = Some(theater_name.to_string());
@@ -1646,6 +1652,50 @@ mod tests {
         assert!(!manager.contains("snow.bin"));
         assert!(manager.contains("temperate.bin"));
         assert_eq!(manager.archives.len(), 2);
+    }
+
+    #[test]
+    fn theater_group_skips_malformed_middle_slot_and_commits_new_identity() {
+        let directory = TestDirectory::new("theater-middle-failure");
+        directory.write_mix("snow.mix", "snow.bin", b"snow");
+        directory.write_mix("temperat.mix", "temperate.bin", b"temperate");
+        std::fs::write(directory.path().join("tem.mix"), b"not a MIX")
+            .expect("write malformed middle archive");
+        directory.write_mix("isotemmd.mix", "iso-md.bin", b"iso-md");
+
+        let mut manager = empty_manager(directory.path());
+        manager
+            .activate_theater_archives("SNOW", &["snow.mix"])
+            .expect("activate initial snow group");
+        manager
+            .activate_theater_archives(
+                "TEMPERATE",
+                &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"],
+            )
+            .expect("malformed optional slot is skipped");
+
+        assert_eq!(manager.active_theater.as_deref(), Some("TEMPERATE"));
+        assert_eq!(
+            manager.active_theater_archives,
+            ["temperat.mix", "isotemmd.mix"]
+        );
+        assert_eq!(
+            manager.registered_archive_names(),
+            ["temperat.mix", "isotemmd.mix"]
+        );
+        assert!(!manager.contains("snow.bin"));
+        assert_eq!(manager.get_ref("iso-md.bin"), Some(&b"iso-md"[..]));
+
+        manager
+            .activate_theater_archives(
+                "temperate",
+                &["temperat.mix", "tem.mix", "isotemmd.mix", "isotemp.mix"],
+            )
+            .expect("same theater is a no-op");
+        assert_eq!(
+            manager.registered_archive_names(),
+            ["temperat.mix", "isotemmd.mix"]
+        );
     }
 
     #[test]
