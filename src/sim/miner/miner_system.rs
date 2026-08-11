@@ -272,6 +272,7 @@ mod gsi_04_03b_tests {
             1,
             shared_head,
             SimFixed::from_num(128),
+            None,
         );
 
         assert_eq!(
@@ -297,6 +298,7 @@ mod gsi_04_03b_tests {
             2,
             shared_head,
             SimFixed::from_num(128),
+            None,
         );
 
         let second = sim.substrate.entities.get(2).expect("second miner");
@@ -516,6 +518,15 @@ pub(super) fn commit_miner_snapshot(sim: &mut Simulation, snap: &MinerSnapshot, 
     }
 }
 
+/// Selects the only production ore authority while allowing old node-only
+/// fixtures to opt into their compatibility store explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResourceQueryAuthority {
+    OverlayGrid,
+    #[cfg(test)]
+    LegacyNodesForTests,
+}
+
 /// Test-only mirror of the production Harvest dispatch walk: the same
 /// per-entity dispatch (timer gate + epilogue) the host Unit arm performs, in
 /// live-object order, with the legacy stable-id fallback for direct-insert
@@ -527,7 +538,14 @@ pub(crate) fn tick_miners(
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
 ) {
-    tick_miners_with_overlay_registry(sim, rules, config, path_grid, None);
+    tick_miners_test_walk(
+        sim,
+        rules,
+        config,
+        path_grid,
+        None,
+        ResourceQueryAuthority::LegacyNodesForTests,
+    );
 }
 
 #[cfg(test)]
@@ -538,6 +556,25 @@ pub(crate) fn tick_miners_with_overlay_registry(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
+    tick_miners_test_walk(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        ResourceQueryAuthority::OverlayGrid,
+    );
+}
+
+#[cfg(test)]
+fn tick_miners_test_walk(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    resource_authority: ResourceQueryAuthority,
+) {
     let live_order = sim.live_object_order_snapshot();
     let keys: Vec<u64> = if live_order.is_empty() {
         sim.substrate.entities.keys_sorted()
@@ -546,13 +583,14 @@ pub(crate) fn tick_miners_with_overlay_registry(
     };
     sweep_dead_dock_reservations_for_keys(sim, &keys);
     for id in keys {
-        super::harvest_mission::dispatch_harvest_for_object(
+        super::harvest_mission::dispatch_harvest_for_object_with_resource_authority_for_tests(
             sim,
             rules,
             config,
             path_grid,
             overlay_registry,
             id,
+            resource_authority,
         );
     }
 }
@@ -569,6 +607,26 @@ pub(super) fn process_miner(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
+    process_miner_with_resource_authority(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        snap,
+        ResourceQueryAuthority::OverlayGrid,
+    );
+}
+
+pub(super) fn process_miner_with_resource_authority(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
+) {
     if sim
         .substrate
         .entities
@@ -580,24 +638,47 @@ pub(super) fn process_miner(
 
     let state_before = format!("{:?}", snap.state);
     match snap.state {
-        MinerState::SearchOre => {
-            handle_search_ore(sim, rules, config, path_grid, overlay_registry, snap)
-        }
-        MinerState::MoveToOre => {
-            handle_move_to_ore(sim, rules, config, path_grid, overlay_registry, snap)
-        }
-        MinerState::Harvest => {
-            handle_harvest(sim, rules, config, path_grid, overlay_registry, snap)
-        }
+        MinerState::SearchOre => handle_search_ore(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
+        MinerState::MoveToOre => handle_move_to_ore(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
+        MinerState::Harvest => handle_harvest(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
         MinerState::ReturnToRefinery => {
-            handle_return(sim, rules, config, path_grid, snap);
+            handle_return(sim, rules, config, path_grid, overlay_registry, snap);
             // Native return/finding-home state has no per-frame exit: every
             // dispatch leaves through the default Rate epilogue.
             arm_rate_epilogue(sim, rules, snap);
         }
-        MinerState::Dock => {
-            super::miner_dock_sequence::handle_dock_sequence(sim, rules, config, path_grid, snap)
-        }
+        MinerState::Dock => super::miner_dock_sequence::handle_dock_sequence(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+        ),
         MinerState::Unload => {
             // Legacy state — production code never enters this path. If we
             // encounter it (e.g., a save from before the FSM rewrite), fall
@@ -612,7 +693,7 @@ pub(super) fn process_miner(
             arm_rate_epilogue(sim, rules, snap);
         }
         MinerState::ForcedReturn => {
-            handle_forced_return(sim, rules, config, path_grid, snap);
+            handle_forced_return(sim, rules, config, path_grid, overlay_registry, snap);
             // VERA-internal cursor; outside the native handler's switch, so
             // it exits through the default epilogue like any high cursor.
             arm_rate_epilogue(sim, rules, snap);
@@ -706,6 +787,7 @@ fn handle_search_ore(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     // gamemd's Mission_Harvest state 0 checks full storage before scanning
     // ore, so a full miner that lost its refinery keeps trying to return.
@@ -748,7 +830,13 @@ fn handle_search_ore(
         // off between the save and the next cycle.
         let mut archive_hit = None;
         if let Some(archive) = snap.miner.last_harvest_cell {
-            let archive_has_ore = resource_cell_present(sim, rules, overlay_registry, archive);
+            let archive_has_ore = resource_cell_present_with_authority(
+                sim,
+                rules,
+                overlay_registry,
+                archive,
+                resource_authority,
+            );
             let archive_reachable = filter_ref.is_none_or(|f| f(archive));
             if archive_has_ore && archive_reachable {
                 archive_hit = Some(ScanOutcome::Archive(archive));
@@ -775,7 +863,7 @@ fn handle_search_ore(
         // swaps in a Drive piggyback. Only the inbound trip (ore → refinery)
         // uses the warp.
         archive_hit.unwrap_or_else(|| {
-            search_local_resource(
+            search_local_resource_with_authority(
                 sim,
                 rules,
                 overlay_registry,
@@ -783,6 +871,7 @@ fn handle_search_ore(
                 config.long_scan_radius,
                 filter_ref,
                 config,
+                resource_authority,
             )
             .map_or(ScanOutcome::NoOre, ScanOutcome::Found)
         })
@@ -809,7 +898,14 @@ fn handle_search_ore(
             // later one.
             if cell != (snap.rx, snap.ry) {
                 if let Some(grid) = path_grid {
-                    let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, cell);
+                    let _ = issue_stock_miner_drive_move_with_overlay_registry(
+                        sim,
+                        rules,
+                        grid,
+                        snap.entity_id,
+                        cell,
+                        overlay_registry,
+                    );
                 }
                 arm_rate_epilogue(sim, rules, snap);
             }
@@ -840,6 +936,7 @@ fn handle_move_to_ore(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     let has_destination_or_movement =
         sim.substrate
@@ -865,7 +962,13 @@ fn handle_move_to_ore(
     };
 
     // Check if current target has been depleted.
-    let still_has_ore = resource_cell_present(sim, rules, overlay_registry, current_target);
+    let still_has_ore = resource_cell_present_with_authority(
+        sim,
+        rules,
+        overlay_registry,
+        current_target,
+        resource_authority,
+    );
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
         snap.state = MinerState::SearchOre;
@@ -904,7 +1007,7 @@ fn handle_move_to_ore(
     let new_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_resource(
+        search_local_resource_with_authority(
             sim,
             rules,
             overlay_registry,
@@ -912,6 +1015,7 @@ fn handle_move_to_ore(
             config.long_scan_radius,
             filter_ref,
             config,
+            resource_authority,
         )
     };
     let target = new_target.unwrap_or(current_target);
@@ -933,7 +1037,14 @@ fn handle_move_to_ore(
     }
 
     if let Some(grid) = path_grid {
-        let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, target);
+        let _ = issue_stock_miner_drive_move_with_overlay_registry(
+            sim,
+            rules,
+            grid,
+            snap.entity_id,
+            target,
+            overlay_registry,
+        );
     }
     // VERA-internal, gamemd equivalent UNCHECKED. This cursor has no native
     // counterpart at all, and the epilogue is armed here whether or not the
@@ -952,6 +1063,7 @@ fn handle_harvest(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     // Frame-anchored gate (was a per-tick countdown).
     if !snap.miner.harvest_timer.due(sim.session.binary_frame) {
@@ -965,7 +1077,15 @@ fn handle_harvest(
         // mission dispatch.
         snap.miner.harvest_timer.reset(sim.session.binary_frame);
         snap.state = MinerState::ReturnToRefinery;
-        save_archive_via_short_scan(sim, rules, config, path_grid, overlay_registry, snap);
+        save_archive_via_short_scan(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        );
         return;
     }
 
@@ -977,8 +1097,15 @@ fn handle_harvest(
 
     // Shared CellClass::Reduce_Tiberium boundary: caller owns cargo insertion,
     // while the helper owns overlay/resource/dirty/queue side effects.
-    let reduction =
-        sim.reduce_tiberium_at_with_native_context(cell, empty, Some(rules), overlay_registry);
+    let reduction = match resource_authority {
+        ResourceQueryAuthority::OverlayGrid => {
+            sim.reduce_tiberium_at_with_native_context(cell, empty, Some(rules), overlay_registry)
+        }
+        #[cfg(test)]
+        ResourceQueryAuthority::LegacyNodesForTests => {
+            sim.reduce_legacy_tiberium_at_for_tests(cell, empty)
+        }
+    };
 
     if reduction.removed_amount > 0 {
         let Some(resource_type) = reduction.resource_type else {
@@ -1015,7 +1142,7 @@ fn handle_harvest(
     let continuation_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_resource(
+        search_local_resource_with_authority(
             sim,
             rules,
             overlay_registry,
@@ -1023,6 +1150,7 @@ fn handle_harvest(
             config.local_continuation_radius,
             filter_ref,
             config,
+            resource_authority,
         )
     };
     if let Some(next_cell) = continuation_target {
@@ -1033,7 +1161,7 @@ fn handle_harvest(
 
     // Scan miss while not full → return to refinery, clear archive.
     snap.miner.last_harvest_cell = None;
-    begin_return(sim, rules, config, path_grid, snap);
+    begin_return(sim, rules, config, path_grid, overlay_registry, snap);
 }
 
 /// Save a fresh ghost-cell archive by running a short-radius scan from
@@ -1047,10 +1175,11 @@ fn save_archive_via_short_scan(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     let scan_filter = build_scan_filter(sim, path_grid, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-    snap.miner.last_harvest_cell = search_local_resource(
+    snap.miner.last_harvest_cell = search_local_resource_with_authority(
         sim,
         rules,
         overlay_registry,
@@ -1058,6 +1187,7 @@ fn save_archive_via_short_scan(
         config.local_continuation_radius,
         filter_ref,
         config,
+        resource_authority,
     );
 }
 
@@ -1066,6 +1196,7 @@ fn handle_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
@@ -1103,10 +1234,26 @@ fn handle_return(
             if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
-            if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+            if try_begin_close_return_radio(
+                sim,
+                rules,
+                config,
+                path_grid,
+                overlay_registry,
+                snap,
+                rsid,
+            ) {
                 return;
             }
-            if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
+            if try_issue_standard_far_return_drive(
+                sim,
+                rules,
+                config,
+                path_grid,
+                overlay_registry,
+                snap,
+                rsid,
+            ) {
                 return;
             }
         } else {
@@ -1142,10 +1289,27 @@ fn handle_return(
     {
         return;
     }
-    if try_begin_close_return_radio(sim, rules, config, path_grid, snap, ref_sid) {
+    if try_begin_close_return_radio(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        snap,
+        ref_sid,
+    ) {
         return;
     }
-    if !moving && try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, ref_sid)
+    if !moving
+        && try_issue_standard_far_return_drive(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            ref_sid,
+        )
     {
         return;
     }
@@ -1177,7 +1341,15 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, dock, snap.speed);
+        issue_move_if_idle(
+            sim,
+            Some(rules),
+            grid,
+            snap.entity_id,
+            dock,
+            snap.speed,
+            overlay_registry,
+        );
     }
 }
 
@@ -1217,6 +1389,7 @@ fn handle_forced_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
@@ -1250,7 +1423,7 @@ fn handle_forced_return(
         }
     }
 
-    handle_return(sim, rules, config, path_grid, snap);
+    handle_return(sim, rules, config, path_grid, overlay_registry, snap);
 }
 
 // -- Helpers --
@@ -1295,6 +1468,7 @@ pub(crate) fn extract_bale(
 /// in a single atomic mutation: one `node.remaining` decrement and one
 /// overlay update (or removal). Returns an empty Vec when the cell is
 /// missing, has `remaining == 0`, or `empty_capacity_bales == 0`.
+#[cfg(test)]
 pub(crate) fn extract_bales_max(
     sim: &mut Simulation,
     cell: (u16, u16),
@@ -1304,7 +1478,7 @@ pub(crate) fn extract_bales_max(
     if empty_capacity_bales == 0 {
         return Vec::new();
     }
-    let outcome = sim.reduce_tiberium_at(cell, empty_capacity_bales);
+    let outcome = sim.reduce_legacy_tiberium_at_for_tests(cell, empty_capacity_bales);
     let Some(resource_type) = outcome.resource_type else {
         return Vec::new();
     };
@@ -1333,6 +1507,7 @@ fn begin_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     if let Some((rsid, _dock)) = find_nearest_refinery(
@@ -1346,10 +1521,19 @@ fn begin_return(
         if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
-        if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+        if try_begin_close_return_radio(sim, rules, config, path_grid, overlay_registry, snap, rsid)
+        {
             return;
         }
-        if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
+        if try_issue_standard_far_return_drive(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            rsid,
+        ) {
             return;
         }
         snap.state = MinerState::ReturnToRefinery;
@@ -1363,6 +1547,7 @@ fn try_begin_close_return_radio(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
@@ -1425,7 +1610,15 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, staging, snap.speed);
+            issue_move_if_idle(
+                sim,
+                Some(rules),
+                grid,
+                snap.entity_id,
+                staging,
+                snap.speed,
+                overlay_registry,
+            );
         }
     }
 
@@ -1495,6 +1688,7 @@ fn try_issue_standard_far_return_drive(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
@@ -1520,7 +1714,14 @@ fn try_issue_standard_far_return_drive(
         return false;
     };
 
-    let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, staging);
+    let _ = issue_stock_miner_drive_move_with_overlay_registry(
+        sim,
+        rules,
+        grid,
+        snap.entity_id,
+        staging,
+        overlay_registry,
+    );
     snap.state = MinerState::ReturnToRefinery;
     true
 }
@@ -1778,13 +1979,35 @@ pub(crate) fn resource_cell_present(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     cell: (u16, u16),
 ) -> bool {
+    resource_cell_present_with_authority(
+        sim,
+        rules,
+        overlay_registry,
+        cell,
+        ResourceQueryAuthority::OverlayGrid,
+    )
+}
+
+fn resource_cell_present_with_authority(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    cell: (u16, u16),
+    resource_authority: ResourceQueryAuthority,
+) -> bool {
     if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
         return crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell).is_some();
     }
-    sim.production
-        .resource_nodes
-        .get(&cell)
-        .is_some_and(|node| node.remaining > 0)
+    #[cfg(test)]
+    if resource_authority == ResourceQueryAuthority::LegacyNodesForTests {
+        return sim
+            .production
+            .resource_nodes
+            .get(&cell)
+            .is_some_and(|node| node.remaining > 0);
+    }
+    let _ = resource_authority;
+    false
 }
 
 pub(crate) fn search_local_resource(
@@ -1796,17 +2019,44 @@ pub(crate) fn search_local_resource(
     filter: Option<&dyn Fn((u16, u16)) -> bool>,
     config: &MinerConfig,
 ) -> Option<(u16, u16)> {
-    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
-        return search_local_tiberium(grid, registry, types, center, radius, filter);
-    }
-    search_local_ore(
-        &sim.production.resource_nodes,
+    search_local_resource_with_authority(
+        sim,
+        rules,
+        overlay_registry,
         center,
         radius,
         filter,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
+        ResourceQueryAuthority::OverlayGrid,
     )
+}
+
+fn search_local_resource_with_authority(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    center: (u16, u16),
+    radius: u16,
+    filter: Option<&dyn Fn((u16, u16)) -> bool>,
+    config: &MinerConfig,
+    resource_authority: ResourceQueryAuthority,
+) -> Option<(u16, u16)> {
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return search_local_tiberium(grid, registry, types, center, radius, filter);
+    }
+    #[cfg(test)]
+    if resource_authority == ResourceQueryAuthority::LegacyNodesForTests {
+        return search_local_ore(
+            &sim.production.resource_nodes,
+            center,
+            radius,
+            filter,
+            config.ore_bale_value,
+            config.gem_bale_value,
+        );
+    }
+    let _ = (config, resource_authority);
+    None
 }
 
 fn search_local_tiberium(
@@ -1953,6 +2203,17 @@ pub(crate) fn issue_stock_miner_drive_move(
     entity_id: u64,
     target: (u16, u16),
 ) -> bool {
+    issue_stock_miner_drive_move_with_overlay_registry(sim, rules, grid, entity_id, target, None)
+}
+
+fn issue_stock_miner_drive_move_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return false;
     }
@@ -1981,11 +2242,13 @@ pub(crate) fn issue_stock_miner_drive_move(
     };
 
     let terrain_costs = sim.terrain_costs.get(&info.speed_type);
-    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
         &sim.substrate.entities,
         grid.width(),
         grid.height(),
         sim.resolved_terrain.as_ref(),
+        sim.overlay_grid.as_ref(),
+        overlay_registry,
         &sim.interner,
         Some(rules),
     );
@@ -2043,6 +2306,7 @@ pub(crate) fn issue_move_if_idle(
     entity_id: u64,
     target: (u16, u16),
     speed: SimFixed,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
@@ -2055,14 +2319,17 @@ pub(crate) fn issue_move_if_idle(
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
-            &sim.substrate.entities,
-            grid.width(),
-            grid.height(),
-            sim.resolved_terrain.as_ref(),
-            &sim.interner,
-            rules,
-        );
+        let blocker_neighbor_counts =
+            movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
+                &sim.substrate.entities,
+                grid.width(),
+                grid.height(),
+                sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
+                &sim.interner,
+                rules,
+            );
         let _ = movement::issue_move_command_with_layered(
             &mut sim.substrate.entities,
             grid,
@@ -2170,6 +2437,7 @@ pub(crate) fn effective_purifier_count(
 #[cfg(test)]
 mod harvest_scan_dispatch_tests {
     use super::*;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
@@ -2239,6 +2507,57 @@ mod harvest_scan_dispatch_tests {
                 resource_type: ResourceType::Ore,
                 remaining: 720,
             },
+        );
+    }
+
+    fn ore_authority_rules() -> (RuleSet, OverlayTypeRegistry, u8) {
+        let mut text = String::from(
+            "[Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nValue=25\n[OverlayTypes]\n",
+        );
+        for slot in 0..=102 {
+            if slot == 102 {
+                text.push_str("102=TIB01\n");
+            } else {
+                text.push_str(&format!("{slot}=FILL{slot:03}\n"));
+            }
+        }
+        text.push_str("[TIB01]\nTiberium=yes\n");
+        let ini = IniFile::from_str(&text);
+        let rules = RuleSet::from_ini(&ini).expect("ore authority rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let tib01 = registry.id_for_name("TIB01").expect("TIB01 slot");
+        (rules, registry, tib01)
+    }
+
+    #[test]
+    fn gsi_04_09_miner_queries_fail_closed_and_ignore_compatibility_nodes() {
+        let (rules, registry, tib01) = ore_authority_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let mut sim = Simulation::new();
+        sim.production.resource_nodes.insert(
+            (2, 2),
+            ResourceNode {
+                resource_type: ResourceType::Gem,
+                remaining: u16::MAX,
+            },
+        );
+
+        assert!(!resource_cell_present(&sim, &rules, None, (2, 2)));
+        assert_eq!(
+            search_local_resource(&sim, &rules, None, (2, 2), 8, None, &config),
+            None,
+            "missing native context cannot switch to the serialized node map"
+        );
+
+        let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        overlay.place_overlay(4, 4, tib01, 0);
+        overlay.take_dirty_cells();
+        sim.overlay_grid = Some(overlay);
+        assert!(resource_cell_present(&sim, &rules, Some(&registry), (4, 4)));
+        assert_eq!(
+            search_local_resource(&sim, &rules, Some(&registry), (2, 2), 8, None, &config,),
+            Some((4, 4)),
+            "the contradictory center node cannot override the live overlay search"
         );
     }
 

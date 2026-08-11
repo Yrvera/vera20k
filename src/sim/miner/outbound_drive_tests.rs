@@ -23,6 +23,9 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::passability::LandType;
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+use crate::sim::pathfinding::zone_hierarchy::{
+    ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord,
+};
 use crate::sim::rng::SimRngLogicalState;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
@@ -803,6 +806,132 @@ fn production_stock_harv_far_return_drive_uses_rule_profile() {
         movement.speed * drive.current_speed_fraction,
     );
     assert!(movement.current_speed > SIM_ZERO);
+}
+
+#[test]
+fn gsi_04_07_placement_miner_return_threads_live_wall_neighbor_authority() {
+    let oracle = outbound_contract_oracle();
+    let config = MinerConfig::from_rules(&oracle.rules);
+    let refinery_anchor = (24, 31);
+    let refinery_type = oracle.rules.object("GAREFN").expect("GAREFN");
+    let queueing = refinery_type.queueing_cell.expect("stock QueueingCell");
+    let staging = (
+        refinery_anchor.0 + queueing.0,
+        refinery_anchor.1 + queueing.1,
+    );
+    assert_eq!(staging, (28, 32));
+    assert!(START.0.abs_diff(refinery_anchor.0) > config.too_far_threshold_standard);
+
+    let overlay_ini = IniFile::from_str(
+        "[OverlayTypes]\n0=WALL\n1=ROCK\n\
+         [WALL]\nWall=yes\n\
+         [ROCK]\nIsARock=yes\n",
+    );
+    let overlay_registry = OverlayTypeRegistry::from_ini(&overlay_ini, None);
+    let wall_id = overlay_registry.id_for_name("WALL").expect("wall id");
+    let rock_id = overlay_registry.id_for_name("ROCK").expect("rock id");
+
+    let make_case = |overlay_id: u8, seed: u64| {
+        let mut sim = production_sim(seed, &oracle);
+        let mut grid = PathGrid::new(GRID_SIZE, GRID_SIZE);
+        for ry in 0..GRID_SIZE {
+            for rx in 0..GRID_SIZE {
+                grid.set_blocked(rx, ry, true);
+            }
+        }
+        for rx in staging.0..=START.0 {
+            grid.set_blocked(rx, START.1, false);
+        }
+        grid.block_building_movement_cells(
+            refinery_anchor.0,
+            refinery_anchor.1,
+            &refinery_type.foundation,
+            refinery_type.bib,
+        );
+        assert!(grid.is_walkable(staging.0, staging.1));
+        install_world(&mut sim, &oracle, &grid, &[], &[], true);
+        let refinery_id = spawn_stock_refinery(&mut sim, &oracle, refinery_anchor);
+        let miner_id = spawn_stock_miner(&mut sim, &oracle, "HARV", MinerKind::War);
+        arm_full_ore_return(&mut sim, miner_id, &config);
+
+        sim.overlay_grid
+            .as_mut()
+            .expect("live overlay grid")
+            .place_overlay(30, 33, overlay_id, 0);
+
+        // Zone_precheck marks only the start/goal zones (1 and 2). The route
+        // must cross off-marker zones 3 and 4. The miner itself supplies the
+        // count beside zone 3; only the off-route wall at (30,33) may supply
+        // zone 4's neighbor exception.
+        let mut cell_zones = vec![1; usize::from(GRID_SIZE) * usize::from(GRID_SIZE)];
+        for (rx, zone) in [(28, 2), (29, 4), (30, 1), (31, 3), (32, 1)] {
+            cell_zones[usize::from(START.1) * usize::from(GRID_SIZE) + rx] = zone;
+        }
+        let mut level2 = ZoneLevelGraph::new(1);
+        level2.set_record(ZoneRecord::new(1, 0, 0));
+        let mut level1 = ZoneLevelGraph::new(1);
+        level1.set_record(ZoneRecord::new(1, 1, 0));
+        let mut level0 =
+            ZoneLevelGraph::new(4).with_cell_zone_ids(cell_zones, GRID_SIZE, GRID_SIZE);
+        for zone in 1..=4 {
+            level0.set_record(ZoneRecord::new(zone, 1, 0));
+        }
+        level0.push_edge(1, ZoneEdgeRecord::new(2, 0));
+        level0.push_edge(2, ZoneEdgeRecord::new(1, 0));
+        sim.zone_grid
+            .as_mut()
+            .expect("zone grid")
+            .set_hierarchy(ZoneHierarchy::new(level0, level1, level2));
+
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(miner_id)
+                .and_then(|entity| entity.miner.as_ref())
+                .and_then(|miner| miner.reserved_refinery),
+            None,
+        );
+        let _ = sim.advance_tick(
+            &[],
+            Some(&oracle.rules),
+            &BTreeMap::new(),
+            Some(&grid),
+            Some(&overlay_registry),
+            67,
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(miner_id)
+                .and_then(|entity| entity.miner.as_ref())
+                .and_then(|miner| miner.reserved_refinery),
+            Some(refinery_id),
+        );
+        (sim, miner_id)
+    };
+
+    let (wall_case, wall_miner) = make_case(wall_id, 0x0407_0001);
+    assert_eq!(
+        wall_case
+            .substrate
+            .entities
+            .get(wall_miner)
+            .and_then(|entity| entity.movement_target.as_ref())
+            .and_then(|movement| movement.final_goal),
+        Some(staging),
+        "Wall=yes must supply the off-marker neighbor exception to the live return route",
+    );
+
+    let (rock_case, rock_miner) = make_case(rock_id, 0x0407_0002);
+    assert!(
+        rock_case
+            .substrate
+            .entities
+            .get(rock_miner)
+            .and_then(|entity| entity.movement_target.as_ref())
+            .is_none(),
+        "a non-wall blocking overlay must not become a neighbor-plane source",
+    );
 }
 
 #[test]
