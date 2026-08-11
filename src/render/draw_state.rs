@@ -310,7 +310,10 @@ mod tests {
             0,
             0,
             InternedId::from_index(0),
-            Health { current: 100, max: 100 },
+            Health {
+                current: 100,
+                max: 100,
+            },
             InternedId::from_index(0),
             EntityCategory::Unit,
             0,
@@ -332,7 +335,16 @@ mod tests {
 
     #[test]
     fn disguise_formula_matches_locked_yr_vectors() {
-        for (phase, expected) in [(0, 0), (64, 25), (70, 50), (78, 25), (100, 0), (120, 50), (126, 25), (200, 0)] {
+        for (phase, expected) in [
+            (0, 0),
+            (64, 25),
+            (70, 50),
+            (78, 25),
+            (100, 0),
+            (120, 50),
+            (126, 25),
+            (200, 0),
+        ] {
             assert_eq!(disguise_phase_percent(phase), expected);
         }
     }
@@ -403,7 +415,10 @@ mod tests {
 
         assert!(decision.visible);
         assert_eq!(decision.state.remap_row, 7);
-        assert_eq!(decision.state.fx_flags, FX_CLOAK | FX_WARP | FX_DISGUISE | FX_INVULNERABILITY);
+        assert_eq!(
+            decision.state.fx_flags,
+            FX_CLOAK | FX_WARP | FX_DISGUISE | FX_INVULNERABILITY
+        );
         assert_eq!(decision.state.fx_params[0], 0.25);
         assert_eq!(decision.state.fx_params[1], 6.0);
         assert_eq!(decision.state.effect_tint, [0.199, 0.199, 0.199, 1.0]);

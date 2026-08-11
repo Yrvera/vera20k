@@ -20,6 +20,7 @@ pub mod bink_movie;
 pub mod bit_font;
 pub mod bridge_atlas;
 pub mod bridge_railing_atlas;
+pub mod combat_light;
 pub mod cursor_atlas;
 pub mod draw_state;
 pub mod egui_integration;
