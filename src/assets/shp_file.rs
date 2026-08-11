@@ -316,14 +316,20 @@ mod tests {
         let shp = ShpFile::from_bytes(&make_test_shp_raw()).expect("parse");
         // 768 raw bytes -> gamemd_ui palette: EVERY entry opaque, index 0 included.
         let pal = Palette::from_bytes_gamemd_ui(&vec![21u8; 768]).expect("palette");
-        assert_eq!(pal.colors[0].a, 255, "fixture guard: palette carries no alpha policy");
+        assert_eq!(
+            pal.colors[0].a, 255,
+            "fixture guard: palette carries no alpha policy"
+        );
 
         // Test frame pixels are [1, 2, 3, 0] — the last one is index 0.
         let rgba = shp.frame_to_rgba(0, &pal).expect("convert");
         assert_eq!(rgba[3], 255, "index 1 stays opaque");
         assert_eq!(rgba[7], 255, "index 2 stays opaque");
         assert_eq!(rgba[11], 255, "index 3 stays opaque");
-        assert_eq!(rgba[15], 0, "index 0 must bake transparent regardless of palette alpha");
+        assert_eq!(
+            rgba[15], 0,
+            "index 0 must bake transparent regardless of palette alpha"
+        );
     }
 
     /// Build a minimal valid SHP file with one uncompressed 2x2 frame.

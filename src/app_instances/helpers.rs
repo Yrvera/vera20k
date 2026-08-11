@@ -21,12 +21,10 @@ use crate::util::fixed_math::SIM_ZERO;
 /// the live ObjectClass registration order rather than falling back to map-key
 /// order. Entities absent from the live vector are appended in creation order
 /// solely so pre-reveal test/dev objects retain the renderer's old visibility.
-pub(crate) fn tactical_entity_encounter_order(
-    sim: &crate::sim::world::Simulation,
-) -> Vec<u64> {
+pub(crate) fn tactical_entity_encounter_order(sim: &crate::sim::world::Simulation) -> Vec<u64> {
     use crate::render::tactical_draw_plan::{
-        BlitPolicy, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput,
-        TacticalDrawPlan, TacticalLayer,
+        BlitPolicy, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput, TacticalDrawPlan,
+        TacticalLayer,
     };
 
     let mut registered = Vec::with_capacity(sim.entities().len());
@@ -42,27 +40,30 @@ pub(crate) fn tactical_entity_encounter_order(
         }
     }
 
-    let inputs = registered.iter().enumerate().filter_map(|(registration, id)| {
-        let entity = sim.entities().get(*id)?;
-        let layer = match entity_draw_band(entity) {
-            EntityDrawBand::Ground => 2,
-            EntityDrawBand::Top => 4,
-        };
-        Some(TacticalDrawInput::Object(ObjectDraw {
-            id: *id,
-            layer: TacticalLayer(layer),
-            coord: TacticalCoord {
-                x: i32::from(entity.position.rx) * 256
-                    + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
-                y: i32::from(entity.position.ry) * 256
-                    + crate::util::fixed_math::sim_to_i32(entity.position.sub_y),
-                z: i32::from(entity.position.z),
-            },
-            y_sort_adjust: 0,
-            registration_order: registration as u64,
-            policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-        }))
-    });
+    let inputs = registered
+        .iter()
+        .enumerate()
+        .filter_map(|(registration, id)| {
+            let entity = sim.entities().get(*id)?;
+            let layer = match entity_draw_band(entity) {
+                EntityDrawBand::Ground => 2,
+                EntityDrawBand::Top => 4,
+            };
+            Some(TacticalDrawInput::Object(ObjectDraw {
+                id: *id,
+                layer: TacticalLayer(layer),
+                coord: TacticalCoord {
+                    x: i32::from(entity.position.rx) * 256
+                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
+                    y: i32::from(entity.position.ry) * 256
+                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_y),
+                    z: i32::from(entity.position.z),
+                },
+                y_sort_adjust: 0,
+                registration_order: registration as u64,
+                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+            }))
+        });
     TacticalDrawPlan::build(inputs)
         .object_layers
         .into_iter()
@@ -98,11 +99,8 @@ pub(crate) fn tactical_entity_render_admission(
     {
         return None;
     }
-    let decision = crate::render::draw_state::DrawState::for_entity(
-        entity,
-        current_frame,
-        remap_row,
-    );
+    let decision =
+        crate::render::draw_state::DrawState::for_entity(entity, current_frame, remap_row);
     decision.visible.then_some(decision)
 }
 
@@ -129,16 +127,16 @@ fn tactical_bounded_entity_encounter_order(
     };
     let zoom = state.zoom_level.max(f32::EPSILON);
     let margin = 32.0 / zoom;
-    let (width_px, height_px) = crate::app_camera::tactical_viewport_size_px(
-        state.render_width(),
-        state.render_height(),
-    );
+    let (width_px, height_px) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let min_x = state.camera_x - margin;
     let min_y = state.camera_y - margin;
     let max_x = state.camera_x + width_px as f32 / zoom + margin;
     let max_y = state.camera_y + height_px as f32 / zoom + margin;
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
-    let local_owner_id = local_owner.as_deref().and_then(|owner| sim.interner.get(owner));
+    let local_owner_id = local_owner
+        .as_deref()
+        .and_then(|owner| sim.interner.get(owner));
 
     compose_tactical_screen_entity_encounter_order(
         sim,
@@ -624,7 +622,10 @@ mod tests {
             true,
         );
 
-        assert!(visible.is_empty(), "neither shrouded enemy is render-tracked");
+        assert!(
+            visible.is_empty(),
+            "neither shrouded enemy is render-tracked"
+        );
         assert_eq!(
             preflight,
             [2],

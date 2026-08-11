@@ -306,9 +306,8 @@ mod tests {
         let mut water_scenario_rng = SimRng::new(0xCAFE_BABE);
         let mut expected_scenario_rng = water_scenario_rng.clone();
         let expected_tile = expected_scenario_rng.next_range_u32_inclusive(0, 3) as i32;
-        let mut scenario_ranged = |low, high| {
-            water_scenario_rng.next_range_u32_inclusive(low, high)
-        };
+        let mut scenario_ranged =
+            |low, high| water_scenario_rng.next_range_u32_inclusive(low, high);
         let mut water_main_rng = SimRng::new(0xCAFE_BABE);
         let main_before = water_main_rng.logical_state();
         let mut main_draw = || water_main_rng.next_u32();
