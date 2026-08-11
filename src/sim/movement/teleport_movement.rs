@@ -26,6 +26,7 @@ use crate::sim::components::{AnimClassSpawnDescriptor, WorldEffect};
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
+use crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload;
 use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
 use crate::util::fixed_math::isqrt_i64;
 use crate::util::lepton::CELL_CENTER_LEPTON;
@@ -108,7 +109,7 @@ pub enum SpecialMovementOutcome {
 /// Set by `issue_teleport_command()` and cleared when the chrono delay
 /// expires. The render system reads `being_warped_ticks` to apply 50%
 /// translucency while the unit materializes.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TeleportState {
     /// Current phase in the teleport sequence.
     pub phase: TeleportPhase,
@@ -267,12 +268,16 @@ fn start_teleport_state(
     entity.movement_target = None;
 
     // Attach the teleport state machine — starts in Relocate (instant).
-    entity.teleport_state = Some(TeleportState {
+    let teleport_state = TeleportState {
         phase: TeleportPhase::Relocate,
         target_rx: target.0,
         target_ry: target.1,
         being_warped_ticks: chrono_ticks,
-    });
+    };
+    entity.teleport_state = Some(teleport_state.clone());
+    if let Some(locomotor) = entity.locomotor.as_mut() {
+        locomotor.runtime_payload = LocomotorRuntimePayload::Teleport(Some(teleport_state));
+    }
     entity.push_debug_event(
         0,
         DebugEventKind::SpecialMovementStart {
@@ -407,6 +412,9 @@ pub fn tick_teleport_movement(
 
         // Log phase transition if it changed.
         let phase_after = teleport.phase;
+        if let Some(locomotor) = entity.locomotor.as_mut() {
+            locomotor.runtime_payload = LocomotorRuntimePayload::Teleport(Some(teleport.clone()));
+        }
         if phase_after != phase_before {
             let phase_name = format!("{:?}", phase_after);
             // Drop the borrow on teleport before pushing debug event.
@@ -422,6 +430,9 @@ pub fn tick_teleport_movement(
     for id in finished {
         if let Some(entity) = entities.get_mut(id) {
             entity.teleport_state = None;
+            if let Some(locomotor) = entity.locomotor.as_mut() {
+                locomotor.runtime_payload = LocomotorRuntimePayload::Teleport(None);
+            }
             entity.push_debug_event(sim_tick as u32, DebugEventKind::SpecialMovementEnd);
         }
         // Every END in gamemd runs behind `Is_Ok_To_End`; the Teleport gate is
@@ -667,10 +678,12 @@ mod tests {
             toggle_power: false,
             powered: false,
             can_disguise: false,
+            disguise_when_still: false,
             wall: false,
             selectable: true,
             light_visibility: 0,
             light_intensity: 0.0,
+            has_spotlight: false,
             light_red_tint: 1.0,
             light_green_tint: 1.0,
             light_blue_tint: 1.0,

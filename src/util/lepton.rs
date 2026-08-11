@@ -11,7 +11,7 @@
 //! ## Dependency rules
 //! - util/ has NO dependencies on other game modules.
 
-use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -204,8 +204,7 @@ pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u
     //   screenX = 30*(rx - ry)         (cell center +128 cancels in X-Y)
     //   screenY = 15*(rx + ry) + 15    (+15 from sub-cell 128+128 projection)
     let base_sx: f32 = (rx as f32 - ry as f32) * 30.0;
-    let base_sy: f32 =
-        (rx as f32 + ry as f32) * 15.0 + 15.0 - f32::from(z as i8) * 15.0;
+    let base_sy: f32 = (rx as f32 + ry as f32) * 15.0 + 15.0 - f32::from(z as i8) * 15.0;
     // Sub-cell offset from center
     let (offset_x, offset_y) = lepton_sub_to_screen_offset(sub_x, sub_y);
     (base_sx + offset_x, base_sy + offset_y)
@@ -247,8 +246,8 @@ mod tests {
     #[test]
     fn gsi_04_03b_ground_height_matches_all_verified_slope_records() {
         let expected = [
-            208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312,
-            260, 260, 260, 260, 260,
+            208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312, 260,
+            260, 260, 260, 260,
         ];
         for (slope, expected) in expected.into_iter().enumerate() {
             assert_eq!(
@@ -271,20 +270,9 @@ mod tests {
 
     #[test]
     fn gsi_04_03b_lepton_projection_sign_extends_raw_level() {
-        let (_, sy_zero) = lepton_to_screen(
-            0,
-            0,
-            CELL_CENTER_LEPTON,
-            CELL_CENTER_LEPTON,
-            0,
-        );
-        let (_, sy_minus_one) = lepton_to_screen(
-            0,
-            0,
-            CELL_CENTER_LEPTON,
-            CELL_CENTER_LEPTON,
-            0xff,
-        );
+        let (_, sy_zero) = lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0);
+        let (_, sy_minus_one) =
+            lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0xff);
         assert_eq!(sy_zero, 15.0);
         assert_eq!(sy_minus_one, 30.0);
     }

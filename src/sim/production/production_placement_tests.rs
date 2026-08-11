@@ -8,8 +8,8 @@ use super::{
     cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, foundation_dimensions,
     place_ready_building_with_overlays, place_ready_building_without_overlays,
     placement_preview_for_owner_with_overlays, placement_preview_for_owner_without_overlays,
-    producer_candidates_for_owner_category,
-    ready_buildings_for_owner, sell_building, tick_production,
+    producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
+    tick_production,
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;

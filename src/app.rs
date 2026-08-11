@@ -461,10 +461,17 @@ pub(crate) struct AppState {
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
     pub(crate) lighting_grid: CellLightGrid,
-    /// Last radiation-glow light epoch applied to `lighting_grid`. The glow is
-    /// rebuilt only when this changes (a site stepped on `RadLightDelay`, or the
-    /// site set changed). App view-state only — never serialized or hashed.
-    pub(crate) last_radiation_light_epoch: u64,
+    /// Last complete point-light producer epoch applied to `lighting_grid`.
+    /// App view-state only — never serialized or hashed.
+    pub(crate) last_lighting_source_epoch: u64,
+    /// Last effective Scenario lighting tuple applied to `lighting_grid`.
+    pub(crate) last_lighting_config_epoch: u64,
+    /// Complete source list behind the visible grid. Retained so source
+    /// transitions can enumerate only old/new affected areas.
+    pub(crate) applied_lighting_sources: Vec<crate::map::lighting::PointLight>,
+    /// YR LightSourceClass-style sampled records. The active grid changes only
+    /// after the complete pending refresh has gathered.
+    pub(crate) pending_lighting_refresh: Option<crate::map::lighting::DeferredCellLightRefresh>,
     /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
     pub(crate) map_lighting_config: LightingConfig,
     /// Active map theater name (e.g., DESERT).
@@ -2380,11 +2387,7 @@ impl App {
         let mut open_browser: Option<SavedSeedMode> = None;
         match released.expect("checked equal to pressed control") {
             Control::Randomize0x621 => {
-                modal.randomize_options(
-                    &settings,
-                    &mut state.frontend_main_rng,
-                    &description,
-                );
+                modal.randomize_options(&settings, &mut state.frontend_main_rng, &description);
             }
             Control::Generate0x620 => {
                 modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
@@ -4463,7 +4466,10 @@ impl App {
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
-            last_radiation_light_epoch: 0,
+            last_lighting_source_epoch: 0,
+            last_lighting_config_epoch: 0,
+            applied_lighting_sources: Vec::new(),
+            pending_lighting_refresh: None,
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),

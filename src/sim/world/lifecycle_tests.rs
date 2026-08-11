@@ -1,4 +1,4 @@
-﻿//! Focused regression tests for ordered lifecycle authority.
+//! Focused regression tests for ordered lifecycle authority.
 
 use std::collections::BTreeMap;
 
@@ -386,7 +386,7 @@ fn gsi_04_12_common_raw_occupation_infantry_masks_follow_coordinates_and_never_b
 }
 
 #[test]
-fn gsi_04_12_common_raw_occupation_infantry_marks_after_link_but_conceal_leaves_stale_bit() {
+fn gsi_04_12_common_raw_occupation_infantry_marks_after_link_then_clears() {
     let mut sim = Simulation::new();
     insert_entity(&mut sim, 1, EntityCategory::Infantry);
 
@@ -403,24 +403,37 @@ fn gsi_04_12_common_raw_occupation_infantry_marks_after_link_but_conceal_leaves_
         .expect("Infantry raw mark");
     assert!(linked < marked);
     assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
+    assert_eq!(
+        sim.substrate
+            .raw_cell_occupation
+            .ground_infantry_owner(3, 4),
+        Some(1)
+    );
 
     sim.lifecycle_test_events.clear();
     let _ = sim.object_conceal(1);
 
     assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
-    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
-    assert!(
-        sim.lifecycle_test_events
-            .contains(&LifecycleTestEvent::RawOccupationListUnlinked)
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(
+        sim.substrate
+            .raw_cell_occupation
+            .ground_infantry_owner(3, 4),
+        None
     );
     assert!(
-        !sim.lifecycle_test_events
+        sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::RawOccupationListUnlinked),
+        "object-list unlink precedes the independent raw occupation clear"
+    );
+    assert!(
+        sim.lifecycle_test_events
             .contains(&LifecycleTestEvent::RawOccupationCleared)
     );
 }
 
 #[test]
-fn gsi_04_12_common_raw_occupation_infantry_above_deck_height_links_without_marking() {
+fn gsi_04_12_common_raw_occupation_infantry_above_deck_height_marks_and_clears_deck() {
     let mut sim = Simulation::new();
     install_common_raw_terrain(&mut sim, 8, 8, 1, Some((3, 4)));
     insert_entity(&mut sim, 1, EntityCategory::Infantry);
@@ -429,15 +442,45 @@ fn gsi_04_12_common_raw_occupation_infantry_above_deck_height_links_without_mark
 
     assert!(sim.substrate.occupancy.contains_entity(3, 4, 1));
     assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
-    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x04);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.deck_infantry_owner(3, 4),
+        Some(1)
+    );
     assert!(
         sim.lifecycle_test_events
             .contains(&LifecycleTestEvent::RawOccupationListLinked)
     );
     assert!(
-        !sim.lifecycle_test_events
+        sim.lifecycle_test_events
             .contains(&LifecycleTestEvent::RawOccupationMarked)
     );
+
+    let _ = sim.object_conceal(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.deck_infantry_owner(3, 4),
+        None
+    );
+}
+
+#[test]
+fn gsi_04_12_common_raw_occupation_high_nonstructural_infantry_retains_mark_plane_asymmetry() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 2, None);
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 6, 192, 64));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x04);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    let _ = sim.object_conceal(1);
+    assert_eq!(
+        sim.substrate.raw_cell_occupation.ground_bits(3, 4),
+        0x04,
+        "InfantryClass::Unmark selects the high plane by Z without retesting Flags&0x100"
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
 }
 
 #[test]
@@ -690,6 +733,7 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
             constructor_reverse: false,
             inactive,
         },
+        draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         in_logic_vector: false,
         owner_entity: None,
         start_sound_active: false,

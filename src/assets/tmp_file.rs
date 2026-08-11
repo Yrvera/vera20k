@@ -340,7 +340,10 @@ mod tests {
         let tmp = TmpFile::from_bytes(&make_test_tmp()).expect("parse");
         let pal = crate::assets::pal_file::Palette::from_bytes_gamemd_ui(&vec![21u8; 768])
             .expect("palette");
-        assert_eq!(pal.colors[0].a, 255, "fixture guard: palette carries no alpha policy");
+        assert_eq!(
+            pal.colors[0].a, 255,
+            "fixture guard: palette carries no alpha policy"
+        );
 
         let rgba = tmp.tile_to_rgba(0, &pal).expect("convert");
         // 8x4 tile, row 0 diamond width 4 -> columns 0,1 are outside the diamond.

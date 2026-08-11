@@ -22,6 +22,24 @@ use crate::render::gpu::GpuContext;
 /// Fragment shader: samples the sprite texture with per-instance UV coordinates.
 const BATCH_SHADER: &str = include_str!("batch_shader.wgsl");
 
+/// Type-16 SpotlightClass zero-blend shader.
+const BUILDING_LIGHT_SHADER: &str = include_str!("building_light.wgsl");
+
+/// `Dst * (mask / 256) + Dst`, preserving destination alpha.
+/// This is destination-dependent fixed-function blending, not alpha blending.
+pub const SPOTLIGHT_ZERO_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Dst,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// WGSL shader with per-pixel Z-depth output via @builtin(frag_depth).
 /// Samples a parallel R8 depth atlas to compute per-pixel depth for terrain
 /// tiles (cliff occlusion) and overlays.
@@ -61,6 +79,20 @@ pub struct SpriteInstance {
     /// Representation-neutral visual state resolved from the authoritative
     /// entity before either SHP or voxel instance construction.
     pub draw_state: DrawState,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SPOTLIGHT_ZERO_BLEND;
+
+    #[test]
+    fn spotlight_pipeline_uses_destination_factor_not_alpha() {
+        assert_eq!(SPOTLIGHT_ZERO_BLEND.color.src_factor, wgpu::BlendFactor::Dst);
+        assert_eq!(SPOTLIGHT_ZERO_BLEND.color.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(SPOTLIGHT_ZERO_BLEND.color.operation, wgpu::BlendOperation::Add);
+        assert_eq!(SPOTLIGHT_ZERO_BLEND.alpha.src_factor, wgpu::BlendFactor::Zero);
+        assert_eq!(SPOTLIGHT_ZERO_BLEND.alpha.dst_factor, wgpu::BlendFactor::One);
+    }
 }
 
 /// Number of vertex attributes in SpriteInstance: 7 base + 4 voxel-shader fields.
@@ -222,6 +254,10 @@ pub struct BatchRenderer {
     /// depth write OFF. Overlays draw unconditionally over terrain because
     /// tiles without Z-data skip Z-testing entirely.
     overlay_passthrough_pipeline: wgpu::RenderPipeline,
+    /// Destination-factor pipeline for SpotlightClass type-16 zero blending.
+    spotlight_zero_blend_pipeline: wgpu::RenderPipeline,
+    /// Procedurally generated native type-16 mask bank (R8, nearest sampled).
+    spotlight_type16_masks: BatchTexture,
     /// Layout for texture bind groups (group 1).
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for zdepth texture bind groups (group 1): color + sampler + R8 depth.
@@ -423,6 +459,103 @@ impl BatchRenderer {
                     bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
                     push_constant_ranges: &[],
                 });
+
+        let building_light_shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("BuildingLight Type-16 Shader"),
+                source: wgpu::ShaderSource::Wgsl(BUILDING_LIGHT_SHADER.into()),
+            });
+        let spotlight_zero_blend_pipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("BuildingLight Type-16 Zero Blend Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &building_light_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: INSTANCE_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &building_light_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: gpu.surface_format,
+                            blend: Some(SPOTLIGHT_ZERO_BLEND),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: false,
+                        depth_compare: wgpu::CompareFunction::Always,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
+        let spotlight_pixels = crate::render::building_light::generate_type16_mask_bank(
+            crate::render::building_light::DEFAULT_SPOTLIGHT_RADIUS,
+        );
+        let spotlight_texture = gpu.device.create_texture_with_data(
+            &gpu.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("BuildingLight Type-16 Mask Bank"),
+                size: wgpu::Extent3d {
+                    width: crate::render::building_light::TYPE16_ATLAS_WIDTH as u32,
+                    height: crate::render::building_light::TYPE16_MASK_HEIGHT as u32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &spotlight_pixels,
+        );
+        let spotlight_view = spotlight_texture.create_view(&Default::default());
+        let spotlight_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("BuildingLight Type-16 Nearest Sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let spotlight_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("BuildingLight Type-16 Mask Bind Group"),
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&spotlight_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&spotlight_sampler),
+                },
+            ],
+        });
+        let spotlight_type16_masks = BatchTexture {
+            bind_group: spotlight_bind_group,
+            view: spotlight_view,
+            width: crate::render::building_light::TYPE16_ATLAS_WIDTH as u32,
+            height: crate::render::building_light::TYPE16_MASK_HEIGHT as u32,
+        };
 
         // Terrain pipeline: depth buffer enabled (write + Less compare).
         // Terrain tiles sort correctly against each other via the depth buffer.
@@ -774,6 +907,8 @@ impl BatchRenderer {
             overlay_pipeline,
             zdepth_pipeline,
             overlay_passthrough_pipeline,
+            spotlight_zero_blend_pipeline,
+            spotlight_type16_masks,
             texture_bind_group_layout,
             zdepth_texture_bind_group_layout,
             unit_atlas_bind_group_layout,
@@ -1363,6 +1498,26 @@ impl BatchRenderer {
         render_pass.set_pipeline(&self.overlay_passthrough_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, &texture.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, 0..count);
+    }
+
+    /// Draw authoritative child-light mask quads through the native
+    /// destination-dependent zero-blend equation. The current RGBA/BGRA target
+    /// cannot reproduce native RGB565 extraction/repack rounding; that target
+    /// format boundary remains explicit rather than being approximated here.
+    pub fn draw_spotlight_type16<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        buffer: &'a wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.spotlight_zero_blend_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.spotlight_type16_masks.bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..6, 0..count);
     }

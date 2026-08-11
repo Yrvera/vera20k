@@ -234,6 +234,7 @@ impl Simulation {
 
             if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
                 ge.foundation = obj.foundation.clone();
+                ge.spotlight_capable = obj.has_spotlight;
             }
             // TechnoClass::Init_Managers for map-placed parents.
             if let Some(ruleset) = rules
@@ -473,6 +474,7 @@ impl Simulation {
         }
 
         ge.foundation = obj.foundation.clone();
+        ge.spotlight_capable = obj.has_spotlight;
         // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
         // resolves. Children are created right after placement, below.
         ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(

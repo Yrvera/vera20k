@@ -38,6 +38,201 @@ const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
 const MULTIPLAYER_FEEDBACK_Z_ADJUST: i32 = -5000;
 const SYNC_EXEMPT_NATIVE_UNIQUE_ID: i32 = -2;
 
+/// Pure YR `AnimClass_UpdateBouncePhysics` directional-frame projection.
+pub fn directional_tumble_frame(running_frames: i32, bucket8: i32, global_frame: i32) -> i32 {
+    let running = running_frames.max(1);
+    running * ((-1 - bucket8) & 7) + (global_frame / 3).rem_euclid(running)
+}
+
+pub fn settled_bounce_frame(running_frames: i32) -> i32 {
+    running_frames.wrapping_mul(8).wrapping_add(1)
+}
+
+/// `AnimClass_Update` @ 0x00423f37: landing consumes two inclusive rolls.
+pub fn bounce_spawn_count(has_spawns: bool, spawn_count: i32, roll_a: i32, roll_b: i32) -> i32 {
+    if !has_spawns || spawn_count <= 0 {
+        return 0;
+    }
+    assert!((0..=spawn_count).contains(&roll_a));
+    assert!((0..=spawn_count).contains(&roll_b));
+    roll_a.wrapping_add(roll_b)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimDrawDetailInput {
+    pub frame_rate_below_minimum: bool,
+    pub type_detail_level: i32,
+    pub game_detail_level: i32,
+    pub hidden: bool,
+    pub special_hidden: bool,
+    pub type_special_hide: bool,
+}
+
+/// `AnimClass__DrawIt` @ 0x00422fd8: visibility gates precede flag selection.
+pub fn anim_draw_detail_visible(input: AnimDrawDetailInput) -> bool {
+    !(input.frame_rate_below_minimum && input.type_detail_level > 1)
+        && !input.hidden
+        && input.type_detail_level <= input.game_detail_level
+        && !(input.special_hidden && input.type_special_hide)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimTranslucencyInput {
+    pub base_flags: u32,
+    pub forced_translucent: bool,
+    pub forced_uses_75: bool,
+    pub translucency_detail_level: i32,
+    pub game_detail_level: i32,
+    pub translucent_ramp: bool,
+    pub current_frame: i32,
+    pub frame_count: i32,
+    pub explicit_translucency: i32,
+    pub instance_ramp: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimTranslucencyResult {
+    pub draw: bool,
+    pub flags: u32,
+}
+
+fn translucency_flag(level: i32) -> u32 {
+    match level {
+        25 => 2,
+        50 => 4,
+        75 => 6,
+        _ => 0,
+    }
+}
+
+/// `AnimClass__DrawIt` @ 0x00423061: preserve native 25/50/75 flag values.
+pub fn anim_translucency_selection(input: AnimTranslucencyInput) -> AnimTranslucencyResult {
+    let mut flags = input.base_flags;
+    if input.forced_translucent {
+        flags |= if input.forced_uses_75 { 6 } else { 4 };
+        return AnimTranslucencyResult { draw: true, flags };
+    }
+    if input.translucency_detail_level > input.game_detail_level {
+        return AnimTranslucencyResult { draw: true, flags };
+    }
+    if input.translucent_ramp {
+        if input.instance_ramp >= 15 {
+            return AnimTranslucencyResult { draw: false, flags };
+        }
+        let frame = i64::from(input.current_frame);
+        let frame_count = i64::from(input.frame_count);
+        flags |= if frame * 5 > frame_count * 3 {
+            6
+        } else if frame * 5 > frame_count * 2 {
+            4
+        } else if frame * 5 > frame_count {
+            2
+        } else {
+            0
+        };
+        return AnimTranslucencyResult { draw: true, flags };
+    }
+    if input.explicit_translucency > 0 {
+        return AnimTranslucencyResult {
+            draw: input.instance_ramp < 15,
+            flags: flags | translucency_flag(input.explicit_translucency),
+        };
+    }
+    if input.instance_ramp > 15 {
+        return AnimTranslucencyResult { draw: false, flags };
+    }
+    if input.instance_ramp > 5 {
+        flags |= 4;
+    }
+    AnimTranslucencyResult { draw: true, flags }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BuildingAnimPowerFlags {
+    pub powered: bool,
+    pub powered_light: bool,
+    pub powered_effect: bool,
+    pub powered_special: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingAnimSlotAction {
+    None,
+    Pause,
+    Destroy,
+    DestroyMarkEffectReplay,
+    PlayActiveSlot3,
+    PlayLowPowerSlot19,
+    PlaySuperLowPowerSlot20,
+    ReplayPoweredSpecial,
+}
+
+pub fn building_storage_fill_level(stored_amount: f64, capacity: i32) -> i32 {
+    if capacity <= 0 {
+        return 0;
+    }
+    let stored = stored_amount.trunc() as i32;
+    ((f64::from(stored.wrapping_mul(4)) / f64::from(capacity)) + 0.5)
+        .trunc()
+        .clamp(0.0, 3.0) as i32
+}
+
+/// `BuildingClass__UpdateAnimVisibilityStates` @ 0x004547c0 action projection.
+pub fn unpowered_building_anim_actions(
+    slot: usize,
+    has_anim: bool,
+    flags: BuildingAnimPowerFlags,
+    storage_active_gate: bool,
+    active_slot3_powered: bool,
+    super_low_power_available: bool,
+) -> Vec<BuildingAnimSlotAction> {
+    if !has_anim {
+        return vec![BuildingAnimSlotAction::None];
+    }
+    if flags.powered {
+        return vec![BuildingAnimSlotAction::Pause];
+    }
+    if flags.powered_light {
+        let mut actions = vec![BuildingAnimSlotAction::Destroy];
+        if slot == 10 && storage_active_gate && active_slot3_powered {
+            actions.push(BuildingAnimSlotAction::PlayActiveSlot3);
+        }
+        return actions;
+    }
+    if flags.powered_effect {
+        let mut actions = vec![BuildingAnimSlotAction::DestroyMarkEffectReplay];
+        if slot == 16 && super_low_power_available {
+            actions.push(BuildingAnimSlotAction::PlaySuperLowPowerSlot20);
+        }
+        return actions;
+    }
+    vec![BuildingAnimSlotAction::None]
+}
+
+pub fn powered_special_actions(
+    records: &[BuildingAnimPowerFlags],
+    restoring: bool,
+    low_power_available: bool,
+) -> Vec<(usize, BuildingAnimSlotAction)> {
+    let mut actions = Vec::new();
+    if restoring {
+        actions.push((19, BuildingAnimSlotAction::Destroy));
+    } else if low_power_available {
+        actions.push((19, BuildingAnimSlotAction::PlayLowPowerSlot19));
+    }
+    actions.extend(records.iter().enumerate().filter_map(|(slot, flags)| {
+        flags.powered_special.then_some((
+            slot,
+            if restoring {
+                BuildingAnimSlotAction::ReplayPoweredSpecial
+            } else {
+                BuildingAnimSlotAction::Destroy
+            },
+        ))
+    }));
+    actions
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnimRuntime {
     pub current_frame: i32,
@@ -49,6 +244,24 @@ pub struct AnimRuntime {
     pub first_ai_guard: bool,
     pub constructor_reverse: bool,
     pub inactive: bool,
+}
+
+/// Per-instance `AnimClass::DrawIt` bytes that are independent of the art
+/// type. They remain serialized simulation state because native effects may
+/// set them between frames; presentation only reads this resolved input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AnimDrawRuntime {
+    /// AnimClass `+0x19d`: unconditional draw suppression.
+    pub hidden: bool,
+    /// AnimClass `+0x199`: applies only with the unresolved type `+0x374` bit.
+    pub special_hidden: bool,
+    /// AnimClass `+0x178`: ramp/age input used by translucency selection.
+    pub translucency_ramp: u8,
+    /// AnimClass `+0x119`: force the type-selected 50/75% draw family.
+    pub forced_translucent: bool,
+    /// Producer-supplied type `+0x368` interpretation; the art-key mapping is
+    /// not closed, so this is deliberately not inferred from other fields.
+    pub forced_uses_75: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -64,6 +277,7 @@ pub struct AnimObject {
     pub effective_end: i32,
     pub effective_loop_end: i32,
     pub runtime: AnimRuntime,
+    pub draw_runtime: AnimDrawRuntime,
     /// LogicClass membership is reconstructed from the serialized vector.
     /// ObjectClass::Save does not persist its local membership byte.
     #[serde(skip)]
@@ -310,6 +524,7 @@ impl Simulation {
                 constructor_reverse: descriptor.reverse,
                 inactive: false,
             },
+            draw_runtime: descriptor.draw_runtime,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -380,6 +595,7 @@ impl Simulation {
                 constructor_reverse: false,
                 inactive: false,
             },
+            draw_runtime: AnimDrawRuntime::default(),
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -455,6 +671,7 @@ impl Simulation {
                         draw_flags: TRAILER_DRAW_FLAGS,
                         z_adjust: 0,
                         reverse: false,
+                        draw_runtime: AnimDrawRuntime::default(),
                     };
                     self.spawn_anim_at_world(rules, descriptor, world_coord)
                         .expect("validated trailer closure must remain spawnable");
@@ -711,6 +928,7 @@ impl Simulation {
                 draw_flags: TRAILER_DRAW_FLAGS,
                 z_adjust: 0,
                 reverse: false,
+                draw_runtime: AnimDrawRuntime::default(),
             };
             let world = AnimWorldCoord {
                 x: base_x.wrapping_add(offset.world_dx),
@@ -908,6 +1126,75 @@ fn reset_to_loop_start(anim: &mut AnimObject, config: &AnimTypeRuntimeConfig) {
 }
 
 #[cfg(test)]
+mod long_tail_contract_tests {
+    use super::*;
+
+    #[test]
+    fn yr_long_tail_vectors() {
+        assert_eq!(directional_tumble_frame(5, 0, 9), 38);
+        assert_eq!(directional_tumble_frame(5, 7, 14), 4);
+        assert_eq!(settled_bounce_frame(5), 41);
+        assert_eq!(bounce_spawn_count(true, 4, 2, 3), 5);
+        assert_eq!(building_storage_fill_level(12.9, 100), 0);
+        assert_eq!(building_storage_fill_level(13.0, 100), 1);
+        assert_eq!(building_storage_fill_level(63.0, 100), 3);
+        assert_eq!(
+            anim_translucency_selection(AnimTranslucencyInput {
+                base_flags: 0,
+                forced_translucent: false,
+                forced_uses_75: false,
+                translucency_detail_level: 1,
+                game_detail_level: 2,
+                translucent_ramp: true,
+                current_frame: 7,
+                frame_count: 10,
+                explicit_translucency: 0,
+                instance_ramp: 0,
+            }),
+            AnimTranslucencyResult {
+                draw: true,
+                flags: 6
+            }
+        );
+    }
+
+    #[test]
+    fn yr_power_slot_actions_are_ordered() {
+        assert_eq!(
+            unpowered_building_anim_actions(
+                10,
+                true,
+                BuildingAnimPowerFlags {
+                    powered_light: true,
+                    ..Default::default()
+                },
+                true,
+                true,
+                false,
+            ),
+            vec![
+                BuildingAnimSlotAction::Destroy,
+                BuildingAnimSlotAction::PlayActiveSlot3
+            ]
+        );
+        let records = [
+            BuildingAnimPowerFlags::default(),
+            BuildingAnimPowerFlags {
+                powered_special: true,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            powered_special_actions(&records, false, true),
+            vec![
+                (19, BuildingAnimSlotAction::PlayLowPowerSlot19),
+                (1, BuildingAnimSlotAction::Destroy),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::map::entities::EntityCategory;
@@ -1011,6 +1298,7 @@ mod tests {
             draw_flags: TRAILER_DRAW_FLAGS,
             z_adjust: 0,
             reverse: false,
+            draw_runtime: AnimDrawRuntime::default(),
         }
     }
 
@@ -1037,6 +1325,31 @@ mod tests {
                 .make_infantry,
             -2
         );
+    }
+
+    #[test]
+    fn draw_runtime_round_trips_and_changes_the_authoritative_hash() {
+        let rules = runtime_rules("[DRAW]\nRate=900\nEnd=1\n", &[("DRAW", 1)]);
+        let mut sim = Simulation::new();
+        let mut descriptor = runtime_descriptor(sim.interner.intern("DRAW"), 0);
+        descriptor.draw_runtime = AnimDrawRuntime {
+            hidden: false,
+            special_hidden: true,
+            translucency_ramp: 6,
+            forced_translucent: true,
+            forced_uses_75: true,
+        };
+        let draw_runtime = descriptor.draw_runtime;
+        let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
+        assert_eq!(sim.anim(id).unwrap().draw_runtime, draw_runtime);
+
+        let serialized = bincode::serialize(&sim.substrate.anims).unwrap();
+        let restored: AnimStore = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(restored.get(id).unwrap().draw_runtime, draw_runtime);
+
+        let before = sim.state_hash();
+        sim.anim_mut_by_id(id).unwrap().draw_runtime.hidden = true;
+        assert_ne!(sim.state_hash(), before);
     }
 
     #[test]
@@ -1576,6 +1889,7 @@ mod tests {
                     draw_flags: TRAILER_DRAW_FLAGS,
                     z_adjust: 0,
                     reverse: false,
+                    draw_runtime: AnimDrawRuntime::default(),
                 },
                 AnimWorldCoord { x: 0, y: 0, z: 0 },
             )

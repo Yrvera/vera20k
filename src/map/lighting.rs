@@ -69,6 +69,19 @@ pub struct LightingConfig {
     pub ground: f32,
     /// Height-based ambient boost per elevation level. Default 0.032.
     pub level: f32,
+    /// Complete Lightning Storm lighting tuple, only present when the scenario
+    /// supplies every authoritative `Ion*` input.
+    pub ion: Option<LightingEffectConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightingEffectConfig {
+    pub ambient: f32,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+    pub ground: f32,
+    pub level: f32,
 }
 
 impl Default for LightingConfig {
@@ -80,6 +93,7 @@ impl Default for LightingConfig {
             blue: 1.0,
             ground: 0.20,
             level: 0.032,
+            ion: None,
         }
     }
 }
@@ -435,6 +449,14 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
         Some(s) => s,
         None => return LightingConfig::default(),
     };
+    let ion = [
+        section.get_f32("IonAmbient"),
+        section.get_f32("IonRed"),
+        section.get_f32("IonGreen"),
+        section.get_f32("IonBlue"),
+        section.get_f32("IonGround"),
+        section.get_f32("IonLevel"),
+    ];
     LightingConfig {
         ambient: section.get_f32("Ambient").unwrap_or(1.0),
         red: section.get_f32("Red").unwrap_or(1.0),
@@ -442,6 +464,44 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
         blue: section.get_f32("Blue").unwrap_or(1.0),
         ground: section.get_f32("Ground").unwrap_or(0.20),
         level: section.get_f32("Level").unwrap_or(0.032),
+        ion: match ion {
+            [
+                Some(ambient),
+                Some(red),
+                Some(green),
+                Some(blue),
+                Some(ground),
+                Some(level),
+            ] => Some(LightingEffectConfig {
+                ambient,
+                red,
+                green,
+                blue,
+                ground,
+                level,
+            }),
+            _ => None,
+        },
+    }
+}
+
+impl LightingConfig {
+    /// Project the only currently represented scenario-light effect. Native
+    /// precedence is Lightning Storm before the unrepresented Psychic
+    /// Dominator and Nuclear Flash branches; absent complete Ion inputs, retain
+    /// normal lighting rather than manufacturing defaults.
+    pub fn with_represented_lightning(&self, lightning_active: bool) -> Self {
+        let Some(ion) = self.ion.as_ref().filter(|_| lightning_active) else {
+            return self.clone();
+        };
+        let mut selected = self.clone();
+        selected.ambient = ion.ambient;
+        selected.red = ion.red;
+        selected.green = ion.green;
+        selected.blue = ion.blue;
+        selected.ground = ion.ground;
+        selected.level = ion.level;
+        selected
     }
 }
 
@@ -507,7 +567,7 @@ where
 ///
 /// Created from map entity data during map load. Each light contributes
 /// localized brightness to nearby cells using linear distance falloff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointLight {
     /// Cell position of the light source.
     pub rx: u16,
@@ -526,6 +586,151 @@ pub struct PointLight {
     pub active: bool,
     /// Detail-level gate placeholder for ordinary light sources.
     pub detail: bool,
+}
+
+/// Renderer-local counterpart of the pending records consumed by YR
+/// `LightSourceClass::UpdateLightConverts`. Sampling is deliberately separate
+/// from replacing the visible grid: no partially gathered light area is shown.
+#[derive(Debug, Clone)]
+pub struct DeferredCellLightRefresh {
+    cells: Vec<((u16, u16), u8)>,
+    config: LightingConfig,
+    lights: Vec<PointLight>,
+    samples: Vec<Option<CellLightSample>>,
+    gathered: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CellLightSample {
+    cell: (u16, u16),
+    neutral: bool,
+    raw_rgb: LightRgbKey,
+    raw_additive_intensity: i32,
+    raw_top_scalar: i32,
+    raw_bottom_scalar: i32,
+}
+
+impl DeferredCellLightRefresh {
+    pub fn new<I>(heights: I, config: &LightingConfig, lights: Vec<PointLight>) -> Self
+    where
+        I: IntoIterator<Item = ((u16, u16), u8)>,
+    {
+        let cells: Vec<((u16, u16), u8)> = heights.into_iter().collect();
+        Self {
+            samples: vec![None; cells.len()],
+            cells,
+            config: config.clone(),
+            lights,
+            gathered: 0,
+        }
+    }
+
+    /// Gather up to `budget` records in reverse order. The currently displayed
+    /// grid remains untouched until every record has a future sample.
+    pub fn gather(&mut self, budget: usize) -> bool {
+        let remaining = self.cells.len().saturating_sub(self.gathered);
+        let count = budget.min(remaining);
+        for _ in 0..count {
+            let index = self.cells.len() - 1 - self.gathered;
+            let (cell, height) = self.cells[index];
+            self.samples[index] = Some(sample_cell_light(cell, height, &self.config, &self.lights));
+            self.gathered += 1;
+        }
+        self.is_gathered()
+    }
+
+    pub fn gather_all(&mut self) {
+        self.gather(self.cells.len());
+    }
+
+    pub fn is_gathered(&self) -> bool {
+        self.gathered == self.cells.len()
+    }
+
+    /// Build the replacement forward only after all samples are gathered.
+    /// Returning `None` before then enforces the native atomic-commit boundary.
+    pub fn commit(self) -> Option<CellLightGrid> {
+        if !self.is_gathered() {
+            return None;
+        }
+        let mut grid = CellLightGrid::with_capacity(self.samples.len());
+        for sample in self.samples.into_iter().flatten() {
+            let light = if sample.neutral {
+                neutral_cell_light(&mut grid.profiles)
+            } else {
+                build_cell_light_from_raw(
+                    &mut grid.profiles,
+                    sample.raw_rgb,
+                    sample.raw_additive_intensity,
+                    sample.raw_top_scalar,
+                    sample.raw_bottom_scalar,
+                )
+            };
+            grid.insert_light(sample.cell, light);
+        }
+        Some(grid)
+    }
+
+    /// Commit a gathered source-area delta into the existing visible grid.
+    /// Samples are applied forward, matching native pending-vector commit order.
+    pub fn commit_into(self, grid: &mut CellLightGrid) -> bool {
+        if !self.is_gathered() {
+            return false;
+        }
+        for sample in self.samples.into_iter().flatten() {
+            let light = if sample.neutral {
+                neutral_cell_light(&mut grid.profiles)
+            } else {
+                build_cell_light_from_raw(
+                    &mut grid.profiles,
+                    sample.raw_rgb,
+                    sample.raw_additive_intensity,
+                    sample.raw_top_scalar,
+                    sample.raw_bottom_scalar,
+                )
+            };
+            grid.insert_light(sample.cell, light);
+        }
+        true
+    }
+}
+
+/// Native `LightSourceClass::ApplyAreaLightConvert @ 0x00554AF0` area walk.
+/// The inclusive square is outer-Y/inner-X and the final gate uses truncated
+/// center-to-source XY distance `<= radius`.
+pub fn point_light_area_cells(
+    light: &PointLight,
+    width: u16,
+    height: u16,
+    mut height_at: impl FnMut(u16, u16) -> Option<u8>,
+) -> Vec<((u16, u16), u8)> {
+    if light.radius_leptons <= 0 || width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let radius_cells = light.radius_leptons / LEPTONS_PER_CELL + 1;
+    let source_rx = light.center_x.div_euclid(LEPTONS_PER_CELL);
+    let source_ry = light.center_y.div_euclid(LEPTONS_PER_CELL);
+    let mut cells = Vec::new();
+    for ry in source_ry - radius_cells..=source_ry + radius_cells {
+        for rx in source_rx - radius_cells..=source_rx + radius_cells {
+            if rx < 0 || ry < 0 || rx >= i32::from(width) || ry >= i32::from(height) {
+                continue;
+            }
+            let rx = rx as u16;
+            let ry = ry as u16;
+            let Some(cell_height) = height_at(rx, ry) else {
+                continue;
+            };
+            let center_x = i32::from(rx) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
+            let center_y = i32::from(ry) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
+            let dx = i64::from(center_x - light.center_x);
+            let dy = i64::from(center_y - light.center_y);
+            if integer_sqrt(dx * dx + dy * dy) <= i64::from(light.radius_leptons) {
+                cells.push(((rx, ry), cell_height));
+            }
+        }
+    }
+    cells
 }
 
 /// Collect point light sources from map-placed buildings with nonzero LightIntensity.
@@ -667,6 +872,79 @@ pub fn accumulate_point_lights(grid: &mut CellLightGrid, lights: &[PointLight]) 
             raw_bottom,
         );
         grid.insert_light(cell, updated);
+    }
+}
+
+fn sample_cell_light(
+    cell: (u16, u16),
+    height: u8,
+    config: &LightingConfig,
+    lights: &[PointLight],
+) -> CellLightSample {
+    if cell == (0, 0) {
+        return CellLightSample {
+            cell,
+            neutral: true,
+            raw_rgb: [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT],
+            raw_additive_intensity: 0,
+            raw_top_scalar: LIGHT_UNIT,
+            raw_bottom_scalar: LIGHT_UNIT,
+        };
+    }
+    let units = scenario_units(config);
+    let mut raw_rgb = [units.red, units.green, units.blue];
+    let mut raw_additive_intensity = 0;
+    let mut raw_top_scalar = units.ambient + units.level * i32::from(height) - units.ground;
+    let mut raw_bottom_scalar =
+        units.ambient + units.level * (i32::from(height) + BOTTOM_LEVEL_OFFSET) - units.ground;
+    accumulate_light_sample(
+        cell,
+        lights,
+        &mut raw_rgb,
+        &mut raw_additive_intensity,
+        &mut raw_top_scalar,
+        &mut raw_bottom_scalar,
+    );
+    CellLightSample {
+        cell,
+        neutral: false,
+        raw_rgb,
+        raw_additive_intensity,
+        raw_top_scalar,
+        raw_bottom_scalar,
+    }
+}
+
+fn accumulate_light_sample(
+    cell: (u16, u16),
+    lights: &[PointLight],
+    raw_rgb: &mut LightRgbKey,
+    raw_additive: &mut i32,
+    raw_top: &mut i32,
+    raw_bottom: &mut i32,
+) {
+    let cell_center_x = i32::from(cell.0) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
+    let cell_center_y = i32::from(cell.1) * LEPTONS_PER_CELL + HALF_CELL_LEPTONS;
+    for light in lights {
+        if !light.active || !light.detail || light.radius_leptons <= 0 {
+            continue;
+        }
+        let dx = i64::from(cell_center_x - light.center_x);
+        let dy = i64::from(cell_center_y - light.center_y);
+        let distance_sq = dx * dx + dy * dy;
+        let radius = i64::from(light.radius_leptons);
+        if distance_sq > radius * radius {
+            continue;
+        }
+        let distance = integer_sqrt(distance_sq);
+        let factor = ((radius - distance) * i64::from(LIGHT_UNIT)) / radius;
+        let intensity = signed_div_1000(i64::from(light.intensity) * factor);
+        *raw_additive += intensity;
+        *raw_top += intensity;
+        *raw_bottom += intensity;
+        for (channel, raw) in raw_rgb.iter_mut().enumerate() {
+            *raw += signed_div_1000(i64::from(light.tint[channel]) * factor);
+        }
     }
 }
 
@@ -866,6 +1144,41 @@ mod tests {
         assert!((config.blue - 1.0).abs() < 0.001);
         assert!((config.ground - 0.20).abs() < 0.001);
         assert!((config.level - 0.032).abs() < 0.001);
+        assert_eq!(config.ion, None);
+    }
+
+    #[test]
+    fn complete_ion_tuple_is_selected_only_while_lightning_is_represented() {
+        let ini = IniFile::from_str(
+            "[Lighting]\nAmbient=0.8\nRed=0.9\nGreen=0.7\nBlue=0.6\nGround=0.2\nLevel=0.03\n\
+             IonAmbient=0.4\nIonRed=0.5\nIonGreen=0.6\nIonBlue=0.7\nIonGround=0.1\nIonLevel=0.02\n",
+        );
+        let config = parse_lighting(&ini);
+
+        assert_eq!(config.with_represented_lightning(false).ambient, 0.8);
+        let ion = config.with_represented_lightning(true);
+        assert_eq!(
+            [
+                ion.ambient,
+                ion.red,
+                ion.green,
+                ion.blue,
+                ion.ground,
+                ion.level
+            ],
+            [0.4, 0.5, 0.6, 0.7, 0.1, 0.02]
+        );
+    }
+
+    #[test]
+    fn incomplete_ion_tuple_does_not_invent_effect_defaults() {
+        let ini = IniFile::from_str(
+            "[Lighting]\nAmbient=0.8\nIonAmbient=0.4\nIonRed=0.5\nIonGreen=0.6\n",
+        );
+        let config = parse_lighting(&ini);
+
+        assert_eq!(config.ion, None);
+        assert_eq!(config.with_represented_lightning(true).ambient, 0.8);
     }
 
     #[test]
@@ -926,6 +1239,7 @@ mod tests {
             blue: 0.6,
             ground: 0.0,
             level: 0.0,
+            ion: None,
         };
         let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
         let light = grid.cell_light_at((1, 1)).expect("light");
@@ -942,6 +1256,7 @@ mod tests {
             blue: 1.0,
             ground: 0.0,
             level: 0.0,
+            ion: None,
         };
         let tint: [f32; 3] = cell_tint(&config, 0);
         // 3.0 > 2.0 cap → scaled to 2.0
@@ -957,6 +1272,7 @@ mod tests {
             blue: 1.0,
             ground: 0.5,
             level: 0.0,
+            ion: None,
         };
         let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
         let light = grid.cell_light_at((1, 1)).expect("light");
@@ -973,6 +1289,7 @@ mod tests {
             blue: 0.88,
             ground: 0.0,
             level: 0.039,
+            ion: None,
         };
         let terrain: [f32; 3] = terrain_tint(&config);
         let ground_cell: [f32; 3] = cell_tint(&config, 0);
@@ -1051,6 +1368,7 @@ mod tests {
             blue: 0.88,
             ground: 0.0,
             level: 0.039,
+            ion: None,
         };
         let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
 
@@ -1091,6 +1409,7 @@ mod tests {
             blue: 1.0,
             ground: 0.0,
             level: 0.032,
+            ion: None,
         };
         let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -1151,6 +1470,7 @@ mod tests {
             blue: 1.0,
             ground: 0.20,
             level: 0.032,
+            ion: None,
         };
         let grid = build_cell_light_grid_from_heights([((10, 10), 0), ((10, 11), 4)], &config);
 
@@ -1452,5 +1772,75 @@ mod tests {
         // art.ini ExtraLight affects building body depth, not map RGB tint.
         let result = grid.tint_or_default(key);
         assert_eq!(result, [0.4, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn deferred_refresh_commits_only_after_reverse_gather() {
+        let config = LightingConfig::default();
+        let heights = [((4, 4), 0), ((5, 4), 2), ((6, 4), 4)];
+        let light = point_light_from_object(5, 4, 512, 0.2, [0.1, 0.0, 0.0]).expect("light");
+        let immediate = {
+            let mut grid = build_cell_light_grid_from_heights(heights, &config);
+            accumulate_point_lights(&mut grid, &[light.clone()]);
+            grid
+        };
+
+        let mut pending = DeferredCellLightRefresh::new(heights, &config, vec![light]);
+        assert!(!pending.gather(1));
+        assert!(
+            pending.commit().is_none(),
+            "partial gathers never become visible"
+        );
+
+        let mut pending = DeferredCellLightRefresh::new(heights, &config, vec![]);
+        pending.gather_all();
+        let no_lamp = pending.commit().expect("complete gather commits");
+        assert_ne!(
+            immediate
+                .cell_light_at((5, 4))
+                .map(|light| light.raw_additive_intensity),
+            no_lamp
+                .cell_light_at((5, 4))
+                .map(|light| light.raw_additive_intensity),
+        );
+
+        let light = point_light_from_object(5, 4, 512, 0.2, [0.1, 0.0, 0.0]).expect("light");
+        let mut pending = DeferredCellLightRefresh::new(heights, &config, vec![light]);
+        assert!(pending.gather(heights.len()));
+        let deferred = pending.commit().expect("complete gather commits");
+        for cell in [(4, 4), (5, 4), (6, 4)] {
+            assert_eq!(deferred.cell_light_at(cell), immediate.cell_light_at(cell));
+        }
+    }
+
+    #[test]
+    fn point_light_area_walk_is_outer_y_inner_x_and_radius_gated() {
+        let light = point_light_from_object(2, 2, 256, 0.2, [0.1, 0.0, 0.0]).expect("light");
+        let cells = point_light_area_cells(&light, 5, 5, |_, _| Some(0));
+
+        assert_eq!(
+            cells,
+            vec![
+                ((2, 1), 0),
+                ((1, 2), 0),
+                ((2, 2), 0),
+                ((3, 2), 0),
+                ((2, 3), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn deferred_source_area_commit_preserves_unaffected_cells() {
+        let config = LightingConfig::default();
+        let mut grid = build_cell_light_grid_from_heights([((1, 1), 0), ((9, 9), 4)], &config);
+        let unaffected = grid.cell_light_at((9, 9)).cloned();
+        let light = point_light_from_object(1, 1, 256, 0.2, [0.1, 0.0, 0.0]).expect("light");
+        let mut pending = DeferredCellLightRefresh::new([((1, 1), 0)], &config, vec![light]);
+
+        pending.gather_all();
+        assert!(pending.commit_into(&mut grid));
+        assert_eq!(grid.cell_light_at((9, 9)), unaffected.as_ref());
+        assert_ne!(grid.cell_light_at((1, 1)), unaffected.as_ref());
     }
 }

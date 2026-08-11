@@ -12,7 +12,7 @@ use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zon
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{OccupancyGrid, RawCellOccupationGrid};
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
@@ -87,6 +87,223 @@ pub struct CellRect {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+/// Raw, single-cell inputs to the shared YR movement-clearance leaf.
+///
+/// Callers retain responsibility for object-specific admission (Foot's cost
+/// classifier, aircraft owner/shroud rules, and DropPod's Unlimbo path). This
+/// type deliberately represents only `CellClass::IsClearToMove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IsClearToMoveRequest {
+    pub speed_type: SpeedType,
+    pub movement_zone: MovementZone,
+    /// `None` corresponds to native zone `-1` (no zone comparison).
+    pub requested_zone: Option<i16>,
+    pub actual_zone: i16,
+    /// Native signed `CellClass+0x11B` base level.
+    pub base_level: i16,
+    /// Native `CellClass::Flags & 0x100` bridge gate.
+    pub has_bridge: bool,
+    /// `None` corresponds to native level `-1` (select bridge occupation on a bridge cell).
+    pub requested_level: Option<i16>,
+    pub is_bridge: bool,
+    /// Native normal `OccupationFlags+0x124` low byte.
+    pub ground_occupation_bits: u8,
+    /// Native alternate `AltOccupationFlags+0x128` low byte.
+    pub deck_occupation_bits: u8,
+    pub ignore_infantry: bool,
+    pub ignore_vehicles: bool,
+    /// Whether the selected land-by-SpeedType row permits this cell.
+    pub land_passable: bool,
+    pub is_wall_overlay: bool,
+    /// OverlayTypeClass's extra Crusher/AmphibiousCrusher admission byte.
+    pub wall_allows_crusher: bool,
+}
+
+/// Deterministic result of the `CellClass::IsClearToMove` leaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IsClearToMoveResult {
+    /// Winged returns before CellClass selects a terrain or occupation plane.
+    ClearWinged,
+    Clear {
+        selected_layer: MovementLayer,
+    },
+    ZoneMismatch,
+    LevelMismatch,
+    Occupied {
+        remaining_bits: u8,
+    },
+    WallBlocked,
+    LandBlocked,
+}
+
+/// Live-map adapter for callers that already own the class-specific admission
+/// wrapper around `CellClass::IsClearToMove`.
+///
+/// `land_passable` remains caller-owned because Foot +0x1AC, placement, and
+/// landing wrappers have distinct structural gates. Raw Cell occupation and
+/// bridge-plane selection are centralized here instead of being reconstructed
+/// independently by each caller.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LiveCellPassabilityQuery<'a> {
+    pub target: (u16, u16),
+    pub speed_type: SpeedType,
+    pub movement_zone: MovementZone,
+    pub requested_zone: Option<i16>,
+    pub actual_zone: i16,
+    pub requested_layer: Option<MovementLayer>,
+    pub ignore_infantry: bool,
+    pub ignore_vehicles: bool,
+    pub land_passable: bool,
+    pub path_grid: Option<&'a PathGrid>,
+    pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
+    pub raw_occupation: Option<&'a RawCellOccupationGrid>,
+}
+
+/// Evaluate one live Cell through the shared native leaf.
+// Native: CellClass::IsClearToMove @ YR 0x0047C650. Callers must still retain
+// their own +0x1AC, CanThisExistHere, aircraft, or virtual-Unlimbo decisions.
+pub(crate) fn evaluate_live_cell_passability(
+    query: LiveCellPassabilityQuery<'_>,
+) -> IsClearToMoveResult {
+    // Winged is the first native branch and therefore does not require a real
+    // map cell. Preserve that ordering before resolving terrain metadata.
+    if query.speed_type == SpeedType::Winged {
+        return evaluate_is_clear_to_move(IsClearToMoveRequest {
+            speed_type: query.speed_type,
+            movement_zone: query.movement_zone,
+            requested_zone: query.requested_zone,
+            actual_zone: query.actual_zone,
+            base_level: 0,
+            has_bridge: false,
+            requested_level: None,
+            is_bridge: false,
+            ground_occupation_bits: 0,
+            deck_occupation_bits: 0,
+            ignore_infantry: query.ignore_infantry,
+            ignore_vehicles: query.ignore_vehicles,
+            land_passable: query.land_passable,
+            is_wall_overlay: false,
+            wall_allows_crusher: false,
+        });
+    }
+
+    let terrain_cell = query
+        .resolved_terrain
+        .and_then(|terrain| terrain.cell(query.target.0, query.target.1));
+    let path_cell = query
+        .path_grid
+        .and_then(|grid| grid.cell(query.target.0, query.target.1));
+    if terrain_cell.is_none() && path_cell.is_none() {
+        return IsClearToMoveResult::LandBlocked;
+    }
+
+    let base_level = path_cell
+        .map(|cell| cell.signed_level())
+        .or_else(|| terrain_cell.map(|cell| i16::from(cell.level as i8)))
+        .unwrap_or(0);
+    let has_bridge = path_cell.is_some_and(|cell| cell.has_structural_bridge())
+        || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
+    let requested_level = query.requested_layer.map(|layer| match layer {
+        MovementLayer::Bridge => base_level.saturating_add(4),
+        _ => base_level,
+    });
+    let ground_occupation_bits = query
+        .raw_occupation
+        .map_or(0, |grid| grid.ground_bits(query.target.0, query.target.1));
+    let deck_occupation_bits = query
+        .raw_occupation
+        .map_or(0, |grid| grid.deck_bits(query.target.0, query.target.1));
+
+    evaluate_is_clear_to_move(IsClearToMoveRequest {
+        speed_type: query.speed_type,
+        movement_zone: query.movement_zone,
+        requested_zone: query.requested_zone,
+        actual_zone: query.actual_zone,
+        base_level,
+        has_bridge,
+        requested_level,
+        is_bridge: query.requested_layer == Some(MovementLayer::Bridge),
+        ground_occupation_bits,
+        deck_occupation_bits,
+        ignore_infantry: query.ignore_infantry,
+        ignore_vehicles: query.ignore_vehicles,
+        land_passable: query.land_passable,
+        is_wall_overlay: terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL),
+        // The parsed overlay model does not expose OverlayTypeClass+0x22D.
+        wall_allows_crusher: false,
+    })
+}
+
+/// Evaluate the native shared movement-clearance leaf without collapsing its callers.
+// Native: CellClass::IsClearToMove (YR 1.001) keeps Winged, bridge, raw-occupation,
+// and wall gates distinct; FootClass +0x1AC and object Unlimbo remain outside this seam.
+pub(crate) fn evaluate_is_clear_to_move(input: IsClearToMoveRequest) -> IsClearToMoveResult {
+    if input.speed_type == SpeedType::Winged {
+        return IsClearToMoveResult::ClearWinged;
+    }
+
+    if input
+        .requested_zone
+        .is_some_and(|requested| requested != input.actual_zone)
+    {
+        return IsClearToMoveResult::ZoneMismatch;
+    }
+
+    let selected_layer = match input.requested_level {
+        Some(level) if level == input.base_level => {
+            if input.has_bridge && !input.is_bridge {
+                return IsClearToMoveResult::LevelMismatch;
+            }
+            MovementLayer::Ground
+        }
+        Some(level) if input.has_bridge && level == input.base_level.saturating_add(4) => {
+            MovementLayer::Bridge
+        }
+        Some(_) => return IsClearToMoveResult::LevelMismatch,
+        None if input.has_bridge => MovementLayer::Bridge,
+        None => MovementLayer::Ground,
+    };
+
+    let mut remaining_bits = match selected_layer {
+        MovementLayer::Bridge => input.deck_occupation_bits,
+        _ => input.ground_occupation_bits,
+    };
+    if input.ignore_infantry {
+        remaining_bits &= 0xE0;
+    }
+    if input.ignore_vehicles {
+        remaining_bits &= 0x5F;
+    }
+    if remaining_bits != 0 {
+        return IsClearToMoveResult::Occupied { remaining_bits };
+    }
+
+    let mut wall_cleared = false;
+    if input.is_wall_overlay {
+        let clears_wall = matches!(
+            input.movement_zone,
+            MovementZone::Destroyer
+                | MovementZone::AmphibiousDestroyer
+                | MovementZone::InfantryDestroyer
+                | MovementZone::CrusherAll
+        ) || (input.wall_allows_crusher
+            && matches!(
+                input.movement_zone,
+                MovementZone::Crusher | MovementZone::AmphibiousCrusher
+            ));
+        if !clears_wall {
+            return IsClearToMoveResult::WallBlocked;
+        }
+        wall_cleared = true;
+    }
+
+    if selected_layer == MovementLayer::Bridge || wall_cleared || input.land_passable {
+        IsClearToMoveResult::Clear { selected_layer }
+    } else {
+        IsClearToMoveResult::LandBlocked
+    }
 }
 
 impl CellRect {
@@ -331,41 +548,43 @@ fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) 
     let structural_bridge = path_cell.is_some_and(|cell| cell.has_structural_bridge())
         || terrain_cell.is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
 
-    let selected_bridge_layer = match ctx.required_height_or_level {
-        Some(required) if required == base_level => {
-            if structural_bridge && !ctx.bridge_aware_zone {
-                return false;
-            }
-            false
-        }
-        Some(required) => {
-            if !structural_bridge || required != base_level.saturating_add(4) {
-                return false;
-            }
-            true
-        }
-        None => structural_bridge,
-    };
-
-    let occupation_layer = if selected_bridge_layer {
-        MovementLayer::Bridge
-    } else {
-        MovementLayer::Ground
-    };
-    if ctx
-        .occupancy
-        .is_some_and(|occupancy| occupancy.count_on_layer(rx, ry, occupation_layer) > 0)
-    {
-        return false;
-    }
-
-    if selected_bridge_layer {
-        return true;
-    }
-
-    terrain_cell.map_or_else(
+    // Native location: `CellClass::IsClearToMove` (YR 1.001). CellRect callers
+    // do not yet carry the raw occupation grid, so their existing object-list
+    // blocker projection is kept explicit here. World/movement callers with raw
+    // bytes must construct `IsClearToMoveRequest` directly rather than infer bits.
+    let projected_ground_bits = u8::from(
+        ctx.occupancy
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Ground) > 0),
+    ) * 0x40;
+    let projected_deck_bits = u8::from(
+        ctx.occupancy
+            .is_some_and(|grid| grid.count_on_layer(rx, ry, MovementLayer::Bridge) > 0),
+    ) * 0x40;
+    let is_wall_overlay = terrain_cell.is_some_and(|cell| cell.zone_type == zone_class::WALL);
+    let land_passable = terrain_cell.map_or_else(
         || ctx.path_grid.map_or(true, |grid| grid.is_walkable(rx, ry)),
         |cell| speed_type_allows_cell(cell, ctx.speed_type, ctx.movement_zone),
+    );
+    matches!(
+        evaluate_is_clear_to_move(IsClearToMoveRequest {
+            speed_type: ctx.speed_type,
+            movement_zone: ctx.movement_zone,
+            requested_zone: None,
+            actual_zone: 0,
+            base_level,
+            has_bridge: structural_bridge,
+            requested_level: ctx.required_height_or_level,
+            is_bridge: ctx.bridge_aware_zone,
+            ground_occupation_bits: projected_ground_bits,
+            deck_occupation_bits: projected_deck_bits,
+            ignore_infantry: false,
+            ignore_vehicles: false,
+            land_passable,
+            is_wall_overlay,
+            // The parsed overlay model has no authority for native +0x22D.
+            wall_allows_crusher: false,
+        }),
+        IsClearToMoveResult::Clear { .. } | IsClearToMoveResult::ClearWinged
     )
 }
 
@@ -552,6 +771,176 @@ mod tests {
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    fn clear_to_move_request() -> IsClearToMoveRequest {
+        IsClearToMoveRequest {
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+            requested_zone: None,
+            actual_zone: 7,
+            base_level: 2,
+            has_bridge: false,
+            requested_level: Some(2),
+            is_bridge: false,
+            ground_occupation_bits: 0,
+            deck_occupation_bits: 0,
+            ignore_infantry: false,
+            ignore_vehicles: false,
+            land_passable: true,
+            is_wall_overlay: false,
+            wall_allows_crusher: false,
+        }
+    }
+
+    #[test]
+    fn is_clear_to_move_keeps_winged_and_raw_ignore_masks_separate() {
+        let winged = IsClearToMoveRequest {
+            speed_type: SpeedType::Winged,
+            requested_zone: Some(99),
+            ground_occupation_bits: 0xFF,
+            deck_occupation_bits: 0xFF,
+            land_passable: false,
+            is_wall_overlay: true,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(winged),
+            IsClearToMoveResult::ClearWinged
+        );
+
+        let infantry_ignored = IsClearToMoveRequest {
+            ground_occupation_bits: 0x01,
+            ignore_infantry: true,
+            ..clear_to_move_request()
+        };
+        assert!(matches!(
+            evaluate_is_clear_to_move(infantry_ignored),
+            IsClearToMoveResult::Clear { .. }
+        ));
+
+        let vehicle_ignored = IsClearToMoveRequest {
+            ground_occupation_bits: 0x20,
+            ignore_vehicles: true,
+            ..clear_to_move_request()
+        };
+        assert!(matches!(
+            evaluate_is_clear_to_move(vehicle_ignored),
+            IsClearToMoveResult::Clear { .. }
+        ));
+
+        let generic_remains = IsClearToMoveRequest {
+            ground_occupation_bits: 0x61,
+            ignore_infantry: true,
+            ignore_vehicles: true,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(generic_remains),
+            IsClearToMoveResult::Occupied {
+                remaining_bits: 0x40
+            }
+        );
+    }
+
+    #[test]
+    fn is_clear_to_move_preserves_bridge_and_wall_admission_order() {
+        let bridge_unspecified = IsClearToMoveRequest {
+            has_bridge: true,
+            requested_level: None,
+            deck_occupation_bits: 0,
+            land_passable: false,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(bridge_unspecified),
+            IsClearToMoveResult::Clear {
+                selected_layer: MovementLayer::Bridge
+            }
+        );
+
+        let bridge_uses_deck_occupation = IsClearToMoveRequest {
+            has_bridge: true,
+            requested_level: None,
+            ground_occupation_bits: 0x40,
+            deck_occupation_bits: 0x20,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(bridge_uses_deck_occupation),
+            IsClearToMoveResult::Occupied {
+                remaining_bits: 0x20
+            }
+        );
+
+        let base_without_bridge_flag = IsClearToMoveRequest {
+            has_bridge: true,
+            requested_level: Some(2),
+            is_bridge: false,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(base_without_bridge_flag),
+            IsClearToMoveResult::LevelMismatch
+        );
+
+        let crusher_wall = IsClearToMoveRequest {
+            movement_zone: MovementZone::Crusher,
+            is_wall_overlay: true,
+            wall_allows_crusher: true,
+            land_passable: false,
+            ..clear_to_move_request()
+        };
+        assert!(matches!(
+            evaluate_is_clear_to_move(crusher_wall),
+            IsClearToMoveResult::Clear {
+                selected_layer: MovementLayer::Ground
+            }
+        ));
+
+        let normal_wall = IsClearToMoveRequest {
+            is_wall_overlay: true,
+            land_passable: false,
+            ..clear_to_move_request()
+        };
+        assert_eq!(
+            evaluate_is_clear_to_move(normal_wall),
+            IsClearToMoveResult::WallBlocked
+        );
+    }
+
+    #[test]
+    fn live_cell_passability_reads_the_selected_raw_plane() {
+        let path_grid = PathGrid::test_all_passable(2, 2);
+        let mut raw = RawCellOccupationGrid::new();
+        raw.mark_ground(1, 1, 0x20);
+        let query = LiveCellPassabilityQuery {
+            target: (1, 1),
+            speed_type: SpeedType::Track,
+            movement_zone: MovementZone::Normal,
+            requested_zone: None,
+            actual_zone: 0,
+            requested_layer: Some(MovementLayer::Ground),
+            ignore_infantry: false,
+            ignore_vehicles: false,
+            land_passable: true,
+            path_grid: Some(&path_grid),
+            resolved_terrain: None,
+            raw_occupation: Some(&raw),
+        };
+        let occupied = evaluate_live_cell_passability(query);
+        assert_eq!(
+            occupied,
+            IsClearToMoveResult::Occupied {
+                remaining_bits: 0x20
+            }
+        );
+
+        let vehicle_ignored = evaluate_live_cell_passability(LiveCellPassabilityQuery {
+            ignore_vehicles: true,
+            ..query
+        });
+        assert!(matches!(vehicle_ignored, IsClearToMoveResult::Clear { .. }));
+    }
 
     fn terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         ResolvedTerrainCell {

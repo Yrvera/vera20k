@@ -18,6 +18,7 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
+use crate::sim::cloak_disguise::{CloakRuntime, DisguiseRuntime};
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
@@ -156,6 +157,14 @@ pub struct BuildingGateRuntime {
     /// Stable-open hold countdown (reseeds while occupants remain in the footprint).
     #[serde(default)]
     pub hold_timer: MissionTimer,
+}
+
+/// Parent-owned `BuildingLightClass` runtime. It exists only for a successfully
+/// placed `HasSpotlight=yes` building and is removed with that parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct BuildingLightRuntime {
+    pub behavior: u8,
+    pub target_id: Option<u64>,
 }
 
 impl Default for BuildingGateRuntime {
@@ -368,6 +377,11 @@ pub struct GameEntity {
     /// BuildingClass BState table.
     #[serde(default)]
     pub building_damage_state_active: bool,
+    /// Persisted type fact needed to recreate the owned light on later Unlimbo.
+    #[serde(default)]
+    pub spotlight_capable: bool,
+    #[serde(default)]
+    pub building_light: Option<BuildingLightRuntime>,
     /// Native BuildingClass damage-fire transition cache. Distinct from the
     /// generic damaged-art state above.
     #[serde(default)]
@@ -398,6 +412,12 @@ pub struct GameEntity {
     pub slave_harvester: Option<SlaveHarvester>,
     /// Persistent high-level order (AttackMove, Guard) that survives transient state changes.
     pub order_intent: Option<OrderIntent>,
+    /// Evidence-bounded native cloak transition state and visual producer values.
+    #[serde(default)]
+    pub cloak: Option<CloakRuntime>,
+    /// Core disguise identity, timestamp, and reveal tuple.
+    #[serde(default)]
+    pub disguise: Option<DisguiseRuntime>,
     /// Teleport movement state machine (warp out/in phases).
     pub teleport_state: Option<TeleportState>,
     /// Dormant YR TunnelLocomotionClass process state. Its underground depth
@@ -466,6 +486,10 @@ pub struct GameEntity {
     /// Aircraft mission state machine — controls attack runs, guard, RTB, idle.
     /// Present on aircraft with Fly locomotor. None for non-aircraft and jumpjets.
     pub aircraft_mission: Option<AircraftMission>,
+    /// Final-release latches retained between consecutive `Mission_Attack`
+    /// entries. This stays separate from the broader, still-residual volley
+    /// cadence rather than borrowing RA2 strafe state.
+    pub aircraft_release_tail: Option<crate::sim::aircraft::runtime_contract::AircraftReleaseTail>,
     /// Infantry sub-cell position (0–4). Only meaningful for infantry.
     pub sub_cell: Option<u8>,
     /// Whether this entity can be crushed by vehicles (Crushable= in rules.ini).
@@ -860,6 +884,8 @@ impl GameEntity {
             building_down: None,
             building_anim_overlays: None,
             building_damage_state_active: false,
+            spotlight_capable: false,
+            building_light: None,
             damage_fire_state_active: false,
             damage_fire_anim_ids: [None; 8],
             bridge_occupancy: None,
@@ -871,6 +897,8 @@ impl GameEntity {
             miner: None,
             slave_harvester: None,
             order_intent: None,
+            cloak: None,
+            disguise: None,
             teleport_state: None,
             tunnel_state: None,
             low_bridge_tube_state: None,
@@ -889,6 +917,7 @@ impl GameEntity {
             dock_state: None,
             aircraft_ammo: None,
             aircraft_mission: None,
+            aircraft_release_tail: None,
             // Infantry get sub-cell 2 (first distinct position) at spawn so
             // they don't all pile up at cell center when multiple are created.
             sub_cell: if category == EntityCategory::Infantry {

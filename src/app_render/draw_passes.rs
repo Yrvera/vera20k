@@ -236,6 +236,17 @@ pub(super) fn dispatch_draw_passes(
         );
     }
 
+    if let (Some(overlay), Some((buffer, count))) =
+        (state.selection_overlay.as_ref(), pool.get("weapon_waves"))
+    {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            overlay.white_texture(),
+            buffer,
+            count,
+        );
+    }
+
     // (There is no separate building-turret pass. gamemd draws a building's
     // voxel turret inside the building's own display call, in the sorted
     // ground layer, right after the body — the pass that does run after
@@ -291,6 +302,15 @@ pub(super) fn dispatch_draw_passes(
                 );
             }
         }
+    }
+
+    // BuildingLightClass registers in layer 3. This pass is exact once its
+    // authoritative child-light coordinates are emitted; it deliberately does
+    // not substitute the parent building coordinate.
+    if let Some((buffer, count)) = pool.get("spotlight_type16") {
+        state
+            .batch_renderer
+            .draw_spotlight_type16(&mut pass, buffer, count);
     }
 
     // --- Step 7.7: The band above Ground (gamemd layers 3 and 4) ---

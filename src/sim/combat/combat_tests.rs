@@ -1058,6 +1058,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         None,
         &BTreeMap::new(),
         &houses,
+        &crate::map::houses::HouseAllianceMap::default(),
         Some(&mut sounds),
         &mut BTreeMap::new(),
         None,
@@ -1067,6 +1068,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         100,
         0,
         &[1, 2],
+        &[],
         &[],
         None,
         &[],
@@ -2738,7 +2740,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         BTreeMap::from([(2, ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0))]);
     assert!(
         sim.projectiles
-            .advance(&target_positions, |_, _| false)
+            .advance(&target_positions, |_, _| None)
             .detonations
             .is_empty()
     );
@@ -2751,7 +2753,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     for _ in 0..8 {
         detonations = restored
             .projectiles
-            .advance(&target_positions, |_, _| false)
+            .advance(&target_positions, |_, _| None)
             .detonations;
         if !detonations.is_empty() {
             break;
@@ -2773,6 +2775,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         None,
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &crate::map::houses::HouseAllianceMap::default(),
         None,
         &mut BTreeMap::new(),
         None,
@@ -2783,6 +2786,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         1,
         &[2],
         &detonations,
+        &[],
         None,
         &[],
         &mut scenario_rng,
@@ -3666,4 +3670,79 @@ fn score_award_is_zero_without_a_cost_or_a_resolvable_type() {
     );
     assert_eq!(score_award_for_victim(Some(&obj), 200), 0);
     assert_eq!(score_award_for_victim(None, 200), 0);
+}
+
+#[test]
+fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n\n[MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\n[PARENT]\nDamage=20\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\n[PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=2\n\n[CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\n[CHILDPROJ]\nSubjectToWalls=yes\n\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("shrapnel rules");
+    let mut entities = EntityStore::new();
+    let mut source = make_entity_owned(1, "MTNK", 5, 5, 100, "Soviet");
+    source.lifecycle.cell_marked = true;
+    entities.insert(source);
+    // First ring-table entry is (+1,-1).
+    let mut target = make_entity_owned(2, "MTNK", 6, 4, 100, "Americans");
+    target.lifecycle.cell_marked = true;
+    entities.insert(target);
+    let mut occupancy = OccupancyGrid::rebuild(&entities);
+    let mut interner = test_interner();
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 7,
+        source_id: 1,
+        target: crate::sim::projectile::ProjectileTarget::Cell(
+            crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
+        ),
+        impact: crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 20,
+            warhead: interner.intern("WH"),
+            weapon: interner.intern("PARENT"),
+            owner: interner.intern("SOVIET"),
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+    let mut scenario_rng = SimRng::new(0x46_a310);
+    let mut expected_rng = scenario_rng.clone();
+    let _ = expected_rng.next_range_u32_inclusive(0, 4);
+    let _ = expected_rng.next_range_u32_inclusive(0, 4);
+    let mut main_rng = SimRng::new(1);
+
+    let result = tick_combat_with_fog_and_main_rng(
+        &mut entities,
+        &mut occupancy,
+        &rules,
+        &mut interner,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &crate::map::houses::HouseAllianceMap::default(),
+        None,
+        &mut BTreeMap::new(),
+        None,
+        None,
+        None,
+        1,
+        100,
+        1,
+        &[1, 2],
+        &[detonation],
+        &[],
+        None,
+        &[],
+        &mut scenario_rng,
+        &mut main_rng,
+    );
+
+    assert_eq!(result.projectile_spawns.len(), 2);
+    assert_eq!(
+        result.projectile_spawns[0].target,
+        crate::sim::projectile::ProjectileTarget::Entity(2)
+    );
+    assert!(matches!(
+        result.projectile_spawns[1].target,
+        crate::sim::projectile::ProjectileTarget::Cell(_)
+    ));
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
 }

@@ -260,9 +260,7 @@ impl OverlayGrid {
 
     /// Drain overlay dirtiness and any already-observed passability change as
     /// one runtime-only result. Neither component is serialized or hashed.
-    pub(crate) fn take_dirty_cells_with_passability_signal(
-        &mut self,
-    ) -> (Vec<(u16, u16)>, bool) {
+    pub(crate) fn take_dirty_cells_with_passability_signal(&mut self) -> (Vec<(u16, u16)>, bool) {
         (
             std::mem::take(&mut self.dirty_cells),
             std::mem::take(&mut self.synchronous_passability_changed),
@@ -774,12 +772,8 @@ mod tests {
         );
         assert!(present.take_dirty_cells().is_empty());
 
-        let mut missing = OverlayGrid::from_overlay_packs(
-            &entries,
-            &OverlayDataPack::missing(),
-            2,
-            2,
-        );
+        let mut missing =
+            OverlayGrid::from_overlay_packs(&entries, &OverlayDataPack::missing(), 2, 2);
         assert_eq!(missing.cell(0, 0).overlay_id, None);
         assert_eq!(missing.cell(0, 0).overlay_data, 0);
         assert_eq!(missing.cell(1, 1).overlay_id, Some(5));

@@ -10,7 +10,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::are_houses_friendly;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::locomotor_type::MovementZone;
-use crate::rules::object_type::ObjectCategory;
+use crate::rules::object_type::{ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BuildingUp;
 use crate::sim::entity_store::EntityStore;
@@ -81,20 +81,12 @@ pub fn placement_preview_for_owner_with_overlays(
                 let overlay_id = overlay_registry.and_then(|reg| reg.id_for_name(type_id));
                 match (owner_id, overlay_id, overlay_registry) {
                     (Some(owner_id), Some(overlay_id), Some(registry)) => wall_cell_placeable(
-                        sim, rules, path_grid, cx, cy, owner_id, overlay_id, registry,
+                        sim, rules, obj, path_grid, cx, cy, owner_id, overlay_id, registry,
                     ),
                     _ => false,
                 }
             } else {
-                cell_placeable(
-                    sim,
-                    &sim.substrate.entities,
-                    rules,
-                    path_grid,
-                    cx,
-                    cy,
-                    obj.water_bound,
-                )
+                can_this_exist_here(sim, &sim.substrate.entities, rules, obj, path_grid, cx, cy)
             };
             cell_valid.push(in_build_area && ok);
         }
@@ -405,17 +397,17 @@ fn evaluate_building_placement(
             let cell_y = ry.saturating_add(dy);
             let placeable = match (wall_overlay_id, overlay_registry, owner_id) {
                 (Some(overlay_id), Some(registry), Some(owner_id)) => wall_cell_placeable(
-                    sim, rules, path_grid, cell_x, cell_y, owner_id, overlay_id, registry,
+                    sim, rules, obj, path_grid, cell_x, cell_y, owner_id, overlay_id, registry,
                 ),
                 (Some(_), _, _) => false,
-                (None, _, _) => cell_placeable(
+                (None, _, _) => can_this_exist_here(
                     sim,
                     &sim.substrate.entities,
                     rules,
+                    obj,
                     path_grid,
                     cell_x,
                     cell_y,
-                    obj.water_bound,
                 ),
             };
             if !placeable {
@@ -482,6 +474,7 @@ fn evaluate_building_placement(
 fn wall_cell_placeable(
     sim: &Simulation,
     rules: &RuleSet,
+    object_type: &ObjectType,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     cx: u16,
     cy: u16,
@@ -500,14 +493,14 @@ fn wall_cell_placeable(
     }
     let existing = *grid.cell(cx, cy);
     if existing.overlay_id.is_none() {
-        return cell_placeable(
+        return can_this_exist_here(
             sim,
             &sim.substrate.entities,
             rules,
+            object_type,
             path_grid,
             cx,
             cy,
-            false,
         );
     }
     if existing.overlay_id != Some(overlay_id)
@@ -535,14 +528,21 @@ fn wall_cell_placeable(
     path_grid.map_or(true, |grid| cx < grid.width() && cy < grid.height())
 }
 
-fn cell_placeable(
+/// Live per-cell `CellClass::CanThisExistHere` projection used by both preview
+/// and committed production placement.
+// Native: CellClass::CanThisExistHere @ YR 0x0047C1D0. The available runtime
+// inputs cover normal-list blockers, overlay absence, terrain/buildability,
+// bridge/ramp/slope rejection, and the type SpeedType/WaterBound projection.
+// The executable's editor/global bypass and unparsed +0xE58 exception remain
+// explicit residuals; neither has a represented live input in this runtime.
+fn can_this_exist_here(
     sim: &Simulation,
     entities: &EntityStore,
     rules: &RuleSet,
+    object_type: &ObjectType,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
     cx: u16,
     cy: u16,
-    water_bound: bool,
 ) -> bool {
     let no_overlap = !structure_occupies_cell(entities, rules, cx, cy, &sim.interner)
         && !ground_non_structure_occupies_cell(sim, cx, cy);
@@ -551,7 +551,7 @@ fn cell_placeable(
         .as_ref()
         .map_or(true, |grid| grid.cell(cx, cy).overlay_id.is_none());
 
-    if water_bound {
+    if object_type.water_bound {
         let cell_ok = if let Some(terrain) = sim.resolved_terrain.as_ref() {
             terrain.cell(cx, cy).is_some_and(|cell| {
                 let ship_passable = pathfinding::passability::is_passable_for_zone(

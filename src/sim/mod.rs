@@ -22,6 +22,7 @@
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;
+pub mod cloak_disguise;
 pub mod command;
 pub mod components;
 pub mod crates; // scenario-start crate placement (Post_Map_Init step 3)
@@ -54,6 +55,7 @@ pub mod radio; // RadioMessage / RadioResponse / RadioPayload
 pub mod movement;
 pub mod pathfinding; // A* search, zone connectivity, terrain costs, path smoothing
 pub mod projectile; // serialized BulletClass-style flight state and detonation handoff
+pub mod wave; // serialized WaveClass-style display registrations and lifetime
 
 // --- Docking: repair depots and airfield landing pads ---
 pub mod docking;
@@ -77,6 +79,7 @@ pub mod gate_runtime;
 pub mod infantry;
 
 // --- Persistent cell occupancy ---
+pub mod cell_kernel;
 pub mod cell_rect;
 pub mod find_nearby_cell;
 pub mod occupancy;

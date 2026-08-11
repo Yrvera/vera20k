@@ -67,17 +67,14 @@ pub fn tiberium_cell_view(
 ) -> Option<TiberiumCellView> {
     let overlay = *overlay_grid.cell(cell.0, cell.1);
     let overlay_id = overlay.overlay_id?;
-    let tiberium_type =
-        overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)?;
+    let tiberium_type = overlay_registry.tiberium_type_for_overlay(tiberium_types, overlay_id)?;
     let ty = tiberium_types.get(tiberium_type)?;
     Some(TiberiumCellView {
         overlay_id,
         overlay_data: overlay.overlay_data,
         tiberium_type,
         resource_type: resource_type_for_tiberium_image(ty.image),
-        nominal_value: ty
-            .value
-            .wrapping_mul(i32::from(overlay.overlay_data) + 1),
+        nominal_value: ty.value.wrapping_mul(i32::from(overlay.overlay_data) + 1),
     })
 }
 
@@ -267,12 +264,7 @@ pub fn place_tiberium(
         let Some(admission) = ctx.new_cell_admission else {
             return false;
         };
-        if !can_place_new_tiberium(
-            ctx.overlay_grid,
-            ctx.source_object_cells,
-            admission,
-            cell,
-        ) {
+        if !can_place_new_tiberium(ctx.overlay_grid, ctx.source_object_cells, admission, cell) {
             return false;
         }
         let Some(variants) = ctx.overlay_registry.flat_tiberium_variant_ids(ty) else {
@@ -316,8 +308,7 @@ pub fn place_tiberium(
     }
 
     let new_data = view.overlay_data.wrapping_add(amount).min(11);
-    ctx.overlay_grid
-        .set_overlay_data(cell.0, cell.1, new_data);
+    ctx.overlay_grid.set_overlay_data(cell.0, cell.1, new_data);
     mark_place_tactical_dirty(ctx, cell);
     ctx.ore_growth_state.add_native_spread_queue_cell(
         ctx.overlay_grid,
@@ -402,6 +393,29 @@ pub fn reduce_tiberium(
     };
     let current = view.overlay_data;
 
+    // `CellClass::ReduceTiberium` @ 0x00480A80 calls
+    // `TiberiumClass::RegisterForGrowth` @ 0x007235A0 at density 11 first.
+    // Its `< 11` admission makes this live call a deliberate no-op: no queue
+    // entry and no Scenario RNG draw are produced before the reduction.
+    if current == 11
+        && let (Some(grid), Some(registry), Some(types), Some(rng)) = (
+            ctx.overlay_grid.as_deref(),
+            ctx.overlay_registry,
+            ctx.tiberium_types,
+            ctx.rng.as_deref_mut(),
+        )
+    {
+        let _ = ctx.ore_growth_state.add_native_growth_queue_cell(
+            grid,
+            registry,
+            types,
+            cell.0,
+            cell.1,
+            ctx.binary_frame,
+            rng,
+        );
+    }
+
     // Native partial predicate is signed `amount < current + 1`. This makes a
     // density-11 request of 11 leave the overlay present at density zero, while
     // 12 clears it. A positive request against data zero takes the full path.
@@ -437,13 +451,7 @@ pub fn reduce_tiberium(
     mark_radar_dirty(ctx, cell);
     ctx.ore_growth_state
         .clear_native_spread_bitmap_cell(cell.0, cell.1);
-    if let (
-        Some(grid),
-        Some(registry),
-        Some(types),
-        Some(source_object_cells),
-        Some(rng),
-    ) = (
+    if let (Some(grid), Some(registry), Some(types), Some(source_object_cells), Some(rng)) = (
         ctx.overlay_grid.as_deref(),
         ctx.overlay_registry,
         ctx.tiberium_types,
@@ -726,8 +734,7 @@ SpreadPercentage=.06
         let interner = StringInterner::default();
         let live_objects =
             TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
-        let runtime_admission =
-            NewTiberiumAdmission::runtime(&terrain, None, live_objects);
+        let runtime_admission = NewTiberiumAdmission::runtime(&terrain, None, live_objects);
 
         let mut overlay = OverlayGrid::new(1, 1);
         let mut growth = OreGrowthState::new(1, 1);
@@ -918,37 +925,22 @@ SpreadPercentage=.06
         overlay.place_overlay(2, 2, gem12, 11);
         overlay.place_overlay(3, 3, tib2_20, 7);
 
-        let zero = tiberium_cell_view(
-            &overlay,
-            &overlay_registry,
-            &tiberium_types,
-            (1, 1),
-        )
-        .expect("raw data zero remains a present resource cell");
+        let zero = tiberium_cell_view(&overlay, &overlay_registry, &tiberium_types, (1, 1))
+            .expect("raw data zero remains a present resource cell");
         assert_eq!(zero.tiberium_type, TiberiumTypeId(0));
         assert_eq!(zero.resource_type, ResourceType::Ore);
         assert_eq!(zero.overlay_data, 0);
         assert_eq!(zero.nominal_value, 25);
 
-        let max = tiberium_cell_view(
-            &overlay,
-            &overlay_registry,
-            &tiberium_types,
-            (2, 2),
-        )
-        .expect("gem");
+        let max =
+            tiberium_cell_view(&overlay, &overlay_registry, &tiberium_types, (2, 2)).expect("gem");
         assert_eq!(max.tiberium_type, TiberiumTypeId(1));
         assert_eq!(max.resource_type, ResourceType::Gem);
         assert_eq!(max.overlay_data, 11);
         assert_eq!(max.nominal_value, 600);
 
-        let extra = tiberium_cell_view(
-            &overlay,
-            &overlay_registry,
-            &tiberium_types,
-            (3, 3),
-        )
-        .expect("TIB2 extra range");
+        let extra = tiberium_cell_view(&overlay, &overlay_registry, &tiberium_types, (3, 3))
+            .expect("TIB2 extra range");
         assert_eq!(extra.tiberium_type, TiberiumTypeId(2));
         assert_eq!(extra.resource_type, ResourceType::Ore);
         assert_eq!(extra.overlay_data, 7);
@@ -995,7 +987,10 @@ SpreadPercentage=.06
             };
 
             let outcome = reduce_tiberium(&mut ctx, (4, 4), amount);
-            assert_eq!(outcome.removed_amount, removed, "data={data} amount={amount}");
+            assert_eq!(
+                outcome.removed_amount, removed,
+                "data={data} amount={amount}"
+            );
             assert_eq!(
                 outcome.resource_type,
                 Some(ResourceType::Ore),
@@ -1051,6 +1046,55 @@ SpreadPercentage=.06
     }
 
     #[test]
+    fn gsi_04_09_max_density_reduction_runs_the_growth_admission_without_rng() {
+        let (overlay_registry, tiberium_types) = native_tiberium_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let mut nodes = BTreeMap::new();
+        let mut overlay = OverlayGrid::new(8, 8);
+        overlay.place_overlay(4, 4, tib01, 11);
+        let mut growth = OreGrowthState::new(8, 8);
+        growth.reset_native_tiberium_classes(tiberium_types.len(), 0);
+        let mut rng = SimRng::new(0x480a80);
+        let expected_rng = rng.clone();
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut nodes,
+            overlay_grid: Some(&mut overlay),
+            ore_growth_state: &mut growth,
+            overlay_registry: Some(&overlay_registry),
+            tiberium_types: Some(&tiberium_types),
+            resolved_terrain: None,
+            source_object_cells: None,
+            rng: Some(&mut rng),
+            binary_frame: 42,
+            spread_enabled: false,
+            radar_dirty_cells: None,
+            radar_dirty_generation: None,
+            tactical_dirty_cells: None,
+        };
+
+        let outcome = reduce_tiberium(&mut ctx, (4, 4), 11);
+
+        assert_eq!(outcome.removed_amount, 11);
+        assert!(!outcome.fully_removed);
+        assert_eq!(overlay.cell(4, 4).overlay_data, 0);
+        assert!(
+            growth.native_tiberium_state().classes[0]
+                .growth_heap
+                .is_empty()
+        );
+        assert!(
+            growth.native_tiberium_state().classes[0]
+                .growth_bitmap
+                .is_empty()
+        );
+        assert_eq!(
+            rng.logical_state(),
+            expected_rng.logical_state(),
+            "the density-11 RegisterForGrowth call rejects before its priority RNG draw"
+        );
+    }
+
+    #[test]
     fn gsi_04_09_full_reduction_propagates_synchronous_path_refresh() {
         let (overlay_registry, tiberium_types) = native_tiberium_fixture();
         let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
@@ -1098,8 +1142,7 @@ SpreadPercentage=.06
             "full reduction updates terrain synchronously"
         );
 
-        let (dirty, mut refresh_after_tick) =
-            overlay.take_dirty_cells_with_passability_signal();
+        let (dirty, mut refresh_after_tick) = overlay.take_dirty_cells_with_passability_signal();
         assert_eq!(dirty, vec![(0, 0)]);
         for (rx, ry) in dirty {
             let repeated = crate::sim::overlay_grid::recalc_overlay_passability(

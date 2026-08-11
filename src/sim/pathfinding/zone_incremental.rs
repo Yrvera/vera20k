@@ -222,13 +222,7 @@ fn update_category(
 
     // Rebuild bridge redirect.
     let bridge_redirect = if mz.can_use_bridges() {
-        build_bridge_redirect(
-            path_grid,
-            resolved_terrain,
-            bridge_records,
-            width,
-            height,
-        )
+        build_bridge_redirect(path_grid, resolved_terrain, bridge_records, width, height)
     } else {
         None
     };

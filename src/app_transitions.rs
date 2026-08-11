@@ -168,6 +168,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.bridge_height_map = result.bridge_height_map;
     state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
     state.lighting_grid = result.lighting_grid;
+    state.last_lighting_source_epoch = 0;
+    state.last_lighting_config_epoch = 0;
+    state.applied_lighting_sources.clear();
+    state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
     state.path_grid = result.path_grid;
     state.rules = result.rules;

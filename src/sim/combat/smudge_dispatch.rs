@@ -339,12 +339,7 @@ pub fn try_dispatch_building_survivor_smudges(
                 rng,
             );
         } else {
-            tiberium.reduce(
-                (snap_rx, snap_ry),
-                CRATER_ORE_REDUCTION,
-                terrain,
-                rng,
-            );
+            tiberium.reduce((snap_rx, snap_ry), CRATER_ORE_REDUCTION, terrain, rng);
             smudge_grid.try_place(
                 SmudgeKind::Crater,
                 coord,

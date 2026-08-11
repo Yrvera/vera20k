@@ -597,6 +597,9 @@ mod tests {
             slot: LocomotorSlot::from_kind(LocomotorKind::Drive),
             powered: true,
             piggyback: None,
+            runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+                LocomotorKind::Drive,
+            ),
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,

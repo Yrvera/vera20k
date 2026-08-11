@@ -14,8 +14,7 @@ const LAUNCH_PATH_SOURCES: &[&str] = &[
 fn launch_path_never_uses_the_default_sim_seed() {
     for rel in LAUNCH_PATH_SOURCES {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        let src =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
         // Strip the in-file test module: everything from the first
         // `#[cfg(test)]` to EOF is fixture territory.
         let live = src.split("#[cfg(test)]").next().unwrap_or(&src);

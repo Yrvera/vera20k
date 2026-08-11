@@ -810,9 +810,9 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         crate::app_chute_anim::tick_parachute_anims(state);
     }
 
-    // Refresh the radiation green glow after the sim steps (stepwise; a no-op
-    // when no radiation site crossed a step boundary this frame).
-    refresh_radiation_glow(state);
+    // Refresh changed point-light producers after the sim step. The queued
+    // Cell refresh itself remains all-gathered-before-commit.
+    refresh_cell_lighting(state);
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
@@ -1499,41 +1499,104 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     frame_committed
 }
 
-/// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
-/// radiation light epoch changes (a site crossed a `RadLightDelay` step boundary,
-/// or a site appeared/disappeared) — i.e. stepwise, matching the original. Idle
-/// matches (no sites) pay one epoch hash per frame and never rebuild. Render-only:
-/// never touches sim state or the deterministic hash.
-fn refresh_radiation_glow(state: &mut AppState) {
-    let epoch = match (state.simulation.as_ref(), state.rules.as_ref()) {
-        (Some(sim), Some(rules)) => {
-            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation)
+/// Samples pending light records backward and swaps the completed grid forward,
+/// matching YR `LightSourceClass::UpdateLightConverts`' all-gathered-before-commit
+/// boundary. This is app-local renderer state, never deterministic simulation state.
+const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
+
+/// Per-frame point-light refresh. A changed producer set schedules a deferred
+/// Cell light refresh; the visible grid remains stable until every replacement
+/// cell has been sampled.
+fn refresh_cell_lighting(state: &mut AppState) {
+    let (source_epoch, lights, effective_config) =
+        match (state.simulation.as_ref(), state.rules.as_ref()) {
+            (Some(sim), Some(rules)) => {
+                let lights = crate::app_init::collect_live_point_lights(Some(sim), Some(rules));
+                // Only Lightning Storm has represented runtime state. Native
+                // precedence places it before the still-unrepresented Psychic
+                // Dominator and Nuclear Flash branches.
+                let config = state
+                    .map_lighting_config
+                    .with_represented_lightning(sim.lightning_storm.is_some());
+                (
+                    crate::app_init::live_point_light_epoch(&lights),
+                    lights,
+                    config,
+                )
+            }
+            _ => return,
+        };
+    let config_epoch = crate::app_init::lighting_config_epoch(&effective_config);
+    let sources_changed = source_epoch != state.last_lighting_source_epoch
+        || lights != state.applied_lighting_sources;
+    let scenario_changed = config_epoch != state.last_lighting_config_epoch;
+    if sources_changed || scenario_changed {
+        // A new queued source flushes the old batch before its area is enumerated.
+        if let Some(mut pending) = state.pending_lighting_refresh.take() {
+            pending.gather_all();
+            let committed = pending.commit_into(&mut state.lighting_grid);
+            debug_assert!(committed);
         }
-        _ => return,
-    };
-    if epoch == state.last_radiation_light_epoch {
-        return;
+        let affected_cells = {
+            let Some(terrain) = state.resolved_terrain.as_ref() else {
+                return;
+            };
+            if scenario_changed {
+                terrain
+                    .iter()
+                    .map(|cell| ((cell.rx, cell.ry), cell.level))
+                    .collect()
+            } else {
+                let changed_sources = state
+                    .applied_lighting_sources
+                    .iter()
+                    .filter(|source| !lights.contains(source))
+                    .chain(
+                        lights
+                            .iter()
+                            .filter(|source| !state.applied_lighting_sources.contains(source)),
+                    );
+                let mut seen = std::collections::BTreeSet::new();
+                let mut cells = Vec::new();
+                for source in changed_sources {
+                    for record in crate::map::lighting::point_light_area_cells(
+                        source,
+                        terrain.width(),
+                        terrain.height(),
+                        |rx, ry| terrain.cell(rx, ry).map(|cell| cell.level),
+                    ) {
+                        if seen.insert(record.0) {
+                            cells.push(record);
+                        }
+                    }
+                }
+                cells
+            }
+        };
+        state.last_lighting_source_epoch = source_epoch;
+        state.last_lighting_config_epoch = config_epoch;
+        state.applied_lighting_sources = lights.clone();
+        state.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
+            crate::map::lighting::DeferredCellLightRefresh::new(
+                affected_cells,
+                &effective_config,
+                lights,
+            )
+        });
     }
-    // Recompute in an inner scope so the shared borrows of `state` drop before
-    // the mutable assignment to `state.lighting_grid`. Terrain is sourced from
-    // `state.resolved_terrain` to match the existing building-placement caller
-    // (the same grid the building lamps light off).
-    let new_grid = {
-        let (Some(sim), Some(rules)) = (state.simulation.as_ref(), state.rules.as_ref()) else {
-            return;
-        };
-        let Some(terrain) = state.resolved_terrain.as_ref() else {
-            return;
-        };
-        crate::app_init::rebuild_lighting_grid_from_sim(
-            terrain,
-            &state.map_lighting_config,
-            Some(sim),
-            Some(rules),
-        )
-    };
-    state.last_radiation_light_epoch = epoch;
-    state.lighting_grid = new_grid;
+
+    let completed = state
+        .pending_lighting_refresh
+        .as_mut()
+        .is_some_and(|pending| pending.gather(CELL_LIGHT_GATHER_BUDGET));
+    if completed {
+        let pending = state
+            .pending_lighting_refresh
+            .take()
+            .expect("completed lighting refresh remains installed");
+        let committed = pending.commit_into(&mut state.lighting_grid);
+        debug_assert!(committed, "completed lighting refresh commits atomically");
+    }
 }
 
 fn begin_fire_effect_batch(pending: &mut Vec<SimFireEvent>) {

@@ -422,9 +422,8 @@ fn apply_tactical_bridge_inverse(
         true
     };
     if apply_extra_bridge_lift {
-        *adjusted_scan_y = scan_y
-            - f32::from(terrain_z as i8) * HEIGHT_STEP
-            - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
+        *adjusted_scan_y =
+            scan_y - f32::from(terrain_z as i8) * HEIGHT_STEP - TACTICAL_BRIDGE_EXTRA_HEIGHT_PX;
     }
     None
 }
@@ -532,8 +531,7 @@ pub fn screen_to_iso_with_height_and_bridges(
                 let bx: u16 = bx_i as u16;
                 let by: u16 = by_i as u16;
                 if let Some(&bridge_z) = bridge_map.get(&(bx, by)) {
-                    let corrected_y: f32 =
-                        screen_y + f32::from(bridge_z as i8) * HEIGHT_STEP;
+                    let corrected_y: f32 = screen_y + f32::from(bridge_z as i8) * HEIGHT_STEP;
                     let (new_rx, new_ry) = screen_to_iso(screen_x, corrected_y);
                     let dist: f32 = (new_rx - bx as f32).abs() + (new_ry - by as f32).abs();
                     if dist < 0.7 && dist < best_dist {

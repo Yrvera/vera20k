@@ -683,8 +683,7 @@ impl ResolvedTerrainGrid {
             .and_then(|td| td.rmg_tiles.clear_tile)
             .unwrap_or(0);
         let materialized_size_diamond = variant_selector.is_some();
-        let playfield =
-            materialized_size_diamond.then(|| Playfield::from_header(&map.header));
+        let playfield = materialized_size_diamond.then(|| Playfield::from_header(&map.header));
         let raw_cells = if let (Some(selector), Some(fill_ranged)) = (
             variant_selector.as_deref_mut(),
             scenario_fill_ranged.as_deref_mut(),
@@ -1142,9 +1141,8 @@ impl ResolvedTerrainGrid {
                 cell.has_bridge_deck = false;
                 cell.bridge_walkable = false;
                 cell.bridge_deck_level = cell.level;
-                cell.build_blocked = cell.base_build_blocked
-                    || cell.terrain_object_blocks
-                    || cell.overlay_blocks;
+                cell.build_blocked =
+                    cell.base_build_blocked || cell.terrain_object_blocks || cell.overlay_blocks;
             }
 
             if facts.has_transition_flag() {
@@ -2080,13 +2078,11 @@ fn merge_overlay_zone_type(current: Option<u8>, candidate: Option<u8>) -> Option
     match (current, candidate) {
         (None, candidate) => candidate,
         (current, None) => current,
-        (Some(current), Some(candidate)) => {
-            Some(if priority(candidate) < priority(current) {
-                candidate
-            } else {
-                current
-            })
-        }
+        (Some(current), Some(candidate)) => Some(if priority(candidate) < priority(current) {
+            candidate
+        } else {
+            current
+        }),
     }
 }
 
@@ -2386,11 +2382,7 @@ mod tests {
         let mut main_draw = || main_rng.next_u32();
         {
             let mut selector = cache.begin_load(&mut main_draw);
-            let cells = materialize_map_load_cells(
-                &map,
-                &mut selector,
-                &mut scenario_fill_ranged,
-            );
+            let cells = materialize_map_load_cells(&map, &mut selector, &mut scenario_fill_ranged);
             let coords: Vec<_> = cells.iter().map(|cell| (cell.rx, cell.ry)).collect();
             assert_eq!(
                 coords,
@@ -2426,7 +2418,10 @@ mod tests {
         drop(main_draw);
         drop(scenario_fill_ranged);
         assert_eq!(scenario_calls, 10);
-        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        assert_eq!(
+            scenario_rng.logical_state(),
+            expected_scenario.logical_state()
+        );
         assert_eq!(main_rng.logical_state(), main_before);
 
         // A registry with neither role publishes native reset sentinels only
@@ -2458,11 +2453,7 @@ mod tests {
                 assert_eq!((low, high), (0, 0));
                 scenario_rng.next_range_u32_inclusive(low, high)
             };
-            let cells = materialize_map_load_cells(
-                &map,
-                &mut selector,
-                &mut scenario_fill_ranged,
-            );
+            let cells = materialize_map_load_cells(&map, &mut selector, &mut scenario_fill_ranged);
             drop(scenario_fill_ranged);
 
             assert_eq!(cells.len(), 10);
@@ -2511,9 +2502,7 @@ mod tests {
         for _ in 1..10 {
             let _ = expected_scenario.next_range_u32_inclusive(0, 3);
         }
-        let mut scenario_fill_ranged = |low, high| {
-            scenario_rng.next_range_u32_inclusive(low, high)
-        };
+        let mut scenario_fill_ranged = |low, high| scenario_rng.next_range_u32_inclusive(low, high);
         let mut main_rng = SimRng::new(seed);
         let main_before = main_rng.logical_state();
         let mut main_draw = || main_rng.next_u32();
@@ -2565,7 +2554,10 @@ mod tests {
         }
         drop(main_draw);
         drop(scenario_fill_ranged);
-        assert_eq!(scenario_rng.logical_state(), expected_scenario.logical_state());
+        assert_eq!(
+            scenario_rng.logical_state(),
+            expected_scenario.logical_state()
+        );
         let mut expected_main = SimRng::new(seed);
         for _ in 0..main_draw_count {
             let _ = expected_main.next_u32();
@@ -3399,10 +3391,7 @@ IsRubble=yes
 
         let grid = ResolvedTerrainGrid::build(&map, None, None, None, Some(&reg), false, 0);
 
-        assert_eq!(
-            grid.cell(0, 0).unwrap().zone_type,
-            zone_class::CRUSHABLE
-        );
+        assert_eq!(grid.cell(0, 0).unwrap().zone_type, zone_class::CRUSHABLE);
         assert!(!grid.cell(0, 0).unwrap().overlay_blocks);
         assert_eq!(grid.cell(1, 0).unwrap().zone_type, zone_class::WALL);
         assert!(grid.cell(1, 0).unwrap().overlay_blocks);
@@ -3600,7 +3589,11 @@ NoUseTileLandType=yes
             assert_eq!(cell.terrain_class, class, "overlay {overlay_id}");
             assert_eq!(
                 cell.speed_costs,
-                registry.flags(overlay_id).unwrap().land_speed_costs.unwrap(),
+                registry
+                    .flags(overlay_id)
+                    .unwrap()
+                    .land_speed_costs
+                    .unwrap(),
                 "overlay {overlay_id} profile"
             );
             assert_eq!(cell.is_water, land == LandType::Water);

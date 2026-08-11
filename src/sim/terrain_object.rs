@@ -90,11 +90,7 @@ pub(crate) fn mark_terrain_raw_occupation(
     cell: (u16, u16),
     source_mask: u8,
 ) {
-    raw_occupation.mark_ground(
-        cell.0,
-        cell.1,
-        terrain_raw_occupation_mask(source_mask),
-    );
+    raw_occupation.mark_ground(cell.0, cell.1, terrain_raw_occupation_mask(source_mask));
 }
 
 fn unmark_terrain_raw_occupation(
@@ -102,11 +98,7 @@ fn unmark_terrain_raw_occupation(
     cell: (u16, u16),
     source_mask: u8,
 ) {
-    raw_occupation.clear_ground(
-        cell.0,
-        cell.1,
-        terrain_raw_occupation_mask(source_mask),
-    );
+    raw_occupation.clear_ground(cell.0, cell.1, terrain_raw_occupation_mask(source_mask));
 }
 
 pub fn sync_spawner_indices_from_live_terrain(production: &mut ProductionState) {
@@ -175,11 +167,7 @@ pub(crate) fn limbo_terrain_object_at_cell(
     }
 
     let source_cell = snapshot.cell();
-    raw_occupation.clear_ground(
-        source_cell.0,
-        source_cell.1,
-        TERRAIN_LIMBO_CLEAR_BIT,
-    );
+    raw_occupation.clear_ground(source_cell.0, source_cell.1, TERRAIN_LIMBO_CLEAR_BIT);
     production.terrain_object_cells.remove(&cell);
     unmark_terrain_raw_occupation(raw_occupation, source_cell, snapshot.occupation_bits);
     unmark_terrain_occupation(production, &snapshot, resolved_terrain);
@@ -329,12 +317,7 @@ mod tests {
         seed_one_at(sim, rules, "TIBTRE01", (10, 11));
     }
 
-    fn seed_one_at(
-        sim: &mut Simulation,
-        rules: &RuleSet,
-        type_name: &str,
-        cell: (u16, u16),
-    ) {
+    fn seed_one_at(sim: &mut Simulation, rules: &RuleSet, type_name: &str, cell: (u16, u16)) {
         seed_terrain_spawners(
             sim,
             &[TerrainObject {

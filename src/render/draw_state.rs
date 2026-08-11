@@ -6,6 +6,14 @@
 
 use crate::sim::game_entity::GameEntity;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObserverDrawContext {
+    /// The observer's house considers the object's real owner allied.
+    pub owner_is_allied: bool,
+    /// Positive sensor/detection result supplied by observer gameplay state.
+    pub detects_cloak: bool,
+}
+
 /// `fx_flags` bit assignments consumed by the sprite shaders.
 pub const FX_CLOAK: u32 = 1 << 0;
 /// Explicit residual: no dedicated YR EMP material mutation is proven.
@@ -172,7 +180,12 @@ impl DrawState {
     }
 
     /// Adapt simulation-owned producers without inventing missing native fields.
-    pub fn for_entity(entity: &GameEntity, current_frame: u32, remap_row: u32) -> DrawDecision {
+    pub fn for_entity(
+        entity: &GameEntity,
+        current_frame: u32,
+        remap_row: u32,
+        observer: ObserverDrawContext,
+    ) -> DrawDecision {
         let (warp_out, warp_in) = entity
             .teleport_state
             .as_ref()
@@ -180,6 +193,32 @@ impl DrawState {
             .unwrap_or_default();
         Self::resolve(
             DrawStateInput {
+                cloak: entity.cloak.as_ref().and_then(|cloak| {
+                    let phase = match cloak.visual_phase? {
+                        crate::sim::cloak_disguise::CloakVisualPhase::Cloaking => {
+                            CloakDrawPhase::Cloaking
+                        }
+                        crate::sim::cloak_disguise::CloakVisualPhase::FullyCloaked => {
+                            CloakDrawPhase::FullyCloaked
+                        }
+                        crate::sim::cloak_disguise::CloakVisualPhase::Uncloaking => {
+                            CloakDrawPhase::Uncloaking
+                        }
+                    };
+                    Some(CloakDrawInput {
+                        phase,
+                        depth: cloak.depth,
+                        cloaking_stages: cloak.cloaking_stages,
+                        late_visible: cloak.late_visible,
+                        force_visible_call: cloak.force_visible_call,
+                        visible_to_observer: observer.owner_is_allied || observer.detects_cloak,
+                    })
+                }),
+                disguise: entity.disguise.as_ref().map(|disguise| DisguiseDrawInput {
+                    active: disguise.disguised,
+                    observer_is_allied: observer.owner_is_allied,
+                    start_frame: disguise.disguise_creation_frame,
+                }),
                 warp_out,
                 warp_in,
                 // The current invulnerability producer has no authoritative YR
@@ -310,7 +349,10 @@ mod tests {
             0,
             0,
             InternedId::from_index(0),
-            Health { current: 100, max: 100 },
+            Health {
+                current: 100,
+                max: 100,
+            },
             InternedId::from_index(0),
             EntityCategory::Unit,
             0,
@@ -332,7 +374,16 @@ mod tests {
 
     #[test]
     fn disguise_formula_matches_locked_yr_vectors() {
-        for (phase, expected) in [(0, 0), (64, 25), (70, 50), (78, 25), (100, 0), (120, 50), (126, 25), (200, 0)] {
+        for (phase, expected) in [
+            (0, 0),
+            (64, 25),
+            (70, 50),
+            (78, 25),
+            (100, 0),
+            (120, 50),
+            (126, 25),
+            (200, 0),
+        ] {
             assert_eq!(disguise_phase_percent(phase), expected);
         }
     }
@@ -403,7 +454,10 @@ mod tests {
 
         assert!(decision.visible);
         assert_eq!(decision.state.remap_row, 7);
-        assert_eq!(decision.state.fx_flags, FX_CLOAK | FX_WARP | FX_DISGUISE | FX_INVULNERABILITY);
+        assert_eq!(
+            decision.state.fx_flags,
+            FX_CLOAK | FX_WARP | FX_DISGUISE | FX_INVULNERABILITY
+        );
         assert_eq!(decision.state.fx_params[0], 0.25);
         assert_eq!(decision.state.fx_params[1], 6.0);
         assert_eq!(decision.state.effect_tint, [0.199, 0.199, 0.199, 1.0]);
@@ -418,7 +472,7 @@ mod tests {
             target_ry: 2,
             being_warped_ticks: 4,
         });
-        let state = DrawState::for_entity(&entity, 45, 3).state;
+        let state = DrawState::for_entity(&entity, 45, 3, ObserverDrawContext::default()).state;
         assert_eq!(state.fx_flags, FX_WARP);
         assert_eq!(state.fx_params[0], 0.5);
     }
@@ -431,7 +485,7 @@ mod tests {
             duration_frames: 20,
             kind: InvulnKind::IronCurtain,
         });
-        let state = DrawState::for_entity(&entity, 45, 3).state;
+        let state = DrawState::for_entity(&entity, 45, 3, ObserverDrawContext::default()).state;
         assert_eq!(state.fx_flags, 0);
         assert_eq!(state.fx_params, [1.0, 0.0, 1.0, 0.0]);
         assert_eq!(state.effect_tint, [1.0; 4]);
@@ -445,7 +499,7 @@ mod tests {
             duration_frames: 5,
             kind: InvulnKind::ForceShield,
         });
-        let state = DrawState::for_entity(&entity, 45, 2).state;
+        let state = DrawState::for_entity(&entity, 45, 2, ObserverDrawContext::default()).state;
         assert_eq!(state.fx_flags, 0);
         assert_eq!(state.effect_tint, [1.0; 4]);
     }

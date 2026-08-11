@@ -172,7 +172,12 @@ use crate::sim::world::Simulation;
 // field onward, for that vehicle and every entity after it. Both occupation
 // marks are rebuilt into the transient `CellOccupationGrid` on load, so a
 // misread is a wrong cell reservation, not just a cosmetic field.
-const SNAPSHOT_VERSION: u32 = 48;
+// Bumped 48 -> 49: synchronized projectile trajectory/visual state,
+// Techno cloak/disguise producers, and the active typed locomotor payload are
+// now serialized. Bincode cannot safely decode the old mid-struct layouts.
+// Bumped 49 -> 50: persistent WaveClass lifecycle, aircraft release-tail,
+// guided projectile, CellClass visibility, BuildingLight, and Anim draw state.
+const SNAPSHOT_VERSION: u32 = 52;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -1367,10 +1372,12 @@ mod tests {
     /// numbers to projectile state, trigger hashing, TeamClass state, piggyback
     /// persistence, and typed special locomotors. The merge unified both as 47.
     /// This pins it so a later accidental bump is caught. 47 -> 48 added
-    /// `DriveLocomotionRuntime::occupation_handoff` mid-struct.
+    /// `DriveLocomotionRuntime::occupation_handoff` mid-struct. 50 -> 51 adds
+    /// projectile collision, wave damage, infantry-owner, and fog/sensor state;
+    /// 51 -> 52 adds serialized per-cell cloak-owner words.
     #[test]
-    fn snapshot_version_is_48() {
-        assert_eq!(super::SNAPSHOT_VERSION, 48);
+    fn snapshot_version_is_52() {
+        assert_eq!(super::SNAPSHOT_VERSION, 52);
     }
 
     #[test]
@@ -1378,6 +1385,12 @@ mod tests {
         let mut sim = Simulation::new();
         sim.substrate.raw_cell_occupation.mark_ground(17, 23, 0x23);
         sim.substrate.raw_cell_occupation.mark_deck(17, 23, 0xC4);
+        sim.substrate
+            .raw_cell_occupation
+            .mark_ground_infantry(17, 23, 0x04, 7001);
+        sim.substrate
+            .raw_cell_occupation
+            .mark_deck_infantry(17, 23, 0x08, 7002);
         sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
         let expected_hash = sim.state_hash();
 
@@ -1396,17 +1409,57 @@ mod tests {
 
         assert_eq!(
             restored.substrate.raw_cell_occupation.ground_bits(17, 23),
-            0x23
+            0x27
         );
         assert_eq!(
             restored.substrate.raw_cell_occupation.deck_bits(17, 23),
-            0xC4
+            0xCC
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .raw_cell_occupation
+                .ground_infantry_owner(17, 23),
+            Some(7001)
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .raw_cell_occupation
+                .deck_infantry_owner(17, 23),
+            Some(7002)
         );
         assert_eq!(
             restored.substrate.raw_cell_occupation.ground_bits(2, 31),
             0x02
         );
         assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn cell_fog_sensor_and_cloak_state_roundtrips_with_hash() {
+        let mut sim = Simulation::new();
+        let viewer = sim.interner.intern("AMERICANS");
+        let source_owner = sim.interner.intern("RUSSIANS");
+        sim.fog.width = 8;
+        sim.fog.height = 8;
+        sim.fog
+            .insert_fogged_object_footprint(viewer, (3, 3), 91, vec![(3, 3), (4, 3)]);
+        sim.fog.sensors_add_at(viewer, (3, 3), 2);
+        assert!(sim.fog.set_cloaked_by_house(7, 3, 3));
+        assert!(
+            sim.fog
+                .draw_objects_cloaked(Some(source_owner), source_owner, 7, 3, 3)
+        );
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "cell_fog_sensor_cloak", 0);
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert_eq!(restored.state_hash(), expected_hash);
+        assert_eq!(restored.fog.fogged_objects.len(), 1);
+        assert!(restored.fog.has_sensor_for_house(viewer, 3, 3));
+        assert!(restored.fog.is_cloaked_by_house(7, 3, 3));
     }
 
     #[test]

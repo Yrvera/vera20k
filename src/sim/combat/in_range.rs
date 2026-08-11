@@ -44,10 +44,7 @@ fn terrain_ground_z_at(
         .map(i64::from)
 }
 
-fn entity_ground_z_leptons(
-    entity: &GameEntity,
-    terrain: &ResolvedTerrainGrid,
-) -> Option<i64> {
+fn entity_ground_z_leptons(entity: &GameEntity, terrain: &ResolvedTerrainGrid) -> Option<i64> {
     let world_x = i32::from(entity.position.rx)
         .wrapping_mul(256)
         .wrapping_add(entity.position.sub_x.to_num::<i32>());
@@ -226,8 +223,7 @@ pub(crate) fn compute_in_range(
     let max_range_lep =
         compute_effective_max_range_leptons(attacker, target, weapon, rules, interner, entities);
 
-    let Some((tx, ty, tz)) =
-        resolve_target_coords_3d(target, entities, rules, interner, terrain)
+    let Some((tx, ty, tz)) = resolve_target_coords_3d(target, entities, rules, interner, terrain)
     else {
         return false;
     };
@@ -316,13 +312,8 @@ fn resolve_target_coords_3d(
                 let world_y = i32::from(t.position.ry)
                     .wrapping_mul(256)
                     .wrapping_add(t.position.sub_y.to_num::<i32>());
-                let mut ground = terrain_ground_z_at(
-                    terrain,
-                    t.position.rx,
-                    t.position.ry,
-                    world_x,
-                    world_y,
-                )?;
+                let mut ground =
+                    terrain_ground_z_at(terrain, t.position.rx, t.position.ry, world_x, world_y)?;
                 if terrain
                     .cell(t.position.rx, t.position.ry)
                     .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
@@ -402,11 +393,7 @@ fn resolve_entity_target_coords(
 
 /// Ground Z in leptons for a cell, plus bridge deck offset if a bridge deck
 /// is present on the cell.
-fn ground_z_with_bridge_offset(
-    rx: u16,
-    ry: u16,
-    terrain: &ResolvedTerrainGrid,
-) -> Option<i64> {
+fn ground_z_with_bridge_offset(rx: u16, ry: u16, terrain: &ResolvedTerrainGrid) -> Option<i64> {
     let cell = terrain.cell(rx, ry)?;
     let world_x = i32::from(rx).wrapping_mul(256).wrapping_add(128);
     let world_y = i32::from(ry).wrapping_mul(256).wrapping_add(128);
@@ -473,6 +460,9 @@ mod tests {
             slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
             powered: true,
             piggyback: None,
+            runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+                LocomotorKind::Fly,
+            ),
             layer: MovementLayer::Air,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Cruising,
@@ -951,8 +941,7 @@ mod tests {
             "generic or low deck state does not satisfy Cell+0x140 bit 0x100"
         );
 
-        terrain.cells[0].bridge_facts.raw_flags =
-            crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        terrain.cells[0].bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
         let structural_z = resolve_target_coords_3d(
             &TargetKind::Entity(200),
             &entities,

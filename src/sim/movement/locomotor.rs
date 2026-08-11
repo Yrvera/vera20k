@@ -26,7 +26,9 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
 use crate::sim::movement::locomotion::LocomotorSlot;
-use crate::sim::movement::locomotion::piggyback::{self, EndGateContext, LocomotorRuntime, StashedLocomotor};
+use crate::sim::movement::locomotion::piggyback::{
+    self, EndGateContext, LocomotorRuntimePayload, StashedLocomotor,
+};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.
@@ -135,6 +137,10 @@ pub struct LocomotorState {
     /// primary Teleport runtime until the active Drive locomotor is ok to end.
     #[serde(default)]
     pub piggyback: Option<StashedLocomotor>,
+    /// Class-local state of the locomotor currently driving this entity.
+    /// Piggyback BEGIN/END transfers this value with the complete runtime.
+    #[serde(default)]
+    pub runtime_payload: LocomotorRuntimePayload,
     /// Which spatial layer the unit currently occupies.
     pub layer: MovementLayer,
     /// Current movement phase (for ground movers).
@@ -281,6 +287,7 @@ impl LocomotorState {
             slot: LocomotorSlot::from_kind(kind),
             powered: true,
             piggyback: None,
+            runtime_payload: LocomotorRuntimePayload::for_kind(kind),
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -351,6 +358,7 @@ impl LocomotorState {
             slot: LocomotorSlot::from_kind(kind),
             powered: true,
             piggyback: None,
+            runtime_payload: LocomotorRuntimePayload::for_kind(kind),
             layer,
             phase: GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -438,18 +446,9 @@ impl LocomotorState {
             return false;
         }
         if self.kind == LocomotorKind::Drive {
-            // Already driving. If the stash is missing the state is inconsistent
-            // — Drive is driving with nothing recorded underneath it — so put
-            // the Teleport locomotor back where it belongs rather than capturing
-            // Drive on top of itself. Repair, not a BEGIN: the native protocol
-            // has no path that reaches this shape.
-            if self.piggyback.is_none() {
-                let mut runtime = LocomotorRuntime::capture(self);
-                runtime.kind = LocomotorKind::Teleport;
-                runtime.layer = MovementLayer::Ground;
-                self.piggyback = Some(StashedLocomotor::from_runtime(runtime));
-            }
-            return true;
+            // WalkLocomotionClass::BeginPiggyback rejects nested/incoherent
+            // ownership; it never reconstructs a missing Teleport COM object.
+            return self.piggyback.is_some();
         }
         self.begin_piggyback(LocomotorKind::Drive, MovementLayer::Ground)
     }

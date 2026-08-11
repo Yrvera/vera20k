@@ -707,6 +707,9 @@ mod tests {
             slot: LocomotorSlot::from_kind(LocomotorKind::Fly),
             powered: true,
             piggyback: None,
+            runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+                LocomotorKind::Fly,
+            ),
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,
@@ -742,6 +745,9 @@ mod tests {
             slot: LocomotorSlot::from_kind(LocomotorKind::Jumpjet),
             powered: true,
             piggyback: None,
+            runtime_payload: crate::sim::movement::locomotion::LocomotorRuntimePayload::for_kind(
+                LocomotorKind::Jumpjet,
+            ),
             layer: MovementLayer::Air,
             phase: crate::sim::movement::locomotor::GroundMovePhase::Idle,
             air_phase: AirMovePhase::Landed,

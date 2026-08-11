@@ -277,11 +277,7 @@ fn key_name(line: &str) -> Option<&str> {
     }
     let eq = t.find('=')?;
     let k = t[..eq].trim();
-    if k.is_empty() {
-        None
-    } else {
-        Some(k)
-    }
+    if k.is_empty() { None } else { Some(k) }
 }
 
 #[cfg(test)]

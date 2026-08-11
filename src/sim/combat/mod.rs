@@ -51,6 +51,7 @@ use crate::sim::miner::ResourceNode;
 
 use self::combat_weapon::{WeaponSlot, select_deploy_fire_weapon, select_weapon_with_override};
 use crate::map::entities::EntityCategory;
+use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -63,11 +64,15 @@ use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
-    ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectilePayload,
-    ProjectileSpawn, ProjectileTarget, TargetExpiryPolicy,
+    ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectileGuidance,
+    ProjectilePayload, ProjectileSpawn, ProjectileTarget, ProjectileTrajectory, ProjectileVelocity,
+    ProjectileVisualState, SpecialDetonationAction, SpecialDetonationFlags, TargetExpiryPolicy,
+    ballistic_launch_velocity, projectile_next_cluster_coord, projectile_random_shrapnel_cell,
+    projectile_shrapnel_count, projectile_special_detonation_action,
 };
 use crate::sim::rng::SimRng;
 use crate::sim::vision::FogState;
+use crate::sim::wave::WaveDamageEvent;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
 
@@ -93,6 +98,8 @@ enum ProjectileDelivery {
         arm_frames: u16,
         tracks_target: bool,
         collision: ProjectileCollisionPolicy,
+        ballistic: bool,
+        guidance: Option<ProjectileGuidance>,
     },
     Immediate(ImmediateProjectileReason),
 }
@@ -106,7 +113,6 @@ enum ImmediateProjectileReason {
     Invisible,
     InstantSpeed,
     Vertical,
-    Ballistic,
     ObstacleTrajectory,
     SpecialTrajectory,
 }
@@ -130,27 +136,20 @@ fn classify_projectile_delivery(
     if projectile.vertical {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::Vertical);
     }
-    if projectile.arcing || weapon.lobber {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::Ballistic);
-    }
     // YR BulletClass::AI linkage: Level's current-cell water predicate and
     // wall entry are now owned by the world collision rung. Cliff/elevation
     // kernels still need their native coordinate contracts.
-    if projectile.subject_to_cliffs || projectile.subject_to_elevation {
+    let ballistic = projectile.arcing || weapon.lobber;
+    if !ballistic && (projectile.subject_to_cliffs || projectile.subject_to_elevation) {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::ObstacleTrajectory);
     }
-    if projectile.airburst
-        || projectile.dropping
-        || projectile.very_high
+    if projectile.dropping
+        || (projectile.very_high && projectile.rot <= 0)
         || projectile.proximity
         || projectile.flak_scatter
         || projectile.inaccurate
         || projectile.degenerates
         || projectile.bouncy
-        // BulletTypeClass defaults Cluster to one ordinary impact. Only a
-        // value other than that baseline requires the cluster kernel.
-        || projectile.cluster != 1
-        || projectile.shrapnel_count != 0
     {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::SpecialTrajectory);
     }
@@ -160,7 +159,24 @@ fn classify_projectile_delivery(
         collision: ProjectileCollisionPolicy {
             level_non_water: projectile.level,
             subject_to_walls: projectile.subject_to_walls,
+            native_cell_collision: projectile.rot <= 0,
         },
+        ballistic,
+        guidance: (!ballistic && projectile.rot > 0).then_some(ProjectileGuidance {
+            rot: projectile.rot,
+            missile_rot_var: rules.general.missile_rot_var,
+            course_lock_frames: projectile
+                .course_lock_duration
+                .clamp(0, i32::from(u16::MAX)) as u16,
+            // The RE contract proves this is BulletClass-identity-derived but
+            // not its formula. Keep the raw phase as an explicit live seam.
+            sidewinder_phase: 0,
+            airburst: projectile.airburst,
+            very_high: projectile.very_high,
+            level: projectile.level,
+            pitch_bam: 0x4000,
+            frames_elapsed: 0,
+        }),
     }
 }
 
@@ -197,7 +213,10 @@ mod projectile_delivery_tests {
                 collision: ProjectileCollisionPolicy {
                     level_non_water: false,
                     subject_to_walls: true,
+                    native_cell_collision: true,
                 },
+                ballistic: false,
+                guidance: None,
             }
         );
     }
@@ -1435,12 +1454,410 @@ fn projectile_impact_cell(impact: ProjectileCoord) -> (u16, u16, SimFixed, SimFi
         ry,
         SimFixed::from_num(impact.x.rem_euclid(256)),
         SimFixed::from_num(impact.y.rem_euclid(256)),
-        impact.z,
+        impact.z / crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
     )
+}
+
+fn shrapnel_launch_velocity(
+    origin: ProjectileCoord,
+    target: ProjectileCoord,
+    speed: i32,
+) -> ProjectileVelocity {
+    let dx = f64::from(target.x - origin.x);
+    let dy = f64::from(target.y - origin.y);
+    let length = dx.hypot(dy);
+    let angle = 0.7853262558535721_f64;
+    let horizontal = f64::from(speed) * angle.cos();
+    let (unit_x, unit_y) = if length == 0.0 {
+        (1.0, 0.0)
+    } else {
+        (dx / length, dy / length)
+    };
+    ProjectileVelocity::new(
+        (unit_x * horizontal).round_ties_even() as i32,
+        (unit_y * horizontal).round_ties_even() as i32,
+        (f64::from(speed) * angle.sin()).round_ties_even() as i32,
+    )
+}
+
+fn emit_projectile_shrapnel(
+    detonation: &ProjectileDetonation,
+    entities: &EntityStore,
+    occupancy: &OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    house_alliances: &HouseAllianceMap,
+    scenario_rng: &mut SimRng,
+    out: &mut CombatEmit,
+) {
+    let Some(parent_weapon) = rules.weapon(interner.resolve(detonation.payload.weapon)) else {
+        return;
+    };
+    let Some(parent_projectile) = parent_weapon
+        .projectile
+        .as_deref()
+        .and_then(|name| rules.projectile(name))
+    else {
+        return;
+    };
+    let Some(child_weapon_name) = parent_projectile.shrapnel_weapon.as_deref() else {
+        return;
+    };
+    let Some(child_weapon) = rules.weapon(child_weapon_name) else {
+        return;
+    };
+    let Some(child_projectile) = child_weapon
+        .projectile
+        .as_deref()
+        .and_then(|name| rules.projectile(name))
+    else {
+        log::debug!(
+            "Projectile {} shrapnel skipped: child projectile constructor unavailable",
+            detonation.projectile_id
+        );
+        return;
+    };
+    let Some(child_warhead_name) = child_weapon.warhead.as_deref() else {
+        return;
+    };
+
+    let target_position = match detonation.target {
+        ProjectileTarget::Entity(id) => entities.get(id).map(|entity| {
+            ProjectileCoord::new(
+                i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+            )
+        }),
+        ProjectileTarget::Cell(coord) => Some(coord),
+    };
+    let distance_cells = target_position.map_or(0, |target| {
+        let dx = i64::from(target.x - detonation.impact.x);
+        let dy = i64::from(target.y - detonation.impact.y);
+        let dz = i64::from(target.z - detonation.impact.z);
+        (dx.saturating_mul(dx)
+            .saturating_add(dy.saturating_mul(dy))
+            .saturating_add(dz.saturating_mul(dz)))
+        .isqrt()
+        .saturating_div(256) as i32
+    });
+    let count = projectile_shrapnel_count(
+        parent_projectile.shrapnel_count,
+        entities.get(detonation.source_id).is_some(),
+        distance_cells,
+    );
+    if count == 0 {
+        return;
+    }
+
+    let center_rx = detonation.impact.x / 256;
+    let center_ry = detonation.impact.y / 256;
+    let source_owner = entities
+        .get(detonation.source_id)
+        .map(|source| source.owner);
+    let mut targets = Vec::with_capacity(count as usize);
+    let scan_radius = child_weapon.range.to_num::<i32>().max(0);
+    for &(dx, dy) in self::cell_spread::splash_cells(SimFixed::from_num(scan_radius))
+        .iter()
+        .skip(1)
+    {
+        if targets.len() == count as usize {
+            break;
+        }
+        let rx = center_rx + i32::from(dx);
+        let ry = center_ry + i32::from(dy);
+        let (Ok(rx), Ok(ry)) = (u16::try_from(rx), u16::try_from(ry)) else {
+            continue;
+        };
+        let Some(target_id) = occupancy
+            .get(rx, ry)
+            .and_then(|cell| {
+                cell.iter_layer(crate::sim::movement::locomotor::MovementLayer::Ground)
+                    .next()
+            })
+            .map(|occupant| occupant.entity_id)
+        else {
+            continue;
+        };
+        if target_id == detonation.source_id {
+            continue;
+        }
+        let Some(target) = entities.get(target_id) else {
+            continue;
+        };
+        let allied = source_owner.is_some_and(|owner| {
+            crate::map::houses::are_houses_friendly(
+                house_alliances,
+                interner.resolve(owner),
+                interner.resolve(target.owner),
+            )
+        });
+        if allied {
+            continue;
+        }
+        targets.push(ProjectileTarget::Entity(target_id));
+    }
+    while targets.len() < count as usize {
+        let (rx, ry) = projectile_random_shrapnel_cell(center_rx, center_ry, scenario_rng);
+        targets.push(ProjectileTarget::Cell(ProjectileCoord::new(
+            rx * 256 + 128,
+            ry * 256 + 128,
+            0,
+        )));
+    }
+
+    let gravity = if child_projectile.floater {
+        rules.general.gravity / 2
+    } else {
+        rules.general.gravity
+    };
+    for target in targets {
+        let target_coord = match target {
+            ProjectileTarget::Entity(id) => {
+                let Some(entity) = entities.get(id) else {
+                    continue;
+                };
+                ProjectileCoord::new(
+                    i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>(),
+                    i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>(),
+                    i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                )
+            }
+            ProjectileTarget::Cell(mut coord) => {
+                if let (Ok(rx), Ok(ry)) =
+                    (u16::try_from(coord.x / 256), u16::try_from(coord.y / 256))
+                    && let Some(cell) = terrain.and_then(|grid| grid.cell(rx, ry))
+                {
+                    coord.z = crate::sim::cell_kernel::cell_floor_height(
+                        cell.level,
+                        cell.slope_type,
+                        coord.x,
+                        coord.y,
+                    )
+                    .unwrap_or(0);
+                }
+                coord
+            }
+        };
+        out.projectile_spawns.push(ProjectileSpawn {
+            source_id: detonation.source_id,
+            origin: detonation.impact,
+            target,
+            initial_target_position: target_coord,
+            payload: ProjectilePayload {
+                base_damage: child_weapon.damage,
+                warhead: interner.intern(child_warhead_name),
+                weapon: interner.intern(child_weapon_name),
+                owner: detonation.payload.owner,
+            },
+            speed_leptons_per_frame: child_weapon.speed.clamp(1, i32::from(u16::MAX)) as u16,
+            velocity: shrapnel_launch_velocity(detonation.impact, target_coord, child_weapon.speed),
+            // `BulletClass::Shrapnel @ 0x0046a310` supplies an explicit
+            // 45-degree launch vector. The existing velocity/gravity flight
+            // state is the represented constructor for that native handoff.
+            trajectory: ProjectileTrajectory::Ballistic { gravity },
+            guidance: None,
+            visual: ProjectileVisualState::new(
+                child_projectile.anim_low as u8,
+                child_projectile.anim_high as u8,
+                child_projectile.anim_rate as u8,
+            ),
+            arm_frames: child_projectile.arm.clamp(0, i32::from(u16::MAX)) as u16,
+            fuse_frames: None,
+            ranged_fuse: child_projectile.ranged,
+            tracks_target: false,
+            target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
+            collision: ProjectileCollisionPolicy {
+                level_non_water: child_projectile.level,
+                subject_to_walls: child_projectile.subject_to_walls,
+                native_cell_collision: child_projectile.rot <= 0,
+            },
+        });
+    }
 }
 
 /// Reuse the ordinary combat emission paths after a persistent bullet reaches
 /// `BulletClass::Detonate`; this stays before the shared damage/death phases.
+fn emit_one_projectile_detonation(
+    detonation: &ProjectileDetonation,
+    entities: &mut EntityStore,
+    occupancy: &OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    overlay_grid: Option<&OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    house_alliances: &HouseAllianceMap,
+    scenario_rng: &mut SimRng,
+    out: &mut CombatEmit,
+) {
+    let Some(warhead) = rules.warhead(interner.resolve(detonation.payload.warhead)) else {
+        log::warn!(
+            "Projectile {} dropped: missing serialized warhead {}",
+            detonation.projectile_id,
+            detonation.payload.warhead
+        );
+        return;
+    };
+    let (impact_rx, impact_ry, impact_sub_x, impact_sub_y, impact_z) =
+        projectile_impact_cell(detonation.impact);
+    let direct_target = match detonation.target {
+        ProjectileTarget::Entity(id) => entities
+            .get(id)
+            .filter(|entity| entity.is_alive() && !entity.dying),
+        ProjectileTarget::Cell(_) => None,
+    };
+
+    // Named location: `BulletClass::Detonate @ 0x004690b0`. Radiation is
+    // outside and before the exclusive special-effect chain.
+    if let Some(weapon) = rules.weapon(interner.resolve(detonation.payload.weapon))
+        && weapon.rad_level > 0
+    {
+        out.rad_detonations
+            .push(crate::sim::radiation::RadDetonation {
+                rx: impact_rx,
+                ry: impact_ry,
+                rad_level: weapon.rad_level,
+                spread: warhead.cell_spread.to_num::<i32>(),
+            });
+    }
+
+    let special_action = projectile_special_detonation_action(SpecialDetonationFlags {
+        mind_control: warhead.mind_control,
+        ivan_bomb: warhead.ivan_bomb,
+        electric_assault: warhead.electric_assault,
+        parasite: warhead.parasite,
+        temporal: warhead.temporal,
+        is_locomotor: warhead.is_locomotor,
+        airstrike: warhead.airstrike,
+        raw_335: warhead.raw_335,
+        bomb_disarm: warhead.bomb_disarm,
+        makes_disguise: warhead.makes_disguise,
+        nuke_maker: warhead.nuke_maker,
+    });
+    if special_action != SpecialDetonationAction::OrdinaryDamage {
+        // Effect bodies are deliberately unsupported. The native else-if
+        // ownership is still authoritative: an enabled earlier predicate
+        // shadows later predicates and ordinary DamageArea even when it no-ops.
+        log::debug!(
+            "Projectile {} selected unsupported special detonation {:?}",
+            detonation.projectile_id,
+            special_action
+        );
+        return;
+    }
+
+    emit_projectile_shrapnel(
+        detonation,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        terrain,
+        house_alliances,
+        scenario_rng,
+        out,
+    );
+
+    if warhead.cell_spread > SIM_ZERO {
+        let aoe_hits = self::combat_aoe::apply_aoe_damage(
+            entities,
+            impact_rx,
+            impact_ry,
+            detonation.payload.base_damage,
+            warhead,
+            rules,
+            interner,
+            interner.resolve(detonation.payload.owner),
+            self::combat_aoe::AoELayerContext {
+                occupancy: Some(occupancy),
+                terrain,
+                impact_z,
+            },
+        );
+        for (target_id, damage) in aoe_hits {
+            out.damage_events.push((
+                target_id,
+                damage,
+                detonation.source_id,
+                detonation.payload.warhead,
+            ));
+        }
+    } else if let Some(target) = direct_target {
+        let armor = rules
+            .object(interner.resolve(target.type_ref))
+            .map(|object| object.armor.as_str())
+            .unwrap_or("none");
+        let raw_damage =
+            detonation.payload.base_damage * warhead.verses[armor_index(armor)] as i32 / 100;
+        let prone =
+            target.category == EntityCategory::Infantry && infantry::is_prone_for_damage(target);
+        let actual_damage = apply_prone_damage_modifier(prone, warhead, raw_damage);
+        if actual_damage > 0 {
+            out.damage_events.push((
+                target.stable_id,
+                actual_damage,
+                detonation.source_id,
+                detonation.payload.warhead,
+            ));
+        }
+    }
+
+    if detonation.payload.base_damage > 0 {
+        let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
+        let wall_flags =
+            wall_overlay_flags_at(overlay_grid, overlay_registry, impact_rx, impact_ry);
+        if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
+            out.wall_damage_events.push(WallDamageEvent {
+                rx: impact_rx,
+                ry: impact_ry,
+                damage,
+            });
+        } else if wall_flags.is_none() && warhead.wall {
+            out.bridge_damage_events.push(BridgeDamageEvent {
+                rx: impact_rx,
+                ry: impact_ry,
+                damage,
+                warhead_ref: detonation.payload.warhead,
+                is_ion_cannon: detonation.payload.warhead == rules.ion_cannon_warhead_id(),
+                impact_z,
+            });
+        }
+    }
+    if warhead.wood && detonation.payload.base_damage > 0 {
+        out.terrain_damage_events.push(TerrainDamageEvent {
+            rx: impact_rx,
+            ry: impact_ry,
+            damage: detonation.payload.base_damage,
+            warhead_ref: detonation.payload.warhead,
+        });
+    }
+    destroy_ore_at_impact(
+        &mut out.tiberium_reduction_requests,
+        impact_rx,
+        impact_ry,
+        detonation.payload.base_damage,
+        warhead.cell_spread,
+    );
+    emit_warhead_detonation_effects(
+        warhead,
+        detonation.payload.base_damage,
+        impact_rx,
+        impact_ry,
+        impact_sub_x,
+        impact_sub_y,
+        impact_z.clamp(0, i32::from(u8::MAX)) as u8,
+        interner,
+        &mut out.explosion_effects,
+        &mut out.smudge_spawn_requests,
+    );
+}
+
+/// Run `BulletClass::Explode @ 0x00468d80` in native call/RNG order.
+/// Detonation work is deliberately not precomputed: ordinary Detonate may
+/// consume Scenario RNG (notably Shrapnel) before the following cluster-radius
+/// and angle draws.
 fn emit_projectile_detonations(
     detonations: &[ProjectileDetonation],
     entities: &mut EntityStore,
@@ -1450,129 +1867,69 @@ fn emit_projectile_detonations(
     overlay_grid: Option<&OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    house_alliances: &HouseAllianceMap,
+    scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
 ) {
     for detonation in detonations {
-        let Some(warhead) = rules.warhead(interner.resolve(detonation.payload.warhead)) else {
-            log::warn!(
-                "Projectile {} dropped: missing serialized warhead {}",
-                detonation.projectile_id,
-                detonation.payload.warhead
+        let projectile_type = rules
+            .weapon(interner.resolve(detonation.payload.weapon))
+            .and_then(|weapon| weapon.projectile.as_deref())
+            .and_then(|projectile| rules.projectile(projectile));
+        let Some(projectile_type) = projectile_type else {
+            emit_one_projectile_detonation(
+                detonation,
+                entities,
+                occupancy,
+                rules,
+                interner,
+                overlay_grid,
+                overlay_registry,
+                terrain,
+                house_alliances,
+                scenario_rng,
+                out,
             );
             continue;
         };
-        let (impact_rx, impact_ry, impact_sub_x, impact_sub_y, impact_z) =
-            projectile_impact_cell(detonation.impact);
-        let direct_target = match detonation.target {
-            ProjectileTarget::Entity(id) => entities
-                .get(id)
-                .filter(|entity| entity.is_alive() && !entity.dying),
-            ProjectileTarget::Cell(_) => None,
-        };
-
-        if warhead.cell_spread > SIM_ZERO {
-            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+        let airburst = projectile_type.airburst;
+        let cluster = projectile_type.cluster;
+        if airburst {
+            emit_one_projectile_detonation(
+                detonation,
                 entities,
-                impact_rx,
-                impact_ry,
-                detonation.payload.base_damage,
-                warhead,
+                occupancy,
                 rules,
                 interner,
-                interner.resolve(detonation.payload.owner),
-                self::combat_aoe::AoELayerContext {
-                    occupancy: Some(occupancy),
-                    terrain,
-                    impact_z,
-                },
+                overlay_grid,
+                overlay_registry,
+                terrain,
+                house_alliances,
+                scenario_rng,
+                out,
             );
-            for (target_id, damage) in aoe_hits {
-                out.damage_events.push((
-                    target_id,
-                    damage,
-                    detonation.source_id,
-                    detonation.payload.warhead,
-                ));
-            }
-        } else if let Some(target) = direct_target {
-            let armor = rules
-                .object(interner.resolve(target.type_ref))
-                .map(|object| object.armor.as_str())
-                .unwrap_or("none");
-            let raw_damage =
-                detonation.payload.base_damage * warhead.verses[armor_index(armor)] as i32 / 100;
-            let prone = target.category == EntityCategory::Infantry
-                && infantry::is_prone_for_damage(target);
-            let actual_damage = apply_prone_damage_modifier(prone, warhead, raw_damage);
-            if actual_damage > 0 {
-                out.damage_events.push((
-                    target.stable_id,
-                    actual_damage,
-                    detonation.source_id,
-                    detonation.payload.warhead,
-                ));
-            }
+            continue;
         }
 
-        if detonation.payload.base_damage > 0 {
-            let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
-            let wall_flags =
-                wall_overlay_flags_at(overlay_grid, overlay_registry, impact_rx, impact_ry);
-            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                out.wall_damage_events.push(WallDamageEvent {
-                    rx: impact_rx,
-                    ry: impact_ry,
-                    damage,
-                });
-            } else if wall_flags.is_none() && warhead.wall {
-                out.bridge_damage_events.push(BridgeDamageEvent {
-                    rx: impact_rx,
-                    ry: impact_ry,
-                    damage,
-                    warhead_ref: detonation.payload.warhead,
-                    is_ion_cannon: detonation.payload.warhead == rules.ion_cannon_warhead_id(),
-                    impact_z,
-                });
-            }
+        let mut coordinate = detonation.impact;
+        for _ in 0..cluster.max(0) {
+            let mut clustered = *detonation;
+            clustered.impact = coordinate;
+            emit_one_projectile_detonation(
+                &clustered,
+                entities,
+                occupancy,
+                rules,
+                interner,
+                overlay_grid,
+                overlay_registry,
+                terrain,
+                house_alliances,
+                scenario_rng,
+                out,
+            );
+            coordinate = projectile_next_cluster_coord(coordinate, scenario_rng);
         }
-        if warhead.wood && detonation.payload.base_damage > 0 {
-            out.terrain_damage_events.push(TerrainDamageEvent {
-                rx: impact_rx,
-                ry: impact_ry,
-                damage: detonation.payload.base_damage,
-                warhead_ref: detonation.payload.warhead,
-            });
-        }
-        destroy_ore_at_impact(
-            &mut out.tiberium_reduction_requests,
-            impact_rx,
-            impact_ry,
-            detonation.payload.base_damage,
-            warhead.cell_spread,
-        );
-        if let Some(weapon) = rules.weapon(interner.resolve(detonation.payload.weapon))
-            && weapon.rad_level > 0
-        {
-            out.rad_detonations
-                .push(crate::sim::radiation::RadDetonation {
-                    rx: impact_rx,
-                    ry: impact_ry,
-                    rad_level: weapon.rad_level,
-                    spread: warhead.cell_spread.to_num::<i32>(),
-                });
-        }
-        emit_warhead_detonation_effects(
-            warhead,
-            detonation.payload.base_damage,
-            impact_rx,
-            impact_ry,
-            impact_sub_x,
-            impact_sub_y,
-            impact_z.clamp(0, i32::from(u8::MAX)) as u8,
-            interner,
-            &mut out.explosion_effects,
-            &mut out.smudge_spawn_requests,
-        );
     }
 }
 
@@ -1615,6 +1972,7 @@ pub fn tick_combat_with_fog(
         fog,
         power_states,
         &BTreeMap::new(),
+        &HouseAllianceMap::default(),
         sound_sink,
         resource_nodes,
         overlay_grid,
@@ -1624,6 +1982,7 @@ pub fn tick_combat_with_fog(
         tick_ms,
         binary_frame,
         live_order,
+        &[],
         &[],
         radiation,
         &[],
@@ -1644,6 +2003,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     fog: Option<&FogState>,
     power_states: &BTreeMap<InternedId, PowerState>,
     houses: &BTreeMap<InternedId, HouseState>,
+    house_alliances: &HouseAllianceMap,
     sound_sink: Option<&mut Vec<SimSoundEvent>>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     overlay_grid: Option<&OverlayGrid>,
@@ -1654,6 +2014,7 @@ pub fn tick_combat_with_fog_and_main_rng(
     binary_frame: u32,
     live_order: &[u64],
     projectile_detonations: &[ProjectileDetonation],
+    wave_damage_events: &[WaveDamageEvent],
     radiation: Option<&mut crate::sim::radiation::RadiationState>,
     missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
     scenario_rng: &mut SimRng,
@@ -2108,6 +2469,35 @@ pub fn tick_combat_with_fog_and_main_rng(
             emit.unit_facing.push((id, desired));
         }
     }
+    // WaveClass::DamageArea visits already-selected occupants in native nested
+    // order. Convert raw weapon damage through the same armor/prone admission
+    // used by direct projectile damage, retaining event order.
+    for event in wave_damage_events {
+        let Some(target) = entities.get(event.target_id) else {
+            continue;
+        };
+        let Some(warhead) = rules.warhead(interner.resolve(event.payload.warhead)) else {
+            continue;
+        };
+        let armor = rules
+            .object(interner.resolve(target.type_ref))
+            .map(|object| object.armor.as_str())
+            .unwrap_or("none");
+        let raw_damage =
+            event.payload.base_damage * warhead.verses[armor_index(armor)] as i32 / 100;
+        let prone =
+            target.category == EntityCategory::Infantry && infantry::is_prone_for_damage(target);
+        let actual_damage = apply_prone_damage_modifier(prone, warhead, raw_damage);
+        if actual_damage > 0 {
+            emit.damage_events.push((
+                target.stable_id,
+                actual_damage,
+                event.payload.firer_id,
+                event.payload.warhead,
+            ));
+        }
+    }
+
     // YR BulletClass::Detonate: completed prior-frame bullets enter the same
     // combat damage/death pipeline as all other authoritative detonations.
     emit_projectile_detonations(
@@ -2119,6 +2509,8 @@ pub fn tick_combat_with_fog_and_main_rng(
         overlay_grid,
         overlay_registry,
         terrain,
+        house_alliances,
+        scenario_rng,
         &mut emit,
     );
     // Destructure back into the named locals so Phases 3-6 are untouched.
@@ -2358,6 +2750,13 @@ pub fn tick_combat_with_fog_and_main_rng(
                 continue;
             }
             target.health.current = target.health.current.saturating_sub(*damage);
+            if let Some(disguise) = target.disguise.as_mut() {
+                // `TechnoClass::ReceiveDamage @ 0x00701900`: the proved writer
+                // uses the damage-path cell payload and `appliedDamage << 1`.
+                let packed_cell =
+                    i32::from(target.position.rx) | (i32::from(target.position.ry) << 16);
+                disguise.arm_damage_reveal(current_tick as u32, packed_cell, i32::from(*damage));
+            }
             target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
             if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
                 infantry::apply_fear_from_damage(
@@ -3041,24 +3440,58 @@ pub(crate) fn resolve_attacker_fire(
         arm_frames,
         tracks_target,
         collision,
+        ballistic,
+        guidance,
     } = persistent_delivery
     {
         let impact = ProjectileCoord::new(
             i32::from(target_rx) * 256 + target_sub_x.to_num::<i32>(),
             i32::from(target_ry) * 256 + target_sub_y.to_num::<i32>(),
-            attack_impact_z(snap.target, entities),
+            attack_impact_z(snap.target, entities)
+                * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
         );
         let target = match snap.target {
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
             TargetKind::Cell(_, _) => ProjectileTarget::Cell(impact),
         };
+        let origin = ProjectileCoord::new(
+            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
+            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
+            i32::from(snap.pos_z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+        );
+        let projectile_type = weapon
+            .projectile
+            .as_deref()
+            .and_then(|projectile_id| rules.projectile(projectile_id));
+        let gravity = projectile_type
+            .map(|projectile| {
+                if projectile.floater {
+                    rules.general.gravity / 2
+                } else {
+                    rules.general.gravity
+                }
+            })
+            .unwrap_or(0);
+        // The root-selector argument remains ABI-ambiguous in the closed RE;
+        // use the proved ordinary (+root) path rather than inferring Lobber.
+        let velocity = if ballistic {
+            ballistic_launch_velocity(origin, impact, weapon.speed, gravity, false)
+                .unwrap_or(ProjectileVelocity::new(0, 0, 0))
+        } else {
+            ProjectileVelocity::new(0, 0, 0)
+        };
+        let visual = projectile_type
+            .map(|projectile| {
+                ProjectileVisualState::new(
+                    projectile.anim_low as u8,
+                    projectile.anim_high as u8,
+                    projectile.anim_rate as u8,
+                )
+            })
+            .unwrap_or_else(|| ProjectileVisualState::new(0, 0, 0));
         out.projectile_spawns.push(ProjectileSpawn {
             source_id: snap.stable_id,
-            origin: ProjectileCoord::new(
-                i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
-                i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
-                i32::from(snap.pos_z),
-            ),
+            origin,
             target,
             initial_target_position: impact,
             payload: ProjectilePayload {
@@ -3068,8 +3501,18 @@ pub(crate) fn resolve_attacker_fire(
                 owner: snap.owner,
             },
             speed_leptons_per_frame: weapon.speed.clamp(1, i32::from(u16::MAX)) as u16,
+            velocity,
+            trajectory: if ballistic {
+                ProjectileTrajectory::Ballistic { gravity }
+            } else {
+                ProjectileTrajectory::Straight
+            },
+            guidance,
+            visual,
             arm_frames,
             fuse_frames: None,
+            ranged_fuse: tracks_target
+                || projectile_type.is_some_and(|projectile| projectile.ranged),
             tracks_target,
             target_expiry: TargetExpiryPolicy::DetonateAtLastKnown,
             collision,

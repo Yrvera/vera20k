@@ -375,14 +375,8 @@ fn gsi_04_06_base_fill_allows_right_delta_three_but_not_vertical() {
 
     let vertical = terrain_from_zone_classes(1, 2, &[0, 0], &[0, 3]);
     let vertical_path = PathGrid::from_resolved_terrain(&vertical);
-    let vertical_zones = ZoneGrid::build_with_terrain(
-        &vertical_path,
-        &BTreeMap::new(),
-        Some(&vertical),
-        &[],
-        1,
-        2,
-    );
+    let vertical_zones =
+        ZoneGrid::build_with_terrain(&vertical_path, &BTreeMap::new(), Some(&vertical), &[], 1, 2);
     let vertical_normal = vertical_zones.map_for(MovementZone::Normal).unwrap();
     assert_eq!(vertical_normal.zone_at(0, 0, MovementLayer::Ground), 2);
     assert_eq!(vertical_normal.zone_at(0, 1, MovementLayer::Ground), 3);
@@ -390,7 +384,8 @@ fn gsi_04_06_base_fill_allows_right_delta_three_but_not_vertical() {
 
 #[test]
 fn gsi_04_06_class_transition_merges_for_amphibious_not_normal() {
-    let terrain = terrain_from_zone_classes(2, 1, &[zone_class::GROUND, zone_class::BEACH], &[0; 2]);
+    let terrain =
+        terrain_from_zone_classes(2, 1, &[zone_class::GROUND, zone_class::BEACH], &[0; 2]);
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
     let zones =
         ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 1);
@@ -406,12 +401,8 @@ fn gsi_04_06_class_transition_merges_for_amphibious_not_normal() {
 
 #[test]
 fn gsi_04_06_class_six_boundary_bypasses_height_for_subterranean_row() {
-    let terrain = terrain_from_zone_classes(
-        2,
-        1,
-        &[zone_class::GROUND, zone_class::IMPASSABLE],
-        &[0, 7],
-    );
+    let terrain =
+        terrain_from_zone_classes(2, 1, &[zone_class::GROUND, zone_class::IMPASSABLE], &[0, 7]);
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
     let zones =
         ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 2, 1);
@@ -438,14 +429,8 @@ fn gsi_04_06_active_bridge_edge_merges_base_zones_before_projection() {
         active: true,
         bridge_kind: BridgeRecordKind::High,
     }];
-    let with_bridge = ZoneGrid::build_with_terrain(
-        &path_grid,
-        &BTreeMap::new(),
-        Some(&terrain),
-        &records,
-        5,
-        1,
-    );
+    let with_bridge =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &records, 5, 1);
     let normal = with_bridge.map_for(MovementZone::Normal).unwrap();
     assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
     assert_eq!(normal.zone_at(4, 0, MovementLayer::Ground), 2);
@@ -456,14 +441,8 @@ fn gsi_04_06_all_thirteen_rows_preserve_native_derived_labels() {
     let classes = [0, 7, 1, 7, 2, 7, 3, 7, 4, 7, 5, 7, 6];
     let terrain = terrain_from_zone_classes(13, 1, &classes, &[0; 13]);
     let path_grid = PathGrid::from_resolved_terrain(&terrain);
-    let zones = ZoneGrid::build_with_terrain(
-        &path_grid,
-        &BTreeMap::new(),
-        Some(&terrain),
-        &[],
-        13,
-        1,
-    );
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 13, 1);
 
     assert_eq!(MovementZone::all_ground().len(), 13);
     for &movement_zone in MovementZone::all_ground() {
@@ -557,8 +536,7 @@ fn zone_grid_hierarchy_accessors_clear_on_mutation() {
     zg.set_super_zone(MovementZone::Water, sz);
     assert!(zg.hierarchy_for(MovementZone::Normal).is_none());
 
-    let rebuilt_terrain =
-        terrain_from_zone_classes(3, 1, &[zone_class::GROUND; 3], &[0; 3]);
+    let rebuilt_terrain = terrain_from_zone_classes(3, 1, &[zone_class::GROUND; 3], &[0; 3]);
     let rebuilt_grid = PathGrid::from_resolved_terrain(&rebuilt_terrain);
     let rebuilt = ZoneGrid::build_with_terrain(
         &rebuilt_grid,

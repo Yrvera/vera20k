@@ -20,7 +20,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::TILE_HEIGHT;
 use crate::render::batch::SpriteInstance;
-use crate::render::draw_state::DrawState;
+use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
     BlitPolicy, BuildingPieceKind, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalLayer,
@@ -91,7 +91,15 @@ pub(crate) fn build_shp_instances(
             continue;
         }
         let owner_str = sim.interner.resolve(entity.owner);
-        let type_str = sim.interner.resolve(entity.type_ref);
+        let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
+        let type_str = active_disguise
+            .and_then(|state| state.disguise_type)
+            .map(|id| sim.interner.resolve(id))
+            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
+        let remap_owner = active_disguise
+            .and_then(|state| state.disguised_as_house)
+            .map(|id| sim.interner.resolve(id))
+            .unwrap_or(owner_str);
         // Wall buildings render as overlays (auto-tiled connectivity frames).
         // Their Y-sorted rendering in the object pass is handled by including
         // wall overlay instances in the unified merge (draw_merged_object_pass),
@@ -125,13 +133,20 @@ pub(crate) fn build_shp_instances(
         }
         let hc: HouseColorIndex = state
             .house_color_map
-            .get(owner_str)
+            .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
         let draw_decision = DrawState::for_entity(
             entity,
             sim.session.binary_frame,
             super::units::house_color_to_remap_row(hc),
+            ObserverDrawContext {
+                owner_is_allied: local_owner.as_deref().is_some_and(|observer| {
+                    crate::map::houses::is_allied_with(&sim.house_alliances, observer, owner_str)
+                }),
+                detects_cloak: local_owner_id
+                    .is_some_and(|observer| sim.fog.has_sensor_for_house(observer, pos.rx, pos.ry)),
+            },
         );
         if !draw_decision.visible {
             continue;

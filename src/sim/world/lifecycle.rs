@@ -192,6 +192,7 @@ impl Simulation {
 
     fn mark_common_raw_occupation(
         &mut self,
+        stable_id: u64,
         category: EntityCategory,
         cells: &[(u16, u16)],
         position: RevealPosition,
@@ -219,18 +220,23 @@ impl Simulation {
                 let (ground_level, live_structural_bridge) =
                     self.raw_occupation_cell_facts(position.rx, position.ry);
                 let z = i16::from(position.z as i8);
-                if z > ground_level + 4 {
-                    return false;
-                }
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
+                // Native: InfantryClass::Mark (+0x743FC0) selects the deck only
+                // at/above the bridge plane and only while CellClass Flags&0x100 holds.
                 if z >= ground_level + 4 && live_structural_bridge {
-                    self.substrate
-                        .raw_cell_occupation
-                        .mark_deck(position.rx, position.ry, mask);
+                    self.substrate.raw_cell_occupation.mark_deck_infantry(
+                        position.rx,
+                        position.ry,
+                        mask,
+                        stable_id,
+                    );
                 } else {
-                    self.substrate
-                        .raw_cell_occupation
-                        .mark_ground(position.rx, position.ry, mask);
+                    self.substrate.raw_cell_occupation.mark_ground_infantry(
+                        position.rx,
+                        position.ry,
+                        mask,
+                        stable_id,
+                    );
                 }
                 true
             }
@@ -265,6 +271,7 @@ impl Simulation {
 
     fn clear_common_raw_occupation(
         &mut self,
+        _stable_id: u64,
         category: EntityCategory,
         cells: &[(u16, u16)],
         position: RevealPosition,
@@ -315,9 +322,26 @@ impl Simulation {
                 }
                 true
             }
-            // Generic Infantry removal intentionally leaves the destructive raw
-            // bit stale; movement/sub-cell transitions own explicit clears.
-            EntityCategory::Infantry => false,
+            EntityCategory::Infantry => {
+                let (ground_level, _) = self.raw_occupation_cell_facts(position.rx, position.ry);
+                let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
+                // Native: InfantryClass::Unmark (+0x744170) picks its plane from
+                // height alone, retaining the proven mark/unmark bridge-bit asymmetry.
+                if i16::from(position.z as i8) >= ground_level + 4 {
+                    self.substrate.raw_cell_occupation.clear_deck_infantry(
+                        position.rx,
+                        position.ry,
+                        mask,
+                    );
+                } else {
+                    self.substrate.raw_cell_occupation.clear_ground_infantry(
+                        position.rx,
+                        position.ry,
+                        mask,
+                    );
+                }
+                true
+            }
         }
     }
 
@@ -392,6 +416,17 @@ impl Simulation {
         }
 
         self.mark_entity_put(stable_id);
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id)
+            && entity.spotlight_capable
+            && entity.category == crate::map::entities::EntityCategory::Structure
+            && entity.building_light.is_none()
+        {
+            // `BuildingClass::Unlimbo @ 0x00441187` constructs after placement succeeds.
+            entity.building_light = Some(crate::sim::game_entity::BuildingLightRuntime {
+                behavior: 1,
+                target_id: None,
+            });
+        }
         if !self
             .substrate
             .entities
@@ -458,7 +493,7 @@ impl Simulation {
                 ) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListLinked);
-                    if self.mark_common_raw_occupation(category, &cells, raw_position) {
+                    if self.mark_common_raw_occupation(stable_id, category, &cells, raw_position) {
                         #[cfg(test)]
                         self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
                     }
@@ -534,7 +569,7 @@ impl Simulation {
             {
                 #[cfg(test)]
                 self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationListUnlinked);
-                if self.clear_common_raw_occupation(category, &cells, raw_position) {
+                if self.clear_common_raw_occupation(stable_id, category, &cells, raw_position) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
                 }
@@ -823,6 +858,9 @@ impl Simulation {
 
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.in_limbo = true;
+            // `BuildingClass::Limbo` destroys its owned BuildingLight before
+            // the remaining building-count/base-node teardown.
+            entity.building_light = None;
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealLimboSet);

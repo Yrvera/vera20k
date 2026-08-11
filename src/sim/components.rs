@@ -785,6 +785,8 @@ pub struct AnimClassSpawnDescriptor {
     pub z_adjust: i32,
     /// Constructor reverse argument.
     pub reverse: bool,
+    /// Instance draw-state bytes supplied by the native producer.
+    pub draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
 }
 
 impl AnimClassSpawnDescriptor {
@@ -808,6 +810,7 @@ impl AnimClassSpawnDescriptor {
             draw_flags: 0,
             z_adjust: 0,
             reverse: false,
+            draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         }
     }
 }

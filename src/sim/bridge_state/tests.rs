@@ -568,8 +568,7 @@ fn gsi_04_12_topology_structural_gap_preserves_intact_plain_gap_clears_it() {
             cell.final_sub_tile = 4;
         }
         if cell.rx == 2 {
-            cell.bridge_facts.raw_flags =
-                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
         }
     });
     let mut mixed = BridgeRuntimeState::from_resolved_terrain(&mixed_gap, true, 300);

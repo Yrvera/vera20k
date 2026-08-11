@@ -10,7 +10,11 @@ use std::ops::Deref;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::util::fixed_math::SimFixed;
 
+use super::super::drop_pod_movement::DropPodState;
 use super::super::locomotor::{AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer};
+use super::super::rocket_movement::RocketState;
+use super::super::teleport_movement::TeleportState;
+use super::super::tunnel_movement::TunnelState;
 
 /// Runtime state shared by every locomotor object, independent of its installed
 /// class identity. This is what moves as one object through the piggyback slot.
@@ -46,18 +50,16 @@ pub struct LocomotorCommonRuntime {
 
 /// Class-local state that travels with the locomotor object.
 ///
-/// The current movement implementation has not yet moved the special process
-/// fields from their entity adapters, so their payloads are deliberately typed
-/// placeholders. They prevent another flat stash from silently losing a special
-/// locomotor's identity when those fields move here in the next wave.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Special process state is carried here rather than reconstructed from a phase
+/// byte when a complete locomotor is suspended or loaded.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LocomotorRuntimePayload {
     Drive,
     Walk,
-    Teleport { phase: u8 },
-    Tunnel { state: u8 },
-    Rocket { state: u8 },
-    DropPod { descent_ticks: u32 },
+    Teleport(Option<TeleportState>),
+    Tunnel(Option<TunnelState>),
+    Rocket(Option<RocketState>),
+    DropPod(Option<DropPodState>),
     Hover,
     Mech,
     Ship,
@@ -67,14 +69,14 @@ pub enum LocomotorRuntimePayload {
 }
 
 impl LocomotorRuntimePayload {
-    fn for_kind(kind: LocomotorKind) -> Self {
+    pub(crate) fn for_kind(kind: LocomotorKind) -> Self {
         match kind {
             LocomotorKind::Drive => Self::Drive,
             LocomotorKind::Walk => Self::Walk,
-            LocomotorKind::Teleport => Self::Teleport { phase: 0 },
-            LocomotorKind::Tunnel => Self::Tunnel { state: 0 },
-            LocomotorKind::Rocket => Self::Rocket { state: 0 },
-            LocomotorKind::DropPod => Self::DropPod { descent_ticks: 0 },
+            LocomotorKind::Teleport => Self::Teleport(None),
+            LocomotorKind::Tunnel => Self::Tunnel(None),
+            LocomotorKind::Rocket => Self::Rocket(None),
+            LocomotorKind::DropPod => Self::DropPod(None),
             LocomotorKind::Hover => Self::Hover,
             LocomotorKind::Mech => Self::Mech,
             LocomotorKind::Ship => Self::Ship,
@@ -82,6 +84,12 @@ impl LocomotorRuntimePayload {
             LocomotorKind::Jumpjet => Self::Jumpjet,
             LocomotorKind::Parachute => Self::Parachute,
         }
+    }
+}
+
+impl Default for LocomotorRuntimePayload {
+    fn default() -> Self {
+        Self::Drive
     }
 }
 
@@ -130,7 +138,7 @@ impl LocomotorRuntime {
                 hover_speed_request: state.hover_speed_request,
                 hover_bob_offset: state.hover_bob_offset,
             },
-            payload: LocomotorRuntimePayload::for_kind(state.kind),
+            payload: state.runtime_payload.clone(),
         }
     }
 
@@ -179,6 +187,7 @@ impl LocomotorRuntime {
         state.hover_throttle = self.common.hover_throttle;
         state.hover_speed_request = self.common.hover_speed_request;
         state.hover_bob_offset = self.common.hover_bob_offset;
+        state.runtime_payload = self.payload;
     }
 }
 
@@ -342,6 +351,7 @@ pub fn is_ok_to_end(state: &LocomotorState, context: EndGateContext) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::movement::tunnel_movement::{TunnelPhase, TunnelState};
 
     fn teleporter() -> LocomotorState {
         LocomotorState::for_test_kind(LocomotorKind::Teleport)
@@ -393,6 +403,61 @@ mod tests {
         assert_eq!(state.altitude, SimFixed::from_num(123));
         assert_eq!(state.slot, installed);
         assert!(state.piggyback.is_none());
+    }
+
+    #[test]
+    fn piggyback_restores_complete_typed_special_payload() {
+        let mut state = LocomotorState::for_test_kind(LocomotorKind::Tunnel);
+        state.runtime_payload = LocomotorRuntimePayload::Tunnel(Some(TunnelState {
+            phase: TunnelPhase::UndergroundTravel,
+        }));
+
+        assert_eq!(
+            begin(&mut state, LocomotorKind::Drive, MovementLayer::Ground),
+            BeginOutcome::Installed
+        );
+        assert_eq!(state.runtime_payload, LocomotorRuntimePayload::Drive);
+        assert_eq!(
+            state.piggyback.as_deref().map(|runtime| &runtime.payload),
+            Some(&LocomotorRuntimePayload::Tunnel(Some(TunnelState {
+                phase: TunnelPhase::UndergroundTravel,
+            })))
+        );
+
+        assert!(end(&mut state).is_some());
+        assert_eq!(
+            state.runtime_payload,
+            LocomotorRuntimePayload::Tunnel(Some(TunnelState {
+                phase: TunnelPhase::UndergroundTravel,
+            }))
+        );
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_active_and_suspended_payloads() {
+        let mut state = LocomotorState::for_test_kind(LocomotorKind::Tunnel);
+        state.runtime_payload = LocomotorRuntimePayload::Tunnel(Some(TunnelState {
+            phase: TunnelPhase::Digging,
+        }));
+        assert_eq!(
+            begin(&mut state, LocomotorKind::DropPod, MovementLayer::Air),
+            BeginOutcome::Installed
+        );
+        state.runtime_payload = LocomotorRuntimePayload::DropPod(None);
+
+        let bytes = bincode::serialize(&state).expect("serialize locomotor");
+        let loaded: LocomotorState = bincode::deserialize(&bytes).expect("load locomotor");
+
+        assert_eq!(
+            loaded.runtime_payload,
+            LocomotorRuntimePayload::DropPod(None)
+        );
+        assert_eq!(
+            loaded.piggyback.as_deref().map(|runtime| &runtime.payload),
+            Some(&LocomotorRuntimePayload::Tunnel(Some(TunnelState {
+                phase: TunnelPhase::Digging,
+            })))
+        );
     }
 
     #[test]

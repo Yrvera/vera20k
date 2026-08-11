@@ -102,8 +102,6 @@ pub fn tick_attack_state(
     // Look up type info.
     let type_str = interner.resolve(type_ref);
     let obj = rules.object(type_str);
-    let fly_by = obj.map_or(false, |o| o.fly_by);
-
     // Get weapon range in cells.
     let weapon_range_cells: SimFixed = obj
         .and_then(|o| {
@@ -225,101 +223,25 @@ pub fn tick_attack_state(
             }
 
             // Firing arc aligned — signal fire permission.
-            let next_state: u8 = if fly_by && ammo_current > 1 {
-                6 // → strafe states
-            } else {
-                10 // → RTB
-            };
-
             AttackTickResult::fire(
                 AircraftMission::Attack {
-                    sub_state: next_state,
-                    has_fired: true,
-                    is_strafe: fly_by,
-                },
-                status.kind,
-            )
-        }
-
-        // ---------------------------------------------------------------
-        // State 5: STRAFE_FIRE — secondary fire pass, continues strafing.
-        // ---------------------------------------------------------------
-        5 => {
-            let Some(status) = target_status else {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            };
-            AttackTickResult::fire(
-                AircraftMission::Attack {
-                    sub_state: 6,
-                    has_fired: true,
-                    is_strafe: true,
-                },
-                status.kind,
-            )
-        }
-
-        // ---------------------------------------------------------------
-        // States 6, 7, 8: STRAFE_PASS_N — multi-pass strafing.
-        // Each state fires one burst, then advances to next state.
-        // If ammo runs out: → State 10 (RTB).
-        // ---------------------------------------------------------------
-        6 | 7 | 8 => {
-            if ammo_current <= 0 {
-                return AttackTickResult::stay(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            }
-            let Some(status) = target_status else {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            };
-            if !status.alive {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            }
-
-            AttackTickResult::fire(
-                AircraftMission::Attack {
-                    sub_state: sub_state + 1,
-                    has_fired: true,
-                    is_strafe: true,
-                },
-                status.kind,
-            )
-        }
-
-        // ---------------------------------------------------------------
-        // State 9: STRAFE_FINAL — last strafe pass, re-evaluate target.
-        // ---------------------------------------------------------------
-        9 => {
-            let Some(status) = target_status else {
-                return AttackTickResult::transition(AircraftMission::Attack {
-                    sub_state: 10,
-                    has_fired,
-                    is_strafe: false,
-                });
-            };
-            AttackTickResult::fire(
-                AircraftMission::Attack {
-                    sub_state: 3,
+                    // The final-release latches carry the evidenced state-1
+                    // -> state-10 tail in `tick_aircraft_missions`; no RA2
+                    // strafe cadence is inferred for states 5..9.
+                    sub_state: 1,
                     has_fired: true,
                     is_strafe: false,
                 },
                 status.kind,
             )
         }
+
+        // YR states 5..9 are deliberately residual pending the runtime cadence proof.
+        5..=9 => AttackTickResult::transition(AircraftMission::Attack {
+            sub_state: 10,
+            has_fired,
+            is_strafe: false,
+        }),
 
         // ---------------------------------------------------------------
         // State 10: RETURN_TO_BASE

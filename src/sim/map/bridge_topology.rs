@@ -62,8 +62,7 @@ pub const BRIDGE_DECK_HEIGHT_LEPTONS: i32 = 4 * LEPTONS_PER_LEVEL as i32;
 /// The same verified deck offset expressed in Level units (`416 leptons / 104 =
 /// 4 levels`). Use this where the operand is already pre-divided to Level units
 /// (the current Rust AoE/occupancy selectors operate on `cell.level`).
-pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 =
-    BRIDGE_DECK_HEIGHT_LEPTONS / LEPTONS_PER_LEVEL as i32;
+pub const BRIDGE_DECK_HEIGHT_LEVELS: i32 = BRIDGE_DECK_HEIGHT_LEPTONS / LEPTONS_PER_LEVEL as i32;
 
 /// Width of a tileset window: a concrete- or wood-bridge tileset occupies the
 /// first 16 tiles `[base, base + 0x10)` of its theater set. Gated on base != -1.

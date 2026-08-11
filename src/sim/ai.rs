@@ -943,16 +943,18 @@ mod tests {
             Some(&registry),
         );
         let (rx, ry) = match commands.as_slice() {
-            [CommandEnvelope {
-                payload:
-                    Command::PlaceReadyBuilding {
-                        owner: command_owner,
-                        type_id,
-                        rx,
-                        ry,
-                    },
-                ..
-            }] => {
+            [
+                CommandEnvelope {
+                    payload:
+                        Command::PlaceReadyBuilding {
+                            owner: command_owner,
+                            type_id,
+                            rx,
+                            ry,
+                        },
+                    ..
+                },
+            ] => {
                 assert_eq!(*command_owner, owner);
                 assert_eq!(*type_id, wall_type);
                 (*rx, *ry)

@@ -1216,6 +1216,8 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             state.simulation.as_ref(),
             state.rules.as_ref(),
         );
+        state.pending_lighting_refresh = None;
+        state.last_lighting_source_epoch = 0;
     }
 
     // Reset timing to prevent a burst of ticks after the load.

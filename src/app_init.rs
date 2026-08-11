@@ -187,6 +187,17 @@ pub(crate) fn rebuild_lighting_grid_from_sim(
             .map(|cell| ((cell.rx, cell.ry), cell.level)),
         lighting_config,
     );
+    let point_lights = collect_live_point_lights(simulation, rules);
+    lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
+    lighting_grid
+}
+
+/// Current app-only point-light producers, in the stable source order used by
+/// CellClass light accumulation: structures first, then RadSite light sources.
+pub(crate) fn collect_live_point_lights(
+    simulation: Option<&Simulation>,
+    rules: Option<&RuleSet>,
+) -> Vec<PointLight> {
     let mut point_lights = collect_live_building_lights(simulation, rules);
     // Radiation green glow: one green point light per live radiation site,
     // accumulated additively alongside building lamps (render-only).
@@ -195,8 +206,51 @@ pub(crate) fn rebuild_lighting_grid_from_sim(
             sim, rules,
         ));
     }
-    lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
-    lighting_grid
+    point_lights
+}
+
+/// Stable app-local epoch for the complete Cell-light producer list. Radiation
+/// lights are already quantized to their native delay step before this hash.
+pub(crate) fn live_point_light_epoch(lights: &[PointLight]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    let mut mix = |value: u64| {
+        hash ^= value;
+        hash = hash.wrapping_mul(PRIME);
+    };
+    for light in lights {
+        mix(u64::from(light.rx));
+        mix(u64::from(light.ry));
+        mix(light.center_x as u32 as u64);
+        mix(light.center_y as u32 as u64);
+        mix(light.radius_leptons as u32 as u64);
+        mix(light.intensity as u32 as u64);
+        for channel in light.tint {
+            mix(channel as u32 as u64);
+        }
+        mix(u64::from(u8::from(light.active)));
+        mix(u64::from(u8::from(light.detail)));
+    }
+    hash
+}
+
+pub(crate) fn lighting_config_epoch(config: &LightingConfig) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for value in [
+        config.ambient,
+        config.red,
+        config.green,
+        config.blue,
+        config.ground,
+        config.level,
+    ] {
+        hash ^= u64::from(value.to_bits());
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 fn collect_live_building_lights(

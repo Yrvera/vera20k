@@ -39,12 +39,9 @@ const OVERLAY_BYTE_NONE: u8 = 0xFF;
 
 /// High-bridge theater slots used by the map-load bridge-record walk.
 /// A negative entry is a deliberately unused slot.
-const HIGH_BRIDGE_START_SUBTILE: [i32; 16] =
-    [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
-const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] =
-    [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
-const HIGH_BRIDGE_END_SUBTILE: [i32; 16] =
-    [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
+const HIGH_BRIDGE_START_SUBTILE: [i32; 16] = [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
+const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] = [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
+const HIGH_BRIDGE_END_SUBTILE: [i32; 16] = [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
 
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
@@ -1776,13 +1773,8 @@ fn compute_high_bridge_endpoints(
         let mut cursor = endpoint_a;
         let mut far_match_seen = false;
         let mut intact = true;
-        let mut group_id = bridge_runtime_group_at(
-            runtime_cells,
-            width,
-            height,
-            endpoint_a.0,
-            endpoint_a.1,
-        );
+        let mut group_id =
+            bridge_runtime_group_at(runtime_cells, width, height, endpoint_a.0, endpoint_a.1);
 
         loop {
             let previous = cursor;
@@ -1812,18 +1804,12 @@ fn compute_high_bridge_endpoints(
             }
 
             group_id = group_id.or_else(|| {
-                bridge_runtime_group_at(
-                    runtime_cells,
-                    width,
-                    height,
-                    cursor.0,
-                    cursor.1,
-                )
+                bridge_runtime_group_at(runtime_cells, width, height, cursor.0, cursor.1)
             });
 
             if let Some(next_offset) = terrain.high_bridge_tile_offset(next_cell) {
-                far_match_seen = HIGH_BRIDGE_END_SUBTILE[next_offset]
-                    == i32::from(next_cell.final_sub_tile);
+                far_match_seen =
+                    HIGH_BRIDGE_END_SUBTILE[next_offset] == i32::from(next_cell.final_sub_tile);
             } else if !next_cell.bridge_facts.has_structural_bridge() {
                 intact = false;
             }

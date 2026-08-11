@@ -6,7 +6,7 @@
 //! This module reports those effects; the world owner applies animation, damage,
 //! occupancy and lifecycle changes in the same master-frame rung.
 
-use crate::util::fixed_math::{SimFixed, SIM_ONE, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
 use super::rocket_movement::SpecialMovementOutcome;
 
@@ -23,7 +23,7 @@ pub enum DropPodPhase {
 /// Serializable active DropPod runtime. No ground occupation is owned while
 /// `phase == Descending`; a successful landing atomically hands that ownership
 /// to the caller's Unlimbo path.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DropPodState {
     pub phase: DropPodPhase,
     pub target_rx: u16,
@@ -58,6 +58,26 @@ pub struct DropPodFrameEffects {
 pub struct DropPodProcessResult {
     pub outcome: SpecialMovementOutcome,
     pub effects: DropPodFrameEffects,
+}
+
+/// Resolve the terminal DropPod decision through the owner's virtual Unlimbo
+/// admission, never through a direct Cell or occupancy predicate.
+///
+/// The callback corresponds to `ObjectClass::Unlimbo(coords, 0)` and is invoked
+/// exactly once only on the frame whose integration reaches the ground.
+// Native: DropPodLocomotionClass::Process @ 0x004B5B70, owner vslot +0xD8.
+pub fn landing_from_virtual_unlimbo(
+    state: &DropPodState,
+    mut virtual_unlimbo: impl FnMut((u16, u16), u8) -> bool,
+) -> Option<DropPodLanding> {
+    if state.phase != DropPodPhase::Descending || state.altitude > state.descent_speed {
+        return None;
+    }
+    Some(if virtual_unlimbo((state.target_rx, state.target_ry), 0) {
+        DropPodLanding::UnlimboSucceeded
+    } else {
+        DropPodLanding::Blocked
+    })
 }
 
 /// Initialize a distinct DropPod process. It deliberately does not alter an
@@ -211,5 +231,34 @@ mod tests {
             SpecialMovementOutcome::Abort
         );
         assert_eq!(state.phase, DropPodPhase::Destroyed);
+    }
+
+    #[test]
+    fn virtual_unlimbo_is_the_only_terminal_admission_call() {
+        let mut airborne = begin_drop_pod_state(
+            (7, 9),
+            SimFixed::from_num(4),
+            SimFixed::from_num(10),
+            SimFixed::from_num(1),
+        );
+        let mut calls = Vec::new();
+        assert_eq!(
+            landing_from_virtual_unlimbo(&airborne, |coords, facing| {
+                calls.push((coords, facing));
+                true
+            }),
+            None
+        );
+        assert!(calls.is_empty());
+
+        airborne.altitude = airborne.descent_speed;
+        assert_eq!(
+            landing_from_virtual_unlimbo(&airborne, |coords, facing| {
+                calls.push((coords, facing));
+                false
+            }),
+            Some(DropPodLanding::Blocked)
+        );
+        assert_eq!(calls, vec![((7, 9), 0)]);
     }
 }

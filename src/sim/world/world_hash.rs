@@ -217,6 +217,7 @@ impl Simulation {
         self.hash_radiation(&mut hasher);
         if include_master_frame_v43 {
             self.hash_projectiles(&mut hasher);
+            self.hash_waves(&mut hasher);
         }
         self.hash_super_weapons(&mut hasher);
         self.hash_entities(&mut hasher, include_lifecycle_v28, include_mission_v29);
@@ -245,12 +246,34 @@ impl Simulation {
             projectile.payload.weapon.index().hash(hasher);
             projectile.payload.owner.index().hash(hasher);
             projectile.speed_leptons_per_frame.hash(hasher);
+            projectile.velocity.hash(hasher);
+            projectile.trajectory.hash(hasher);
+            projectile.guidance.hash(hasher);
+            projectile.visual.hash(hasher);
             projectile.arm_frames_remaining.hash(hasher);
             projectile.fuse_frames_remaining.hash(hasher);
+            projectile.ranged_fuse.hash(hasher);
+            projectile.last_distance_half.hash(hasher);
             projectile.tracks_target.hash(hasher);
             projectile.target_expiry.hash(hasher);
             projectile.collision.level_non_water.hash(hasher);
             projectile.collision.subject_to_walls.hash(hasher);
+            projectile.collision.native_cell_collision.hash(hasher);
+        }
+    }
+
+    fn hash_waves(&self, hasher: &mut impl Hasher) {
+        self.waves.next_id().hash(hasher);
+        self.waves.len().hash(hasher);
+        for (&id, wave) in self.waves.iter() {
+            id.hash(hasher);
+            wave.wave_type.hash(hasher);
+            wave.source.hash(hasher);
+            wave.target.hash(hasher);
+            wave.lifetime.hash(hasher);
+            wave.intensity.hash(hasher);
+            wave.recorded_cells.hash(hasher);
+            wave.damage_payload.hash(hasher);
         }
     }
 
@@ -264,9 +287,11 @@ impl Simulation {
             return;
         }
 
-        b"raw-cell-occupation-v1".hash(hasher);
+        b"raw-cell-occupation-v2".hash(hasher);
         entry_count.hash(hasher);
-        for (rx, ry, ground, deck) in self.substrate.raw_cell_occupation.entries() {
+        for (rx, ry, ground, deck, ground_owner, deck_owner) in
+            self.substrate.raw_cell_occupation.entries()
+        {
             0xC1u8.hash(hasher); // entry delimiter
             rx.hash(hasher);
             ry.hash(hasher);
@@ -274,6 +299,8 @@ impl Simulation {
             ground.hash(hasher);
             1u8.hash(hasher); // deck-plane tag
             deck.hash(hasher);
+            ground_owner.hash(hasher);
+            deck_owner.hash(hasher);
         }
     }
 
@@ -552,7 +579,24 @@ impl Simulation {
         for (owner, fog) in &self.fog.by_owner {
             owner.hash(hasher);
             fog.cells_raw().hash(hasher);
+            // CellClass visibility counters/flags are serialized simulation
+            // state, not renderer cache; fold their row-major projection too.
+            for cell in fog.cell_runtime_raw() {
+                cell.shroud_counter.hash(hasher);
+                cell.gap_shroud_counter.hash(hasher);
+                cell.alt_flags.hash(hasher);
+                cell.flags.hash(hasher);
+                cell.visibility.hash(hasher);
+                cell.foggedness.hash(hasher);
+            }
+            fog.visibility_marks_raw().hash(hasher);
         }
+        b"fogged-object-footprints-v1".hash(hasher);
+        self.fog.next_fogged_object_id.hash(hasher);
+        self.fog.fogged_object_cells.hash(hasher);
+        self.fog.fogged_objects.hash(hasher);
+        self.fog.sensors_by_house.hash(hasher);
+        self.fog.cloaked_by_houses.hash(hasher);
         for (owner, allies) in &self.house_alliances {
             owner.hash(hasher);
             for ally in allies {
@@ -804,6 +848,14 @@ impl Simulation {
                 loco.hover_throttle.to_bits().hash(hasher);
                 loco.hover_bob_offset.to_bits().hash(hasher);
                 loco.altitude.to_bits().hash(hasher);
+                hash_locomotor_payload(&loco.runtime_payload, hasher);
+                match loco.piggyback.as_deref() {
+                    Some(runtime) => {
+                        1u8.hash(hasher);
+                        hash_locomotor_runtime(runtime, hasher);
+                    }
+                    None => 0u8.hash(hasher),
+                }
                 // Mission readiness inputs are NOT hashed: they are derived at
                 // the gate from state already hashed above (and from position,
                 // facing and movement target, likewise hashed). Hashing a
@@ -820,12 +872,46 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.on_bridge.hash(hasher);
-            entity.runtime_bridge_transition.pending_mismatch.hash(hasher);
+            entity
+                .runtime_bridge_transition
+                .pending_mismatch
+                .hash(hasher);
+            entity.spotlight_capable.hash(hasher);
+            entity.building_light.hash(hasher);
             entity.low_bridge_tube_state.hash(hasher);
             hash_teleport_state(entity.teleport_state.as_ref(), hasher);
             hash_tunnel_state(entity.tunnel_state.as_ref(), hasher);
             hash_rocket_state(entity.rocket_state.as_ref(), hasher);
             hash_drop_pod_state(entity.drop_pod_state.as_ref(), hasher);
+            if let Some(cloak) = entity.cloak.as_ref() {
+                1u8.hash(hasher);
+                cloak.state.hash(hasher);
+                cloak.visual_phase.map(|phase| phase as u8).hash(hasher);
+                cloak.depth.hash(hasher);
+                cloak.cloaking_stages.hash(hasher);
+                cloak.late_visible.hash(hasher);
+                cloak.force_visible_call.hash(hasher);
+                cloak.opaque_counter1.hash(hasher);
+                cloak.opaque_tuple.start_frame.hash(hasher);
+                cloak.opaque_tuple.payload.hash(hasher);
+                cloak.opaque_tuple.duration_frames.hash(hasher);
+                cloak.opaque_cooldown2.hash(hasher);
+                cloak.opaque_mode_flag.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
+            if let Some(disguise) = entity.disguise.as_ref() {
+                1u8.hash(hasher);
+                disguise.disguised.hash(hasher);
+                disguise.disguise_creation_frame.hash(hasher);
+                disguise.disguise_type.hash(hasher);
+                disguise.disguised_as_house.hash(hasher);
+                disguise.reveal.start_frame.hash(hasher);
+                disguise.reveal.neighbor_cell_packed.hash(hasher);
+                disguise.reveal.duration_frames.hash(hasher);
+            } else {
+                0u8.hash(hasher);
+            }
 
             if let Some(ref inv) = entity.invulnerability {
                 1u8.hash(hasher);
@@ -1061,6 +1147,17 @@ impl Simulation {
             } else {
                 hash_mission_com_before_v29(&entity.mission, hasher);
             }
+            match entity.aircraft_release_tail {
+                Some(tail) => {
+                    1u8.hash(hasher);
+                    tail.remaining_releases.hash(hasher);
+                    tail.release_pending.hash(hasher);
+                    tail.tail_latch.hash(hasher);
+                    tail.completion_latch.hash(hasher);
+                    tail.clear_target_next.hash(hasher);
+                }
+                None => 0u8.hash(hasher),
+            }
             // S4b damage-Spark `+0x308`-equivalent live-system gate. Hashed because
             // it gates future scenario_rng draws (a divergence here desyncs the
             // stream). Zero for every entity in stock YR (the gate is Cyborg-only).
@@ -1076,6 +1173,78 @@ impl Simulation {
             id.hash(hasher);
             anim.hash(hasher);
         }
+    }
+}
+
+fn hash_locomotor_runtime(
+    runtime: &crate::sim::movement::locomotion::piggyback::LocomotorRuntime,
+    hasher: &mut impl Hasher,
+) {
+    (runtime.kind as u8).hash(hasher);
+    (runtime.layer as u8).hash(hasher);
+    let common = &runtime.common;
+    common.powered.hash(hasher);
+    (common.phase as u8).hash(hasher);
+    (common.air_phase as u8).hash(hasher);
+    common.speed_multiplier.to_bits().hash(hasher);
+    common.speed_fraction.to_bits().hash(hasher);
+    common.fly_current_speed.to_bits().hash(hasher);
+    common.altitude.to_bits().hash(hasher);
+    common.target_altitude.to_bits().hash(hasher);
+    common.climb_rate.to_bits().hash(hasher);
+    common.jumpjet_speed.to_bits().hash(hasher);
+    common.jumpjet_accel.to_bits().hash(hasher);
+    common.jumpjet_current_speed.to_bits().hash(hasher);
+    common.jumpjet_deviation.hash(hasher);
+    common.jumpjet_crash_speed.to_bits().hash(hasher);
+    common.jumpjet_turn_rate.hash(hasher);
+    common.balloon_hover.hash(hasher);
+    common.hover_attack.hash(hasher);
+    common.speed_type.hash(hasher);
+    common.movement_zone.hash(hasher);
+    common.rot.hash(hasher);
+    common.air_progress.to_bits().hash(hasher);
+    common.infantry_wobble_phase.to_bits().hash(hasher);
+    common
+        .subcell_dest
+        .map(|(x, y)| (x.to_bits(), y.to_bits()))
+        .hash(hasher);
+    common.hover_throttle.to_bits().hash(hasher);
+    common.hover_speed_request.to_bits().hash(hasher);
+    common.hover_bob_offset.to_bits().hash(hasher);
+    hash_locomotor_payload(&runtime.payload, hasher);
+}
+
+fn hash_locomotor_payload(
+    payload: &crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload,
+    hasher: &mut impl Hasher,
+) {
+    use crate::sim::movement::locomotion::piggyback::LocomotorRuntimePayload;
+    match payload {
+        LocomotorRuntimePayload::Drive => 0u8.hash(hasher),
+        LocomotorRuntimePayload::Walk => 1u8.hash(hasher),
+        LocomotorRuntimePayload::Teleport(state) => {
+            2u8.hash(hasher);
+            hash_teleport_state(state.as_ref(), hasher);
+        }
+        LocomotorRuntimePayload::Tunnel(state) => {
+            3u8.hash(hasher);
+            hash_tunnel_state(state.as_ref(), hasher);
+        }
+        LocomotorRuntimePayload::Rocket(state) => {
+            4u8.hash(hasher);
+            hash_rocket_state(state.as_ref(), hasher);
+        }
+        LocomotorRuntimePayload::DropPod(state) => {
+            5u8.hash(hasher);
+            hash_drop_pod_state(state.as_ref(), hasher);
+        }
+        LocomotorRuntimePayload::Hover => 6u8.hash(hasher),
+        LocomotorRuntimePayload::Mech => 7u8.hash(hasher),
+        LocomotorRuntimePayload::Ship => 8u8.hash(hasher),
+        LocomotorRuntimePayload::Fly => 9u8.hash(hasher),
+        LocomotorRuntimePayload::Jumpjet => 10u8.hash(hasher),
+        LocomotorRuntimePayload::Parachute => 11u8.hash(hasher),
     }
 }
 
@@ -1182,9 +1351,7 @@ fn hash_drop_pod_state(
 mod teleport_rocket_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::movement::rocket_movement::{
-        RocketFlightParameters, RocketPhase, RocketState,
-    };
+    use crate::sim::movement::rocket_movement::{RocketFlightParameters, RocketPhase, RocketState};
     use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
     use crate::util::fixed_math::SimFixed;
 
