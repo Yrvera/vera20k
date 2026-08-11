@@ -108,8 +108,7 @@ fn cell_distance_leptons(
 ) -> Result<i32, UnsupportedGroundSlope> {
     let dx = (b.0 as i64 - a.0 as i64) * LEPTONS_PER_CELL;
     let dy = (b.1 as i64 - a.1 as i64) * LEPTONS_PER_CELL;
-    let dz = cell_height_leptons(terrain, b.0, b.1)?
-        - cell_height_leptons(terrain, a.0, a.1)?;
+    let dz = cell_height_leptons(terrain, b.0, b.1)? - cell_height_leptons(terrain, a.0, a.1)?;
     let dist_sq = (dx * dx + dy * dy + dz * dz) as f64;
     Ok(dist_sq.sqrt() as i32)
 }
@@ -381,7 +380,12 @@ impl RadiationState {
 mod tests {
     use super::*;
 
-    fn terrain_cell(rx: u16, ry: u16, level: u8, slope_type: u8) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+    fn terrain_cell(
+        rx: u16,
+        ry: u16,
+        level: u8,
+        slope_type: u8,
+    ) -> crate::map::resolved_terrain::ResolvedTerrainCell {
         crate::map::resolved_terrain::ResolvedTerrainCell {
             rx,
             ry,

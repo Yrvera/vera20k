@@ -9,6 +9,149 @@ use std::collections::BTreeMap;
 
 use crate::sim::game_options::GameOptions;
 use crate::sim::intern::InternedId;
+use crate::sim::timer::CdTimer;
+
+/// One map-authored global lighting profile in the native integer scales.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioLightProfileUnits {
+    /// Ambient/R/G/B are percentages scaled by 100 at parse time.
+    pub ambient_percent: i32,
+    pub red_percent: i32,
+    pub green_percent: i32,
+    pub blue_percent: i32,
+    /// Ground/Level retain ScenarioClass's 250-based integer scale.
+    pub ground_units: i32,
+    pub level_units: i32,
+}
+
+impl ScenarioLightProfileUnits {
+    pub const fn normal_default() -> Self {
+        Self {
+            ambient_percent: 100,
+            red_percent: 100,
+            green_percent: 100,
+            blue_percent: 100,
+            ground_units: 50,
+            level_units: 8,
+        }
+    }
+
+    pub const fn ion_default() -> Self {
+        Self {
+            ambient_percent: 87,
+            red_percent: 30,
+            green_percent: 40,
+            blue_percent: 75,
+            ground_units: 0,
+            level_units: 0,
+        }
+    }
+}
+
+impl Default for ScenarioLightProfileUnits {
+    fn default() -> Self {
+        Self::normal_default()
+    }
+}
+
+/// Which map-authored RGB/Ground/Level tuple supplies the current global view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ScenarioLightingProfile {
+    Normal,
+    Ion,
+}
+
+/// Persistent ScenarioClass-style authority for global lighting transitions.
+///
+/// The per-cell grid remains an app-derived cache. Only the profile inputs,
+/// mutable scalar/target, selection, and signed frame timer belong to lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioLightingState {
+    pub normal: ScenarioLightProfileUnits,
+    pub ion: ScenarioLightProfileUnits,
+    pub current_ambient: i32,
+    pub target_ambient: i32,
+    pub selected_profile: ScenarioLightingProfile,
+    pub transition_timer: CdTimer,
+}
+
+impl ScenarioLightingState {
+    /// Construct a tick-zero scenario from its two map-authored profiles.
+    pub const fn new(normal: ScenarioLightProfileUnits, ion: ScenarioLightProfileUnits) -> Self {
+        Self {
+            current_ambient: normal.ambient_percent,
+            target_ambient: normal.ambient_percent,
+            normal,
+            ion,
+            selected_profile: ScenarioLightingProfile::Normal,
+            // Scenario construction starts this zero-duration timer at frame 0;
+            // it is immediately due without using CdTimer's paused sentinel.
+            transition_timer: CdTimer::started(0, 0),
+        }
+    }
+
+    #[inline]
+    pub fn selected(&self) -> ScenarioLightProfileUnits {
+        match self.selected_profile {
+            ScenarioLightingProfile::Normal => self.normal,
+            ScenarioLightingProfile::Ion => self.ion,
+        }
+    }
+
+    #[inline]
+    pub fn select_normal(&mut self) {
+        self.selected_profile = ScenarioLightingProfile::Normal;
+        self.target_ambient = self.normal.ambient_percent;
+    }
+
+    #[inline]
+    pub fn select_ion(&mut self) {
+        self.selected_profile = ScenarioLightingProfile::Ion;
+        self.target_ambient = self.ion.ambient_percent;
+    }
+
+    /// Run the one native pre-ore transition rung for `binary_frame`.
+    ///
+    /// Returns true when the due rung restarted its timer. Target selection is
+    /// deliberately separate, so a Lightning Storm activated later in the same
+    /// master frame cannot move the scalar until the following eligible frame.
+    pub fn advance_transition_if_due(
+        &mut self,
+        binary_frame: u32,
+        rate_nonzero: bool,
+        interval_frames: i32,
+        ambient_step: i32,
+    ) -> bool {
+        if self.current_ambient == self.target_ambient || !rate_nonzero {
+            return false;
+        }
+
+        let frame = binary_frame as i32;
+        if !self.transition_timer.expired(frame) {
+            return false;
+        }
+        self.transition_timer.start(frame, interval_frames);
+
+        let target = self.target_ambient.max(0);
+        if self.current_ambient < target {
+            let advanced = self.current_ambient.wrapping_add(ambient_step);
+            self.current_ambient = advanced.min(target);
+        } else if self.current_ambient > target {
+            let advanced = self.current_ambient.wrapping_sub(ambient_step);
+            self.current_ambient = advanced.max(target);
+        }
+        true
+    }
+}
+
+impl Default for ScenarioLightingState {
+    fn default() -> Self {
+        Self::new(
+            ScenarioLightProfileUnits::normal_default(),
+            ScenarioLightProfileUnits::ion_default(),
+        )
+    }
+}
 
 /// Everything the app layer decides about a session before the sim exists.
 /// Built from the lobby/launch flow and the selected map file — never
@@ -25,6 +168,14 @@ pub struct ScenarioDescriptor {
     pub map_name: String,
     /// Theater name from the map header (e.g. "TEMPERATE").
     pub theater: String,
+    /// Native GameMode classification used by EventClass receiver gates:
+    /// false is mode 0; true represents every nonzero mode.
+    pub game_mode_nonzero: bool,
+    /// Native `ScenarioClass` flags bit `0x20`. The shared direct and area
+    /// damage entries return before any receiver or terrain mutation while set.
+    pub no_damage: bool,
+    /// Map-authored global-light profiles plus their tick-zero mutable state.
+    pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the CANONICAL CELL-ARRAY frame (max cell
     /// rx/ry + 1 — the frame entities, waypoints, and vision index), NOT the
     /// raw `[Map] Size=` values: sim cell coordinates span the iso diamond,
@@ -52,6 +203,7 @@ impl ScenarioDescriptor {
         Self {
             seed: header.seed,
             map_name: header.scenario_name(),
+            no_damage: header.special_flags & 0x20 != 0,
             ..Self::default()
         }
     }
@@ -74,6 +226,14 @@ pub struct ScenarioSession {
     pub map_name: String,
     /// Theater name from the map header.
     pub theater: String,
+    /// Persisted native zero/nonzero GameMode classification.
+    #[serde(default)]
+    pub game_mode_nonzero: bool,
+    /// Persisted native `ScenarioClass` flags bit `0x20`.
+    #[serde(default)]
+    pub no_damage: bool,
+    /// Persistent fixed-integer global-light configuration and transition state.
+    pub lighting: ScenarioLightingState,
     /// Authoritative map bounds in the canonical cell-array frame (max cell
     /// rx/ry + 1); see the descriptor field of the same name. Seeds the fog
     /// grid dimensions at construction.
@@ -117,6 +277,9 @@ impl ScenarioSession {
             seed: u64::from(desc.seed),
             map_name: desc.map_name.clone(),
             theater: desc.theater.clone(),
+            game_mode_nonzero: desc.game_mode_nonzero,
+            no_damage: desc.no_damage,
+            lighting: desc.lighting,
             map_width: desc.map_width,
             map_height: desc.map_height,
             local_left: desc.local_left,
@@ -147,6 +310,48 @@ mod tests {
         });
         let b = Simulation::with_seed(0xDEAD_BEEF);
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_20_lighting_defaults_and_due_rungs_clamp_both_directions() {
+        let mut lighting = ScenarioLightingState::default();
+        assert_eq!(lighting.normal, ScenarioLightProfileUnits::normal_default());
+        assert_eq!(lighting.ion, ScenarioLightProfileUnits::ion_default());
+        assert_eq!(lighting.transition_timer, CdTimer::started(0, 0));
+
+        lighting.select_ion();
+        assert!(lighting.advance_transition_if_due(0, true, 180, 20));
+        assert_eq!(lighting.current_ambient, 87);
+        assert_eq!(lighting.transition_timer, CdTimer::started(0, 180));
+
+        lighting.select_normal();
+        assert!(!lighting.advance_transition_if_due(179, true, 180, 20));
+        assert_eq!(lighting.current_ambient, 87);
+        assert!(lighting.advance_transition_if_due(180, true, 180, 20));
+        assert_eq!(lighting.current_ambient, 100);
+
+        lighting.select_ion();
+        assert!(!lighting.advance_transition_if_due(360, false, 180, 20));
+        assert_eq!(lighting.current_ambient, 100);
+        assert_eq!(lighting.transition_timer, CdTimer::started(180, 180));
+    }
+
+    #[test]
+    fn gsi_04_20_lighting_config_runtime_selection_and_timer_are_hashed() {
+        let baseline = Simulation::new().state_hash();
+        let assert_differs = |mutate: fn(&mut ScenarioLightingState)| {
+            let mut sim = Simulation::new();
+            mutate(&mut sim.session.lighting);
+            assert_ne!(sim.state_hash(), baseline);
+        };
+
+        assert_differs(|lighting| lighting.normal.red_percent += 1);
+        assert_differs(|lighting| lighting.ion.blue_percent += 1);
+        assert_differs(|lighting| lighting.current_ambient -= 1);
+        assert_differs(|lighting| lighting.target_ambient -= 1);
+        assert_differs(|lighting| lighting.selected_profile = ScenarioLightingProfile::Ion);
+        assert_differs(|lighting| lighting.transition_timer = CdTimer::from_raw(1, 0));
+        assert_differs(|lighting| lighting.transition_timer = CdTimer::from_raw(0, 1));
     }
 
     /// AT-1: two sims constructed from the same descriptor seed stay in
@@ -311,5 +516,30 @@ mod tests {
         assert_eq!(descriptor.map_name, "arena.map");
         assert_eq!(descriptor.map_width, 0);
         assert_eq!(descriptor.map_height, 0);
+    }
+
+    #[test]
+    fn gsi_04_10_replay_scenario_no_damage_roundtrips_and_changes_hash() {
+        let mut header = crate::sim::replay::NativeReplayHeader::new(0x1234_5678, "inert.map");
+        header.special_flags = 0x20;
+        let descriptor = ScenarioDescriptor::from_native_replay_header(&header);
+        assert!(descriptor.no_damage);
+
+        let inert = Simulation::from_descriptor(&descriptor);
+        assert!(inert.session.no_damage);
+        let mut ordinary = Simulation::from_descriptor(&ScenarioDescriptor {
+            no_damage: false,
+            ..descriptor.clone()
+        });
+        assert_ne!(inert.state_hash(), ordinary.state_hash());
+
+        ordinary.session.no_damage = true;
+        assert_eq!(inert.state_hash(), ordinary.state_hash());
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&inert, 1, 2, "inert.map", 0);
+        let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .expect("v61 inert snapshot")
+            .sim;
+        assert!(restored.session.no_damage);
+        assert_eq!(restored.state_hash(), inert.state_hash());
     }
 }
