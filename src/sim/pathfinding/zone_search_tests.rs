@@ -107,6 +107,19 @@ fn gsi_04_12_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
     terrain
 }
 
+fn gsi_04_12_cell_listed_entity(
+    stable_id: u64,
+    type_ref: &str,
+    owner: &str,
+    rx: u16,
+    ry: u16,
+) -> GameEntity {
+    let mut entity = GameEntity::test_default(stable_id, type_ref, owner, rx, ry);
+    entity.lifecycle.in_limbo = false;
+    entity.lifecycle.cell_marked = true;
+    entity
+}
+
 #[test]
 fn zoned_path_reachable_returns_path() {
     let grid = grid_from_str(
@@ -471,7 +484,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
 
     let make_entities = || {
         let mut entities = EntityStore::new();
-        let mut mover = GameEntity::test_default(1, "HTNK", "Americans", 1, 0);
+        let mut mover = gsi_04_12_cell_listed_entity(1, "HTNK", "Americans", 1, 0);
         let mut locomotor = crate::sim::movement::locomotor::LocomotorState::for_test_kind(
             crate::rules::locomotor_type::LocomotorKind::Drive,
         );
@@ -480,7 +493,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
         mover.on_bridge = true;
         mover.drive_locomotion = Some(Default::default());
         entities.insert(mover);
-        entities.insert(GameEntity::test_default(2, "HTNK", "Russians", 2, 0));
+        entities.insert(gsi_04_12_cell_listed_entity(2, "HTNK", "Russians", 2, 0));
         entities
     };
 
@@ -982,7 +995,7 @@ fn gsi_04_12_attack_pursuit_entry_threads_exact_blocker_counts() {
     terrain.cell_mut(0, 0).unwrap().final_tile_index = 100;
     terrain.cell_mut(4, 0).unwrap().final_tile_index = 100;
 
-    let mut attacker = GameEntity::test_default(1, "MTNK", "Americans", 1, 0);
+    let mut attacker = gsi_04_12_cell_listed_entity(1, "MTNK", "Americans", 1, 0);
     let mut locomotor = crate::sim::movement::locomotor::LocomotorState::for_test_kind(
         crate::rules::locomotor_type::LocomotorKind::Drive,
     );
@@ -991,7 +1004,7 @@ fn gsi_04_12_attack_pursuit_entry_threads_exact_blocker_counts() {
     attacker.on_bridge = true;
     attacker.drive_locomotion = Some(Default::default());
     attacker.attack_target = Some(AttackTarget::for_cell(3, 0));
-    let blocker = GameEntity::test_default(2, "MTNK", "Russians", 2, 0);
+    let blocker = gsi_04_12_cell_listed_entity(2, "MTNK", "Russians", 2, 0);
 
     let mut sim = Simulation::new();
     sim.interner = test_interner();
@@ -1056,7 +1069,7 @@ fn gsi_04_12_phase_six_order_resume_threads_exact_blocker_counts() {
     terrain.cell_mut(0, 0).unwrap().final_tile_index = 100;
     terrain.cell_mut(4, 0).unwrap().final_tile_index = 100;
 
-    let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 1, 0);
+    let mut mover = gsi_04_12_cell_listed_entity(1, "MTNK", "Americans", 1, 0);
     let mut locomotor = crate::sim::movement::locomotor::LocomotorState::for_test_kind(
         crate::rules::locomotor_type::LocomotorKind::Drive,
     );
@@ -1068,7 +1081,7 @@ fn gsi_04_12_phase_six_order_resume_threads_exact_blocker_counts() {
         goal_rx: 3,
         goal_ry: 0,
     });
-    let blocker = GameEntity::test_default(2, "MTNK", "Russians", 2, 0);
+    let blocker = gsi_04_12_cell_listed_entity(2, "MTNK", "Russians", 2, 0);
 
     let mut sim = Simulation::new();
     sim.interner = test_interner();
@@ -1140,7 +1153,7 @@ fn gsi_04_12_drive_pending_continuation_keeps_hierarchy_context_and_raw_route() 
     terrain.cell_mut(0, 0).unwrap().final_tile_index = 100;
     terrain.cell_mut(4, 0).unwrap().final_tile_index = 100;
 
-    let mut mover = GameEntity::test_default(1, "MTNK", "Americans", 1, 0);
+    let mut mover = gsi_04_12_cell_listed_entity(1, "MTNK", "Americans", 1, 0);
     let mut locomotor = crate::sim::movement::locomotor::LocomotorState::for_test_kind(
         crate::rules::locomotor_type::LocomotorKind::Drive,
     );
@@ -1150,7 +1163,7 @@ fn gsi_04_12_drive_pending_continuation_keeps_hierarchy_context_and_raw_route() 
     mover.drive_locomotion = Some(Default::default());
     mover.navigation.nav_com = Some(NavTargetRef::cell(3, 0));
     mover.navigation.pending_arrival_clear = true;
-    let blocker = GameEntity::test_default(2, "MTNK", "Russians", 2, 0);
+    let blocker = gsi_04_12_cell_listed_entity(2, "MTNK", "Russians", 2, 0);
 
     let mut entities = EntityStore::new();
     entities.insert(mover);
@@ -1251,7 +1264,7 @@ fn gsi_04_12_stock_miner_move_entries_thread_exact_world_context() {
         terrain.cell_mut(0, 0).unwrap().final_tile_index = 100;
         terrain.cell_mut(4, 0).unwrap().final_tile_index = 100;
 
-        let mut miner = GameEntity::test_default(1, "HARV", "Americans", 1, 0);
+        let mut miner = gsi_04_12_cell_listed_entity(1, "HARV", "Americans", 1, 0);
         let mut locomotor = crate::sim::movement::locomotor::LocomotorState::for_test_kind(
             crate::rules::locomotor_type::LocomotorKind::Drive,
         );
@@ -1259,7 +1272,7 @@ fn gsi_04_12_stock_miner_move_entries_thread_exact_world_context() {
         miner.locomotor = Some(locomotor);
         miner.on_bridge = true;
         miner.drive_locomotion = Some(Default::default());
-        let blocker = GameEntity::test_default(2, "HARV", "Russians", 2, 0);
+        let blocker = gsi_04_12_cell_listed_entity(2, "HARV", "Russians", 2, 0);
 
         let mut sim = Simulation::new();
         sim.interner = test_interner();
@@ -1296,6 +1309,7 @@ fn gsi_04_12_stock_miner_move_entries_thread_exact_world_context() {
         1,
         (3, 0),
         SimFixed::from_num(128),
+        None,
     );
     assert_eq!(
         refinery_return

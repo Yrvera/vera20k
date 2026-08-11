@@ -803,6 +803,37 @@ fn test_find_path_diagonal_corner_cutting_allowed() {
 }
 
 #[test]
+fn gsi_04_12_astar_allows_destination_legal_bridge_diagonal_with_missing_flank() {
+    // Retail PathfinderClass+0x01 is constructor-zero and never written, so
+    // AStar_compute_edge_cost never consults the two cardinal bridge flanks.
+    // BayOPigs has this stock-shaped entry at (112,134)->(113,135): the start
+    // and east flank are level-5 ground, while the south flank and diagonal
+    // destination are level-1 structural transition cells stamped by BRIDGE2.
+    let mut grid = PathGrid::new(2, 2);
+    grid.set_cell_for_test(0, 0, 5, false, false);
+    grid.set_cell_for_test(1, 0, 5, false, false);
+    grid.set_cell_for_test(0, 1, 1, true, true);
+    grid.set_cell_for_test(1, 1, 1, true, true);
+
+    let path = astar_search(
+        &grid,
+        (0, 0),
+        MovementLayer::Ground,
+        (1, 1),
+        &AStarOptions::default(),
+    )
+    .expect("destination-legal bridge diagonal must remain traversable");
+
+    assert_eq!(
+        path.iter()
+            .map(|step| (step.rx, step.ry, step.layer))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, MovementLayer::Ground), (1, 1, MovementLayer::Bridge),],
+        "missing cardinal bridge flank must not force a detour"
+    );
+}
+
+#[test]
 fn test_path_grid_dimensions() {
     let grid: PathGrid = PathGrid::new(80, 70);
     assert_eq!(grid.width(), 80);
@@ -2250,51 +2281,6 @@ fn astar_edge_cost_marker_stacks_after_code2_before_tiebreak() {
         tentative,
         STEP_COST * CODE2_MULT_JAM * SEARCH_MARKER_COST_MULTIPLIER + DIR_TIEBREAK[2],
         "marker must multiply the code-2 step cost, with direction tiebreak added afterward"
-    );
-}
-
-#[test]
-fn bridge_flank_multiplier_matches_binary_structural_cases() {
-    assert_eq!(
-        bridge_flank_multiplier(false, false),
-        BRIDGE_FLANK_MISSING_MULTIPLIER,
-        "first flank missing structural bridge yields 10x regardless of second flank"
-    );
-    assert_eq!(
-        bridge_flank_multiplier(false, true),
-        BRIDGE_FLANK_MISSING_MULTIPLIER,
-        "first flank test dominates the binary branch"
-    );
-    assert_eq!(
-        bridge_flank_multiplier(true, false),
-        BRIDGE_FLANK_ONE_MULTIPLIER,
-        "first structural, second missing yields 1x"
-    );
-    assert_eq!(
-        bridge_flank_multiplier(true, true),
-        BRIDGE_FLANK_BOTH_MULTIPLIER,
-        "both structural flanks yield 2x"
-    );
-}
-
-#[test]
-fn marker_flank_cost_does_not_scale_direction_tiebreak() {
-    let mut overlay = SearchMarkerOverlay::new();
-    overlay.toggle((3, 1));
-
-    let code2_cost = STEP_COST * CODE2_MULT_JAM;
-    let marked_cost = apply_search_marker_cost(code2_cost, Some(&overlay), (3, 1));
-    let flank_cost = apply_bridge_flank_cost(marked_cost, bridge_flank_multiplier(false, false));
-    let tentative = flank_cost + DIR_TIEBREAK[2];
-
-    assert_eq!(
-        tentative,
-        STEP_COST
-            * CODE2_MULT_JAM
-            * SEARCH_MARKER_COST_MULTIPLIER
-            * BRIDGE_FLANK_MISSING_MULTIPLIER
-            + DIR_TIEBREAK[2],
-        "direction tiebreak is final/additive and must not be multiplied by marker or flank costs"
     );
 }
 
