@@ -172,7 +172,50 @@ use crate::sim::world::Simulation;
 // field onward, for that vehicle and every entity after it. Both occupation
 // marks are rebuilt into the transient `CellOccupationGrid` on load, so a
 // misread is a wrong cell reservation, not just a cosmetic field.
-const SNAPSHOT_VERSION: u32 = 48;
+//
+// Bumped 48 -> 49: ObjectSubstrate gains authoritative serialized building
+// hidden-occupation counters, and GameEntity gains the immutable fixed-slot
+// type profile needed to reverse a contribution after load. RemoveOccupy's
+// enter-only cancellation makes this state impossible to reconstruct exactly
+// from the currently placed object set.
+//
+// Bumped 49 -> 50: ObjectSubstrate gains authoritative serialized per-house
+// Building base reservations (including shared dummy state), and GameEntity
+// gains the immutable signed AIBaseSpacing writer profile.
+// Bumped 50 -> 51: GameEntity gains serialized airborne spatial-bucket
+// membership and vector-tail order. These fields drive Apply_area_damage
+// receiver order and therefore must not be defaulted from an older bincode tail.
+// Bumped 51 -> 52: GameEntity gains the mutable per-Techno armor multiplier;
+// its exact double bits affect every later receiver result.
+// Bumped 52 -> 53: GameEntity gains the authoritative Psychedelic berserk byte
+// and signed timer; both affect subsequent receiver callbacks and targeting.
+// Bumped 53 -> 54: GameEntity gains the persistent WasAttackedByEnemy byte;
+// building AI reads it after load when deciding whether to sell at red health.
+// Bumped 54 -> 55: HouseState gains authoritative CurrentIQ.
+// Bumped 55 -> 56: GameEntity gains the damage-Smoke ParticleSystem identity.
+// Bumped 56 -> 57: GameEntity gains the controller-owned CaptureManager
+// capacity snapshot and ordered victim-link vector. Bincode cannot default a
+// missing mid-record field safely, and both fields change later mission state.
+// Bumped 57 -> 58: HouseState gains receiver-updated AngerStruct scores and
+// the selected enemy-house identity. Both feed later AI target decisions.
+// Bumped 58 -> 59: the Building shared C4/PostMortem latch now preserves its
+// signed start/duration and nullable retained source identity.
+// Bumped 59 -> 60: wall-sale commands may persist in the pending queue, and
+// HouseState/ScenarioSession now preserve distinct PlayerControl and GameMode
+// inputs used by their native EventClass receiver gate.
+// Bumped 60 -> 61: ScenarioSession now persists native ScenarioFlags bit 0x20,
+// which suppresses direct and area damage and therefore changes later world state.
+// Bumped 61 -> 62: Position gains authoritative signed exact-Z leptons, and
+// active low-bridge TubeMovement now persists its sole live
+// `{tube_id, cursor, target_xyz}` payload. Both change GameEntity's bincode
+// layout and must resume without rebuilding the mover's detached cell state.
+// Bumped 62 -> 63: GameEntity persists the immutable `Factory=BuildingType`
+// profile that gates later house-edge refreshes on reveal and owner transfer.
+// Bumped 63 -> 64: HouseState persists the aggregate active SpySat latch.
+// Bumped 64 -> 65: ScenarioSession persists both map lighting profiles plus
+// the mutable global ambient target/profile and signed transition timer;
+// the disproven queued Lightning Storm payload is removed at the same boundary.
+const SNAPSHOT_VERSION: u32 = 65;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
@@ -596,6 +639,12 @@ fn restore_object_references(
 
     let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
     let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
+    let particle_system_ids: BTreeSet<u64> = sim
+        .substrate
+        .particle_systems
+        .iter()
+        .map(|(&id, _)| id)
+        .collect();
 
     // Swizzle::Apply has no unmatched-reference recovery path. Validate the
     // complete modeled pointer graph before mutating even weak references or
@@ -704,6 +753,18 @@ fn restore_object_references(
                 "EntityStore",
                 target_id,
             )?;
+        }
+        if let Some(manager) = entity.capture_manager.as_ref() {
+            for &target_id in &manager.controlled_entity_ids {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "capture_manager.controlled_entity_ids",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
         }
         if let Some(plant) = entity.c4_plant.as_ref() {
             require_resolved_reference(
@@ -815,6 +876,16 @@ fn restore_object_references(
                 anim_id,
             )?;
         }
+        if let Some(system_id) = entity.damage_smoke_system_id {
+            require_resolved_reference(
+                particle_system_ids.contains(&system_id),
+                "EntityStore",
+                entity_id,
+                "damage_smoke_system_id",
+                "ParticleSystemStore",
+                system_id,
+            )?;
+        }
         if let Some(target_id) = entity.bunker_occupant {
             require_resolved_reference(
                 entity_ids.contains(&target_id),
@@ -921,9 +992,11 @@ fn restore_object_references(
             entity.last_attacker_id = None;
         }
         if let Some(pending) = entity.pending_c4_detonation.as_mut()
-            && !entity_ids.contains(&pending.attacker_id)
+            && pending
+                .source_entity_id
+                .is_some_and(|id| !entity_ids.contains(&id))
         {
-            pending.attacker_id = 0;
+            pending.source_entity_id = None;
         }
     }
 
@@ -1367,10 +1440,455 @@ mod tests {
     /// numbers to projectile state, trigger hashing, TeamClass state, piggyback
     /// persistence, and typed special locomotors. The merge unified both as 47.
     /// This pins it so a later accidental bump is caught. 47 -> 48 added
-    /// `DriveLocomotionRuntime::occupation_handoff` mid-struct.
+    /// `DriveLocomotionRuntime::occupation_handoff` mid-struct; 48 -> 49 added
+    /// the serialized building hidden-occupation grid and per-entity profile;
+    /// 49 -> 50 added Building base reservations and per-entity spacing;
+    /// 50 -> 51 added airborne spatial-bucket membership and vector order;
+    /// 51 -> 52 added the mutable per-Techno armor multiplier; 52 -> 53 added
+    /// the Psychedelic berserk byte and signed timer; 53 -> 54 added the
+    /// persistent WasAttackedByEnemy byte; 54 -> 55 added per-house CurrentIQ;
+    /// 55 -> 56 added the Techno damage-Smoke ParticleSystem identity; 56 ->
+    /// 57 added controller-owned CaptureManager capacity and victim links; 57
+    /// -> 58 added per-house AngerStruct scores and selected enemy identity;
+    /// 58 -> 59 replaced the lossy C4 timer with the shared signed
+    /// C4/PostMortem timer and nullable retained source; 59 -> 60 added the
+    /// wall-sale command plus house/game-mode receiver inputs; 60 -> 61 added
+    /// ScenarioFlags no-damage; 61 -> 62 added exact object Z and the sole live
+    /// low-bridge TubeMovement payload; 62 -> 63 added the immutable
+    /// `Factory=BuildingType` house-edge callback profile; 63 -> 64 added the
+    /// aggregate per-house SpySat-active latch; 64 -> 65 added persistent
+    /// Scenario lighting transition authority and removed queued storm state.
     #[test]
-    fn snapshot_version_is_48() {
-        assert_eq!(super::SNAPSHOT_VERSION, 48);
+    fn snapshot_version_is_65() {
+        assert_eq!(super::SNAPSHOT_VERSION, 65);
+    }
+
+    #[test]
+    fn gsi_04_20_mid_fade_lighting_roundtrip_preserves_hash_and_next_rung() {
+        let mut original = Simulation::with_seed(0x420);
+        original.session.binary_frame = 20;
+        original.session.lighting.normal.red_percent = 93;
+        original.session.lighting.ion.blue_percent = 71;
+        original.session.lighting.current_ambient = 95;
+        original.session.lighting.target_ambient = 87;
+        original.session.lighting.selected_profile =
+            crate::sim::scenario_session::ScenarioLightingProfile::Ion;
+        original.session.lighting.transition_timer = crate::sim::timer::CdTimer::from_raw(17, 3);
+
+        let saved_hash = original.state_hash();
+        let bytes = GameSnapshot::save(&original, 11, 22, "", 33);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("v65 lighting snapshot")
+            .sim;
+
+        assert_eq!(restored.session.lighting, original.session.lighting);
+        assert_eq!(restored.state_hash(), saved_hash);
+
+        let original_due = original
+            .session
+            .lighting
+            .advance_transition_if_due(20, true, 180, 20);
+        let restored_due = restored
+            .session
+            .lighting
+            .advance_transition_if_due(20, true, 180, 20);
+        assert_eq!(restored_due, original_due);
+        assert_eq!(restored.session.lighting, original.session.lighting);
+        assert_eq!(restored.state_hash(), original.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_18_spy_sat_latch_and_erased_map_knowledge_roundtrip_at_v65() {
+        let mut sim = Simulation::with_seed(0x418);
+        sim.fog.width = 12;
+        sim.fog.height = 12;
+        let owner = sim.interner.intern("Soviet");
+        let gapper = sim.interner.intern("Americans");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 1, None, true, 10_000, 10);
+        house.spy_sat_active = true;
+        house.map_is_clear = true;
+        sim.houses.insert(owner, house);
+        sim.fog.reveal_all_for_owner(owner);
+        crate::sim::vision::apply_gap_generators(&mut sim.fog, &[(gapper, 6, 6, 2)], &sim.interner);
+        assert!(sim.fog.is_cell_revealed(owner, 0, 0));
+        assert!(!sim.fog.is_cell_revealed(owner, 6, 6));
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_18_shroud", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("v65 SpySat snapshot").sim;
+
+        assert!(restored.houses[&owner].spy_sat_active);
+        assert!(restored.houses[&owner].map_is_clear);
+        assert!(restored.fog.is_cell_revealed(owner, 0, 0));
+        assert!(!restored.fog.is_cell_revealed(owner, 6, 6));
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_15_active_tube_detachment_and_exact_z_roundtrip_hash() {
+        use crate::map::tube_facts::TubeId;
+        use crate::sim::components::DriveCoord;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "MTNK", "Americans", 5, 7);
+        entity.lifecycle.in_limbo = false;
+        entity.lifecycle.cell_marked = false;
+        entity.in_logic_vector = true;
+        entity.position.z = 3;
+        entity.position.exact_z_leptons = Some(-37);
+        entity.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(9),
+            cursor: 2,
+            target: DriveCoord {
+                x: 1_536,
+                y: 2_048,
+                z: -19,
+            },
+        });
+        sim.substrate.entities.insert(entity);
+        sim.substrate
+            .logic
+            .try_push(entity_id)
+            .expect("active TubeMovement fixture enters LogicClass order");
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_15_tube", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("current tube snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("active detached tube object restores");
+
+        let restored_entity = restored
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("tube mover restored");
+        assert_eq!(restored_entity.position.z, 3);
+        assert_eq!(restored_entity.position.exact_z_leptons, Some(-37));
+        assert_eq!(
+            restored_entity.low_bridge_tube_state,
+            Some(LowBridgeTubeMovementState {
+                tube_id: TubeId(9),
+                cursor: 2,
+                target: DriveCoord {
+                    x: 1_536,
+                    y: 2_048,
+                    z: -19,
+                },
+            })
+        );
+        assert!(!restored_entity.lifecycle.cell_marked);
+        assert!(
+            !restored
+                .substrate
+                .occupancy
+                .contains_entity(5, 7, entity_id)
+        );
+        assert_eq!(
+            restored.substrate.cell_occupation.vehicle_bits(
+                5,
+                7,
+                crate::sim::movement::locomotor::MovementLayer::Ground,
+            ),
+            0
+        );
+        assert_eq!(restored.substrate.raw_cell_occupation.ground_bits(5, 7), 0);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_07_wall_sell_pending_command_house_mode_roundtrip_and_hash() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Receiver");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 10);
+        house.player_control = true;
+        sim.houses.insert(owner, house);
+        sim.session.house_order.push(owner);
+        sim.session.game_mode_nonzero = true;
+        sim.pending_commands
+            .push(crate::sim::command::CommandEnvelope::new(
+                owner,
+                17,
+                crate::sim::command::Command::SellWallAtCell { x: -3, y: 9 },
+            ));
+        let expected_hash = sim.state_hash();
+        sim.houses.get_mut(&owner).unwrap().player_control = false;
+        assert_ne!(sim.state_hash(), expected_hash);
+        sim.houses.get_mut(&owner).unwrap().player_control = true;
+        sim.session.game_mode_nonzero = false;
+        assert_ne!(sim.state_hash(), expected_hash);
+        sim.session.game_mode_nonzero = true;
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "wall.map", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v60 wall-sale snapshot")
+            .sim;
+        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert!(restored.houses.get(&owner).unwrap().player_control);
+        assert!(restored.session.game_mode_nonzero);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_07_damage_v60_air_spatial_armor_berserk_hostile_hit_iq_smoke_capture_anger_and_delay_roundtrip_hash()
+     {
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut aircraft = crate::sim::game_entity::GameEntity::test_default(
+            entity_id,
+            "ORCA",
+            "AMERICANS",
+            11,
+            7,
+        );
+        aircraft.air_spatial_bucket = Some(143);
+        aircraft.air_spatial_enter_order = 91;
+        aircraft.armor_multiplier =
+            crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits());
+        aircraft.berserk.active = true;
+        aircraft.berserk.timer = -17;
+        aircraft.was_attacked_by_enemy = true;
+        aircraft.damage_smoke_system_id = Some(2);
+        aircraft.capture_manager = Some(crate::sim::capture_manager::CaptureManagerState {
+            max_control: 3,
+            infinite_mind_control: false,
+            controlled_entity_ids: vec![3, 4],
+        });
+        aircraft.pending_c4_detonation = Some(crate::sim::components::PendingC4Detonation {
+            start_frame: 11,
+            duration_frames: 35,
+            source_entity_id: Some(3),
+        });
+        sim.substrate.entities.insert(aircraft);
+        sim.substrate
+            .entities
+            .insert(crate::sim::game_entity::GameEntity::test_default(
+                3,
+                "E1",
+                "AMERICANS",
+                12,
+                7,
+            ));
+        sim.substrate
+            .entities
+            .insert(crate::sim::game_entity::GameEntity::test_default(
+                4,
+                "E1",
+                "AMERICANS",
+                13,
+                7,
+            ));
+        sim.substrate
+            .particle_systems
+            .insert(crate::sim::particles::ParticleSystem {
+                stable_id: 2,
+                in_logic_vector: false,
+                type_id: crate::rules::particle_system_type::ParticleSystemTypeId(0),
+                coords: glam::IVec3::ZERO,
+                offset: glam::IVec3::ZERO,
+                particles: Vec::new(),
+                spawn_timer: crate::util::fixed_math::SimFixed::from_num(1),
+                lifetime: -1,
+                spark_spawn_frames: 0,
+                facing: 0x1D,
+                marked_for_deletion: false,
+                directionless: true,
+                attached_entity: None,
+                owner_entity: Some(entity_id),
+                target_coords: glam::IVec3::ZERO,
+                owner_house: None,
+                done_spawning: false,
+            });
+        sim.substrate.next_stable_object_id = 5;
+        let owner = sim.interner.intern("ComputerIQ");
+        let mut house = crate::sim::house_state::HouseState::new(owner, 0, None, false, 0, 51);
+        house.current_iq = 2;
+        let threat_peer = sim.interner.intern("ThreatPeer");
+        house.grudge_scores.insert(threat_peer, 350);
+        house.enemy_house = Some(threat_peer);
+        sim.houses.insert(owner, house);
+        sim.houses.insert(
+            threat_peer,
+            crate::sim::house_state::HouseState::new(threat_peer, 1, None, false, 0, 51),
+        );
+        sim.session.house_order.extend([owner, threat_peer]);
+        let expected_hash = sim.state_hash();
+
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .air_spatial_enter_order = 92;
+        assert_ne!(sim.state_hash(), expected_hash, "vector order is hashed");
+        {
+            let entity = sim.substrate.entities.get_mut(entity_id).unwrap();
+            entity.air_spatial_enter_order = 91;
+            entity.air_spatial_bucket = Some(144);
+        }
+        assert_ne!(sim.state_hash(), expected_hash, "bucket identity is hashed");
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .air_spatial_bucket = Some(143);
+        assert_eq!(sim.state_hash(), expected_hash);
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .armor_multiplier = crate::util::native_x87::NativeF64Bits::ONE;
+        assert_ne!(sim.state_hash(), expected_hash, "instance armor is hashed");
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .armor_multiplier =
+            crate::util::native_x87::NativeF64Bits::from_bits(1.5_f64.to_bits());
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .berserk
+            .timer = -18;
+        assert_ne!(sim.state_hash(), expected_hash, "berserk timer is hashed");
+        {
+            let entity = sim.substrate.entities.get_mut(entity_id).unwrap();
+            entity.berserk.timer = -17;
+            entity.berserk.active = false;
+        }
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "berserk active byte is hashed"
+        );
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .berserk
+            .active = true;
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .was_attacked_by_enemy = false;
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "hostile-hit latch is hashed"
+        );
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .was_attacked_by_enemy = true;
+        sim.houses.get_mut(&owner).unwrap().current_iq = 1;
+        assert_ne!(sim.state_hash(), expected_hash, "CurrentIQ is hashed");
+        sim.houses.get_mut(&owner).unwrap().current_iq = 2;
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .grudge_scores
+            .insert(threat_peer, 351);
+        assert_ne!(sim.state_hash(), expected_hash, "anger score is hashed");
+        {
+            let house = sim.houses.get_mut(&owner).unwrap();
+            house.grudge_scores.insert(threat_peer, 350);
+            house.enemy_house = None;
+        }
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "selected enemy identity is hashed"
+        );
+        sim.houses.get_mut(&owner).unwrap().enemy_house = Some(threat_peer);
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .damage_smoke_system_id = None;
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "damage-Smoke identity is hashed"
+        );
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .damage_smoke_system_id = Some(2);
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_entity_ids
+            .reverse();
+        assert_ne!(sim.state_hash(), expected_hash, "MCNode order is hashed");
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .capture_manager
+            .as_mut()
+            .unwrap()
+            .controlled_entity_ids
+            .reverse();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_07_air_spatial", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let mut restored = GameSnapshot::load(&bytes).expect("v60 snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("damage-Smoke pointer resolves through ParticleSystemStore");
+        let entity = restored.substrate.entities.get(entity_id).unwrap();
+        assert_eq!(entity.air_spatial_bucket, Some(143));
+        assert_eq!(entity.air_spatial_enter_order, 91);
+        assert_eq!(entity.armor_multiplier.bits(), 1.5_f64.to_bits());
+        assert!(entity.berserk.active);
+        assert_eq!(entity.berserk.timer, -17);
+        assert!(entity.was_attacked_by_enemy);
+        assert_eq!(entity.damage_smoke_system_id, Some(2));
+        assert_eq!(
+            entity.pending_c4_detonation,
+            Some(crate::sim::components::PendingC4Detonation {
+                start_frame: 11,
+                duration_frames: 35,
+                source_entity_id: Some(3),
+            })
+        );
+        assert_eq!(
+            entity
+                .capture_manager
+                .as_ref()
+                .map(|manager| manager.controlled_entity_ids.as_slice()),
+            Some([3, 4].as_slice())
+        );
+        assert_eq!(restored.houses.get(&owner).unwrap().current_iq, 2);
+        assert_eq!(
+            restored.houses[&owner].grudge_scores.get(&threat_peer),
+            Some(&350)
+        );
+        assert_eq!(restored.houses[&owner].enemy_house, Some(threat_peer));
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
@@ -1405,6 +1923,199 @@ mod tests {
         assert_eq!(
             restored.substrate.raw_cell_occupation.ground_bits(2, 31),
             0x02
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_snapshot_and_hash_preserve_counter_and_exit_profile() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        sim.session.map_width = 32;
+        sim.session.map_height = 32;
+        let entity_id = sim.allocate_stable_id();
+        let mut building = GameEntity::test_default(entity_id, "GAREFN", "AMERICANS", 10, 10);
+        building.category = EntityCategory::Structure;
+        building.foundation = "4x3".to_string();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.add_occupy[0] = Some((-1, 0));
+        profile.add_occupy[1] = Some((-1, -1));
+        profile.remove_occupy[0] = Some((3, 1));
+        building.building_hidden_occupancy = Some(profile);
+        sim.substrate.entities.insert(building);
+        sim.add_entity_occupancy(entity_id);
+
+        let expected_hash = sim.state_hash();
+        sim.substrate
+            .hidden_occupation
+            .exit_building((10, 10), "4x3", profile, Some((32, 32)));
+        assert_ne!(sim.state_hash(), expected_hash);
+        sim.substrate
+            .hidden_occupation
+            .enter_building((10, 10), "4x3", profile, Some((32, 32)));
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .building_hidden_occupancy
+            .as_mut()
+            .unwrap()
+            .occupy_height = 4;
+        assert_ne!(sim.state_hash(), expected_hash);
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .building_hidden_occupancy
+            .as_mut()
+            .unwrap()
+            .occupy_height = 2;
+        assert_eq!(sim.state_hash(), expected_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05_hidden", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("restore skipped cell-list caches");
+
+        assert_eq!(restored.substrate.hidden_occupation.count(9, 9), 1);
+        assert_eq!(restored.substrate.hidden_occupation.count(13, 11), 0);
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .unwrap()
+                .building_hidden_occupancy,
+            Some(profile)
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_16_waypoint_edge_factory_profile_roundtrips_and_hashes() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut conyard = GameEntity::test_default(entity_id, "GACNST", "AMERICANS", 10, 10);
+        conyard.category = EntityCategory::Structure;
+        sim.substrate.entities.insert(conyard);
+        let without_profile = sim.state_hash();
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .determines_waypoint_edge = true;
+        let expected_hash = sim.state_hash();
+        assert_ne!(expected_hash, without_profile);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_16_edge_profile", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        assert!(
+            restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .unwrap()
+                .determines_waypoint_edge
+        );
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_v50_roundtrip_and_hash_cover_real_dummy_and_profile() {
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let mut building = crate::sim::game_entity::GameEntity::test_default(
+            entity_id,
+            "GAPOWR",
+            "AMERICANS",
+            3,
+            4,
+        );
+        building.category = crate::map::entities::EntityCategory::Structure;
+        building.base_reservation_spacing = Some(-3);
+        sim.substrate.entities.insert(building);
+        let mut reservation_terrain = flat_terrain(4, 5);
+        reservation_terrain.test_set_native_allocated_cells(&[(3, 4)]);
+        sim.resolved_terrain = Some(reservation_terrain);
+        sim.substrate
+            .base_reservations
+            .reserve(sim.resolved_terrain.as_ref(), 3, 4, 0);
+        sim.substrate
+            .base_reservations
+            .reserve(sim.resolved_terrain.as_ref(), 1, 0, 1);
+        assert_eq!(
+            sim.substrate
+                .base_reservations
+                .raw_mask(sim.resolved_terrain.as_ref(), 2, 0),
+            1 << 1,
+            "distinct valid-linear null slots share the dummy before save"
+        );
+        let expected_hash = sim.state_hash();
+
+        sim.substrate
+            .base_reservations
+            .clear(sim.resolved_terrain.as_ref(), 3, 4, 0);
+        assert_ne!(sim.state_hash(), expected_hash, "real mask is hashed");
+        sim.substrate
+            .base_reservations
+            .reserve(sim.resolved_terrain.as_ref(), 3, 4, 0);
+        sim.substrate
+            .base_reservations
+            .clear(sim.resolved_terrain.as_ref(), 2, 0, 1);
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "valid-linear native-unallocated shared dummy mask is hashed"
+        );
+        sim.substrate
+            .base_reservations
+            .reserve(sim.resolved_terrain.as_ref(), 1, 0, 1);
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .base_reservation_spacing = Some(9);
+        assert_ne!(
+            sim.state_hash(),
+            expected_hash,
+            "entity writer profile is hashed"
+        );
+        sim.substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .base_reservation_spacing = Some(-3);
+        assert_eq!(sim.state_hash(), expected_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05_reservation", 0);
+        assert_eq!(
+            GameSnapshot::read_header(&bytes).unwrap().version,
+            super::SNAPSHOT_VERSION
+        );
+        let mut restored = GameSnapshot::load(&bytes).expect("v50 snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("restore transient caches without rebuilding reservations");
+        assert_eq!(restored.substrate.base_reservations.raw_mask(None, 3, 4), 1);
+        assert_eq!(restored.substrate.base_reservations.dummy_mask(), 1 << 1);
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(entity_id)
+                .unwrap()
+                .base_reservation_spacing,
+            Some(-3)
         );
         assert_eq!(restored.state_hash(), expected_hash);
     }
@@ -2196,6 +2907,273 @@ mod tests {
             hash_at_save,
             "cache rebuild must not change authoritative save state"
         );
+    }
+
+    #[test]
+    fn gsi_04_10_destroyed_terrain_snapshot_rebuild_does_not_resurrect_cache() {
+        use crate::map::resolved_terrain::zone_class;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::pathfinding::zone_map::ZONE_INVALID;
+        use crate::sim::terrain_object::{
+            TerrainDamageResult, TerrainObjectLifecycle, TerrainObjectState,
+            damage_terrain_object_at_cell, mark_terrain_occupation, mark_terrain_raw_occupation,
+        };
+        use crate::sim::terrain_spawn::TerrainSpawnerState;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nTreeStrength=10\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n0=DUMMY\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [TerrainTypes]\n0=TREE01\n1=TIBTRE01\n\
+             [DUMMY]\nPrimary=Gun\nStrength=100\nArmor=heavy\n\
+             [Gun]\nDamage=10\nWarhead=WH\n\
+             [WH]\nWood=yes\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\
+             [TREE01]\nStrength=10\nArmor=wood\nImmune=no\nTemperateOccupationBits=7\n\
+             [TIBTRE01]\nStrength=10\nArmor=wood\nImmune=yes\nSpawnsTiberium=yes\nTemperateOccupationBits=7\n",
+        ))
+        .expect("terrain damage rules");
+        let mut sim = Simulation::new();
+        let damaged_cell = (0, 0);
+        let destroyed_cell = (1, 1);
+        let spawner_cell = (2, 2);
+        let damaged_id = 1;
+        let destroyed_id = 2;
+        let spawner_id = 3;
+        let tree_type = sim.interner.intern("TREE01");
+        let spawner_type = sim.interner.intern("TIBTRE01");
+        let damaged = TerrainObjectState {
+            stable_id: damaged_id,
+            type_ref: tree_type,
+            rx: damaged_cell.0,
+            ry: damaged_cell.1,
+            health: 6,
+            max_health: 10,
+            occupation_bits: 7,
+            lifecycle: TerrainObjectLifecycle::Live,
+        };
+        let destroyed = TerrainObjectState {
+            stable_id: destroyed_id,
+            type_ref: sim.interner.intern("TREE01"),
+            rx: destroyed_cell.0,
+            ry: destroyed_cell.1,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 7,
+            lifecycle: TerrainObjectLifecycle::Live,
+        };
+        let spawner = TerrainObjectState {
+            stable_id: spawner_id,
+            type_ref: spawner_type,
+            rx: spawner_cell.0,
+            ry: spawner_cell.1,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 7,
+            lifecycle: TerrainObjectLifecycle::Live,
+        };
+        for terrain in [&damaged, &destroyed, &spawner] {
+            sim.production
+                .terrain_objects
+                .insert(terrain.stable_id, terrain.clone());
+            sim.production
+                .terrain_object_cells
+                .insert(terrain.cell(), terrain.stable_id);
+            mark_terrain_raw_occupation(
+                &mut sim.substrate.raw_cell_occupation,
+                terrain.cell(),
+                terrain.occupation_bits,
+            );
+        }
+        sim.production.next_terrain_object_id = spawner_id + 1;
+        sim.production.terrain_spawners.insert(
+            spawner_cell,
+            TerrainSpawnerState::new(spawner_type, 3_000, 3, 22),
+        );
+        sim.production
+            .tiberium_spawning_terrain_cells
+            .insert(spawner_cell);
+
+        let mut original_occupied_grid = flat_terrain(3, 3);
+        for terrain in [&damaged, &destroyed, &spawner] {
+            mark_terrain_occupation(
+                &mut sim.production,
+                terrain,
+                Some(&mut original_occupied_grid),
+            );
+        }
+        let stale_original_grid = original_occupied_grid.clone();
+        assert!(
+            !PathGrid::from_resolved_terrain(&stale_original_grid)
+                .is_walkable(destroyed_cell.0, destroyed_cell.1)
+        );
+        assert_eq!(
+            all_terrain_costs(&stale_original_grid)[&SpeedType::Track]
+                .cost_at(destroyed_cell.0, destroyed_cell.1),
+            0,
+            "the caller fixture must carry the original blocked cost cache"
+        );
+        sim.terrain_costs = all_terrain_costs(&original_occupied_grid);
+        sim.resolved_terrain = Some(original_occupied_grid);
+
+        let result = damage_terrain_object_at_cell(
+            &mut sim.production,
+            &mut sim.substrate.raw_cell_occupation,
+            &rules,
+            &sim.interner,
+            destroyed_cell,
+            10,
+            rules.warhead("WH").expect("wood warhead"),
+            sim.resolved_terrain.as_mut(),
+        );
+        assert_eq!(result, TerrainDamageResult::Destroyed);
+        sim.terrain_costs =
+            crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(
+                sim.resolved_terrain
+                    .as_ref()
+                    .expect("post-destruction terrain"),
+            );
+        let authoritative_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_10_destroyed_terrain", 0);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("destroyed Terrain snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("restore serialized authority");
+        let stale_costs = all_terrain_costs(&stale_original_grid);
+        restored.rebuild_caches_after_load(
+            stale_original_grid,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            stale_costs,
+        );
+
+        assert_eq!(
+            restored.production.terrain_objects[&destroyed_id].lifecycle,
+            TerrainObjectLifecycle::Destroyed
+        );
+        assert!(
+            !restored
+                .production
+                .terrain_object_cells
+                .contains_key(&destroyed_cell)
+        );
+        let restored_damaged = &restored.production.terrain_objects[&damaged_id];
+        assert_eq!(restored_damaged.health, 6);
+        assert_eq!(restored_damaged.lifecycle, TerrainObjectLifecycle::Live);
+        assert_eq!(restored_damaged.cell(), damaged_cell);
+        assert_eq!(
+            restored.production.terrain_object_cells[&damaged_cell],
+            damaged_id
+        );
+        let restored_spawner = &restored.production.terrain_objects[&spawner_id];
+        assert_eq!(restored_spawner.health, 10);
+        assert_eq!(restored_spawner.lifecycle, TerrainObjectLifecycle::Live);
+        assert_eq!(restored_spawner.cell(), spawner_cell);
+        assert_eq!(
+            restored.production.terrain_object_cells[&spawner_cell],
+            spawner_id
+        );
+        assert_eq!(
+            restored.production.terrain_spawners[&spawner_cell].type_ref,
+            spawner_type
+        );
+        assert!(
+            restored
+                .production
+                .tiberium_spawning_terrain_cells
+                .contains(&spawner_cell)
+        );
+        assert_eq!(restored.production.next_terrain_object_id, spawner_id + 1);
+        let reconciled = restored
+            .resolved_terrain
+            .as_ref()
+            .expect("reconciled terrain");
+        let source = reconciled
+            .cell(destroyed_cell.0, destroyed_cell.1)
+            .expect("source cell");
+        assert_eq!(source.terrain_object_occupation, None);
+        assert!(!source.terrain_object_blocks);
+        assert!(!source.ground_walk_blocked);
+        assert_eq!(source.zone_type, zone_class::GROUND);
+        for (cell, bits) in [(damaged_cell, 7), (spawner_cell, 7)] {
+            let live = reconciled.cell(cell.0, cell.1).expect("live Terrain cell");
+            assert_eq!(live.terrain_object_occupation, Some(bits));
+            assert!(live.terrain_object_blocks);
+            assert!(live.ground_walk_blocked);
+            let raw_mask = crate::sim::terrain_object::terrain_raw_occupation_mask(bits);
+            assert_eq!(
+                restored
+                    .substrate
+                    .raw_cell_occupation
+                    .ground_bits(cell.0, cell.1)
+                    & raw_mask,
+                raw_mask
+            );
+        }
+        assert_eq!(
+            restored
+                .substrate
+                .raw_cell_occupation
+                .ground_bits(destroyed_cell.0, destroyed_cell.1)
+                & crate::sim::terrain_object::terrain_raw_occupation_mask(
+                    destroyed.occupation_bits,
+                ),
+            0
+        );
+        assert_eq!(
+            restored.terrain_costs[&SpeedType::Track].cost_at(destroyed_cell.0, destroyed_cell.1),
+            100,
+            "canonical post-load costs must ignore the stale caller cache"
+        );
+
+        let path = PathGrid::from_resolved_terrain_with_bridges(
+            reconciled,
+            restored.bridge_state.as_ref(),
+        );
+        assert!(path.is_walkable(destroyed_cell.0, destroyed_cell.1));
+        assert!(!path.is_walkable(damaged_cell.0, damaged_cell.1));
+        assert!(!path.is_walkable(spawner_cell.0, spawner_cell.1));
+        restored.rebuild_zone_grid(&path);
+        assert_ne!(
+            restored
+                .zone_grid
+                .as_ref()
+                .and_then(|zones| zones.map_for(MovementZone::Normal))
+                .expect("normal zone map")
+                .zone_at(destroyed_cell.0, destroyed_cell.1, MovementLayer::Ground),
+            ZONE_INVALID
+        );
+        assert_eq!(restored.state_hash(), authoritative_hash);
+
+        let mut changed_health = GameSnapshot::load(&bytes)
+            .expect("health-mutation control snapshot")
+            .sim;
+        changed_health
+            .production
+            .terrain_objects
+            .get_mut(&damaged_id)
+            .expect("damaged Terrain authority")
+            .health = 5;
+        assert_ne!(changed_health.state_hash(), authoritative_hash);
+
+        let mut changed_lifecycle = GameSnapshot::load(&bytes)
+            .expect("lifecycle-mutation control snapshot")
+            .sim;
+        changed_lifecycle
+            .production
+            .terrain_objects
+            .get_mut(&spawner_id)
+            .expect("spawning Terrain authority")
+            .lifecycle = TerrainObjectLifecycle::Limbo;
+        assert_ne!(changed_lifecycle.state_hash(), authoritative_hash);
     }
 
     #[test]
