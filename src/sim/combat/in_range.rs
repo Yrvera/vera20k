@@ -614,7 +614,7 @@ mod tests {
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,

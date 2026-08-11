@@ -185,7 +185,6 @@ fn upload_to_gpu(
 
     // Terrain + overlays
     pool.upload(&state.gpu, "terrain", &world.terrain.normal);
-    pool.upload(&state.gpu, "terrain_cliff", &world.terrain.cliff_redraw);
     pool.upload(&state.gpu, "overlay", &world.overlay);
     pool.upload(&state.gpu, "overlay_bridge_body", &world.bridge_body);
     pool.upload(

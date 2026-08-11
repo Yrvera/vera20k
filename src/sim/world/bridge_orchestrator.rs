@@ -1575,7 +1575,7 @@ mod tests {
                     speed_costs: SpeedCostProfile::default(),
                     is_water: is_bridge,
                     is_cliff_like: false,
-                    is_cliff_redraw: false,
+                    height_in_pixels: 0,
                     variant: 0,
                     is_rough: false,
                     is_road: false,

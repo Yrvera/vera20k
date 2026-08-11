@@ -23,8 +23,7 @@ use crate::render::gpu::GpuContext;
 const BATCH_SHADER: &str = include_str!("batch_shader.wgsl");
 
 /// WGSL shader with per-pixel Z-depth output via @builtin(frag_depth).
-/// Samples a parallel R8 depth atlas to compute per-pixel depth for terrain
-/// tiles (cliff occlusion) and overlays.
+/// Samples a parallel R8 depth atlas to compute per-pixel terrain depth.
 const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 
 /// WGSL voxel-sprite shader: byte → (palette | house_ramp) → fx pipeline.
@@ -207,13 +206,13 @@ impl InstanceBufferPool {
 ///
 /// Pipelines:
 /// - `pipeline` / `zdepth_pipeline` (terrain): depth write ON — terrain writes Z-data.
-/// - `overlay_pipeline` (cliff redraw, UI): depth write ON, LessEqual — for passes
-///   that must write depth (cliff face redraw after entities).
+/// - `overlay_pipeline` (UI/debug): depth write ON, LessEqual — for passes that
+///   intentionally update the shared depth buffer.
 pub struct BatchRenderer {
     /// Render pipeline for terrain (depth write + Less compare).
     pipeline: wgpu::RenderPipeline,
     /// Render pipeline with depth write ON, LessEqual compare.
-    /// Used for cliff redraw (must write depth) and UI passes.
+    /// Used for UI/debug passes that intentionally write depth.
     overlay_pipeline: wgpu::RenderPipeline,
     /// Render pipeline with per-pixel Z-depth (frag_depth output, Less compare).
     /// Used for terrain tiles with TMP Z-data.
@@ -475,8 +474,7 @@ impl BatchRenderer {
                 });
 
         // Overlay pipeline: depth write ON, LessEqual compare.
-        // Used for cliff redraw (must write depth to occlude sprites behind cliffs)
-        // and UI passes that don't interact with game depth.
+        // Used for UI/debug passes that intentionally update depth.
         let overlay_pipeline: wgpu::RenderPipeline =
             gpu.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1354,7 +1352,7 @@ impl BatchRenderer {
 
     /// Draw instances using the overlay pipeline (LessEqual, depth write ON).
     ///
-    /// Used for cliff redraw (must write depth) and UI passes.
+    /// Used for UI/debug passes that intentionally write depth.
     pub fn draw_with_buffer_no_depth<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,

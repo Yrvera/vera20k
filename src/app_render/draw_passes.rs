@@ -47,7 +47,7 @@ pub(super) struct DrawPassData<'a> {
 /// Draw order follows the original engine's layered rendering:
 /// 1. Terrain (zdepth) → 2. Bridge body (zdepth) → 3. Overlays (passthrough) →
 /// 4. Bridge entities (merge) → 5. Ground objects, building turrets included
-/// (merge) → 7. Cliff redraw (zdepth) → 7.6 Particles (layer 3) →
+/// (merge) → 7. Bridge railings → 7.5 Particles (layer 3) →
 /// 7.7 Bodies above the Ground band (layers 3–4) → 8. Debug → 9. Shroud/fog →
 /// 10. UI/sidebar
 pub(super) fn dispatch_draw_passes(
@@ -126,8 +126,6 @@ pub(super) fn dispatch_draw_passes(
     // Overlays paint unconditionally over terrain. Without
     // passthrough, adjacent terrain tiles from closer iso rows would
     // occlude overlays via LessEqual depth test ("sinking into ground").
-    // Cliff occlusion for overlays comes from the cliff redraw pass (step 7).
-    //
     // Overlays (including walls) stay in the fixed cell family.
     draw_pooled_passthrough_overlay(
         &mut pass,
@@ -244,24 +242,9 @@ pub(super) fn dispatch_draw_passes(
     // the same UnitAtlas stream as the vehicles and interleave with them in
     // step 5; see the note in build_instances.)
 
-    // --- Step 7: Cliff redraw ---
-    // Cliff terrain tiles redrawn AFTER sprites using zdepth shader + Less compare.
-    // Only cliff face pixels (z_sample > 0) pass the depth test — their frag_depth
-    // is pushed closer than the terrain depth written in step 1. Flat ground pixels
-    // (z_sample = 0) have equal frag_depth and fail Less, preserving sprites near
-    // cliff edges.
-    draw_pooled_zdepth(
-        &mut pass,
-        &state.batch_renderer,
-        pool,
-        state.tile_atlas.as_ref(),
-        "terrain_cliff",
-    );
-
-    // --- Step 7.5: Bridge railings (passthrough — Z-test ON, Z-write OFF) ---
-    // Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug.
-    // Anything between body and railings (units, anims, cliff redraw) sits
-    // ABOVE the deck but BELOW the railings.
+    // --- Step 7: Bridge railings (passthrough — Z-test ON, Z-write OFF) ---
+    // Drawn after the unit/ground merge and before debug. Units and anims sit
+    // above the deck body but below the railings.
     draw_pooled_bridge_railing(
         &mut pass,
         &state.batch_renderer,
@@ -270,9 +253,9 @@ pub(super) fn dispatch_draw_passes(
         "overlay_bridge_railing",
     );
 
-    // --- Step 7.6: Particles (Layer 3, above all ground geometry incl. cliffs) ---
+    // --- Step 7.5: Particles (Layer 3, above all ground geometry) ---
     // ParticleClass::GetLayer = 3 in the original engine, drawing particles
-    // above Layer 2 (buildings, units, turrets) and above cliff redraw.
+    // above Layer 2 (buildings, units, turrets).
     // Passthrough pipeline (no depth interaction) — particles are translucent
     // and Y-sorted on the CPU, so no GPU depth read/write needed.
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
@@ -708,7 +691,7 @@ fn draw_pooled_bridge_zdepth<'a>(
 }
 
 /// Draw a pooled buffer with LessEqual depth test, depth write ON.
-/// Used for cliff redraw (must write depth) and UI/debug passes.
+/// Used for the base terrain pass and UI/debug passes that write depth.
 fn draw_pooled_no_depth<'a>(
     pass: &mut wgpu::RenderPass<'a>,
     batch: &'a BatchRenderer,

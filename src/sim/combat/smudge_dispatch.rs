@@ -623,12 +623,15 @@ mod dispatch_tests {
             render_offset_x: 0,
             render_offset_y: 0,
             terrain_class: Default::default(),
-            speed_costs: Default::default(),
+            speed_costs: crate::rules::terrain_rules::SpeedCostProfile {
+                track: Some(100),
+                ..Default::default()
+            },
             is_water: false,
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,

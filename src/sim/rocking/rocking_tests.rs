@@ -464,7 +464,7 @@ fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,

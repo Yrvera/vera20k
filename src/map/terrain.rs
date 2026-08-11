@@ -184,9 +184,6 @@ pub struct TerrainCell {
     pub ry: u16,
     /// True when the resolved terrain classifies the cell as water.
     pub is_water: bool,
-    /// FinalAlert2 cliff redraw flag — this tile is drawn a second time after
-    /// entities so cliff face pixels occlude units behind them.
-    pub is_cliff_redraw: bool,
     /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     /// RGB color tint from map lighting. [1,1,1] = full brightness (default).
@@ -617,7 +614,6 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
             rx: cell.rx,
             ry: cell.ry,
             is_water: tile_id == 0,
-            is_cliff_redraw: false,
             variant: 0,
             tint: [1.0, 1.0, 1.0],
             radar_left: [0, 0, 0],
@@ -691,7 +687,6 @@ pub fn build_terrain_grid_from_resolved(
             rx: cell.rx,
             ry: cell.ry,
             is_water: cell.final_tile_index >= 0 && cell.is_water,
-            is_cliff_redraw: cell.is_cliff_redraw,
             variant: cell.variant,
             tint: [1.0, 1.0, 1.0],
             radar_left: cell.radar_left,
@@ -729,15 +724,10 @@ pub fn build_terrain_grid_from_resolved(
     }
 }
 
-/// Terrain instance sets: normal terrain drawn behind entities, and cliff-redraw
-/// terrain drawn after entities so cliff face pixels occlude units behind them.
-/// The cliff-redraw set contains copies of flagged tiles with a depth bias that
-/// places them in front of entities in the depth buffer.
+/// Visible ordinary terrain instances drawn in the base terrain pass.
 pub struct TerrainInstances {
-    /// Normal terrain — drawn in the first pass (behind entities).
+    /// Normal terrain — drawn in the base terrain pass.
     pub normal: Vec<SpriteInstance>,
-    /// Cliff-redraw terrain — drawn after entities (cliff occlusion pass).
-    pub cliff_redraw: Vec<SpriteInstance>,
 }
 
 fn visible_cell_slice(grid: &TerrainGrid, view_top: f32, view_bottom: f32) -> &[TerrainCell] {
@@ -777,7 +767,6 @@ pub fn build_visible_instances(
 
     let mut instances = TerrainInstances {
         normal: Vec::with_capacity(grid.cells.len() / 2),
-        cliff_redraw: Vec::new(),
     };
 
     for cell in visible_cell_slice(grid, view_top, view_bottom) {
@@ -879,13 +868,6 @@ pub fn build_visible_instances(
                 ..Default::default()
             };
             instances.normal.push(inst);
-            // Cliff-redraw: same tile redrawn AFTER sprites using zdepth shader
-            // with Less compare. Only cliff face pixels (z_sample > 0) pass the
-            // test — flat ground pixels have equal depth and fail Less, preserving
-            // sprites near cliff edges.
-            if cell.is_cliff_redraw {
-                instances.cliff_redraw.push(inst);
-            }
         }
     }
 
@@ -1282,7 +1264,6 @@ mod tests {
                     rx: 1,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1298,7 +1279,6 @@ mod tests {
                     rx: 100,
                     ry: 100,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1318,7 +1298,6 @@ mod tests {
         let result: TerrainInstances =
             build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None, None);
         assert_eq!(result.normal.len(), 1);
-        assert_eq!(result.cliff_redraw.len(), 0);
     }
 
     #[test]
@@ -1334,7 +1313,6 @@ mod tests {
                     rx: 1,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1350,7 +1328,6 @@ mod tests {
                     rx: 2,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1400,7 +1377,6 @@ mod tests {
                 rx: 0,
                 ry: 0,
                 is_water: false,
-                is_cliff_redraw: false,
                 variant: 0,
                 tint: [1.0; 3],
                 radar_left: [0; 3],

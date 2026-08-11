@@ -191,10 +191,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             bridge_state,
         )
     } else {
-        terrain::TerrainInstances {
-            normal: Vec::new(),
-            cliff_redraw: Vec::new(),
-        }
+        terrain::TerrainInstances { normal: Vec::new() }
     };
 
     // Map overlays and walls are lowered through the fixed per-cell draw plan.
@@ -344,9 +341,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let total_grid: usize = state.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
         log::info!(
-            "First frame: {} terrain ({} cliff redraw, of {} cells) + {} overlay + {} vxl + {} shp",
+            "First frame: {} terrain (of {} cells) + {} overlay + {} vxl + {} shp",
             terrain.normal.len(),
-            terrain.cliff_redraw.len(),
             total_grid,
             overlay.len() + bridge_body.len(),
             unit.len(),

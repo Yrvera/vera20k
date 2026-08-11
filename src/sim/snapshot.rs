@@ -1103,7 +1103,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
