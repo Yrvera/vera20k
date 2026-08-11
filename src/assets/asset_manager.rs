@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::assets::error::AssetError;
 use crate::assets::mix_archive::MixArchive;
-use crate::assets::mix_hash::{mix_hash, westwood_hash};
+use crate::assets::mix_hash::mix_hash;
 
 /// A MIX archive with a human-readable name for logging and diagnostics.
 struct NamedArchive {
@@ -360,12 +360,11 @@ impl AssetManager {
     }
 
     /// Load through retail's `LoadFileFromMIX @ 0x005B40B0` boundary.
-    ///
-    /// This intentionally differs from [`Self::resolve_ref`]:
-    ///
-    /// - the uppercase-normalized filename CRC is checked first;
-    /// - a cache miss searches registered MIXes before the raw filesystem;
-    /// - the first payload for a CRC remains cached even after archive remounts.
+    /// Retail provenance: Sticky CRC file cache — `LoadFileFromMIX` @ `0x005B40B0`.
+    /// Retail provenance: Availability probing — `CCFileClass__IsAvailable_MixThenRaw` @ `0x00473C50`.
+    /// Retail provenance: Raw-before-MIX size selection — `CCFileClass__GetSize_RawThenMix` @ `0x00473C00`.
+    /// Retail provenance: Raw-before-MIX byte selection — `CCFileClass__Open_RawThenMix` @ `0x00473D10`.
+    /// A cache miss takes loose bytes before registered MIX bytes; that first CRC winner is sticky.
     pub fn load_file_from_mix(&self, name: &str) -> Option<MixFileLoad> {
         let cache_key = mix_hash(name);
         if let Some(cached) = self
@@ -378,18 +377,18 @@ impl AssetManager {
             return Some(cached);
         }
 
-        let candidate = if let Some((named, entry_id)) = self.lookup_asset_entry(name) {
-            MixFileLoad {
-                bytes: Arc::from(named.archive.get_by_id(entry_id)?),
-                source_archive: Arc::from(named.name.as_str()),
-                entry_id,
-            }
-        } else {
-            let loose = self.loose_asset(name)?;
+        let candidate = if let Some(loose) = self.loose_asset(name) {
             MixFileLoad {
                 bytes: Arc::from(loose.bytes.as_slice()),
                 source_archive: Arc::from(loose.source_name.as_str()),
                 entry_id: cache_key,
+            }
+        } else {
+            let (named, entry_id) = self.lookup_asset_entry(name)?;
+            MixFileLoad {
+                bytes: Arc::from(named.archive.get_by_id(entry_id)?),
+                source_archive: Arc::from(named.name.as_str()),
+                entry_id,
             }
         };
 
@@ -539,9 +538,9 @@ impl AssetManager {
         Ok(loaded_count)
     }
 
-    /// Check if a file exists in any loaded archive.
+    /// Check if a file is available through a registered MIX or the loose root.
+    /// Retail provenance: MIX-then-raw availability — `CCFileClass__IsAvailable_MixThenRaw` @ `0x00473C50`.
     pub fn contains(&self, name: &str) -> bool {
-        // Native availability checks MIX before raw. Only the boolean escapes.
         self.lookup_location_for_name(name).is_some() || self.loose_asset(name).is_some()
     }
 
@@ -607,30 +606,13 @@ impl AssetManager {
         Some((archive, location.entry_id))
     }
 
+    /// Retail provenance: First-match MIX filename resolution — `MixFileSystem__Resolve_First` @ `0x005B4430`.
+    /// Retail provenance: Padded filename CRC — `CRCEngine__AddData` @ `0x004A1DE0`.
     fn lookup_location_for_name(&self, name: &str) -> Option<AssetLocation> {
-        let primary_id = mix_hash(name);
-        let alternate_id = westwood_hash(name);
-        let primary = self.lookup_index.get(&primary_id).copied();
-        let alternate = if alternate_id == primary_id {
-            None
-        } else {
-            self.lookup_index.get(&alternate_id).copied()
-        };
-
-        match (primary, alternate) {
-            (Some(primary), Some(alternate)) => {
-                if primary.archive_index <= alternate.archive_index {
-                    Some(primary)
-                } else {
-                    Some(alternate)
-                }
-            }
-            (Some(primary), None) => Some(primary),
-            (None, Some(alternate)) => Some(alternate),
-            (None, None) => None,
-        }
+        self.lookup_index.get(&mix_hash(name)).copied()
     }
 
+    /// Retail provenance: Append-before-tail registration — `MixFileClass` registered constructor @ `0x005B3C20`.
     fn append_registered_archive(&mut self, named: NamedArchive) {
         let archive_index = self.archives.len();
         for entry in named.archive.entries() {
@@ -1136,20 +1118,6 @@ mod tests {
             .expect("new-format test mix should parse")
     }
 
-    fn make_old_format_mix(name: &str, body: &[u8]) -> MixArchive {
-        let mut data = Vec::new();
-        let entry_id = westwood_hash(name);
-
-        data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        data.extend_from_slice(&entry_id.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        data.extend_from_slice(body);
-
-        MixArchive::from_bytes(data).expect("old-format test mix should parse")
-    }
-
     #[test]
     fn media_mode_matches_native_uppercase_substring_command_line_test() {
         assert_eq!(
@@ -1401,40 +1369,30 @@ mod tests {
     }
 
     #[test]
-    fn indexed_lookup_prefers_earliest_archive_across_hash_fallbacks() {
-        let mut manager = AssetManager {
-            archives: vec![
-                NamedArchive {
-                    name: "theme.mix".to_string(),
-                    archive: make_old_format_mix("audio.idx", b"westwood"),
-                },
-                NamedArchive {
-                    name: "audio.mix".to_string(),
-                    archive: make_new_format_mix("audio.idx", b"crc32"),
-                },
-            ],
-            archive_catalog: Vec::new(),
-            lookup_index: HashMap::new(),
-            mix_file_cache: Mutex::new(HashMap::new()),
-            loose_files: HashMap::new(),
-            active_theater: None,
-            active_theater_archives: Vec::new(),
-            ra2_dir: PathBuf::new(),
-        };
-        manager.rebuild_indexes();
+    fn first_registered_crc_duplicate_wins() {
+        let directory = TestDirectory::new("first-registered-crc-duplicate");
+        let mut manager = empty_manager(directory.path());
+        manager.append_registered_archive(NamedArchive {
+            name: "first.mix".to_string(),
+            archive: make_new_format_mix("audio.idx", b"first"),
+        });
+        manager.append_registered_archive(NamedArchive {
+            name: "second.mix".to_string(),
+            archive: make_new_format_mix("audio.idx", b"second"),
+        });
 
         let (bytes, source) = manager
             .get_with_source("audio.idx")
             .expect("indexed lookup should find audio.idx");
-        assert_eq!(bytes, b"westwood");
-        assert_eq!(source, "theme.mix");
+        assert_eq!(bytes, b"first");
+        assert_eq!(source, "first.mix");
 
         let resolved = manager
             .resolve_ref("audio.idx")
             .expect("observational resolution should preserve first match");
-        assert_eq!(resolved.bytes, b"westwood");
-        assert_eq!(resolved.source_archive, "theme.mix");
-        assert_eq!(resolved.entry_id, westwood_hash("audio.idx"));
+        assert_eq!(resolved.bytes, b"first");
+        assert_eq!(resolved.source_archive, "first.mix");
+        assert_eq!(resolved.entry_id, mix_hash("audio.idx"));
     }
 
     #[test]
@@ -1595,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn loose_mixed_case_file_supplies_bytes_before_registered_mix() {
+    fn load_file_from_mix_fills_from_loose_before_mix_and_stays_sticky() {
         let mut manager = AssetManager {
             archives: vec![NamedArchive {
                 name: "first.mix".to_string(),
@@ -1625,48 +1583,24 @@ mod tests {
         assert_eq!(bytes, b"loose");
         assert_eq!(source, "loose:RA2MD.CSF");
 
-        let mix_only = manager
-            .load_file_from_mix("RA2MD.CSF")
-            .expect("LoadFileFromMIX checks MIX before the loose fallback");
-        assert_eq!(&*mix_only.bytes, b"archived");
-        assert_eq!(mix_only.source_archive.as_ref(), "first.mix");
-    }
-
-    #[test]
-    fn load_file_from_mix_caches_raw_fallback_before_later_mix_registration() {
-        let mut manager = AssetManager {
-            archives: Vec::new(),
-            archive_catalog: Vec::new(),
-            lookup_index: HashMap::new(),
-            mix_file_cache: Mutex::new(HashMap::new()),
-            loose_files: HashMap::from([(
-                "weather.bin".to_string(),
-                LooseAsset {
-                    path: PathBuf::from("WEATHER.BIN"),
-                    source_name: "loose:WEATHER.BIN".to_string(),
-                    bytes: LooseBytes::Owned(Box::from(&b"raw-first"[..])),
-                },
-            )]),
-            active_theater: None,
-            active_theater_archives: Vec::new(),
-            ra2_dir: PathBuf::new(),
-        };
-
         let first = manager
-            .load_file_from_mix("Weather.Bin")
-            .expect("raw fallback");
-        assert_eq!(&*first.bytes, b"raw-first");
-        assert_eq!(first.source_archive.as_ref(), "loose:WEATHER.BIN");
+            .load_file_from_mix("RA2MD.CSF")
+            .expect("loose file should fill cache before registered MIX");
+        assert_eq!(&*first.bytes, b"loose");
+        assert_eq!(first.source_archive.as_ref(), "loose:RA2MD.CSF");
+        assert_eq!(first.entry_id, mix_hash("RA2MD.CSF"));
 
-        manager.append_registered_archive(NamedArchive {
-            name: "later.mix".to_string(),
-            archive: make_new_format_mix("WEATHER.BIN", b"later-mix"),
-        });
+        manager.loose_files.clear();
+        assert_eq!(
+            manager.resolve_ref("RA2MD.CSF").map(|found| found.bytes),
+            Some(&b"archived"[..])
+        );
         let cached = manager
-            .load_file_from_mix("WEATHER.BIN")
-            .expect("cached raw winner");
-        assert_eq!(&*cached.bytes, b"raw-first");
-        assert_eq!(cached.source_archive.as_ref(), "loose:WEATHER.BIN");
+            .load_file_from_mix("ra2md.csf")
+            .expect("cached loose winner");
+        assert_eq!(&*cached.bytes, b"loose");
+        assert!(Arc::ptr_eq(&first.bytes, &cached.bytes));
+        assert_eq!(cached.source_archive.as_ref(), "loose:RA2MD.CSF");
     }
 
     #[test]

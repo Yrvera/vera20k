@@ -14,7 +14,7 @@
 //!           if not encrypted → file index header
 //! ```
 //!
-//! ### Old format (Tiberian Dawn, Red Alert 1, theme.mix):
+//! ### Old-header layout (also used by YR theme archives):
 //! ```text
 //! Offset 0: u16 = file_count (non-zero — this IS the count, no flags)
 //! Offset 2: u32 = body_size
@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use crate::assets::error::AssetError;
 use crate::assets::mix_crypto;
-use crate::assets::mix_hash::{mix_hash, westwood_hash};
+use crate::assets::mix_hash::mix_hash;
 use crate::util::read_helpers::{read_i32_le, read_u16_le, read_u32_le};
 
 /// MIX flags bit: file index is Blowfish-encrypted (with RSA key block).
@@ -83,19 +83,11 @@ pub struct MixEntry {
 pub struct MixArchive {
     /// The file index entries, sorted by id for binary search lookup.
     entries: Vec<MixEntry>,
-    /// Filename hash algorithm used by this archive format.
-    hash_kind: MixHashKind,
     /// Byte offset where the body section starts in the raw data.
     body_offset: usize,
     /// The raw archive bytes. Top-level archives can stay memory-mapped;
     /// nested archives can share a sub-view into parent archive storage.
     data: MixData,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MixHashKind {
-    Crc32,
-    Westwood,
 }
 
 #[derive(Clone)]
@@ -161,7 +153,7 @@ impl MixArchive {
     ///
     /// Detects old vs new format by checking the first u16:
     /// - 0x0000 → new format (RA2/TS): real flags at offset 2
-    /// - Non-zero → old format (TD/RA1): that value IS the file_count
+    /// - Non-zero → old-header layout: that value IS the file_count
     pub fn from_bytes(data: Vec<u8>) -> Result<Self, AssetError> {
         Self::from_data(MixData::from_owned(data))
     }
@@ -221,9 +213,9 @@ impl MixArchive {
 
         // The first u16 distinguishes old vs new MIX format.
         // New format (RA2/TS): offset 0 is always 0x0000 as a format marker.
-        // Old format (TD/RA1): offset 0 is file_count (always non-zero).
+        // Old-header layout: offset 0 is file_count (always non-zero).
         let first_word: u16 = read_u16_le(bytes, 0);
-        let (mut entries, hash_kind, body_offset) = if first_word == 0 {
+        let (mut entries, body_offset) = if first_word == 0 {
             // New format: actual flags are at offset 2.
             let flags: u16 = read_u16_le(bytes, 2);
             let is_encrypted: bool = (flags & FLAG_ENCRYPTED) != 0;
@@ -234,14 +226,13 @@ impl MixArchive {
                 Self::parse_unencrypted_new_format(bytes)?
             }
         } else {
-            // Old format: first_word IS the file_count. No flags, no encryption.
+            // Old-header layout: first_word IS the file_count. No flags, no encryption.
             Self::parse_old_format(bytes, first_word)?
         };
         entries.sort_by_key(|e| e.id);
 
         Ok(Self {
             entries,
-            hash_kind,
             body_offset,
             data,
         })
@@ -255,25 +246,11 @@ impl MixArchive {
     }
 
     /// Look up a file by name. Returns the raw bytes if found.
-    ///
-    /// MIX archives in the wild are not perfectly format-segregated by hash style:
-    /// some old-format archives (notably `theme.mix` / `thememd.mix`) still use the
-    /// CRC-style filename hash. Try the archive's primary hash first, then fall back
-    /// to the alternate hash before giving up.
+    /// Retail provenance: MIX filename resolution — `MixFileSystem__Resolve_First` @ `0x005B4430`.
+    /// Retail provenance: Padded filename CRC — `CRCEngine__AddData` @ `0x004A1DE0`.
+    /// Header layout affects parsing only; active YR resolves every archive with one CRC ID.
     pub fn get_by_name(&self, name: &str) -> Option<&[u8]> {
-        let primary: i32 = match self.hash_kind {
-            MixHashKind::Crc32 => mix_hash(name),
-            MixHashKind::Westwood => westwood_hash(name),
-        };
-        if let Some(data) = self.get_by_id(primary) {
-            return Some(data);
-        }
-
-        let alternate: i32 = match self.hash_kind {
-            MixHashKind::Crc32 => westwood_hash(name),
-            MixHashKind::Westwood => mix_hash(name),
-        };
-        self.get_by_id(alternate)
+        self.get_by_id(mix_hash(name))
     }
 
     /// Look up a file by its pre-computed hash ID.
@@ -326,9 +303,7 @@ impl MixArchive {
     ///
     /// Layout: [marker:2][flags:2][RSA block:80][encrypted index...][body...]
     /// The RSA block starts at offset 4 (after the 2-byte marker + 2-byte flags).
-    fn parse_encrypted_new_format(
-        data: &[u8],
-    ) -> Result<(Vec<MixEntry>, MixHashKind, usize), AssetError> {
+    fn parse_encrypted_new_format(data: &[u8]) -> Result<(Vec<MixEntry>, usize), AssetError> {
         // RSA key block starts after the 4-byte new-format header.
         let rsa_start: usize = NEW_FORMAT_HEADER_SIZE;
         let rsa_end: usize = rsa_start + mix_crypto::RSA_KEY_BLOCK_SIZE;
@@ -393,16 +368,14 @@ impl MixArchive {
         // Body data starts right after the encrypted index.
         let body_offset: usize = encrypted_start + encrypted_size;
 
-        Ok((entries, MixHashKind::Crc32, body_offset))
+        Ok((entries, body_offset))
     }
 
     /// Parse a new-format unencrypted MIX file (flags has no encryption bit).
     ///
     /// Layout: [marker:2][flags:2][file_count:2][body_size:4][entries...][body...]
     /// The index header starts at offset 4.
-    fn parse_unencrypted_new_format(
-        data: &[u8],
-    ) -> Result<(Vec<MixEntry>, MixHashKind, usize), AssetError> {
+    fn parse_unencrypted_new_format(data: &[u8]) -> Result<(Vec<MixEntry>, usize), AssetError> {
         if data.len() < NEW_FORMAT_HEADER_SIZE + INDEX_HEADER_SIZE {
             return Err(AssetError::InvalidMixHeader {
                 reason: "File too small for new-format unencrypted header".to_string(),
@@ -427,20 +400,20 @@ impl MixArchive {
         let entries: Vec<MixEntry> = Self::parse_entries(&data, index_start, file_count)?;
         let body_offset: usize = index_end;
 
-        Ok((entries, MixHashKind::Crc32, body_offset))
+        Ok((entries, body_offset))
     }
 
-    /// Parse an old-format MIX file (TD/RA1/theme.mix — no format marker).
+    /// Parse an old-header MIX file (no format marker).
     ///
     /// Layout: [file_count:2][body_size:4][entries...][body...]
     /// The first u16 at offset 0 is already the file_count (passed in).
     fn parse_old_format(
         data: &[u8],
         file_count: u16,
-    ) -> Result<(Vec<MixEntry>, MixHashKind, usize), AssetError> {
+    ) -> Result<(Vec<MixEntry>, usize), AssetError> {
         if data.len() < INDEX_HEADER_SIZE {
             return Err(AssetError::InvalidMixHeader {
-                reason: "File too small for old-format header".to_string(),
+                reason: "File too small for old-header MIX header".to_string(),
             });
         }
 
@@ -453,7 +426,7 @@ impl MixArchive {
         if data.len() < index_end {
             return Err(AssetError::InvalidMixHeader {
                 reason: format!(
-                    "File too small for {} old-format index entries: need {} bytes",
+                    "File too small for {} old-header index entries: need {} bytes",
                     file_count, index_end
                 ),
             });
@@ -462,7 +435,7 @@ impl MixArchive {
         let entries: Vec<MixEntry> = Self::parse_entries(&data, index_start, file_count)?;
         let body_offset: usize = index_end;
 
-        Ok((entries, MixHashKind::Westwood, body_offset))
+        Ok((entries, body_offset))
     }
 
     /// Parse file index entries from a buffer starting at the given offset.
@@ -517,6 +490,7 @@ impl MixArchive {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::mix_hash::westwood_hash;
 
     /// Build a minimal new-format unencrypted MIX file with one entry.
     ///
@@ -545,18 +519,18 @@ mod tests {
         data
     }
 
-    /// Build a minimal old-format MIX file (like theme.mix).
+    /// Build a minimal old-header MIX file (like thememd.mix).
     ///
     /// Layout: [file_count:1][body_size:5][index entry: 12 bytes][body: "world"]
-    fn make_test_mix_old_format() -> Vec<u8> {
+    fn make_test_mix_old_header() -> Vec<u8> {
         let mut data: Vec<u8> = Vec::new();
 
-        // Old format: file_count directly at offset 0 (non-zero).
+        // Old-header layout: file_count directly at offset 0 (non-zero).
         data.extend_from_slice(&1u16.to_le_bytes()); // file_count=1
         data.extend_from_slice(&5u32.to_le_bytes()); // body_size=5
 
         // Index entry
-        let test_id: i32 = westwood_hash("data.bin");
+        let test_id: i32 = 0x0CFB_D6C3;
         data.extend_from_slice(&test_id.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes()); // offset
         data.extend_from_slice(&5u32.to_le_bytes()); // size
@@ -592,15 +566,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_old_format() {
-        let data: Vec<u8> = make_test_mix_old_format();
+    fn parses_old_header_layout() {
+        let data: Vec<u8> = make_test_mix_old_header();
         let archive: MixArchive =
-            MixArchive::from_bytes(data).expect("Should parse old-format MIX");
+            MixArchive::from_bytes(data).expect("Should parse old-header MIX");
         assert_eq!(archive.entry_count(), 1);
     }
 
     #[test]
-    fn test_get_by_name_new_format() {
+    fn get_by_name_uses_one_crc_id_without_rolling_fallback() {
         let data: Vec<u8> = make_test_mix_new_format();
         let archive: MixArchive = MixArchive::from_bytes(data).expect("Should parse");
 
@@ -608,16 +582,26 @@ mod tests {
             .get_by_name("test.txt")
             .expect("Should find test.txt");
         assert_eq!(content, b"hello");
+
+        let mut rolling_only = make_test_mix_new_format();
+        let crc_id = mix_hash("test.txt");
+        let rolling_id = westwood_hash("test.txt");
+        assert_ne!(crc_id, rolling_id);
+        let index_start = NEW_FORMAT_HEADER_SIZE + INDEX_HEADER_SIZE;
+        rolling_only[index_start..index_start + 4].copy_from_slice(&rolling_id.to_le_bytes());
+        let rolling_only = MixArchive::from_bytes(rolling_only).expect("Should parse");
+        assert!(rolling_only.get_by_name("test.txt").is_none());
     }
 
     #[test]
-    fn test_get_by_name_old_format() {
-        let data: Vec<u8> = make_test_mix_old_format();
+    fn old_header_get_by_name_uses_crc_id() {
+        assert_eq!(mix_hash("BRAINfre.wav"), 0x0CFB_D6C3);
+        let data: Vec<u8> = make_test_mix_old_header();
         let archive: MixArchive = MixArchive::from_bytes(data).expect("Should parse");
 
         let content: &[u8] = archive
-            .get_by_name("data.bin")
-            .expect("Should find data.bin");
+            .get_by_name("brainfre.wav")
+            .expect("Should find BRAINfre.wav");
         assert_eq!(content, b"world");
     }
 
@@ -641,7 +625,7 @@ mod tests {
     #[test]
     fn test_looks_like_mix_accepts_valid_headers() {
         assert!(MixArchive::looks_like_mix(&make_test_mix_new_format()));
-        assert!(MixArchive::looks_like_mix(&make_test_mix_old_format()));
+        assert!(MixArchive::looks_like_mix(&make_test_mix_old_header()));
     }
 
     #[test]
