@@ -129,7 +129,7 @@ pub fn build_entity_block_sets(
         // A Dying corpse is off the occupancy grid (uninit unmarked it); exclude
         // it here too so movers don't path around a building that no longer
         // exists.
-        if entity.dying {
+        if entity.dying || !entity.lifecycle.cell_marked {
             continue;
         }
         // Entities inside transports don't occupy cells.
@@ -243,6 +243,28 @@ pub(crate) fn build_blocker_neighbor_counts(
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
 ) -> BlockerNeighborCounts {
+    build_blocker_neighbor_counts_with_overlays(
+        entities,
+        width,
+        height,
+        resolved_terrain,
+        None,
+        None,
+        interner,
+        rules,
+    )
+}
+
+pub(crate) fn build_blocker_neighbor_counts_with_overlays(
+    entities: &EntityStore,
+    width: u16,
+    height: u16,
+    resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    interner: &crate::sim::intern::StringInterner,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> BlockerNeighborCounts {
     let mut counts = BlockerNeighborCounts::new(width, height);
 
     if let Some(terrain) = resolved_terrain {
@@ -251,10 +273,22 @@ pub(crate) fn build_blocker_neighbor_counts(
                 let Some(cell) = terrain.cell(x, y) else {
                     continue;
                 };
-                if cell.overlay_blocks {
+                if cell.terrain_object_occupation.is_some() {
                     counts.add_single_cell_neighbor_source(x, y);
                 }
-                if cell.terrain_object_blocks {
+            }
+        }
+    }
+
+    if let (Some(grid), Some(registry)) = (overlay_grid, overlay_registry) {
+        for y in 0..height {
+            for x in 0..width {
+                if grid
+                    .cell(x, y)
+                    .overlay_id
+                    .and_then(|id| registry.flags(id))
+                    .is_some_and(|flags| flags.wall)
+                {
                     counts.add_single_cell_neighbor_source(x, y);
                 }
             }
@@ -264,7 +298,7 @@ pub(crate) fn build_blocker_neighbor_counts(
     for entity in entities.values() {
         // Dying corpses are off the occupancy grid — don't let them inflate the
         // A* dynamic-blocker neighbor costs.
-        if entity.dying {
+        if entity.dying || !entity.lifecycle.cell_marked {
             continue;
         }
         if entity.passenger_role.is_inside_transport() || entity.occupancy_list_layer().is_none() {
@@ -1132,6 +1166,173 @@ pub fn scatter_blocker(
     crate::sim::movement::movement_commands::issue_direct_move(entities, blocker_id, dest, speed)
 }
 
+/// One accepted nonfatal Infantry damage scatter, selected before the
+/// receiver's fear callback mutates the target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InfantryDamageScatter {
+    pub(crate) destination: (u16, u16),
+    pub(crate) speed: SimFixed,
+}
+
+/// Select the native attacker-relative displacement used by the Infantry
+/// damage receiver.
+///
+/// This is deliberately separate from [`scatter_blocker`]: blocked-cell
+/// scatter starts from an unconstrained eight-way draw, while the damage
+/// callback draws inclusive `0..=4`, offsets the direction away from the
+/// attacker by `-2..=+2`, and then scans all eight adjacent cells in wrapping
+/// compass order. The returned command is committed by combat between the HP
+/// write and the fear callback, preserving the receiver's synchronous order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn select_infantry_damage_scatter(
+    infantry: &GameEntity,
+    attacker_coord: (i32, i32),
+    terrain: Option<&ResolvedTerrainGrid>,
+    occupancy: &OccupancyGrid,
+    rules: &crate::rules::ruleset::RuleSet,
+    owner_is_human: bool,
+    infantry_is_fraidycat: bool,
+    has_scatter_ability: bool,
+    rng: &mut SimRng,
+) -> Option<InfantryDamageScatter> {
+    if infantry.category != EntityCategory::Infantry
+        || infantry.dying
+        || infantry.health.current == 0
+        || infantry.locomotor.is_none()
+    {
+        return None;
+    }
+
+    let doing = infantry
+        .animation
+        .as_ref()
+        .map(|animation| crate::rules::infantry_sequence::action_id(animation.sequence));
+    // With ReceiveDamage's literal false/false arguments, a player-owned man
+    // in the four deploy-family actions returns at the entry branch. This is
+    // independent of the permission-table byte (28..30 are otherwise allowed).
+    if owner_is_human && doing.is_some_and(|doing| (0x1b..=0x1e).contains(&doing)) {
+        return None;
+    }
+
+    // ReceiveDamage calls the Infantry virtual directly; the CurrentIQ versus
+    // IQ.Scatter gate belongs only to CellClass::Scatter_Objects and must not
+    // be imported here. With force=false, the current mission's Scatter flag
+    // is an unconditional pre-RNG gate.
+    let mission_scatter = infantry
+        .mission
+        .current()
+        .known()
+        .and_then(|mission| rules.mission_control.entry(mission))
+        .map_or(true, |entry| entry.scatter);
+    if !mission_scatter {
+        return None;
+    }
+    // The unforced body refuses to interrupt an ordinary combat infantryman's
+    // current shoot-at target; Fraidycat types are the verified exception.
+    if !infantry_is_fraidycat && infantry.attack_target.is_some() {
+        return None;
+    }
+    // Native indexes byte zero of the four-byte Doing record. -1 (no Rust
+    // Animation) and action 0x1f are explicit bypasses; every represented
+    // SequenceKind maps into the verified 42-entry table.
+    if doing.is_some_and(|doing| {
+        doing != 0x1f
+            && !matches!(
+                doing,
+                0 | 1
+                    | 2
+                    | 3
+                    | 4
+                    | 6
+                    | 8
+                    | 9
+                    | 10
+                    | 16
+                    | 17
+                    | 18
+                    | 19
+                    | 22
+                    | 23
+                    | 24
+                    | 25
+                    | 26
+                    | 28
+                    | 29
+                    | 30
+                    | 33
+                    | 37
+                    | 38
+                    | 39
+                    | 40
+                    | 41
+            )
+    }) {
+        return None;
+    }
+    // This direct virtual does not read CurrentIQ. Under stock
+    // PlayerScatter=no, its separate player-owned branch refuses an unforced
+    // unit with no SCATTER ability and a null NavTarget. The audited evidence
+    // explicitly does not support importing CellClass's IQ gate here.
+    if !rules.general.player_scatter
+        && !has_scatter_ability
+        && owner_is_human
+        && infantry.navigation.nav_com.is_none()
+    {
+        return None;
+    }
+
+    let defender_x = i32::from(infantry.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(infantry.position.sub_x.to_num::<i32>());
+    let defender_y = i32::from(infantry.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(infantry.position.sub_y.to_num::<i32>());
+    let away_facing = crate::util::fixed_math::facing_from_delta_int_u16(
+        defender_x.wrapping_sub(attacker_coord.0),
+        defender_y.wrapping_sub(attacker_coord.1),
+    );
+    let away_direction = (((u32::from(away_facing) >> 12) + 1) >> 1) as i32 & 7;
+    let start_direction = rng.next_range_u32_inclusive(0, 4) as i32 - 2 + away_direction;
+    let layer = infantry.movement_layer_or_ground();
+    let locomotor = infantry.locomotor.as_ref().expect("checked above");
+
+    for offset in 0..8 {
+        let direction = (start_direction + offset) & 7;
+        let (dx, dy) = NEIGHBOR_OFFSETS[direction as usize];
+        let nx = i32::from(infantry.position.rx) + dx;
+        let ny = i32::from(infantry.position.ry) + dy;
+        let (Ok(nx), Ok(ny)) = (u16::try_from(nx), u16::try_from(ny)) else {
+            continue;
+        };
+
+        let terrain_allows = terrain.is_none_or(|grid| {
+            let Some(cell) = grid.cell(nx, ny) else {
+                return false;
+            };
+            match layer {
+                MovementLayer::Ground => {
+                    crate::sim::pathfinding::passability::is_passable_for_zone(
+                        cell.zone_type,
+                        locomotor.movement_zone,
+                    )
+                }
+                MovementLayer::Bridge => cell.bridge_walkable,
+                MovementLayer::Air | MovementLayer::Underground => false,
+            }
+        });
+        if !terrain_allows || !cell_passable_for_infantry(occupancy.get(nx, ny), layer) {
+            continue;
+        }
+
+        return Some(InfantryDamageScatter {
+            destination: (nx, ny),
+            speed: locomotor.speed_multiplier * SimFixed::from_num(1024),
+        });
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1139,8 +1340,77 @@ pub fn scatter_blocker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
     use crate::sim::game_entity::{GameEntity, InfantryRuntime};
     use crate::sim::occupancy::CellListInsertion;
+
+    fn flat_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        let land = LandType::Clear.as_index();
+        let speed_costs = SpeedCostProfile::default();
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: true,
+            tileset_index: None,
+            land_type: land,
+            yr_cell_land_type: land,
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs,
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: true,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: land,
+            base_yr_cell_land_type: land,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: speed_costs,
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn flat_resolved_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let cells = (0..height)
+            .flat_map(|ry| (0..width).map(move |rx| flat_resolved_cell(rx, ry)))
+            .collect();
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
 
     fn infantry(id: u64, rx: u16, ry: u16, sub: u8) -> GameEntity {
         let mut e = GameEntity::test_default(id, "E1", "Allies", rx, ry);
@@ -1169,6 +1439,8 @@ mod tests {
         let mut entities = EntityStore::new();
         let mut blocker = vehicle(1, 2, 2);
         blocker.on_bridge = true;
+        blocker.lifecycle.in_limbo = false;
+        blocker.lifecycle.cell_marked = true;
         entities.insert(blocker);
         let interner = crate::sim::intern::StringInterner::new();
 
@@ -1180,9 +1452,66 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_10_zero_occupation_terrain_still_contributes_neighbor_blocker() {
+        let entities = EntityStore::new();
+        let interner = crate::sim::intern::StringInterner::new();
+        let mut terrain = flat_resolved_terrain(5, 5);
+        let source = terrain.cell_mut(2, 2).expect("source cell");
+        source.terrain_object_occupation = Some(0);
+        source.terrain_object_blocks = false;
+
+        let counts =
+            build_blocker_neighbor_counts(&entities, 5, 5, Some(&terrain), &interner, None);
+        for y in 1..=3 {
+            for x in 1..=3 {
+                assert_eq!(counts.count_at(x, y), u8::from((x, y) != (2, 2)));
+            }
+        }
+
+        terrain
+            .cell_mut(2, 2)
+            .expect("interior source cell")
+            .terrain_object_occupation = None;
+        let edge_source = terrain.cell_mut(0, 0).expect("edge source cell");
+        edge_source.terrain_object_occupation = Some(0);
+        edge_source.terrain_object_blocks = false;
+        let edge_counts =
+            build_blocker_neighbor_counts(&entities, 5, 5, Some(&terrain), &interner, None);
+        assert_eq!(edge_counts.count_at(1, 0), 1);
+        assert_eq!(edge_counts.count_at(0, 1), 1);
+        assert_eq!(edge_counts.count_at(1, 1), 1);
+        let edge_counts_ref = &edge_counts;
+        assert_eq!(
+            (0..5)
+                .flat_map(|y| (0..5).map(move |x| edge_counts_ref.count_at(x, y) as u32))
+                .sum::<u32>(),
+            3,
+            "an edge Terrain contributes only to its three valid neighbors"
+        );
+
+        terrain
+            .cell_mut(0, 0)
+            .expect("edge source cell")
+            .terrain_object_occupation = None;
+        let removed =
+            build_blocker_neighbor_counts(&entities, 5, 5, Some(&terrain), &interner, None);
+        let removed_ref = &removed;
+        assert_eq!(
+            (0..5)
+                .flat_map(|y| (0..5).map(move |x| removed_ref.count_at(x, y) as u32))
+                .sum::<u32>(),
+            0,
+            "removing the live terrain identity reverses all eight contributions"
+        );
+    }
+
+    #[test]
     fn blocker_neighbor_counts_building_uses_expanded_foundation_rectangle_once() {
         let mut entities = EntityStore::new();
-        entities.insert(structure(1, 2, 2));
+        let mut building = structure(1, 2, 2);
+        building.lifecycle.in_limbo = false;
+        building.lifecycle.cell_marked = true;
+        entities.insert(building);
         let interner = crate::sim::intern::StringInterner::new();
 
         let counts = build_blocker_neighbor_counts(&entities, 5, 5, None, &interner, None);
@@ -1233,6 +1562,102 @@ mod tests {
             omni_crush_resistant,
             iron_curtained,
         }
+    }
+
+    #[test]
+    fn gsi_04_07_placement_neighbor_plane_counts_only_wall_overlay_and_reverses() {
+        use crate::map::overlay_types::OverlayTypeRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::sim::overlay_grid::OverlayGrid;
+
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=WALL\n1=ROCK\n2=ZEROWHEEL\n\
+             [Wall]\nWheel=100%\n\
+             [Rock]\nWheel=0%\n\
+             [WALL]\nWall=yes\n\
+             [ROCK]\nIsARock=yes\n\
+             [ZEROWHEEL]\nLand=Rock\n",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let entities = EntityStore::new();
+        let interner = crate::sim::intern::StringInterner::new();
+
+        for non_wall in [1u8, 2u8] {
+            let mut overlays = OverlayGrid::new(5, 5);
+            overlays.place_overlay(2, 2, non_wall, 0);
+            let counts = build_blocker_neighbor_counts_with_overlays(
+                &entities,
+                5,
+                5,
+                None,
+                Some(&overlays),
+                Some(&registry),
+                &interner,
+                None,
+            );
+            let counts_ref = &counts;
+            assert_eq!(
+                (0..5)
+                    .flat_map(|y| (0..5).map(move |x| counts_ref.count_at(x, y) as u32))
+                    .sum::<u32>(),
+                0,
+                "non-wall overlay {non_wall} must not produce neighbor counts"
+            );
+        }
+
+        let mut overlays = OverlayGrid::new(5, 5);
+        overlays.place_overlay(2, 2, 0, 0);
+        let mut counts = build_blocker_neighbor_counts_with_overlays(
+            &entities,
+            5,
+            5,
+            None,
+            Some(&overlays),
+            Some(&registry),
+            &interner,
+            None,
+        );
+        for y in 1..=3 {
+            for x in 1..=3 {
+                assert_eq!(counts.count_at(x, y), u8::from((x, y) != (2, 2)));
+            }
+        }
+        counts.remove_single_cell_neighbor_source(2, 2);
+        let counts_ref = &counts;
+        assert_eq!(
+            (0..5)
+                .flat_map(|y| (0..5).map(move |x| counts_ref.count_at(x, y) as u32))
+                .sum::<u32>(),
+            0
+        );
+    }
+
+    #[test]
+    fn gsi_04_15_detached_tube_mover_is_absent_from_both_blocker_snapshots() {
+        let mut entities = EntityStore::new();
+        let mut mover = GameEntity::test_default(7, "MTNK", "Americans", 2, 2);
+        mover.lifecycle.in_limbo = false;
+        mover.lifecycle.cell_marked = false;
+        entities.insert(mover);
+        let interner = crate::sim::intern::test_interner();
+        let alliances = crate::map::houses::HouseAllianceMap::new();
+
+        let (ground, bridge, dynamic) =
+            build_entity_block_sets(&entities, "Russians", &alliances, &interner, None);
+        assert!(ground.is_empty());
+        assert!(bridge.is_empty());
+        assert!(!dynamic.contains_any(&(2, 2)));
+
+        let counts = build_blocker_neighbor_counts_with_overlays(
+            &entities, 5, 5, None, None, None, &interner, None,
+        );
+        let counts_ref = &counts;
+        assert_eq!(
+            (0..5)
+                .flat_map(|y| (0..5).map(move |x| u32::from(counts_ref.count_at(x, y))))
+                .sum::<u32>(),
+            0
+        );
     }
 
     #[test]
