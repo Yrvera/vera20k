@@ -82,7 +82,10 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
         now,
         &measure,
     );
-    debug_assert!(!outcome.play_sound, "TypeSelect feedback is a silent message add");
+    debug_assert!(
+        !outcome.play_sound,
+        "TypeSelect feedback is a silent message add"
+    );
 }
 
 fn add_type_select_feedback(

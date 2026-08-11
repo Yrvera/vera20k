@@ -577,6 +577,7 @@ mod tests {
             rx: 10,
             ry: 11,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };

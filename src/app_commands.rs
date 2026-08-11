@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use crate::app::AppState;
 use crate::map::entities::EntityCategory;
+use crate::net::lockstep::SynchronizedCommand;
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
 use crate::sim::intern::InternedId;
 use crate::sim::production;
@@ -192,20 +193,11 @@ pub(crate) fn sell_selected_buildings(state: &mut AppState) {
     }
 }
 
-/// Stable id of the local player's own building under the given world point, if
-/// any. Shared by the repair/sell cursor feedback (`app_cursor`) and the
-/// repair/sell click handler below so the two can never disagree about what is
-/// an eligible target. Only OWN structures qualify — allied buildings are not
-/// repairable/sellable by the local player (the sim `ToggleRepair` /
-/// `SellBuilding` handlers also enforce ownership).
-pub(crate) fn own_building_under_point(
-    state: &AppState,
-    world_x: f32,
-    world_y: f32,
-) -> Option<u64> {
+/// Stable id of the visible object selected by the tactical object picker.
+fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> Option<u64> {
     let sim = state.simulation.as_ref()?;
     let owner = preferred_local_owner(state)?;
-    let hover = crate::app_entity_pick::hover_target_at_point(
+    crate::app_entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
@@ -214,14 +206,105 @@ pub(crate) fn own_building_under_point(
         state.rules.as_ref(),
         &state.height_map,
         Some(&state.tactical_bridge_inverse_map),
-    )?;
-    let entity = sim.entities().get(hover.stable_id)?;
+    )
+    .map(|hover| hover.stable_id)
+}
+
+fn own_building_id(state: &AppState, stable_id: u64) -> Option<u64> {
+    let sim = state.simulation.as_ref()?;
+    let owner = preferred_local_owner(state)?;
+    let entity = sim.entities().get(stable_id)?;
     (entity.category == EntityCategory::Structure
         && sim
             .interner
             .resolve(entity.owner)
             .eq_ignore_ascii_case(&owner))
-    .then_some(hover.stable_id)
+    .then_some(stable_id)
+}
+
+/// Stable id of the local player's own building under the given world point, if
+/// any. Shared by the repair/sell cursor feedback (`app_cursor`) and the
+/// repair/sell click handler below so the two can never disagree about what is
+/// an eligible building target. Only OWN structures qualify — allied buildings
+/// are not repairable/sellable by the local player (the sim `ToggleRepair` /
+/// `SellBuilding` handlers also enforce ownership).
+pub(crate) fn own_building_under_point(
+    state: &AppState,
+    world_x: f32,
+    world_y: f32,
+) -> Option<u64> {
+    own_building_id(state, visible_object_under_point(state, world_x, world_y)?)
+}
+
+pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
+    let (world_x, world_y) =
+        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+    if visible_object_under_point(state, world_x, world_y).is_some() {
+        return false;
+    }
+    let (rx, ry) =
+        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+    let Some(owner) = preferred_local_owner(state) else {
+        return false;
+    };
+    match (&state.simulation, &state.overlay_registry) {
+        (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
+            sim,
+            overlays,
+            &owner,
+            rx,
+            ry,
+            state.sandbox_full_visibility,
+            false,
+        )
+        .is_some(),
+        _ => false,
+    }
+}
+
+fn sell_wall_command_for_cell(
+    sim: &crate::sim::world::Simulation,
+    overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+    local_owner: &str,
+    rx: u16,
+    ry: u16,
+    ignore_visibility: bool,
+    object_under_cursor: bool,
+) -> Option<Command> {
+    if object_under_cursor || (rx, ry) == (0, 0) {
+        return None;
+    }
+    let local_owner_id = sim.interner.get(local_owner)?;
+    if crate::app_instances::cell_visibility_for_local_owner(
+        Some(local_owner_id),
+        Some(&sim.fog),
+        rx,
+        ry,
+        ignore_visibility,
+    ) != crate::app_instances::CellVisibilityState::Visible
+    {
+        return None;
+    }
+    let grid = sim.overlay_grid.as_ref()?;
+    if rx >= grid.width() || ry >= grid.height() {
+        return None;
+    }
+    let cell = grid.cell(rx, ry);
+    let overlay_id = cell.overlay_id?;
+    if !overlays.flags(overlay_id).is_some_and(|flags| flags.wall) {
+        return None;
+    }
+    let wall_owner = cell.wall_owner?;
+    let wall_owner_house = sim.houses.get(&wall_owner)?;
+    let owner_is_human_player = if sim.session.game_mode_nonzero {
+        wall_owner == local_owner_id
+    } else {
+        wall_owner_house.is_human || wall_owner_house.player_control
+    };
+    owner_is_human_player.then_some(Command::SellWallAtCell {
+        x: rx as i16,
+        y: ry as i16,
+    })
 }
 
 /// Handle a tactical left-click while the sidebar Repair or Sell cursor mode is
@@ -239,7 +322,8 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
     }
     let (world_x, world_y) =
         crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
-    if let Some(entity_id) = own_building_under_point(state, world_x, world_y) {
+    let object_under_cursor = visible_object_under_point(state, world_x, world_y);
+    if let Some(entity_id) = object_under_cursor.and_then(|id| own_building_id(state, id)) {
         let owner: String =
             preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
         let payload = if repair {
@@ -248,6 +332,27 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
             Command::SellBuilding { entity_id }
         };
         schedule_command(state, &owner, payload);
+    } else if sell && object_under_cursor.is_none() {
+        let (rx, ry) =
+            crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        let Some(owner) = preferred_local_owner(state) else {
+            return true;
+        };
+        let payload = match (&state.simulation, &state.overlay_registry) {
+            (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
+                sim,
+                overlays,
+                &owner,
+                rx,
+                ry,
+                state.sandbox_full_visibility,
+                false,
+            ),
+            _ => None,
+        };
+        if let Some(payload) = payload {
+            schedule_command(state, &owner, payload);
+        }
     }
     true
 }
@@ -651,11 +756,18 @@ fn schedule_command_in_sim(
     sim: &mut crate::sim::world::Simulation,
     owner: &str,
     payload: Command,
-) -> u64 {
+) -> Option<u64> {
     let execute_tick = sim.session.tick;
     let owner_id = sim.interner.intern(owner);
-    sim.queue_command(CommandEnvelope::new(owner_id, execute_tick, payload));
-    execute_tick
+    let envelope = match payload {
+        Command::SellWallAtCell { x, y } => {
+            let record = sim.encode_sell_wall_at_cell_record(owner_id, x, y)?;
+            SynchronizedCommand::opaque(record).decode_for_simulation(sim, execute_tick)?
+        }
+        payload => CommandEnvelope::new(owner_id, execute_tick, payload),
+    };
+    sim.queue_command(envelope);
+    Some(execute_tick)
 }
 
 /// Queue one ordinary deterministic command and return its actual execute tick.
@@ -671,7 +783,7 @@ pub(crate) fn try_schedule_command(
     state
         .simulation
         .as_mut()
-        .map(|sim| schedule_command_in_sim(sim, owner, payload))
+        .and_then(|sim| schedule_command_in_sim(sim, owner, payload))
 }
 
 /// Preserve the existing unit-returning command boundary for ordinary callers.
@@ -689,8 +801,10 @@ pub(crate) fn is_playable_house_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::schedule_command_in_sim;
-    use crate::sim::command::Command;
+    use super::{schedule_command_in_sim, sell_wall_command_for_cell};
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::house_state::HouseState;
     use crate::sim::world::Simulation;
 
     #[test]
@@ -700,7 +814,8 @@ mod tests {
         sim.input_delay_ticks = 7;
 
         let execute_tick =
-            schedule_command_in_sim(&mut sim, "Russians", Command::DeployMcv { entity_id: 99 });
+            schedule_command_in_sim(&mut sim, "Russians", Command::DeployMcv { entity_id: 99 })
+                .unwrap();
 
         assert_eq!(execute_tick, 41);
         assert_eq!(sim.pending_commands.len(), 1);
@@ -722,9 +837,141 @@ mod tests {
         sim.input_delay_ticks = 8;
 
         let execute_tick =
-            schedule_command_in_sim(&mut sim, "YuriCountry", Command::DeployMcv { entity_id: 7 });
+            schedule_command_in_sim(&mut sim, "YuriCountry", Command::DeployMcv { entity_id: 7 })
+                .unwrap();
 
         assert_eq!(execute_tick, u64::MAX - 1);
         assert_eq!(sim.pending_commands[0].execute_tick, u64::MAX - 1);
+    }
+
+    #[test]
+    fn gsi_04_07_wall_sell_scheduler_uses_current_tick_and_signed_cell_payload() {
+        let mut sim = Simulation::new();
+        sim.session.tick = 23;
+        let local = sim.interner.intern("Local");
+        let remote = sim.interner.intern("Remote");
+        let ai = sim.interner.intern("AI");
+        let missing_house = sim.interner.intern("MissingHouse");
+        let mut local_house = HouseState::new(local, 0, None, false, 0, 10);
+        local_house.player_control = true;
+        sim.houses.insert(local, local_house);
+        sim.houses
+            .insert(remote, HouseState::new(remote, 1, None, true, 0, 10));
+        sim.houses
+            .insert(ai, HouseState::new(ai, 2, None, false, 0, 10));
+        sim.session.house_order = vec![local, remote, ai];
+        sim.session.binary_frame = 23;
+
+        let issued = sim
+            .encode_sell_wall_at_cell_record(local, 0, 1)
+            .expect("registered local house encodes");
+        assert_eq!(
+            issued.opcode(),
+            crate::sim::command::SELL_WALL_AT_CELL_OPCODE
+        );
+        assert_eq!(issued.house_id(), 0);
+        assert_eq!(issued.frame_stamp(), 23);
+        assert_eq!(&issued.payload()[..4], &[0, 0, 1, 0]);
+        assert_eq!(
+            crate::net::lockstep::SynchronizedCommand::opaque(issued)
+                .decode_for_simulation(&sim, 23)
+                .unwrap(),
+            CommandEnvelope::new(local, 23, Command::SellWallAtCell { x: 0, y: 1 })
+        );
+
+        let overlay_ini = IniFile::from_str(
+            "[OverlayTypes]\n0=GAWALL\n1=ORE\n\
+             [GAWALL]\nWall=yes\n\
+             [ORE]\nWall=no\n",
+        );
+        let overlays = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&overlay_ini, None);
+        sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(4, 4));
+        for cell in [(0, 1), (1, 1), (3, 3)] {
+            sim.fog.mark_visible_for_owner(local, cell.0, cell.1);
+        }
+
+        fn attempt(
+            sim: &mut Simulation,
+            overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+            cell: (u16, u16),
+            object_under_cursor: bool,
+        ) -> Option<u64> {
+            let payload = sell_wall_command_for_cell(
+                sim,
+                overlays,
+                "Local",
+                cell.0,
+                cell.1,
+                false,
+                object_under_cursor,
+            )?;
+            schedule_command_in_sim(sim, "Local", payload)
+        }
+
+        assert_eq!(attempt(&mut sim, &overlays, (0, 0), false), None);
+        assert_eq!(attempt(&mut sim, &overlays, (3, 3), false), None);
+
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(1, 1, 1, 0, local);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), false), None);
+
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(2, 2, 0, 0, local);
+        assert_eq!(attempt(&mut sim, &overlays, (2, 2), false), None);
+
+        sim.overlay_grid.as_mut().unwrap().place_overlay(1, 1, 0, 0);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), false), None);
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(1, 1, 0, 0, missing_house);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), false), None);
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(1, 1, 0, 0, ai);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), false), None);
+
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(0, 1, 0, 0, remote);
+        assert_eq!(attempt(&mut sim, &overlays, (0, 1), false), Some(23));
+        assert_eq!(sim.pending_commands.len(), 1);
+        assert_eq!(sim.pending_commands[0].execute_tick, 23);
+        assert_eq!(
+            sim.pending_commands[0].payload,
+            Command::SellWallAtCell { x: 0, y: 1 }
+        );
+        sim.pending_commands.clear();
+
+        sim.session.game_mode_nonzero = true;
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(1, 1, 0, 0, remote);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), false), None);
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(1, 1, 0, 0, local);
+        assert_eq!(attempt(&mut sim, &overlays, (1, 1), true), None);
+        assert!(sim.pending_commands.is_empty());
+
+        sim.overlay_grid
+            .as_mut()
+            .unwrap()
+            .place_owned_wall(0, 1, 0, 0, local);
+        assert_eq!(attempt(&mut sim, &overlays, (0, 1), false), Some(23));
+        assert_eq!(sim.pending_commands.len(), 1);
+        assert_eq!(sim.pending_commands[0].execute_tick, 23);
+        assert_eq!(
+            sim.pending_commands[0].payload,
+            Command::SellWallAtCell { x: 0, y: 1 }
+        );
     }
 }
