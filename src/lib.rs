@@ -142,6 +142,9 @@ pub mod app_building_anim;
 // Weapon fire presentation: non-garrison muzzle flashes and FLH-positioned reports.
 pub mod app_fire_effects;
 
+// App-owned presentation runtime for the native transient combat-light vector.
+pub mod app_combat_lights;
+
 // Parachute SHP animation lifecycle for descending paradropped infantry.
 pub mod app_chute_anim;
 
