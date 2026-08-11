@@ -698,9 +698,9 @@ impl OreGrowthState {
             })
             .collect();
         let mut stats = NativeSpreadProcessStats::default();
-        let new_cell_admission = resolved_terrain.zip(live_objects).map(
-            |(terrain, objects)| NewTiberiumAdmission::runtime(terrain, path_grid, objects),
-        );
+        let new_cell_admission = resolved_terrain
+            .zip(live_objects)
+            .map(|(terrain, objects)| NewTiberiumAdmission::runtime(terrain, path_grid, objects));
         for type_id in due_ids {
             stats.add(self.process_native_spread_for_type_with_placement(
                 type_id,
@@ -747,13 +747,11 @@ impl OreGrowthState {
         current_frame: u32,
         spread_enabled: bool,
     ) -> NativeSpreadProcessStats {
-        let new_cell_admission = Some(
-            NewTiberiumAdmission::compatibility_without_native_context(
-                resolved_terrain,
-                path_grid,
-                None,
-            ),
-        );
+        let new_cell_admission = Some(NewTiberiumAdmission::compatibility_without_native_context(
+            resolved_terrain,
+            path_grid,
+            None,
+        ));
         self.process_native_spread_for_type_with_placement(
             type_id,
             overlay_grid,
@@ -1336,12 +1334,7 @@ fn spread_tiberium_from_source(
             radar_dirty_generation: radar_dirty_generation.as_deref_mut(),
             tactical_dirty_cells: tactical_dirty_cells.as_deref_mut(),
         };
-        if !place_tiberium(
-            &mut context,
-            target,
-            type_id,
-            SPREAD_GERMINATION_DENSITY,
-        ) {
+        if !place_tiberium(&mut context, target, type_id, SPREAD_GERMINATION_DENSITY) {
             return None;
         }
         return Some(target);
@@ -2434,7 +2427,10 @@ SpreadPercentage=.06
             growth_queue_priority(100, spread_priority_raw).to_bits()
         );
         assert_eq!(tactical_dirty, vec![(1, 1)]);
-        assert!(radar_dirty.is_empty(), "existing growth does not dirty radar");
+        assert!(
+            radar_dirty.is_empty(),
+            "existing growth does not dirty radar"
+        );
         assert_eq!(radar_generation, 0);
         assert_eq!(
             nodes.get(&(1, 1)).map(|node| node.remaining),
@@ -2757,12 +2753,8 @@ SpreadPercentage=.06
             None,
             CellListInsertion::AppendBuilding,
         );
-        let live_objects = TiberiumPlacementObjectContext::new(
-            &entities,
-            &occupancy,
-            &rules,
-            &interner,
-        );
+        let live_objects =
+            TiberiumPlacementObjectContext::new(&entities, &occupancy, &rules, &interner);
 
         let mut state = make_state(8, 8);
         state.reset_native_tiberium_classes(tiberium_types.len(), 10);
@@ -2806,7 +2798,11 @@ SpreadPercentage=.06
         assert_eq!(stats.zero_target_entries, 1);
         assert_eq!(stats.spread_calls, 0);
         assert_eq!(overlay_grid.cell(4, 3).overlay_id, None);
-        assert!(state.native_tiberium_state().classes[0].growth_heap.is_empty());
+        assert!(
+            state.native_tiberium_state().classes[0]
+                .growth_heap
+                .is_empty()
+        );
         assert!(nodes.is_empty());
         assert!(radar_dirty.is_empty());
         assert_eq!(radar_generation, 0);
@@ -2877,7 +2873,11 @@ SpreadPercentage=.06
         assert_eq!(stats.zero_target_entries, 1);
         assert_eq!(stats.spread_calls, 0);
         assert_eq!(overlay_grid.cell(4, 3).overlay_id, None);
-        assert!(state.native_tiberium_state().classes[0].growth_heap.is_empty());
+        assert!(
+            state.native_tiberium_state().classes[0]
+                .growth_heap
+                .is_empty()
+        );
         assert!(nodes.is_empty());
         assert!(radar_dirty.is_empty());
         assert_eq!(radar_generation, 0);
