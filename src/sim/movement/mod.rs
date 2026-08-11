@@ -73,8 +73,8 @@ pub mod parachute_descent;
 pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;
-pub mod tunnel_movement;
 pub mod tube_movement;
+pub mod tunnel_movement;
 pub mod turret;
 
 pub use facing_class::FacingClass;

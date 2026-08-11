@@ -510,6 +510,7 @@ mod tests {
                 rx: 5,
                 ry: 5,
                 z: 0,
+                exact_z_leptons: None,
                 sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
                 sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
             };
@@ -575,6 +576,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -680,6 +682,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -738,6 +741,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -809,6 +813,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -886,6 +891,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: SimFixed::from_num(128),
             sub_y: SimFixed::from_num(128),
         };
