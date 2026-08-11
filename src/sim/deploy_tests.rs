@@ -352,7 +352,15 @@ fn deploy_then_undeploy_returns_the_mcv_to_its_original_cell() {
 
     let start = (20u16, 22u16);
     let mcv = sim
-        .spawn_object("AMCV", "Americans", start.0, start.1, 128, &rules, &height_map)
+        .spawn_object(
+            "AMCV",
+            "Americans",
+            start.0,
+            start.1,
+            128,
+            &rules,
+            &height_map,
+        )
         .expect("spawn MCV");
     assert!(
         sim.apply_command(

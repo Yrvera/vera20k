@@ -79,8 +79,8 @@ pub mod skirmish_scenarios;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
-pub mod app_types;
 pub mod app_hotkeys;
+pub mod app_types;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
 // Extracted from app.rs to keep the orchestrator under 600 lines.
@@ -130,8 +130,8 @@ pub mod app_commands;
 
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
-pub mod app_sim_tick;
 pub mod app_frame_pacer;
+pub mod app_sim_tick;
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.
