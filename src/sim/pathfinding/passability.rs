@@ -10,8 +10,8 @@
 //! Native direct readers use the unit's **MovementZone** row, not SpeedType.
 //! The matrix lookup `MOVEMENT_ZONE_PASSABILITY[movement_zone][reduced_zone_type]` returns:
 //! - 1 = passable
-//! - 2 = blocked (dynamically, e.g. occupied)
-//! - 3 = impassable (always blocked, e.g. rock)
+//! - 2 = blocked
+//! - 3 = the Outside/sentinel value (also returned for an invalid lookup)
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/locomotor_type (MovementZone).
@@ -24,7 +24,7 @@ pub use crate::rules::terrain_rules::{LandType, tmp_terrain_to_land_type};
 /// Passability values from the matrix.
 pub const PASS_OK: u8 = 1;
 pub const PASS_BLOCKED: u8 = 2;
-pub const PASS_IMPASSABLE: u8 = 3;
+pub const PASS_OUTSIDE_SENTINEL: u8 = 3;
 
 /// Number of zone layers (rows) in the matrix.
 pub const ZONE_LAYER_COUNT: usize = 13;
@@ -38,7 +38,7 @@ pub const TERRAIN_TYPE_COUNT: usize = 8;
 /// from `CellClass::RecalcZoneType`:
 /// 0=Ground, 1=Crushable, 2=Wall, 3=Beach, 4=Water, 5=Building,
 /// 6=Impassable, 7=Outside.
-/// Values: 1 = passable, 2 = blocked, 3 = impassable (sentinel).
+/// Values: 1 = passable, 2 = blocked, 3 = Outside/sentinel.
 ///
 /// Do not label column 1 as road or crate; the verified writer uses overlay
 /// `Crushable=yes`.
@@ -87,10 +87,10 @@ pub fn is_passable_for_zone(reduced_zone_type: u8, mz: MovementZone) -> bool {
 
 /// Get the raw passability value (1/2/3) for a row and reduced ZoneType.
 ///
-/// Returns PASS_IMPASSABLE for out-of-bounds inputs.
+/// Returns `PASS_OUTSIDE_SENTINEL` for out-of-bounds inputs.
 pub fn passability_value(zone_layer: usize, reduced_zone_type: u8) -> u8 {
     if zone_layer >= ZONE_LAYER_COUNT || reduced_zone_type as usize >= TERRAIN_TYPE_COUNT {
-        return PASS_IMPASSABLE;
+        return PASS_OUTSIDE_SENTINEL;
     }
     MOVEMENT_ZONE_PASSABILITY[zone_layer][reduced_zone_type as usize]
 }
@@ -116,7 +116,7 @@ mod tests {
     ];
 
     #[test]
-    fn matrix_matches_verified_native_dump() {
+    fn gsi_04_04_matrix_matches_verified_native_dump() {
         assert_eq!(MOVEMENT_ZONE_PASSABILITY, VERIFIED_NATIVE_ROWS);
     }
 
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn impassable_zone_type_blocked_except_subterranean_and_fly() {
+    fn gsi_04_04_impassable_zone_type_retains_row_specific_one_or_two() {
         // Reduced ZoneType 6 is the native Impassable column.
         // Subterranean (row 6) and Fly (row 9) can enter; all others blocked.
         for layer in 0..ZONE_LAYER_COUNT {
@@ -151,14 +151,23 @@ mod tests {
     }
 
     #[test]
-    fn outside_zone_type_blocks_all_rows() {
+    fn gsi_04_04_raw_three_is_only_outside_and_oob_sentinel() {
         for layer in 0..ZONE_LAYER_COUNT {
             assert_eq!(
-                MOVEMENT_ZONE_PASSABILITY[layer][7], PASS_IMPASSABLE,
+                MOVEMENT_ZONE_PASSABILITY[layer][7], PASS_OUTSIDE_SENTINEL,
                 "Zone layer {} on Outside ZoneType",
                 layer
             );
+            assert_ne!(MOVEMENT_ZONE_PASSABILITY[layer][6], PASS_OUTSIDE_SENTINEL);
         }
+        assert_eq!(
+            passability_value(ZONE_LAYER_COUNT, 0),
+            PASS_OUTSIDE_SENTINEL
+        );
+        assert_eq!(
+            passability_value(0, TERRAIN_TYPE_COUNT as u8),
+            PASS_OUTSIDE_SENTINEL
+        );
     }
 
     #[test]
@@ -176,12 +185,12 @@ mod tests {
         let row = MOVEMENT_ZONE_PASSABILITY[3];
         assert_eq!(row[0], PASS_OK); // clear
         assert_eq!(row[1], PASS_OK); // crushable overlay
-        assert_eq!(row[2], PASS_OK); // rough
+        assert_eq!(row[2], PASS_OK); // wall
         assert_eq!(row[3], PASS_OK); // beach
         assert_eq!(row[4], PASS_OK); // water
         assert_eq!(row[5], PASS_OK); // building
         assert_eq!(row[6], PASS_BLOCKED); // impassable
-        assert_eq!(row[7], PASS_IMPASSABLE); // outside
+        assert_eq!(row[7], PASS_OUTSIDE_SENTINEL); // outside
     }
 
     #[test]
