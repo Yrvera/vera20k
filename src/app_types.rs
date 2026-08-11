@@ -294,15 +294,9 @@ mod tests {
 
     #[test]
     fn item83_type_select_outcomes_use_csf_keys_not_source_line_numbers() {
-        assert_eq!(
-            TypeSelectOutcome::Empty.csf_key(),
-            "MSG:NothingSelected"
-        );
+        assert_eq!(TypeSelectOutcome::Empty.csf_key(), "MSG:NothingSelected");
         assert_eq!(TypeSelectOutcome::Map.csf_key(), "MSG:SelAcrossMap");
-        assert_eq!(
-            TypeSelectOutcome::Screen.csf_key(),
-            "MSG:SelAcrossScreen"
-        );
+        assert_eq!(TypeSelectOutcome::Screen.csf_key(), "MSG:SelAcrossScreen");
     }
 }
 
