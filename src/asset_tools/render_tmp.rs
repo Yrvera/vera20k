@@ -946,6 +946,7 @@ mod tests {
             depth: vec![0; (TILE_W * TILE_H) as usize],
             pixel_width: TILE_W,
             pixel_height: TILE_H,
+            relative_extra_y: 0,
             offset_x: 0,
             offset_y: 0,
             has_damaged_data: false,

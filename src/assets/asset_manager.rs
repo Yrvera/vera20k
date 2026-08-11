@@ -207,6 +207,20 @@ impl AssetManager {
         Self::new_with_media_mode(ra2_dir, MediaArchiveMode::default())
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_loose_root_for_test(ra2_dir: &Path) -> Self {
+        Self {
+            archives: Vec::new(),
+            archive_catalog: Vec::new(),
+            lookup_index: HashMap::new(),
+            mix_file_cache: Mutex::new(HashMap::new()),
+            loose_files: Self::open_loose_root(ra2_dir).expect("open loose test root"),
+            active_theater: None,
+            active_theater_archives: Vec::new(),
+            ra2_dir: ra2_dir.to_path_buf(),
+        }
+    }
+
     /// Load the core runtime archive stack for one native media-selection mode.
     pub fn new_with_media_mode(
         ra2_dir: &Path,

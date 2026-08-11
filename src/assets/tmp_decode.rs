@@ -237,6 +237,7 @@ pub(crate) fn parse_tile_cell(
         depth,
         pixel_width,
         pixel_height,
+        relative_extra_y: extra_y,
         offset_x,
         offset_y,
         has_damaged_data,
@@ -493,6 +494,7 @@ mod tests {
             parse_tile_cell(&data, CELL_START, TEST_TILE_WIDTH, TEST_TILE_HEIGHT).unwrap();
 
         assert_eq!((tile.pixel_width, tile.pixel_height), (10, 5));
+        assert_eq!(tile.relative_extra_y, -1);
         assert_eq!((tile.offset_x, tile.offset_y), (-2, -1));
         assert_eq!(&tile.pixels[0..2], &[70, 71]);
         assert_eq!(&tile.depth[0..2], &[201, 202]);
@@ -515,6 +517,24 @@ mod tests {
         let tile: TmpTile = parse_tile_cell(&data, 0, TEST_TILE_WIDTH, TEST_TILE_HEIGHT).unwrap();
 
         assert_eq!(tile.pixels[2], 99);
+    }
+
+    #[test]
+    fn gsi_04_03c_preserves_relative_extra_y_separately_from_render_bounds() {
+        let mut data: Vec<u8> = vec![0; 81];
+        put_i32(&mut data, 4, 10);
+        put_u32(&mut data, 8, 80);
+        put_i32(&mut data, 24, 25);
+        put_u32(&mut data, 28, 1);
+        put_u32(&mut data, 32, 1);
+        put_u32(&mut data, 36, FLAG_HAS_EXTRA_DATA);
+        put_test_diamond(&mut data, 0);
+        data[80] = 99;
+
+        let tile = parse_tile_cell(&data, 0, TEST_TILE_WIDTH, TEST_TILE_HEIGHT).unwrap();
+
+        assert_eq!(tile.relative_extra_y, 15);
+        assert_eq!(tile.offset_y, 0);
     }
 
     #[test]
