@@ -35,8 +35,22 @@ pub struct HouseDefinition {
     pub side: Option<String>,
     /// Optional player-control hint from `PlayerControl=`.
     pub player_control: Option<bool>,
+    /// Optional scenario-authored `IQ=` read into HouseClass CurrentIQ.
+    pub iq: Option<i32>,
     /// Allies listed in the house section.
     pub allies: Vec<String>,
+}
+
+impl HouseDefinition {
+    /// Resolve the named scenario-house `IQ=` exactly as
+    /// `HouseClass::Read_Scenario_INI @ 0x00500B40` does.
+    pub const fn scenario_current_iq(&self, max_iq_levels: i32) -> i32 {
+        match self.iq {
+            Some(iq) if iq > max_iq_levels => 1,
+            Some(iq) => iq,
+            None => 0,
+        }
+    }
 }
 
 /// Ordered active-house list from the map's `[Houses]` section.
@@ -174,6 +188,7 @@ pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseR
         let country = section.and_then(|s| s.get("Country")).map(str::to_string);
         let side = section.and_then(|s| s.get("Side")).map(str::to_string);
         let player_control = section.and_then(|s| s.get_bool("PlayerControl"));
+        let iq = section.and_then(|s| s.get_i32("IQ"));
         let allies = section
             .and_then(|s| s.get_list("Allies"))
             .unwrap_or_default()
@@ -188,6 +203,7 @@ pub fn parse_house_roster(ini: &IniFile, schemes: &[ColorSchemeEntry]) -> HouseR
             country,
             side,
             player_control,
+            iq,
             allies,
         });
     }
@@ -244,6 +260,7 @@ mod tests {
         assert_eq!(roster.houses[0].side.as_deref(), Some("Allies"));
         assert_eq!(roster.houses[0].country.as_deref(), Some("America"));
         assert_eq!(roster.houses[0].player_control, Some(true));
+        assert_eq!(roster.houses[0].iq, None);
         assert_eq!(
             roster.houses[1].allies,
             vec!["Confederation".to_string(), "YuriCountry".to_string()]
@@ -289,8 +306,12 @@ mod tests {
     #[test]
     fn test_missing_color_defaults_to_default_scheme() {
         let ini: IniFile = IniFile::from_str("[Houses]\n0=Neutral\n[Neutral]\nIQ=5\n");
-        let map = parse_house_colors(&ini, &test_schemes());
+        let roster = parse_house_roster(&ini, &test_schemes());
+        let map = roster.color_map();
         assert_eq!(map["Neutral"], HouseColorIndex(DEFAULT_SCHEME_ENTRY as u8));
+        assert_eq!(roster.houses[0].iq, Some(5));
+        assert_eq!(roster.houses[0].scenario_current_iq(5), 5);
+        assert_eq!(roster.houses[0].scenario_current_iq(4), 1);
     }
 
     #[test]
