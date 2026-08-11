@@ -306,8 +306,8 @@ fn edge_scroll_step_with_context(
 
     // Truncating float-to-long, matching gamemd's chop rounding mode: the stock
     // multiplier turns the table into 1, 2, 4, 8, 13, 17, 22, 26, 31 px/frame.
-    let distance = (f64::from(EDGE_SCROLL_SPEED_TABLE[index as usize]) * scroll_multiplier)
-        .trunc() as f32;
+    let distance =
+        (f64::from(EDGE_SCROLL_SPEED_TABLE[index as usize]) * scroll_multiplier).trunc() as f32;
 
     if active_direction.is_some() {
         state.ramp_up(now);
@@ -461,10 +461,7 @@ fn system_drag_metrics_px() -> (i32, i32) {
     }
     #[cfg(not(windows))]
     {
-        (
-            DEFAULT_SYSTEM_DRAG_METRIC_PX,
-            DEFAULT_SYSTEM_DRAG_METRIC_PX,
-        )
+        (DEFAULT_SYSTEM_DRAG_METRIC_PX, DEFAULT_SYSTEM_DRAG_METRIC_PX)
     }
 }
 
@@ -699,12 +696,10 @@ pub(crate) fn update_camera(state: &mut AppState) {
     if !state.tactical_mouse.captured && !state.minimap_dragging {
         let now = state.edge_scroll.radar_timer();
         let scroll_rate = state.in_game_options.scroll_rate;
-        let active_direction = edge_scroll_intent(
-            (state.cursor_x, state.cursor_y),
-            sw as i32,
-            sh as i32,
-        );
-        let requested_direction = active_direction.or_else(|| state.edge_scroll.coasting_direction());
+        let active_direction =
+            edge_scroll_intent((state.cursor_x, state.cursor_y), sw as i32, sh as i32);
+        let requested_direction =
+            active_direction.or_else(|| state.edge_scroll.coasting_direction());
         let movement_allowed = requested_direction
             .is_none_or(|direction| camera_scroll_direction_allowed(state, direction, sw, sh));
         let scroll_multiplier = state
@@ -891,12 +886,8 @@ pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
 }
 
 pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f32) {
-    let (camera_x, camera_y) = clamp_camera_point_for_state(
-        state,
-        (state.camera_x, state.camera_y),
-        sw,
-        sh,
-    );
+    let (camera_x, camera_y) =
+        clamp_camera_point_for_state(state, (state.camera_x, state.camera_y), sw, sh);
     state.camera_y = camera_y;
     state.camera_x = camera_x;
 }
@@ -976,11 +967,7 @@ fn camera_scroll_direction_allowed(
         state.camera_y + dy / state.zoom_level,
     );
     let clamped = clamp_camera_point_for_state(state, candidate, sw, sh);
-    requested_scroll_survives_clamp(
-        (state.camera_x, state.camera_y),
-        clamped,
-        direction,
-    )
+    requested_scroll_survives_clamp((state.camera_x, state.camera_y), clamped, direction)
 }
 
 fn requested_scroll_survives_clamp(
@@ -997,11 +984,7 @@ fn requested_scroll_survives_clamp(
 pub(crate) fn edge_scroll_cursor_state(state: &AppState) -> Option<(ScrollDir, bool)> {
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
-    let direction = edge_scroll_intent(
-        (state.cursor_x, state.cursor_y),
-        sw as i32,
-        sh as i32,
-    )?;
+    let direction = edge_scroll_intent((state.cursor_x, state.cursor_y), sw as i32, sh as i32)?;
     Some((
         direction,
         !camera_scroll_direction_allowed(state, direction, sw, sh),

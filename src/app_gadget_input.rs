@@ -321,10 +321,8 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     // Tactical catcher rect = the play area left of the sidebar panel (the Rust
     // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
     // no in-game map editor (gamemd registers it only when !g_IsMapEditor).
-    let (tactical_width, tactical_height) = crate::app_camera::tactical_viewport_size_px(
-        state.render_width(),
-        state.render_height(),
-    );
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let play_rect = GadgetRect::new(0, 0, tactical_width as i32, tactical_height as i32);
     if let Some(th) = state.in_game_gadgets.tactical
         && let Some(g) = state.in_game_gadgets.list.get_mut(th)

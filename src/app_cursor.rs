@@ -66,7 +66,8 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         let repair = state.sidebar_gadget_state.repair_mode_on;
         let (wx, wy) =
             crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
-        let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some();
+        let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some()
+            || (!repair && crate::app_commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
             CursorFeedbackKind::RepairMode(valid)
         } else {
@@ -194,11 +195,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             )
             .is_some()
         }
-        _ => sim
-            .production
-            .resource_nodes
-            .get(&(hover_rx, hover_ry))
-            .is_some_and(|node| node.remaining > 0),
+        _ => false,
     };
     if has_ore
         && best_id.is_some_and(|id| sim.entities().get(id).is_some_and(|e| e.miner.is_some()))

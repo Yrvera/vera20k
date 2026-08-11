@@ -523,10 +523,7 @@ pub(crate) fn compute_type_select_tap(
         );
         if visible.iter().any(|id| !selected.contains(id)) {
             mutation.select.extend(type_select_final_admissions(
-                entities,
-                &visible,
-                rules,
-                interner,
+                entities, &visible, rules, interner,
             ));
             return TypeSelectTapResult {
                 mutation,
@@ -587,13 +584,7 @@ fn type_select_candidates(
                 || !seeds.contains(&entity.type_ref)
                 || (screen_only
                     && entity.category != EntityCategory::Structure
-                    && !is_drawn_for_local_owner(
-                        fog,
-                        local_owner,
-                        owner,
-                        entity,
-                        local_owner_id,
-                    ))
+                    && !is_drawn_for_local_owner(fog, local_owner, owner, entity, local_owner_id))
             {
                 return None;
             }
@@ -699,12 +690,7 @@ pub(crate) fn compute_type_select_box_mutation(
             continue;
         };
         let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
-        if !entity.lifecycle.object_alive
-            || sx < min_x
-            || sx > max_x
-            || sy < min_y
-            || sy > max_y
-        {
+        if !entity.lifecycle.object_alive || sx < min_x || sx > max_x || sy < min_y || sy > max_y {
             continue;
         }
         if !represented_types.contains(&entity.type_ref) {
@@ -964,13 +950,7 @@ pub(crate) fn pick_entity_at_point(
         }
         let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
         if entity.category != EntityCategory::Structure
-            && !is_drawn_for_local_owner(
-                fog,
-                local_owner,
-                owner_str,
-                entity,
-                local_owner_id,
-            )
+            && !is_drawn_for_local_owner(fog, local_owner, owner_str, entity, local_owner_id)
         {
             continue;
         }
@@ -1177,7 +1157,15 @@ mod tests {
         let gacnst = interner.intern("GACNST");
         let soviet = interner.intern("Soviet");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, true));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
         entities.insert(item83_entity(
             2,
             11,
@@ -1187,7 +1175,15 @@ mod tests {
             EntityCategory::Structure,
             true,
         ));
-        entities.insert(item83_entity(3, 12, 10, owner, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            3,
+            12,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
         entities.insert(item83_entity(
             4,
             13,
@@ -1197,8 +1193,24 @@ mod tests {
             EntityCategory::Structure,
             false,
         ));
-        entities.insert(item83_entity(5, 30, 30, owner, amcv, EntityCategory::Unit, false));
-        entities.insert(item83_entity(6, 14, 10, soviet, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            5,
+            30,
+            30,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
+        entities.insert(item83_entity(
+            6,
+            14,
+            10,
+            soviet,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
 
         let screen = [1, 2, 4, 6, 3];
         let map = [1, 2, 3, 4, 5, 6];
@@ -1261,7 +1273,15 @@ mod tests {
         let owner = interner.intern("Americans");
         let amcv = interner.intern("AMCV");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, true));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
         let mut warp_out = item83_entity(2, 11, 10, owner, amcv, EntityCategory::Unit, false);
         warp_out.teleport_state = Some(TeleportState {
             phase: TeleportPhase::Relocate,
@@ -1270,7 +1290,15 @@ mod tests {
             being_warped_ticks: 0,
         });
         entities.insert(warp_out);
-        entities.insert(item83_entity(3, 30, 30, owner, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            3,
+            30,
+            30,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
 
         let tap = compute_type_select_tap(
             &entities,
@@ -1301,7 +1329,15 @@ mod tests {
         let amcv = interner.intern("AMCV");
         let gacnst = interner.intern("GACNST");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, true));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
         entities.insert(item83_entity(
             2,
             11,
@@ -1311,7 +1347,15 @@ mod tests {
             EntityCategory::Structure,
             false,
         ));
-        entities.insert(item83_entity(3, 12, 10, owner, amcv, EntityCategory::Unit, true));
+        entities.insert(item83_entity(
+            3,
+            12,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
         let scope = [1, 2, 3];
 
         let replace = compute_type_select_click_mutation(
@@ -1362,7 +1406,15 @@ mod tests {
         let amcv = interner.intern("AMCV");
         let gacnst = interner.intern("GACNST");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
         entities.insert(item83_entity(
             2,
             11,
@@ -1372,7 +1424,15 @@ mod tests {
             EntityCategory::Structure,
             false,
         ));
-        entities.insert(item83_entity(3, 30, 30, owner, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            3,
+            30,
+            30,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
         entities.insert(item83_entity(
             4,
             31,
@@ -1447,9 +1507,8 @@ mod tests {
             EntityCategory::Unit,
             false,
         ));
-        let (x, y) = crate::app_instances::interpolated_screen_position_entity(
-            entities.get(1).unwrap(),
-        );
+        let (x, y) =
+            crate::app_instances::interpolated_screen_position_entity(entities.get(1).unwrap());
 
         let mutation = compute_type_select_box_mutation(
             &entities,
@@ -1543,7 +1602,10 @@ mod tests {
         )
         .expect("the chosen target still owns the click");
         assert!(rejected.clear);
-        assert!(rejected.select.is_empty(), "must not retry the valid unit behind it");
+        assert!(
+            rejected.select.is_empty(),
+            "must not retry the valid unit behind it"
+        );
 
         let nonlocal = entities.get_mut(2).unwrap();
         nonlocal.type_ref = building_type;
@@ -1565,7 +1627,10 @@ mod tests {
             Some(&interner),
         )
         .expect("discovered nonlocal object owns the click");
-        assert!(nonlocal_click.clear, "an incompatible local group is replaced");
+        assert!(
+            nonlocal_click.clear,
+            "an incompatible local group is replaced"
+        );
         assert_eq!(nonlocal_click.select, [2]);
     }
 
@@ -1576,8 +1641,24 @@ mod tests {
         let owner = interner.intern("Americans");
         let amcv = interner.intern("AMCV");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, false));
-        entities.insert(item83_entity(2, 14, 10, owner, amcv, EntityCategory::Unit, false));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
+        entities.insert(item83_entity(
+            2,
+            14,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            false,
+        ));
         let (x, y) = crate::render::locomotor_visual::screen_position(entities.get(1).unwrap());
         let heights = std::collections::BTreeMap::new();
 
@@ -1616,8 +1697,24 @@ mod tests {
         let amcv = interner.intern("AMCV");
         let gacnst = interner.intern("GACNST");
         let mut entities = EntityStore::new();
-        entities.insert(item83_entity(1, 10, 10, owner, amcv, EntityCategory::Unit, true));
-        entities.insert(item83_entity(2, 30, 30, owner, amcv, EntityCategory::Unit, true));
+        entities.insert(item83_entity(
+            1,
+            10,
+            10,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
+        entities.insert(item83_entity(
+            2,
+            30,
+            30,
+            owner,
+            amcv,
+            EntityCategory::Unit,
+            true,
+        ));
         entities.insert(item83_entity(
             3,
             11,
@@ -1685,7 +1782,10 @@ mod tests {
         assert!(input.release(KeyCode::KeyT, pressed_at + Duration::from_millis(500)));
 
         input.prepare_tap_scope();
-        assert!(!input.across_map, "mode reset forces the release tap back to screen");
+        assert!(
+            !input.across_map,
+            "mode reset forces the release tap back to screen"
+        );
         let tap = compute_type_select_tap(
             &entities,
             &screen,
@@ -1699,6 +1799,9 @@ mod tests {
         );
         assert_eq!(tap.outcome, crate::app_types::TypeSelectOutcome::Screen);
         assert_eq!(tap.mutation.select, [1, 3]);
-        assert!(!tap.mutation.select.contains(&4), "off-screen linked type stays out");
+        assert!(
+            !tap.mutation.select.contains(&4),
+            "off-screen linked type stays out"
+        );
     }
 }

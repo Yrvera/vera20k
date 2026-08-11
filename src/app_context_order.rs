@@ -515,11 +515,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     )
                     .is_some()
                 }
-                _ => sim
-                    .production
-                    .resource_nodes
-                    .get(&(target_rx, target_ry))
-                    .is_some_and(|node| node.remaining > 0),
+                _ => false,
             };
 
         if clicked_friendly_refinery && only_miners_selected {

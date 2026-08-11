@@ -609,10 +609,7 @@ mod tests {
         let depths: Vec<f32> = instances.iter().map(|i| i.depth).collect();
         assert_eq!(depths.len(), 4);
         for pair in depths.windows(2) {
-            assert!(
-                pair[1] < pair[0],
-                "moving south must move nearer: {pair:?}"
-            );
+            assert!(pair[1] < pair[0], "moving south must move nearer: {pair:?}");
         }
     }
 

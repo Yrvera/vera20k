@@ -20,8 +20,8 @@ use crate::app_commands::{
 use crate::app_context_order::try_queue_context_order_at_screen_point;
 use crate::app_entity_pick::{
     SelectionMutation, compute_box_selection_snapshot, compute_click_selection_snapshot,
-    compute_type_select_box_mutation, compute_type_select_click_mutation,
-    compute_type_select_tap, map_entity_creation_order, pick_entity_at_point,
+    compute_type_select_box_mutation, compute_type_select_click_mutation, compute_type_select_tap,
+    map_entity_creation_order, pick_entity_at_point,
 };
 use crate::app_hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
 use crate::app_sidebar_render::current_sidebar_view;
@@ -209,9 +209,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 {
                     let order =
                         crate::app_instances::tactical_band_preflight_entity_encounter_order(state);
-                    if band_caught_drawn_object(
-                        state, &order, min_x, min_y, max_x, max_y,
-                    ) {
+                    if band_caught_drawn_object(state, &order, min_x, min_y, max_x, max_y) {
                         band_preflight_order = Some(order);
                     } else {
                         action = SelectAction::Click(release_point.0, release_point.1);
@@ -556,10 +554,8 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
         return;
     }
     // Clamp drag position to the tactical viewport (exclude sidebar area).
-    let (tactical_width, tactical_height) = crate::app_camera::tactical_viewport_size_px(
-        state.render_width(),
-        state.render_height(),
-    );
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let clamped_endpoint = clamp_tactical_drag_endpoint(
         state.cursor_x,
         state.cursor_y,
@@ -665,7 +661,11 @@ mod item83_click_route_tests {
             ClickActionRoute::Selection => selection.clear(),
             other => panic!("unexpected held-ground route: {other:?}"),
         }
-        assert_eq!(selection, [1], "an ordered ground click never reaches selection clear");
+        assert_eq!(
+            selection,
+            [1],
+            "an ordered ground click never reaches selection clear"
+        );
     }
 
     #[test]
@@ -1078,12 +1078,7 @@ fn execute_type_select_tap(state: &mut AppState) {
     };
     let outcome = result.outcome;
     let across_map = result.across_map;
-    apply_selection_mutation(
-        state,
-        result.mutation,
-        false,
-        TYPE_SELECT_TAP_VOICE_POLICY,
-    );
+    apply_selection_mutation(state, result.mutation, false, TYPE_SELECT_TAP_VOICE_POLICY);
     state.type_select.finish_tap(outcome, across_map);
     crate::app_messages::post_type_select_feedback(state, outcome.csf_key());
     // Native marks the tactical display dirty here but does not start action
@@ -1611,12 +1606,19 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         effect_frame_counts,
         terrain_costs,
     );
+    if let Some(overlay_registry) = state.overlay_registry.as_ref() {
+        crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
+            &mut sim,
+            overlay_registry,
+        );
+    }
     sim.resolve_type_handles(rules);
     if let Err(error) = sim.restore_move_sound_handles_after_load(rules) {
         log::error!("Load: restoration validation failed: {error}");
         return;
     }
     state.simulation = Some(sim);
+    state.combat_lights.clear();
 
     // Rebuild the app-layer dynamic path grid (building footprints + walls).
     crate::app_sim_tick::rebuild_dynamic_path_grid(state);
@@ -1633,7 +1635,9 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             &state.map_lighting_config,
             state.simulation.as_ref(),
             state.rules.as_ref(),
+            state.in_game_options.detail_level,
         );
+        state.last_lighting_view_fingerprint = None;
     }
 
     // Reset timing to prevent a burst of ticks after the load.
@@ -1734,12 +1738,7 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
     if !state.selection_order_pending {
         for entity in sim.entities().values() {
             if entity.selected && !ordered.contains(&entity.stable_id) {
-                insert_selected_id(
-                    &mut ordered,
-                    entity.stable_id,
-                    sim,
-                    state.rules.as_ref(),
-                );
+                insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules.as_ref());
             }
         }
     }
@@ -1756,9 +1755,11 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
     };
     if state.selection_order_pending {
         let before_retain = state.selection_order.len();
-        state
-            .selection_order
-            .retain(|id| sim.entities().get(*id).is_some_and(|entity| entity.lifecycle.object_alive));
+        state.selection_order.retain(|id| {
+            sim.entities()
+                .get(*id)
+                .is_some_and(|entity| entity.lifecycle.object_alive)
+        });
         if state.selection_order.len() != before_retain {
             state.type_select.reset_scope();
         }
@@ -1783,17 +1784,16 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
         .selection_order
         .iter()
         .copied()
-        .filter(|id| sim.entities().get(*id).is_some_and(|entity| entity.selected))
+        .filter(|id| {
+            sim.entities()
+                .get(*id)
+                .is_some_and(|entity| entity.selected)
+        })
         .collect();
     let lifecycle_removed = reconciled.len() < prior_len;
     for entity in sim.entities().values() {
         if entity.selected && !reconciled.contains(&entity.stable_id) {
-            insert_selected_id(
-                &mut reconciled,
-                entity.stable_id,
-                sim,
-                state.rules.as_ref(),
-            );
+            insert_selected_id(&mut reconciled, entity.stable_id, sim, state.rules.as_ref());
         }
     }
     if lifecycle_removed {
@@ -1851,9 +1851,7 @@ fn apply_selection_mutation(
     if reset_type_select_scope {
         state.type_select.reset_scope();
     } else if native_selection_mode_reset {
-        state
-            .type_select
-            .note_successful_selection_mutation(false);
+        state.type_select.note_successful_selection_mutation(false);
     }
     for id in selection_voice_recipients(
         voice_policy,
@@ -2320,10 +2318,7 @@ fn handle_control_group_command(
             // deselect-all runs before the select loop, unconditionally.
             state.last_control_group_press = Some((group_idx, std::time::Instant::now()));
             queue_selection_snapshot_command(state, live_group, false);
-            apply_selection_action_line_policy(
-                state,
-                ORDINARY_SELECTION_ACTION_LINE_POLICY,
-            );
+            apply_selection_action_line_policy(state, ORDINARY_SELECTION_ACTION_LINE_POLICY);
         }
     }
 }
