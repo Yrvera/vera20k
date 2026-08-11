@@ -29,6 +29,7 @@ use crate::render::loading_screen_chrome::{
     LoadingScreenWidth, MmpbMarkerRemap, PreparedLoadingPreviewRgba,
     build_loading_screen_atlas_with_composition,
 };
+use crate::render::shell_surface_present::ShellSurfacePresenter;
 use crate::render::shell_text::{ScissorRect, ShellAlign, ShellTextDraw, TextRect, draw_in_rect};
 use crate::rules::color_scheme::{
     ColorSchemeEntry, hsv_to_rgb, scheme_entry_by_name, scheme_entry_for_priority,
@@ -681,6 +682,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             {
                 advance_and_present_native_progress(
                     &state.gpu,
+                    &state.shell_surface_presenter,
                     &state.depth_view,
                     &state.batch_renderer,
                     &state.bit_font,
@@ -711,6 +713,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     let composition = native.composition.as_ref();
                     let mut sink = RenderingProgressSink {
                         gpu: &state.gpu,
+                        presenter: &state.shell_surface_presenter,
                         depth_view: &state.depth_view,
                         batch: &state.batch_renderer,
                         font: &state.bit_font,
@@ -781,6 +784,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
                         advance_and_present_native_progress(
                             &state.gpu,
+                            &state.shell_surface_presenter,
                             &state.depth_view,
                             &state.batch_renderer,
                             &state.bit_font,
@@ -1205,7 +1209,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
 pub(crate) fn render_loading_screen(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    destination: &wgpu::Texture,
 ) -> LoadingRenderResult {
     if !is_native_loading_session(state) {
         return LoadingRenderResult::GenericFallback;
@@ -1236,6 +1240,7 @@ pub(crate) fn render_loading_screen(
             "native Skirmish loading atlas was not available for render"
         ));
     };
+    let target = state.shell_surface_presenter.source_render_view();
 
     let frame_plan = build_native_loading_frame_plan(
         &state.bit_font,
@@ -1286,7 +1291,7 @@ pub(crate) fn render_loading_screen(
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Native Loading Screen"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
+            view: &target,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
@@ -1340,6 +1345,10 @@ pub(crate) fn render_loading_screen(
         );
     }
     pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    drop(pass);
+    state
+        .shell_surface_presenter
+        .encode_present(encoder, destination);
     LoadingRenderResult::NativeRendered
 }
 
@@ -1720,6 +1729,7 @@ fn build_native_loading_frame_plan(
 /// Returns an error on acquire/upload failure; the caller treats it as non-fatal.
 fn present_native_loading(
     gpu: &GpuContext,
+    presenter: &ShellSurfacePresenter,
     depth_view: &wgpu::TextureView,
     batch: &BatchRenderer,
     font: &BitFont,
@@ -1735,7 +1745,7 @@ fn present_native_loading(
         .surface
         .get_current_texture()
         .map_err(|e| anyhow::anyhow!("loading repaint surface texture: {e}"))?;
-    let view = output.texture.create_view(&Default::default());
+    let view = presenter.source_render_view();
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1822,6 +1832,7 @@ fn present_native_loading(
         pass.set_scissor_rect(0, 0, gpu.config.width, gpu.config.height);
     }
 
+    presenter.encode_present(&mut encoder, &output.texture);
     gpu.queue.submit(std::iter::once(encoder.finish()));
     output.present();
     Ok(())
@@ -1829,6 +1840,7 @@ fn present_native_loading(
 
 fn advance_and_present_native_progress(
     gpu: &GpuContext,
+    presenter: &ShellSurfacePresenter,
     depth_view: &wgpu::TextureView,
     batch: &BatchRenderer,
     font: &BitFont,
@@ -1845,6 +1857,7 @@ fn advance_and_present_native_progress(
     };
     if let Err(err) = present_native_loading(
         gpu,
+        presenter,
         depth_view,
         batch,
         font,
@@ -1869,6 +1882,7 @@ fn advance_and_present_native_progress(
 /// they never abort the map load.
 struct RenderingProgressSink<'a> {
     gpu: &'a GpuContext,
+    presenter: &'a ShellSurfacePresenter,
     depth_view: &'a wgpu::TextureView,
     batch: &'a BatchRenderer,
     font: &'a BitFont,
@@ -1888,6 +1902,7 @@ impl LoadingProgressSink for RenderingProgressSink<'_> {
         if self.progress.advance_progress(effective_percent) {
             if let Err(err) = present_native_loading(
                 self.gpu,
+                self.presenter,
                 self.depth_view,
                 self.batch,
                 self.font,

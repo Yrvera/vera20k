@@ -13,6 +13,7 @@ use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
+use crate::render::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION;
 
 const ATLAS_PADDING: u32 = 2;
 
@@ -471,7 +472,9 @@ fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedLo
             err
         })
         .ok()?;
-    let rgba = pcx.to_rgba_with_color_key(SIDE_ICON_TRANSPARENT_RGB);
+    let mut rgba = pcx.to_rgba(None);
+    ACTIVE_RETAIL_RGB565_PRESENTATION
+        .apply_packed_color_key_rgba8(&mut rgba, SIDE_ICON_TRANSPARENT_RGB);
     Some(RenderedLoadingEntry {
         label: file_name.to_ascii_lowercase(),
         width: pcx.width as u32,

@@ -430,18 +430,23 @@ fn update_owner_draw_button_paint_sound(state: &mut AppState, mode: ShellRenderM
 pub(crate) fn render_skirmish_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    destination: &wgpu::Texture,
 ) -> anyhow::Result<SkirmishShellAction> {
+    let color = state.shell_surface_presenter.source_render_view();
     let depth = state.depth_view.clone();
-    render_skirmish_shell_to_target(
+    let action = render_skirmish_shell_to_target(
         state,
         encoder,
         ShellRenderTarget {
-            color: target,
+            color: &color,
             depth: &depth,
         },
         ShellRenderMode::Visible,
-    )
+    )?;
+    state
+        .shell_surface_presenter
+        .encode_present(encoder, destination);
+    Ok(action)
 }
 
 /// Render the active in-game Options (`0xBBB`) overlay over the frozen
