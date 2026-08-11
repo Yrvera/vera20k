@@ -304,7 +304,7 @@ fn sync_controls(state: &mut AppState, view: &SidebarView) {
 /// relative order is observationally irrelevant — the broadcast walk's
 /// first-consumer-by-rect and the smallest-area hover both resolve to the unique
 /// containing gadget regardless (study tactical/minimap lanes §6/§4).
-fn sync_regions(state: &mut AppState, view: &SidebarView) {
+fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     if state.in_game_gadgets.tactical.is_none() {
         let zero = GadgetRect::new(0, 0, 0, 0);
         let tac = state
@@ -321,8 +321,9 @@ fn sync_regions(state: &mut AppState, view: &SidebarView) {
     // Tactical catcher rect = the play area left of the sidebar panel (the Rust
     // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
     // no in-game map editor (gamemd registers it only when !g_IsMapEditor).
-    let panel_left = view.panel_rect.x.round().max(0.0) as i32;
-    let play_rect = GadgetRect::new(0, 0, panel_left, state.render_height() as i32);
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let play_rect = GadgetRect::new(0, 0, tactical_width as i32, tactical_height as i32);
     if let Some(th) = state.in_game_gadgets.tactical
         && let Some(g) = state.in_game_gadgets.list.get_mut(th)
     {
@@ -393,9 +394,8 @@ pub(crate) fn handle_mouse_button_event(
     button: MouseButton,
     pressed: bool,
 ) -> GadgetConsume {
-    // The held record updates on every edge (G8 idle-tick source). Middle is
-    // never a gadget event (the gadget masks cover left/right only) — the caller
-    // handles middle-mouse pan directly.
+    // The held record updates on every edge (G8 idle-tick source). The gadget
+    // masks cover left/right only; middle input has no tactical behavior.
     match button {
         MouseButton::Left => state.in_game_gadgets.left_held = pressed,
         MouseButton::Right => state.in_game_gadgets.right_held = pressed,

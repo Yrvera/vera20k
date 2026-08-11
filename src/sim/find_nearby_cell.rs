@@ -1,6 +1,7 @@
 //! Nearby-passable-cell search (engine `Find_Nearby_Passable_Cell`).
 //!
-//! Diamond-ring expansion around a seed cell; per-candidate passability (plus an
+//! Square (Chebyshev) ring expansion around a seed cell — concentric perimeters,
+//! NOT a Manhattan diamond (see `ring_cells`); per-candidate passability (plus an
 //! optional occupancy check that always SKIPS reservations); frame-counter
 //! selection when no target cell is given, nearest-distance selection when a
 //! target is given. This is a read-only projection over the cell grids — it
@@ -9,7 +10,7 @@
 //! render/ui/sidebar/audio/net.
 //!
 //! Determinism contract:
-//! - The diamond-ring candidate ORDER is fully deterministic; it feeds both the
+//! - The square-ring candidate ORDER is fully deterministic; it feeds both the
 //!   frame-counter modulo index and the nearest-distance tie-break.
 //! - Nearest-distance uses integer squared Euclidean distance (`dx*dx + dy*dy`)
 //!   so the comparison stays fixed-point per the sim layering invariant.
@@ -29,15 +30,47 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 
-/// Hard radius cap for the diamond-ring search — `min(Speed + Sight, RADIUS_HARD_CAP)`.
+/// Hard radius cap for the ring search.
+///
+/// The engine derives its own cap from the two map-rectangle scalars —
+/// `min(mapRectWidth + mapRectHeight, 32)` — and that sum exceeds 32 on any
+/// playable map, so the effective cap IS this constant there. It is NOT
+/// `Speed + Sight`: that reading is refuted, and a caller that derives its radius
+/// from a unit's speed and sight abandons the search around 21 rings early.
 pub const RADIUS_HARD_CAP: u16 = 32;
 /// Candidate-pool early-terminate count — the search stops collecting once it has
 /// this many surviving candidates.
 pub const MAX_CANDIDATES: usize = 24;
 
-/// The subset of the passability config FNPC always supplies the same way for each
-/// 1x1 candidate. FNPC always passes `required_height_or_level = -1` (None) and
-/// `reject_any_overlay = false`; those are fixed by the search, not the caller.
+/// Terrain-level delta the height gate admits, exclusive: a candidate passes when
+/// `abs(seedLevel - bridgeRise - candidateLevel) < 2`. For an ordinary candidate
+/// (`bridgeRise == 0`) that reads "at most one level from the seed"; for a bridge
+/// candidate it does not — see [`candidate_height_ok`].
+const MAX_SEED_LEVEL_DELTA_EXCLUSIVE: i16 = 2;
+/// Levels a bridge deck sits above the ground cell that carries it. When the
+/// candidate carries a bridge the height gate subtracts this from the SEED level —
+/// not from the candidate's — so it does NOT normalize a deck to ground; the
+/// arithmetic and what it actually admits are spelled out in [`candidate_height_ok`].
+const BRIDGE_LEVEL_RISE: i16 = 4;
+
+/// Diagonal steps south-east of a candidate that the direct/indirect occlusion test
+/// probes. The engine's projection ray starts a fixed `0x600` leptons — six cells at
+/// 256 leptons per cell — south-east of the candidate's own centre on BOTH axes, then
+/// walks back up-screen to it, so a cell seven or more diagonal steps away can never
+/// draw over the candidate. See [`is_direct_candidate`].
+const OCCLUSION_PROBE_CELLS: i32 = 6;
+/// Terrain levels of rise per diagonal step in the occlusion threshold `2q - 1`. One
+/// terrain level lifts a cell's rendered diamond up-screen by half a cell diagonal, so
+/// covering one more diagonal step of separation costs two levels of height.
+const OCCLUSION_RISE_PER_STEP: i16 = 2;
+/// Constant term of the occlusion threshold `2q - 1`: the immediate south-east
+/// neighbour (`q == 1`) needs only a single level of rise to occlude.
+const OCCLUSION_RISE_BIAS: i16 = -1;
+
+/// The subset of the passability config the search always supplies the same way for
+/// each 1x1 candidate: `required_height_or_level = -1` (None) is fixed by the search.
+/// Overlay rejection is NOT fixed here — it is a per-call caller argument and lives
+/// in [`NearbySearchOptions`].
 #[derive(Debug, Clone, Copy)]
 pub struct PassabilityArgs {
     pub speed_type: SpeedType,
@@ -46,18 +79,34 @@ pub struct PassabilityArgs {
     pub bridge_aware_zone: bool,
 }
 
+/// Per-call arguments the CALLER varies between otherwise identical searches.
+///
+/// The engine's free-unit placement is the worked example: it runs the same search
+/// twice, and the only argument that differs between the two calls is overlay
+/// rejection — the first pass refuses any cell carrying an overlay (so a fresh unit
+/// is not dropped onto the ore field), the second pass accepts one. Defaulting to
+/// "accept" keeps every caller that does not name the option on today's behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NearbySearchOptions {
+    /// Reject any candidate cell that carries an overlay (ore, gems, walls).
+    pub reject_any_overlay: bool,
+}
+
 /// FNPC query — mirrors the engine `Find_Nearby_Passable_Cell` caller args.
 pub struct NearbyQuery<'a> {
     /// Per-candidate passability config (built into a 1x1 passability rect).
     pub passability: PassabilityArgs,
     /// Bridge filter applied AFTER passability (an FNPC filter, not a passability arg).
     pub allow_bridge_cells: bool,
-    /// FNPC's internal `±2` height gate — DEFERRED until its comparison semantics
-    /// are pinned; the spawn path passes required-height `-1`, so it no-ops there.
+    /// Caller's terrain-level gate. When set, a candidate is admitted only while it
+    /// stays within one level of the seed cell, with a four-level correction for a
+    /// candidate that carries a bridge. Both free-unit placement attempts set it.
     pub check_height: bool,
     /// When set, each candidate also runs `check_occupancy_rect(.., reservation_arg = -1)`.
     pub check_occupancy: bool,
-    /// Radius cap; the caller computes `min(Speed + Sight, RADIUS_HARD_CAP)`.
+    /// Radius cap the caller supplies. The engine's own expression is
+    /// `min(map-rect width + map-rect height, RADIUS_HARD_CAP)`, which is the cap
+    /// itself on any playable map; this value is clamped to the cap internally.
     pub radius_cap: u16,
     /// `None` => frame-counter selection; `Some` => nearest-distance to target.
     pub target_cell: Option<(i32, i32)>,
@@ -76,7 +125,8 @@ pub struct NearbyQuery<'a> {
 }
 
 /// A surviving FNPC candidate, classified `direct` vs indirect by the engine's
-/// height-projection identity test (see `is_direct_candidate`), NOT a cardinal-axis
+/// screen-occlusion test on the candidate's own south-east diagonal (see
+/// [`is_direct_candidate`]) — NOT a cardinal-axis test, and NOT an absolute-height
 /// test. Direct candidates are preferred at selection time.
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
@@ -95,7 +145,18 @@ pub fn find_nearby_passable_cell(
     q: &NearbyQuery<'_>,
     frame_counter: u32,
 ) -> Option<(u16, u16)> {
-    let candidates = collect_candidates(seed, q);
+    find_nearby_passable_cell_with_options(seed, q, NearbySearchOptions::default(), frame_counter)
+}
+
+/// Engine `Find_Nearby_Passable_Cell` with the caller's per-call options spelled
+/// out. [`find_nearby_passable_cell`] is this with the default options.
+pub fn find_nearby_passable_cell_with_options(
+    seed: (i32, i32),
+    q: &NearbyQuery<'_>,
+    options: NearbySearchOptions,
+    frame_counter: u32,
+) -> Option<(u16, u16)> {
+    let candidates = collect_candidates(seed, q, options);
     if candidates.is_empty() {
         return None;
     }
@@ -134,28 +195,45 @@ pub fn find_nearby_passable_cell(
 /// collecting surviving candidates in the engine's fixed visit order, capping at
 /// `MAX_CANDIDATES` and applying the per-ring early-out.
 ///
-/// The outer loop runs `r = 0 .. cap` where `cap = min(Speed + Sight, 32)`; the
-/// largest ring actually scanned is `cap - 1`. Ring shape and order match the
+/// The outer loop runs `r = 0 .. cap` where `cap = min(caller radius_cap,
+/// [`RADIUS_HARD_CAP`])`; the largest ring actually scanned is `cap - 1`. The engine
+/// derives its own cap from a map-rectangle sum capped at the same constant, and that
+/// sum exceeds it on any playable map, so the cap IS [`RADIUS_HARD_CAP`] there. It is
+/// NOT `Speed + Sight` — that reading is refuted. Ring shape and order match the
 /// engine exactly (see `ring_cells`).
 ///
 /// Per-ring early-out: once ANY direct candidate has been accepted, the search
 /// finishes the *current* ring and then STOPS scanning further rings — biasing the
 /// result toward the nearest ring that yields a direct hit. The 24-candidate cap is
-/// also honored mid-ring (the engine compares the running count to `0x18` after
+/// also honored mid-ring (the engine compares the running count to the same 24 after
 /// every accept and jumps straight to selection on equality).
-fn collect_candidates(seed: (i32, i32), q: &NearbyQuery<'_>) -> Vec<Candidate> {
+///
+/// Arming the early-out is ASYMMETRIC with the pool split: in the bridge-aware zone the
+/// engine skips the occlusion projection entirely, so *any* accepted candidate arms the
+/// early-out there, while selection still re-runs the projection on every stored
+/// candidate to split the pools. That is why the flag and the stored classification are
+/// computed separately below.
+fn collect_candidates(
+    seed: (i32, i32),
+    q: &NearbyQuery<'_>,
+    options: NearbySearchOptions,
+) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     let cap = q.radius_cap.min(RADIUS_HARD_CAP) as i32;
     let mut direct_found = false;
+    // The height gate's reference level is read once, from the seed cell.
+    let seed_level = q.check_height.then(|| cell_level(q, seed.0, seed.1));
 
     let mut r = 0;
     while r < cap {
         for (cx, cy) in ring_cells(seed, r) {
-            if !candidate_passes(q, cx, cy) {
+            if !candidate_passes(q, options, seed_level, cx, cy) {
                 continue;
             }
             let direct = is_direct_candidate(q, cx, cy);
-            direct_found |= direct;
+            // Bridge-aware searches skip the projection, so any accept arms the
+            // early-out; `direct` still carries the projection for the pool split.
+            direct_found |= q.passability.bridge_aware_zone || direct;
             out.push(Candidate {
                 cell: (cx, cy),
                 direct,
@@ -205,37 +283,74 @@ fn ring_cells(seed: (i32, i32), r: i32) -> Vec<(i32, i32)> {
     cells
 }
 
-/// Engine "direct" classification — the height-projection identity test
-/// (`FUN_006d6410`): a candidate is direct when its lepton-center, projected down
-/// the isometric height ray, resolves back to the candidate's own cell.
+/// Engine "direct" classification — a screen-occlusion test on the candidate's own
+/// south-east diagonal, measured RELATIVE to the candidate's own terrain level.
 ///
-/// On flat terrain (the cell at level 0 with no structural-bridge bit) the
-/// projection is the identity, so every accepted flat cell is DIRECT — this is the
-/// case the cardinal-axis test got wrong (it marked only the seed's row/column
-/// direct). The full ray-walk over sloped / bridged neighbour cells is a deferred
-/// follow-up: it reads neighbour cell level bytes along the descent ray, which the
-/// flat-terrain slice does not yet model. Until then a non-flat candidate is
-/// conservatively classified as indirect.
+/// The engine projects the candidate's lepton centre down the isometric height ray: it
+/// starts [`OCCLUSION_PROBE_CELLS`] cells south-east of that centre and walks back
+/// up-screen toward it in small steps, asking at each cell whether that cell's
+/// *rendered* diamond — its own diamond lifted up-screen by half a cell diagonal per
+/// terrain level — already covers the candidate's centre. The candidate is DIRECT when
+/// the walk resolves back to the candidate's own cell, i.e. when nothing south-east of
+/// it draws over it.
 ///
-/// TODO-cutover: model the full `FUN_006d6410` descent (neighbour level bytes +
-/// bridge bit) before relying on direct/indirect on sloped or bridged terrain.
+/// Why the south-east diagonal specifically: cell `+X` renders down-right and `+Y`
+/// down-left, so `+X +Y` is straight DOWN the screen. A cell south-east of the
+/// candidate is drawn in FRONT of it, and its height lifts it up-screen across the
+/// candidate. A cliff due east or due south is a different screen direction and does
+/// not occlude, so only the exact diagonal is probed.
+///
+/// The two axes carry identical offsets, so the ray arithmetic collapses to one scalar
+/// and yields a fixed threshold table — the minimum rise at diagonal step `q` that
+/// makes the candidate INDIRECT:
+///
+/// | step `q`      | 1  | 2  | 3  | 4  | 5  | 6   | 7+          |
+/// |---------------|----|----|----|----|----|-----|-------------|
+/// | rise to occlude | +1 | +3 | +5 | +7 | +9 | +11 | never probed |
+///
+/// which is `OCCLUSION_RISE_PER_STEP * q + OCCLUSION_RISE_BIAS`.
+///
+/// Being relative rather than absolute is the whole point: on a uniformly raised
+/// plateau every difference is 0, so every cell is direct exactly as at level 0, and a
+/// candidate at level 7 under a level-7 neighbour is direct while the same candidate
+/// under a level-8 neighbour is not. Off-grid probes read level 0, matching the engine's
+/// out-of-range cell lookup, which returns a shared zeroed cell rather than failing.
+///
+/// The candidate's own bridge bit deliberately plays NO part here — it belongs to the
+/// caller's height gate ([`candidate_height_ok`]) and to the bridge filter, and folding
+/// it in was what made this port call every bridge cell indirect.
+///
+/// VERA-internal, gamemd equivalent UNCHECKED: the engine adds four levels to a *probe*
+/// cell that carries a bridge, but only when the candidate cell carries a second,
+/// unidentified cell flag. That flag's writer was not found, so the correction is
+/// omitted rather than invented. Direction of the residual: gamemd classifies slightly
+/// MORE cells indirect than we do near a bridge deck. Trigger: a candidate within six
+/// diagonal steps north-west of a bridge deck that also carries the unidentified flag;
+/// free-unit placement rejects bridge cells outright, so it is unreachable there.
 fn is_direct_candidate(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
-    let (Ok(rx), Ok(ry)) = (u16::try_from(cx), u16::try_from(cy)) else {
-        return false;
-    };
-    let Some(cell) = q.resolved_terrain.and_then(|t| t.cell(rx, ry)) else {
-        // No terrain cell to project from; treat as flat-equivalent (direct).
-        return true;
-    };
-    cell.level == 0 && !cell.bridge_facts.has_structural_bridge()
+    let base_level = cell_level(q, cx, cy);
+    for step in 1..=OCCLUSION_PROBE_CELLS {
+        let rise = cell_level(q, cx + step, cy + step).saturating_sub(base_level);
+        let rise_that_occludes = OCCLUSION_RISE_PER_STEP * step as i16 + OCCLUSION_RISE_BIAS;
+        if rise >= rise_that_occludes {
+            return false;
+        }
+    }
+    true
 }
 
-/// Run the per-candidate predicates in FNPC order: passability first (1x1 rect,
-/// `required_height_or_level = -1`, `reject_any_overlay = false`), then the optional
-/// occupancy check with reservations SKIPPED (`-1`), then the bridge filter AFTER
-/// both (a candidate that is a structural-bridge cell is dropped unless bridges are
-/// allowed).
-fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
+/// Run the per-candidate predicates in engine order: passability first (1x1 rect,
+/// `required_height_or_level = -1`, caller-supplied overlay rejection), then the
+/// optional occupancy check with reservations SKIPPED (`-1`), then the caller's
+/// height gate, then the bridge filter last (a candidate that is a structural-bridge
+/// cell is dropped unless bridges are allowed).
+fn candidate_passes(
+    q: &NearbyQuery<'_>,
+    options: NearbySearchOptions,
+    seed_level: Option<i16>,
+    cx: i32,
+    cy: i32,
+) -> bool {
     let rect = CellRect::new(cx, cy, 1, 1);
 
     let passable = check_passability_rect(CellRectPassabilityContext {
@@ -243,9 +358,11 @@ fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
         speed_type: q.passability.speed_type,
         required_zone_id: q.passability.required_zone_id,
         movement_zone: q.passability.movement_zone,
-        required_height_or_level: None, // FNPC always passes -1 (L21)
+        required_height_or_level: None, // the search always passes -1 (L21)
         bridge_aware_zone: q.passability.bridge_aware_zone,
-        reject_any_overlay: false, // FNPC passes 0 (overlays not rejected here)
+        // Caller argument, forwarded verbatim: the engine's two free-unit attempts
+        // differ in this one value and nothing else.
+        reject_any_overlay: options.reject_any_overlay,
         path_grid: q.path_grid,
         resolved_terrain: q.resolved_terrain,
         overlay_grid: q.overlay_grid,
@@ -263,6 +380,7 @@ fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
             reservations: None,
             occupancy: q.occupancy,
             entities: q.entities,
+            terrain_object_cells: None,
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
             map_size: q.map_size,
@@ -272,12 +390,73 @@ fn candidate_passes(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> bool {
         return false;
     }
 
-    // Bridge filter applied AFTER passability/occupancy.
+    if let Some(seed_level) = seed_level
+        && !candidate_height_ok(q, seed_level, cx, cy)
+    {
+        return false;
+    }
+
+    // Bridge filter applied AFTER passability/occupancy/height.
     if !q.allow_bridge_cells && candidate_is_bridge_cell(q, cx, cy) {
         return false;
     }
 
     true
+}
+
+/// The caller's height gate: `abs(seedLevel - bridgeRise - candidateLevel) < 2`,
+/// where `bridgeRise` is [`BRIDGE_LEVEL_RISE`] when the candidate carries a bridge
+/// and 0 otherwise.
+///
+/// For an ordinary candidate that is "stay within one level of the seed". For a
+/// bridge candidate the rise comes off the SEED side of the subtraction, so a deck
+/// does NOT compare as ground: a bridge candidate sitting at the seed's own level
+/// reads as four levels away and is REJECTED, and the only bridge candidates the
+/// gate admits are those three to five levels BELOW the seed. Direction and signum
+/// arithmetic is a recurring bug class here — this describes the subtraction as
+/// written, which is the audited engine expression; do not "fix" it toward the
+/// intent the name suggests.
+///
+/// At both free-unit placement callsites the bridge term never decides anything:
+/// those callsites also set `allow_bridge_cells = false`, so a bridge candidate is
+/// dropped by the bridge filter whatever this gate says.
+///
+/// RESIDUAL, recorded not fixed (out of scope for the direct/indirect work): the engine
+/// also ADDS [`BRIDGE_LEVEL_RISE`] to the SEED level when the bridge-aware zone flag is
+/// set and the seed cell itself carries a bridge; this port reads the seed level raw.
+/// *Trigger:* a search whose seed is a bridge cell, run with `bridge_aware_zone` — today
+/// only the movement reroute helper sets that flag, and only for a goal on a bridge
+/// deck, so it fires when a unit is ordered onto an unreachable bridge cell. *Effect:*
+/// a four-level shift in which candidates the gate admits around such a seed. Both
+/// free-unit placement callsites clear the flag, so it is inert there.
+fn candidate_height_ok(q: &NearbyQuery<'_>, seed_level: i16, cx: i32, cy: i32) -> bool {
+    let bridge_rise = if candidate_is_bridge_cell(q, cx, cy) {
+        BRIDGE_LEVEL_RISE
+    } else {
+        0
+    };
+    let delta = seed_level
+        .saturating_sub(bridge_rise)
+        .saturating_sub(cell_level(q, cx, cy));
+    delta.abs() < MAX_SEED_LEVEL_DELTA_EXCLUSIVE
+}
+
+/// A cell's terrain level, read from the path grid first and the resolved terrain
+/// second — the same order and the same "missing reads as 0" default the passability
+/// facade uses for its own level term, so the two never disagree about a cell.
+fn cell_level(q: &NearbyQuery<'_>, cx: i32, cy: i32) -> i16 {
+    let (Ok(rx), Ok(ry)) = (u16::try_from(cx), u16::try_from(cy)) else {
+        return 0;
+    };
+    q.path_grid
+        .and_then(|grid| grid.cell(rx, ry))
+        .map(|cell| cell.signed_level())
+        .or_else(|| {
+            q.resolved_terrain
+                .and_then(|terrain| terrain.cell(rx, ry))
+                .map(|cell| cell.level as i8 as i16)
+        })
+        .unwrap_or(0)
 }
 
 /// Whether a candidate cell is a structural-bridge cell (filtered out when bridges
@@ -337,7 +516,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
@@ -374,6 +553,33 @@ mod tests {
             .flat_map(|ry| (0..width).map(move |rx| terrain_cell(rx, ry)))
             .collect();
         ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    /// A grid whose every cell sits at the same raised terrain level — a plateau. The
+    /// occlusion test is relative, so this must behave exactly like `flat_terrain`.
+    fn plateau_terrain(width: u16, height: u16, level: u8) -> ResolvedTerrainGrid {
+        let mut terrain = flat_terrain(width, height);
+        for cell in terrain.cells.iter_mut() {
+            cell.level = level;
+        }
+        terrain
+    }
+
+    /// A grid that climbs one terrain level per south-east diagonal step, so EVERY cell
+    /// is occluded by its immediate SE neighbour and no candidate is ever direct.
+    fn diagonal_ramp_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut terrain = flat_terrain(width, height);
+        for cell in terrain.cells.iter_mut() {
+            cell.level = ((cell.rx as u32 + cell.ry as u32) / 2) as u8;
+        }
+        terrain
+    }
+
+    /// Classify one cell against a terrain grid, with a path grid built from it.
+    fn direct_at(terrain: &ResolvedTerrainGrid, cell: (i32, i32)) -> bool {
+        let path_grid = PathGrid::from_resolved_terrain(terrain);
+        let q = base_query(terrain, &path_grid);
+        is_direct_candidate(&q, cell.0, cell.1)
     }
 
     fn track_args() -> PassabilityArgs {
@@ -435,17 +641,179 @@ mod tests {
 
     #[test]
     fn find_nearby_per_ring_early_out_stops_after_first_direct_ring() {
-        // On flat terrain every accepted cell is DIRECT (height-projection identity),
-        // so ring 0 alone yields a direct hit: the per-ring early-out finishes ring 0
+        // On flat terrain every accepted cell is DIRECT (nothing south-east of it rises
+        // above it), so ring 0 alone yields a direct hit: the early-out finishes ring 0
         // (which emits the seed twice) and STOPS — it never walks out to fill 24.
         let terrain = flat_terrain(40, 40);
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
         let mut q = base_query(&terrain, &path_grid);
         q.radius_cap = 100; // requests beyond the hard cap; clamps to 32
-        let candidates = collect_candidates((20, 20), &q);
+        let candidates = collect_candidates((20, 20), &q, NearbySearchOptions::default());
         // Ring 0 = seed twice, both direct -> early-out after ring 0.
         assert_eq!(candidates.len(), 2);
         assert!(candidates.iter().all(|c| c.cell == (20, 20) && c.direct));
+    }
+
+    #[test]
+    fn find_nearby_early_out_fires_on_a_raised_plateau_exactly_as_at_level_zero() {
+        // THE BUG THIS CLOSES. The occlusion test is relative: on a uniformly raised
+        // plateau every south-east difference is 0, so every accepted cell is DIRECT and
+        // the per-ring early-out fires on ring 0 — byte-for-byte the level-0 result. The
+        // absolute `level == 0` placeholder this replaced marked every cell above level 0
+        // indirect, so the early-out never armed, collection ran on to MAX_CANDIDATES
+        // across rings 1-3, and a refinery's free miner could land three cells out.
+        for level in [0u8, 2, 7] {
+            let terrain = plateau_terrain(40, 40, level);
+            let path_grid = PathGrid::from_resolved_terrain(&terrain);
+            let mut q = base_query(&terrain, &path_grid);
+            q.radius_cap = 100; // requests beyond the hard cap; clamps to 32
+            let candidates = collect_candidates((20, 20), &q, NearbySearchOptions::default());
+            assert_eq!(
+                candidates.len(),
+                2,
+                "level {level}: the early-out must stop after ring 0"
+            );
+            assert!(candidates.iter().all(|c| c.cell == (20, 20) && c.direct));
+        }
+    }
+
+    #[test]
+    fn find_nearby_direct_threshold_is_two_levels_per_diagonal_step_minus_one() {
+        // A cell `q` diagonal steps SOUTH-EAST of the candidate occludes it — making the
+        // candidate INDIRECT — once it rises `2q - 1` levels above it. One level below
+        // that threshold leaves the candidate direct. Walked as a fixture per step
+        // rather than asserted from the same formula the code uses.
+        const GRID: usize = 20;
+        for (step, threshold) in [(1i32, 1i16), (2, 3), (3, 5), (4, 7), (5, 9), (6, 11)] {
+            for (rise, expect_direct) in [(threshold - 1, true), (threshold, false)] {
+                let mut terrain = flat_terrain(GRID as u16, GRID as u16);
+                let probe = 5 + step as usize;
+                terrain.cells[probe * GRID + probe].level = rise as u8;
+                assert_eq!(
+                    direct_at(&terrain, (5, 5)),
+                    expect_direct,
+                    "step {step}: a rise of {rise} against a threshold of {threshold}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_nearby_direct_probes_only_six_cells_down_the_south_east_diagonal() {
+        // The ray starts a fixed six cells south-east and walks back, so step 7 is never
+        // probed; and only the exact diagonal is probed, because a cliff due east or due
+        // south is a different screen direction and cannot draw over the candidate.
+        const GRID: usize = 20;
+        let mut terrain = flat_terrain(GRID as u16, GRID as u16);
+        terrain.cells[12 * GRID + 12].level = 13; // (12,12): seven diagonal steps out
+        terrain.cells[5 * GRID + 6].level = 10; // (6,5): due EAST of the candidate
+        terrain.cells[6 * GRID + 5].level = 10; // (5,6): due SOUTH of the candidate
+        assert!(direct_at(&terrain, (5, 5)));
+    }
+
+    #[test]
+    fn find_nearby_direct_reads_the_relative_rise_not_the_absolute_level() {
+        const GRID: usize = 20;
+        // Absolute height is irrelevant; only the south-east difference decides.
+        let high_plateau = plateau_terrain(GRID as u16, GRID as u16, 7);
+        assert!(
+            direct_at(&high_plateau, (5, 5)),
+            "a level-7 cell among level-7 cells is direct"
+        );
+        let mut stepped_up = plateau_terrain(GRID as u16, GRID as u16, 7);
+        stepped_up.cells[6 * GRID + 6].level = 8;
+        assert!(
+            !direct_at(&stepped_up, (5, 5)),
+            "the same cell under a single level of rise at step 1 is indirect"
+        );
+
+        // Ground falling away to the south-east can never occlude.
+        let mut downhill = plateau_terrain(GRID as u16, GRID as u16, 5);
+        for step in 1..=6usize {
+            downhill.cells[(5 + step) * GRID + (5 + step)].level = 5u8.saturating_sub(step as u8);
+        }
+        assert!(direct_at(&downhill, (5, 5)));
+
+        // At the map's south-east corner every probe leaves the grid and reads level 0,
+        // matching the engine's out-of-range cell lookup (a shared zeroed cell, never
+        // null), so a raised corner cell is still direct.
+        let mut corner = flat_terrain(GRID as u16, GRID as u16);
+        corner.cells[(GRID - 1) * GRID + (GRID - 1)].level = 3;
+        assert!(direct_at(&corner, (GRID as i32 - 1, GRID as i32 - 1)));
+    }
+
+    #[test]
+    fn find_nearby_direct_ignores_the_candidates_own_bridge_bit() {
+        // The projection reads terrain LEVELS only. A candidate's own bridge bit is read
+        // by the height gate and the bridge filter, never by this test — folding it in
+        // is what made the placeholder call every bridge cell on flat ground indirect.
+        let mut terrain = flat_terrain(20, 20);
+        terrain.cells[5 * 20 + 5].bridge_facts.raw_flags = BRIDGE_FLAG_STRUCTURAL;
+        assert!(direct_at(&terrain, (5, 5)));
+    }
+
+    #[test]
+    fn find_nearby_slope_keeps_the_cell_under_the_rise_indirect() {
+        // A genuine slope still splits the pools. Seed (5,5) is walled off so the search
+        // reaches ring 1, and is itself raised two levels — which is exactly one diagonal
+        // step south-east of ring-1's (4,4). So (4,4) is occluded and lands in the
+        // indirect pool while every other ring-1 cell stays on flat ground and is direct,
+        // and selection — which consults the indirect pool only when there are no directs
+        // — can never return (4,4).
+        const GRID: usize = 20;
+        let mut terrain = flat_terrain(GRID as u16, GRID as u16);
+        terrain.cells[5 * GRID + 5].zone_type = zone_class::WALL;
+        terrain.cells[5 * GRID + 5].level = 2;
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let q = base_query(&terrain, &path_grid);
+
+        let candidates = collect_candidates((5, 5), &q, NearbySearchOptions::default());
+        let occluded = candidates
+            .iter()
+            .find(|c| c.cell == (4, 4))
+            .expect("(4,4) is collected on ring 1");
+        assert!(
+            !occluded.direct,
+            "(4,4) sits under a +2 rise one diagonal step south-east"
+        );
+        assert!(
+            candidates
+                .iter()
+                .filter(|c| c.cell != (4, 4))
+                .all(|c| c.direct),
+            "every other ring-1 cell is on flat ground and stays direct"
+        );
+        for frame in 0..12u32 {
+            assert_ne!(
+                find_nearby_passable_cell((5, 5), &q, frame),
+                Some((4, 4)),
+                "frame {frame}: the direct pool is non-empty, so the occluded cell is never picked"
+            );
+        }
+    }
+
+    #[test]
+    fn find_nearby_bridge_aware_zone_arms_the_early_out_without_the_projection() {
+        // The engine skips the projection entirely in the bridge-aware zone, so ANY
+        // accepted candidate arms the per-ring early-out there — while selection still
+        // re-runs the projection to split the pools. On terrain climbing one level per
+        // south-east step nothing is ever direct, so without the asymmetry the search
+        // runs on to the 24-candidate cap.
+        let terrain = diagonal_ramp_terrain(20, 20);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+
+        let unarmed = collect_candidates((8, 8), &q, NearbySearchOptions::default());
+        assert_eq!(unarmed.len(), MAX_CANDIDATES);
+        assert!(unarmed.iter().all(|c| !c.direct));
+
+        q.passability.bridge_aware_zone = true;
+        let armed = collect_candidates((8, 8), &q, NearbySearchOptions::default());
+        assert_eq!(armed.len(), 2, "ring 0 alone arms the early-out");
+        assert!(
+            armed.iter().all(|c| !c.direct),
+            "the stored classification still comes from the projection"
+        );
     }
 
     #[test]
@@ -514,6 +882,74 @@ mod tests {
     }
 
     #[test]
+    fn find_nearby_overlay_rejection_is_a_caller_argument() {
+        // The engine's two free-unit attempts differ in exactly one argument: the
+        // first rejects a cell carrying an overlay, the second accepts one. So the
+        // same query over the same grid must return the ore seed with the default
+        // options and refuse it with `reject_any_overlay`.
+        const ORE_OVERLAY_ID: u8 = 102;
+        let terrain = flat_terrain(5, 5);
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut overlay = OverlayGrid::new(5, 5);
+        overlay.place_overlay(2, 2, ORE_OVERLAY_ID, 0);
+        let mut q = base_query(&terrain, &path_grid);
+        q.overlay_grid = Some(&overlay);
+
+        assert_eq!(
+            find_nearby_passable_cell((2, 2), &q, 0),
+            Some((2, 2)),
+            "the overlay-allowed attempt keeps the ore cell"
+        );
+        let rejecting = NearbySearchOptions {
+            reject_any_overlay: true,
+        };
+        let found = find_nearby_passable_cell_with_options((2, 2), &q, rejecting, 0)
+            .expect("clear ground exists on the next ring");
+        assert_ne!(
+            found,
+            (2, 2),
+            "the overlay-rejecting attempt must walk off the ore cell"
+        );
+    }
+
+    #[test]
+    fn find_nearby_height_gate_drops_candidates_more_than_one_level_from_seed() {
+        // `check_height` admits a candidate only while it stays within one level of
+        // the seed. Seed (2,2) is walled off so the search reaches ring 1, where
+        // (2,1) sits three levels up: it survives with the gate off and is dropped
+        // with the gate on, while the level-1 cell at (1,2) survives either way.
+        let mut terrain = flat_terrain(5, 5);
+        terrain.cells[2 * 5 + 2].zone_type = zone_class::WALL; // seed rejected
+        terrain.cells[1 * 5 + 2].level = 3; // (2,1): three levels above the seed
+        terrain.cells[2 * 5 + 1].level = 1; // (1,2): one level above the seed
+        let path_grid = PathGrid::from_resolved_terrain(&terrain);
+        let mut q = base_query(&terrain, &path_grid);
+
+        let without_gate: Vec<(i32, i32)> =
+            collect_candidates((2, 2), &q, NearbySearchOptions::default())
+                .into_iter()
+                .map(|c| c.cell)
+                .collect();
+        assert!(without_gate.contains(&(2, 1)));
+        assert!(without_gate.contains(&(1, 2)));
+
+        q.check_height = true;
+        let with_gate: Vec<(i32, i32)> =
+            collect_candidates((2, 2), &q, NearbySearchOptions::default())
+                .into_iter()
+                .map(|c| c.cell)
+                .collect();
+        assert!(
+            !with_gate.contains(&(2, 1)),
+            "a candidate three levels from the seed must be rejected"
+        );
+        assert!(
+            with_gate.contains(&(1, 2)),
+            "a candidate one level from the seed must survive"
+        );
+    }
+
+    #[test]
     fn find_nearby_passes_required_height_minus_one() {
         // FNPC always supplies required_height_or_level = -1 (None) regardless of any
         // caller height: a flat seed cell is found with no height gating applied.
@@ -532,7 +968,7 @@ mod tests {
         let path_grid = PathGrid::from_resolved_terrain(&terrain);
         let q = base_query(&terrain, &path_grid);
 
-        let directs: Vec<_> = collect_candidates((3, 3), &q)
+        let directs: Vec<_> = collect_candidates((3, 3), &q, NearbySearchOptions::default())
             .into_iter()
             .filter(|c| c.direct)
             .collect();

@@ -271,7 +271,7 @@ pub(crate) fn deploy_fire_weapon_id(obj: &ObjectType, veterancy: u16) -> Option<
     .map(|(weapon_id, _slot)| weapon_id)
 }
 
-fn weapon_for_slot_index(
+pub(crate) fn weapon_for_slot_index(
     obj: &ObjectType,
     veterancy: u16,
     index: i32,

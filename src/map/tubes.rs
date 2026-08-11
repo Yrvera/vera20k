@@ -42,56 +42,64 @@ fn parse_tube_entry(value: &str) -> Option<TubeFact> {
         return None;
     }
 
-    let entry = (
-        parse_u16(fields[0], "[Tubes] entry X")?,
-        parse_u16(fields[1], "[Tubes] entry Y")?,
-    );
-    let direction = parse_direction(fields[2], "[Tubes] entry direction")?;
-    let exit = (
-        parse_u16(fields[3], "[Tubes] exit X")?,
-        parse_u16(fields[4], "[Tubes] exit Y")?,
-    );
+    let entry = (crt_atoi(fields[0]) as u16, crt_atoi(fields[1]) as u16);
+    let direction = crt_atoi(fields[2]);
+    let exit = (crt_atoi(fields[3]) as u16, crt_atoi(fields[4]) as u16);
 
     let mut path_steps = Vec::new();
-    for raw in fields
-        .iter()
-        .skip(MIN_TUBE_FIELDS)
-        .take(MAX_TUBE_PATH_STEPS)
-    {
-        let Ok(step) = raw.parse::<i32>() else {
-            log::warn!("[Tubes] invalid path step '{}'", raw);
-            return None;
-        };
+    let mut terminated = false;
+    for raw in fields.iter().skip(MIN_TUBE_FIELDS) {
+        let step = crt_atoi(raw);
         if step == TUBE_PATH_SENTINEL {
+            terminated = true;
             break;
         }
-        if !(0..=7).contains(&step) {
-            log::warn!("[Tubes] path step {} outside direction range 0..=7", step);
+        if path_steps.len() == MAX_TUBE_PATH_STEPS {
+            log::warn!("[Tubes] path buffer has no -1 sentinel within 100 entries");
             return None;
         }
-        path_steps.push(step as u8);
+        path_steps.push(step);
+    }
+    if !terminated {
+        log::warn!("[Tubes] path buffer is missing its -1 sentinel");
+        return None;
     }
 
     Some(TubeFact::explicit(entry, exit, direction, path_steps))
 }
 
-fn parse_u16(value: &str, label: &str) -> Option<u16> {
-    match value.parse::<u16>() {
-        Ok(parsed) => Some(parsed),
-        Err(_) => {
-            log::warn!("{} '{}' is not a valid cell coordinate", label, value);
-            None
+/// The supported, deterministic part of CRT `atoi`: leading ASCII whitespace,
+/// one optional sign, then the maximal decimal digit prefix. Missing digits
+/// return zero. Accumulation wraps in the same 32-bit domain used by TubeClass.
+fn crt_atoi(value: &str) -> i32 {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    let mut negative = false;
+    if let Some(sign) = bytes.get(index) {
+        if *sign == b'-' || *sign == b'+' {
+            negative = *sign == b'-';
+            index += 1;
         }
     }
-}
-
-fn parse_direction(value: &str, label: &str) -> Option<u8> {
-    match value.parse::<u8>() {
-        Ok(parsed @ 0..=7) => Some(parsed),
-        _ => {
-            log::warn!("{} '{}' is outside direction range 0..=7", label, value);
-            None
+    let mut value = 0_i32;
+    let mut saw_digit = false;
+    while let Some(&digit) = bytes.get(index) {
+        if !digit.is_ascii_digit() {
+            break;
         }
+        saw_digit = true;
+        value = value.wrapping_mul(10).wrapping_add(i32::from(digit - b'0'));
+        index += 1;
+    }
+    if !saw_digit {
+        0
+    } else if negative {
+        value.wrapping_neg()
+    } else {
+        value
     }
 }
 
@@ -130,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_tubes_caps_path_buffer_at_binary_limit() {
+    fn gsi_04_15_parse_tubes_rejects_path_without_in_bounds_sentinel() {
         let mut value = String::from("0,0,2,100,0");
         for _ in 0..105 {
             value.push_str(",2");
@@ -139,8 +147,7 @@ mod tests {
 
         let tubes = parse_tubes(&ini);
 
-        assert_eq!(tubes.len(), 1);
-        assert_eq!(tubes[0].path_len(), MAX_TUBE_PATH_STEPS);
+        assert!(tubes.is_empty());
     }
 
     #[test]
@@ -151,12 +158,20 @@ mod tests {
     }
 
     #[test]
-    fn malformed_tube_entry_is_skipped() {
-        let ini = IniFile::from_str("[Tubes]\n0=1,2,9,4,2,2,-1\n1=1,2,2,4,2,2,-1\n");
+    fn gsi_04_15_raw_atoi_values_and_low16_coordinates_are_preserved() {
+        let ini = IniFile::from_str("[Tubes]\nname=-1,65537,9tail,4,2,10,-2,15,-1,6\n");
 
         let tubes = parse_tubes(&ini);
 
         assert_eq!(tubes.len(), 1);
-        assert_eq!(tubes[0].direction, 2);
+        assert_eq!(tubes[0].entry, (u16::MAX, 1));
+        assert_eq!(tubes[0].direction, 9);
+        assert_eq!(tubes[0].path_steps, vec![10, -2, 15]);
+    }
+
+    #[test]
+    fn gsi_04_15_missing_path_sentinel_is_rejected_safely() {
+        let ini = IniFile::from_str("[Tubes]\n0=1,2,2,4,2,2,2\n");
+        assert!(parse_tubes(&ini).is_empty());
     }
 }

@@ -98,6 +98,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
     state.simulation = result.simulation;
+    state.combat_lights.clear();
     if let Some(sim) = &mut state.simulation {
         sim.input_delay_ticks = state.configured_input_delay_ticks;
     }
@@ -168,11 +169,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.bridge_height_map = result.bridge_height_map;
     state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
     state.lighting_grid = result.lighting_grid;
-    state.last_lighting_source_epoch = 0;
-    state.last_lighting_config_epoch = 0;
     state.applied_lighting_sources.clear();
+    state.applied_lighting_profile = None;
+    state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
     state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
+    state.last_lighting_view_fingerprint = None;
     state.path_grid = result.path_grid;
     state.rules = result.rules;
     state.art_registry = result.art_registry;
@@ -180,13 +182,46 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;
-    // Map load hands over a world anchor point; the camera top-left needs the
-    // scaled sidebar width and the live zoom, both of which only exist here.
+
+    // The background loader has no access to the live renderer detail option.
+    // Re-derive once at handoff so the first visible frame already uses the
+    // selected detail mask and its corresponding building-light gate.
+    let initial_lighting = match (
+        state.resolved_terrain.as_ref(),
+        state.simulation.as_ref(),
+        state.rules.as_ref(),
+    ) {
+        (Some(terrain), Some(sim), Some(rules)) => {
+            let view = crate::app_init::derive_lighting_view(
+                &state.map_lighting_config,
+                Some(sim),
+                Some(rules),
+                state.in_game_options.detail_level,
+            );
+            let fingerprint = view.fingerprint;
+            let profile = view.profile;
+            let detail_level = view.detail_level;
+            let point_lights = view.point_lights.clone();
+            let grid = crate::app_init::build_lighting_grid_from_view(terrain, &view);
+            Some((fingerprint, profile, detail_level, point_lights, grid))
+        }
+        _ => None,
+    };
+    if let Some((fingerprint, profile, detail_level, point_lights, grid)) = initial_lighting {
+        state.lighting_grid = grid;
+        state.last_lighting_view_fingerprint = Some(fingerprint);
+        state.applied_lighting_profile = Some(profile);
+        state.applied_lighting_detail_level = detail_level;
+        state.applied_lighting_sources = point_lights;
+    }
+    // Map load hands over a world anchor point; the transition applies the
+    // active tactical rectangle and live zoom.
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let (camera_x, camera_y) = crate::app_camera::tactical_camera_top_left(
         (result.camera_anchor_x, result.camera_anchor_y),
-        state.render_width() as f32,
-        state.render_height() as f32,
-        state.sidebar_layout_spec.sidebar_width,
+        tactical_width as f32,
+        tactical_height as f32,
         state.zoom_level,
     );
     state.camera_x = camera_x;
@@ -241,15 +276,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         ));
     }
     state.minimap_dragging = false;
-    state.middle_mouse_panning = false;
     state.tactical_mouse = Default::default();
     state.keys_held.clear();
-    let tactical_w = crate::app_camera::tactical_viewport_width_px(
-        state.render_width(),
-        state.sidebar_layout_spec,
-    ) as f32;
-    state.cursor_x = tactical_w * 0.5;
-    state.cursor_y = state.render_height() as f32 * 0.5;
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    state.cursor_x = tactical_width as f32 * 0.5;
+    state.cursor_y = tactical_height as f32 * 0.5;
 
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.

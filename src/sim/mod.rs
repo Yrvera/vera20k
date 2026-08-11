@@ -22,6 +22,7 @@
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;
+pub mod capture_manager;
 pub mod cloak_disguise;
 pub mod command;
 pub mod components;

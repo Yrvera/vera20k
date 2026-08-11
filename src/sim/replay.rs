@@ -537,7 +537,32 @@ impl ReplayRunner {
         path_grid: Option<&PathGrid>,
         tick_ms: u32,
     ) -> Vec<u64> {
-        Self::run_master_frame(sim, replay, rules, height_map, path_grid, tick_ms, None)
+        Self::run_with_overlay_registry(sim, replay, rules, height_map, path_grid, None, tick_ms)
+    }
+
+    /// Re-run diagnostic-log ticks with the static overlay type registry used
+    /// by the recorded map. Overlay-backed simulation authority (including
+    /// miner resource queries) must see the same registry on record and replay.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_with_overlay_registry(
+        sim: &mut Simulation,
+        replay: &ReplayLog,
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        tick_ms: u32,
+    ) -> Vec<u64> {
+        Self::run_master_frame(
+            sim,
+            replay,
+            rules,
+            height_map,
+            path_grid,
+            overlay_registry,
+            tick_ms,
+            None,
+        )
     }
 
     /// Replay through the same master-frame admission used by gameplay.
@@ -552,6 +577,7 @@ impl ReplayRunner {
         rules: Option<&RuleSet>,
         height_map: &BTreeMap<(u16, u16), u8>,
         path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> Vec<u64> {
@@ -585,7 +611,7 @@ impl ReplayRunner {
                 rules,
                 height_map,
                 path_grid,
-                None,
+                overlay_registry,
                 tick_ms,
                 TickLane::Ordinary,
                 None,
@@ -833,5 +859,34 @@ mod tests {
         assert_eq!(parsed.ticks.len(), 1);
         assert_eq!(parsed.ticks[0].tick, 1);
         assert_eq!(parsed.ticks[0].state_hash, 999);
+    }
+
+    #[test]
+    fn gsi_04_07_wall_sell_diagnostic_replay_roundtrips_without_native_version_bump() {
+        let owner = crate::sim::intern::test_intern("Receiver");
+        let mut log = ReplayLog::new(ReplayHeader {
+            version: 1,
+            tick_hz: 15,
+            seed: 7,
+            map_name: "wall.map".to_string(),
+            rules_hash: 9,
+        });
+        log.record_tick(
+            4,
+            vec![CommandEnvelope::new(
+                owner,
+                4,
+                Command::SellWallAtCell { x: 0, y: 12 },
+            )],
+            11,
+        );
+        let json = serde_json::to_string(&log).unwrap();
+        let decoded: ReplayLog = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.header.version, 1);
+        assert_eq!(
+            decoded.ticks[0].commands[0].payload,
+            Command::SellWallAtCell { x: 0, y: 12 }
+        );
+        assert_eq!(NATIVE_REPLAY_VERSION, 10);
     }
 }

@@ -99,8 +99,10 @@ pub(crate) fn scatter_inviso_effect_coord(
     sub_x: SimFixed,
     sub_y: SimFixed,
 ) -> (u16, u16, SimFixed, SimFixed) {
-    let byte = (rng.next_u32() & 0xff) as u8;
-    scatter_effect_coord_for_byte(byte, rx, ry, sub_x, sub_y)
+    let base_x = i32::from(rx) * LEPTONS_PER_CELL + sub_x.to_num::<i32>();
+    let base_y = i32::from(ry) * LEPTONS_PER_CELL + sub_y.to_num::<i32>();
+    let (x, y) = random_direction_coord(rng, base_x, base_y, INVISO_ANIM_RADIUS);
+    split_valid_coord(x, y)
 }
 
 fn scatter_effect_coord_for_byte(
@@ -112,7 +114,32 @@ fn scatter_effect_coord_for_byte(
 ) -> (u16, u16, SimFixed, SimFixed) {
     let base_x = i32::from(rx) * LEPTONS_PER_CELL + sub_x.to_num::<i32>();
     let base_y = i32::from(ry) * LEPTONS_PER_CELL + sub_y.to_num::<i32>();
-    let radius = X87Chop53::load_i32(INVISO_ANIM_RADIUS);
+    let (x, y) = random_direction_coord_for_byte(byte, base_x, base_y, INVISO_ANIM_RADIUS);
+    split_valid_coord(x, y)
+}
+
+/// Consume one raw Scenario RNG draw and apply the active-YR random-direction
+/// CoordStruct helper at an arbitrary magnitude.
+///
+/// The returned coordinate falls back as a whole to `(base_x, base_y)` when
+/// either native signed cell conversion lands outside the 512-cell domain.
+pub(crate) fn random_direction_coord(
+    rng: &mut SimRng,
+    base_x: i32,
+    base_y: i32,
+    magnitude_leptons: i32,
+) -> (i32, i32) {
+    let byte = (rng.next_u32() & 0xff) as u8;
+    random_direction_coord_for_byte(byte, base_x, base_y, magnitude_leptons)
+}
+
+pub(crate) fn random_direction_coord_for_byte(
+    byte: u8,
+    base_x: i32,
+    base_y: i32,
+    magnitude_leptons: i32,
+) -> (i32, i32) {
+    let radius = X87Chop53::load_i32(magnitude_leptons);
     let cosine = X87Chop53::load_f32(NativeF32Bits::from_bits(COSINE_BITS[usize::from(byte)]))
         .expect("binary cosine sample is finite and normal");
     let sine = X87Chop53::load_f32(NativeF32Bits::from_bits(SINE_BITS[usize::from(byte)]))
@@ -132,9 +159,15 @@ fn scatter_effect_coord_for_byte(
     let x_cell = coord_to_cell_truncating(x);
     let y_cell = coord_to_cell_truncating(y);
     if (x_cell as u32) >= MAP_CELL_LIMIT || (y_cell as u32) >= MAP_CELL_LIMIT {
-        return (rx, ry, sub_x, sub_y);
+        return (base_x, base_y);
     }
 
+    (x, y)
+}
+
+fn split_valid_coord(x: i32, y: i32) -> (u16, u16, SimFixed, SimFixed) {
+    let x_cell = coord_to_cell_truncating(x);
+    let y_cell = coord_to_cell_truncating(y);
     (
         x_cell as u16,
         y_cell as u16,
@@ -145,7 +178,7 @@ fn scatter_effect_coord_for_byte(
 
 /// The native helper implements signed division by 256 with `CDQ/AND/ADD/SAR`,
 /// so negative coordinates truncate toward zero rather than floor.
-fn coord_to_cell_truncating(coord: i32) -> i32 {
+pub(crate) fn coord_to_cell_truncating(coord: i32) -> i32 {
     (coord + if coord.is_negative() { 0xff } else { 0 }) >> 8
 }
 
@@ -481,5 +514,33 @@ mod tests {
         );
         assert_eq!(got, expected);
         assert_eq!(rng.logical_state(), reference.logical_state());
+    }
+
+    #[test]
+    fn gsi_04_11_radius_128_cardinals_fallback_and_draw_count_match_native() {
+        let base = 65_536;
+        let offsets = [
+            (0_u8, (0, -128)),
+            (64, (128, 0)),
+            (128, (-1, 128)),
+            (192, (-128, -1)),
+        ];
+        for (byte, expected) in offsets {
+            let got = random_direction_coord_for_byte(byte, base, base, 0x80);
+            assert_eq!((got.0 - base, got.1 - base), expected, "byte {byte}");
+        }
+
+        let edge = (511 * LEPTONS_PER_CELL + 250, 7 * LEPTONS_PER_CELL + 19);
+        assert_eq!(
+            random_direction_coord_for_byte(64, edge.0, edge.1, 0x80),
+            edge,
+            "one out-of-domain axis falls the whole coordinate back"
+        );
+
+        let mut actual_rng = SimRng::new(42);
+        let mut reference_rng = actual_rng.clone();
+        let _ = random_direction_coord(&mut actual_rng, base, base, 0x80);
+        let _ = reference_rng.next_u32();
+        assert_eq!(actual_rng.logical_state(), reference_rng.logical_state());
     }
 }

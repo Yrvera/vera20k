@@ -89,7 +89,7 @@ impl TerrainCostGrid {
                 || terrain_object_blocked;
             // Bridge deck overrides underlying terrain (water/cliff) for ground units.
             // Units walk on the bridge surface, not the terrain below.
-            let cost = if cell.has_bridge_deck && !cell.overlay_blocks {
+            let cost = if cell.is_elevated_bridge_cell() && !cell.overlay_blocks {
                 COST_NORMAL
             } else if hard_blocked {
                 COST_BLOCKED
@@ -316,6 +316,50 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_13_synthetic_low_bridge_uses_ground_surface_cost_not_deck_override() {
+        use crate::sim::pathfinding::passability::LandType;
+
+        let custom_surface = SpeedCostProfile {
+            track: Some(55),
+            ..SpeedCostProfile::default()
+        };
+        let terrain = ResolvedTerrainGrid::from_cells(
+            2,
+            1,
+            vec![
+                ResolvedTerrainCell {
+                    level: 2,
+                    has_bridge_deck: true,
+                    bridge_walkable: false,
+                    bridge_deck_level: 2,
+                    land_type: LandType::Rough.as_index(),
+                    is_rough: true,
+                    speed_costs: custom_surface,
+                    ..make_resolved_cell(0, 0)
+                },
+                ResolvedTerrainCell {
+                    level: 0,
+                    has_bridge_deck: true,
+                    bridge_walkable: true,
+                    bridge_deck_level: 4,
+                    land_type: LandType::Rough.as_index(),
+                    is_rough: true,
+                    speed_costs: custom_surface,
+                    ..make_resolved_cell(1, 0)
+                },
+            ],
+        );
+        let track = TerrainCostGrid::from_resolved_terrain(&terrain, SpeedType::Track);
+
+        assert_eq!(track.cost_at(0, 0), 55, "ground-level bridge uses TMP Land");
+        assert_eq!(
+            track.cost_at(1, 0),
+            COST_NORMAL,
+            "elevated deck overrides TMP Land"
+        );
+    }
+
+    #[test]
     fn test_canonical_ramp_is_not_blocked_by_cliff_like_rock_land() {
         use crate::map::resolved_terrain::RampDirection;
         use crate::sim::pathfinding::passability::LandType;
@@ -491,7 +535,7 @@ mod tests {
             speed_costs: SpeedCostProfile::default(),
             is_water: false,
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,

@@ -33,6 +33,14 @@ pub struct Position {
     pub ry: u16,
     /// Elevation level (0 = ground). Each level is 15px visual offset.
     pub z: u8,
+    /// Exact native ObjectClass coordinate Z, in signed leptons.
+    ///
+    /// Most grounded objects are completely described by the coarse signed
+    /// CellClass level above. UnitClass TubeMovement is the exception: its
+    /// interpolated/final Z retains the signed division remainder after the
+    /// tube state clears, so it cannot be reconstructed from `z`.
+    #[serde(default)]
+    pub exact_z_leptons: Option<i32>,
     /// Sub-cell lepton offset X (0..256). 128 = cell center.
     /// Provides sub-cell precision for smooth movement and accurate range checks.
     pub sub_x: SimFixed,
@@ -349,23 +357,6 @@ pub struct DriveTurnState {
     pub first_movement_allowed: bool,
 }
 
-/// UnitClass low-bridge TubeMovement payload carried by Drive/Unit movement.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DriveTubePayload {
-    #[serde(default)]
-    pub tube_index: Option<u16>,
-    #[serde(default)]
-    pub cursor: u16,
-    #[serde(default)]
-    pub path_buffer: Vec<DriveCoord>,
-    #[serde(default)]
-    pub destination: Option<DriveCoord>,
-    #[serde(default)]
-    pub z_accumulator: i32,
-    #[serde(default)]
-    pub z_step: i32,
-}
-
 fn default_drive_track_index() -> i16 {
     -1
 }
@@ -410,8 +401,6 @@ pub struct DriveLocomotionRuntime {
     pub current_speed_fraction: SimFixed,
     #[serde(default)]
     pub residual_budget: i32,
-    #[serde(default)]
-    pub active_tube: Option<DriveTubePayload>,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
     /// membership. Ordinary flat Drive installs one mark for its accepted next
     /// cell before any paid track point is consumed.
@@ -445,7 +434,6 @@ impl Default for DriveLocomotionRuntime {
             target_speed_fraction: SIM_ZERO,
             current_speed_fraction: SIM_ZERO,
             residual_budget: 0,
-            active_tube: None,
             occupation_head_to: None,
             occupation_handoff: None,
             current_occupation_cleared: false,
@@ -1048,26 +1036,48 @@ impl RockingState {
     }
 }
 
-/// Per-building C4 detonation timer.
+/// Shared per-building C4 / PostMortem detonation timer.
 ///
-/// Set by `tick_c4_plants` when an attacker with `c4_plant` arrives on the
-/// building's cell. Once set, the building's update tick fires C4Warhead
-/// damage every frame after the wrapping native-frame delay has elapsed, using
-/// `damage = current_hp` for guaranteed one-shot kill.
+/// Native BuildingClass uses one latch and timer triple for both an infantry
+/// C4 plant and a qualifying `CausesDelayKill` fatal hit. Once elapsed, the
+/// building's own Update fires a forced C4Warhead receiver packet with damage
+/// equal to its current HP.
 ///
-/// Normal C4 targets keep the marker until the building dies. IronCurtain on
-/// the building does NOT clear this; damage attempts get nullified by
-/// `is_invulnerable` each tick until IC expires, at which point the next
-/// damage tick kills the building. BridgeRepairHut targets clear the marker
-/// after the bridge-collapse dispatcher returns because the hut survives.
+/// IronCurtain/ForceShield entry cancels this state. Normal targets keep an
+/// expired latch if the forced receiver unexpectedly leaves them alive;
+/// BridgeRepairHut owns the separate consume-and-clear branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PendingC4Detonation {
-    /// Native frame widened to retain the existing snapshot field width.
-    pub plant_start_tick: u64,
-    /// Original attacker for kill-credit. May refer to a despawned entity
-    /// at detonation time; in that case the credit is unattributed (the
-    /// binary uses a dangling pointer; we resolve gracefully to None).
-    pub attacker_id: u64,
+    /// Native signed Building timer start frame (`+0x528`). `-1` means the
+    /// duration is already a remaining-duration value.
+    pub start_frame: i32,
+    /// Native signed duration (`+0x530`), preserved without clamping.
+    pub duration_frames: i32,
+    /// Retained source-object identity (`+0x540`). Fresh PostMortem arms leave
+    /// this null; shortening an infantry C4 timer preserves its source.
+    pub source_entity_id: Option<u64>,
+}
+
+impl PendingC4Detonation {
+    /// Native signed remaining-time calculation shared by the shorten test,
+    /// Building Update expiry, and deterministic checksum.
+    #[inline]
+    pub fn remaining_at(self, current_frame: i32) -> i32 {
+        if self.start_frame == -1 {
+            return self.duration_frames;
+        }
+        let elapsed = current_frame.wrapping_sub(self.start_frame);
+        if elapsed < self.duration_frames {
+            self.duration_frames.wrapping_sub(elapsed)
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    pub fn is_expired_at(self, current_frame: i32) -> bool {
+        self.remaining_at(current_frame) == 0
+    }
 }
 
 #[cfg(test)]
@@ -1081,6 +1091,7 @@ mod tests {
             rx: 30,
             ry: 40,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -1115,7 +1126,6 @@ mod tests {
         assert_send_sync::<crate::sim::movement::locomotor::LocomotorState>();
         assert_send_sync::<NavigationState>();
         assert_send_sync::<DriveLocomotionRuntime>();
-        assert_send_sync::<DriveTubePayload>();
     }
 
     #[test]
@@ -1151,7 +1161,6 @@ mod tests {
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
         assert_eq!(drive.residual_budget, 0);
-        assert_eq!(drive.active_tube, None);
     }
 
     #[test]
@@ -1176,25 +1185,6 @@ mod tests {
         drive_b.path.directions = vec![2, 2, 2];
         drive_b.turn.target_facing_16 = Some(0x4000);
         drive_b.residual_budget = 6;
-
-        assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
-    }
-
-    #[test]
-    fn drive_tube_payload_hash_changes_with_z_accumulator() {
-        use std::hash::{Hash, Hasher};
-
-        fn hash_drive(drive: &DriveLocomotionRuntime) -> u64 {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            drive.hash(&mut hasher);
-            hasher.finish()
-        }
-
-        let mut drive_a = DriveLocomotionRuntime::default();
-        let mut drive_b = DriveLocomotionRuntime::default();
-        drive_a.active_tube = Some(DriveTubePayload::default());
-        drive_b.active_tube = Some(DriveTubePayload::default());
-        drive_b.active_tube.as_mut().unwrap().z_accumulator = 1;
 
         assert_ne!(hash_drive(&drive_a), hash_drive(&drive_b));
     }

@@ -5,15 +5,17 @@
 //!
 //! Dependency rules: same as sim/ (depends on rules/, map/; never render/ui/audio/net).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::Simulation;
+use super::{SimSoundEvent, Simulation};
 use crate::map::houses::are_houses_friendly;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
-use crate::sim::command::Command;
+use crate::sim::combat::combat_aoe::{CellTargetDetach, detach_cell_target_references};
+use crate::sim::command::{Command, CommandEnvelope, CommandRecord, SellWallAtCellRecord};
 use crate::sim::components::OrderIntent;
 use crate::sim::docking::building_dock::{self, DockPhase, DockState};
 use crate::sim::mission::{DockTeardown, MissionType};
@@ -23,8 +25,15 @@ use crate::sim::movement::bump_crush;
 use crate::sim::movement::jumpjet_movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::teleport_movement;
+use crate::sim::overlay_grid::{
+    RecomputeResult, recalc_overlay_passability, recompute_wall_connectivity_at,
+};
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
+use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
+use crate::sim::pathfinding::zone_incremental::{
+    PackedZoneCoord, ZoneRepairKind, repair_zone_cell,
+};
 use crate::sim::production;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, ra2_speed_to_leptons_per_second};
 
@@ -64,7 +73,305 @@ impl MoveInfo {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WallSellZoneRepairTestStep {
+    pub(crate) repair_cell: (u16, u16),
+    pub(crate) walkable_cross: [bool; 5],
+    pub(crate) movement_class_cross: [u8; 5],
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static WALL_SELL_ZONE_REPAIR_TEST_TRACE:
+        std::cell::RefCell<Vec<WallSellZoneRepairTestStep>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+}
+
+#[cfg(test)]
+pub(crate) fn clear_wall_sell_zone_repair_test_trace() {
+    WALL_SELL_ZONE_REPAIR_TEST_TRACE.with(|trace| trace.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_wall_sell_zone_repair_test_trace() -> Vec<WallSellZoneRepairTestStep> {
+    WALL_SELL_ZONE_REPAIR_TEST_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+}
+
+#[cfg(test)]
+fn trace_wall_sell_zone_repair_step(
+    zone_grid: &crate::sim::pathfinding::zone_map::ZoneGrid,
+    tail_grid: &PathGrid,
+    sold_cell: (u16, u16),
+    repair_cell: (u16, u16),
+) {
+    const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+    let mut walkable_cross = [false; 5];
+    let mut movement_class_cross = [crate::map::resolved_terrain::zone_class::OUTSIDE; 5];
+    for (index, (dx, dy)) in CROSS.into_iter().enumerate() {
+        let x = i32::from(sold_cell.0) + dx;
+        let y = i32::from(sold_cell.1) + dy;
+        if x < 0 || y < 0 {
+            continue;
+        }
+        let (x, y) = (x as u16, y as u16);
+        walkable_cross[index] = tail_grid.is_walkable(x, y);
+        movement_class_cross[index] = zone_grid
+            .base_movement_class_at(x, y)
+            .unwrap_or(crate::map::resolved_terrain::zone_class::OUTSIDE);
+    }
+    WALL_SELL_ZONE_REPAIR_TEST_TRACE.with(|trace| {
+        trace.borrow_mut().push(WallSellZoneRepairTestStep {
+            repair_cell,
+            walkable_cross,
+            movement_class_cross,
+        });
+    });
+}
+
 impl Simulation {
+    /// Encode the native synchronized record for one locally issued wall sale.
+    /// House bytes are HouseClass registration indices, never interner ids.
+    pub(crate) fn encode_sell_wall_at_cell_record(
+        &self,
+        command_owner: crate::sim::intern::InternedId,
+        x: i16,
+        y: i16,
+    ) -> Option<CommandRecord> {
+        if !self.houses.contains_key(&command_owner) {
+            return None;
+        }
+        let house_id = self
+            .session
+            .house_order
+            .iter()
+            .position(|&owner| owner == command_owner)
+            .and_then(|index| i8::try_from(index).ok())?;
+        SellWallAtCellRecord {
+            house_id,
+            frame: self.session.binary_frame,
+            x,
+            y,
+        }
+        .encode()
+        .ok()
+    }
+
+    /// Decode one synchronized record after its queue has admitted the stamped
+    /// frame. The semantic envelope is only a typed execution view of the raw
+    /// bytes; timing/processed-bit ownership remains with the raw queue.
+    pub(crate) fn decode_native_command_record(
+        &self,
+        record: &CommandRecord,
+        execute_tick: u64,
+    ) -> Option<CommandEnvelope> {
+        let typed = SellWallAtCellRecord::decode(record)?;
+        let house_index = usize::try_from(typed.house_id).ok()?;
+        let owner = *self.session.house_order.get(house_index)?;
+        self.houses.contains_key(&owner).then(|| {
+            CommandEnvelope::new(
+                owner,
+                execute_tick,
+                Command::SellWallAtCell {
+                    x: typed.x,
+                    y: typed.y,
+                },
+            )
+        })
+    }
+
+    /// Publish one wall-sale RecalcAttributes result to the transaction-local
+    /// path/cost view and the retained base movement-class topology. Zone ID
+    /// assignment remains owned by the ordered native repair callback.
+    fn refresh_wall_sale_recalc_prefix(
+        &mut self,
+        tail_grid: &mut Option<PathGrid>,
+        rx: u16,
+        ry: u16,
+        navigation_changed: bool,
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+
+        if navigation_changed {
+            self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+            let resolved =
+                PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
+            if tail_grid.as_ref().is_some_and(|tail| {
+                tail.width() != resolved.width() || tail.height() != resolved.height()
+            }) {
+                *tail_grid = None;
+            }
+            if let Some(tail) = tail_grid.as_mut() {
+                let _ = tail.replace_cell_from(&resolved, rx, ry);
+            }
+        }
+
+        if let Some(zone_grid) = self.zone_grid.as_mut() {
+            let _ = zone_grid.refresh_base_movement_class_at(terrain, rx, ry);
+        }
+    }
+
+    /// Run the exact AssignOrphaned + local graph repair against the current
+    /// visit-prefix view. This does not publish `tail_grid`; the sale commits
+    /// the completed transaction once all cleanup visits finish.
+    fn repair_wall_sale_zone_prefix(
+        &mut self,
+        tail_grid: &PathGrid,
+        sold_cell: (u16, u16),
+        repair_cell: (u16, u16),
+    ) {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        let Some(zone_grid) = self.zone_grid.as_mut() else {
+            return;
+        };
+        let bridge_records = self
+            .bridge_state
+            .as_ref()
+            .map(|state| state.endpoint_records())
+            .unwrap_or(&[]);
+        #[cfg(test)]
+        trace_wall_sell_zone_repair_step(zone_grid, tail_grid, sold_cell, repair_cell);
+        let _ = repair_zone_cell(
+            zone_grid,
+            PackedZoneCoord::new(repair_cell.0 as i16, repair_cell.1 as i16),
+            ZoneRepairKind::AssignOrphaned,
+            tail_grid,
+            &self.terrain_costs,
+            terrain,
+            bridge_records,
+        );
+    }
+
+    fn sell_wall_at_cell(
+        &mut self,
+        command_owner: &str,
+        x: i16,
+        y: i16,
+        rules: &RuleSet,
+        path_grid: Option<&PathGrid>,
+        overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) -> bool {
+        // EventClass rejects only the exact packed null CellStruct. Every
+        // other signed pair is resolved by MapClass' fixed 512-wide linear
+        // cell array, so out-of-range components may alias a canonical slot.
+        if (x, y) == (0, 0) {
+            return false;
+        }
+        let Some((rx, ry)) = canonical_cell_coord(i32::from(x), i32::from(y)) else {
+            return false;
+        };
+        let Some(grid) = self.overlay_grid.as_ref() else {
+            return false;
+        };
+        if rx >= grid.width() || ry >= grid.height() {
+            return false;
+        }
+        let cell = *grid.cell(rx, ry);
+        let (Some(overlay_id), Some(wall_owner)) = (cell.overlay_id, cell.wall_owner) else {
+            return false;
+        };
+        let Some(owner_house) = self.houses.get(&wall_owner) else {
+            return false;
+        };
+        let owner_admitted = if self.session.game_mode_nonzero {
+            owner_house.is_human
+        } else {
+            owner_house.is_human || owner_house.player_control
+        };
+        if !owner_admitted || !overlays.flags(overlay_id).is_some_and(|flags| flags.wall) {
+            return false;
+        }
+        let Some(wall_type) = rules.first_building_type_for_overlay(overlay_id, overlays) else {
+            return false;
+        };
+        if wall_type.unsellable {
+            return false;
+        }
+
+        // Native emits the global cue before the discarded actual-cost call
+        // and before clearing the overlay. Locality belongs to the receiver.
+        if rules.general.sell_sound.is_some()
+            && let Some(receiver) = self.interner.get(command_owner)
+        {
+            self.sound_events.push(SimSoundEvent::WallSold { receiver });
+        }
+        let _discarded_actual_cost = rules.building_actual_cost(wall_type);
+
+        let mut tail_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
+        let sold_navigation_changed = if let Some(grid) = self.overlay_grid.as_mut() {
+            grid.clear_overlay(rx, ry);
+            if let Some(terrain) = self.resolved_terrain.as_mut() {
+                let changed = recalc_overlay_passability(grid, terrain, overlays, rx, ry);
+                grid.record_synchronous_passability_change_at(rx, ry, changed);
+                changed
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        self.refresh_wall_sale_recalc_prefix(&mut tail_grid, rx, ry, sold_navigation_changed);
+
+        // Selling invokes exactly one PostDestructionWallCleanup at the sold
+        // cell: N, E, S, W, self. It is not damage's four-cardinal fan-out.
+        const CROSS: [(i32, i32); 5] = [(0, -1), (1, 0), (0, 1), (-1, 0), (0, 0)];
+        for (dx, dy) in CROSS {
+            let nx = i32::from(rx) + dx;
+            let ny = i32::from(ry) + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let (nx, ny) = (nx as u16, ny as u16);
+            let in_bounds = self
+                .overlay_grid
+                .as_ref()
+                .is_some_and(|grid| nx < grid.width() && ny < grid.height());
+            if !in_bounds {
+                continue;
+            }
+
+            self.tactical_dirty_cells.push((nx, ny));
+            self.mark_radar_terrain_dirty_cells([(nx, ny)]);
+            let mut result = RecomputeResult::NoChange;
+            let mut navigation_changed = false;
+            if let Some(grid) = self.overlay_grid.as_mut() {
+                result = recompute_wall_connectivity_at(grid, overlays, nx, ny);
+                if let Some(terrain) = self.resolved_terrain.as_mut() {
+                    navigation_changed =
+                        recalc_overlay_passability(grid, terrain, overlays, nx, ny);
+                    grid.record_synchronous_passability_change_at(nx, ny, navigation_changed);
+                }
+            }
+            self.refresh_wall_sale_recalc_prefix(&mut tail_grid, nx, ny, navigation_changed);
+            if result == RecomputeResult::Destroyed
+                && let Some(prefix_grid) = tail_grid.as_ref()
+            {
+                self.repair_wall_sale_zone_prefix(prefix_grid, (rx, ry), (nx, ny));
+            }
+        }
+        self.mark_radar_terrain_dirty_cells([(rx, ry)]);
+
+        let mut detach_trace: Vec<CellTargetDetach> = Vec::new();
+        detach_cell_target_references(&mut self.substrate.entities, rx, ry, &mut detach_trace);
+
+        if let Some(tail_grid) = tail_grid {
+            if self.zone_grid.is_some() {
+                // HouseClass performs the sold-cell AssignOrphaned/graph tail
+                // after PostDestructionWallCleanup has completed every visit.
+                self.repair_wall_sale_zone_prefix(&tail_grid, (rx, ry), (rx, ry));
+            } else {
+                self.rebuild_zone_grid_full(&tail_grid);
+            }
+            self.prev_path_grid = Some(tail_grid);
+        }
+        true
+    }
+
     /// Snapshot entity + rules data needed for movement dispatch in one lookup.
     pub(crate) fn resolve_move_info(
         &self,
@@ -130,12 +437,7 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> bool {
         match cmd {
-            Command::Select { entity_ids, .. } => {
-                let mut snapshot = entity_ids.clone();
-                snapshot.sort_unstable();
-                snapshot.dedup();
-                self.apply_selection_snapshot(&snapshot, rules)
-            }
+            Command::Select { entity_ids, .. } => self.apply_selection_snapshot(entity_ids, rules),
             Command::Move {
                 entity_id,
                 target_rx,
@@ -216,14 +518,17 @@ impl Simulation {
                         ) {
                             let Some(grid) = path_grid else { return false };
                             let cost_grid = self.terrain_costs.get(&info.speed_type);
-                            let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                                &self.substrate.entities,
-                                grid.width(),
-                                grid.height(),
-                                self.resolved_terrain.as_ref(),
-                                &self.interner,
-                                rules,
-                            );
+                            let blocker_neighbor_counts =
+                                bump_crush::build_blocker_neighbor_counts_with_overlays(
+                                    &self.substrate.entities,
+                                    grid.width(),
+                                    grid.height(),
+                                    self.resolved_terrain.as_ref(),
+                                    self.overlay_grid.as_ref(),
+                                    overlay_registry,
+                                    &self.interner,
+                                    rules,
+                                );
                             return movement::issue_move_command_with_layered(
                                 &mut self.substrate.entities,
                                 grid,
@@ -265,14 +570,17 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                        &self.substrate.entities,
-                        grid.width(),
-                        grid.height(),
-                        self.resolved_terrain.as_ref(),
-                        &self.interner,
-                        rules,
-                    );
+                    let blocker_neighbor_counts =
+                        bump_crush::build_blocker_neighbor_counts_with_overlays(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
+                            &self.interner,
+                            rules,
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -582,14 +890,17 @@ impl Simulation {
                 } else {
                     let Some(grid) = path_grid else { return false };
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                        &self.substrate.entities,
-                        grid.width(),
-                        grid.height(),
-                        self.resolved_terrain.as_ref(),
-                        &self.interner,
-                        rules,
-                    );
+                    let blocker_neighbor_counts =
+                        bump_crush::build_blocker_neighbor_counts_with_overlays(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
+                            &self.interner,
+                            rules,
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -818,6 +1129,12 @@ impl Simulation {
                 }
                 production::sell_building(self, rules, *entity_id)
             }
+            Command::SellWallAtCell { x, y } => {
+                let (Some(rules), Some(overlays)) = (rules, overlay_registry) else {
+                    return false;
+                };
+                self.sell_wall_at_cell(command_owner, *x, *y, rules, path_grid, overlays)
+            }
             Command::ToggleRepair { entity_id } => {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {
                     return false;
@@ -997,14 +1314,17 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
-                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                        &self.substrate.entities,
-                        grid.width(),
-                        grid.height(),
-                        self.resolved_terrain.as_ref(),
-                        &self.interner,
-                        Some(rules),
-                    );
+                    let blocker_neighbor_counts =
+                        bump_crush::build_blocker_neighbor_counts_with_overlays(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1122,14 +1442,17 @@ impl Simulation {
                 );
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
-                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                        &self.substrate.entities,
-                        grid.width(),
-                        grid.height(),
-                        self.resolved_terrain.as_ref(),
-                        &self.interner,
-                        Some(rules),
-                    );
+                    let blocker_neighbor_counts =
+                        bump_crush::build_blocker_neighbor_counts_with_overlays(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
+                            &self.interner,
+                            Some(rules),
+                        );
                     movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
@@ -1314,11 +1637,13 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     let blocker_neighbor_counts =
-                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
                             &self.substrate.entities,
                             grid.width(),
                             grid.height(),
                             self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
                             &self.interner,
                             Some(rules),
                         );
@@ -1437,11 +1762,13 @@ impl Simulation {
                 if let Some(grid) = path_grid {
                     let cost_grid = self.terrain_costs.get(&speed_type);
                     let blocker_neighbor_counts =
-                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
                             &self.substrate.entities,
                             grid.width(),
                             grid.height(),
                             self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
                             &self.interner,
                             Some(rules),
                         );
@@ -1520,7 +1847,12 @@ impl Simulation {
                     crate::rules::superweapon_type::SuperWeaponKind::GeneticConverter => {
                         let rules = rules.unwrap();
                         crate::sim::superweapon::genetic_converter::launch(
-                            self, rules, owner_iid, *target_rx, *target_ry,
+                            self,
+                            rules,
+                            owner_iid,
+                            *target_rx,
+                            *target_ry,
+                            overlay_registry,
                         )
                     }
                     crate::rules::superweapon_type::SuperWeaponKind::PsychicReveal => {
@@ -1663,14 +1995,17 @@ impl Simulation {
                     );
                     if let Some(grid) = path_grid {
                         let cost_grid = self.terrain_costs.get(&speed_type);
-                        let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                            &self.substrate.entities,
-                            grid.width(),
-                            grid.height(),
-                            self.resolved_terrain.as_ref(),
-                            &self.interner,
-                            Some(rules),
-                        );
+                        let blocker_neighbor_counts =
+                            bump_crush::build_blocker_neighbor_counts_with_overlays(
+                                &self.substrate.entities,
+                                grid.width(),
+                                grid.height(),
+                                self.resolved_terrain.as_ref(),
+                                self.overlay_grid.as_ref(),
+                                overlay_registry,
+                                &self.interner,
+                                Some(rules),
+                            );
                         movement::issue_move_command_with_layered(
                             &mut self.substrate.entities,
                             grid,
@@ -1811,18 +2146,25 @@ impl Simulation {
 
     /// Replace the current selection with exactly the given stable entity IDs.
     ///
-    /// Mirrors gamemd's replace-selection flow: clear the whole group first, then
-    /// run each requested object through `ObjectClass::Select`, which decides on
-    /// its own whether the object may join.
+    /// Mirrors gamemd's mutation flow: omitted old members are deselected,
+    /// requested old members retain their existing admission, and only genuinely
+    /// new members run through `ObjectClass::Select`. This distinction matters
+    /// for an already-selected Chrono unit in warp-out: warp blocks a fresh
+    /// selection, but does not retroactively remove an existing one.
     fn apply_selection_snapshot(&mut self, stable_ids: &[u64], rules: Option<&RuleSet>) -> bool {
-        // Deselect all via EntityStore.
+        let requested: BTreeSet<u64> = stable_ids.iter().copied().collect();
+        // Deselect only omitted old members. Requested old members remain set,
+        // so the final-admission gates below are never reapplied to them.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         for &id in &keys {
-            if let Some(e) = self.substrate.entities.get_mut(id) {
+            if !requested.contains(&id)
+                && let Some(e) = self.substrate.entities.get_mut(id)
+            {
                 e.selected = false;
             }
         }
-        // Select the requested IDs.
+        // Iterate the original payload, not the membership set: source order is
+        // authoritative even though this sim layer stores only selected bits.
         for &stable_id in stable_ids {
             self.try_select_object(stable_id, rules);
         }
@@ -1832,20 +2174,11 @@ impl Simulation {
     /// `TechnoClass::Select` then `ObjectClass::Select` — commit one object into
     /// the selection group.
     ///
-    /// Returns whether the object joined. A unit or building never reaches the
-    /// ObjectClass gates directly: `TechnoClass::Select` runs first and refuses
-    /// outright when the owning house is not a human player, which is what keeps
-    /// enemy AI armour and civilian props out of a band-box swept across a
-    /// fight. gamemd lets a per-object override byte bypass that refusal; the
-    /// byte's meaning is UNCHECKED and no VERA field models it. Note also that
-    /// gamemd's human-player test has two forms — a per-house pair of flags, and
-    /// a strict identity test against the local player — and which one a YR
-    /// skirmish takes is UNCHECKED; VERA implements the per-house form, so the
-    /// gate admits any human house rather than only the command issuer.
-    ///
-    /// Then the ObjectClass gates reject, in this order, an object that is in
-    /// limbo (it has no map presence to select), one that is already selected
-    /// (the group holds no duplicates), and one whose type answers no to
+    /// Caller-specific TechnoClass paths own their owner gate: bandbox and
+    /// TypeSelect admit only the local house, while an ordinary click may pass
+    /// a discovered nonlocal object. The final ObjectClass gates reject an
+    /// object that is dead, in limbo, already selected, leaving through a
+    /// chrono warp, or whose type answers no to
     /// `CanBeSelected` — i.e. `Selectable=no`, which is how the scripted
     /// paradrop/spy planes stay out of the player's hands. Without rules loaded
     /// the type answer is unknown, and the type default is yes.
@@ -1853,17 +2186,14 @@ impl Simulation {
         let Some(entity) = self.substrate.entities.get(stable_id) else {
             return false;
         };
-        // A house that was never declared — bare test sims, unowned map props —
-        // is treated as human, so this only fires on a house known to be AI.
-        // Same convention `credits_entry_for_owner` uses for missing houses.
-        if self
-            .houses
-            .get(&entity.owner)
-            .is_some_and(|house| !house.is_human)
+        if !entity.lifecycle.object_alive
+            || entity.lifecycle.in_limbo
+            || entity.selected
+            || entity
+                .teleport_state
+                .as_ref()
+                .is_some_and(|teleport| teleport.warp_out_active())
         {
-            return false;
-        }
-        if entity.lifecycle.in_limbo || entity.selected {
             return false;
         }
         let type_ref = entity.type_ref;

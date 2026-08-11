@@ -387,6 +387,14 @@ impl OwnerVisibility {
         }
     }
 
+    /// Clear only transient Gap Generator flags while preserving line of sight
+    /// and persisted map knowledge.
+    fn clear_gap_flags(&mut self) {
+        for cell in &mut self.cells {
+            *cell &= !(FLAG_GAP_COVERED | FLAG_GAP_FOG);
+        }
+    }
+
     /// Zero all flags (visible + revealed). Used when reusing the merged
     /// grid buffer in `build_merged_for`.
     fn clear_all(&mut self) {
@@ -900,6 +908,63 @@ impl FogState {
         if let Some(vis) = self.by_owner.get_mut(&owner) {
             for cell in &mut vis.cells {
                 *cell = 0;
+            }
+        }
+    }
+
+    /// Restore shroud after a house loses its last SpySat provider.
+    ///
+    /// Historical exploration is discarded, but the current Phase-3 techno
+    /// sight survives the House rung and remains explored in the same frame.
+    /// Transient Gap flags are replaced by the final SpySat -> Gap pass.
+    pub(crate) fn restore_shroud_after_spy_sat_loss(&mut self, owner: InternedId) {
+        if let Some(visibility) = self.by_owner.get_mut(&owner) {
+            for cell in &mut visibility.cells {
+                *cell = if *cell & FLAG_VISIBLE != 0 {
+                    FLAG_VISIBLE | FLAG_REVEALED
+                } else {
+                    0
+                };
+            }
+        }
+    }
+
+    /// Clear the transient enemy/friendly Gap result on every viewer plane.
+    pub fn clear_gap_flags(&mut self) {
+        for visibility in self.by_owner.values_mut() {
+            visibility.clear_gap_flags();
+        }
+    }
+
+    /// Lift unexplored shroud for one viewer without granting current sight.
+    pub fn reveal_all_for_owner(&mut self, owner: InternedId) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let vis = self
+            .by_owner
+            .entry(owner)
+            .or_insert_with(|| OwnerVisibility::new(self.width, self.height));
+        for cell in &mut vis.cells {
+            *cell |= FLAG_REVEALED;
+        }
+    }
+
+    /// Lift unexplored shroud only on the supplied allocated map cells.
+    pub fn reveal_cells_for_owner<I>(&mut self, owner: InternedId, cells: I)
+    where
+        I: IntoIterator<Item = (u16, u16)>,
+    {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let vis = self
+            .by_owner
+            .entry(owner)
+            .or_insert_with(|| OwnerVisibility::new(self.width, self.height));
+        for (rx, ry) in cells {
+            if let Some(index) = vis.index(rx, ry) {
+                vis.cells[index] |= FLAG_REVEALED;
             }
         }
     }
@@ -1430,9 +1495,9 @@ pub fn reveal_radius(
     );
 }
 
-/// Apply the SpySat map reveal: if any qualifying SpySat building exists for an
-/// owner, mark ALL cells **revealed** for that owner. Call after the normal
-/// vision recompute.
+/// Materialize active SpySat house latches by marking every synthetic-grid cell
+/// **revealed** for those owners. Production world code routes the same write
+/// through the native allocated-cell iterator instead. Call after normal vision.
 ///
 /// gamemd's whole-map reveal sets only the explored bit on every cell. It does
 /// not create a "currently in sight" state — with `FogOfWar=no` no such per-cell
@@ -1441,36 +1506,27 @@ pub fn reveal_radius(
 /// combat target acquisition, so writing it map-wide would let every unit
 /// acquire across the whole map, which the engine never does.
 ///
-/// Because the explored bit is monotonic, writing it repeatedly is idempotent:
-/// the reveal survives a power dip and outlives the tick that set it, matching
-/// the engine's edge-triggered one-shot. The reveal is withdrawn by
-/// `reset_explored_for_owner` when the last uplink dies or is sold.
+/// Writing it repeatedly is idempotent. The persisted per-house aggregate latch
+/// decides activation and last-provider loss; this helper only materializes the
+/// active owners and never infers a transition from an absent list entry.
 ///
-/// Takes a list of owner names for each SpySat building currently qualifying.
-/// Qualification filtering is done by the caller (see `refresh_fog`).
+/// Takes the owner names whose persisted SpySat latch is active.
 pub fn apply_spy_sat(
     fog: &mut FogState,
     spy_sat_owners: &[InternedId],
     _interner: &StringInterner,
 ) {
-    let width = fog.width;
-    let height = fog.height;
     for &owner_id in spy_sat_owners {
-        let vis = fog
-            .by_owner
-            .entry(owner_id)
-            .or_insert_with(|| OwnerVisibility::new(width, height));
-        for cell in &mut vis.cells {
-            *cell |= FLAG_REVEALED;
-        }
+        fog.reveal_all_for_owner(owner_id);
     }
 }
 
 /// Apply Gap Generator coverage for one tick. Each generator carries its own
 /// `GapRadiusInCells`. For every cell in the strict circular footprint
 /// `dx*dx + dy*dy < (radius+1)*(radius+1)`:
-///   - enemy viewers: clear FLAG_VISIBLE and set FLAG_GAP_COVERED — the cell is
-///     hidden and its terrain renders black (treated as unrevealed);
+///   - enemy viewers: clear FLAG_VISIBLE and FLAG_REVEALED, then set
+///     FLAG_GAP_COVERED; the cell renders black and its persisted map knowledge
+///     stays erased until local sight or a whole-map reveal reaches it again;
 ///   - friendly viewers (owner + allies): set FLAG_GAP_FOG — the cell renders
 ///     half-bright fog while keeping the owner's own vision.
 /// Call AFTER spy_sat so gap wins in contested areas.
@@ -1514,7 +1570,7 @@ pub fn apply_gap_generators(
                         if friendly {
                             vis.cells[i] |= FLAG_GAP_FOG;
                         } else {
-                            vis.cells[i] &= !FLAG_VISIBLE;
+                            vis.cells[i] &= !(FLAG_VISIBLE | FLAG_REVEALED);
                             vis.cells[i] |= FLAG_GAP_COVERED;
                         }
                     }

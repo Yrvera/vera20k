@@ -138,14 +138,6 @@ const CODE6_MULT_STATIONARY_ALLY: i32 = 8;
 /// search-scoped overlay instead of mutating persistent `PathGrid` cells.
 const SEARCH_MARKER_COST_MULTIPLIER: i32 = 4;
 
-/// Bridge flank cost multipliers from `AStar_compute_edge_cost`.
-///
-/// Runtime wiring is blocked until `PathfinderClass+0x01` lifecycle is verified;
-/// these helpers pin the binary numeric behavior without applying it globally.
-const BRIDGE_FLANK_MISSING_MULTIPLIER: i32 = 10;
-const BRIDGE_FLANK_ONE_MULTIPLIER: i32 = 1;
-const BRIDGE_FLANK_BOTH_MULTIPLIER: i32 = 2;
-
 /// Entry in the entity soft-block map for A* cost computation.
 /// Carries the blocker's next cell (for code-2 chain walk) and the
 /// Can_Enter_Cell return code (2/5/6) that selects the cost multiplier.
@@ -287,6 +279,19 @@ impl BlockerNeighborCounts {
         }
     }
 
+    /// Reverse one single-cell producer's eight raw-byte neighbor increments.
+    /// Overlay removal wiring is intentionally deferred to its owning batch.
+    pub(crate) fn remove_single_cell_neighbor_source(&mut self, x: u16, y: u16) {
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                self.decrement_i32(x as i32 + dx, y as i32 + dy);
+            }
+        }
+    }
+
     pub(crate) fn add_building_expanded_foundation(
         &mut self,
         origin_x: u16,
@@ -310,7 +315,15 @@ impl BlockerNeighborCounts {
             return;
         }
         let idx = y as usize * self.width as usize + x as usize;
-        self.counts[idx] = self.counts[idx].saturating_add(1);
+        self.counts[idx] = self.counts[idx].wrapping_add(1);
+    }
+
+    fn decrement_i32(&mut self, x: i32, y: i32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let idx = y as usize * self.width as usize + x as usize;
+        self.counts[idx] = self.counts[idx].wrapping_sub(1);
     }
 
     pub(crate) fn count_at(&self, x: u16, y: u16) -> u8 {
@@ -1033,7 +1046,7 @@ pub fn astar_search(
             }
 
             // --- Neighbor expansion ---
-            for (dir_index, &(dx, dy, is_diagonal)) in NEIGHBORS.iter().enumerate() {
+            for (dir_index, &(dx, dy, _is_diagonal)) in NEIGHBORS.iter().enumerate() {
                 let nx_i = cx as i32 + dx;
                 let ny_i = cy as i32 + dy;
                 if nx_i < 0
@@ -1331,25 +1344,11 @@ pub fn astar_search(
                     continue;
                 }
 
-                // Diagonal corner-cutting: gamemd does NOT validate the two
-                // cardinal cells flanking a diagonal neighbor. AStar_main_loop
-                // only calls Can_Enter_Cell on the diagonal cell itself, so
-                // units may "clip" between two impassable cells at a corner.
-                // The flanking-cardinals check is retained only for the Bridge
-                // layer, where geometry makes clipping nonsensical.
-                if is_diagonal && neighbor_use_bridge {
-                    if !grid.is_walkable_on_layer(nx, cy, MovementLayer::Bridge)
-                        || !grid.is_walkable_on_layer(cx, ny, MovementLayer::Bridge)
-                    {
-                        trace_step.rejected_reason = Some("bridge_diagonal_corner_blocked");
-                        emit_astar_trace(options, trace_step);
-                        continue;
-                    }
-                }
-
                 // Step cost — uniform across all 8 compass directions.
-                // The is_diagonal flag is still consumed by the corner-cutting
-                // check above; only the cost is unified.
+                // AStar_main_loop checks only the destination through
+                // Can_Enter_Cell. PathfinderClass+0x01 is constructor-zero and
+                // has no retail writer, so the dormant bridge-flank block does
+                // not inspect either cardinal beside a diagonal destination.
                 let base_cost = STEP_COST;
                 let mut step_cost = if terrain_cost == 100 {
                     base_cost
@@ -2415,22 +2414,6 @@ fn apply_search_marker_cost(
     } else {
         step_cost
     }
-}
-
-#[allow(dead_code)]
-fn bridge_flank_multiplier(first_flank_structural: bool, second_flank_structural: bool) -> i32 {
-    if !first_flank_structural {
-        BRIDGE_FLANK_MISSING_MULTIPLIER
-    } else if second_flank_structural {
-        BRIDGE_FLANK_BOTH_MULTIPLIER
-    } else {
-        BRIDGE_FLANK_ONE_MULTIPLIER
-    }
-}
-
-#[allow(dead_code)]
-fn apply_bridge_flank_cost(step_cost: i32, multiplier: i32) -> i32 {
-    step_cost * multiplier
 }
 
 /// Find a path from start to goal using A* search.

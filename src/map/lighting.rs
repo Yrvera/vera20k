@@ -49,6 +49,8 @@ pub const LEPTONS_PER_CELL: i32 = 256;
 
 const HALF_CELL_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
 const BOTTOM_LEVEL_OFFSET: i32 = 4;
+const DETAIL_LOW_RGB_MASK: i32 = !127;
+const DETAIL_MEDIUM_RGB_MASK: i32 = !63;
 const DETAIL_HIGH_RGB_MASK: i32 = !31;
 
 /// Default white tint (no lighting effect).
@@ -69,19 +71,18 @@ pub struct LightingConfig {
     pub ground: f32,
     /// Height-based ambient boost per elevation level. Default 0.032.
     pub level: f32,
-    /// Complete Lightning Storm lighting tuple, only present when the scenario
-    /// supplies every authoritative `Ion*` input.
-    pub ion: Option<LightingEffectConfig>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LightingEffectConfig {
-    pub ambient: f32,
-    pub red: f32,
-    pub green: f32,
-    pub blue: f32,
-    pub ground: f32,
-    pub level: f32,
+    /// Lightning Storm ambient target (default 0.87).
+    pub ion_ambient: f32,
+    /// Lightning Storm global red profile (default 0.30).
+    pub ion_red: f32,
+    /// Lightning Storm global green profile (default 0.40).
+    pub ion_green: f32,
+    /// Lightning Storm global blue profile (default 0.75).
+    pub ion_blue: f32,
+    /// Lightning Storm ground subtraction (default 0.0).
+    pub ion_ground: f32,
+    /// Lightning Storm height contribution (default 0.0).
+    pub ion_level: f32,
 }
 
 impl Default for LightingConfig {
@@ -93,9 +94,33 @@ impl Default for LightingConfig {
             blue: 1.0,
             ground: 0.20,
             level: 0.032,
-            ion: None,
+            ion_ambient: 0.87,
+            ion_red: 0.30,
+            ion_green: 0.40,
+            ion_blue: 0.75,
+            ion_ground: 0.0,
+            ion_level: 0.0,
         }
     }
+}
+
+/// Scenario-owned integer lighting profile as stored after map INI parsing.
+/// Ambient/RGB use the native 100 scale; Ground/Level use the native 250 scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LightingProfileUnits {
+    pub ambient_percent: i32,
+    pub red_percent: i32,
+    pub green_percent: i32,
+    pub blue_percent: i32,
+    pub ground_units: i32,
+    pub level_units: i32,
+}
+
+/// Ordinary and Lightning/Ion profiles parsed from one map `[Lighting]` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParsedLightingProfiles {
+    pub normal: LightingProfileUnits,
+    pub ion: LightingProfileUnits,
 }
 
 /// Integer RGB identity used by the light profile cache.
@@ -251,6 +276,7 @@ impl CellLight {
 pub struct CellLightGrid {
     cells: HashMap<(u16, u16), CellLight>,
     profiles: LightProfileCache,
+    detail_level: u32,
 }
 
 impl CellLightGrid {
@@ -258,6 +284,7 @@ impl CellLightGrid {
         Self {
             cells: HashMap::new(),
             profiles: LightProfileCache::new(),
+            detail_level: 2,
         }
     }
 
@@ -265,6 +292,15 @@ impl CellLightGrid {
         Self {
             cells: HashMap::with_capacity(capacity),
             profiles: LightProfileCache::new(),
+            detail_level: 2,
+        }
+    }
+
+    fn with_detail_level(detail_level: u32) -> Self {
+        Self {
+            cells: HashMap::new(),
+            profiles: LightProfileCache::new(),
+            detail_level: detail_level.min(2),
         }
     }
 
@@ -449,14 +485,6 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
         Some(s) => s,
         None => return LightingConfig::default(),
     };
-    let ion = [
-        section.get_f32("IonAmbient"),
-        section.get_f32("IonRed"),
-        section.get_f32("IonGreen"),
-        section.get_f32("IonBlue"),
-        section.get_f32("IonGround"),
-        section.get_f32("IonLevel"),
-    ];
     LightingConfig {
         ambient: section.get_f32("Ambient").unwrap_or(1.0),
         red: section.get_f32("Red").unwrap_or(1.0),
@@ -464,45 +492,72 @@ pub fn parse_lighting(ini: &IniFile) -> LightingConfig {
         blue: section.get_f32("Blue").unwrap_or(1.0),
         ground: section.get_f32("Ground").unwrap_or(0.20),
         level: section.get_f32("Level").unwrap_or(0.032),
-        ion: match ion {
-            [
-                Some(ambient),
-                Some(red),
-                Some(green),
-                Some(blue),
-                Some(ground),
-                Some(level),
-            ] => Some(LightingEffectConfig {
-                ambient,
-                red,
-                green,
-                blue,
-                ground,
-                level,
-            }),
-            _ => None,
+        ion_ambient: section.get_f32("IonAmbient").unwrap_or(0.87),
+        ion_red: section.get_f32("IonRed").unwrap_or(0.30),
+        ion_green: section.get_f32("IonGreen").unwrap_or(0.40),
+        ion_blue: section.get_f32("IonBlue").unwrap_or(0.75),
+        ion_ground: section.get_f32("IonGround").unwrap_or(0.0),
+        ion_level: section.get_f32("IonLevel").unwrap_or(0.0),
+    }
+}
+
+/// Parse the fixed integer ScenarioClass lighting fields without a second
+/// floating-point narrowing step. `ReadDouble` already models the native
+/// single-precision scan widened to double; each consumer then applies its
+/// own scale, +0.01 bias, and truncate-toward-zero conversion.
+pub fn parse_lighting_profiles(ini: &IniFile) -> ParsedLightingProfiles {
+    let Some(section) = ini.section("Lighting") else {
+        return ParsedLightingProfiles::default();
+    };
+    let percent =
+        |key: &str, default: f64| quantize_scenario_light(section.read_double(key, default), 100);
+    let ground_level =
+        |key: &str, default: f64| quantize_scenario_light(section.read_double(key, default), 250);
+    ParsedLightingProfiles {
+        normal: LightingProfileUnits {
+            ambient_percent: percent("Ambient", 1.0),
+            red_percent: percent("Red", 1.0),
+            green_percent: percent("Green", 1.0),
+            blue_percent: percent("Blue", 1.0),
+            ground_units: ground_level("Ground", 0.20),
+            level_units: ground_level("Level", 0.032),
+        },
+        ion: LightingProfileUnits {
+            ambient_percent: percent("IonAmbient", 0.87),
+            red_percent: percent("IonRed", 0.30),
+            green_percent: percent("IonGreen", 0.40),
+            blue_percent: percent("IonBlue", 0.75),
+            ground_units: ground_level("IonGround", 0.0),
+            level_units: ground_level("IonLevel", 0.0),
         },
     }
 }
 
-impl LightingConfig {
-    /// Project the only currently represented scenario-light effect. Native
-    /// precedence is Lightning Storm before the unrepresented Psychic
-    /// Dominator and Nuclear Flash branches; absent complete Ion inputs, retain
-    /// normal lighting rather than manufacturing defaults.
-    pub fn with_represented_lightning(&self, lightning_active: bool) -> Self {
-        let Some(ion) = self.ion.as_ref().filter(|_| lightning_active) else {
-            return self.clone();
-        };
-        let mut selected = self.clone();
-        selected.ambient = ion.ambient;
-        selected.red = ion.red;
-        selected.green = ion.green;
-        selected.blue = ion.blue;
-        selected.ground = ion.ground;
-        selected.level = ion.level;
-        selected
+impl Default for ParsedLightingProfiles {
+    fn default() -> Self {
+        Self {
+            normal: LightingProfileUnits {
+                ambient_percent: 100,
+                red_percent: 100,
+                green_percent: 100,
+                blue_percent: 100,
+                ground_units: 50,
+                level_units: 8,
+            },
+            ion: LightingProfileUnits {
+                ambient_percent: 87,
+                red_percent: 30,
+                green_percent: 40,
+                blue_percent: 75,
+                ground_units: 0,
+                level_units: 0,
+            },
+        }
     }
+}
+
+fn quantize_scenario_light(value: f64, scale: i32) -> i32 {
+    (value * f64::from(scale) + 0.01) as i32
 }
 
 /// Compute the RGB tint for a single cell given its elevation.
@@ -540,8 +595,31 @@ pub fn build_cell_light_grid_from_heights<I>(heights: I, config: &LightingConfig
 where
     I: IntoIterator<Item = ((u16, u16), u8)>,
 {
-    let mut grid = CellLightGrid::new();
-    let units = scenario_units(config);
+    build_cell_light_grid_from_heights_and_units(heights, scenario_profile_units(config))
+}
+
+/// Build a cell-light grid from exact ScenarioClass integer fields.
+pub fn build_cell_light_grid_from_heights_and_units<I>(
+    heights: I,
+    profile: LightingProfileUnits,
+) -> CellLightGrid
+where
+    I: IntoIterator<Item = ((u16, u16), u8)>,
+{
+    build_cell_light_grid_from_heights_and_units_with_detail(heights, profile, 2)
+}
+
+/// Build a cell-light grid using the native Options detail-level RGB cache mask.
+pub fn build_cell_light_grid_from_heights_and_units_with_detail<I>(
+    heights: I,
+    profile: LightingProfileUnits,
+    detail_level: u32,
+) -> CellLightGrid
+where
+    I: IntoIterator<Item = ((u16, u16), u8)>,
+{
+    let mut grid = CellLightGrid::with_detail_level(detail_level);
+    let units = scenario_units_from_profile(profile);
     for (cell, z) in heights {
         if cell == (0, 0) {
             let light = neutral_cell_light(&mut grid.profiles);
@@ -557,6 +635,7 @@ where
             0,
             raw_top,
             raw_bottom,
+            grid.detail_level,
         );
         grid.insert_light(cell, light);
     }
@@ -594,7 +673,8 @@ pub struct PointLight {
 #[derive(Debug, Clone)]
 pub struct DeferredCellLightRefresh {
     cells: Vec<((u16, u16), u8)>,
-    config: LightingConfig,
+    profile: LightingProfileUnits,
+    detail_level: u32,
     lights: Vec<PointLight>,
     samples: Vec<Option<CellLightSample>>,
     gathered: usize,
@@ -615,11 +695,24 @@ impl DeferredCellLightRefresh {
     where
         I: IntoIterator<Item = ((u16, u16), u8)>,
     {
+        Self::new_with_profile(heights, normal_profile_units(config), 2, lights)
+    }
+
+    pub fn new_with_profile<I>(
+        heights: I,
+        profile: LightingProfileUnits,
+        detail_level: u32,
+        lights: Vec<PointLight>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = ((u16, u16), u8)>,
+    {
         let cells: Vec<((u16, u16), u8)> = heights.into_iter().collect();
         Self {
             samples: vec![None; cells.len()],
             cells,
-            config: config.clone(),
+            profile,
+            detail_level: detail_level.min(2),
             lights,
             gathered: 0,
         }
@@ -633,7 +726,7 @@ impl DeferredCellLightRefresh {
         for _ in 0..count {
             let index = self.cells.len() - 1 - self.gathered;
             let (cell, height) = self.cells[index];
-            self.samples[index] = Some(sample_cell_light(cell, height, &self.config, &self.lights));
+            self.samples[index] = Some(sample_cell_light(cell, height, self.profile, &self.lights));
             self.gathered += 1;
         }
         self.is_gathered()
@@ -653,7 +746,7 @@ impl DeferredCellLightRefresh {
         if !self.is_gathered() {
             return None;
         }
-        let mut grid = CellLightGrid::with_capacity(self.samples.len());
+        let mut grid = CellLightGrid::with_detail_level(self.detail_level);
         for sample in self.samples.into_iter().flatten() {
             let light = if sample.neutral {
                 neutral_cell_light(&mut grid.profiles)
@@ -664,6 +757,7 @@ impl DeferredCellLightRefresh {
                     sample.raw_additive_intensity,
                     sample.raw_top_scalar,
                     sample.raw_bottom_scalar,
+                    self.detail_level,
                 )
             };
             grid.insert_light(sample.cell, light);
@@ -677,6 +771,7 @@ impl DeferredCellLightRefresh {
         if !self.is_gathered() {
             return false;
         }
+        grid.detail_level = self.detail_level;
         for sample in self.samples.into_iter().flatten() {
             let light = if sample.neutral {
                 neutral_cell_light(&mut grid.profiles)
@@ -687,6 +782,7 @@ impl DeferredCellLightRefresh {
                     sample.raw_additive_intensity,
                     sample.raw_top_scalar,
                     sample.raw_bottom_scalar,
+                    self.detail_level,
                 )
             };
             grid.insert_light(sample.cell, light);
@@ -870,6 +966,7 @@ pub fn accumulate_point_lights(grid: &mut CellLightGrid, lights: &[PointLight]) 
             raw_additive,
             raw_top,
             raw_bottom,
+            grid.detail_level,
         );
         grid.insert_light(cell, updated);
     }
@@ -878,7 +975,7 @@ pub fn accumulate_point_lights(grid: &mut CellLightGrid, lights: &[PointLight]) 
 fn sample_cell_light(
     cell: (u16, u16),
     height: u8,
-    config: &LightingConfig,
+    profile: LightingProfileUnits,
     lights: &[PointLight],
 ) -> CellLightSample {
     if cell == (0, 0) {
@@ -891,7 +988,7 @@ fn sample_cell_light(
             raw_bottom_scalar: LIGHT_UNIT,
         };
     }
-    let units = scenario_units(config);
+    let units = scenario_units_from_profile(profile);
     let mut raw_rgb = [units.red, units.green, units.blue];
     let mut raw_additive_intensity = 0;
     let mut raw_top_scalar = units.ambient + units.level * i32::from(height) - units.ground;
@@ -979,18 +1076,35 @@ struct NormalizedLight {
 }
 
 fn scenario_units(config: &LightingConfig) -> ScenarioLightUnits {
-    ScenarioLightUnits {
-        ambient: light_float_to_units(config.ambient),
-        red: light_float_to_units(config.red),
-        green: light_float_to_units(config.green),
-        blue: light_float_to_units(config.blue),
-        ground: light_ground_level_to_units(config.ground),
-        level: light_ground_level_to_units(config.level),
+    scenario_units_from_profile(scenario_profile_units(config))
+}
+
+fn scenario_profile_units(config: &LightingConfig) -> LightingProfileUnits {
+    LightingProfileUnits {
+        ambient_percent: (f64::from(config.ambient) * 100.0 + 0.01) as i32,
+        red_percent: (f64::from(config.red) * 100.0 + 0.01) as i32,
+        green_percent: (f64::from(config.green) * 100.0 + 0.01) as i32,
+        blue_percent: (f64::from(config.blue) * 100.0 + 0.01) as i32,
+        ground_units: (f64::from(config.ground) * 250.0 + 0.01) as i32,
+        level_units: (f64::from(config.level) * 250.0 + 0.01) as i32,
     }
 }
 
-fn light_ground_level_to_units(value: f32) -> i32 {
-    (value * GROUND_LEVEL_UNIT_SCALE as f32 + 0.1) as i32
+/// Convert the compatibility map config into the exact ordinary profile
+/// shape used by the integer cell-light builder.
+pub fn normal_profile_units(config: &LightingConfig) -> LightingProfileUnits {
+    scenario_profile_units(config)
+}
+
+fn scenario_units_from_profile(profile: LightingProfileUnits) -> ScenarioLightUnits {
+    ScenarioLightUnits {
+        ambient: profile.ambient_percent.wrapping_mul(10),
+        red: profile.red_percent.wrapping_mul(10),
+        green: profile.green_percent.wrapping_mul(10),
+        blue: profile.blue_percent.wrapping_mul(10),
+        ground: profile.ground_units,
+        level: profile.level_units,
+    }
 }
 
 fn build_cell_light_from_raw(
@@ -999,8 +1113,9 @@ fn build_cell_light_from_raw(
     raw_additive_intensity: i32,
     raw_top_scalar: i32,
     raw_bottom_scalar: i32,
+    detail_level: u32,
 ) -> CellLight {
-    let normalized = normalize_light(raw_rgb, raw_additive_intensity);
+    let normalized = normalize_light_at_detail(raw_rgb, raw_additive_intensity, detail_level);
     let top_high = raw_top_scalar.min(LIGHT_CLAMP_MAX);
     let common_high = top_high;
     let scaled_bottom = ((i64::from(raw_bottom_scalar) * i64::from(normalized.scale16)) >> 16)
@@ -1044,6 +1159,14 @@ fn neutral_cell_light(profiles: &mut LightProfileCache) -> CellLight {
 }
 
 fn normalize_light(raw_rgb: LightRgbKey, additive_intensity: i32) -> NormalizedLight {
+    normalize_light_at_detail(raw_rgb, additive_intensity, 2)
+}
+
+fn normalize_light_at_detail(
+    raw_rgb: LightRgbKey,
+    additive_intensity: i32,
+    detail_level: u32,
+) -> NormalizedLight {
     let mut rgb = [
         raw_rgb[0].clamp(0, LIGHT_CLAMP_MAX),
         raw_rgb[1].clamp(0, LIGHT_CLAMP_MAX),
@@ -1088,7 +1211,7 @@ fn normalize_light(raw_rgb: LightRgbKey, additive_intensity: i32) -> NormalizedL
     NormalizedLight {
         scale16,
         additive_intensity: additive,
-        rgb_key: quantize_rgb_key(rgb),
+        rgb_key: quantize_rgb_key(rgb, detail_level),
     }
 }
 
@@ -1100,14 +1223,19 @@ fn normalize_channel_by_scale(channel: i32, scale16: i32) -> i32 {
     ((i64::from(channel) * i64::from(LIGHT_SCALE16_IDENTITY)) / i64::from(scale16)) as i32
 }
 
-fn quantize_rgb_key(rgb: LightRgbKey) -> LightRgbKey {
+fn quantize_rgb_key(rgb: LightRgbKey, detail_level: u32) -> LightRgbKey {
     if rgb == [LIGHT_UNIT, LIGHT_UNIT, LIGHT_UNIT] {
         return rgb;
     }
+    let mask = match detail_level {
+        0 => DETAIL_LOW_RGB_MASK,
+        1 => DETAIL_MEDIUM_RGB_MASK,
+        _ => DETAIL_HIGH_RGB_MASK,
+    };
     [
-        (rgb[0].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
-        (rgb[1].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
-        (rgb[2].clamp(0, LIGHT_UNIT)) & DETAIL_HIGH_RGB_MASK,
+        (rgb[0].clamp(0, LIGHT_UNIT)) & mask,
+        (rgb[1].clamp(0, LIGHT_UNIT)) & mask,
+        (rgb[2].clamp(0, LIGHT_UNIT)) & mask,
     ]
 }
 
@@ -1144,41 +1272,82 @@ mod tests {
         assert!((config.blue - 1.0).abs() < 0.001);
         assert!((config.ground - 0.20).abs() < 0.001);
         assert!((config.level - 0.032).abs() < 0.001);
-        assert_eq!(config.ion, None);
-    }
-
-    #[test]
-    fn complete_ion_tuple_is_selected_only_while_lightning_is_represented() {
-        let ini = IniFile::from_str(
-            "[Lighting]\nAmbient=0.8\nRed=0.9\nGreen=0.7\nBlue=0.6\nGround=0.2\nLevel=0.03\n\
-             IonAmbient=0.4\nIonRed=0.5\nIonGreen=0.6\nIonBlue=0.7\nIonGround=0.1\nIonLevel=0.02\n",
-        );
-        let config = parse_lighting(&ini);
-
-        assert_eq!(config.with_represented_lightning(false).ambient, 0.8);
-        let ion = config.with_represented_lightning(true);
+        assert!((config.ion_ambient - 0.87).abs() < 0.001);
+        assert!((config.ion_red - 0.30).abs() < 0.001);
+        assert!((config.ion_green - 0.40).abs() < 0.001);
+        assert!((config.ion_blue - 0.75).abs() < 0.001);
         assert_eq!(
-            [
-                ion.ambient,
-                ion.red,
-                ion.green,
-                ion.blue,
-                ion.ground,
-                ion.level
-            ],
-            [0.4, 0.5, 0.6, 0.7, 0.1, 0.02]
+            parse_lighting_profiles(&ini),
+            ParsedLightingProfiles::default()
         );
     }
 
     #[test]
-    fn incomplete_ion_tuple_does_not_invent_effect_defaults() {
+    fn gsi_04_20_lighting_profiles_use_native_integer_scales_and_truncation() {
         let ini = IniFile::from_str(
-            "[Lighting]\nAmbient=0.8\nIonAmbient=0.4\nIonRed=0.5\nIonGreen=0.6\n",
+            "[Lighting]\n\
+             Ambient=.8798\nRed=.3198\nGreen=.4198\nBlue=.7598\n\
+             Ground=.0039\nLevel=.0319\n\
+             IonAmbient=.8698\nIonRed=.2998\nIonGreen=.3998\nIonBlue=.7498\n\
+             IonGround=.0079\nIonLevel=.0119\n",
         );
-        let config = parse_lighting(&ini);
+        let parsed = parse_lighting_profiles(&ini);
+        assert_eq!(
+            parsed.normal,
+            LightingProfileUnits {
+                ambient_percent: 87,
+                red_percent: 31,
+                green_percent: 41,
+                blue_percent: 75,
+                ground_units: 0,
+                level_units: 7,
+            }
+        );
+        assert_eq!(
+            parsed.ion,
+            LightingProfileUnits {
+                ambient_percent: 86,
+                red_percent: 29,
+                green_percent: 39,
+                blue_percent: 74,
+                ground_units: 1,
+                level_units: 2,
+            }
+        );
 
-        assert_eq!(config.ion, None);
-        assert_eq!(config.with_represented_lightning(true).ambient, 0.8);
+        let grid = build_cell_light_grid_from_heights_and_units([((3, 4), 2)], parsed.ion);
+        let light = grid.cell_light_at((3, 4)).expect("light");
+        assert_eq!(light.common_scalar, 863);
+        assert_eq!(light.raw_rgb, [290, 390, 740]);
+    }
+
+    #[test]
+    fn gsi_04_20_detail_level_requantizes_lightconvert_rgb() {
+        let profile = LightingProfileUnits {
+            ambient_percent: 100,
+            red_percent: 100,
+            green_percent: 88,
+            blue_percent: 88,
+            ground_units: 0,
+            level_units: 0,
+        };
+        let key_at = |detail_level| {
+            build_cell_light_grid_from_heights_and_units_with_detail(
+                [((3, 4), 0)],
+                profile,
+                detail_level,
+            )
+            .cell_light_at((3, 4))
+            .expect("light")
+            .rgb_key
+        };
+
+        let low = key_at(0);
+        let medium = key_at(1);
+        let high = key_at(2);
+        assert_eq!(low, [896, 768, 768]);
+        assert_eq!(medium, [960, 832, 832]);
+        assert_eq!(high, [992, 864, 864]);
     }
 
     #[test]
@@ -1239,7 +1408,7 @@ mod tests {
             blue: 0.6,
             ground: 0.0,
             level: 0.0,
-            ion: None,
+            ..LightingConfig::default()
         };
         let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
         let light = grid.cell_light_at((1, 1)).expect("light");
@@ -1256,7 +1425,7 @@ mod tests {
             blue: 1.0,
             ground: 0.0,
             level: 0.0,
-            ion: None,
+            ..LightingConfig::default()
         };
         let tint: [f32; 3] = cell_tint(&config, 0);
         // 3.0 > 2.0 cap → scaled to 2.0
@@ -1272,7 +1441,7 @@ mod tests {
             blue: 1.0,
             ground: 0.5,
             level: 0.0,
-            ion: None,
+            ..LightingConfig::default()
         };
         let grid = build_cell_light_grid_from_heights([((1, 1), 0)], &config);
         let light = grid.cell_light_at((1, 1)).expect("light");
@@ -1289,7 +1458,7 @@ mod tests {
             blue: 0.88,
             ground: 0.0,
             level: 0.039,
-            ion: None,
+            ..LightingConfig::default()
         };
         let terrain: [f32; 3] = terrain_tint(&config);
         let ground_cell: [f32; 3] = cell_tint(&config, 0);
@@ -1368,7 +1537,7 @@ mod tests {
             blue: 0.88,
             ground: 0.0,
             level: 0.039,
-            ion: None,
+            ..LightingConfig::default()
         };
         let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
 
@@ -1409,7 +1578,7 @@ mod tests {
             blue: 1.0,
             ground: 0.0,
             level: 0.032,
-            ion: None,
+            ..LightingConfig::default()
         };
         let grid = build_cell_light_grid_from_heights([((7, 9), 0)], &config);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
@@ -1470,7 +1639,7 @@ mod tests {
             blue: 1.0,
             ground: 0.20,
             level: 0.032,
-            ion: None,
+            ..LightingConfig::default()
         };
         let grid = build_cell_light_grid_from_heights([((10, 10), 0), ((10, 11), 4)], &config);
 
@@ -1511,6 +1680,7 @@ mod tests {
                     0,
                     base_scalar,
                     base_scalar,
+                    2,
                 );
                 grid.insert_light((x, y), light);
             }
@@ -1652,7 +1822,8 @@ mod tests {
     #[test]
     fn lightconvert_normalization_preserves_scale16_and_rgb_key() {
         let mut profiles = LightProfileCache::new();
-        let light = build_cell_light_from_raw(&mut profiles, [1050, 1050, 1010], 200, 1150, 1182);
+        let light =
+            build_cell_light_from_raw(&mut profiles, [1050, 1050, 1010], 200, 1150, 1182, 2);
 
         assert_eq!(light.raw_rgb, [1050, 1050, 1010]);
         assert_eq!(light.raw_additive_intensity, 200);
@@ -1809,7 +1980,19 @@ mod tests {
         assert!(pending.gather(heights.len()));
         let deferred = pending.commit().expect("complete gather commits");
         for cell in [(4, 4), (5, 4), (6, 4)] {
-            assert_eq!(deferred.cell_light_at(cell), immediate.cell_light_at(cell));
+            let mut deferred_light = deferred
+                .cell_light_at(cell)
+                .cloned()
+                .expect("deferred cell");
+            let mut immediate_light = immediate
+                .cell_light_at(cell)
+                .cloned()
+                .expect("immediate cell");
+            // Profile IDs are local cache slots; equivalent RGB profiles can
+            // be interned in a different order by full-grid and deferred paths.
+            deferred_light.profile_id = LightProfileId(0);
+            immediate_light.profile_id = LightProfileId(0);
+            assert_eq!(deferred_light, immediate_light);
         }
     }
 

@@ -174,14 +174,17 @@ pub(super) fn resolve_cell_transition_bridge_state(
     match compute_bridge_transition(src_cell, dst_cell) {
         BridgeTransition::Enter { deck_level } => {
             position.z = deck_level;
+            position.exact_z_leptons = None;
             BridgeStateUpdate::Set(deck_level)
         }
         BridgeTransition::Exit => {
             position.z = dst_cell.ground_level;
+            position.exact_z_leptons = None;
             BridgeStateUpdate::Clear
         }
         BridgeTransition::NoChange => {
             position.z = dst_cell.effective_cell_z_for_layer(next_layer);
+            position.exact_z_leptons = None;
             BridgeStateUpdate::Unchanged
         }
     }
@@ -450,6 +453,7 @@ mod tests {
             rx,
             ry,
             z,
+            exact_z_leptons: None,
             sub_x: SimFixed::ZERO,
             sub_y: SimFixed::ZERO,
             // screen_x/screen_y are #[serde(skip, default)] but Position has no

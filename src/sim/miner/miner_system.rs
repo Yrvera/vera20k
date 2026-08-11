@@ -28,7 +28,6 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::zone_map::{ZONE_INVALID, ZoneGrid};
-use crate::sim::production::pick_best_resource_node;
 use crate::sim::world::{SimSoundEvent, Simulation};
 use crate::util::fixed_math::{SimFixed, ra2_speed_to_leptons_per_second};
 
@@ -147,7 +146,7 @@ mod gsi_04_03b_tests {
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: true,
             canonical_ramp: None,
@@ -273,6 +272,7 @@ mod gsi_04_03b_tests {
             1,
             shared_head,
             SimFixed::from_num(128),
+            None,
         );
 
         assert_eq!(
@@ -298,6 +298,7 @@ mod gsi_04_03b_tests {
             2,
             shared_head,
             SimFixed::from_num(128),
+            None,
         );
 
         let second = sim.substrate.entities.get(2).expect("second miner");
@@ -328,13 +329,20 @@ mod gsi_04_03b_tests {
 pub(super) const DISPATCH_NEXT_FRAME: i32 = 1;
 
 /// Jitter ceiling of the default handler epilogue: `RandomRanged(0, 2)`.
-const RATE_EPILOGUE_JITTER_MAX_FRAMES: u32 = 2;
+///
+/// Visible to the sibling test modules so a fixture mirroring the epilogue draw
+/// cannot silently desync from the implementation.
+pub(super) const RATE_EPILOGUE_JITTER_MAX_FRAMES: u32 = 2;
 
 /// Keyless-`[Harvest]` fallback for the epilogue base; the stock `Rate=.016`
 /// resolves to `ftol(.016 × 900) = 14` from the mission-control table, so this
 /// is only reached when a mod strips the section. The gamemd MissionControl
 /// ctor default for that case is UNCHECKED.
-const HARVEST_RATE_FALLBACK_FRAMES: u8 = 14;
+///
+/// Visible to the sibling test modules for the same reason as the jitter
+/// ceiling above: a fixture that recomputes the epilogue base must read the
+/// same fallback the production path does.
+pub(super) const HARVEST_RATE_FALLBACK_FRAMES: u8 = 14;
 
 /// Install the native default handler epilogue as the dispatch delay:
 /// `ftol([Harvest] Rate × 900)` plus one `RandomRanged(0, 2)` drawn on the
@@ -510,6 +518,15 @@ pub(super) fn commit_miner_snapshot(sim: &mut Simulation, snap: &MinerSnapshot, 
     }
 }
 
+/// Selects the only production ore authority while allowing old node-only
+/// fixtures to opt into their compatibility store explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResourceQueryAuthority {
+    OverlayGrid,
+    #[cfg(test)]
+    LegacyNodesForTests,
+}
+
 /// Test-only mirror of the production Harvest dispatch walk: the same
 /// per-entity dispatch (timer gate + epilogue) the host Unit arm performs, in
 /// live-object order, with the legacy stable-id fallback for direct-insert
@@ -521,7 +538,14 @@ pub(crate) fn tick_miners(
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
 ) {
-    tick_miners_with_overlay_registry(sim, rules, config, path_grid, None);
+    tick_miners_test_walk(
+        sim,
+        rules,
+        config,
+        path_grid,
+        None,
+        ResourceQueryAuthority::LegacyNodesForTests,
+    );
 }
 
 #[cfg(test)]
@@ -532,6 +556,25 @@ pub(crate) fn tick_miners_with_overlay_registry(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
+    tick_miners_test_walk(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        ResourceQueryAuthority::OverlayGrid,
+    );
+}
+
+#[cfg(test)]
+fn tick_miners_test_walk(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    resource_authority: ResourceQueryAuthority,
+) {
     let live_order = sim.live_object_order_snapshot();
     let keys: Vec<u64> = if live_order.is_empty() {
         sim.substrate.entities.keys_sorted()
@@ -540,13 +583,14 @@ pub(crate) fn tick_miners_with_overlay_registry(
     };
     sweep_dead_dock_reservations_for_keys(sim, &keys);
     for id in keys {
-        super::harvest_mission::dispatch_harvest_for_object(
+        super::harvest_mission::dispatch_harvest_for_object_with_resource_authority_for_tests(
             sim,
             rules,
             config,
             path_grid,
             overlay_registry,
             id,
+            resource_authority,
         );
     }
 }
@@ -563,6 +607,26 @@ pub(super) fn process_miner(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
+    process_miner_with_resource_authority(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        snap,
+        ResourceQueryAuthority::OverlayGrid,
+    );
+}
+
+pub(super) fn process_miner_with_resource_authority(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    config: &MinerConfig,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
+) {
     if sim
         .substrate
         .entities
@@ -574,24 +638,47 @@ pub(super) fn process_miner(
 
     let state_before = format!("{:?}", snap.state);
     match snap.state {
-        MinerState::SearchOre => {
-            handle_search_ore(sim, rules, config, path_grid, overlay_registry, snap)
-        }
-        MinerState::MoveToOre => {
-            handle_move_to_ore(sim, rules, config, path_grid, overlay_registry, snap)
-        }
-        MinerState::Harvest => {
-            handle_harvest(sim, rules, config, path_grid, overlay_registry, snap)
-        }
+        MinerState::SearchOre => handle_search_ore(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
+        MinerState::MoveToOre => handle_move_to_ore(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
+        MinerState::Harvest => handle_harvest(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        ),
         MinerState::ReturnToRefinery => {
-            handle_return(sim, rules, config, path_grid, snap);
+            handle_return(sim, rules, config, path_grid, overlay_registry, snap);
             // Native return/finding-home state has no per-frame exit: every
             // dispatch leaves through the default Rate epilogue.
             arm_rate_epilogue(sim, rules, snap);
         }
-        MinerState::Dock => {
-            super::miner_dock_sequence::handle_dock_sequence(sim, rules, config, path_grid, snap)
-        }
+        MinerState::Dock => super::miner_dock_sequence::handle_dock_sequence(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+        ),
         MinerState::Unload => {
             // Legacy state — production code never enters this path. If we
             // encounter it (e.g., a save from before the FSM rewrite), fall
@@ -606,7 +693,7 @@ pub(super) fn process_miner(
             arm_rate_epilogue(sim, rules, snap);
         }
         MinerState::ForcedReturn => {
-            handle_forced_return(sim, rules, config, path_grid, snap);
+            handle_forced_return(sim, rules, config, path_grid, overlay_registry, snap);
             // VERA-internal cursor; outside the native handler's switch, so
             // it exits through the default epilogue like any high cursor.
             arm_rate_epilogue(sim, rules, snap);
@@ -700,6 +787,7 @@ fn handle_search_ore(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     // gamemd's Mission_Harvest state 0 checks full storage before scanning
     // ore, so a full miner that lost its refinery keeps trying to return.
@@ -722,9 +810,9 @@ fn handle_search_ore(
     enum ScanOutcome {
         /// Ghost-cell archive consumed — the native archive-target return.
         Archive((u16, u16)),
-        /// Fresh ore target from the bounded or global scan.
+        /// Fresh ore target from the bounded scan.
         Found((u16, u16)),
-        /// No reachable ore anywhere.
+        /// No reachable ore inside the scan radius.
         NoOre,
     }
 
@@ -742,7 +830,13 @@ fn handle_search_ore(
         // off between the save and the next cycle.
         let mut archive_hit = None;
         if let Some(archive) = snap.miner.last_harvest_cell {
-            let archive_has_ore = resource_cell_present(sim, rules, overlay_registry, archive);
+            let archive_has_ore = resource_cell_present_with_authority(
+                sim,
+                rules,
+                overlay_registry,
+                archive,
+                resource_authority,
+            );
             let archive_reachable = filter_ref.is_none_or(|f| f(archive));
             if archive_has_ore && archive_reachable {
                 archive_hit = Some(ScanOutcome::Archive(archive));
@@ -758,13 +852,18 @@ fn handle_search_ore(
         // pre-pass — the search expands outward and picks the best cell
         // within radius. Used for both war miners and chrono miners.
         //
-        // Chrono miners DRIVE to ore, not warp — the original's
-        // Mission_Harvest state 0 forces a DriveLocomotion piggyback before
-        // calling Set_Destination, so the teleport-vs-drive branch in
-        // Set_Destination resolves to drive. Only the inbound trip
-        // (ore → refinery) uses the warp; outbound is a normal drive.
+        // That radius is the whole search. gamemd's scan is hard-bounded by
+        // it and breaks on the first ring with a hit; there is no second,
+        // wider pass behind it, so a miss is a miss and the miss arm below —
+        // not a cross-map drive — is what a player sees.
+        //
+        // Chrono miners DRIVE to ore, not warp: the destination-setting path
+        // only keeps the Teleport locomotor when the miner already holds a
+        // radio contact, which a miner heading out to ore never does, so it
+        // swaps in a Drive piggyback. Only the inbound trip (ore → refinery)
+        // uses the warp.
         archive_hit.unwrap_or_else(|| {
-            search_local_resource(
+            search_local_resource_with_authority(
                 sim,
                 rules,
                 overlay_registry,
@@ -772,17 +871,8 @@ fn handle_search_ore(
                 config.long_scan_radius,
                 filter_ref,
                 config,
+                resource_authority,
             )
-            // Global search — find nearest reachable ore anywhere on the map.
-            .or_else(|| {
-                pick_best_resource_cell(
-                    sim,
-                    rules,
-                    overlay_registry,
-                    (snap.rx, snap.ry),
-                    filter_ref,
-                )
-            })
             .map_or(ScanOutcome::NoOre, ScanOutcome::Found)
         })
     };
@@ -799,7 +889,26 @@ fn handle_search_ore(
         ScanOutcome::Found(cell) => {
             snap.miner.target_ore_cell = Some(cell);
             snap.state = MinerState::MoveToOre;
-            // Productive search: per-frame dispatch (native return 1).
+            // A scan that answers the miner's own cell is gamemd's one
+            // productive return with nothing to drive to: per-frame dispatch,
+            // no epilogue draw. Every other hit sets the destination inside
+            // this same dispatch and then falls through into the default Rate
+            // epilogue — so the drive command and the epilogue's single
+            // RandomRanged(0, 2) both belong to the scan dispatch, not to a
+            // later one.
+            if cell != (snap.rx, snap.ry) {
+                if let Some(grid) = path_grid {
+                    let _ = issue_stock_miner_drive_move_with_overlay_registry(
+                        sim,
+                        rules,
+                        grid,
+                        snap.entity_id,
+                        cell,
+                        overlay_registry,
+                    );
+                }
+                arm_rate_epilogue(sim, rules, snap);
+            }
         }
         ScanOutcome::NoOre => {
             // Native: no ore, no owner destination, no archive parks the
@@ -807,7 +916,9 @@ fn handle_search_ore(
             // directly — bypassing the Rate epilogue, so no RNG draw. The
             // dispatch delay carries the wait; the internal rescan gate is
             // armed to the same expiry (the gate fires inclusively at
-            // start + duration), so the two never double-count.
+            // start + duration), so the two never double-count. What runs when
+            // the wait expires — and how far it is from gamemd's own idle tail
+            // — is documented on `handle_wait_no_ore`.
             snap.state = MinerState::WaitNoOre;
             snap.miner.rescan_cooldown.arm(
                 sim.session.binary_frame,
@@ -825,6 +936,7 @@ fn handle_move_to_ore(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     let has_destination_or_movement =
         sim.substrate
@@ -850,7 +962,13 @@ fn handle_move_to_ore(
     };
 
     // Check if current target has been depleted.
-    let still_has_ore = resource_cell_present(sim, rules, overlay_registry, current_target);
+    let still_has_ore = resource_cell_present_with_authority(
+        sim,
+        rules,
+        overlay_registry,
+        current_target,
+        resource_authority,
+    );
     if !still_has_ore {
         snap.miner.target_ore_cell = None;
         snap.state = MinerState::SearchOre;
@@ -871,16 +989,25 @@ fn handle_move_to_ore(
         return;
     }
 
-    // Per-tick rescan — gamemd's Mission_Harvest state 0 re-runs the
-    // ore scan every tick from the harvester's current cell. If the
-    // best-available cell shifts (current target became blocked by a
-    // tree / other miner, or a closer ore opened up), retarget. The
-    // scan is deterministic given unchanged inputs, so when nothing
-    // changes it returns the same cell and the assignment is a no-op.
+    // Rescan on re-entry, NOT per tick. gamemd's Mission_Harvest state 0
+    // wraps its entire body — scan, cell lookup and destination write — in
+    // the "no destination held" guard above; while a destination is held the
+    // state never looks at ore. So this scan runs only on the dispatches that
+    // get past that guard, i.e. after the drive ends (arrival or abort). A
+    // *distant* destination going impassable therefore retargets nothing
+    // until the miner's own movement reaches it. Exactly one candidate
+    // fast-retarget path was checked and ruled out: the destination repair
+    // inside the locomotor's path search, which runs from within a re-path
+    // and nudges the destination by a cell rather than re-running the ore
+    // scan. Whether any *other* mechanism reacts to that trigger is
+    // UNCHECKED — no exhaustive sweep was run. Here the scan re-picks the
+    // best cell from the harvester's current position; it is deterministic
+    // given unchanged inputs, so a world that has not changed returns the
+    // same cell and the assignment is a no-op.
     let new_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_resource(
+        search_local_resource_with_authority(
             sim,
             rules,
             overlay_registry,
@@ -888,6 +1015,7 @@ fn handle_move_to_ore(
             config.long_scan_radius,
             filter_ref,
             config,
+            resource_authority,
         )
     };
     let target = new_target.unwrap_or(current_target);
@@ -909,8 +1037,23 @@ fn handle_move_to_ore(
     }
 
     if let Some(grid) = path_grid {
-        let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, target);
+        let _ = issue_stock_miner_drive_move_with_overlay_registry(
+            sim,
+            rules,
+            grid,
+            snap.entity_id,
+            target,
+            overlay_registry,
+        );
     }
+    // VERA-internal, gamemd equivalent UNCHECKED. This cursor has no native
+    // counterpart at all, and the epilogue is armed here whether or not the
+    // drive command was accepted. What the decompile actually shows is only
+    // the accepted case: a destination that took reaches the default Rate
+    // epilogue, because the handler's next test reads a now-non-null
+    // destination slot. Whether a *refused* destination lands there too is
+    // unchecked — VERA's mover can refuse where the native call cannot.
+    arm_rate_epilogue(sim, rules, snap);
 }
 
 fn handle_harvest(
@@ -920,6 +1063,7 @@ fn handle_harvest(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     // Frame-anchored gate (was a per-tick countdown).
     if !snap.miner.harvest_timer.due(sim.session.binary_frame) {
@@ -933,7 +1077,15 @@ fn handle_harvest(
         // mission dispatch.
         snap.miner.harvest_timer.reset(sim.session.binary_frame);
         snap.state = MinerState::ReturnToRefinery;
-        save_archive_via_short_scan(sim, rules, config, path_grid, overlay_registry, snap);
+        save_archive_via_short_scan(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            resource_authority,
+        );
         return;
     }
 
@@ -945,8 +1097,15 @@ fn handle_harvest(
 
     // Shared CellClass::Reduce_Tiberium boundary: caller owns cargo insertion,
     // while the helper owns overlay/resource/dirty/queue side effects.
-    let reduction =
-        sim.reduce_tiberium_at_with_native_context(cell, empty, Some(rules), overlay_registry);
+    let reduction = match resource_authority {
+        ResourceQueryAuthority::OverlayGrid => {
+            sim.reduce_tiberium_at_with_native_context(cell, empty, Some(rules), overlay_registry)
+        }
+        #[cfg(test)]
+        ResourceQueryAuthority::LegacyNodesForTests => {
+            sim.reduce_legacy_tiberium_at_for_tests(cell, empty)
+        }
+    };
 
     if reduction.removed_amount > 0 {
         let Some(resource_type) = reduction.resource_type else {
@@ -983,7 +1142,7 @@ fn handle_harvest(
     let continuation_target = {
         let scan_filter = build_scan_filter(sim, path_grid, snap);
         let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-        search_local_resource(
+        search_local_resource_with_authority(
             sim,
             rules,
             overlay_registry,
@@ -991,6 +1150,7 @@ fn handle_harvest(
             config.local_continuation_radius,
             filter_ref,
             config,
+            resource_authority,
         )
     };
     if let Some(next_cell) = continuation_target {
@@ -1001,7 +1161,7 @@ fn handle_harvest(
 
     // Scan miss while not full → return to refinery, clear archive.
     snap.miner.last_harvest_cell = None;
-    begin_return(sim, rules, config, path_grid, snap);
+    begin_return(sim, rules, config, path_grid, overlay_registry, snap);
 }
 
 /// Save a fresh ghost-cell archive by running a short-radius scan from
@@ -1015,10 +1175,11 @@ fn save_archive_via_short_scan(
     path_grid: Option<&PathGrid>,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
+    resource_authority: ResourceQueryAuthority,
 ) {
     let scan_filter = build_scan_filter(sim, path_grid, snap);
     let filter_ref: Option<&dyn Fn((u16, u16)) -> bool> = scan_filter.as_deref();
-    snap.miner.last_harvest_cell = search_local_resource(
+    snap.miner.last_harvest_cell = search_local_resource_with_authority(
         sim,
         rules,
         overlay_registry,
@@ -1026,6 +1187,7 @@ fn save_archive_via_short_scan(
         config.local_continuation_radius,
         filter_ref,
         config,
+        resource_authority,
     );
 }
 
@@ -1034,6 +1196,7 @@ fn handle_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
@@ -1071,10 +1234,26 @@ fn handle_return(
             if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
                 return;
             }
-            if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+            if try_begin_close_return_radio(
+                sim,
+                rules,
+                config,
+                path_grid,
+                overlay_registry,
+                snap,
+                rsid,
+            ) {
                 return;
             }
-            if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
+            if try_issue_standard_far_return_drive(
+                sim,
+                rules,
+                config,
+                path_grid,
+                overlay_registry,
+                snap,
+                rsid,
+            ) {
                 return;
             }
         } else {
@@ -1110,10 +1289,27 @@ fn handle_return(
     {
         return;
     }
-    if try_begin_close_return_radio(sim, rules, config, path_grid, snap, ref_sid) {
+    if try_begin_close_return_radio(
+        sim,
+        rules,
+        config,
+        path_grid,
+        overlay_registry,
+        snap,
+        ref_sid,
+    ) {
         return;
     }
-    if !moving && try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, ref_sid)
+    if !moving
+        && try_issue_standard_far_return_drive(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            ref_sid,
+        )
     {
         return;
     }
@@ -1145,10 +1341,42 @@ fn handle_return(
     }
 
     if let Some(grid) = path_grid {
-        issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, dock, snap.speed);
+        issue_move_if_idle(
+            sim,
+            Some(rules),
+            grid,
+            snap.entity_id,
+            dock,
+            snap.speed,
+            overlay_registry,
+        );
     }
 }
 
+/// The idle cursor gamemd's Harvest handler parks in when its bounded ore scan
+/// found nothing — gamemd's only entry into this cursor. The scan-miss
+/// return carries the whole 105-frame wait as the dispatch delay, so gamemd's
+/// body has no internal gate of its own; the wait expiring *is* the next
+/// dispatch. VERA's `rescan_cooldown` anchor mirrors that same expiry, so the
+/// gate below never adds a second wait on top of it.
+///
+/// UNIMPLEMENTED NATIVE TAIL, recorded rather than half-built: gamemd's body
+/// queues the miner off Harvest onto the mission whose handler is the
+/// harvester Guard override, and that override is the half that brings the
+/// miner back — its player arm re-queues Harvest when a refinery the house
+/// owns sits in one of the eight neighbouring cells, which is exactly where a
+/// refinery's own free miner stands. VERA does not model that arm (the
+/// residual is recorded at the Unit Guard dispatch arm in
+/// `sim/world/techno_ai.rs`), so queueing the handoff from here would strand
+/// the miner for the rest of the match instead of cycling it. Until the
+/// override's harvester arm exists, this keeps VERA's own re-search exit:
+/// VERA-internal, gamemd equivalent UNCHECKED. It reproduces the retry cadence
+/// a miner parked beside its refinery shows in gamemd and never loses the
+/// unit; it diverges for a miner parked *away* from any refinery, which gamemd
+/// leaves sitting on Guard while this keeps re-scanning every 105 frames.
+///
+/// The other entries into this cursor (no live refinery, from the return and
+/// forced-return handlers) are VERA-internal as well and share the same exit.
 fn handle_wait_no_ore(snap: &mut MinerSnapshot, now: u32) {
     if !snap.miner.rescan_cooldown.due(now) {
         return;
@@ -1161,6 +1389,7 @@ fn handle_forced_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let has_teleport = sim
@@ -1194,7 +1423,7 @@ fn handle_forced_return(
         }
     }
 
-    handle_return(sim, rules, config, path_grid, snap);
+    handle_return(sim, rules, config, path_grid, overlay_registry, snap);
 }
 
 // -- Helpers --
@@ -1239,6 +1468,7 @@ pub(crate) fn extract_bale(
 /// in a single atomic mutation: one `node.remaining` decrement and one
 /// overlay update (or removal). Returns an empty Vec when the cell is
 /// missing, has `remaining == 0`, or `empty_capacity_bales == 0`.
+#[cfg(test)]
 pub(crate) fn extract_bales_max(
     sim: &mut Simulation,
     cell: (u16, u16),
@@ -1248,7 +1478,7 @@ pub(crate) fn extract_bales_max(
     if empty_capacity_bales == 0 {
         return Vec::new();
     }
-    let outcome = sim.reduce_tiberium_at(cell, empty_capacity_bales);
+    let outcome = sim.reduce_legacy_tiberium_at_for_tests(cell, empty_capacity_bales);
     let Some(resource_type) = outcome.resource_type else {
         return Vec::new();
     };
@@ -1277,6 +1507,7 @@ fn begin_return(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     if let Some((rsid, _dock)) = find_nearest_refinery(
@@ -1290,10 +1521,19 @@ fn begin_return(
         if try_issue_chrono_far_return_teleport(sim, rules, config, path_grid, snap, rsid) {
             return;
         }
-        if try_begin_close_return_radio(sim, rules, config, path_grid, snap, rsid) {
+        if try_begin_close_return_radio(sim, rules, config, path_grid, overlay_registry, snap, rsid)
+        {
             return;
         }
-        if try_issue_standard_far_return_drive(sim, rules, config, path_grid, snap, rsid) {
+        if try_issue_standard_far_return_drive(
+            sim,
+            rules,
+            config,
+            path_grid,
+            overlay_registry,
+            snap,
+            rsid,
+        ) {
             return;
         }
         snap.state = MinerState::ReturnToRefinery;
@@ -1307,6 +1547,7 @@ fn try_begin_close_return_radio(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
@@ -1369,7 +1610,15 @@ fn try_begin_close_return_radio(
             && !is_adjacent_or_at((snap.rx, snap.ry), staging)
             && let Some(grid) = path_grid
         {
-            issue_move_if_idle(sim, Some(rules), grid, snap.entity_id, staging, snap.speed);
+            issue_move_if_idle(
+                sim,
+                Some(rules),
+                grid,
+                snap.entity_id,
+                staging,
+                snap.speed,
+                overlay_registry,
+            );
         }
     }
 
@@ -1439,6 +1688,7 @@ fn try_issue_standard_far_return_drive(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     ref_sid: u64,
 ) -> bool {
@@ -1464,7 +1714,14 @@ fn try_issue_standard_far_return_drive(
         return false;
     };
 
-    let _ = issue_stock_miner_drive_move(sim, rules, grid, snap.entity_id, staging);
+    let _ = issue_stock_miner_drive_move_with_overlay_registry(
+        sim,
+        rules,
+        grid,
+        snap.entity_id,
+        staging,
+        overlay_registry,
+    );
     snap.state = MinerState::ReturnToRefinery;
     true
 }
@@ -1722,13 +1979,35 @@ pub(crate) fn resource_cell_present(
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     cell: (u16, u16),
 ) -> bool {
+    resource_cell_present_with_authority(
+        sim,
+        rules,
+        overlay_registry,
+        cell,
+        ResourceQueryAuthority::OverlayGrid,
+    )
+}
+
+fn resource_cell_present_with_authority(
+    sim: &Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    cell: (u16, u16),
+    resource_authority: ResourceQueryAuthority,
+) -> bool {
     if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
         return crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell).is_some();
     }
-    sim.production
-        .resource_nodes
-        .get(&cell)
-        .is_some_and(|node| node.remaining > 0)
+    #[cfg(test)]
+    if resource_authority == ResourceQueryAuthority::LegacyNodesForTests {
+        return sim
+            .production
+            .resource_nodes
+            .get(&cell)
+            .is_some_and(|node| node.remaining > 0);
+    }
+    let _ = resource_authority;
+    false
 }
 
 pub(crate) fn search_local_resource(
@@ -1740,59 +2019,44 @@ pub(crate) fn search_local_resource(
     filter: Option<&dyn Fn((u16, u16)) -> bool>,
     config: &MinerConfig,
 ) -> Option<(u16, u16)> {
-    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
-        return search_local_tiberium(grid, registry, types, center, radius, filter);
-    }
-    search_local_ore(
-        &sim.production.resource_nodes,
+    search_local_resource_with_authority(
+        sim,
+        rules,
+        overlay_registry,
         center,
         radius,
         filter,
-        config.ore_bale_value,
-        config.gem_bale_value,
+        config,
+        ResourceQueryAuthority::OverlayGrid,
     )
 }
 
-fn pick_best_resource_cell(
+fn search_local_resource_with_authority(
     sim: &Simulation,
     rules: &RuleSet,
     overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    from: (u16, u16),
+    center: (u16, u16),
+    radius: u16,
     filter: Option<&dyn Fn((u16, u16)) -> bool>,
+    config: &MinerConfig,
+    resource_authority: ResourceQueryAuthority,
 ) -> Option<(u16, u16)> {
-    let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry)
-    else {
-        return pick_best_resource_node(&sim.production.resource_nodes, from, filter);
-    };
-    let mut best: Option<(i32, u32, u16, u16)> = None;
-    for (rx, ry, _) in grid.iter_occupied() {
-        let cell = (rx, ry);
-        if filter.is_some_and(|candidate_filter| !candidate_filter(cell)) {
-            continue;
-        }
-        let Some(view) = crate::sim::tiberium::tiberium_cell_view(grid, registry, types, cell)
-        else {
-            continue;
-        };
-        let dx = i64::from(rx) - i64::from(from.0);
-        let dy = i64::from(ry) - i64::from(from.1);
-        let distance = (dx * dx + dy * dy) as u32;
-        let candidate = (view.nominal_value, distance, ry, rx);
-        let replace = match best {
-            None => true,
-            Some(current) => {
-                candidate.0 > current.0
-                    || (candidate.0 == current.0 && candidate.1 < current.1)
-                    || (candidate.0 == current.0
-                        && candidate.1 == current.1
-                        && (candidate.2, candidate.3) < (current.2, current.3))
-            }
-        };
-        if replace {
-            best = Some(candidate);
-        }
+    if let Some((grid, registry, types)) = native_tiberium_context(sim, rules, overlay_registry) {
+        return search_local_tiberium(grid, registry, types, center, radius, filter);
     }
-    best.map(|(_, _, ry, rx)| (rx, ry))
+    #[cfg(test)]
+    if resource_authority == ResourceQueryAuthority::LegacyNodesForTests {
+        return search_local_ore(
+            &sim.production.resource_nodes,
+            center,
+            radius,
+            filter,
+            config.ore_bale_value,
+            config.gem_bale_value,
+        );
+    }
+    let _ = (config, resource_authority);
+    None
 }
 
 fn search_local_tiberium(
@@ -1939,6 +2203,17 @@ pub(crate) fn issue_stock_miner_drive_move(
     entity_id: u64,
     target: (u16, u16),
 ) -> bool {
+    issue_stock_miner_drive_move_with_overlay_registry(sim, rules, grid, entity_id, target, None)
+}
+
+fn issue_stock_miner_drive_move_with_overlay_registry(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    grid: &PathGrid,
+    entity_id: u64,
+    target: (u16, u16),
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return false;
     }
@@ -1967,11 +2242,13 @@ pub(crate) fn issue_stock_miner_drive_move(
     };
 
     let terrain_costs = sim.terrain_costs.get(&info.speed_type);
-    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
+    let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
         &sim.substrate.entities,
         grid.width(),
         grid.height(),
         sim.resolved_terrain.as_ref(),
+        sim.overlay_grid.as_ref(),
+        overlay_registry,
         &sim.interner,
         Some(rules),
     );
@@ -2029,6 +2306,7 @@ pub(crate) fn issue_move_if_idle(
     entity_id: u64,
     target: (u16, u16),
     speed: SimFixed,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
@@ -2041,14 +2319,17 @@ pub(crate) fn issue_move_if_idle(
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
-            &sim.substrate.entities,
-            grid.width(),
-            grid.height(),
-            sim.resolved_terrain.as_ref(),
-            &sim.interner,
-            rules,
-        );
+        let blocker_neighbor_counts =
+            movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
+                &sim.substrate.entities,
+                grid.width(),
+                grid.height(),
+                sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
+                &sim.interner,
+                rules,
+            );
         let _ = movement::issue_move_command_with_layered(
             &mut sim.substrate.entities,
             grid,
@@ -2151,4 +2432,319 @@ pub(crate) fn effective_purifier_count(
     let table = rules.general.ai_virtual_purifiers;
     let virtual_count = table[house.difficulty.table_index()];
     real + virtual_count
+}
+
+#[cfg(test)]
+mod harvest_scan_dispatch_tests {
+    use super::*;
+    use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::mission::MissionType;
+
+    const MINER_ID: u64 = 1;
+
+    fn scan_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             0=GAREFN\n\
+             [HARV]\n\
+             Name=War Miner\n\
+             Speed=4\n\
+             Sight=5\n\
+             Harvester=yes\n\
+             Dock=GAREFN\n\
+             [GAREFN]\n\
+             Name=Ore Refinery\n\
+             Foundation=4x3\n\
+             Refinery=yes\n",
+        );
+        RuleSet::from_ini(&ini).expect("scan rules")
+    }
+
+    /// A War Miner parked at `cell` with the Harvest cursor on the search state.
+    fn spawn_search_miner(sim: &mut Simulation, cell: (u16, u16)) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("HARV");
+        let mut ge = GameEntity::new_at_frame_zero_for_test(
+            MINER_ID,
+            cell.0,
+            cell.1,
+            0,
+            0,
+            owner,
+            Health {
+                current: 600,
+                max: 600,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        ge.locomotor = Some(
+            crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+                crate::rules::locomotor_type::LocomotorKind::Drive,
+            ),
+        );
+        ge.drive_locomotion = Some(Default::default());
+        ge.miner = Some(Miner::new(MinerKind::War, &MinerConfig::default(), 0));
+        ge.mission.set_handler_state(MinerState::SearchOre.cursor());
+        sim.substrate.entities.insert(ge);
+        sim.substrate.next_stable_object_id = MINER_ID + 1;
+    }
+
+    fn seed_ore(sim: &mut Simulation, cell: (u16, u16)) {
+        sim.production.resource_nodes.insert(
+            cell,
+            ResourceNode {
+                resource_type: ResourceType::Ore,
+                remaining: 720,
+            },
+        );
+    }
+
+    fn ore_authority_rules() -> (RuleSet, OverlayTypeRegistry, u8) {
+        let mut text = String::from(
+            "[Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nValue=25\n[OverlayTypes]\n",
+        );
+        for slot in 0..=102 {
+            if slot == 102 {
+                text.push_str("102=TIB01\n");
+            } else {
+                text.push_str(&format!("{slot}=FILL{slot:03}\n"));
+            }
+        }
+        text.push_str("[TIB01]\nTiberium=yes\n");
+        let ini = IniFile::from_str(&text);
+        let rules = RuleSet::from_ini(&ini).expect("ore authority rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let tib01 = registry.id_for_name("TIB01").expect("TIB01 slot");
+        (rules, registry, tib01)
+    }
+
+    #[test]
+    fn gsi_04_09_miner_queries_fail_closed_and_ignore_compatibility_nodes() {
+        let (rules, registry, tib01) = ore_authority_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let mut sim = Simulation::new();
+        sim.production.resource_nodes.insert(
+            (2, 2),
+            ResourceNode {
+                resource_type: ResourceType::Gem,
+                remaining: u16::MAX,
+            },
+        );
+
+        assert!(!resource_cell_present(&sim, &rules, None, (2, 2)));
+        assert_eq!(
+            search_local_resource(&sim, &rules, None, (2, 2), 8, None, &config),
+            None,
+            "missing native context cannot switch to the serialized node map"
+        );
+
+        let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+        overlay.place_overlay(4, 4, tib01, 0);
+        overlay.take_dirty_cells();
+        sim.overlay_grid = Some(overlay);
+        assert!(resource_cell_present(&sim, &rules, Some(&registry), (4, 4)));
+        assert_eq!(
+            search_local_resource(&sim, &rules, Some(&registry), (2, 2), 8, None, &config,),
+            Some((4, 4)),
+            "the contradictory center node cannot override the live overlay search"
+        );
+    }
+
+    #[test]
+    fn productive_scan_sets_the_destination_and_draws_the_epilogue_in_one_dispatch() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner(&mut sim, (10, 10));
+        seed_ore(&mut sim, (10, 14));
+
+        let scenario_before = sim.rng_state().scenario;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(
+            entity.miner.as_ref().expect("miner").target_ore_cell,
+            Some((10, 14))
+        );
+        assert!(
+            entity.movement_target.is_some(),
+            "gamemd sets the destination inside the scan dispatch"
+        );
+        assert_ne!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "the Rate epilogue's RandomRanged(0, 2) belongs to the scan dispatch"
+        );
+        let base = i32::from(crate::sim::miner::miner_dock_sequence::mission_base_frames(
+            &rules,
+            MissionType::Harvest,
+            HARVEST_RATE_FALLBACK_FRAMES,
+        ));
+        let delay = entity.mission.dispatch_timer().delay();
+        assert!(
+            (base..=base + RATE_EPILOGUE_JITTER_MAX_FRAMES as i32).contains(&delay),
+            "a productive scan returns the Rate epilogue, not the per-frame return \
+             (delay {delay}, base {base})"
+        );
+    }
+
+    #[test]
+    fn scan_answering_the_miners_own_cell_returns_per_frame_and_draws_nothing() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner(&mut sim, (10, 10));
+        seed_ore(&mut sim, (10, 10));
+
+        let scenario_before = sim.rng_state().scenario;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert!(entity.movement_target.is_none(), "nothing to drive to");
+        assert_eq!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "gamemd's own-cell return bypasses the Rate epilogue"
+        );
+        assert_eq!(entity.mission.dispatch_timer().delay(), DISPATCH_NEXT_FRAME);
+    }
+
+    #[test]
+    fn scan_miss_parks_the_miner_instead_of_driving_to_the_far_side_of_the_map() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(512, 512);
+        let mut sim = Simulation::new();
+        spawn_search_miner(&mut sim, (10, 10));
+        // Well outside TiberiumLongScan — the only ore on the map, and gamemd's
+        // bounded scan can never reach it.
+        seed_ore(&mut sim, (400, 400));
+        assert!(config.long_scan_radius < 300);
+
+        let scenario_before = sim.rng_state().scenario;
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(entity.miner_state(), Some(MinerState::WaitNoOre));
+        assert_eq!(
+            entity.miner.as_ref().expect("miner").target_ore_cell,
+            None,
+            "no whole-map fallback target"
+        );
+        assert!(entity.movement_target.is_none(), "no cross-map drive");
+        assert_eq!(
+            entity.mission.dispatch_timer().delay(),
+            i32::from(config.rescan_cooldown_ticks),
+        );
+        assert_eq!(
+            sim.rng_state().scenario,
+            scenario_before,
+            "the miss return bypasses the Rate epilogue"
+        );
+    }
+
+    /// The park must stay recoverable. gamemd's idle tail hands the miner to
+    /// the harvester Guard override, whose player arm puts it straight back on
+    /// Harvest beside its own refinery; VERA has the handoff's destination but
+    /// not that return arm, so a miner queued off Harvest here would never come
+    /// back. A refinery's free miner that misses its first scan is the concrete
+    /// case — a 1400-credit unit lost for the match if this regresses.
+    #[test]
+    fn the_park_re_searches_after_the_wait_instead_of_retiring_the_miner() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner(&mut sim, (10, 10));
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(MINER_ID)
+                .expect("miner")
+                .miner_state(),
+            Some(MinerState::WaitNoOre)
+        );
+
+        // Ore appears inside the scan radius while the miner is parked.
+        seed_ore(&mut sim, (10, 14));
+
+        // The idle state's own dispatch, one full wait later, runs the exit.
+        sim.session.binary_frame += u32::from(config.rescan_cooldown_ticks);
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(
+            entity.mission.queued().known(),
+            None,
+            "nothing may queue the miner off Harvest while the Guard override's \
+             harvester return arm is unmodelled"
+        );
+        assert_ne!(
+            entity.miner_state(),
+            Some(MinerState::WaitNoOre),
+            "the park must be recoverable, not a terminal state"
+        );
+    }
+
+    #[test]
+    fn idling_for_want_of_a_refinery_keeps_the_re_search_exit() {
+        let rules = scan_rules();
+        let config = MinerConfig::from_rules(&rules);
+        let grid = PathGrid::new(64, 64);
+        let mut sim = Simulation::new();
+        spawn_search_miner(&mut sim, (10, 10));
+        // Full cargo with no refinery on the map drives the return handler into
+        // the idle cursor. That entry is VERA-internal with no gamemd
+        // counterpart, and it shares the scan-miss park's re-search exit.
+        {
+            let entity = sim.substrate.entities.get_mut(MINER_ID).expect("miner");
+            entity
+                .mission
+                .set_handler_state(MinerState::ReturnToRefinery.cursor());
+            let miner = entity.miner.as_mut().expect("miner");
+            let capacity = miner.capacity_bales;
+            miner.cargo = (0..capacity)
+                .map(|_| CargoBale {
+                    resource_type: ResourceType::Ore,
+                    value: 25,
+                })
+                .collect();
+        }
+
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(MINER_ID)
+                .expect("miner")
+                .miner_state(),
+            Some(MinerState::WaitNoOre)
+        );
+
+        sim.session.binary_frame += u32::from(config.rescan_cooldown_ticks);
+        tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+        let entity = sim.substrate.entities.get(MINER_ID).expect("miner");
+        assert_eq!(
+            entity.mission.queued().known(),
+            None,
+            "the VERA-internal no-refinery park queues no mission either"
+        );
+        assert_eq!(entity.miner_state(), Some(MinerState::SearchOre));
+    }
 }

@@ -9,6 +9,9 @@
 //! - Part of the app layer — no sim/render dependencies.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use winit::keyboard::KeyCode;
 
 use crate::render::batch::BatchTexture;
 
@@ -49,6 +52,103 @@ pub(crate) enum OrderMode {
     Move,
     AttackMove,
     Guard,
+}
+
+/// Local edge state for the retail TypeSelect command.
+///
+/// The command is unusual among the keyboard actions: the press arms a held
+/// mode, mouse selection consults that mode while the key remains down, and
+/// the release performs the tap action only when it arrives within 500 ms.
+/// This is presentation/input state, never lockstep simulation state.
+#[derive(Debug, Default)]
+pub(crate) struct TypeSelectInputState {
+    pressed_at: Option<Instant>,
+    physical_key: Option<KeyCode>,
+    selection_mode_is_type_select: bool,
+    pub(crate) across_map: bool,
+    pub(crate) last_outcome: Option<TypeSelectOutcome>,
+}
+
+impl TypeSelectInputState {
+    pub(crate) fn held(&self) -> bool {
+        self.pressed_at.is_some()
+    }
+
+    pub(crate) fn owns_key(&self, physical_key: KeyCode) -> bool {
+        self.physical_key == Some(physical_key)
+    }
+
+    /// Arm on the first press edge. Auto-repeat and duplicate press events do
+    /// not move the timestamp.
+    pub(crate) fn press(&mut self, physical_key: KeyCode, now: Instant, repeat: bool) {
+        if repeat || self.pressed_at.is_some() {
+            return;
+        }
+        self.pressed_at = Some(now);
+        self.physical_key = Some(physical_key);
+    }
+
+    /// Clear the matching held edge and report whether the release is a tap.
+    pub(crate) fn release(&mut self, physical_key: KeyCode, now: Instant) -> bool {
+        if self.physical_key != Some(physical_key) {
+            return false;
+        }
+        self.physical_key = None;
+        let Some(pressed_at) = self.pressed_at.take() else {
+            return false;
+        };
+        now.saturating_duration_since(pressed_at) <= Duration::from_millis(500)
+    }
+
+    pub(crate) fn clear_held(&mut self) {
+        self.pressed_at = None;
+        self.physical_key = None;
+    }
+
+    /// TypeSelect's scope byte persists independently of SelectionMode. A held
+    /// batch consumes the old scope first; its successful Select then resets
+    /// SelectionMode, so a following short-release tap must restart on-screen.
+    pub(crate) fn note_successful_selection_mutation(&mut self, clear_scope: bool) {
+        self.selection_mode_is_type_select = false;
+        if clear_scope {
+            self.across_map = false;
+            self.last_outcome = None;
+        }
+    }
+
+    pub(crate) fn prepare_tap_scope(&mut self) {
+        if !self.selection_mode_is_type_select {
+            self.across_map = false;
+        }
+    }
+
+    pub(crate) fn finish_tap(&mut self, outcome: TypeSelectOutcome, across_map: bool) {
+        self.selection_mode_is_type_select = true;
+        self.across_map = across_map;
+        self.last_outcome = Some(outcome);
+    }
+
+    pub(crate) fn reset_scope(&mut self) {
+        self.note_successful_selection_mutation(true);
+    }
+}
+
+/// Localized HUD outcomes emitted by the native TypeSelect action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeSelectOutcome {
+    Empty,
+    Map,
+    Screen,
+}
+
+impl TypeSelectOutcome {
+    pub(crate) const fn csf_key(self) -> &'static str {
+        match self {
+            Self::Empty => "MSG:NothingSelected",
+            Self::Map => "MSG:SelAcrossMap",
+            Self::Screen => "MSG:SelAcrossScreen",
+        }
+    }
 }
 
 /// Identifies a visual cursor from mouse.sha. Used as HashMap key in SoftwareCursor.
@@ -93,7 +193,7 @@ pub(crate) enum CursorId {
     EngineerRepair,
     TogglePower,
     NoTogglePower,
-    /// 4-way scroll arrow for middle-mouse pan (frame 385 in mouse.sha).
+    /// 4-way pan cursor (frame 385 in mouse.sha).
     Pan,
     // Sell / repair mode cursors.
     Sell,
@@ -178,6 +278,26 @@ mod tests {
         assert_ne!(default, tps_for_game_speed(2));
         assert_ne!(default, tps_for_game_speed(3));
     }
+
+    #[test]
+    fn item83_type_select_release_window_is_inclusive_and_repeat_does_not_rearm() {
+        let start = Instant::now();
+        let mut state = TypeSelectInputState::default();
+        state.press(KeyCode::KeyT, start, false);
+        state.press(KeyCode::KeyT, start + Duration::from_millis(400), true);
+        assert!(state.release(KeyCode::KeyT, start + Duration::from_millis(500)));
+
+        state.press(KeyCode::KeyT, start, false);
+        assert!(!state.release(KeyCode::KeyT, start + Duration::from_millis(501)));
+        assert!(!state.held());
+    }
+
+    #[test]
+    fn item83_type_select_outcomes_use_csf_keys_not_source_line_numbers() {
+        assert_eq!(TypeSelectOutcome::Empty.csf_key(), "MSG:NothingSelected");
+        assert_eq!(TypeSelectOutcome::Map.csf_key(), "MSG:SelAcrossMap");
+        assert_eq!(TypeSelectOutcome::Screen.csf_key(), "MSG:SelAcrossScreen");
+    }
 }
 
 /// Eight compass directions used for edge-scroll cursor selection.
@@ -210,8 +330,11 @@ pub(crate) enum CursorFeedbackKind {
     Invalid,
     PlaceValid,
     PlaceInvalid,
-    /// Edge-scroll arrow — shown when cursor is near a screen edge.
+    /// Edge-scroll arrow shown on the one-pixel outer window edge.
     Scroll(ScrollDir),
+    /// Directional barred edge-scroll arrow when the tactical clamp removes
+    /// every requested movement component.
+    ScrollBlocked(ScrollDir),
     /// Move cursor minimap variant (frames 42–51) — shown when hovering over the minimap.
     MinimapMove,
     /// Deploy/undeploy cursor — shown when a Deployer unit hovers over itself.
@@ -229,8 +352,6 @@ pub(crate) enum CursorFeedbackKind {
     /// Sell cursor mode active (sidebar dollar). `true` = an own building is
     /// under the cursor (sell), `false` = no eligible target (no-sell).
     SellMode(bool),
-    /// Pan cursor — shown while middle-mouse dragging to scroll the map.
-    Pan,
     /// Superweapon targeting reticle — shown while a charged SW is armed
     /// and the cursor is over the tactical map. Payload is the per-SW
     /// CursorId resolved from the `Action=` INI string.

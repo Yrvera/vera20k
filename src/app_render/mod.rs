@@ -71,7 +71,6 @@ pub(crate) struct GameRenderOutput {
 pub(crate) fn render_game(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
 ) -> Result<GameRenderOutput> {
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
@@ -125,11 +124,21 @@ pub(crate) fn render_game(
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
     state.cached_overlay_instances = world.overlay;
 
+    let combat_lights = state.combat_lights.draw_records();
+    state.combat_light_renderer.prepare(
+        &state.gpu,
+        &combat_lights,
+        [sw, sh],
+        [state.camera_x, state.camera_y],
+        state.zoom_level,
+    );
+    let composition_view = state.combat_light_renderer.composition_view();
+
     // Phase 7: Dispatch draw calls in render order.
     draw_passes::dispatch_draw_passes(
         state,
         encoder,
-        view,
+        &composition_view,
         &draw_passes::DrawPassData {
             bridge_unit_instances: &world.bridge_unit,
             bridge_unit_pages: &world.bridge_unit_pages,
@@ -144,7 +153,6 @@ pub(crate) fn render_game(
             ghost_page: ui.ghost_page,
         },
     );
-
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
     state.cached_unit_instances = world.unit;
@@ -185,7 +193,6 @@ fn upload_to_gpu(
 
     // Terrain + overlays
     pool.upload(&state.gpu, "terrain", &world.terrain.normal);
-    pool.upload(&state.gpu, "terrain_cliff", &world.terrain.cliff_redraw);
     pool.upload(&state.gpu, "overlay", &world.overlay);
     pool.upload(&state.gpu, "overlay_bridge_body", &world.bridge_body);
     pool.upload(
@@ -248,6 +255,20 @@ fn upload_to_gpu(
     for (i, page_inst) in world.top_shp_paged.iter().enumerate() {
         if i < SHP_TOP_KEYS.len() {
             pool.upload(&state.gpu, SHP_TOP_KEYS[i], page_inst);
+        }
+    }
+    // Selected buildings' bodies for the depth-only stamp before the bracket
+    // redraw. Same atlas pages as the bodies themselves, so it needs the same
+    // per-page split.
+    const SHP_SELECTED_DEPTH_KEYS: [&str; 4] = [
+        "shp_selected_depth_p0",
+        "shp_selected_depth_p1",
+        "shp_selected_depth_p2",
+        "shp_selected_depth_p3",
+    ];
+    for (i, page_inst) in world.selected_building_depth_paged.iter().enumerate() {
+        if i < SHP_SELECTED_DEPTH_KEYS.len() {
+            pool.upload(&state.gpu, SHP_SELECTED_DEPTH_KEYS[i], page_inst);
         }
     }
     // (No `building_turret` buffer: a building's voxel turret rides the `unit`

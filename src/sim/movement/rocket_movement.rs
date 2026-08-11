@@ -444,6 +444,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: SIM_ZERO,
             sub_y: SIM_ZERO,
         };

@@ -18,7 +18,12 @@ use crate::app_commands::{
     spawn_test_units_for_local_owner, toggle_pause_build_queue,
 };
 use crate::app_context_order::try_queue_context_order_at_screen_point;
-use crate::app_entity_pick::{compute_box_selection_snapshot, compute_click_selection_snapshot};
+use crate::app_entity_pick::{
+    SelectionMutation, compute_box_selection_snapshot, compute_click_selection_snapshot,
+    compute_type_select_box_mutation, compute_type_select_click_mutation, compute_type_select_tap,
+    map_entity_creation_order, pick_entity_at_point,
+};
+use crate::app_hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
 use crate::app_sidebar_render::current_sidebar_view;
 use crate::app_types::OrderMode;
 use crate::audio::events::GameSoundEvent;
@@ -35,12 +40,12 @@ pub(crate) const CLICK_SELECT_RADIUS: f32 = 30.0;
 /// The in-game gadget walk runs FIRST (study G22/A8): chrome buttons + cameos
 /// fire/consume there; the full-tactical catcher and the minimap region decide
 /// WHICH body runs (the regions are sticky, so a drag stays bound to its region
-/// across the sidebar boundary). Middle-mouse pan is never a gadget event and is
-/// handled directly. A `NotConsumed` click hits no live gadget — only the legacy
-/// dev/pause/producer press path runs; empty-sidebar / off-window clicks do
-/// nothing (gamemd's sidebar-body gadget swallows them, A6). Right-press is owned
-/// by the tactical catcher (viewport-only), so right-clicking dead sidebar chrome
-/// no longer deselects — matching gamemd.
+/// across the sidebar boundary). A `NotConsumed` click hits no live gadget — only
+/// the legacy dev/pause/producer press path runs; empty-sidebar / off-window
+/// clicks do nothing (gamemd's sidebar-body gadget swallows them, A6). The middle
+/// button has no tactical behavior. Right-press is owned by the tactical catcher
+/// (viewport-only), so right-clicking dead sidebar chrome no longer deselects —
+/// matching gamemd.
 pub(crate) fn handle_mouse_input(
     state: &mut AppState,
     button: MouseButton,
@@ -64,15 +69,8 @@ pub(crate) fn handle_mouse_input(
         crate::app_in_game_options_input::in_game_options_mouse(state, button, pressed);
         return;
     }
-    // Middle-mouse pan: not a gadget event, handle directly.
+    // The stock tactical handler has no middle-button case.
     if button == MouseButton::Middle {
-        if pressed {
-            state.middle_mouse_panning = true;
-            state.middle_mouse_anchor_x = state.cursor_x;
-            state.middle_mouse_anchor_y = state.cursor_y;
-        } else {
-            state.middle_mouse_panning = false;
-        }
         return;
     }
     match crate::app_gadget_input::handle_mouse_button_event(state, button, pressed) {
@@ -85,11 +83,58 @@ pub(crate) fn handle_mouse_input(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClickActionRoute<T> {
+    ContextOrder(T),
+    Selection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionVoicePolicy {
+    FirstAdded,
+    EveryAdded,
+    Suppressed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionActionLinePolicy {
+    Start,
+    Preserve,
+}
+
+const ORDINARY_SELECTION_VOICE_POLICY: SelectionVoicePolicy = SelectionVoicePolicy::FirstAdded;
+const TYPE_SELECT_TAP_VOICE_POLICY: SelectionVoicePolicy = SelectionVoicePolicy::EveryAdded;
+const HELD_TYPE_SELECT_VOICE_POLICY: SelectionVoicePolicy = SelectionVoicePolicy::Suppressed;
+const ORDINARY_SELECTION_ACTION_LINE_POLICY: SelectionActionLinePolicy =
+    SelectionActionLinePolicy::Start;
+const TYPE_SELECT_TAP_ACTION_LINE_POLICY: SelectionActionLinePolicy =
+    SelectionActionLinePolicy::Preserve;
+
+/// Resolve the ordinary tactical action before TypeSelect is allowed to modify
+/// a selection/toggle click. Non-held Shift keeps its established toggle path;
+/// while TypeSelect is held, Shift attack/move actions still resolve first.
+fn route_click_action_before_type_select<T>(
+    action: SelectAction,
+    shift: bool,
+    type_select_held: bool,
+    resolve_context_order: impl FnOnce(f32, f32) -> Option<T>,
+) -> ClickActionRoute<T> {
+    let SelectAction::Click(sx, sy) = action else {
+        return ClickActionRoute::Selection;
+    };
+    if shift && !type_select_held {
+        return ClickActionRoute::Selection;
+    }
+    resolve_context_order(sx, sy)
+        .map(ClickActionRoute::ContextOrder)
+        .unwrap_or(ClickActionRoute::Selection)
+}
+
 /// Tactical-viewport mouse body (routed here when the full-tactical ClickRegion
 /// consumes the edge — i.e. a click in the play area, or a captured drag/release
 /// that started there). Logic is the legacy handler's tactical path, unchanged;
-/// the minimap-drag-end and minimap-begin checks moved to `minimap_mouse`, and
-/// middle-pan moved to the dispatcher.
+/// the minimap-drag-end and minimap-begin checks moved to `minimap_mouse`. The
+/// stock tactical path has no middle-button case, so the Rust dispatcher ignores it.
 pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_state: ElementState) {
     match button {
         MouseButton::Left => {
@@ -126,9 +171,27 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     place_ready_building_at_cursor(state, &type_id);
                     return;
                 }
+                // Only an active band box owns a clamped tactical endpoint.
+                // A pending press is still an ordinary click at the actual
+                // release point, including after sticky capture routing.
+                let release_point = if state.selection_state.is_band_box_active() {
+                    let (tactical_width, tactical_height) =
+                        crate::app_camera::tactical_viewport_size_px(
+                            state.render_width(),
+                            state.render_height(),
+                        );
+                    clamp_tactical_drag_endpoint(
+                        state.cursor_x,
+                        state.cursor_y,
+                        tactical_width,
+                        tactical_height,
+                    )
+                } else {
+                    (state.cursor_x, state.cursor_y)
+                };
                 let mut action: SelectAction = state
                     .selection_state
-                    .end_drag(state.cursor_x, state.cursor_y);
+                    .end_drag(release_point.0, release_point.1);
                 let shift = is_shift_held(state);
                 // A band box that caught no drawn object leaves the selection
                 // exactly as it was, and the release is handled as an ordinary
@@ -140,27 +203,49 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // the only thing that lets control reach the click/action path.
                 // So a shift drag that catches nothing does nothing at all: it
                 // must not walk the army to the release point.
-                if let SelectAction::BoxSelect(min_x, min_y, max_x, max_y) = action {
-                    if !shift && !band_caught_drawn_object(state, min_x, min_y, max_x, max_y) {
-                        action = SelectAction::Click(state.cursor_x, state.cursor_y);
+                let mut band_preflight_order = None;
+                if let SelectAction::BoxSelect(min_x, min_y, max_x, max_y) = action
+                    && !shift
+                {
+                    let order =
+                        crate::app_instances::tactical_band_preflight_entity_encounter_order(state);
+                    if band_caught_drawn_object(state, &order, min_x, min_y, max_x, max_y) {
+                        band_preflight_order = Some(order);
+                    } else {
+                        action = SelectAction::Click(release_point.0, release_point.1);
                     }
                 }
-                // On a single click (not drag-box), try issuing a command first.
-                // If the click lands on a friendly unit/building, fall through to
-                // selection instead (select_friendly_clicks=true).
-                if let SelectAction::Click(_, _) = action {
-                    let commanded: bool = try_queue_context_order_at_screen_point(
-                        state,
-                        state.cursor_x,
-                        state.cursor_y,
-                        true, // select_friendly_clicks: let friendly clicks fall through to selection
-                    );
-                    if commanded {
-                        return;
-                    }
+                // TypeSelect modifies only actions that already resolved as
+                // selection/toggle. Ground move, attack, and every other
+                // context action keep their ordinary priority while T is held.
+                let type_select_held = state.type_select.held();
+                if matches!(
+                    route_click_action_before_type_select(
+                        action,
+                        shift,
+                        type_select_held,
+                        |sx, sy| {
+                            try_queue_context_order_at_screen_point(state, sx, sy, true)
+                                .then_some(())
+                        },
+                    ),
+                    ClickActionRoute::ContextOrder(())
+                ) {
+                    return;
                 }
-                let mut queued_selection: Option<Vec<u64>> = None;
+                let mut queued_selection: Option<SelectionMutation> = None;
+                let mut held_type_select_batch = false;
                 if let Some(sim) = &state.simulation {
+                    let screen_order =
+                        crate::app_instances::tactical_screen_entity_encounter_order(state);
+                    let current_selection = selected_stable_ids_in_order(state);
+                    let map_order = map_entity_creation_order(sim.entities());
+                    let held_type_select = type_select_held;
+                    let scope_order = if state.type_select.across_map {
+                        map_order.as_slice()
+                    } else {
+                        screen_order.as_slice()
+                    };
                     match action {
                         SelectAction::Click(sx, sy) => {
                             let world_x: f32 = sx / state.zoom_level + state.camera_x;
@@ -170,20 +255,69 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                             } else {
                                 Some(&sim.fog)
                             };
-                            queued_selection = compute_click_selection_snapshot(
-                                sim.entities(),
-                                fog_ref,
-                                preferred_local_owner_name(state).as_deref(),
-                                world_x,
-                                world_y,
-                                CLICK_SELECT_RADIUS,
-                                shift,
-                                state.rules.as_ref(),
-                                Some(&sim.houses),
-                                &state.height_map,
-                                Some(&state.tactical_bridge_inverse_map),
-                                Some(&sim.interner),
-                            );
+                            if held_type_select {
+                                let picked = pick_entity_at_point(
+                                    sim.entities(),
+                                    &screen_order,
+                                    fog_ref,
+                                    preferred_local_owner_name(state).as_deref(),
+                                    world_x,
+                                    world_y,
+                                    CLICK_SELECT_RADIUS,
+                                    state.rules.as_ref(),
+                                    Some(&sim.houses),
+                                    &state.height_map,
+                                    Some(&state.tactical_bridge_inverse_map),
+                                    Some(&sim.interner),
+                                );
+                                queued_selection = if let Some(clicked_id) = picked {
+                                    Some(compute_type_select_click_mutation(
+                                        sim.entities(),
+                                        scope_order,
+                                        &current_selection,
+                                        clicked_id,
+                                        shift,
+                                        preferred_local_owner_name(state).as_deref(),
+                                        state.rules.as_ref(),
+                                        Some(&sim.interner),
+                                    ))
+                                } else {
+                                    compute_click_selection_snapshot(
+                                        sim.entities(),
+                                        &screen_order,
+                                        &current_selection,
+                                        fog_ref,
+                                        preferred_local_owner_name(state).as_deref(),
+                                        world_x,
+                                        world_y,
+                                        CLICK_SELECT_RADIUS,
+                                        shift,
+                                        state.rules.as_ref(),
+                                        Some(&sim.houses),
+                                        &state.height_map,
+                                        Some(&state.tactical_bridge_inverse_map),
+                                        Some(&sim.interner),
+                                    )
+                                };
+                                held_type_select_batch = true;
+                            } else {
+                                queued_selection = compute_click_selection_snapshot(
+                                    sim.entities(),
+                                    &screen_order,
+                                    &current_selection,
+                                    fog_ref,
+                                    preferred_local_owner_name(state).as_deref(),
+                                    world_x,
+                                    world_y,
+                                    CLICK_SELECT_RADIUS,
+                                    shift,
+                                    state.rules.as_ref(),
+                                    Some(&sim.houses),
+                                    &state.height_map,
+                                    Some(&state.tactical_bridge_inverse_map),
+                                    Some(&sim.interner),
+                                );
+                            }
                         }
                         SelectAction::BoxSelect(min_x, min_y, max_x, max_y) => {
                             let fog_ref = if state.sandbox_full_visibility {
@@ -192,31 +326,89 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                 Some(&sim.fog)
                             };
                             let z = state.zoom_level;
-                            queued_selection = compute_box_selection_snapshot(
-                                sim.entities(),
-                                fog_ref,
-                                preferred_local_owner_name(state).as_deref(),
+                            let (min_x, min_y, max_x, max_y) = (
                                 min_x / z + state.camera_x,
                                 min_y / z + state.camera_y,
                                 max_x / z + state.camera_x,
                                 max_y / z + state.camera_y,
-                                shift,
-                                state.rules.as_ref(),
-                                Some(&sim.houses),
-                                Some(&sim.interner),
                             );
+                            if held_type_select {
+                                queued_selection = Some(compute_type_select_box_mutation(
+                                    sim.entities(),
+                                    &screen_order,
+                                    scope_order,
+                                    &current_selection,
+                                    fog_ref,
+                                    preferred_local_owner_name(state).as_deref(),
+                                    min_x,
+                                    min_y,
+                                    max_x,
+                                    max_y,
+                                    shift,
+                                    state.rules.as_ref(),
+                                    Some(&sim.interner),
+                                ));
+                                held_type_select_batch = true;
+                            } else {
+                                let preflight_order = band_preflight_order
+                                    .as_deref()
+                                    .unwrap_or(screen_order.as_slice());
+                                queued_selection = compute_box_selection_snapshot(
+                                    sim.entities(),
+                                    preflight_order,
+                                    &screen_order,
+                                    &current_selection,
+                                    fog_ref,
+                                    preferred_local_owner_name(state).as_deref(),
+                                    min_x,
+                                    min_y,
+                                    max_x,
+                                    max_y,
+                                    shift,
+                                    state.rules.as_ref(),
+                                    Some(&sim.houses),
+                                    Some(&sim.interner),
+                                );
+                            }
                         }
                         SelectAction::None => {}
                     }
                 }
-                if let Some(snapshot) = queued_selection {
-                    // Emit VoiceSelect for the first selected unit type.
-                    emit_selection_voice(state, &snapshot);
-                    queue_selection_snapshot_command(state, snapshot, shift);
+                if let Some(mutation) = queued_selection {
+                    if held_type_select_batch {
+                        if mutation.select.is_empty() {
+                            apply_selection_mutation(
+                                state,
+                                mutation,
+                                false,
+                                ORDINARY_SELECTION_VOICE_POLICY,
+                            );
+                        } else {
+                            let prior = state.selection_voice_enabled;
+                            state.selection_voice_enabled = false;
+                            apply_selection_mutation(
+                                state,
+                                mutation,
+                                false,
+                                HELD_TYPE_SELECT_VOICE_POLICY,
+                            );
+                            state.selection_voice_enabled = prior;
+                        }
+                    } else {
+                        apply_selection_mutation(
+                            state,
+                            mutation,
+                            true,
+                            ORDINARY_SELECTION_VOICE_POLICY,
+                        );
+                    }
                     // Both selection arms of the band-box release open the
                     // action-line window, so the units just picked up flash
                     // whatever they are already doing.
-                    start_action_line_timer(state);
+                    apply_selection_action_line_policy(
+                        state,
+                        ORDINARY_SELECTION_ACTION_LINE_POLICY,
+                    );
                 }
             }
         }
@@ -277,6 +469,7 @@ fn right_click_cancel_ladder(state: &mut AppState) {
 /// native "is the box empty" answer out.
 fn band_caught_drawn_object(
     state: &AppState,
+    encounter_order: &[u64],
     min_x: f32,
     min_y: f32,
     max_x: f32,
@@ -293,6 +486,7 @@ fn band_caught_drawn_object(
     };
     crate::app_entity_pick::band_rect_contains_drawn_object(
         sim.entities(),
+        encounter_order,
         fog_ref,
         preferred_local_owner_name(state).as_deref(),
         min_x / z + state.camera_x,
@@ -332,9 +526,17 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
 /// While a minimap press is held the camera does NOT follow (gamemd ignores
 /// held minimap motion); the move is swallowed so it can't start a selection
 /// drag. Otherwise this updates the unit-selection drag rectangle.
-/// Speed multiplier for middle-mouse camera panning. Each pixel of mouse movement
-/// translates to this many pixels of camera scroll, making it feel fast and responsive.
-const MIDDLE_MOUSE_PAN_SPEED: f32 = 3.0;
+fn clamp_tactical_drag_endpoint(
+    cursor_x: f32,
+    cursor_y: f32,
+    tactical_width: u32,
+    tactical_height: u32,
+) -> (f32, f32) {
+    (
+        cursor_x.clamp(0.0, tactical_width.saturating_sub(1) as f32),
+        cursor_y.clamp(0.0, tactical_height.saturating_sub(1) as f32),
+    )
+}
 
 pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // Paused in-game Options overlay: drive a live slider drag (visual/stored only —
@@ -351,30 +553,175 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     if state.minimap_dragging {
         return;
     }
-    if state.middle_mouse_panning {
-        let dx: f32 = state.cursor_x - state.middle_mouse_anchor_x;
-        let dy: f32 = state.cursor_y - state.middle_mouse_anchor_y;
-        // Divide by zoom so screen-space mouse delta maps to correct world distance.
-        state.camera_x -= dx * MIDDLE_MOUSE_PAN_SPEED / state.zoom_level;
-        state.camera_y -= dy * MIDDLE_MOUSE_PAN_SPEED / state.zoom_level;
-        state.middle_mouse_anchor_x = state.cursor_x;
-        state.middle_mouse_anchor_y = state.cursor_y;
-        // Clamp after panning so camera stays within map bounds.
-        let sw: f32 = state.render_width() as f32;
-        let sh: f32 = state.render_height() as f32;
-        crate::app_camera::clamp_camera_to_playable_area(state, sw, sh);
-        return;
-    }
     // Clamp drag position to the tactical viewport (exclude sidebar area).
-    let viewport_w = state.render_width() as f32;
-    let viewport_h = state.render_height() as f32;
-    let drag_x = state.cursor_x.clamp(0.0, viewport_w - 1.0);
-    let drag_y = state.cursor_y.clamp(0.0, viewport_h - 1.0);
+    let (tactical_width, tactical_height) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let clamped_endpoint = clamp_tactical_drag_endpoint(
+        state.cursor_x,
+        state.cursor_y,
+        tactical_width,
+        tactical_height,
+    );
 
     // Activation arms the rectangle and nothing else. The call gamemd makes at
     // that moment is a cursor-shape setter, not an unselect — the selection is
     // only replaced on the release, and only when the box caught something.
-    state.selection_state.update_drag(drag_x, drag_y);
+    // The threshold is measured from the live mouse point. Once active, the
+    // rendered/stored endpoint is restricted to the tactical surface.
+    state
+        .selection_state
+        .update_drag(state.cursor_x, state.cursor_y);
+    if state.selection_state.is_band_box_active() {
+        state.selection_state.drag_current = Some(clamped_endpoint);
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::clamp_tactical_drag_endpoint;
+    use crate::sim::selection::{SelectAction, SelectionState};
+
+    #[test]
+    fn item82_captured_drag_live_and_release_endpoints_stop_at_tactical_rect() {
+        let endpoint = clamp_tactical_drag_endpoint(950.0, 650.0, 632, 568);
+        assert_eq!(endpoint, (631.0, 567.0));
+
+        let mut selection = SelectionState::new();
+        selection.begin_drag(100.0, 100.0);
+        selection.update_drag(950.0, 650.0);
+        selection.drag_current = Some(endpoint);
+        assert_eq!(selection.drag_rect(), Some((100.0, 100.0, 631.0, 567.0)));
+        let SelectAction::BoxSelect(min_x, min_y, max_x, max_y) =
+            selection.end_drag(endpoint.0, endpoint.1)
+        else {
+            panic!("active drag must end as a box selection");
+        };
+        assert_eq!((min_x, min_y, max_x, max_y), (100.0, 100.0, 631.0, 567.0));
+    }
+}
+
+#[cfg(test)]
+mod item83_click_route_tests {
+    use super::{ClickActionRoute, route_click_action_before_type_select};
+    use crate::app_context_order::object_click_payload;
+    use crate::app_entity_pick::compute_type_select_click_mutation;
+    use crate::app_types::OrderMode;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::command::Command;
+    use crate::sim::components::Health;
+    use crate::sim::entity_store::EntityStore;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::StringInterner;
+    use crate::sim::selection::SelectAction;
+
+    #[test]
+    fn item83_held_type_select_keeps_attack_and_ground_move_ahead_of_selection() {
+        let attack = route_click_action_before_type_select(
+            SelectAction::Click(40.0, 40.0),
+            true,
+            true,
+            |_, _| {
+                Some(object_click_payload(
+                    OrderMode::Move,
+                    false,
+                    false,
+                    1,
+                    9,
+                    20,
+                    20,
+                    true,
+                ))
+            },
+        );
+        assert_eq!(
+            attack,
+            ClickActionRoute::ContextOrder(Command::Attack {
+                attacker_id: 1,
+                target_id: 9,
+            })
+        );
+
+        let mut selection = vec![1];
+        let ground = route_click_action_before_type_select(
+            SelectAction::Click(80.0, 70.0),
+            false,
+            true,
+            |_, _| {
+                Some(Command::Move {
+                    entity_id: 1,
+                    target_rx: 14,
+                    target_ry: 15,
+                    queue: false,
+                    group_id: None,
+                })
+            },
+        );
+        match ground {
+            ClickActionRoute::ContextOrder(Command::Move { .. }) => {}
+            ClickActionRoute::Selection => selection.clear(),
+            other => panic!("unexpected held-ground route: {other:?}"),
+        }
+        assert_eq!(
+            selection,
+            [1],
+            "an ordered ground click never reaches selection clear"
+        );
+    }
+
+    #[test]
+    fn item83_held_friendly_selection_falls_through_to_exact_type_batch() {
+        let route = route_click_action_before_type_select(
+            SelectAction::Click(40.0, 40.0),
+            false,
+            true,
+            |_, _| None::<Command>,
+        );
+
+        let mut interner = StringInterner::new();
+        let owner = interner.intern("Americans");
+        let type_ref = interner.intern("AMCV");
+        let mut entities = EntityStore::new();
+        for (id, rx) in [(1, 10), (2, 12)] {
+            let mut entity = GameEntity::new_at_frame_zero_for_test(
+                id,
+                rx,
+                10,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 100,
+                    max: 100,
+                },
+                type_ref,
+                EntityCategory::Unit,
+                0,
+                5,
+                true,
+            );
+            entity.lifecycle.object_alive = true;
+            entity.lifecycle.in_limbo = false;
+            entities.insert(entity);
+        }
+
+        let mutation = match route {
+            ClickActionRoute::Selection => compute_type_select_click_mutation(
+                &entities,
+                &[1, 2],
+                &[1],
+                1,
+                false,
+                Some("Americans"),
+                None,
+                Some(&interner),
+            ),
+            ClickActionRoute::ContextOrder(command) => {
+                panic!("friendly selection unexpectedly dispatched {command:?}")
+            }
+        };
+        assert!(mutation.clear);
+        assert_eq!(mutation.select, [1, 2]);
+    }
 }
 
 /// The sidebar command one wheel notch resolves to.
@@ -678,124 +1025,190 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 ///
 /// Dev/debug functions live behind the Ctrl+Shift chord, which stock binds
 /// nothing to, so bare keys stay free for stock game hotkeys.
-pub(crate) fn handle_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
-    let modifiers = KeyModifiers::from_state(state);
-    if let Some(group_idx) = control_group_index(code) {
-        handle_control_group_hotkey(state, group_idx);
-        return;
-    }
-    // ScreenCapture is a stock Shift chord (Shift+S).
-    if code == KeyCode::KeyS && modifiers.only_shift() {
-        state.retail_screenshot_requested = true;
-        state.window.request_redraw();
-        return;
-    }
-    // Additive select-same-type is VERA-internal: stock has no Shift+T row, so
-    // retail does nothing here. Kept as a deliberate extra, not parity.
-    if code == KeyCode::KeyT && modifiers.only_shift() {
-        select_same_type(state, true);
-        return;
-    }
-    if modifiers.dev_chord() {
-        handle_dev_hotkey_pressed(state, code);
-        return;
-    }
-    // Camera bookmarks. Stock binds View1..View4 to F1..F4 and SetView1..4 to
-    // Ctrl+F1..F4 — the only two modifier states these keys answer to.
-    if matches!(code, KeyCode::F1 | KeyCode::F2 | KeyCode::F3 | KeyCode::F4)
-        && (modifiers.none() || modifiers.only_ctrl())
-    {
-        let slot = match code {
-            KeyCode::F1 => 0,
-            KeyCode::F2 => 1,
-            KeyCode::F3 => 2,
-            _ => 3,
-        };
-        if modifiers.only_ctrl() {
-            crate::app_camera::set_view_bookmark(state, slot);
-        } else {
-            crate::app_camera::recall_view_bookmark(state, slot);
+pub(crate) fn handle_type_select_key_edge(
+    state: &mut AppState,
+    resolution: HotkeyResolution,
+    physical_code: winit::keyboard::KeyCode,
+    element_state: ElementState,
+    repeat: bool,
+) -> bool {
+    let is_type_select = resolution == HotkeyResolution::Command(HotkeyCommand::TypeSelect);
+    if element_state.is_pressed() {
+        if !is_type_select {
+            return false;
         }
-        return;
+        state
+            .type_select
+            .press(physical_code, std::time::Instant::now(), repeat);
+        return true;
     }
-    // Everything below is a bare-key binding, and a bare-key command is
-    // rejected outright while any modifier is held.
-    if modifiers.any() {
-        return;
+    if !is_type_select && !state.type_select.owns_key(physical_code) {
+        return false;
     }
-    match code {
-        KeyCode::Escape => {
-            if state.paused {
-                // Unpause — reset timing to prevent sim accumulator spike.
-                state.paused = false;
-                state.frame_pacer.reset_for_immediate_frame();
-                // Re-hide OS cursor so the software cursor takes over.
-                if state.software_cursor.is_some() {
-                    state.window.set_cursor_visible(false);
-                }
-                log::info!("Game resumed");
-            } else if state.targeting_mode.is_some() {
-                state.targeting_mode = None;
-                state.building_placement_preview = None;
-            } else if state.sidebar_gadget_state.repair_mode_on
-                || state.sidebar_gadget_state.sell_mode_on
-            {
-                state.sidebar_gadget_state.repair_mode_on = false;
-                state.sidebar_gadget_state.sell_mode_on = false;
-            } else {
-                state.paused = true;
-                // Opening the in-game Options overlay: reset the transient
-                // interaction flags so the drag-gated value-label quirk (stale
-                // "Faster" until the slider is first dragged) resets each open.
-                state.in_game_options.on_open();
-                // Show OS cursor for egui interaction.
-                if state.software_cursor.is_some() {
-                    state.window.set_cursor_visible(true);
-                }
-                log::info!("Game paused");
+    let execute_tap = state
+        .type_select
+        .release(physical_code, std::time::Instant::now());
+    if execute_tap {
+        execute_type_select_tap(state);
+    }
+    true
+}
+
+fn execute_type_select_tap(state: &mut AppState) {
+    state.type_select.prepare_tap_scope();
+    let result = {
+        let Some(sim) = &state.simulation else {
+            return;
+        };
+        let screen_order = crate::app_instances::tactical_screen_entity_encounter_order(state);
+        let map_order = map_entity_creation_order(sim.entities());
+        let current = selected_stable_ids_in_order(state);
+        let fog = (!state.sandbox_full_visibility).then_some(&sim.fog);
+        compute_type_select_tap(
+            sim.entities(),
+            &screen_order,
+            &map_order,
+            &current,
+            fog,
+            preferred_local_owner_name(state).as_deref(),
+            state.rules.as_ref(),
+            Some(&sim.interner),
+            state.type_select.across_map,
+        )
+    };
+    let outcome = result.outcome;
+    let across_map = result.across_map;
+    apply_selection_mutation(state, result.mutation, false, TYPE_SELECT_TAP_VOICE_POLICY);
+    state.type_select.finish_tap(outcome, across_map);
+    crate::app_messages::post_type_select_feedback(state, outcome.csf_key());
+    // Native marks the tactical display dirty here but does not start action
+    // lines. The visible-window event loop already requests a redraw from
+    // `about_to_wait`, so the tap needs no duplicate redraw request.
+    apply_selection_action_line_policy(state, TYPE_SELECT_TAP_ACTION_LINE_POLICY);
+}
+
+pub(crate) fn handle_hotkey_pressed(
+    state: &mut AppState,
+    resolution: HotkeyResolution,
+    physical_code: winit::keyboard::KeyCode,
+) {
+    match resolution {
+        HotkeyResolution::Command(command) => dispatch_retail_hotkey(state, command),
+        HotkeyResolution::Fallback(HotkeyFallback::DiplomacyDialog) => {
+            // RT_DIALOG 0x73 is owned by the later diplomacy/communication
+            // milestone. Preserve the semantic event without inventing a modal.
+        }
+        HotkeyResolution::Fallback(
+            HotkeyFallback::ArrowLeft
+            | HotkeyFallback::ArrowUp
+            | HotkeyFallback::ArrowRight
+            | HotkeyFallback::ArrowDown,
+        ) => {}
+        HotkeyResolution::Unhandled => {
+            if KeyModifiers::from_modifiers_state(state.hotkey_modifiers).dev_chord() {
+                handle_dev_hotkey_pressed(state, physical_code);
             }
         }
-        KeyCode::KeyS => queue_stop_for_selected(state),
-        KeyCode::KeyD => queue_deploy_undeploy_for_selected(state),
-        KeyCode::KeyG => {
+    }
+}
+
+fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
+    match command {
+        HotkeyCommand::StopObject => queue_stop_for_selected(state),
+        HotkeyCommand::DeployObject => queue_deploy_undeploy_for_selected(state),
+        HotkeyCommand::GuardObject => {
             state.queued_order_mode = OrderMode::Guard;
             log::info!("Order mode armed: Guard");
         }
-        KeyCode::KeyQ => {
+        HotkeyCommand::StructureTab => {
             apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Building))
         }
-        KeyCode::KeyW => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Defense)),
-        KeyCode::KeyE => {
+        HotkeyCommand::DefenseTab => {
+            apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Defense))
+        }
+        HotkeyCommand::InfantryTab => {
             apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Infantry))
         }
-        KeyCode::KeyR => apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle)),
-        KeyCode::KeyT => select_same_type(state, false),
-        // ToggleRepair / ToggleSell — stock binds these to bare K and L, the
-        // same two sidebar mode flags the wrench and dollar buttons drive.
-        KeyCode::KeyK => apply_sidebar_action(state, SidebarAction::ToggleRepairMode),
-        KeyCode::KeyL => apply_sidebar_action(state, SidebarAction::ToggleSellMode),
-        KeyCode::KeyH => {
-            jump_camera_to_base(state);
+        HotkeyCommand::UnitTab => {
+            apply_sidebar_action(state, SidebarAction::SelectTab(SidebarTab::Vehicle))
         }
-        KeyCode::Space => {
-            // Spacebar cycles through recent radar events and jumps the camera.
+        // TypeSelect owns both edges in `handle_type_select_key_edge`.
+        HotkeyCommand::TypeSelect => {}
+        HotkeyCommand::ToggleRepair => apply_sidebar_action(state, SidebarAction::ToggleRepairMode),
+        HotkeyCommand::ToggleSell => apply_sidebar_action(state, SidebarAction::ToggleSellMode),
+        HotkeyCommand::CenterBase => jump_camera_to_base(state),
+        HotkeyCommand::CenterOnRadarEvent => {
             let event = state
                 .simulation
                 .as_mut()
                 .and_then(|sim| sim.radar_events.cycle_event());
             if let Some((rx, ry)) = event {
-                // Centres on the tactical viewport, not the window — the sidebar
-                // column is not part of the game view.
                 crate::app_camera::center_camera_on_cell(state, rx, ry);
             }
         }
-        _ => {}
+        HotkeyCommand::ScreenCapture => {
+            state.retail_screenshot_requested = true;
+            state.window.request_redraw();
+        }
+        HotkeyCommand::View(slot) => crate::app_camera::recall_view_bookmark(state, slot),
+        HotkeyCommand::SetView(slot) => crate::app_camera::set_view_bookmark(state, slot),
+        HotkeyCommand::TeamSelect(slot) => handle_control_group_command(state, slot, None),
+        HotkeyCommand::TeamAddSelect(slot) => {
+            handle_control_group_command(state, slot, Some(GroupPressAction::AddToSelection))
+        }
+        HotkeyCommand::TeamCreate(slot) => {
+            handle_control_group_command(state, slot, Some(GroupPressAction::Assign))
+        }
+        HotkeyCommand::TeamCenter(slot) => {
+            handle_control_group_command(state, slot, Some(GroupPressAction::Center))
+        }
+        // Native SidebarUp/Down execute the same one-row saturated sidebar
+        // owner as wheel input (up=1, down=0).
+        HotkeyCommand::SidebarUp => sidebar_wheel_scroll(state, 1.0),
+        HotkeyCommand::SidebarDown => sidebar_wheel_scroll(state, -1.0),
+        HotkeyCommand::Options => handle_options_hotkey(state),
+        HotkeyCommand::CenterView
+        | HotkeyCommand::ToggleAlliance
+        | HotkeyCommand::PlaceBeacon
+        | HotkeyCommand::AllToCheer
+        | HotkeyCommand::Follow
+        | HotkeyCommand::PreviousObject
+        | HotkeyCommand::NextObject
+        | HotkeyCommand::CombatantSelect
+        | HotkeyCommand::PageUser
+        | HotkeyCommand::ScatterObject
+        | HotkeyCommand::VeterancyNav
+        | HotkeyCommand::PlanningMode
+        | HotkeyCommand::Delete
+        | HotkeyCommand::Taunt(_) => {}
     }
 }
 
-/// Dev/debug hotkeys — all require Ctrl+Shift so the bare keys stay free for
-/// stock game hotkeys (bare X/P/L/K/M/N/B/A/Delete/F5-F12 previously
-/// shadowed stock functions like Scatter and Beacon).
+fn handle_options_hotkey(state: &mut AppState) {
+    if state.paused {
+        state.paused = false;
+        state.frame_pacer.reset_for_immediate_frame();
+        if state.software_cursor.is_some() {
+            state.window.set_cursor_visible(false);
+        }
+        log::info!("Game resumed");
+    } else if state.targeting_mode.is_some() {
+        state.targeting_mode = None;
+        state.building_placement_preview = None;
+    } else if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
+        state.sidebar_gadget_state.repair_mode_on = false;
+        state.sidebar_gadget_state.sell_mode_on = false;
+    } else {
+        state.paused = true;
+        state.in_game_options.on_open();
+        if state.software_cursor.is_some() {
+            state.window.set_cursor_visible(true);
+        }
+        log::info!("Game paused");
+    }
+}
+
+/// Dev/debug hotkeys require Ctrl+Shift, a chord stock binds to no command.
 fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCode) {
     match code {
         // The hotkey-help overlay is VERA-only and used to sit on bare F1, which
@@ -1193,12 +1606,19 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         effect_frame_counts,
         terrain_costs,
     );
+    if let Some(overlay_registry) = state.overlay_registry.as_ref() {
+        crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
+            &mut sim,
+            overlay_registry,
+        );
+    }
     sim.resolve_type_handles(rules);
     if let Err(error) = sim.restore_move_sound_handles_after_load(rules) {
         log::error!("Load: restoration validation failed: {error}");
         return;
     }
     state.simulation = Some(sim);
+    state.combat_lights.clear();
 
     // Rebuild the app-layer dynamic path grid (building footprints + walls).
     crate::app_sim_tick::rebuild_dynamic_path_grid(state);
@@ -1215,9 +1635,13 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             &state.map_lighting_config,
             state.simulation.as_ref(),
             state.rules.as_ref(),
+            state.in_game_options.detail_level,
         );
         state.pending_lighting_refresh = None;
-        state.last_lighting_source_epoch = 0;
+        state.applied_lighting_sources.clear();
+        state.applied_lighting_profile = None;
+        state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+        state.last_lighting_view_fingerprint = None;
     }
 
     // Reset timing to prevent a burst of ticks after the load.
@@ -1247,11 +1671,11 @@ pub(crate) struct KeyModifiers {
 }
 
 impl KeyModifiers {
-    fn from_state(state: &AppState) -> Self {
+    fn from_modifiers_state(modifiers: winit::keyboard::ModifiersState) -> Self {
         Self {
-            shift: is_shift_held(state),
-            ctrl: is_ctrl_held(state),
-            alt: is_alt_held(state),
+            shift: modifiers.shift_key(),
+            ctrl: modifiers.control_key(),
+            alt: modifiers.alt_key(),
         }
     }
 
@@ -1284,12 +1708,11 @@ impl KeyModifiers {
 }
 
 pub(crate) fn is_shift_held(state: &AppState) -> bool {
-    state.keys_held.contains(&KeyCode::ShiftLeft) || state.keys_held.contains(&KeyCode::ShiftRight)
+    state.hotkey_modifiers.shift_key()
 }
 
 pub(crate) fn is_ctrl_held(state: &AppState) -> bool {
-    state.keys_held.contains(&KeyCode::ControlLeft)
-        || state.keys_held.contains(&KeyCode::ControlRight)
+    state.hotkey_modifiers.control_key()
 }
 
 /// Return `true` if either Alt key is currently held.
@@ -1297,40 +1720,344 @@ pub(crate) fn is_ctrl_held(state: &AppState) -> bool {
 /// Used in order resolution to detect Alt+Ctrl = attack-move (NOT force-fire),
 /// matching gamemd's `What_Action_OnCell` Alt-overrides-Ctrl rule.
 pub(crate) fn is_alt_held(state: &AppState) -> bool {
-    state.keys_held.contains(&KeyCode::AltLeft) || state.keys_held.contains(&KeyCode::AltRight)
+    state.hotkey_modifiers.alt_key()
 }
 
-pub(crate) fn selected_stable_ids_sorted(
-    entities: &crate::sim::entity_store::EntityStore,
-) -> Vec<u64> {
-    let mut ids: Vec<u64> = entities
-        .values()
-        .filter(|e| e.selected)
-        .map(|e| e.stable_id)
+/// Read the player-side selection vector in native order. While a selection
+/// command is queued the ledger is already the newest local state; after the
+/// sim tick, reconciliation trusts the committed selected bits and admits any
+/// lifecycle-transferred selection that was not issued by input.
+pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
+    let Some(sim) = &state.simulation else {
+        return Vec::new();
+    };
+    let mut ordered = Vec::new();
+    for &id in &state.selection_order {
+        if let Some(entity) = sim.entities().get(id) {
+            if state.selection_order_pending || entity.selected {
+                ordered.push(id);
+            }
+        }
+    }
+    if !state.selection_order_pending {
+        for entity in sim.entities().values() {
+            if entity.selected && !ordered.contains(&entity.stable_id) {
+                insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules.as_ref());
+            }
+        }
+    }
+    ordered
+}
+
+/// Synchronize the app ledger after the due selection commands and lifecycle
+/// removals have committed for this frame.
+pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
+    let Some(sim) = &state.simulation else {
+        state.selection_order.clear();
+        state.selection_order_pending = false;
+        return;
+    };
+    if state.selection_order_pending {
+        let before_retain = state.selection_order.len();
+        state.selection_order.retain(|id| {
+            sim.entities()
+                .get(*id)
+                .is_some_and(|entity| entity.lifecycle.object_alive)
+        });
+        if state.selection_order.len() != before_retain {
+            state.type_select.reset_scope();
+        }
+        let committed: Vec<u64> = sim
+            .entities()
+            .values()
+            .filter(|entity| entity.selected)
+            .map(|entity| entity.stable_id)
+            .collect();
+        let same_membership = committed.len() == state.selection_order.len()
+            && committed
+                .iter()
+                .all(|id| state.selection_order.contains(id));
+        if !same_membership {
+            return;
+        }
+        state.selection_order_pending = false;
+        return;
+    }
+    let prior_len = state.selection_order.len();
+    let mut reconciled: Vec<u64> = state
+        .selection_order
+        .iter()
+        .copied()
+        .filter(|id| {
+            sim.entities()
+                .get(*id)
+                .is_some_and(|entity| entity.selected)
+        })
         .collect();
-    ids.sort_unstable();
-    ids
+    let lifecycle_removed = reconciled.len() < prior_len;
+    for entity in sim.entities().values() {
+        if entity.selected && !reconciled.contains(&entity.stable_id) {
+            insert_selected_id(&mut reconciled, entity.stable_id, sim, state.rules.as_ref());
+        }
+    }
+    if lifecycle_removed {
+        state.type_select.reset_scope();
+    }
+    state.selection_order = reconciled;
+    state.selection_order_pending = false;
 }
 
-fn queue_selection_snapshot_command(state: &mut AppState, selected_ids: Vec<u64>, additive: bool) {
+fn apply_selection_mutation(
+    state: &mut AppState,
+    mutation: SelectionMutation,
+    reset_type_select_scope: bool,
+    voice_policy: SelectionVoicePolicy,
+) -> bool {
+    if !mutation.clear && mutation.deselect.is_empty() && mutation.select.is_empty() {
+        return false;
+    }
+    let Some(sim) = &state.simulation else {
+        return false;
+    };
+    let mut ordered = selected_stable_ids_in_order(state);
+    let mut native_selection_mode_reset = mutation.clear;
+    if mutation.clear {
+        ordered.clear();
+    }
+    let before_deselect = ordered.len();
+    ordered.retain(|id| !mutation.deselect.contains(id));
+    native_selection_mode_reset |= ordered.len() != before_deselect;
+
+    let mut successful_adds = Vec::new();
+    for id in mutation.select {
+        let Some(entity) = sim.entities().get(id) else {
+            continue;
+        };
+        let type_id = sim.interner.resolve(entity.type_ref);
+        let admitted = entity.lifecycle.object_alive
+            && !entity.lifecycle.in_limbo
+            && !entity
+                .teleport_state
+                .as_ref()
+                .is_some_and(|teleport| teleport.warp_out_active())
+            && state
+                .rules
+                .as_ref()
+                .is_none_or(|rules| rules.object(type_id).is_none_or(|object| object.selectable));
+        if !admitted || ordered.contains(&id) {
+            continue;
+        }
+        successful_adds.push(id);
+        native_selection_mode_reset = true;
+        insert_selected_id(&mut ordered, id, sim, state.rules.as_ref());
+    }
+
+    if reset_type_select_scope {
+        state.type_select.reset_scope();
+    } else if native_selection_mode_reset {
+        state.type_select.note_successful_selection_mutation(false);
+    }
+    for id in selection_voice_recipients(
+        voice_policy,
+        state.selection_voice_enabled,
+        &successful_adds,
+    ) {
+        emit_selection_voice(state, *id);
+    }
+    state.selection_order = ordered.clone();
+    state.selection_order_pending = true;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     schedule_command(
         state,
         &owner,
         Command::Select {
-            entity_ids: selected_ids,
-            additive,
+            entity_ids: ordered,
+            additive: !mutation.clear,
         },
+    );
+    true
+}
+
+fn insert_selected_id(
+    ordered: &mut Vec<u64>,
+    id: u64,
+    sim: &crate::sim::world::Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) {
+    let positive_damage_primary = sim.entities().get(id).is_some_and(|entity| {
+        let type_id = sim.interner.resolve(entity.type_ref);
+        rules
+            .and_then(|rules| rules.object(type_id))
+            .and_then(|object| object.primary.as_deref())
+            .and_then(|weapon_id| rules.and_then(|rules| rules.weapon(weapon_id)))
+            .is_some_and(|weapon| weapon.damage > 0)
+    });
+    insert_selected_id_by_role(ordered, id, positive_damage_primary);
+}
+
+fn insert_selected_id_by_role(ordered: &mut Vec<u64>, id: u64, positive_damage_primary: bool) {
+    if positive_damage_primary {
+        ordered.insert(0, id);
+    } else {
+        ordered.push(id);
+    }
+}
+
+fn selection_voice_recipients(
+    policy: SelectionVoicePolicy,
+    voice_enabled: bool,
+    successful_adds: &[u64],
+) -> &[u64] {
+    if !voice_enabled || policy == SelectionVoicePolicy::Suppressed {
+        return &[];
+    }
+    match policy {
+        SelectionVoicePolicy::FirstAdded => &successful_adds[..successful_adds.len().min(1)],
+        SelectionVoicePolicy::EveryAdded => successful_adds,
+        SelectionVoicePolicy::Suppressed => &[],
+    }
+}
+
+#[cfg(test)]
+mod item83_selection_order_tests {
+    use super::{
+        HELD_TYPE_SELECT_VOICE_POLICY, ORDINARY_SELECTION_ACTION_LINE_POLICY,
+        ORDINARY_SELECTION_VOICE_POLICY, TYPE_SELECT_TAP_ACTION_LINE_POLICY,
+        TYPE_SELECT_TAP_VOICE_POLICY, apply_selection_action_line_policy_at_tick,
+        insert_selected_id_by_role, selection_voice_event, selection_voice_recipients,
+    };
+    use crate::app_target_lines::TargetLineState;
+    use crate::audio::events::GameSoundEvent;
+    use crate::map::entities::EntityCategory;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn item83_positive_damage_technos_prepend_and_noncombat_technos_append() {
+        let mut order = vec![10];
+        insert_selected_id_by_role(&mut order, 20, true);
+        insert_selected_id_by_role(&mut order, 30, true);
+        insert_selected_id_by_role(&mut order, 40, false);
+        assert_eq!(order, [30, 20, 10, 40]);
+    }
+
+    #[test]
+    fn item83_voice_policy_emits_every_tap_voice_in_candidate_order_only() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[InfantryTypes]\n0=E1\n1=E2\n\n\
+             [VehicleTypes]\n\n[AircraftTypes]\n\n[BuildingTypes]\n\n\
+             [E1]\nStrength=100\nArmor=none\nSpeed=4\nVoiceSelect=VoiceOne\n\n\
+             [E2]\nStrength=100\nArmor=none\nSpeed=4\nVoiceSelect=VoiceTwo\n",
+        ))
+        .expect("item83 voice rules");
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        for (id, type_name) in [(1, "E1"), (2, "E2")] {
+            let type_ref = sim.interner.intern(type_name);
+            sim.entities_mut()
+                .insert(GameEntity::new_at_frame_zero_for_test(
+                    id,
+                    10 + id as u16,
+                    10,
+                    0,
+                    0,
+                    owner,
+                    Health {
+                        current: 100,
+                        max: 100,
+                    },
+                    type_ref,
+                    EntityCategory::Infantry,
+                    0,
+                    5,
+                    false,
+                ));
+        }
+        let candidate_order = [2, 1];
+        let emitted = |policy| {
+            selection_voice_recipients(policy, true, &candidate_order)
+                .iter()
+                .filter_map(|id| selection_voice_event(&sim, &rules, *id))
+                .map(|event| match event {
+                    GameSoundEvent::UnitSelected { sound_id } => sound_id,
+                    other => panic!("unexpected selection event: {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            emitted(TYPE_SELECT_TAP_VOICE_POLICY),
+            vec!["VoiceTwo".to_string(), "VoiceOne".to_string()],
+            "tap voices retain successful candidate/Select call order"
+        );
+        assert!(
+            emitted(HELD_TYPE_SELECT_VOICE_POLICY).is_empty(),
+            "held exact-type group-select suppresses the whole batch"
+        );
+        assert_eq!(
+            emitted(ORDINARY_SELECTION_VOICE_POLICY),
+            vec!["VoiceTwo".to_string()],
+            "ordinary band/click policy retains only the first success"
+        );
+    }
+
+    #[test]
+    fn item83_type_select_tap_preserves_action_line_timer_while_mouse_selection_starts_it() {
+        let mut target_lines = TargetLineState::default();
+
+        apply_selection_action_line_policy_at_tick(
+            &mut target_lines,
+            10,
+            TYPE_SELECT_TAP_ACTION_LINE_POLICY,
+        );
+        assert!(
+            !target_lines.is_selected_action_active(10),
+            "a short TypeSelect tap leaves a zero timer untouched"
+        );
+
+        apply_selection_action_line_policy_at_tick(
+            &mut target_lines,
+            10,
+            ORDINARY_SELECTION_ACTION_LINE_POLICY,
+        );
+        assert!(
+            target_lines.is_selected_action_active(10),
+            "ordinary click/bandbox selection still opens the action-line window"
+        );
+
+        apply_selection_action_line_policy_at_tick(
+            &mut target_lines,
+            20,
+            TYPE_SELECT_TAP_ACTION_LINE_POLICY,
+        );
+        assert!(
+            !target_lines.is_selected_action_active(35),
+            "a later TypeSelect tap preserves rather than restarts the existing timer"
+        );
+    }
+}
+
+fn queue_selection_snapshot_command(state: &mut AppState, selected_ids: Vec<u64>, additive: bool) {
+    apply_selection_mutation(
+        state,
+        SelectionMutation {
+            clear: !additive,
+            select: selected_ids,
+            ..Default::default()
+        },
+        true,
+        ORDINARY_SELECTION_VOICE_POLICY,
     );
 }
 
 fn queue_stop_for_selected(state: &mut AppState) {
-    let Some(sim) = &state.simulation else { return };
-    let mut selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
+    let mut selected_ids = selected_stable_ids_in_order(state);
     if selected_ids.is_empty() {
         return;
     }
-    selected_ids.sort_unstable();
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     for entity_id in selected_ids {
         schedule_command(state, &owner, Command::Stop { entity_id });
@@ -1341,8 +2068,8 @@ fn queue_stop_for_selected(state: &mut AppState) {
 /// - Selected unit with `DeploysInto` → `Command::DeployMcv` (MCV → ConYard)
 /// - Selected structure with `UndeploysInto` → `Command::UndeployBuilding` (ConYard → MCV)
 fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
+    let selected_ids = selected_stable_ids_in_order(state);
     let Some(sim) = &state.simulation else { return };
-    let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
     if selected_ids.is_empty() {
         return;
     }
@@ -1387,22 +2114,6 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
     }
     for cmd in commands {
         schedule_command(state, &owner, cmd);
-    }
-}
-
-fn control_group_index(code: KeyCode) -> Option<usize> {
-    match code {
-        KeyCode::Digit0 => Some(0),
-        KeyCode::Digit1 => Some(1),
-        KeyCode::Digit2 => Some(2),
-        KeyCode::Digit3 => Some(3),
-        KeyCode::Digit4 => Some(4),
-        KeyCode::Digit5 => Some(5),
-        KeyCode::Digit6 => Some(6),
-        KeyCode::Digit7 => Some(7),
-        KeyCode::Digit8 => Some(8),
-        KeyCode::Digit9 => Some(9),
-        _ => None,
     }
 }
 
@@ -1557,17 +2268,16 @@ fn center_camera_on_group(state: &mut AppState, group: &[u64]) {
     crate::app_camera::center_camera_on_cell(state, rx, ry);
 }
 
-fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
+fn handle_control_group_command(
+    state: &mut AppState,
+    group_idx: usize,
+    action_override: Option<GroupPressAction>,
+) {
     if group_idx >= state.control_groups.len() {
         return;
     }
-    let modifiers = KeyModifiers::from_state(state);
     let group = state.control_groups[group_idx].clone();
-    let selected = state
-        .simulation
-        .as_ref()
-        .map(|sim| selected_stable_ids_sorted(sim.entities()))
-        .unwrap_or_default();
+    let selected = selected_stable_ids_in_order(state);
     // Only live members count towards "the selection is exactly the group" —
     // membership is derived by scanning live objects, so a dead unit has
     // already left its group.
@@ -1575,11 +2285,16 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
     let last_press = state
         .last_control_group_press
         .map(|(slot, at)| (slot, at.elapsed()));
-    let Some(action) =
-        control_group_press_action(modifiers, group_idx, &live_group, &selected, last_press)
-    else {
-        return;
-    };
+    let action = action_override.unwrap_or_else(|| {
+        control_group_press_action(
+            KeyModifiers::default(),
+            group_idx,
+            &live_group,
+            &selected,
+            last_press,
+        )
+        .expect("a bare team-select binding always resolves")
+    });
 
     match action {
         GroupPressAction::Assign => {
@@ -1589,7 +2304,7 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
             // Alt+digit selects the group as well as centring; a bare
             // double-tap centres on a selection that already is the group, so
             // the same centring call covers both.
-            if modifiers.only_alt() && !live_group.is_empty() {
+            if action_override == Some(GroupPressAction::Center) && !live_group.is_empty() {
                 queue_selection_snapshot_command(state, live_group.clone(), false);
             }
             center_camera_on_group(state, &live_group);
@@ -1600,86 +2315,61 @@ fn handle_control_group_hotkey(state: &mut AppState, group_idx: usize) {
             }
             let mut final_ids = selected;
             final_ids.extend(live_group);
-            final_ids.sort_unstable();
-            final_ids.dedup();
             queue_selection_snapshot_command(state, final_ids, true);
         }
         GroupPressAction::Recall => {
             // A recall on an empty group still clears the selection: the
             // deselect-all runs before the select loop, unconditionally.
             state.last_control_group_press = Some((group_idx, std::time::Instant::now()));
-            let mut final_ids = live_group;
-            final_ids.sort_unstable();
-            final_ids.dedup();
-            queue_selection_snapshot_command(state, final_ids, false);
-            start_action_line_timer(state);
+            queue_selection_snapshot_command(state, live_group, false);
+            apply_selection_action_line_policy(state, ORDINARY_SELECTION_ACTION_LINE_POLICY);
         }
     }
 }
 
-/// Open the action-line window on a selection event.
+/// Apply the selection caller's action-line policy.
 ///
 /// Band-box release, click-select and control-group recall all call the
 /// engine's start-timer helper unconditionally, so the freshly selected units
-/// flash their current orders for the 25-frame window.
-fn start_action_line_timer(state: &mut AppState) {
+/// flash their current orders for the 25-frame window. TypeSelect tap preserves
+/// the prior timer instead.
+fn apply_selection_action_line_policy(state: &mut AppState, policy: SelectionActionLinePolicy) {
     let Some(tick) = state.simulation.as_ref().map(|sim| sim.session.tick) else {
         return;
     };
-    state.target_lines.start_timer(tick);
+    apply_selection_action_line_policy_at_tick(&mut state.target_lines, tick, policy);
 }
 
-fn select_same_type(state: &mut AppState, additive: bool) {
-    let Some(sim) = &state.simulation else { return };
-    let anchor = sim
-        .entities()
-        .values()
-        .find(|e| e.selected)
-        .map(|e| (e.type_ref, e.owner));
-    let Some((type_id, owner_id)) = anchor else {
-        return;
-    };
-
-    let mut matching_ids: Vec<u64> = sim
-        .entities()
-        .values()
-        .filter_map(|e| (e.type_ref == type_id && e.owner == owner_id).then_some(e.stable_id))
-        .collect();
-    if additive {
-        matching_ids.extend(selected_stable_ids_sorted(sim.entities()));
+fn apply_selection_action_line_policy_at_tick(
+    target_lines: &mut crate::app_target_lines::TargetLineState,
+    tick: u64,
+    policy: SelectionActionLinePolicy,
+) {
+    if policy == SelectionActionLinePolicy::Start {
+        target_lines.start_timer(tick);
     }
-    matching_ids.sort_unstable();
-    matching_ids.dedup();
-    let owner = sim.interner.resolve(owner_id).to_string();
-    let local_owner: String = preferred_local_owner(state).unwrap_or_else(|| owner.clone());
-    schedule_command(
-        state,
-        &local_owner,
-        Command::Select {
-            entity_ids: matching_ids,
-            additive,
-        },
-    );
 }
 
-/// Emit VoiceSelect sound for the first entity in a selection snapshot.
-fn emit_selection_voice(state: &mut AppState, snapshot: &[u64]) {
-    let Some(first_id) = snapshot.first() else {
-        return;
-    };
+/// Emit the modeled VoiceSelect side effect for one successful Select call.
+fn emit_selection_voice(state: &mut AppState, entity_id: u64) {
     let Some(sim) = &state.simulation else { return };
     let Some(rules) = &state.rules else { return };
 
-    // Find the entity's type and look up its VoiceSelect sound.
-    if let Some(entity) = sim.entities().get(*first_id) {
-        if let Some(obj) = rules.object(sim.interner.resolve(entity.type_ref)) {
-            if let Some(ref voice_id) = obj.voice_select {
-                state.sound_events.push(GameSoundEvent::UnitSelected {
-                    sound_id: voice_id.clone(),
-                });
-            }
-        }
+    if let Some(event) = selection_voice_event(sim, rules, entity_id) {
+        state.sound_events.push(event);
     }
+}
+
+fn selection_voice_event(
+    sim: &crate::sim::world::Simulation,
+    rules: &crate::rules::ruleset::RuleSet,
+    entity_id: u64,
+) -> Option<GameSoundEvent> {
+    let entity = sim.entities().get(entity_id)?;
+    let object = rules.object(sim.interner.resolve(entity.type_ref))?;
+    Some(GameSoundEvent::UnitSelected {
+        sound_id: object.voice_select.clone()?,
+    })
 }
 
 /// Jump camera to the local player's base.

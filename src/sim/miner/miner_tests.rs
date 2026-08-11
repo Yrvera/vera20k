@@ -2402,8 +2402,14 @@ fn search_ore_becomes_wait_when_empty() {
 }
 
 // ==========================================================================
-// Test 14: WaitNoOre rescans after cooldown
+// Test 14: the no-ore park sits out the whole wait, then re-searches
 // ==========================================================================
+/// The park must stay recoverable. gamemd's scan-miss return carries the whole
+/// 105-frame wait as the dispatch delay itself, so the frame the wait expires
+/// *is* the next dispatch and that dispatch is the exit. VERA keeps a re-search
+/// exit there rather than gamemd's queue-off-Harvest handoff (VERA-internal, see
+/// `miner_system::handle_wait_no_ore`), so what this pins is: no early rescan
+/// while the gate is closed, and a live miner on the far side of it.
 #[test]
 fn wait_no_ore_rescans_after_cooldown() {
     let mut sim = Simulation::new();
@@ -2413,25 +2419,37 @@ fn wait_no_ore_rescans_after_cooldown() {
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 20, 20);
     spawn_refinery(&mut sim, 2, 10, 10);
 
-    let now = sim.session.binary_frame;
+    let start_frame = sim.session.binary_frame;
+    let wait = u32::from(config.rescan_cooldown_ticks);
     {
         let entity = sim
             .substrate
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::WaitNoOre.cursor());
-        miner
+        // Reproduce the scan-miss arm exactly: the wait is carried by the
+        // dispatch delay and the internal gate mirrors the same expiry, so the
+        // two never double-count. Arming only the internal gate would leave the
+        // dispatch timer due every frame, making the miner poll at the Rate
+        // epilogue's ~14-16 frame cadence and putting the exit frame at the
+        // mercy of whichever jitter values that run happened to draw.
+        entity
+            .mission
+            .write_dispatch_epilogue(start_frame as i32, wait as i32);
+        entity
+            .miner
+            .as_mut()
+            .expect("miner component")
             .rescan_cooldown
-            .arm(now, u32::from(config.rescan_cooldown_ticks));
+            .arm(start_frame, wait);
     }
 
-    // rescan_cooldown_ticks = 105 (0x69 frames from original engine).
-    // After half the cooldown, should still be waiting.
-    let half_cooldown = (config.rescan_cooldown_ticks / 2) as usize;
+    // rescan_cooldown_ticks = 105 (0x69 frames from the original engine).
+    // Half way through, still parked.
+    let half_cooldown = (wait / 2) as usize;
     tick_miners_n(&mut sim, &rules, half_cooldown);
     assert_eq!(
         get_miner(&sim, miner_id).state,
@@ -2439,17 +2457,50 @@ fn wait_no_ore_rescans_after_cooldown() {
         "Should still be waiting mid-cooldown"
     );
 
-    // Place ore so that when rescan fires it finds something.
+    // Ore appears inside the scan radius while the miner is parked.
     place_ore(&mut sim, 20, 20, 100);
 
-    // Tick the remaining cooldown + 5 extra (transition tick + SearchOre tick).
-    let remaining = (config.rescan_cooldown_ticks as usize) - half_cooldown + 5;
-    tick_miners_n(&mut sim, &rules, remaining);
-    let state = get_miner(&sim, miner_id).state;
-    assert!(
-        state != MinerState::WaitNoOre,
-        "Should have rescanned and found ore, got {:?}",
-        state,
+    // The last frame before the gate opens: fresh ore must not cut the wait short.
+    tick_miners_n(&mut sim, &rules, (wait - 1) as usize - half_cooldown);
+    assert_eq!(sim.session.binary_frame, start_frame + wait - 1);
+    assert_eq!(
+        get_miner(&sim, miner_id).state,
+        MinerState::WaitNoOre,
+        "the 105-frame wait is not shortened by ore appearing during it"
+    );
+
+    // The expiry frame is the next dispatch, and that dispatch is the exit.
+    tick_miners_n(&mut sim, &rules, 1);
+    assert_eq!(sim.session.binary_frame, start_frame + wait);
+    assert_eq!(
+        get_miner(&sim, miner_id).state,
+        MinerState::SearchOre,
+        "the park exits on the frame the wait expires, not a cadence later"
+    );
+
+    // The exit itself takes the default Rate epilogue, so the re-search runs on
+    // the following Harvest dispatch — one whole epilogue window later at most.
+    let base = super::miner_dock_sequence::mission_base_frames(
+        &rules,
+        crate::sim::mission::MissionType::Harvest,
+        super::miner_system::HARVEST_RATE_FALLBACK_FRAMES,
+    );
+    // + the RandomRanged(0, 2) ceiling the epilogue adds on top of the base.
+    tick_miners_n(
+        &mut sim,
+        &rules,
+        usize::from(base) + super::miner_system::RATE_EPILOGUE_JITTER_MAX_FRAMES as usize,
+    );
+    let m = get_miner(&sim, miner_id);
+    assert_ne!(
+        m.state,
+        MinerState::WaitNoOre,
+        "the park must be recoverable, not a terminal state",
+    );
+    assert_eq!(
+        m.target_ore_cell,
+        Some((20, 20)),
+        "the re-search must pick the ore that appeared during the wait",
     );
 }
 
@@ -6861,8 +6912,65 @@ fn scan_ring_0_allows_harvesters_own_cell() {
 }
 
 // ---------------------------------------------------------------------------
-// MoveToOre per-tick rescan (gamemd parity for Mission_Harvest state 0)
+// MoveToOre destination guard (gamemd parity for Mission_Harvest state 0)
 // ---------------------------------------------------------------------------
+
+/// Re-anchor the miner's Harvest dispatch timer so the very next dispatch runs.
+///
+/// A productive scan exits through the Rate epilogue (~14-16 frames), so the
+/// frames immediately behind it carry no Harvest dispatch at all. A fixture that
+/// means to observe the *next* dispatch has to ask for it rather than assume the
+/// following tick brings one: what that dispatch does is under test here, not
+/// which frame it lands on. Mirrors the helper of the same name in
+/// `outbound_drive_tests` — sibling test modules cannot share it.
+fn arm_dispatch_now(sim: &mut Simulation, entity_id: u64) {
+    let now = sim.session.binary_frame as i32;
+    sim.substrate
+        .entities
+        .get_mut(entity_id)
+        .expect("miner entity")
+        .mission
+        .write_dispatch_epilogue(now, 0);
+}
+
+/// End the outbound drive the way arrival or an abort does: the owner
+/// destination and the transitional MovementTarget both go null.
+///
+/// Both halves matter, and only because these fixtures spawn their miner
+/// through `spawn_drive_miner`: a move command writes `navigation.nav_com`
+/// only for a Drive or Ship locomotor, so on a locomotor-less miner this
+/// would be one real clear and one no-op.
+fn clear_outbound_drive(sim: &mut Simulation, entity_id: u64) {
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(entity_id)
+        .expect("miner entity");
+    entity.navigation.nav_com = None;
+    entity.movement_target = None;
+}
+
+/// A stock War Miner with the Drive locomotor it actually has in a match.
+///
+/// The destination guard reads the owner `navigation.nav_com` first and takes
+/// `movement_target` only as Rust's transitional second owner. A move command
+/// writes nav_com solely for Drive/Ship locomotors, and the shared
+/// `spawn_miner` attaches a locomotor only for the Chrono kind — so a bare
+/// fixture would hold the guard on the transitional field alone, never
+/// exercising the field that owns it once the Drive host migration lands and
+/// the transitional half goes away. Mirrors `spawn_search_miner` in
+/// `miner_system`'s own test module.
+fn spawn_drive_miner(sim: &mut Simulation, sid: u64, rx: u16, ry: u16) -> u64 {
+    let miner_id = spawn_miner(sim, sid, MinerKind::War, rx, ry);
+    let entity = sim
+        .substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity");
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    entity.drive_locomotion = Some(Default::default());
+    miner_id
+}
 
 /// If a tree blocks the initially-chosen ore cell, the miner must NOT
 /// target it on first scan — the scan filter rejects it, and a different
@@ -6907,11 +7015,24 @@ fn move_to_ore_avoids_tree_blocked_cell_from_start() {
     );
 }
 
-/// When the current target ore cell becomes blocked mid-move (a tree
-/// appears, another miner parks on it), the per-tick rescan retargets
-/// to the next-best available cell.
+/// Blocking the cell an already-commanded drive is aimed at must change
+/// nothing while the destination is still held.
+///
+/// Mission_Harvest state 0 wraps its whole body — the ore scan, the cell
+/// lookup and the destination write — in a "no destination held" guard. While
+/// a destination IS held the state is a no-op that re-arms the Rate cadence
+/// and returns; it never looks at ore. Only one candidate fast-retarget path
+/// was checked against a *distant* destination going impassable (the
+/// destination repair inside the locomotor's path search) and it cannot fire
+/// here; whether anything else in the engine reacts to that trigger is
+/// UNCHECKED. So on the checked paths the miner keeps driving at the tree and
+/// only re-picks once the drive ends.
+///
+/// Non-vacuity: the blocked cell is the one the scan chose, and a second ore
+/// patch sits one ring further out, so a body that re-ran the scan here would
+/// visibly move the target.
 #[test]
-fn move_to_ore_retargets_when_blocker_appears() {
+fn move_to_ore_holds_target_while_destination_is_held() {
     use crate::sim::pathfinding::zone_map::ZoneGrid;
     use std::collections::BTreeMap;
 
@@ -6922,7 +7043,7 @@ fn move_to_ore_retargets_when_blocker_appears() {
     let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
     sim.zone_grid = Some(zone_grid);
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 8, 12);
+    let miner_id = spawn_drive_miner(&mut sim, 1, 8, 12);
     place_ore(&mut sim, 12, 12, 1200);
     place_ore(&mut sim, 11, 12, 1200);
 
@@ -6937,33 +7058,203 @@ fn move_to_ore_retargets_when_blocker_appears() {
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
     let initial_target = get_miner(&sim, miner_id).target_ore_cell;
-    assert!(initial_target.is_some(), "must pick an initial target");
+    let blocked_cell = initial_target.expect("the scan must pick an initial target");
+    {
+        let entity = sim.substrate.entities.get(miner_id).expect("miner entity");
+        assert!(
+            entity.navigation.nav_com.is_some(),
+            "the scan dispatch must leave the OWNER destination in place — this \
+             is the half of the guard that survives the Drive host migration, \
+             and without it the guard under test is never reached",
+        );
+        assert!(
+            entity.movement_target.is_some(),
+            "the scan dispatch must leave the transitional destination in place \
+             too — the guard reads both while MovementTarget is still a second \
+             owner",
+        );
+    }
 
-    // Block whichever cell was picked. Build a fresh grid with that cell
-    // blocked so the next tick's scan filter rejects it.
-    let blocked_cell = initial_target.unwrap();
+    // Block the cell the drive is aimed at, and rebuild the zone map with it,
+    // so a scan re-run from here would reject it and answer (12, 12) instead.
     grid.set_blocked(blocked_cell.0, blocked_cell.1, true);
-    let zone_grid_2 = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
-    sim.zone_grid = Some(zone_grid_2);
+    sim.zone_grid = Some(ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32));
 
-    // Advance the frame so the per-frame dispatch timer is due again.
+    // Move off the scan's own frame so the epilogue anchor below is observable,
+    // then ask for the next dispatch explicitly.
     sim.session.binary_frame += 1;
+    let dispatch_frame = sim.session.binary_frame;
+    arm_dispatch_now(&mut sim, miner_id);
+
+    // The held-destination return exits through the default Rate epilogue, so
+    // it draws exactly one RandomRanged(0, 2). Mirror it twice: once for the
+    // value the delay must carry, once for the scenario-stream position that
+    // draw must leave behind. The value alone cannot tell "drew and added 0"
+    // from "never drew", and cannot see a second draw at all — and stream
+    // position is the thing lockstep actually depends on.
+    let expected_scenario = {
+        let mut probe = sim.miner_jitter_rng().clone();
+        let _ =
+            probe.next_range_u32_inclusive(0, super::miner_system::RATE_EPILOGUE_JITTER_MAX_FRAMES);
+        probe.logical_state()
+    };
+    let jitter = {
+        let mut probe = sim.miner_jitter_rng().clone();
+        probe.next_range_u32_inclusive(0, super::miner_system::RATE_EPILOGUE_JITTER_MAX_FRAMES)
+    };
+
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
 
-    let new_target = get_miner(&sim, miner_id).target_ore_cell;
-    assert_ne!(
-        new_target, initial_target,
-        "must retarget when initial cell becomes blocked",
+    let m = get_miner(&sim, miner_id);
+    assert_eq!(
+        m.state,
+        MinerState::MoveToOre,
+        "the held-destination return leaves the cursor where it was",
     );
-    assert!(new_target.is_some(), "must pick an alternative cell");
+    assert_eq!(
+        m.target_ore_cell, initial_target,
+        "state 0 must not look at ore while a destination is held — the target \
+         stays on the now-blocked cell until the drive itself ends",
+    );
+
+    // ...and the refusal to re-scan is paced by the mission cadence, not retried
+    // every frame: the dispatch timer is re-anchored at this dispatch with the
+    // [Harvest] Rate base plus the drawn jitter, so the next frame carries no
+    // Harvest dispatch at all.
+    let base = super::miner_dock_sequence::mission_base_frames(
+        &rules,
+        crate::sim::mission::MissionType::Harvest,
+        super::miner_system::HARVEST_RATE_FALLBACK_FRAMES,
+    );
+    let timer = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner entity")
+        .mission
+        .dispatch_timer();
+    assert_eq!(
+        timer.start_frame(),
+        dispatch_frame as i32,
+        "the epilogue re-anchors at the dispatch that ran",
+    );
+    assert_eq!(
+        timer.delay(),
+        i32::from(base) + jitter as i32,
+        "held-destination return arms the [Harvest] Rate base plus the drawn jitter",
+    );
+    assert_eq!(
+        sim.rng_state().scenario,
+        expected_scenario,
+        "the held-destination return draws exactly one epilogue jitter — no draw \
+         leaves the stream short, a second one leaves it long, and either \
+         desyncs every later scenario consumer in lockstep",
+    );
+    assert!(
+        !timer.due(dispatch_frame + 1),
+        "the Rate cadence must gate the next dispatch — a per-frame retry here \
+         would be the pre-retiming VERA drift",
+    );
 }
 
-/// Per-tick rescan must NOT thrash — with a stable world the chosen
-/// target stays the same tick after tick.
+/// Once the drive ends, the next due dispatch runs the state-0 body for real:
+/// it re-runs the ore scan, the scan filter rejects the now-blocked cell, and
+/// the miner is retargeted and re-commanded to the next-best patch.
+///
+/// This is the other half of the guard pinned by
+/// `move_to_ore_holds_target_while_destination_is_held`: the retarget is real,
+/// it is just gated on the destination clearing rather than on a per-tick
+/// rescan.
+#[test]
+fn move_to_ore_rescans_and_rejects_blocked_cell_once_destination_clears() {
+    use crate::sim::pathfinding::zone_map::ZoneGrid;
+    use std::collections::BTreeMap;
+
+    let mut sim = Simulation::new();
+    let rules = miner_rules();
+
+    let mut grid = PathGrid::new(32, 32);
+    let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
+    sim.zone_grid = Some(zone_grid);
+
+    let miner_id = spawn_drive_miner(&mut sim, 1, 8, 12);
+    place_ore(&mut sim, 12, 12, 1200);
+    place_ore(&mut sim, 11, 12, 1200);
+
+    {
+        let entity = sim.substrate.entities.get_mut(miner_id).expect("miner");
+        entity
+            .mission
+            .set_handler_state(MinerState::SearchOre.cursor());
+    }
+
+    let config = MinerConfig::default();
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let initial_target = get_miner(&sim, miner_id).target_ore_cell;
+    let blocked_cell = initial_target.expect("the scan must pick an initial target");
+
+    grid.set_blocked(blocked_cell.0, blocked_cell.1, true);
+    sim.zone_grid = Some(ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32));
+
+    // The native trigger for re-entering the state-0 body: the destination is
+    // gone (arrival, or an aborted drive), not merely a frame having passed.
+    clear_outbound_drive(&mut sim, miner_id);
+    sim.session.binary_frame += 1;
+    arm_dispatch_now(&mut sim, miner_id);
+
+    super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
+
+    let m = get_miner(&sim, miner_id);
+    let new_target = m.target_ore_cell;
+    assert_eq!(
+        m.state,
+        MinerState::MoveToOre,
+        "a hit keeps the miner on the move-to-ore cursor",
+    );
+    assert_ne!(
+        new_target, initial_target,
+        "with the destination cleared the scan re-runs, and its filter rejects \
+         the blocked cell",
+    );
+    assert!(new_target.is_some(), "must pick an alternative cell");
+
+    // The retarget is not bookkeeping: the same dispatch commands the drive to
+    // the newly chosen cell. This also proves the body ran at all — the
+    // fixture cleared the destination immediately before the dispatch.
+    let movement = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner entity")
+        .movement_target
+        .as_ref()
+        .expect("the retargeting dispatch must re-command the drive");
+    assert_eq!(
+        movement.final_goal, new_target,
+        "the drive is commanded to the cell the rescan chose",
+    );
+}
+
+/// The rescan must NOT thrash. Three ore cells sit on the same row, one ring
+/// apart; when the destination clears and the state-0 body genuinely re-runs
+/// the scan from an unmoved position in an unchanged world, it has to answer
+/// the same cell it answered the first time — not flip between candidates.
+///
+/// Non-vacuity: state 0 keeps the current target when the scan answers
+/// nothing (`new_target.unwrap_or(current_target)`), so a fixture that left
+/// the first answer in place would pass on a scan that had stopped returning
+/// anything at all. The target is therefore poisoned to the FARTHEST of the
+/// three ore cells before the second dispatch: only a scan that genuinely
+/// re-picks the nearest can put the original answer back.
 #[test]
 fn move_to_ore_target_stable_when_world_unchanged() {
     use crate::sim::pathfinding::zone_map::ZoneGrid;
     use std::collections::BTreeMap;
+
+    // Farthest of the three ore cells — a live ore cell (so the depletion
+    // branch does not fire) that the scan will never answer from (8, 12).
+    const POISON_TARGET: (u16, u16) = (16, 12);
 
     let mut sim = Simulation::new();
     let rules = miner_rules();
@@ -6972,7 +7263,7 @@ fn move_to_ore_target_stable_when_world_unchanged() {
     let zone_grid = ZoneGrid::build(&grid, &BTreeMap::new(), 32, 32);
     sim.zone_grid = Some(zone_grid);
 
-    let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 8, 12);
+    let miner_id = spawn_drive_miner(&mut sim, 1, 8, 12);
     place_ore(&mut sim, 14, 12, 1200);
     place_ore(&mut sim, 15, 12, 1200);
     place_ore(&mut sim, 16, 12, 1200);
@@ -6987,17 +7278,57 @@ fn move_to_ore_target_stable_when_world_unchanged() {
     let config = MinerConfig::default();
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let t1 = get_miner(&sim, miner_id).target_ore_cell;
-    // Advance the frame so the second dispatch actually runs (per-frame timer).
-    sim.session.binary_frame += 1;
+    assert!(t1.is_some(), "the scan must pick an initial target");
+    assert_ne!(
+        t1,
+        Some(POISON_TARGET),
+        "the poison must not be the scan's own answer, or the re-scan pin below \
+         is vacuous again",
+    );
 
-    // Several ticks later, with the world unchanged, the target must not
-    // have shifted to a different ore cell. (It will only change once the
-    // miner physically moves close enough that ring distances shift, but
-    // a single tick without movement should be stable.)
+    // Two things are needed for the second dispatch to reach the scan at all:
+    // the destination has to be gone (state 0 is a no-op while one is held),
+    // and the Rate epilogue the first dispatch installed has to be re-anchored.
+    // Without both, this fixture would pass on a skipped dispatch and prove
+    // nothing about the scan.
+    clear_outbound_drive(&mut sim, miner_id);
+    // Poison the target so a scan that answers nothing can no longer be
+    // mistaken for a scan that answered the same cell twice: state 0 falls
+    // back to the current target on a `None`, so `t1 == t2` would otherwise
+    // hold even if the scan had stopped returning anything.
+    sim.substrate
+        .entities
+        .get_mut(miner_id)
+        .expect("miner entity")
+        .miner
+        .as_mut()
+        .expect("miner component")
+        .target_ore_cell = Some(POISON_TARGET);
+    sim.session.binary_frame += 1;
+    arm_dispatch_now(&mut sim, miner_id);
+
     super::miner_system::tick_miners(&mut sim, &rules, &config, Some(&grid));
     let t2 = get_miner(&sim, miner_id).target_ore_cell;
 
-    assert_eq!(t1, t2, "stable world → stable target across ticks");
+    assert_eq!(
+        t1, t2,
+        "stable world → stable target across dispatches; a scan that answered \
+         nothing would leave the poisoned cell in place instead",
+    );
+    // The dispatch really did run the body: it re-commanded the drive the
+    // fixture had just cleared, and aimed it at the same cell.
+    let movement = sim
+        .substrate
+        .entities
+        .get(miner_id)
+        .expect("miner entity")
+        .movement_target
+        .as_ref()
+        .expect("the rescanning dispatch must re-command the drive");
+    assert_eq!(
+        movement.final_goal, t1,
+        "the re-issued drive keeps the original destination",
+    );
 }
 
 /// The dock handshake now routes contact admission + the dock-entered flag

@@ -294,8 +294,10 @@ pub fn place_ready_building_with_overlays(
     // Log screen position for debugging placement alignment.
     if let Some(ge) = sim.substrate.entities.get(new_sid) {
         let (fw, fh) = foundation_dimensions(&foundation_str);
-        // Buildings carry no visual height lift, so the bare projection is
-        // the drawn position. sim/ cannot call render/ for the general case.
+        // The entity anchor — the projection of the building's own coordinate,
+        // which is its north-west cell's diamond centre. The drawn art sits half
+        // a tile above this (render's building render-coordinate lift); this is
+        // a debug log, and sim/ cannot call render/ to apply it.
         let screen = crate::util::lepton::lepton_to_screen(
             ge.position.rx,
             ge.position.ry,

@@ -394,6 +394,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
             None,
             &height_map,
             None,
+            None,
             67,
             Some(trigger_inputs),
         ),

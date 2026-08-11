@@ -1,7 +1,8 @@
 //! Slice 8 — global lockstep parity harness.
 //!
 //! Records a deterministic multi-faction skirmish as a `ReplayLog` and re-runs it
-//! through the SAME `ReplayRunner::run` path the live game uses, asserting (1)
+//! through the same registry-aware `ReplayRunner` master-frame path the live
+//! game uses, asserting (1)
 //! every tick's replayed hash equals the recorded hash (intra-run determinism)
 //! and (2) the final hash equals a committed baseline. This is the project-wide
 //! desync tripwire for the whole mission/radio substrate migration.
@@ -22,10 +23,11 @@
 
 use super::*;
 use crate::map::entities::{EntityCategory, MapEntity};
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::miner::{ResourceNode, ResourceType};
+use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::replay::{ReplayHeader, ReplayLog, ReplayRunner};
 use std::collections::BTreeMap;
@@ -124,14 +126,20 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// from, moved -- and the intra-run determinism assertion still passes, so this
 /// is a changed schedule, not an RNG misroute. No draw site was added or
 /// removed.
+/// Re-baselined 2026-08-11 after this fixture stopped using the legacy
+/// `ResourceNode` stand-in and installed the production `OverlayGrid` plus
+/// Tiberium rules on both record and replay. The harvester now reaches the
+/// native overlay authority and consumes the Scenario draws owned by that
+/// path. Main and MapGen remain byte-identical, and record/replay equality
+/// remains exact, localizing the intended change to Scenario.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     // MERGE 2026-08-03: both branches re-baselined these independently (dev:
     // passive acquire + spawner; foundations: Move cadence + hashed runtime
     // state). Neither side's values describe the merged tree; re-derived below
     // from the merged tree's own output in the same merge commit.
-    3450507931353894124,
-    4175722561206807420,
-    2082941527059030371,
+    0x78D4_8215_F590_AB97,
+    0x39F3_258B_A550_EB7C,
+    0x1CE8_1848_7043_6163,
 );
 
 /// Committed final-hash baseline. Captured from the first green run. Re-baselines
@@ -295,8 +303,17 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // the DRAW COUNT per stream is unchanged, not the schedule; the intra-run
 // determinism assertion passes on top of that. Still a Rust-vs-prior-Rust
 // regression ratchet, not gamemd parity evidence.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x5E01_CF58_F799_8106;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x56B3_66E6_7991_E8A4;
+// Re-baselined 2026-08-11 with the production OverlayGrid/Tiberium fixture.
+// Both legacy-schema probes deliberately hash production and overlay state, so
+// they move with the same measured authority correction as the current hash.
+// Record/replay equality and the Scenario-only stream shift remain the guards
+// against nondeterminism or cross-stream routing.
+// Re-baselined 2026-08-11 for the v69 combined serialized/hash substrate. The
+// exact Scenario/Main/MapGen stream tuple below remains byte-identical and the
+// record/replay comparison remains exact, proving this shift is composition,
+// not RNG routing or committed simulation behavior.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xF836_1EE2_4497_4C3A;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F16_2026_F611_DDF3;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -407,18 +424,25 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x56B3_66E6_7991_E8A4;
 /// `occupation_handoff` field present and every behaviour writer neutralised,
 /// this fixture produces this exact value, so the shift is entirely the hash
 /// schema and none of it is behaviour.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF221_E97E_4076_76CA;
+/// Re-baselined 2026-08-11 with `FINAL_STREAM_STATES` after the harness gained
+/// its production OverlayGrid/Tiberium authority. The changed miner/resource
+/// state is replay-identical and the stream movement is Scenario-only.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCB59_4C79_FDEE_2CEE;
 
-fn harness_rules() -> RuleSet {
+fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
     // real harvester (Harvester/Dock/Storage) and a real refinery (Refinery=yes)
     // so the miner dock path is reachable. Short weapon ranges keep combat to the
     // scripted engagements, keeping the scenario deterministic.
-    let ini: IniFile = IniFile::from_str(
+    IniFile::from_str(
         "[InfantryTypes]\n0=E1\n\n\
          [VehicleTypes]\n0=MTNK\n1=HARV\n\n\
          [AircraftTypes]\n\n\
          [BuildingTypes]\n0=GAWEAP\n1=GAREFN\n\n\
+         [OverlayTypes]\n0=TIB01\n\n\
+         [Tiberiums]\n0=Riparius\n\n\
+         [Riparius]\nImage=1\nValue=25\n\n\
+         [TIB01]\nTiberium=yes\n\n\
          [E1]\nLocomotor={4A582744-9839-11d1-B709-00A024DDAFD1}\nStrength=125\nArmor=flak\nSpeed=4\nPrimary=M60\n\n\
          [MTNK]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
          [HARV]\nLocomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\nStrength=600\nArmor=heavy\nSpeed=5\nHarvester=yes\nStorage=28\nDock=GAREFN\n\n\
@@ -428,8 +452,16 @@ fn harness_rules() -> RuleSet {
          [105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
          [SA]\nVerses=100%,100%,100%,90%,70%,25%,100%,25%,25%,0%,0%\n\n\
          [AP]\nVerses=100%,100%,90%,75%,75%,75%,60%,30%,20%,0%,0%\n",
-    );
+    )
+}
+
+fn harness_rules() -> RuleSet {
+    let ini = harness_ini();
     RuleSet::from_ini(&ini).expect("harness rules should parse")
+}
+
+fn harness_overlays() -> OverlayTypeRegistry {
+    OverlayTypeRegistry::from_ini(&harness_ini(), None)
 }
 
 fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> MapEntity {
@@ -451,7 +483,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 /// Build the recorded scenario into `sim`. Spawn order fixes stable ids
 /// 1..=7 (war factory, refinery, harvester, Allied tank, Allied infantry,
 /// Soviet tank, Soviet infantry).
-fn seed_scenario(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16, u16), u8>) {
+fn seed_scenario(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    heights: &BTreeMap<(u16, u16), u8>,
+    overlays: &OverlayTypeRegistry,
+) {
     sim.spawn_from_map(
         &[
             unit("Americans", "GAWEAP", 3, 3, EntityCategory::Structure), // 1
@@ -465,17 +502,16 @@ fn seed_scenario(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16,
         Some(rules),
         heights,
     );
-    // Seed an ore patch near the harvester so it harvests, then returns to the
-    // refinery and engages the dock handshake (populating dock_reservations).
+    // Seed the native CellClass overlay authority near the harvester. The
+    // serialized ResourceNode map is only a compatibility seam for isolated
+    // tests and production SearchOre deliberately ignores it.
+    let tib01 = overlays.id_for_name("TIB01").expect("harness TIB01");
+    let mut overlay_grid = OverlayGrid::new(64, 64);
     for (rx, ry) in [(12, 13), (13, 13), (12, 14), (13, 14)] {
-        sim.production.resource_nodes.insert(
-            (rx, ry),
-            ResourceNode {
-                resource_type: ResourceType::Ore,
-                remaining: 5000,
-            },
-        );
+        overlay_grid.place_overlay(rx, ry, tib01, 11);
     }
+    overlay_grid.take_dirty_cells();
+    sim.overlay_grid = Some(overlay_grid);
 }
 
 /// Scripted commands keyed by `execute_tick` (fires when tick+1 == execute_tick).
@@ -537,13 +573,14 @@ fn due_commands(sim: &Simulation, script: &[(u64, Command)], tick: u64) -> Vec<C
 #[test]
 fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
     let rules = harness_rules();
+    let overlays = harness_overlays();
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let grid = PathGrid::new(64, 64);
     let script = harness_script();
 
     // ---- Record pass: build a ReplayLog through the live advance_tick path. ----
     let mut rec = Simulation::with_seed(HARNESS_SEED);
-    seed_scenario(&mut rec, &rules, &heights);
+    seed_scenario(&mut rec, &rules, &heights, &overlays);
     let mut log = ReplayLog::new(ReplayHeader {
         version: 1,
         tick_hz: 15,
@@ -570,7 +607,7 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             Some(&rules),
             &heights,
             Some(&grid),
-            None,
+            Some(&overlays),
             HARNESS_TICK_MS,
         );
         if rec
@@ -598,13 +635,12 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
          else miner-component creation or the SearchOre path regressed"
     );
 
-    // ---- Replay pass: fresh sim, real ReplayRunner::run, assert tick-by-tick.
-    // The replay is fed through the SAME ReplayRunner::run path the live game
-    // uses, chunked at the stream checkpoints so the per-stream cursors can be
-    // pinned between chunks (chunking preserves the exact advance_tick call
-    // sequence; ReplayRunner::run is a plain fold over entries). ----
+    // ---- Replay pass: fresh sim, real ReplayRunner, assert tick-by-tick.
+    // The registry-aware entry uses the SAME master-frame path as the legacy
+    // convenience entry, chunked at the stream checkpoints so the per-stream
+    // cursors can be pinned between chunks. ----
     let mut rep = Simulation::with_seed(HARNESS_SEED);
-    seed_scenario(&mut rep, &rules, &heights);
+    seed_scenario(&mut rep, &rules, &heights, &overlays);
     let mut replayed: Vec<u64> = Vec::with_capacity(log.ticks.len());
     let mut replayed_streams: Vec<(u64, u64, u64, u64)> = Vec::new();
     let mut chunk_start = 0usize;
@@ -614,12 +650,13 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             header: log.header.clone(),
             ticks: log.ticks[chunk_start..chunk_end].to_vec(),
         };
-        replayed.extend(ReplayRunner::run(
+        replayed.extend(ReplayRunner::run_with_overlay_registry(
             &mut rep,
             &chunk,
             Some(&rules),
             &heights,
             Some(&grid),
+            Some(&overlays),
             HARNESS_TICK_MS,
         ));
         replayed_streams.push((
@@ -635,12 +672,13 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             header: log.header.clone(),
             ticks: log.ticks[chunk_start..].to_vec(),
         };
-        replayed.extend(ReplayRunner::run(
+        replayed.extend(ReplayRunner::run_with_overlay_registry(
             &mut rep,
             &tail,
             Some(&rules),
             &heights,
             Some(&grid),
+            Some(&overlays),
             HARNESS_TICK_MS,
         ));
     }

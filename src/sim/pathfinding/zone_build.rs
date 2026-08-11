@@ -35,11 +35,16 @@ pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
 ];
 
 /// Shared persistent topology projected through all 13 MovementZone rows.
+#[derive(Debug, Clone)]
 pub(crate) struct BaseZoneTopology {
-    movement_classes: Vec<u8>,
-    zone_ids: Vec<ZoneId>,
-    zone_count: ZoneId,
-    adjacency: ZoneAdjacency,
+    pub(crate) movement_classes: Vec<u8>,
+    pub(crate) zone_ids: Vec<ZoneId>,
+    pub(crate) zone_count: ZoneId,
+    pub(crate) adjacency: ZoneAdjacency,
+    /// Raw `MapClass+0x18[row][base_cluster]` values. Label 1 and `0xffff`
+    /// remain represented here even though the flattened compatibility maps
+    /// expose both as an invalid cell zone.
+    pub(crate) raw_zone_ids_by_row: [Vec<ZoneId>; passability::ZONE_LAYER_COUNT],
 }
 
 struct BaseEdgeBuckets {
@@ -252,9 +257,7 @@ pub(crate) fn build_base_zone_topology(
     height: u16,
 ) -> BaseZoneTopology {
     let movement_classes: Vec<u8> = (0..height)
-        .flat_map(|ry| {
-            (0..width).map(move |rx| movement_class_for_cell(path_grid, resolved_terrain, rx, ry))
-        })
+        .flat_map(|ry| (0..width).map(move |rx| movement_class_for_cell(resolved_terrain, rx, ry)))
         .collect();
 
     let (zone_ids, zone_count, mut edge_buckets) =
@@ -262,11 +265,22 @@ pub(crate) fn build_base_zone_topology(
     register_bridge_base_edges(&mut edge_buckets, &zone_ids, bridge_records, width);
     let adjacency = edge_buckets.into_adjacency(zone_count);
 
+    let raw_zone_ids_by_row = std::array::from_fn(|row| {
+        rebuild_zone_ids_for_movement_zone(
+            &movement_classes,
+            &zone_ids,
+            zone_count,
+            &adjacency.neighbors,
+            MovementZone::all_ground()[row],
+        )
+    });
+
     BaseZoneTopology {
         movement_classes,
         zone_ids,
         zone_count,
         adjacency,
+        raw_zone_ids_by_row,
     }
 }
 
@@ -317,6 +331,228 @@ pub(crate) fn build_zone_hierarchy(
     );
 
     ZoneHierarchy::new(level0, level1, level2)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalHierarchyPatchResult {
+    Outside,
+    Patched,
+    NeedsFullRebuild,
+}
+
+/// Patch the one shared hierarchy around a changed signed cell coordinate.
+/// Base topology and the 13 row projections are intentionally read-only here.
+pub(crate) fn incremental_rebuild_zone_hierarchy_around_cell(
+    hierarchy: &mut ZoneHierarchy,
+    base: &BaseZoneTopology,
+    path_grid: &PathGrid,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bridge_records: &[BridgeEndpointRecord],
+    coord: (i16, i16),
+    width: u16,
+    height: u16,
+) -> LocalHierarchyPatchResult {
+    let (x, y) = (i32::from(coord.0), i32::from(coord.1));
+    if base_record_index(x, y, width, height).is_none()
+        || resolved_terrain
+            .cell(x as u16, y as u16)
+            .is_none_or(|cell| cell.outside_playfield)
+    {
+        return LocalHierarchyPatchResult::Outside;
+    }
+
+    for level in (0..3).rev() {
+        let block_size = 1i32 << (level + 1);
+        let x_min = x - x % block_size;
+        let y_min = y - y % block_size;
+        let block = HierarchyBlock {
+            x_min,
+            x_max: x_min + block_size - 1,
+            y_min,
+            y_max: y_min + block_size - 1,
+        };
+
+        let patched = match level {
+            2 => patch_hierarchy_level(
+                &mut hierarchy.levels_mut()[2],
+                None,
+                base,
+                path_grid,
+                resolved_terrain,
+                bridge_records,
+                width,
+                height,
+                block,
+            ),
+            1 => {
+                let (lower, upper) = hierarchy.levels_mut().split_at_mut(2);
+                patch_hierarchy_level(
+                    &mut lower[1],
+                    Some(&upper[0]),
+                    base,
+                    path_grid,
+                    resolved_terrain,
+                    bridge_records,
+                    width,
+                    height,
+                    block,
+                )
+            }
+            0 => {
+                let (lower, upper) = hierarchy.levels_mut().split_at_mut(1);
+                patch_hierarchy_level(
+                    &mut lower[0],
+                    Some(&upper[0]),
+                    base,
+                    path_grid,
+                    resolved_terrain,
+                    bridge_records,
+                    width,
+                    height,
+                    block,
+                )
+            }
+            _ => unreachable!(),
+        };
+        if !patched {
+            return LocalHierarchyPatchResult::NeedsFullRebuild;
+        }
+    }
+
+    refresh_local_hierarchy_parents(hierarchy, base, x, y, width, height);
+    LocalHierarchyPatchResult::Patched
+}
+
+#[allow(clippy::too_many_arguments)]
+fn patch_hierarchy_level(
+    graph: &mut ZoneLevelGraph,
+    parent_level: Option<&ZoneLevelGraph>,
+    base: &BaseZoneTopology,
+    path_grid: &PathGrid,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bridge_records: &[BridgeEndpointRecord],
+    width: u16,
+    height: u16,
+    block: HierarchyBlock,
+) -> bool {
+    let mut edge_buckets = HierarchyEdgeBuckets::new();
+    let mut old_ids = Vec::new();
+
+    // First-seen IDs are collected row-major. The native vector's backwards
+    // duplicate probe is equivalent to this reverse linear lookup.
+    for by in block.y_min..=block.y_max {
+        for bx in block.x_min..=block.x_max {
+            if base_record_index(bx, by, width, height).is_none() {
+                continue;
+            }
+            let old = graph.zone_at(bx as u16, by as u16);
+            if old != ZONE_INVALID && !old_ids.iter().rev().any(|&seen| seen == old) {
+                old_ids.push(old);
+            }
+            graph.set_zone_at(bx, by, ZONE_INVALID);
+        }
+    }
+
+    // Old records remain allocated as stale holes. Only their outgoing edges
+    // are cleared, with one reverse-found reciprocal removed per occurrence.
+    for &old in old_ids.iter().rev() {
+        let outgoing = graph.edges(old).to_vec();
+        for edge in outgoing.iter().rev() {
+            graph.remove_last_edge_to(edge.neighbor, old);
+        }
+        graph.clear_edges(old);
+    }
+
+    for by in block.y_min..=block.y_max {
+        for bx in block.x_min..=block.x_max {
+            let Some(index) = base_record_index(bx, by, width, height) else {
+                continue;
+            };
+            if base.movement_classes[index] == zone_class::OUTSIDE
+                || graph.zone_at(bx as u16, by as u16) != ZONE_INVALID
+            {
+                continue;
+            }
+            let Ok(zone_id) = ZoneId::try_from(graph.record_slot_count()) else {
+                return false;
+            };
+            let parent = parent_level
+                .map(|parent| parent.zone_at(bx as u16, by as u16))
+                .unwrap_or(ZONE_INVALID);
+            if !graph.append_record(ZoneRecord::new(
+                zone_id,
+                parent,
+                base.movement_classes[index],
+            )) {
+                return false;
+            }
+            let _ = flood_fill_hierarchy_scanline(
+                bx as u16,
+                by as u16,
+                zone_id,
+                base.zone_ids[index],
+                base,
+                graph.cell_zone_ids_mut(),
+                path_grid,
+                width,
+                height,
+                block,
+                &mut edge_buckets,
+            );
+        }
+    }
+
+    for record in bridge_records.iter().rev() {
+        if !record.active
+            || (!hierarchy_block_contains_coord(block, record.endpoint_a)
+                && !hierarchy_block_contains_coord(block, record.endpoint_b))
+        {
+            continue;
+        }
+        register_high_bridge_hierarchy_edges_for_record(
+            &mut edge_buckets,
+            graph.cell_zone_ids(),
+            resolved_terrain,
+            record,
+            width,
+            height,
+        );
+    }
+
+    edge_buckets.drain_into(graph);
+    true
+}
+
+fn hierarchy_block_contains_coord(block: HierarchyBlock, coord: (u16, u16)) -> bool {
+    block.contains(i32::from(coord.0), i32::from(coord.1))
+}
+
+fn refresh_local_hierarchy_parents(
+    hierarchy: &mut ZoneHierarchy,
+    base: &BaseZoneTopology,
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+) {
+    let x_min = x - x % 8;
+    let y_min = y - y % 8;
+    let levels = hierarchy.levels_mut();
+    for by in y_min..y_min + 8 {
+        for bx in x_min..x_min + 8 {
+            let Some(index) = base_record_index(bx, by, width, height) else {
+                continue;
+            };
+            if base.movement_classes[index] == zone_class::OUTSIDE {
+                continue;
+            }
+            let level0 = levels[0].zone_at(bx as u16, by as u16);
+            let level1 = levels[1].zone_at(bx as u16, by as u16);
+            let level2 = levels[2].zone_at(bx as u16, by as u16);
+            levels[0].set_parent(level0, level1);
+            levels[1].set_parent(level1, level2);
+        }
+    }
 }
 
 fn build_hierarchy_level(
@@ -435,22 +671,46 @@ fn register_high_bridge_hierarchy_edges(
     height: u16,
 ) {
     for record in bridge_records {
-        if !record.active || !record.is_high() {
+        if !record.active {
             continue;
         }
-        let Some(endpoint_a_cell) = terrain.cell(record.endpoint_a.0, record.endpoint_a.1) else {
-            continue;
-        };
-        let Some(tile_offset) = terrain.high_bridge_tile_offset(endpoint_a_cell) else {
-            continue;
-        };
-        let raw_direction = i32::from(HIGH_BRIDGE_HIERARCHY_DIRECTIONS[tile_offset]);
-        let direction = (raw_direction & 7) as u8;
-        let opposite = ((raw_direction - 4) & 7) as u8;
-
-        register_hierarchy_cell_pair(
+        register_high_bridge_hierarchy_edges_for_record(
             edge_buckets,
             zone_ids,
+            terrain,
+            record,
+            width,
+            height,
+        );
+    }
+}
+
+fn register_high_bridge_hierarchy_edges_for_record(
+    edge_buckets: &mut HierarchyEdgeBuckets,
+    zone_ids: &[ZoneId],
+    terrain: &ResolvedTerrainGrid,
+    record: &BridgeEndpointRecord,
+    width: u16,
+    height: u16,
+) {
+    // The shared native helper handles high bridges and low tubes. This slice
+    // retains the verified call/filter/order interface; tube pair geometry is
+    // owned by the later tube-topology item.
+    if !record.is_high() {
+        return;
+    }
+    let Some(endpoint_a_cell) = terrain.cell(record.endpoint_a.0, record.endpoint_a.1) else {
+        return;
+    };
+    let Some(tile_offset) = terrain.high_bridge_tile_offset(endpoint_a_cell) else {
+        return;
+    };
+    let raw_direction = i32::from(HIGH_BRIDGE_HIERARCHY_DIRECTIONS[tile_offset]);
+    let direction = (raw_direction & 7) as u8;
+    let opposite = ((raw_direction - 4) & 7) as u8;
+
+    for (a, b) in [
+        (
             (
                 i32::from(record.endpoint_a.0),
                 i32::from(record.endpoint_a.1),
@@ -459,25 +719,17 @@ fn register_high_bridge_hierarchy_edges(
                 i32::from(record.endpoint_b.0),
                 i32::from(record.endpoint_b.1),
             ),
-            width,
-            height,
-        );
-        register_hierarchy_cell_pair(
-            edge_buckets,
-            zone_ids,
+        ),
+        (
             hierarchy_side_coord(record.endpoint_a, direction),
             hierarchy_side_coord(record.endpoint_b, direction),
-            width,
-            height,
-        );
-        register_hierarchy_cell_pair(
-            edge_buckets,
-            zone_ids,
+        ),
+        (
             hierarchy_side_coord(record.endpoint_a, opposite),
             hierarchy_side_coord(record.endpoint_b, opposite),
-            width,
-            height,
-        );
+        ),
+    ] {
+        register_hierarchy_cell_pair(edge_buckets, zone_ids, a, b, width, height);
     }
 }
 
@@ -813,13 +1065,10 @@ pub(crate) fn build_zone_map_from_base_topology(
     width: u16,
     height: u16,
 ) -> (ZoneMap, ZoneAdjacency) {
-    let derived_by_base = rebuild_zone_ids_for_movement_zone(
-        &base.movement_classes,
-        &base.zone_ids,
-        base.zone_count,
-        &base.adjacency.neighbors,
-        movement_zone,
-    );
+    let row_index = movement_zone
+        .matrix_row()
+        .expect("ZoneGrid builds only the 13 concrete movement rows");
+    let derived_by_base = &base.raw_zone_ids_by_row[row_index];
     let zone_ids: Vec<ZoneId> = base
         .zone_ids
         .iter()
@@ -847,24 +1096,14 @@ pub(crate) fn build_zone_map_from_base_topology(
     (zone_map, adj)
 }
 
-fn movement_class_for_cell(
-    path_grid: &PathGrid,
+pub(crate) fn movement_class_for_cell(
     resolved_terrain: &ResolvedTerrainGrid,
     x: u16,
     y: u16,
 ) -> u8 {
-    let Some(cell) = resolved_terrain.cell(x, y) else {
-        return zone_class::OUTSIDE;
-    };
-
-    // Buildings are entity-based, not stored on ResolvedTerrainCell.
-    // Check PathGrid for building footprints → class 5 (Building).
-    // Only override if the cached zone_type isn't already a stronger blocker.
-    if cell.zone_type < zone_class::BUILDING && !path_grid.is_walkable(x, y) && !cell.is_water {
-        return zone_class::BUILDING;
-    }
-
-    cell.zone_type
+    resolved_terrain
+        .cell(x, y)
+        .map_or(zone_class::OUTSIDE, |cell| cell.zone_type)
 }
 
 fn rebuild_node_indices(
@@ -1729,7 +1968,7 @@ mod tests {
                     is_road: false,
                     accepts_smudge: false,
                     allows_tiberium: false,
-                    is_cliff_redraw: false,
+                    height_in_pixels: 0,
                     variant: 0,
                     has_ramp: false,
                     canonical_ramp: None,
@@ -1771,11 +2010,22 @@ mod tests {
     fn hierarchy_base(movement_classes: Vec<u8>, zone_ids: Vec<ZoneId>) -> BaseZoneTopology {
         assert_eq!(movement_classes.len(), zone_ids.len());
         let zone_count = zone_ids.iter().copied().max().unwrap_or(ZONE_INVALID);
+        let adjacency = ZoneAdjacency::new(vec![Vec::new(); zone_count as usize + 1]);
+        let raw_zone_ids_by_row = std::array::from_fn(|row| {
+            rebuild_zone_ids_for_movement_zone(
+                &movement_classes,
+                &zone_ids,
+                zone_count,
+                &adjacency.neighbors,
+                MovementZone::all_ground()[row],
+            )
+        });
         BaseZoneTopology {
             movement_classes,
             zone_ids,
             zone_count,
-            adjacency: ZoneAdjacency::new(vec![Vec::new(); zone_count as usize + 1]),
+            adjacency,
+            raw_zone_ids_by_row,
         }
     }
 
@@ -2158,6 +2408,81 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_06_local_hierarchy_bridge_injection_is_reverse_touch_filtered() {
+        let width = 12;
+        let height = 5;
+        let terrain = redirect_terrain(width, height, Some(100), None, |cell| {
+            if matches!((cell.rx, cell.ry), (2, 2) | (8, 2) | (2, 4)) {
+                cell.final_tile_index = 100;
+            }
+        });
+        let base = unique_hierarchy_base(width, height);
+        let path_grid = PathGrid::new(width, height);
+        let mut hierarchy =
+            build_zone_hierarchy(&base, &path_grid, Some(&terrain), &[], width, height);
+        let records = [
+            BridgeEndpointRecord {
+                endpoint_a: (2, 2),
+                endpoint_b: (6, 2),
+                group_id: 1,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (8, 2),
+                endpoint_b: (11, 2),
+                group_id: 2,
+                active: true,
+                bridge_kind: BridgeRecordKind::High,
+            },
+            BridgeEndpointRecord {
+                endpoint_a: (2, 4),
+                endpoint_b: (6, 4),
+                group_id: 3,
+                active: false,
+                bridge_kind: BridgeRecordKind::High,
+            },
+        ];
+
+        assert_eq!(
+            incremental_rebuild_zone_hierarchy_around_cell(
+                &mut hierarchy,
+                &base,
+                &path_grid,
+                &terrain,
+                &records,
+                (2, 2),
+                width,
+                height,
+            ),
+            LocalHierarchyPatchResult::Patched
+        );
+
+        for level in 0..3 {
+            let graph = hierarchy.level(level).unwrap();
+            assert_zero_edge(graph, (2, 2), (6, 2));
+            let untouched_a = graph.zone_at(8, 2);
+            let untouched_b = graph.zone_at(11, 2);
+            assert!(
+                !graph
+                    .edges(untouched_a)
+                    .iter()
+                    .any(|edge| edge.neighbor == untouched_b),
+                "level {level}: record outside the aligned block must not inject"
+            );
+            let inactive_a = graph.zone_at(2, 4);
+            let inactive_b = graph.zone_at(6, 4);
+            assert!(
+                !graph
+                    .edges(inactive_a)
+                    .iter()
+                    .any(|edge| edge.neighbor == inactive_b),
+                "level {level}: inactive touching record must not inject"
+            );
+        }
+    }
+
+    #[test]
     fn gsi_04_12_hierarchy_geometry_negative_table_entry_wraps_nw_and_se() {
         let width = 7;
         let height = 5;
@@ -2488,6 +2813,7 @@ mod tests {
             movement_classes,
             zone_ids,
             zone_count,
+            raw_zone_ids_by_row: std::array::from_fn(|_| Vec::new()),
         };
 
         assert_eq!(base.zone_ids, vec![1, 1, 2, 2]);

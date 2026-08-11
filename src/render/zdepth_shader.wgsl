@@ -1,4 +1,4 @@
-// Per-pixel Z-depth shader for terrain tiles and cliff redraw.
+// Per-pixel Z-depth shader for the base terrain pass.
 //
 // Same vertex shader as batch_shader.wgsl. Fragment shader samples an R8 depth
 // atlas (binding 2) at the same UV as the color texture, then writes per-pixel
@@ -85,9 +85,8 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     let z_sample: f32 = textureSample(t_zdepth, s_sprite, input.uv).r;
 
     // Depth formula: base_depth is the tile's Y-sorted depth (0=near, 1=far).
-    // z_sample offsets per-pixel: higher z_sample values push terrain pixels
-    // closer to the camera (lower depth), creating cliff occlusion. Sprites
-    // behind a cliff fail the depth test because their depth > cliff depth.
+    // z_sample offsets per-pixel: higher values push terrain pixels closer to
+    // the camera (lower depth) in the shared terrain depth buffer.
     let depth_scale: f32 = 0.0002;
     let frag_depth: f32 = clamp(input.base_depth - z_sample * depth_scale, 0.001, 0.999);
 

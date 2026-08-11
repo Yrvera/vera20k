@@ -8,8 +8,8 @@
 //! that slip through.
 //!
 //! Output pages match the sprite atlas page layout — particle pass uses its
-//! own pool keys ("particle_p0".."particle_p3") drawn at Step 7.5 (between
-//! cliff redraw and debug overlays).
+//! own pool keys ("particle_p0".."particle_p3") drawn after bridge railings
+//! and before debug overlays.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

@@ -46,14 +46,18 @@ pub(crate) fn receive_damage(
 ) -> DamageOutcome {
     let unaffected = DamageOutcome {
         hp_delta: 0,
+        post_object_damage: None,
         state: DamageState::Unaffected,
+        psychedelic_value: None,
+        invulnerability_impact_damage: None,
+        reached_survivor_postlude: false,
     };
 
-    // Positive-only receiver divides. Healing (incoming < 0) bypasses. gamemd
+    // Nonnegative receiver divides. Healing (incoming < 0) bypasses. gamemd
     // runs the divides BEFORE the immunity gates (TypeImmune included), so the
     // gates are evaluated below, not before the divides.
     let mut dmg = incoming;
-    if dmg > 0 {
+    if !gates.ignore_defenses && dmg >= 0 {
         // country-armor DIVIDE folding per-unit ArmorMultiplier, ONE ftol.
         // FDIVR: damage / (country * unit); larger mult => less damage.
         let armor_div = mods.defender_country_armor * mods.defender_unit_armor;
@@ -71,45 +75,90 @@ pub(crate) fn receive_damage(
     // Immunity gates (after the divides; TypeImmune handled inside).
     match evaluate_gates(gates) {
         DamageGate::Nullified => return unaffected,
+        DamageGate::Invulnerable => {
+            return DamageOutcome {
+                invulnerability_impact_damage: Some(dmg.wrapping_shl(1)),
+                ..unaffected
+            };
+        }
         DamageGate::MindControlled => {
-            // 0 HP delta, damaged-marker (gamemd returns code 1).
+            // Accepted Psychedelic is a separate Techno receiver transaction:
+            // run the same signed kernel at literal distance zero, store its
+            // result in Techno state, and return code 1 before Object HP.
+            let psychedelic_value = apply_warhead_damage(
+                dmg,
+                cell_spread,
+                percent_at_max,
+                verses_f64,
+                target.armor,
+                0,
+                scenario_no_damage,
+                max_damage,
+            );
             return DamageOutcome {
                 hp_delta: 0,
+                post_object_damage: None,
                 state: DamageState::Damaged,
+                psychedelic_value: Some(psychedelic_value),
+                invulnerability_impact_damage: None,
+                reached_survivor_postlude: false,
             };
         }
         DamageGate::Pass => {}
     }
 
-    // Verses kernel (falloff -> Verses -> cap; also re-runs the D1/D2 early-outs).
-    let mut delta = apply_warhead_damage(
-        dmg,
-        cell_spread,
-        percent_at_max,
-        verses_f64,
-        target.armor,
-        distance_leptons,
-        scenario_no_damage,
-        max_damage,
-    );
-
-    // Healing path (delta < 0): caller adds back, clamped to strength elsewhere.
-    // Bypasses the building floor + overkill clamp.
-    if delta < 0 {
+    // ObjectClass::ReceiveDamage entry gate. Ordered area receivers always
+    // enter with ignoreDefenses=false, so an Immune type returns before the
+    // ordinary kernel, HP write, and every downstream callback. This stays
+    // after the Techno gates because accepted Psychedelic returns above without
+    // delegating to ObjectClass.
+    if !gates.ignore_defenses && target.object_immune {
         return DamageOutcome {
-            hp_delta: delta,
-            state: classify(target, delta, condition_red_ratio),
+            post_object_damage: Some(dmg),
+            reached_survivor_postlude: true,
+            ..unaffected
         };
     }
 
+    // Verses kernel (falloff -> Verses -> cap; also re-runs the D1/D2 early-outs).
+    let mut delta = if gates.ignore_defenses {
+        dmg
+    } else {
+        apply_warhead_damage(
+            dmg,
+            cell_spread,
+            percent_at_max,
+            verses_f64,
+            target.armor,
+            distance_leptons,
+            scenario_no_damage,
+            max_damage,
+        )
+    };
+
     // Building min-1 (ObjectClass::ReceiveDamage, post-Verses, Building && !CanC4).
-    // MUST run BEFORE the zero-check: a building whose Verses collapses to 0 still
-    // takes 1 (a non-building taking 0 is genuinely unaffected).
+    // MUST run before the sign/zero dispatch: a building whose Verses collapses
+    // to zero, or whose packet was negative, is rewritten to positive one.
     if target.is_building && !target.can_c4 {
         delta = delta.max(1);
     }
+    // Healing path (delta < 0): caller adds back, clamped to strength elsewhere.
+    if delta < 0 {
+        return DamageOutcome {
+            hp_delta: delta,
+            post_object_damage: Some(delta),
+            state: classify(target, delta, condition_red_ratio),
+            psychedelic_value: None,
+            invulnerability_impact_damage: None,
+            reached_survivor_postlude: true,
+        };
+    }
     if delta == 0 {
-        return unaffected;
+        return DamageOutcome {
+            post_object_damage: Some(0),
+            reached_survivor_postlude: true,
+            ..unaffected
+        };
     }
 
     // Overkill clamp: damage never exceeds remaining HP.
@@ -119,7 +168,11 @@ pub(crate) fn receive_damage(
 
     DamageOutcome {
         hp_delta: delta,
+        post_object_damage: Some(delta),
         state: classify(target, delta, condition_red_ratio),
+        psychedelic_value: None,
+        invulnerability_impact_damage: None,
+        reached_survivor_postlude: true,
     }
 }
 
@@ -163,6 +216,7 @@ mod tests {
             armor: ArmorClass(5),
             strength,
             current_hp: hp,
+            object_immune: false,
             is_building: false,
             can_c4: false,
         }
@@ -378,14 +432,13 @@ mod tests {
         );
         assert_eq!(o.hp_delta, 0);
         assert_eq!(o.state, DamageState::Damaged);
+        assert_eq!(o.psychedelic_value, Some(100));
     }
 
     #[test]
-    fn force_shield_matches_old_coarse_nullify() {
-        // The receiver reproduces the old coarse is_invulnerable nullify: a
-        // force-shielded target takes 0 and stays Unaffected.
+    fn invulnerability_returns_native_doubled_impact_argument() {
         let g = ImmunityInputs {
-            force_shield: true,
+            invulnerable: true,
             ..allow()
         };
         let o = receive_damage(
@@ -403,5 +456,6 @@ mod tests {
         );
         assert_eq!(o.hp_delta, 0);
         assert_eq!(o.state, DamageState::Unaffected);
+        assert_eq!(o.invulnerability_impact_damage, Some(200));
     }
 }

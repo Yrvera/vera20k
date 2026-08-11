@@ -665,11 +665,10 @@ fn spy_sat_reveals_the_map_without_making_it_currently_visible() {
     }
 }
 
-/// The reveal outlives the tick that set it, so a brownout cannot blink the
-/// map back to black. gamemd's is edge-triggered and power-independent; here
-/// the explored bit is monotonic, which gets the same result.
+/// The pure materializer does not treat an absent owner as a transition. The
+/// House-rung aggregate latch owns restoration when the last provider is lost.
 #[test]
-fn spy_sat_reveal_survives_the_owner_dropping_off_the_qualifying_list() {
+fn spy_sat_reveal_helper_does_not_implicitly_reshroud_an_absent_owner() {
     let owner = intern::test_intern("Americans");
     let interner = ti();
     let mut fog = FogState {
@@ -680,7 +679,7 @@ fn spy_sat_reveal_survives_the_owner_dropping_off_the_qualifying_list() {
     apply_spy_sat(&mut fog, &[owner], &interner);
     assert!(fog.is_cell_revealed(owner, 19, 19));
 
-    // Next tick: visibility is cleared and the owner no longer qualifies.
+    // Next tick: visibility is cleared and this materialization pass is empty.
     if let Some(vis) = fog.by_owner.get_mut(&owner) {
         vis.clear_all_visible();
     }
@@ -737,6 +736,77 @@ fn test_gap_generator_does_not_suppress_friendly() {
     let interner = ti();
     apply_gap_generators(&mut fog, &[(americans_id, 10, 10, 5)], &interner);
     assert!(fog.is_cell_visible(intern::test_intern("Americans"), 10, 10));
+}
+
+#[test]
+fn gsi_04_18_hostile_gap_erases_map_knowledge_until_current_sight_returns() {
+    let viewer = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+    fog.mark_visible_for_owner(viewer, 16, 16);
+    assert!(fog.is_cell_revealed(viewer, 16, 16));
+
+    apply_gap_generators(&mut fog, &[(gapper, 16, 16, 5)], &interner);
+    assert!(!fog.is_cell_visible(viewer, 16, 16));
+    assert!(!fog.is_cell_revealed(viewer, 16, 16));
+    assert!(fog.is_cell_gap_covered(viewer, 16, 16));
+
+    fog.by_owner
+        .get_mut(&viewer)
+        .expect("viewer plane")
+        .clear_all_visible();
+    apply_gap_generators(&mut fog, &[], &interner);
+    assert!(!fog.is_cell_gap_covered(viewer, 16, 16));
+    assert!(
+        !fog.is_cell_revealed(viewer, 16, 16),
+        "destroying the hostile gap must not restore erased knowledge"
+    );
+
+    reveal_radius(&mut fog, viewer, 16, 16, 1);
+    assert!(fog.is_cell_visible(viewer, 16, 16));
+    assert!(fog.is_cell_revealed(viewer, 16, 16));
+}
+
+#[test]
+fn gsi_04_18_spy_sat_repeat_restores_uncovered_cells_and_active_gap_still_wins() {
+    let viewer = intern::test_intern("Soviet");
+    let gapper = intern::test_intern("Americans");
+    let interner = ti();
+    let mut fog = FogState {
+        width: 32,
+        height: 32,
+        ..Default::default()
+    };
+
+    apply_spy_sat(&mut fog, &[viewer], &interner);
+    apply_gap_generators(&mut fog, &[(gapper, 16, 16, 5)], &interner);
+    assert!(!fog.is_cell_revealed(viewer, 16, 16));
+
+    fog.by_owner
+        .get_mut(&viewer)
+        .expect("viewer plane")
+        .clear_all_visible();
+    apply_spy_sat(&mut fog, &[viewer], &interner);
+    assert!(
+        fog.is_cell_revealed(viewer, 16, 16),
+        "the repeated uplink pass restores a cell after the gap disappears"
+    );
+    apply_gap_generators(&mut fog, &[(gapper, 16, 16, 5)], &interner);
+    assert!(
+        !fog.is_cell_revealed(viewer, 16, 16),
+        "the active hostile gap remains the final writer"
+    );
+
+    fog.mark_visible_for_owner(gapper, 16, 16);
+    apply_gap_generators(&mut fog, &[(gapper, 16, 16, 5)], &interner);
+    assert!(fog.is_cell_visible(gapper, 16, 16));
+    assert!(fog.is_cell_revealed(gapper, 16, 16));
+    assert!(fog.is_cell_gap_fog(gapper, 16, 16));
 }
 
 // -- In-place recompute tests --
@@ -889,8 +959,8 @@ fn test_gap_generator_sets_gap_covered_flag() {
     // Cell should now be gap-covered AND not visible for Soviet.
     assert!(fog.is_cell_gap_covered(intern::test_intern("Soviet"), 12, 10));
     assert!(!fog.is_cell_visible(intern::test_intern("Soviet"), 12, 10));
-    // But still revealed (gap doesn't erase exploration).
-    assert!(fog.is_cell_revealed(intern::test_intern("Soviet"), 12, 10));
+    // Hostile gap coverage erases current map knowledge as well as sight.
+    assert!(!fog.is_cell_revealed(intern::test_intern("Soviet"), 12, 10));
 }
 
 #[test]
@@ -1136,8 +1206,8 @@ fn gap_marks_friendly_viewer_as_fog_not_covered() {
 
 #[test]
 fn gap_coverage_clears_when_no_generator_present() {
-    // dev recomputes coverage each tick (no reference counter): once the
-    // generator is gone, the next tick's clear + empty apply restores the cell.
+    // dev recomputes the transient coverage flag each tick (no reference
+    // counter); removing the generator does not restore erased map knowledge.
     let enemy = intern::test_intern("Soviet");
     let gapper = intern::test_intern("Americans");
     let interner = ti();

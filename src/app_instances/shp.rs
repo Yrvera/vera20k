@@ -10,7 +10,7 @@
 use super::helpers::{
     ANIM_DRAW_DEPTH_BIAS_PX, EntityDrawBand, apply_bridge_depth_bias, apply_shape_z_adjust,
     compute_sprite_depth, effective_anim_z_adjust, entity_draw_band, ground_sort_row, in_view,
-    is_entity_visible_for_local_owner, is_under_bridge_render_state,
+    is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
 use crate::app_render::draw_plan_lowering::{
@@ -18,7 +18,6 @@ use crate::app_render::draw_plan_lowering::{
 };
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
-use crate::map::terrain::TILE_HEIGHT;
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
@@ -56,6 +55,12 @@ pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
 /// type on a Jumpjet locomotor.
 /// `parachute_body_depths` collects the sort key of every body currently under
 /// a parachute, keyed by entity — see [`ParachuteBodyDepths`].
+/// `selected_building_depth_paged` receives a second copy of every selected
+/// building's body, for the depth-only stamp that lets the art clip its own
+/// selection brackets. It is taken here rather than rebuilt later because this
+/// is where the resolved atlas entry, buildup frame and sort depth already
+/// exist together; re-deriving them elsewhere would be a second source of truth
+/// that drifts the moment either side changes.
 pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
@@ -64,6 +69,7 @@ pub(crate) fn build_shp_instances(
     unit_instances: &mut Vec<SpriteInstance>,
     unit_instance_pages: &mut Vec<usize>,
     parachute_body_depths: &mut ParachuteBodyDepths,
+    selected_building_depth_paged: &mut [Vec<SpriteInstance>],
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -81,15 +87,15 @@ pub(crate) fn build_shp_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    for entity in sim
-        .entities()
-        .values()
-        .filter(|e| !e.is_voxel && !e.lifecycle.in_limbo)
-    {
-        // Skip entities inside a transport/garrison — they are hidden from the map.
-        if entity.passenger_role.is_inside_transport() {
+    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    for stable_id in encounter_order {
+        let Some(entity) = sim.entities().get(stable_id) else {
+            continue;
+        };
+        if entity.is_voxel {
             continue;
         }
+        // Common visibility, passenger, limbo, and DrawState admission is shared below.
         let owner_str = sim.interner.resolve(entity.owner);
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
         let type_str = active_disguise
@@ -116,28 +122,18 @@ pub(crate) fn build_shp_instances(
             }
         }
         let pos = &entity.position;
-        if !is_entity_visible_for_local_owner(
-            local_owner.as_deref(),
-            &sim.fog,
-            pos,
-            owner_str,
-            ignore_visibility,
-            local_owner_id,
-        ) {
-            continue;
-        }
-        let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
-        let interp_z = pos.z;
-        if !in_view(sx, sy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
-            continue;
-        }
         let hc: HouseColorIndex = state
             .house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
-        let draw_decision = DrawState::for_entity(
+        let Some(draw_decision) = tactical_entity_render_admission(
             entity,
+            owner_str,
+            local_owner.as_deref(),
+            local_owner_id,
+            &sim.fog,
+            ignore_visibility,
             sim.session.binary_frame,
             super::units::house_color_to_remap_row(hc),
             ObserverDrawContext {
@@ -147,8 +143,23 @@ pub(crate) fn build_shp_instances(
                 detects_cloak: local_owner_id
                     .is_some_and(|observer| sim.fog.has_sensor_for_house(observer, pos.rx, pos.ry)),
             },
-        );
-        if !draw_decision.visible {
+        ) else {
+            continue;
+        };
+        // Buildings are the one class gamemd draws off its own render-coordinate
+        // virtual rather than the plain object coordinate; everything below this
+        // point — body, bib, anims, turret, and the row they sort on — wants that
+        // lifted anchor. See `locomotor_visual::BUILDING_ART_LIFT_PX`.
+        let (sx, sy) = {
+            let anchor = crate::render::locomotor_visual::screen_position(entity);
+            if entity.category == EntityCategory::Structure {
+                crate::render::locomotor_visual::building_art_anchor(anchor.0, anchor.1)
+            } else {
+                anchor
+            }
+        };
+        let interp_z = pos.z;
+        if !in_view(sx, sy, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0) {
             continue;
         }
         let draw_state = draw_decision.state;
@@ -268,11 +279,11 @@ pub(crate) fn build_shp_instances(
         let band = entity_draw_band(entity);
         let base_depth: f32 = match entity.category {
             EntityCategory::Structure => {
-                // Building render coords use (Location.X - 128, Location.Y - 128) — the
-                // NW cell origin, not center. YSort = X + Y from those coords. In screen
-                // space the -128 lepton shift equals -TILE_HEIGHT/2 on iso_row.
-                // Our iso_to_screen bakes in +TILE_HEIGHT/2, so subtract it.
-                compute_sprite_depth(state, sy - TILE_HEIGHT / 2.0, interp_z)
+                // `sy` already carries the render-coordinate lift, so it *is* the
+                // NW footprint cell's tile row — the row gamemd's YSort (X + Y
+                // off the render coords) reduces to. A building therefore sorts
+                // on its own cell rather than one iso row north of it.
+                compute_sprite_depth(state, sy, interp_z)
             }
             _ => {
                 // The drawn row carries this body's height lift; the sort key
@@ -333,6 +344,25 @@ pub(crate) fn build_shp_instances(
 
         let mut building_pieces = Vec::new();
         if entity.category == EntityCategory::Structure {
+            // Only the selected building's own art participates in clipping its
+            // brackets, so the stamp bucket stays empty in ordinary play and
+            // costs one extra quad per selected structure otherwise.
+            if entity.selected {
+                if let Some(bucket) = selected_building_depth_paged.get_mut(entry.page as usize) {
+                    // Deliberately NOT the body's sort depth. gamemd anchors a
+                    // shape's Z on the bottom edge of its blit rect, and the
+                    // per-pixel ramp it lays over the sprite cancels the
+                    // walker's own per-row step, so every pixel of a building
+                    // ends up carrying that one bottom-row value. The sort key
+                    // is a different quantity — the north-west footprint cell's
+                    // tile row — and using it here would put the stamp north of
+                    // every bracket corner, so nothing would ever clip.
+                    bucket.push(SpriteInstance {
+                        depth: compute_sprite_depth(state, final_y + entry.pixel_size[1], interp_z),
+                        ..body
+                    });
+                }
+            }
             building_pieces.push(PlannedBuildingPieceInstance {
                 kind: if is_building_up || is_building_down {
                     BuildingPieceKind::BuildupOrSpecial

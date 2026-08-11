@@ -346,9 +346,10 @@ impl BridgeRuntimeState {
         let mut touched = Vec::with_capacity(3);
         let mut spans = std::collections::BTreeSet::new();
         for pos in triple.into_iter().flatten() {
+            let overlay_changed =
+                self.write_overlay_byte_deferred_recalc(pos.0, pos.1, new_overlay);
             if let Some(cell) = self.cell_mut(pos.0, pos.1) {
-                let changed = cell.overlay_byte != new_overlay || cell.damaged_variant;
-                cell.overlay_byte = new_overlay;
+                let changed = overlay_changed || cell.damaged_variant;
                 if changed {
                     outcome.repaired_cells += 1;
                 }
@@ -357,6 +358,9 @@ impl BridgeRuntimeState {
                 }
                 touched.push(pos);
             }
+        }
+        for &(rx, ry) in &touched {
+            self.queue_overlay_recalc(rx, ry);
         }
 
         for &(rx, ry) in &touched {
@@ -696,6 +700,19 @@ impl BridgeRuntimeState {
         [Some((rx, ry)), west, east]
     }
 
+    /// Main low-damage walkers write both perpendicular neighbors before the
+    /// center cell, then defer center-first RecalcAttributes until after their
+    /// sibling-cascade calls return.
+    fn ns_low_root_write_order(rx: u16, ry: u16) -> [Option<(u16, u16)>; 3] {
+        let [center, north, south] = Self::ns_triple(rx, ry);
+        [north, south, center]
+    }
+
+    fn ew_low_root_write_order(rx: u16, ry: u16) -> [Option<(u16, u16)>; 3] {
+        let [center, west, east] = Self::ew_triple(rx, ry);
+        [west, east, center]
+    }
+
     // ----- Sibling-cascade leaves (`apply_bridge_destruction_*_high`). -----
 
     /// Sibling-cascade leaf for the NS body axis. Validates `(rx, ry)` is
@@ -748,8 +765,8 @@ impl BridgeRuntimeState {
 
         for slot in Self::ns_triple(rx, ry) {
             if let Some(pos) = slot {
+                let _ = self.write_overlay_byte(pos.0, pos.1, next);
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     // Every touched cell (final OR intermediate) is minimap-dirty.
                     radar.push(pos);
                     if next == 0xE7 {
@@ -805,8 +822,8 @@ impl BridgeRuntimeState {
 
         for slot in Self::ew_triple(rx, ry) {
             if let Some(pos) = slot {
+                let _ = self.write_overlay_byte(pos.0, pos.1, next);
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     // Every touched cell (final OR intermediate) is minimap-dirty.
                     radar.push(pos);
                     if next == 0xE8 {
@@ -884,8 +901,8 @@ impl BridgeRuntimeState {
         // final collapse) like any other cell — it is NOT left standing.
         for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
+                let _ = self.write_overlay_byte(pos.0, pos.1, next);
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -979,8 +996,8 @@ impl BridgeRuntimeState {
 
         for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
             if let Some(pos) = opt_pos {
+                let _ = self.write_overlay_byte(pos.0, pos.1, next);
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -1127,10 +1144,13 @@ impl BridgeRuntimeState {
             return final_cells;
         };
 
-        for slot in Self::ns_triple(rx, ry) {
+        let triple = Self::ns_triple(rx, ry);
+        for pos in triple.into_iter().flatten() {
+            let _ = self.write_overlay_byte_deferred_recalc(pos.0, pos.1, next);
+        }
+        for slot in triple {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     // Every touched cell (final OR intermediate) is minimap-dirty.
                     radar.push(pos);
                     if next == 0x64 {
@@ -1141,6 +1161,9 @@ impl BridgeRuntimeState {
                     }
                 }
             }
+        }
+        for pos in triple.into_iter().flatten() {
+            self.queue_overlay_recalc(pos.0, pos.1);
         }
         final_cells
     }
@@ -1183,10 +1206,13 @@ impl BridgeRuntimeState {
             return final_cells;
         };
 
-        for slot in Self::ew_triple(rx, ry) {
+        let triple = Self::ew_triple(rx, ry);
+        for pos in triple.into_iter().flatten() {
+            let _ = self.write_overlay_byte_deferred_recalc(pos.0, pos.1, next);
+        }
+        for slot in triple {
             if let Some(pos) = slot {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     // Every touched cell (final OR intermediate) is minimap-dirty.
                     radar.push(pos);
                     if next == 0x65 {
@@ -1197,6 +1223,9 @@ impl BridgeRuntimeState {
                     }
                 }
             }
+        }
+        for pos in triple.into_iter().flatten() {
+            self.queue_overlay_recalc(pos.0, pos.1);
         }
         final_cells
     }
@@ -1251,10 +1280,13 @@ impl BridgeRuntimeState {
         // fed to the minimap radar-dirty channel by the orchestrator.
         let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
-        for (slot, opt_pos) in Self::ns_triple(rx, ry).into_iter().enumerate() {
+        let triple = Self::ns_triple(rx, ry);
+        for pos in Self::ns_low_root_write_order(rx, ry).into_iter().flatten() {
+            let _ = self.write_overlay_byte_deferred_recalc(pos.0, pos.1, next);
+        }
+        for (slot, opt_pos) in triple.into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -1278,6 +1310,10 @@ impl BridgeRuntimeState {
                     actions.push((pos, 0, CellAction::BlowUpBridge));
                 }
             }
+        }
+
+        for pos in triple.into_iter().flatten() {
+            self.queue_overlay_recalc(pos.0, pos.1);
         }
 
         if !is_final && destroyed.is_empty() {
@@ -1342,10 +1378,13 @@ impl BridgeRuntimeState {
         // fed to the minimap radar-dirty channel by the orchestrator.
         let mut radar_cells: Vec<(u16, u16)> = Vec::new();
 
-        for (slot, opt_pos) in Self::ew_triple(rx, ry).into_iter().enumerate() {
+        let triple = Self::ew_triple(rx, ry);
+        for pos in Self::ew_low_root_write_order(rx, ry).into_iter().flatten() {
+            let _ = self.write_overlay_byte_deferred_recalc(pos.0, pos.1, next);
+        }
+        for (slot, opt_pos) in triple.into_iter().enumerate() {
             if let Some(pos) = opt_pos {
                 if let Some(c) = self.cell_mut(pos.0, pos.1) {
-                    c.overlay_byte = next;
                     radar_cells.push(pos);
                     if is_final {
                         c.damage_state = DamageState::Destroyed;
@@ -1369,6 +1408,10 @@ impl BridgeRuntimeState {
                     actions.push((pos, 0, CellAction::BlowUpBridge));
                 }
             }
+        }
+
+        for pos in triple.into_iter().flatten() {
+            self.queue_overlay_recalc(pos.0, pos.1);
         }
 
         if !is_final && destroyed.is_empty() {
@@ -1465,7 +1508,7 @@ mod tests {
                     is_road: false,
                     accepts_smudge: false,
                     allows_tiberium: false,
-                    is_cliff_redraw: false,
+                    height_in_pixels: 0,
                     variant: 0,
                     has_ramp: false,
                     canonical_ramp: None,
@@ -2055,6 +2098,167 @@ mod tests {
             assert_eq!(c.overlay_byte, 0x50);
             assert_eq!(c.damage_state, DamageState::Damaged);
         }
+    }
+
+    #[test]
+    fn gsi_04_13_low_overlay_projection_ops_preserve_native_phases_and_repeated_writes() {
+        let mut state = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_low_body_cell(&mut state, 2, y, Axis::NS, 0x4A);
+        }
+
+        assert!(!state.write_overlay_byte(2, 1, 0x4A));
+        assert_eq!(
+            state.take_overlay_projection_ops(),
+            vec![
+                crate::sim::bridge_state::BridgeOverlayProjectionOp::Write {
+                    rx: 2,
+                    ry: 1,
+                    overlay_byte: 0x4A,
+                },
+                crate::sim::bridge_state::BridgeOverlayProjectionOp::Recalc { rx: 2, ry: 1 },
+            ],
+            "an overlapping native writer still performs RecalcAttributes"
+        );
+
+        let outcome = state.destroy_bridge_walker_ns_low(2, 1, &empty_terrain());
+        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert_eq!(
+            state.take_overlay_projection_ops(),
+            projection_ops(
+                &[((2, 0), 0x50), ((2, 2), 0x50), ((2, 1), 0x50)],
+                &[(2, 1), (2, 0), (2, 2)],
+            ),
+            "NS root writes north/south/center before center/north/south recalc"
+        );
+
+        let mut ew = BridgeRuntimeState::default();
+        for x in 0..3u16 {
+            seed_low_body_cell(&mut ew, x, 2, Axis::EW, 0x53);
+        }
+        let outcome = ew.destroy_bridge_walker_ew_low(1, 2, &empty_terrain());
+        assert!(matches!(outcome, StateOutcome::Absorbed));
+        assert_eq!(
+            ew.take_overlay_projection_ops(),
+            projection_ops(
+                &[((0, 2), 0x59), ((2, 2), 0x59), ((1, 2), 0x59)],
+                &[(1, 2), (0, 2), (2, 2)],
+            ),
+            "EW root writes west/east/center before center/west/east recalc"
+        );
+
+        let mut leaf = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_low_body_cell(&mut leaf, 2, y, Axis::NS, 0x4A);
+        }
+        seed_low_body_cell(&mut leaf, 3, 1, Axis::NS, 0x4E);
+        let mut radar = Vec::new();
+        let _ = leaf.apply_bridge_destruction_ns_low(2, 1, &mut radar);
+        let leaf_byte = leaf.cell(2, 1).expect("leaf center").overlay_byte;
+        assert_eq!(
+            leaf.take_overlay_projection_ops(),
+            projection_ops(
+                &[
+                    ((2, 1), leaf_byte),
+                    ((2, 0), leaf_byte),
+                    ((2, 2), leaf_byte),
+                ],
+                &[(2, 1), (2, 0), (2, 2)],
+            ),
+            "cascade leaf completes center/north/south writes before recalc"
+        );
+
+        let mut repair = BridgeRuntimeState::default();
+        for y in 0..3u16 {
+            seed_low_body_cell(&mut repair, 2, y, Axis::NS, 0x64);
+        }
+        let mut repair_outcome = RepairOutcome::default();
+        repair.apply_repair_to_strip_cell(
+            BridgeRuntimeState::ns_triple(2, 1),
+            RepairFamily::LowNs,
+            &mut SimRng::new(0),
+            &empty_terrain(),
+            &mut repair_outcome,
+        );
+        let repair_byte = repair.cell(2, 1).expect("repair center").overlay_byte;
+        assert_eq!(
+            repair.take_overlay_projection_ops(),
+            projection_ops(
+                &[
+                    ((2, 1), repair_byte),
+                    ((2, 0), repair_byte),
+                    ((2, 2), repair_byte),
+                ],
+                &[(2, 1), (2, 0), (2, 2)],
+            ),
+            "repair completes center/north/south writes before recalc"
+        );
+
+        let mut ew_leaf = BridgeRuntimeState::default();
+        for x in 0..3u16 {
+            seed_low_body_cell(&mut ew_leaf, x, 2, Axis::EW, 0x53);
+        }
+        seed_low_body_cell(&mut ew_leaf, 1, 1, Axis::EW, 0x57);
+        let mut radar = Vec::new();
+        let _ = ew_leaf.apply_bridge_destruction_ew_low(1, 2, &mut radar);
+        let leaf_byte = ew_leaf.cell(1, 2).expect("EW leaf center").overlay_byte;
+        assert_eq!(
+            ew_leaf.take_overlay_projection_ops(),
+            projection_ops(
+                &[
+                    ((1, 2), leaf_byte),
+                    ((0, 2), leaf_byte),
+                    ((2, 2), leaf_byte),
+                ],
+                &[(1, 2), (0, 2), (2, 2)],
+            ),
+            "EW cascade leaf completes center/west/east writes before recalc"
+        );
+
+        let mut ew_repair = BridgeRuntimeState::default();
+        for x in 0..3u16 {
+            seed_low_body_cell(&mut ew_repair, x, 2, Axis::EW, 0x65);
+        }
+        let mut repair_outcome = RepairOutcome::default();
+        ew_repair.apply_repair_to_strip_cell(
+            BridgeRuntimeState::ew_triple(1, 2),
+            RepairFamily::LowEw,
+            &mut SimRng::new(0),
+            &empty_terrain(),
+            &mut repair_outcome,
+        );
+        let repair_byte = ew_repair.cell(1, 2).expect("EW repair center").overlay_byte;
+        assert_eq!(
+            ew_repair.take_overlay_projection_ops(),
+            projection_ops(
+                &[
+                    ((1, 2), repair_byte),
+                    ((0, 2), repair_byte),
+                    ((2, 2), repair_byte),
+                ],
+                &[(1, 2), (0, 2), (2, 2)],
+            ),
+            "EW repair completes center/west/east writes before recalc"
+        );
+    }
+
+    fn projection_ops(
+        writes: &[((u16, u16), u8)],
+        recalcs: &[(u16, u16)],
+    ) -> Vec<crate::sim::bridge_state::BridgeOverlayProjectionOp> {
+        writes
+            .iter()
+            .map(|&((rx, ry), overlay_byte)| {
+                crate::sim::bridge_state::BridgeOverlayProjectionOp::Write {
+                    rx,
+                    ry,
+                    overlay_byte,
+                }
+            })
+            .chain(recalcs.iter().map(|&(rx, ry)| {
+                crate::sim::bridge_state::BridgeOverlayProjectionOp::Recalc { rx, ry }
+            }))
+            .collect()
     }
 
     #[test]

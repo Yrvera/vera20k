@@ -122,8 +122,11 @@ pub(crate) fn unit_status_visibility(selected: bool, hovered: bool) -> (bool, bo
 ///   pip_x[i]  = loc_x + (-(W+H)*15 + 3 + num_pips*4) - i*4
 ///   pip_y[i]  = loc_y + ((H-W)*7.5 + 4 - 2*num_pips) + i*2
 ///
-/// Where loc = entity screen position. lepton_to_screen now returns cell center
-/// (matching the original CoordsToClient), so loc = (screen_x, screen_y).
+/// Where loc = the **plain entity anchor**, the projection of the building's own
+/// coordinate — the same point the original's health-bar path starts from. That
+/// path is reached from the object-render loop's foundation-centre coordinate,
+/// not from the render-coordinate override the building's art takes, so the pips
+/// deliberately do not carry that override.
 /// The draw point is then shifted by the PIPS.SHP canvas/frame offset so the
 /// SpriteInstance position is the final frame-rect top-left, matching flags 0x600.
 pub(crate) fn build_building_status_instances(

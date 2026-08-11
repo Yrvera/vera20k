@@ -44,6 +44,10 @@ pub struct TmpTile {
     pub depth: Vec<u8>,
     pub pixel_width: u32,
     pub pixel_height: u32,
+    /// Extra-plane Y origin relative to the stored diamond origin. This is
+    /// `raw_extra_y - stored_y` when the extra-data flag is set, otherwise 0.
+    /// It is distinct from `offset_y`, which is the decoded render bound.
+    pub relative_extra_y: i32,
     /// Offset from tile diamond origin (non-zero when extra data extends beyond).
     pub offset_x: i32,
     pub offset_y: i32,

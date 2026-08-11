@@ -68,7 +68,8 @@ fn entity_ground_z_leptons(entity: &GameEntity, terrain: &ResolvedTerrainGrid) -
     )
 }
 
-/// Combined absolute coordinate Z of an entity: exact sloped terrain ground,
+/// Absolute world-coordinate Z of an entity. An object-owned exact coordinate
+/// is authoritative; otherwise this reconstructs exact sloped terrain ground,
 /// the entity-owned OnBridge deck offset, and locomotor altitude.
 ///
 /// Droppod and parachute altitudes are intentionally NOT added — those
@@ -78,6 +79,10 @@ pub(crate) fn effective_z_leptons(
     entity: &GameEntity,
     terrain: &ResolvedTerrainGrid,
 ) -> Option<i64> {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return Some(i64::from(exact_z_leptons));
+    }
+
     let base = entity_ground_z_leptons(entity, terrain)?;
     Some(
         base + entity
@@ -542,6 +547,19 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_15_effective_z_prefers_exact_signed_world_coordinate() {
+        let mut entity = aircraft_at_altitude(1500);
+        entity.position.rx = 600;
+        entity.position.ry = 600;
+        entity.position.z = 9;
+        entity.position.exact_z_leptons = Some(-137);
+        entity.on_bridge = true;
+
+        let terrain = flat_terrain(1, 1);
+        assert_eq!(effective_z_leptons(&entity, &terrain), Some(-137));
+    }
+
+    #[test]
     fn is_low_flying_only_for_airborne_aircraft() {
         let ground = ground_entity_at_level(5);
         assert!(!is_low_flying(&ground));
@@ -549,7 +567,7 @@ mod tests {
         let grounded_air = aircraft_at_altitude(0);
         assert!(!is_low_flying(&grounded_air));
 
-        let low = aircraft_at_altitude(500);
+        let low = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
         assert!(is_low_flying(&low));
 
         let high = aircraft_at_altitude(1500);
@@ -558,7 +576,7 @@ mod tests {
 
     #[test]
     fn is_high_flying_inverse_threshold() {
-        let just_below = aircraft_at_altitude(999);
+        let just_below = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
         assert!(!is_high_flying(&just_below));
 
         let at_threshold = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS);
@@ -604,7 +622,7 @@ mod tests {
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
@@ -871,8 +889,8 @@ mod tests {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let weapon = rules.weapon("GUN").expect("weapon");
         let attacker = ground_attacker(0, 0, 0, "ATKR");
-        // Aircraft at altitude 500 lep (low-flying), 4 cells away horizontally.
-        let target = aircraft_target(4, 0, 0, 500, "TGT");
+        // Aircraft one lepton below the verified high-flight split, 4 cells away.
+        let target = aircraft_target(4, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         let mut entities = EntityStore::new();
         entities.insert(target);
         let interner = test_interner();
@@ -898,7 +916,7 @@ mod tests {
     fn gsi_04_03b_low_flight_snap_uses_exact_target_subcell() {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let interner = test_interner();
-        let mut target = aircraft_target(4, 0, 0, 500, "TGT");
+        let mut target = aircraft_target(4, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         target.position.sub_x = SimFixed::from_num(3);
         target.position.sub_y = SIM_ZERO;
         let mut entities = EntityStore::new();
@@ -921,7 +939,7 @@ mod tests {
     fn gsi_04_03b_low_flight_bridge_snap_requires_structural_flag() {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let interner = test_interner();
-        let target = aircraft_target(0, 0, 0, 500, "TGT");
+        let target = aircraft_target(0, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         let mut entities = EntityStore::new();
         entities.insert(target);
         let mut terrain = flat_terrain(1, 1);

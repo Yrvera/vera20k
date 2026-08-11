@@ -52,6 +52,10 @@ pub(super) struct WorldInstances {
     pub top_unit_pages: Vec<usize>,
     /// The SHP half of the same band — in stock YR, Rocketeers at hover height.
     pub top_shp_paged: Vec<Vec<SpriteInstance>>,
+    /// Selected buildings' bodies again, for the depth-only stamp that lets a
+    /// building's own art clip its selection-bracket redraw. Empty whenever no
+    /// structure is selected.
+    pub selected_building_depth_paged: Vec<Vec<SpriteInstance>>,
     /// Per-particle SpriteInstances (Layer 3). Drawn at Step 7.5 — above
     /// all ground objects + cliffs, below debug/shroud/UI.
     pub particle_paged: Vec<Vec<SpriteInstance>>,
@@ -191,10 +195,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             bridge_state,
         )
     } else {
-        terrain::TerrainInstances {
-            normal: Vec::new(),
-            cliff_redraw: Vec::new(),
-        }
+        terrain::TerrainInstances { normal: Vec::new() }
     };
 
     // Map overlays and walls are lowered through the fixed per-cell draw plan.
@@ -231,6 +232,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut top_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
+    let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
+        vec![Vec::new(); shp_page_count];
 
     // VXL units (ground + bridge) — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
@@ -296,6 +299,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit,
         &mut unit_pages,
         &mut parachute_body_depths,
+        &mut selected_building_depth_paged,
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
@@ -317,9 +321,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
-    // Layer 3 particle systems — separate paged list, drawn AFTER cliff
-    // redraw at Step 7.5, above all ground geometry per the original's
-    // ParticleClass::GetLayer = 3.
+    // Layer 3 particle systems — separate paged list above all Ground-layer
+    // geometry per the original's ParticleClass::GetLayer = 3.
     app_instances::build_particle_instances(state, &mut particle_paged);
     for page in &mut particle_paged {
         sort_by_depth_desc(page);
@@ -341,9 +344,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let total_grid: usize = state.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
         log::info!(
-            "First frame: {} terrain ({} cliff redraw, of {} cells) + {} overlay + {} vxl + {} shp",
+            "First frame: {} terrain (of {} cells) + {} overlay + {} vxl + {} shp",
             terrain.normal.len(),
-            terrain.cliff_redraw.len(),
             total_grid,
             overlay.len() + bridge_body.len(),
             unit.len(),
@@ -377,6 +379,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         top_unit,
         top_unit_pages,
         top_shp_paged,
+        selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
         weapon_waves,
@@ -445,16 +448,19 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// hands them to `render::smudge::build_visible_instances` along with a
 /// closure that resolves SmudgeType id + frame index to atlas UVs.
 ///
-/// Until the SmudgeType atlas registration lands as a follow-up, the closure
-/// always returns `None`, so this function returns an empty Vec. The pipeline
-/// (build → upload → draw) is wired end-to-end so adding the atlas in a later
-/// task is the only change required to make smudges visible.
+/// The atlas stores each smudge SHP as one composite frame. The render helper
+/// uses the resolved terrain level at the footprint origin and emits that
+/// frame once even though native recenters an identical draw from every
+/// occupied footprint cell.
 fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
     let (sim, rules) = match (&state.simulation, &state.rules) {
         (Some(s), Some(r)) => (s, r),
         _ => return Vec::new(),
     };
     let Some(grid) = sim.smudge_grid.as_ref() else {
+        return Vec::new();
+    };
+    let Some(resolved_terrain) = sim.resolved_terrain.as_ref() else {
         return Vec::new();
     };
     let Some(atlas) = state.overlay_atlas.as_ref() else {
@@ -481,6 +487,7 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
     crate::render::smudge::build_visible_instances(
         grid,
         &rules.smudge_types,
+        resolved_terrain,
         &lookup,
         state.camera_x,
         state.camera_y,
@@ -748,7 +755,8 @@ fn compute_wall_autofill_cells(
 pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances {
     let view = current_sidebar_view(state);
     let minimap_rect = active_minimap_screen_rect(state);
-    let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
+    let (tactical_w, tactical_h) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
@@ -778,8 +786,8 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
             Some(mm) => mm.build_viewport_rect_in_rect(
                 state.camera_x,
                 state.camera_y,
-                sw / z,
-                sh / z,
+                tactical_w as f32 / z,
+                tactical_h as f32 / z,
                 minimap_rect.x,
                 minimap_rect.y,
                 minimap_rect.w,

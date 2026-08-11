@@ -1,7 +1,12 @@
 //! Tests for zone map flood-fill and adjacency extraction.
 
-use super::zone_build::build_zone_map;
+use super::zone_build::{
+    LocalHierarchyPatchResult, build_zone_map, incremental_rebuild_zone_hierarchy_around_cell,
+};
 use super::zone_hierarchy::{ZoneEdgeRecord, ZoneHierarchy, ZoneLevelGraph, ZoneRecord};
+use super::zone_incremental::{
+    PackedZoneCoord, ZoneRepairKind, ZoneRepairOutcome, repair_zone_cell,
+};
 use super::zone_map::*;
 use crate::map::resolved_terrain::{
     BridgeDirection, BridgeLayer, ResolvedTerrainCell, ResolvedTerrainGrid, YR_CELL_LAND_TUNNEL,
@@ -76,7 +81,7 @@ fn water_row_terrain(width: u16) -> ResolvedTerrainGrid {
             speed_costs: SpeedCostProfile::default(),
             is_water: true,
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,
@@ -152,7 +157,7 @@ fn clear_beach_water_row_terrain() -> ResolvedTerrainGrid {
             speed_costs: SpeedCostProfile::default(),
             is_water: land_type == crate::sim::pathfinding::passability::LandType::Water.as_index(),
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,
@@ -235,7 +240,7 @@ fn stock_low_bridge_auto_shell_terrain() -> ResolvedTerrainGrid {
             speed_costs: SpeedCostProfile::default(),
             is_water: false,
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,
@@ -485,6 +490,592 @@ fn gsi_04_06_simulation_rebuild_initializes_zone_grid() {
         .and_then(|zones| zones.map_for(MovementZone::Normal))
         .unwrap();
     assert_eq!(normal.zone_at(0, 0, MovementLayer::Ground), 2);
+}
+
+#[test]
+fn gsi_04_06_pathgrid_blocking_does_not_rewrite_cell_owned_reduced_class() {
+    let terrain = terrain_from_zone_classes(
+        3,
+        1,
+        &[zone_class::GROUND, zone_class::CRUSHABLE, zone_class::WALL],
+        &[0; 3],
+    );
+    let mut path_grid = PathGrid::from_resolved_terrain(&terrain);
+    for x in 0..3 {
+        path_grid.set_blocked(x, 0, true);
+    }
+    let zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 3, 1);
+
+    assert_ne!(
+        zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "a PathGrid bit cannot turn Ground into Building"
+    );
+    assert_ne!(
+        zones
+            .map_for(MovementZone::Crusher)
+            .unwrap()
+            .zone_at(1, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "Crusher must retain the Crushable column"
+    );
+    assert_eq!(
+        zones
+            .map_for(MovementZone::Infantry)
+            .unwrap()
+            .zone_at(2, 0, MovementLayer::Ground),
+        ZONE_INVALID,
+        "Wall must not be coerced to Infantry-passable Building"
+    );
+}
+
+#[test]
+fn gsi_04_06_simulation_detects_class_only_change_with_identical_pathgrid() {
+    let terrain = terrain_from_zone_classes(1, 1, &[zone_class::GROUND], &[0]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut sim = crate::sim::world::Simulation::new();
+    sim.resolved_terrain = Some(terrain);
+    sim.rebuild_zone_grid(&path_grid);
+    assert_ne!(
+        sim.zone_grid
+            .as_ref()
+            .unwrap()
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID
+    );
+
+    sim.resolved_terrain.as_mut().unwrap().cells[0].zone_type = zone_class::CRUSHABLE;
+    sim.rebuild_zone_grid(&path_grid);
+
+    let zones = sim.zone_grid.as_ref().unwrap();
+    assert_eq!(
+        zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID
+    );
+    assert_ne!(
+        zones
+            .map_for(MovementZone::Crusher)
+            .unwrap()
+            .zone_at(0, 0, MovementLayer::Ground),
+        ZONE_INVALID
+    );
+}
+
+fn base_repair_fixture(
+    classes: [u8; 9],
+    clusters: [ZoneId; 9],
+) -> (ResolvedTerrainGrid, PathGrid, ZoneGrid) {
+    let terrain = terrain_from_zone_classes(3, 3, &classes, &[0; 9]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 3, 3);
+    let base = zones.base_topology_mut().unwrap();
+    base.movement_classes = classes.to_vec();
+    base.zone_ids = clusters.to_vec();
+    base.zone_count = clusters.iter().copied().max().unwrap_or(0);
+    base.adjacency
+        .neighbors
+        .resize(base.zone_count as usize + 1, Vec::new());
+    for row in &mut base.raw_zone_ids_by_row {
+        row.resize(base.zone_count as usize + 1, 1);
+        row[0] = u16::MAX;
+        for cluster in 1..=base.zone_count {
+            row[cluster as usize] = cluster + 1;
+        }
+    }
+    let flat_ids: Vec<ZoneId> = clusters
+        .iter()
+        .map(|&cluster| {
+            (cluster != ZONE_INVALID)
+                .then_some(cluster + 1)
+                .unwrap_or(ZONE_INVALID)
+        })
+        .collect();
+    let flat_zone_count = base.zone_count + 1;
+    for &movement_zone in MovementZone::all_ground() {
+        let map = zones.map_mut(movement_zone).unwrap();
+        *map.zone_ids_mut() = flat_ids.clone();
+        map.set_zone_count(flat_zone_count);
+        map.set_zone_info(super::zone_build::compute_zone_info(
+            map.zone_ids_slice(),
+            3,
+            3,
+            map.zone_count,
+        ));
+    }
+    (terrain, path_grid, zones)
+}
+
+#[test]
+fn gsi_04_06_base_repair_uses_transition_count_first_candidate_and_preserves_tables() {
+    // Neighbor order from center: N=A, NE=B, E=A, then sentinels. This is
+    // exactly three row-0 mapping transitions, so the first candidate wins.
+    let classes = [7, 0, 2, 7, 0, 0, 7, 7, 7];
+    let clusters = [0, 1, 2, 0, 3, 3, 0, 0, 0];
+    let (terrain, path_grid, mut zones) = base_repair_fixture(classes, clusters);
+    for &movement_zone in MovementZone::all_ground() {
+        let map = zones.map_for(movement_zone).unwrap();
+        assert_eq!(map.zone_at(1, 1, MovementLayer::Ground), 4);
+        assert_eq!(map.info_for(2).unwrap().cell_count, 1);
+        assert_eq!(map.info_for(2).unwrap().center, (1, 0));
+        assert_eq!(map.info_for(4).unwrap().cell_count, 2);
+        assert_eq!(map.info_for(4).unwrap().center, (1, 1));
+    }
+    let (before_count, before_adj, before_raw, before_clusters) = {
+        let base = zones.base_topology_mut().unwrap();
+        (
+            base.zone_count,
+            base.adjacency.neighbors.clone(),
+            base.raw_zone_ids_by_row.clone(),
+            base.zone_ids.clone(),
+        )
+    };
+    let before_maps: Vec<Vec<ZoneId>> = MovementZone::all_ground()
+        .iter()
+        .map(|&mz| zones.map_for(mz).unwrap().zone_ids_slice().to_vec())
+        .collect();
+
+    let outcome = repair_zone_cell(
+        &mut zones,
+        PackedZoneCoord::new(1, 1),
+        ZoneRepairKind::AssignOrphaned,
+        &path_grid,
+        &BTreeMap::new(),
+        &terrain,
+        &[],
+    );
+    assert_eq!(outcome, ZoneRepairOutcome::Adopted { cluster: 1 });
+
+    {
+        let base = zones.base_topology_mut().unwrap();
+        assert_eq!(base.zone_count, before_count);
+        assert_eq!(base.adjacency.neighbors, before_adj);
+        assert_eq!(base.raw_zone_ids_by_row, before_raw);
+        assert_eq!(base.zone_ids[4], 1);
+        for (index, (&before, &after)) in before_clusters.iter().zip(&base.zone_ids).enumerate() {
+            if index != 4 {
+                assert_eq!(after, before, "unrelated base cell {index}");
+            }
+        }
+    }
+    for (row, &movement_zone) in MovementZone::all_ground().iter().enumerate() {
+        let after = zones.map_for(movement_zone).unwrap().zone_ids_slice();
+        for index in 0..after.len() {
+            if index != 4 {
+                assert_eq!(
+                    after[index], before_maps[row][index],
+                    "row {row} cell {index}"
+                );
+            }
+        }
+        assert_eq!(before_maps[row][4], 4);
+        assert_eq!(after[4], 2, "target inherits candidate cluster mapping");
+        let adopted = zones.map_for(movement_zone).unwrap().info_for(2).unwrap();
+        assert_eq!(adopted.cell_count, 2);
+        assert_eq!(adopted.center, (1, 0));
+        let vacated = zones.map_for(movement_zone).unwrap().info_for(4).unwrap();
+        assert_eq!(vacated.cell_count, 1);
+        assert_eq!(vacated.center, (2, 1));
+    }
+}
+
+#[test]
+fn gsi_04_06_base_repair_fallbacks_and_explicit_merge_provenance() {
+    let alternating_classes = [7, 0, 2, 7, 0, 0, 7, 7, 2];
+    let alternating_clusters = [0, 1, 2, 0, 3, 1, 0, 0, 2];
+    let (terrain, path_grid, mut zones) =
+        base_repair_fixture(alternating_classes, alternating_clusters);
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(1, 1),
+            ZoneRepairKind::AssignOrphaned,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::FullRebuild,
+        "A/B/A/B reaches four transitions and must rebuild"
+    );
+
+    let non_ground_assign_classes = [7, 0, 2, 7, 2, 7, 7, 7, 7];
+    let non_ground_assign_clusters = [0, 1, 2, 0, 2, 0, 0, 0, 0];
+    let (terrain, path_grid, mut zones) =
+        base_repair_fixture(non_ground_assign_classes, non_ground_assign_clusters);
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(1, 1),
+            ZoneRepairKind::AssignOrphaned,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::FullRebuild,
+        "AssignOrphaned cannot adopt when the target is non-ground"
+    );
+
+    let merge_classes = [7, 2, 0, 7, 2, 2, 7, 7, 7];
+    let merge_clusters = [0, 2, 1, 0, 3, 2, 0, 0, 0];
+    let (terrain, path_grid, mut zones) = base_repair_fixture(merge_classes, merge_clusters);
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(1, 1),
+            ZoneRepairKind::MergeAdjacent,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::Adopted { cluster: 2 },
+        "Merge adopts the first same-type non-ground neighbor"
+    );
+
+    let mut sentinel = terrain_from_zone_classes(1, 1, &[zone_class::OUTSIDE], &[0]);
+    sentinel.cells[0].outside_playfield = false;
+    let sentinel_path = PathGrid::from_resolved_terrain(&sentinel);
+    let mut sentinel_zones =
+        ZoneGrid::build_with_terrain(&sentinel_path, &BTreeMap::new(), Some(&sentinel), &[], 1, 1);
+    assert_eq!(
+        repair_zone_cell(
+            &mut sentinel_zones,
+            PackedZoneCoord::new(0, 0),
+            ZoneRepairKind::MergeAdjacent,
+            &sentinel_path,
+            &BTreeMap::new(),
+            &sentinel,
+            &[],
+        ),
+        ZoneRepairOutcome::SentinelNoOp
+    );
+    assert_eq!(
+        repair_zone_cell(
+            &mut sentinel_zones,
+            PackedZoneCoord::new(-1, 0),
+            ZoneRepairKind::MergeAdjacent,
+            &sentinel_path,
+            &BTreeMap::new(),
+            &sentinel,
+            &[],
+        ),
+        ZoneRepairOutcome::OutsideNoOp
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HierarchyRegionSnapshot {
+    cell_ids: Vec<ZoneId>,
+    records: Vec<(ZoneId, Option<ZoneRecord>, Vec<ZoneEdgeRecord>)>,
+}
+
+fn hierarchy_region_snapshot(
+    hierarchy: &ZoneHierarchy,
+    width: u16,
+    height: u16,
+    x_min: u16,
+) -> Vec<HierarchyRegionSnapshot> {
+    (0..3)
+        .map(|level| {
+            let graph = hierarchy.level(level).unwrap();
+            let mut cell_ids = Vec::new();
+            let mut record_ids = Vec::new();
+            for y in 0..height {
+                for x in x_min..width {
+                    let zone = graph.zone_at(x, y);
+                    cell_ids.push(zone);
+                    if zone != ZONE_INVALID && !record_ids.contains(&zone) {
+                        record_ids.push(zone);
+                    }
+                }
+            }
+            let records = record_ids
+                .into_iter()
+                .map(|zone| (zone, graph.record(zone), graph.edges(zone).to_vec()))
+                .collect();
+            HierarchyRegionSnapshot { cell_ids, records }
+        })
+        .collect()
+}
+
+#[test]
+fn gsi_04_06_fallback_rebuilds_base_without_resetting_hierarchy_high_water() {
+    let width = 16;
+    let height = 8;
+    let classes: Vec<u8> = (0..height)
+        .flat_map(|_| {
+            (0..width).map(|x| {
+                if x == 7 {
+                    zone_class::OUTSIDE
+                } else if x >= 12 {
+                    zone_class::WALL
+                } else {
+                    zone_class::GROUND
+                }
+            })
+        })
+        .collect();
+    let terrain = terrain_from_zone_classes(width, height, &classes, &vec![0; classes.len()]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut zones = ZoneGrid::build_with_terrain(
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[],
+        width,
+        height,
+    );
+    let mut expected = ZoneGrid::build_with_terrain(
+        &path_grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[],
+        width,
+        height,
+    );
+
+    let (initial_slots, initial_right_ids) = {
+        let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        (
+            std::array::from_fn::<_, 3, _>(|level| {
+                hierarchy.level(level).unwrap().record_slot_count()
+            }),
+            std::array::from_fn::<_, 3, _>(|level| hierarchy.level(level).unwrap().zone_at(10, 2)),
+        )
+    };
+    {
+        let (base, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        assert_eq!(
+            incremental_rebuild_zone_hierarchy_around_cell(
+                hierarchy,
+                base,
+                &path_grid,
+                &terrain,
+                &[],
+                (10, 2),
+                width,
+                height,
+            ),
+            LocalHierarchyPatchResult::Patched
+        );
+    }
+
+    let prior_high_water = {
+        let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        std::array::from_fn::<_, 3, _>(|level| {
+            let graph = hierarchy.level(level).unwrap();
+            assert!(graph.record_slot_count() > initial_slots[level]);
+            assert!(graph.record(initial_right_ids[level]).is_some());
+            assert!(graph.edges(initial_right_ids[level]).is_empty());
+            graph.record_slot_count()
+        })
+    };
+    let right_before = {
+        let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        hierarchy_region_snapshot(hierarchy, width, height, 8)
+    };
+    assert!(
+        right_before
+            .iter()
+            .any(|level| { level.records.iter().any(|(_, _, edges)| !edges.is_empty()) })
+    );
+
+    let expected_base = expected.base_topology_mut().unwrap().clone();
+    let expected_rows: Vec<(MovementZone, Vec<ZoneId>, Vec<Vec<ZoneId>>)> =
+        MovementZone::all_ground()
+            .iter()
+            .map(|&movement_zone| {
+                (
+                    movement_zone,
+                    expected
+                        .map_for(movement_zone)
+                        .unwrap()
+                        .zone_ids_slice()
+                        .to_vec(),
+                    expected
+                        .adjacency_for(movement_zone)
+                        .unwrap()
+                        .neighbors
+                        .clone(),
+                )
+            })
+            .collect();
+
+    let index = |x: usize, y: usize| y * width as usize + x;
+    {
+        let base = zones.base_topology_mut().unwrap();
+        for &(x, y, zone_type, cluster) in &[
+            (2, 1, zone_class::GROUND, 1),
+            (3, 1, zone_class::WALL, 2),
+            (3, 2, zone_class::GROUND, 1),
+            (3, 3, zone_class::WALL, 2),
+            (2, 3, zone_class::OUTSIDE, 0),
+            (1, 3, zone_class::OUTSIDE, 0),
+            (1, 2, zone_class::OUTSIDE, 0),
+            (1, 1, zone_class::OUTSIDE, 0),
+        ] {
+            base.movement_classes[index(x, y)] = zone_type;
+            base.zone_ids[index(x, y)] = cluster;
+        }
+        base.movement_classes[index(2, 2)] = zone_class::GROUND;
+        base.zone_ids[index(2, 2)] = 1;
+        base.raw_zone_ids_by_row[0][0] = u16::MAX;
+        base.raw_zone_ids_by_row[0][1] = 2;
+        base.raw_zone_ids_by_row[0][2] = 3;
+
+        // A distant, deliberately stale base/projection entry proves the
+        // fallback refresh is global even though the hierarchy patch is local.
+        base.movement_classes[index(14, 2)] = zone_class::GROUND;
+        base.zone_ids[index(14, 2)] = 1;
+    }
+    zones.project_adopted_base_cell(index(14, 2));
+    assert_ne!(
+        zones
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(14, 2, MovementLayer::Ground),
+        expected
+            .map_for(MovementZone::Normal)
+            .unwrap()
+            .zone_at(14, 2, MovementLayer::Ground)
+    );
+
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(2, 2),
+            ZoneRepairKind::AssignOrphaned,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::FullRebuild,
+        "the ordered A/B/A/B neighborhood has exactly four transitions"
+    );
+
+    {
+        let actual = zones.base_topology_mut().unwrap();
+        assert_eq!(actual.movement_classes, expected_base.movement_classes);
+        assert_eq!(actual.zone_ids, expected_base.zone_ids);
+        assert_eq!(actual.zone_count, expected_base.zone_count);
+        assert_eq!(
+            actual.adjacency.neighbors,
+            expected_base.adjacency.neighbors
+        );
+        assert_eq!(
+            actual.raw_zone_ids_by_row,
+            expected_base.raw_zone_ids_by_row
+        );
+    }
+    for (movement_zone, expected_ids, expected_adjacency) in expected_rows {
+        assert_eq!(
+            zones.map_for(movement_zone).unwrap().zone_ids_slice(),
+            expected_ids
+        );
+        assert_eq!(
+            zones.adjacency_for(movement_zone).unwrap().neighbors,
+            expected_adjacency
+        );
+    }
+
+    let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+    assert_eq!(
+        hierarchy_region_snapshot(hierarchy, width, height, 8),
+        right_before,
+        "the isolated hierarchy block retains IDs, metadata, and edge order"
+    );
+    for (level, &high_water) in prior_high_water.iter().enumerate() {
+        let graph = hierarchy.level(level).unwrap();
+        assert_eq!(graph.zone_at(2, 2), high_water as ZoneId);
+        assert!(graph.record_slot_count() > high_water);
+    }
+}
+
+#[test]
+fn gsi_04_06_local_hierarchy_patch_keeps_stale_holes_and_appends_edges_stably() {
+    let terrain = terrain_from_zone_classes(6, 1, &[zone_class::GROUND; 6], &[0; 6]);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    let mut zones =
+        ZoneGrid::build_with_terrain(&path_grid, &BTreeMap::new(), Some(&terrain), &[], 6, 1);
+    let (old, middle, right, old_slots) = {
+        let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        let level0 = hierarchy.level(0).unwrap();
+        (
+            level0.zone_at(0, 0),
+            level0.zone_at(2, 0),
+            level0.zone_at(5, 0),
+            level0.record_slot_count(),
+        )
+    };
+
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(-1, 0),
+            ZoneRepairKind::MergeAdjacent,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::OutsideNoOp
+    );
+    {
+        let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+        let level0 = hierarchy.level(0).unwrap();
+        assert_eq!(level0.zone_at(0, 0), old);
+        assert_eq!(level0.zone_at(2, 0), middle);
+        assert_eq!(level0.zone_at(5, 0), right);
+        assert_eq!(level0.record_slot_count(), old_slots);
+    }
+
+    assert_eq!(
+        repair_zone_cell(
+            &mut zones,
+            PackedZoneCoord::new(0, 0),
+            ZoneRepairKind::MergeAdjacent,
+            &path_grid,
+            &BTreeMap::new(),
+            &terrain,
+            &[],
+        ),
+        ZoneRepairOutcome::Adopted { cluster: 1 }
+    );
+
+    let (_, hierarchy) = zones.base_and_hierarchy_mut().unwrap();
+    let level0 = hierarchy.level(0).unwrap();
+    let replacement = level0.zone_at(0, 0);
+    assert_ne!(replacement, old);
+    assert_eq!(level0.zone_at(2, 0), middle, "2x2 alignment boundary");
+    assert_eq!(level0.zone_at(5, 0), right, "unrelated level-0 block");
+    assert!(level0.record(old).is_some(), "old slot remains allocated");
+    assert!(level0.edges(old).is_empty(), "stale slot edges are cleared");
+    assert!(level0.record_slot_count() > old_slots);
+    let middle_edges: Vec<ZoneId> = level0
+        .edges(middle)
+        .iter()
+        .map(|edge| edge.neighbor)
+        .collect();
+    assert!(!middle_edges.contains(&old));
+    assert_eq!(middle_edges.first().copied(), Some(right));
+    assert_eq!(middle_edges.last().copied(), Some(replacement));
+    assert_eq!(
+        level0.record(replacement).unwrap().parent,
+        hierarchy.level(1).unwrap().zone_at(0, 0),
+        "8x8 parent refresh links the replacement to the rebuilt coarse level"
+    );
 }
 
 #[test]

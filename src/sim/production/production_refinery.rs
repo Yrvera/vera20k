@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::find_nearby_cell::{
+    NearbyQuery, NearbySearchOptions, PassabilityArgs, RADIUS_HARD_CAP,
+    find_nearby_passable_cell_with_options,
+};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{
@@ -20,6 +24,20 @@ const FREE_UNIT_FACING_PRIMARY: u8 = 0xC0;
 /// Native fallback FreeUnit facing byte. Under the project facing convention,
 /// 0xA0 is southwest.
 const FREE_UNIT_FACING_FALLBACK: u8 = 0xA0;
+
+/// The two ordered nearby-cell searches gamemd runs once the primary placement is
+/// refused. Both calls are argument-for-argument identical except for overlay
+/// rejection: the first pass refuses to drop the free unit on a cell carrying an
+/// overlay (so it walks out to bare ground instead of standing on the ore field),
+/// and only the second pass accepts one.
+const FREE_UNIT_FALLBACK_ATTEMPTS: [NearbySearchOptions; 2] = [
+    NearbySearchOptions {
+        reject_any_overlay: true,
+    },
+    NearbySearchOptions {
+        reject_any_overlay: false,
+    },
+];
 
 /// Spawn configured refinery FreeUnits for buildings whose build-up completed
 /// this tick. The input order is the deterministic completion order.
@@ -60,7 +78,6 @@ pub(crate) fn spawn_completed_refinery_free_units(
         any_spawned |= try_spawn_refinery_free_unit(
             sim,
             rules,
-            stable_id,
             &owner,
             &building_type_id,
             rx,
@@ -78,7 +95,6 @@ pub(crate) fn spawn_completed_refinery_free_units(
 fn try_spawn_refinery_free_unit(
     sim: &mut Simulation,
     rules: &RuleSet,
-    source_refinery_id: u64,
     owner: &str,
     building_type_id: &str,
     building_rx: u16,
@@ -101,30 +117,16 @@ fn try_spawn_refinery_free_unit(
         .map_or(0, |object| object.cost.max(0));
 
     let primary = primary_free_unit_cell(building_rx, building_ry, width, height);
-    let fallbacks =
-        find_compatibility_fallback_cells(building_rx, building_ry, width, height, path_grid);
-    let initial = primary
-        .or_else(|| fallbacks.first().copied())
-        .map(|(rx, ry)| {
-            let facing = if primary == Some((rx, ry)) {
-                FREE_UNIT_FACING_PRIMARY
-            } else {
-                FREE_UNIT_FACING_FALLBACK
-            };
-            (rx, ry, facing)
-        });
-    let Some((initial_rx, initial_ry, initial_facing)) = initial else {
-        log::warn!(
-            "No representable cell near completed refinery ({},{}) to construct {}",
-            building_rx,
-            building_ry,
-            free_unit_type
-        );
-        return false;
-    };
+    // Both nearby searches are seeded from the building's NORTH-WEST footprint cell —
+    // not the foundation centre the primary cell is derived from, and not the
+    // footprint rectangle.
+    let search_seed = (building_rx, building_ry);
 
     // Native constructs one UnitClass, then retries Unlimbo on that same object.
-    // Keep that one stable ID in limbo until a placement commits.
+    // Keep that one stable ID in limbo until a placement commits. The limbo cell is
+    // the primary target; it is overwritten by whichever attempt commits, and the
+    // object is not on the map until one does.
+    let (initial_rx, initial_ry) = primary.unwrap_or(search_seed);
     let initial_z = height_map
         .get(&(initial_rx, initial_ry))
         .copied()
@@ -134,7 +136,7 @@ fn try_spawn_refinery_free_unit(
         owner,
         initial_rx,
         initial_ry,
-        initial_facing,
+        FREE_UNIT_FACING_PRIMARY,
         initial_z,
         rules,
     ) else {
@@ -156,7 +158,6 @@ fn try_spawn_refinery_free_unit(
             primary_rx,
             primary_ry,
             FREE_UNIT_FACING_PRIMARY,
-            Some(source_refinery_id),
             height_map,
         )
     {
@@ -171,18 +172,27 @@ fn try_spawn_refinery_free_unit(
         return true;
     }
 
-    // The native function performs exactly two ordered nearby searches. The
-    // exact differing FNPC option remains undecoded, so these candidates retain
-    // the existing deterministic compatibility order without claiming exact
-    // cell-selection parity.
-    for (fallback_rx, fallback_ry) in fallbacks.into_iter().take(2) {
+    // Exactly two ordered nearby searches, each followed by one placement try. The
+    // second attempt runs only when the first produced no cell or its placement was
+    // refused, and each search runs here — after the primary has failed — rather
+    // than being precomputed, so it sees the occupancy the placement will meet.
+    for options in FREE_UNIT_FALLBACK_ATTEMPTS {
+        let Some((fallback_rx, fallback_ry)) = find_free_unit_nearby_cell(
+            sim,
+            rules,
+            &free_unit_type,
+            search_seed,
+            path_grid,
+            options,
+        ) else {
+            continue;
+        };
         if try_place_free_unit(
             sim,
             free_unit_id,
             fallback_rx,
             fallback_ry,
             FREE_UNIT_FACING_FALLBACK,
-            None,
             height_map,
         ) {
             log::info!(
@@ -216,14 +226,24 @@ fn try_place_free_unit(
     rx: u16,
     ry: u16,
     facing: u8,
-    allowed_ground_occupant: Option<u64>,
     height_map: &BTreeMap<(u16, u16), u8>,
 ) -> bool {
-    let admitted = sim.substrate.occupancy.get(rx, ry).is_none_or(|occupancy| {
-        occupancy
-            .blockers(MovementLayer::Ground)
-            .all(|occupant_id| Some(occupant_id) == allowed_ground_occupant)
-    });
+    // gamemd admits the cell only when its cell-entry test returns "clear", and that
+    // test grants no exemption to the building that is placing the unit: a refinery
+    // sitting on its own bay cell refuses the free unit exactly like any other
+    // blocker, which is why the two-attempt nearby search below is the ordinary path
+    // rather than the exception.
+    //
+    // Only the ground-blocker half of that test is modelled here. The rest of the
+    // native cell-entry family — the per-cell bib / impassable-row escapes that let a
+    // unit stand on a refinery's unload lane, infantry sub-cell occupants, and the
+    // terrain/zone clauses — is NOT modelled and is left as a stated residual rather
+    // than replaced by a substitute rule.
+    let admitted = sim
+        .substrate
+        .occupancy
+        .get(rx, ry)
+        .is_none_or(|occupancy| !occupancy.has_blockers_on(MovementLayer::Ground));
     let Some((sub_x, sub_y)) = sim.substrate.entities.get_mut(free_unit_id).map(|entity| {
         entity.facing = facing;
         (entity.position.sub_x, entity.position.sub_y)
@@ -271,62 +291,86 @@ fn primary_free_unit_cell(
     ))
 }
 
-/// Return at most two distinct compatibility candidates in the existing
-/// deterministic perimeter order. Native also performs two attempts, but its
-/// differing FNPC option and exact returned cells remain an explicit residual.
-fn find_compatibility_fallback_cells(
-    cx: u16,
-    cy: u16,
-    width: u16,
-    height: u16,
+/// One of the two ordered nearby-cell searches for a refused FreeUnit placement,
+/// routed through the shared search port.
+///
+/// Mirrors the engine's two calls: 1x1 candidates seeded from the building's NW
+/// footprint cell, the free unit's own movement zone, bridge cells refused, the
+/// terrain-level gate on, no target cell — so selection is the frame-counter modulo
+/// over the candidate pool, consuming no RNG. `options` carries the one argument the
+/// two calls differ in.
+fn find_free_unit_nearby_cell(
+    sim: &Simulation,
+    rules: &RuleSet,
+    free_unit_type: &str,
+    seed: (u16, u16),
     path_grid: Option<&PathGrid>,
-) -> Vec<(u16, u16)> {
-    let Some(grid) = path_grid else {
-        let Some(rx) = cx.checked_add(width) else {
-            return Vec::new();
-        };
-        let Some(first_ry) = cy.checked_add(height / 2) else {
-            return Vec::new();
-        };
-        let mut cells = vec![(rx, first_ry)];
-        if let Some(second_ry) = first_ry.checked_add(1) {
-            cells.push((rx, second_ry));
-        }
-        return cells;
+    options: NearbySearchOptions,
+) -> Option<(u16, u16)> {
+    let free_unit = rules.object(free_unit_type)?;
+    let query = NearbyQuery {
+        passability: PassabilityArgs {
+            // SUBSTITUTION, not a match. The engine hardcodes one fixed speed-type
+            // index (2) at both callsites; VERA passes the free unit's own
+            // `SpeedType=` instead. The index-to-`SpeedType=`-string mapping is
+            // UNCHECKED, and the tree's own evidence points the other way: index 2 is
+            // Wheel under `rules::locomotor_type::SpeedType`'s ordering, while
+            // `[CMIN]` and `[HARV]` declare no `SpeedType=` and therefore default to
+            // Track. The substitution is invisible to THIS search under the stock
+            // terrain tables — Track and Wheel are zero together and non-zero together
+            // in all twelve stock land-type sections, and the search reads only the
+            // resulting accept/reject verdict, never the cost percentage — but it is
+            // not a verified equivalence for a modded table or another caller.
+            speed_type: free_unit.speed_type,
+            // The engine requires each candidate to share the seed cell's movement
+            // zone. The seed is always a building-footprint cell, to which the Rust
+            // zone map assigns no zone, so requiring it here would reject every
+            // candidate. Left unrequired — a stated residual, not a substitute rule.
+            required_zone_id: None,
+            movement_zone: free_unit.movement_zone,
+            bridge_aware_zone: false,
+        },
+        // Both callsites reject bridge cells.
+        allow_bridge_cells: false,
+        // Both callsites enable the terrain-level gate.
+        check_height: true,
+        // DROPPED native constraint, recorded. The per-candidate occupancy rejection
+        // itself is not lost — it lives inside the passability check, which reads the
+        // same occupancy grid. What is lost is the rest of that column: the isometric
+        // playfield-diamond bound (the terrain rectangle still rejects off-grid
+        // cells), the terrain-object block, the slope byte and the ground-building
+        // test. Whether the engine sets its separate rect-occupancy argument at these
+        // two callsites was not re-derived — UNCHECKED. It stays off because the
+        // ported check rejects ANY overlay cell unconditionally, which would cancel
+        // the second attempt's overlay-allowed contract above and leave the two calls
+        // indistinguishable.
+        check_occupancy: false,
+        // The engine's cap is `min(map-rect width + height, RADIUS_HARD_CAP)`, which
+        // is the hard cap itself on any playable map.
+        radius_cap: RADIUS_HARD_CAP,
+        target_cell: None,
+        path_grid,
+        resolved_terrain: sim.resolved_terrain.as_ref(),
+        overlay_grid: sim.overlay_grid.as_ref(),
+        occupancy: Some(&sim.substrate.occupancy),
+        entities: Some(&sim.substrate.entities),
+        zone_grid: sim.zone_grid.as_ref(),
+        map_size: None,
+        playfield_bounds: sim.playfield_bounds,
     };
-
-    let mut candidates = Vec::with_capacity(2);
-    let building_max_x = i32::from(cx) + i32::from(width) - 1;
-    let building_max_y = i32::from(cy) + i32::from(height) - 1;
-    for radius in 1..=5_i32 {
-        let min_x = i32::from(cx) - radius;
-        let max_x = building_max_x + radius;
-        let min_y = i32::from(cy) - radius;
-        let max_y = building_max_y + radius;
-        for ry in min_y..=max_y {
-            for rx in min_x..=max_x {
-                let on_perimeter = rx == min_x || rx == max_x || ry == min_y || ry == max_y;
-                if !on_perimeter {
-                    continue;
-                }
-                let (Ok(rx_u16), Ok(ry_u16)) = (u16::try_from(rx), u16::try_from(ry)) else {
-                    continue;
-                };
-                if grid.is_walkable(rx_u16, ry_u16) {
-                    candidates.push((rx_u16, ry_u16));
-                    if candidates.len() == 2 {
-                        return candidates;
-                    }
-                }
-            }
-        }
-    }
-    candidates
+    find_nearby_passable_cell_with_options(
+        (i32::from(seed.0), i32::from(seed.1)),
+        &query,
+        options,
+        // The frame counter is committed late, so during this advance it still holds
+        // the current frame — the value the selection modulo must alias.
+        sim.session.binary_frame,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::primary_free_unit_cell;
+    use super::{FREE_UNIT_FALLBACK_ATTEMPTS, primary_free_unit_cell};
 
     #[test]
     fn stock_4x3_primary_cell_is_center_plus_south() {
@@ -336,5 +380,15 @@ mod tests {
     #[test]
     fn primary_cell_rejects_u16_overflow() {
         assert_eq!(primary_free_unit_cell(u16::MAX, u16::MAX, 4, 3), None);
+    }
+
+    #[test]
+    fn fallback_attempts_reject_overlays_first_then_allow_them() {
+        // Exactly two attempts, and the only argument that differs between them is
+        // overlay rejection — set on the first, clear on the second. Reversing the
+        // order would drop the free unit onto the ore field it should walk off.
+        assert_eq!(FREE_UNIT_FALLBACK_ATTEMPTS.len(), 2);
+        assert!(FREE_UNIT_FALLBACK_ATTEMPTS[0].reject_any_overlay);
+        assert!(!FREE_UNIT_FALLBACK_ATTEMPTS[1].reject_any_overlay);
     }
 }

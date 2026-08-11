@@ -24,37 +24,70 @@ pub const CELL_ROW_STRIDE: i64 = 0x200;
 /// Highest valid linear cell index under the fixed 512-wide stride.
 pub const MAX_CELL_INDEX: i64 = 0x3FFFF;
 
+/// Cell coordinates cross the native seam as packed 16-bit words. Normalize at
+/// that seam so the Rust-facing `i32` parameters cannot retain non-native high
+/// bits.
+const fn packed_cell_coord(x: i32, y: i32) -> (i32, i32) {
+    (x as i16 as i32, y as i16 as i32)
+}
+
 /// Linear cell index using the fixed 512-wide stride (NOT the loaded-map width).
 ///
 /// Returns `None` only when the index falls outside `[0, MAX_CELL_INDEX]`; the
 /// dummy fallback (`get_cellclass_fallback`) turns that `None` into a non-null
 /// reference, mirroring the engine's never-null `Get_CellClass`.
 pub fn cell_linear_index(x: i32, y: i32) -> Option<i64> {
+    let (x, y) = packed_cell_coord(x, y);
     let idx = (y as i64) * CELL_ROW_STRIDE + (x as i64);
     (0..=MAX_CELL_INDEX).contains(&idx).then_some(idx)
 }
 
+/// Canonical real slot selected by the packed fixed-stride Map lookup.
+pub(crate) fn canonical_cell_coord(x: i32, y: i32) -> Option<(u16, u16)> {
+    cell_linear_index(x, y).map(|index| {
+        (
+            (index % CELL_ROW_STRIDE) as u16,
+            (index / CELL_ROW_STRIDE) as u16,
+        )
+    })
+}
+
 /// A non-null cell reference — `Real` for an in-range, present cell, or `Dummy`
-/// carrying the requested coord for an out-of-range / missing lookup.
+/// carrying the requested coord and shared fallback height bytes for an
+/// out-of-range / missing lookup.
 ///
 /// Never the absence of a value: the engine's coord→cell lookup returns a
 /// non-null dummy that stores the requested coord and lets the caller keep
-/// dispatching on it. The dummy carries only the coord; its other field values
-/// are an open RE item and must NOT be read until that lands.
+/// dispatching on it. Coordinate writes do not reconstruct or clear its
+/// independently persistent level/slope state.
 #[derive(Debug, Clone, Copy)]
 pub enum CellRef<'a> {
     Real(&'a ResolvedTerrainCell),
-    Dummy { coord: (i32, i32) },
+    Dummy {
+        coord: (i32, i32),
+        level: i8,
+        slope_type: u8,
+    },
 }
 
 // `ResolvedTerrainCell` is not `PartialEq`; compare `Real` by pointer identity
-// (same backing cell) and `Dummy` by the coord it carries. This is enough for the
-// facade's only need: distinguishing the dummy fallback and asserting its coord.
+// (same backing cell) and `Dummy` by the value snapshot returned by the lookup.
 impl PartialEq for CellRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (CellRef::Real(a), CellRef::Real(b)) => std::ptr::eq(*a, *b),
-            (CellRef::Dummy { coord: a }, CellRef::Dummy { coord: b }) => a == b,
+            (
+                CellRef::Dummy {
+                    coord: a,
+                    level: al,
+                    slope_type: aslope,
+                },
+                CellRef::Dummy {
+                    coord: b,
+                    level: bl,
+                    slope_type: bslope,
+                },
+            ) => a == b && al == bl && aslope == bslope,
             _ => false,
         }
     }
@@ -62,15 +95,17 @@ impl PartialEq for CellRef<'_> {
 impl Eq for CellRef<'_> {}
 
 /// Engine `Get_CellClass`: coord → cell via the fixed stride; an out-of-range or
-/// missing cell returns `CellRef::Dummy { coord }` carrying the *requested* coord
-/// (NOT `(0,0)`, NOT `None`). The width-based `PathGrid`/`ResolvedTerrainGrid`
-/// index stays as the cache; this is the never-null parity lookup. Components are
-/// not checked separately: any valid linear index aliases its canonical 512-wide slot.
+/// missing cell returns `CellRef::Dummy` carrying the packed requested coord and
+/// preserved shared fallback bytes (NOT `(0,0)`, NOT `None`). The width-based
+/// `PathGrid`/`ResolvedTerrainGrid` index stays as the cache; this is the
+/// never-null parity lookup. Components are not checked separately: any valid
+/// linear index aliases its canonical 512-wide slot.
 pub fn get_cellclass_fallback<'a>(
     terrain: Option<&'a ResolvedTerrainGrid>,
     x: i32,
     y: i32,
 ) -> CellRef<'a> {
+    let (x, y) = packed_cell_coord(x, y);
     if let Some(index) = cell_linear_index(x, y) {
         let rx = (index % CELL_ROW_STRIDE) as u16;
         let ry = (index / CELL_ROW_STRIDE) as u16;
@@ -78,7 +113,14 @@ pub fn get_cellclass_fallback<'a>(
             return CellRef::Real(cell);
         }
     }
-    CellRef::Dummy { coord: (x, y) }
+    let (level, slope_type) = terrain
+        .map(ResolvedTerrainGrid::dummy_cell_level_slope)
+        .unwrap_or((0, 0));
+    CellRef::Dummy {
+        coord: (x, y),
+        level,
+        slope_type,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,9 +363,32 @@ impl CellRect {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Native CellRect scan: x outer, y inner, wrapping endpoints and signed
+/// comparisons. Returning false from `visit` stops at the first failed cell.
+pub(crate) fn scan_cell_rect(rect: CellRect, mut visit: impl FnMut(i32, i32) -> bool) -> bool {
+    let end_x = rect.x.wrapping_add(rect.width);
+    let end_y = rect.y.wrapping_add(rect.height);
+    let mut x = rect.x;
+    while x < end_x {
+        let mut y = rect.y;
+        while y < end_y {
+            if !visit(x, y) {
+                return false;
+            }
+            y = y.wrapping_add(1);
+        }
+        x = x.wrapping_add(1);
+    }
+    true
+}
+
+/// Sparse authority for CellClass `+0xDC`. A fixed-stride coordinate selects a
+/// real entry only when the active terrain has an allocated CellClass pointer;
+/// every invalid or valid-but-unallocated lookup shares `dummy_mask`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CellReservationGrid {
     masks: BTreeMap<(u16, u16), u32>,
+    dummy_mask: u32,
 }
 
 impl CellReservationGrid {
@@ -331,34 +396,178 @@ impl CellReservationGrid {
         Self::default()
     }
 
-    pub fn reserve(&mut self, rx: u16, ry: u16, reservation_arg: i32) {
-        let mask = reservation_mask(reservation_arg);
-        if mask != 0 {
-            *self.masks.entry((rx, ry)).or_default() |= mask;
-        }
-    }
-
-    pub fn clear(&mut self, rx: u16, ry: u16, reservation_arg: i32) {
+    pub fn reserve(
+        &mut self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        x: i32,
+        y: i32,
+        reservation_arg: i32,
+    ) {
         let mask = reservation_mask(reservation_arg);
         if mask == 0 {
             return;
         }
-        if let Some(bits) = self.masks.get_mut(&(rx, ry)) {
+        if let Some(cell) = reservation_cell_coord(terrain, x, y) {
+            *self.masks.entry(cell).or_default() |= mask;
+        } else {
+            self.dummy_mask |= mask;
+        }
+    }
+
+    pub fn clear(
+        &mut self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        x: i32,
+        y: i32,
+        reservation_arg: i32,
+    ) {
+        let mask = reservation_mask(reservation_arg);
+        if mask == 0 {
+            return;
+        }
+        let Some(cell) = reservation_cell_coord(terrain, x, y) else {
+            self.dummy_mask &= !mask;
+            return;
+        };
+        if let Some(bits) = self.masks.get_mut(&cell) {
             *bits &= !mask;
             if *bits == 0 {
-                self.masks.remove(&(rx, ry));
+                self.masks.remove(&cell);
             }
         }
     }
 
-    pub fn has_reservation(&self, rx: u16, ry: u16, reservation_arg: i32) -> bool {
-        let mask = reservation_mask(reservation_arg);
-        mask != 0
-            && self
-                .masks
-                .get(&(rx, ry))
-                .is_some_and(|bits| bits & mask != 0)
+    pub fn raw_mask(&self, terrain: Option<&ResolvedTerrainGrid>, x: i32, y: i32) -> u32 {
+        reservation_cell_coord(terrain, x, y).map_or(self.dummy_mask, |cell| {
+            self.masks.get(&cell).copied().unwrap_or(0)
+        })
     }
+
+    pub fn has_reservation(
+        &self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        x: i32,
+        y: i32,
+        reservation_arg: i32,
+    ) -> bool {
+        let mask = reservation_mask(reservation_arg);
+        mask != 0 && self.raw_mask(terrain, x, y) & mask != 0
+    }
+
+    pub(crate) fn reserve_rect(
+        &mut self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        rect: CellRect,
+        reservation_arg: i32,
+    ) {
+        scan_cell_rect(rect, |x, y| {
+            self.reserve(terrain, x, y, reservation_arg);
+            true
+        });
+    }
+
+    pub(crate) fn clear_rect(
+        &mut self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        rect: CellRect,
+        reservation_arg: i32,
+    ) {
+        scan_cell_rect(rect, |x, y| {
+            self.clear(terrain, x, y, reservation_arg);
+            true
+        });
+    }
+
+    pub(crate) fn has_reservation_inclusive(
+        &self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        min_x: i32,
+        min_y: i32,
+        max_x: i32,
+        max_y: i32,
+        reservation_arg: i32,
+    ) -> bool {
+        if min_x > max_x || min_y > max_y || reservation_mask(reservation_arg) == 0 {
+            return false;
+        }
+        let mut x = min_x;
+        loop {
+            let mut y = min_y;
+            loop {
+                if self.has_reservation(terrain, x, y, reservation_arg) {
+                    return true;
+                }
+                if y == max_y {
+                    break;
+                }
+                y = y.wrapping_add(1);
+            }
+            if x == max_x {
+                break;
+            }
+            x = x.wrapping_add(1);
+        }
+        false
+    }
+
+    /// Same-house reservation connectivity around a center cell. Bits are
+    /// N, NE, E, SE, S, SW, W, NW. A center without the requested house bit
+    /// returns the native `-1` sentinel as `u32::MAX`.
+    pub fn house_reservation_neighbor_mask(
+        &self,
+        terrain: Option<&ResolvedTerrainGrid>,
+        x: i32,
+        y: i32,
+        reservation_arg: i32,
+    ) -> u32 {
+        if !self.has_reservation(terrain, x, y, reservation_arg) {
+            return u32::MAX;
+        }
+        const NEIGHBORS: [(i32, i32); 8] = [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ];
+        let mut result = 0u32;
+        for (index, (dx, dy)) in NEIGHBORS.into_iter().enumerate() {
+            if self.has_reservation(
+                terrain,
+                x.wrapping_add(dx),
+                y.wrapping_add(dy),
+                reservation_arg,
+            ) {
+                result |= 1u32 << index;
+            }
+        }
+        result
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.masks.clear();
+        self.dummy_mask = 0;
+    }
+
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (u16, u16, u32)> + '_ {
+        self.masks.iter().map(|(&(rx, ry), &mask)| (rx, ry, mask))
+    }
+
+    pub(crate) fn dummy_mask(&self) -> u32 {
+        self.dummy_mask
+    }
+}
+
+fn reservation_cell_coord(
+    terrain: Option<&ResolvedTerrainGrid>,
+    x: i32,
+    y: i32,
+) -> Option<(u16, u16)> {
+    canonical_cell_coord(x, y)
+        .filter(|&(rx, ry)| terrain.is_none_or(|terrain| terrain.cell(rx, ry).is_some()))
 }
 
 pub struct CellRectPassabilityContext<'a> {
@@ -382,6 +591,8 @@ pub struct CellRectOccupancyContext<'a> {
     pub reservations: Option<&'a CellReservationGrid>,
     pub occupancy: Option<&'a OccupancyGrid>,
     pub entities: Option<&'a EntityStore>,
+    /// Derived index of live TerrainClass objects in the active ground list.
+    pub terrain_object_cells: Option<&'a BTreeMap<(u16, u16), u64>>,
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
     pub overlay_grid: Option<&'a OverlayGrid>,
     pub map_size: Option<(u16, u16)>,
@@ -441,53 +652,10 @@ pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
 pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
     let mask = reservation_mask(ctx.reservation_arg);
 
-    if ctx.rect.width > 0 && ctx.rect.height > 0 {
-        let mut x = 0;
-        while x < ctx.rect.width {
-            let mut y = 0;
-            while y < ctx.rect.height {
-                let cx = ctx.rect.x.saturating_add(x);
-                let cy = ctx.rect.y.saturating_add(y);
-                let Some((rx, ry)) = to_cell_coord(cx, cy) else {
-                    return false;
-                };
-
-                if terrain_object_blocks(ctx.resolved_terrain, rx, ry) {
-                    return false;
-                }
-                if mask != 0
-                    && ctx.reservations.is_some_and(|reservations| {
-                        reservations.has_reservation(rx, ry, ctx.reservation_arg)
-                    })
-                {
-                    return false;
-                }
-                if overlay_present(ctx.overlay_grid, rx, ry) {
-                    return false;
-                }
-                // The engine scans two separate per-cell columns in this order:
-                // (d) the reduced-ZoneType column (column 0 == Ground passes), then
-                // (e) the slope/special byte. They are split — not fused — so the
-                // first-blocker scan order is reproduced even though both reject the
-                // same way; a cell with only a slope and a cell with only a non-Ground
-                // zone-type each reject independently.
-                let tcell = ctx
-                    .resolved_terrain
-                    .and_then(|terrain| terrain.cell(rx, ry));
-                if tcell.is_some_and(|cell| cell.zone_type != zone_class::GROUND) {
-                    return false;
-                }
-                if tcell.is_some_and(|cell| cell.slope_type != 0) {
-                    return false;
-                }
-                if ground_building_present(ctx.occupancy, ctx.entities, rx, ry) {
-                    return false;
-                }
-
-                y += 1;
-            }
-            x += 1;
-        }
+    if !scan_cell_rect(ctx.rect, |x, y| {
+        occupancy_blocker_at(&ctx, x, y, mask).is_none()
+    }) {
+        return false;
     }
 
     rect_in_playfield(
@@ -501,6 +669,59 @@ pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
             })
             .or_else(|| ctx.overlay_grid.map(|grid| (grid.width(), grid.height()))),
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OccupancyBlocker {
+    TerrainObject,
+    Reservation,
+    Overlay,
+    ZoneType,
+    Slope,
+    Building,
+}
+
+fn occupancy_blocker_at(
+    ctx: &CellRectOccupancyContext<'_>,
+    x: i32,
+    y: i32,
+    reservation_mask: u32,
+) -> Option<OccupancyBlocker> {
+    let canonical = canonical_cell_coord(x, y);
+
+    if canonical.is_some_and(|cell| {
+        ctx.terrain_object_cells
+            .is_some_and(|terrain| terrain.contains_key(&cell))
+    }) {
+        return Some(OccupancyBlocker::TerrainObject);
+    }
+    if reservation_mask != 0
+        && ctx.reservations.is_some_and(|reservations| {
+            reservations.raw_mask(ctx.resolved_terrain, x, y) & reservation_mask != 0
+        })
+    {
+        return Some(OccupancyBlocker::Reservation);
+    }
+    if canonical.is_some_and(|(rx, ry)| overlay_present(ctx.overlay_grid, rx, ry)) {
+        return Some(OccupancyBlocker::Overlay);
+    }
+
+    let cell = get_cellclass_fallback(ctx.resolved_terrain, x, y);
+    if matches!(cell, CellRef::Real(cell) if cell.zone_type != zone_class::GROUND) {
+        return Some(OccupancyBlocker::ZoneType);
+    }
+    if match cell {
+        CellRef::Real(cell) => cell.slope_type != 0,
+        CellRef::Dummy { slope_type, .. } => slope_type != 0,
+    } {
+        return Some(OccupancyBlocker::Slope);
+    }
+    if canonical
+        .is_some_and(|(rx, ry)| ground_building_present(ctx.occupancy, ctx.entities, rx, ry))
+    {
+        return Some(OccupancyBlocker::Building);
+    }
+    None
 }
 
 fn check_cell_passability(ctx: &CellRectPassabilityContext<'_>, x: i32, y: i32) -> bool {
@@ -607,12 +828,6 @@ fn speed_type_allows_cell(
         .is_none_or(|cost| cost > 0)
 }
 
-fn terrain_object_blocks(resolved_terrain: Option<&ResolvedTerrainGrid>, rx: u16, ry: u16) -> bool {
-    resolved_terrain
-        .and_then(|terrain| terrain.cell(rx, ry))
-        .is_some_and(|cell| cell.terrain_object_blocks)
-}
-
 fn overlay_present(overlay_grid: Option<&OverlayGrid>, rx: u16, ry: u16) -> bool {
     overlay_grid
         .map(|grid| grid.cell(rx, ry).overlay_id.is_some())
@@ -656,14 +871,7 @@ fn rect_in_playfield(
     terrain: Option<&ResolvedTerrainGrid>,
     map_size: Option<(u16, u16)>,
 ) -> bool {
-    let max_x = rect.x.saturating_add(rect.width).saturating_sub(1);
-    let max_y = rect.y.saturating_add(rect.height).saturating_sub(1);
-    let corners = [
-        (rect.x, rect.y), // NW
-        (max_x, rect.y),  // NE
-        (rect.x, max_y),  // SW
-        (max_x, max_y),   // SE
-    ];
+    let corners = rect_playfield_corners(rect);
 
     if let Some(bounds) = bounds {
         return corners
@@ -681,6 +889,21 @@ fn rect_in_playfield(
         .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
 }
 
+/// Construct the packed corner coordinates in the engine's fixed order. The
+/// far-edge arithmetic happens before each component is truncated to its stored
+/// 16-bit word.
+fn rect_playfield_corners(rect: CellRect) -> [(i32, i32); 4] {
+    let (min_x, min_y) = packed_cell_coord(rect.x, rect.y);
+    let max_x = rect.x.wrapping_add(rect.width).wrapping_sub(1) as i16 as i32;
+    let max_y = rect.y.wrapping_add(rect.height).wrapping_sub(1) as i16 as i32;
+    [
+        (min_x, min_y), // NW
+        (max_x, min_y), // NE
+        (min_x, max_y), // SW
+        (max_x, max_y), // SE
+    ]
+}
+
 /// Exact single-cell `MapClass::Is_Cell_In_Playfield(cell, 1)` seam.
 ///
 /// Production maps supply `bounds`, selecting the retail isometric-diamond
@@ -692,6 +915,7 @@ pub(crate) fn cell_is_in_playfield(
     terrain: Option<&ResolvedTerrainGrid>,
     map_size: Option<(u16, u16)>,
 ) -> bool {
+    let cell = packed_cell_coord(cell.0, cell.1);
     if let Some(bounds) = bounds {
         return cell_in_playfield_diamond(cell.0, cell.1, &bounds, terrain);
     }
@@ -717,25 +941,27 @@ pub(crate) fn cell_is_in_playfield(
 ///
 /// Height extension (height_flag = 1): `h = signed(cell.level)`; if the cell's slope
 /// byte is nonzero AND `sx+sy < base + 4 + off_100*2 + h` then `h += 1`. An
-/// out-of-grid cell contributes `h = 0` (flat).
+/// fallback cell contributes its persistent shared bytes (zero after grid
+/// construction until a verified runtime writer changes them).
 fn cell_in_playfield_diamond(
     sx: i32,
     sy: i32,
     bounds: &PlayfieldBounds,
     terrain: Option<&ResolvedTerrainGrid>,
 ) -> bool {
+    let (sx, sy) = packed_cell_coord(sx, sy);
     let base = bounds.base;
 
     // Height extension from the cell at (sx, sy). The cell level byte is read signed;
     // a nonzero slope byte bumps h by 1 when the cell sits below the slope threshold.
-    let mut h = 0i32;
-    if let (Ok(rx), Ok(ry)) = (u16::try_from(sx), u16::try_from(sy)) {
-        if let Some(cell) = terrain.and_then(|t| t.cell(rx, ry)) {
-            h = i32::from(cell.level as i8);
-            if cell.slope_type != 0 && (sx + sy) < base + 4 + bounds.off_100 * 2 + h {
-                h += 1;
-            }
-        }
+    let (mut h, slope_type) = match get_cellclass_fallback(terrain, sx, sy) {
+        CellRef::Real(cell) => (i32::from(cell.level as i8), cell.slope_type),
+        CellRef::Dummy {
+            level, slope_type, ..
+        } => (i32::from(level), slope_type),
+    };
+    if slope_type != 0 && (sx + sy) < base + 4 + bounds.off_100 * 2 + h {
+        h += 1;
     }
 
     let low = bounds.off_100 * 2 + h;
@@ -968,7 +1194,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
@@ -1012,7 +1238,7 @@ mod tests {
         let mut terrain = flat_terrain(3, 1);
         terrain.cells[1].slope_type = 2;
         let mut reservations = CellReservationGrid::new();
-        reservations.reserve(0, 0, 3);
+        reservations.reserve(Some(&terrain), 0, 0, 3);
 
         let clear_reserved = CellRectOccupancyContext {
             rect: CellRect::single(0, 0),
@@ -1020,6 +1246,7 @@ mod tests {
             reservations: Some(&reservations),
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1033,6 +1260,7 @@ mod tests {
             reservations: Some(&reservations),
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1045,7 +1273,7 @@ mod tests {
     fn cellrect_occupancy_house_reservation_blocks_same_house_only() {
         let terrain = flat_terrain(2, 1);
         let mut reservations = CellReservationGrid::new();
-        reservations.reserve(0, 0, 5);
+        reservations.reserve(Some(&terrain), 0, 0, 5);
 
         let same_house = CellRectOccupancyContext {
             rect: CellRect::single(0, 0),
@@ -1053,6 +1281,7 @@ mod tests {
             reservations: Some(&reservations),
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1066,6 +1295,7 @@ mod tests {
             reservations: Some(&reservations),
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1079,6 +1309,7 @@ mod tests {
             reservations: Some(&reservations),
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1198,6 +1429,7 @@ mod tests {
             reservations: None,
             occupancy: Some(&occupancy),
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1228,7 +1460,11 @@ mod tests {
         // (never None, never (0,0)).
         assert_eq!(
             get_cellclass_fallback(Some(&g), -3, 7),
-            CellRef::Dummy { coord: (-3, 7) }
+            CellRef::Dummy {
+                coord: (-3, 7),
+                level: 0,
+                slope_type: 0,
+            }
         );
     }
 
@@ -1247,13 +1483,137 @@ mod tests {
 
         assert_eq!(
             get_cellclass_fallback(Some(&terrain), -1, 0),
-            CellRef::Dummy { coord: (-1, 0) }
+            CellRef::Dummy {
+                coord: (-1, 0),
+                level: 0,
+                slope_type: 0,
+            }
         );
         let missing_canonical_cell = flat_terrain(2, 1);
         assert_eq!(
             get_cellclass_fallback(Some(&missing_canonical_cell), 512, 0),
-            CellRef::Dummy { coord: (512, 0) }
+            CellRef::Dummy {
+                coord: (512, 0),
+                level: 0,
+                slope_type: 0,
+            }
         );
+    }
+
+    #[test]
+    fn gsi_04_01_packs_cell_inputs_and_wraps_rect_corners() {
+        let terrain = flat_terrain(512, 2);
+
+        // Only the low word of each requested component reaches the native
+        // lookup: 0xFFFF is -1, so (-1,1) aliases canonical (511,0).
+        assert_eq!(cell_linear_index(0xFFFF, 1), Some(511));
+        assert_eq!(cell_linear_index(0x1_0000, 0), Some(0));
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 0xFFFF, 1),
+            CellRef::Real(terrain.cell(511, 0).expect("canonical index 511"))
+        );
+        assert_eq!(
+            get_cellclass_fallback(Some(&flat_terrain(2, 1)), 0xFFFF, 0),
+            CellRef::Dummy {
+                coord: (-1, 0),
+                level: 0,
+                slope_type: 0,
+            }
+        );
+
+        // Far corners use x+width-1/y+height-1, then truncate each component
+        // to its stored word, without saturating at the i32 or i16 boundary.
+        assert_eq!(
+            rect_playfield_corners(CellRect::new(
+                i32::from(i16::MAX),
+                i32::from(i16::MIN),
+                2,
+                0,
+            )),
+            [
+                (i32::from(i16::MAX), i32::from(i16::MIN)),
+                (i32::from(i16::MIN), i32::from(i16::MIN)),
+                (i32::from(i16::MAX), i32::from(i16::MAX)),
+                (i32::from(i16::MIN), i32::from(i16::MAX)),
+            ]
+        );
+        assert!(rect_in_playfield(
+            CellRect::new(7, 6, 0x1_0001, 1),
+            Some(diamond_bounds()),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn gsi_04_01_playfield_height_reads_fixed_stride_alias() {
+        let mut terrain = flat_terrain(512, 1);
+        terrain.cells[511].level = u8::MAX; // signed level -1
+        let bounds = PlayfieldBounds {
+            base: 0,
+            off_fc: -5,
+            off_100: 0,
+            off_104: 10,
+            off_108: 0,
+        };
+
+        // Requested (-1,1) aliases canonical (511,0). Its signed level -1
+        // shifts the strict low sum boundary from 0 to -1, making sum=0 pass.
+        // The zero-field dummy leaves the boundary at 0 and therefore fails.
+        assert!(!cell_is_in_playfield((-1, 1), Some(bounds), None, None,));
+        assert!(cell_is_in_playfield(
+            (-1, 1),
+            Some(bounds),
+            Some(&terrain),
+            None,
+        ));
+    }
+
+    #[test]
+    fn gsi_04_01_dummy_state_persists_across_fallback_lookups() {
+        let mut terrain = flat_terrain(1, 1);
+        assert_eq!(terrain.dummy_cell_level_slope(), (0, 0));
+        terrain.test_set_dummy_cell_level_slope(-4, 7);
+        terrain.set_dummy_cell_level(-5);
+        assert_eq!(terrain.clone().dummy_cell_level_slope(), (-5, 7));
+
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 0xFFFF, 0),
+            CellRef::Dummy {
+                coord: (-1, 0),
+                level: -5,
+                slope_type: 7,
+            }
+        );
+        assert_eq!(
+            get_cellclass_fallback(Some(&terrain), 0xFFFE, 0),
+            CellRef::Dummy {
+                coord: (-2, 0),
+                level: -5,
+                slope_type: 7,
+            }
+        );
+
+        let bounds = PlayfieldBounds {
+            base: -1,
+            off_fc: -5,
+            off_100: 0,
+            off_104: 10,
+            off_108: 3,
+        };
+        let zero_dummy = flat_terrain(1, 1);
+        assert!(!cell_is_in_playfield(
+            (-1, 0),
+            Some(bounds),
+            Some(&zero_dummy),
+            None,
+        ));
+        assert!(cell_is_in_playfield(
+            (-1, 0),
+            Some(bounds),
+            Some(&terrain),
+            None,
+        ));
     }
 
     // --- T2: passability shadow agreement + zero-size short-circuit ---
@@ -1328,6 +1688,7 @@ mod tests {
             reservations: None,
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1341,6 +1702,7 @@ mod tests {
             reservations: None,
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1354,6 +1716,7 @@ mod tests {
             reservations: None,
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
             map_size: None,
@@ -1387,6 +1750,7 @@ mod tests {
             reservations: None,
             occupancy: None,
             entities: None,
+            terrain_object_cells: None,
             resolved_terrain: None,
             overlay_grid: None,
             map_size: None,
@@ -1447,5 +1811,269 @@ mod tests {
         assert!(check_occupancy_rect(occupancy_with_bounds(
             CellRect::single(7, 6)
         )));
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_masks_aliases_dummy_and_neighbors_are_native_shaped() {
+        assert_eq!(reservation_mask(-1), 0);
+        assert_eq!(reservation_mask(-2), 1 << 30);
+        assert_eq!(reservation_mask(32), 1);
+        assert_eq!(reservation_mask(63), 1 << 31);
+
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(None, -1, 1, 32);
+        assert_eq!(grid.raw_mask(None, 511, 0), 1);
+        grid.reserve(None, 512, 0, 1);
+        assert_eq!(grid.raw_mask(None, 0, 1), 2);
+
+        grid.reserve(None, -1, 0, 3);
+        assert_eq!(grid.raw_mask(None, -512, 0), 1 << 3);
+        assert_eq!(grid.dummy_mask(), 1 << 3);
+        grid.clear(None, -513, 0, 3);
+        assert_eq!(grid.dummy_mask(), 0, "every invalid lookup shares +0xDC");
+
+        let mut neighbors = CellReservationGrid::new();
+        neighbors.reserve(None, 10, 10, 4);
+        assert_eq!(
+            neighbors.house_reservation_neighbor_mask(None, 9, 9, 4),
+            u32::MAX
+        );
+        assert_eq!(
+            neighbors.house_reservation_neighbor_mask(None, 10, 10, 4),
+            0
+        );
+        for (dx, dy) in [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ] {
+            neighbors.reserve(None, 10 + dx, 10 + dy, 4);
+        }
+        assert_eq!(
+            neighbors.house_reservation_neighbor_mask(None, 10, 10, 4),
+            0xff
+        );
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_valid_unallocated_slots_share_dummy_but_allocated_alias_is_real() {
+        let mut terrain = flat_terrain(3, 1);
+        terrain.test_set_native_allocated_cells(&[(0, 0)]);
+        assert!(terrain.cell(0, 0).is_some());
+        assert!(terrain.cell(1, 0).is_none());
+        assert!(terrain.cell(2, 0).is_none());
+
+        let mut grid = CellReservationGrid::new();
+        grid.reserve(Some(&terrain), 1, 0, 6);
+        assert_eq!(grid.raw_mask(Some(&terrain), 2, 0), 1 << 6);
+        assert!(grid.has_reservation_inclusive(Some(&terrain), 2, 0, 2, 0, 6));
+        assert_eq!(
+            grid.house_reservation_neighbor_mask(Some(&terrain), 2, 0, 6),
+            0xff,
+            "the center and all null neighbors dereference the shared dummy"
+        );
+        assert!(!check_occupancy_rect(CellRectOccupancyContext {
+            rect: CellRect::single(2, 0),
+            reservation_arg: 6,
+            reservations: Some(&grid),
+            occupancy: None,
+            entities: None,
+            terrain_object_cells: None,
+            resolved_terrain: Some(&terrain),
+            overlay_grid: None,
+            map_size: None,
+            playfield_bounds: None,
+        }));
+
+        grid.reserve(Some(&terrain), 0, 0, 7);
+        assert_eq!(grid.raw_mask(Some(&terrain), 0, 0), 1 << 7);
+        assert_eq!(grid.raw_mask(Some(&terrain), 1, 0), 1 << 6);
+        grid.clear(Some(&terrain), 2, 0, 6);
+        assert_eq!(grid.raw_mask(Some(&terrain), 1, 0), 0);
+        assert_eq!(grid.raw_mask(Some(&terrain), 0, 0), 1 << 7);
+
+        let alias_terrain = flat_terrain(512, 1);
+        let mut aliases = CellReservationGrid::new();
+        aliases.reserve(Some(&alias_terrain), -1, 1, 0);
+        assert_eq!(aliases.raw_mask(Some(&alias_terrain), 511, 0), 1);
+        assert_eq!(aliases.dummy_mask(), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_rect_scan_wraps_and_empty_rects_still_test_corners() {
+        let mut visited = Vec::new();
+        assert!(scan_cell_rect(CellRect::new(i32::MAX, 0, 2, 1), |x, y| {
+            visited.push((x, y));
+            true
+        }));
+        assert!(
+            visited.is_empty(),
+            "wrapped endpoint is below the signed start, so native scan skips"
+        );
+        assert!(check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            13, 13, 0, 0
+        ))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            7, 6, 0, 0
+        ))));
+        assert!(!check_occupancy_rect(occupancy_with_bounds(CellRect::new(
+            7, 6, -1, -1
+        ))));
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_checkoccupancy_first_blocker_order_is_exact() {
+        use crate::sim::components::Health;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::intern::InternedId;
+
+        let mut terrain = flat_terrain(1, 1);
+        terrain.cells[0].zone_type = zone_class::WATER;
+        terrain.cells[0].slope_type = 2;
+        let mut reservations = CellReservationGrid::new();
+        reservations.reserve(Some(&terrain), 0, 0, 0);
+        let mut overlays = OverlayGrid::new(1, 1);
+        overlays.place_overlay(0, 0, 7, 0);
+        let mut terrain_objects = BTreeMap::new();
+        terrain_objects.insert((0, 0), 88);
+        let mut entities = EntityStore::new();
+        entities.insert(GameEntity::new_at_frame_zero_for_test(
+            1,
+            0,
+            0,
+            0,
+            0,
+            InternedId::from_index(0),
+            Health {
+                current: 10,
+                max: 10,
+            },
+            InternedId::from_index(1),
+            EntityCategory::Structure,
+            0,
+            0,
+            false,
+        ));
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            0,
+            0,
+            1,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+
+        macro_rules! blocker {
+            () => {
+                occupancy_blocker_at(
+                    &CellRectOccupancyContext {
+                        rect: CellRect::single(0, 0),
+                        reservation_arg: 0,
+                        reservations: Some(&reservations),
+                        occupancy: Some(&occupancy),
+                        entities: Some(&entities),
+                        terrain_object_cells: Some(&terrain_objects),
+                        resolved_terrain: Some(&terrain),
+                        overlay_grid: Some(&overlays),
+                        map_size: Some((1, 1)),
+                        playfield_bounds: None,
+                    },
+                    0,
+                    0,
+                    reservation_mask(0),
+                )
+            };
+        }
+
+        assert_eq!(blocker!(), Some(OccupancyBlocker::TerrainObject));
+        terrain_objects.clear();
+        assert_eq!(blocker!(), Some(OccupancyBlocker::Reservation));
+        reservations.clear(Some(&terrain), 0, 0, 0);
+        assert_eq!(blocker!(), Some(OccupancyBlocker::Overlay));
+        overlays.clear_overlay(0, 0);
+        assert_eq!(blocker!(), Some(OccupancyBlocker::ZoneType));
+        terrain.cells[0].zone_type = zone_class::GROUND;
+        assert_eq!(blocker!(), Some(OccupancyBlocker::Slope));
+        terrain.cells[0].slope_type = 0;
+        assert_eq!(blocker!(), Some(OccupancyBlocker::Building));
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_checkoccupancy_ignores_deck_buildings_and_ground_units() {
+        use crate::sim::components::Health;
+        use crate::sim::entity_store::EntityStore;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::intern::InternedId;
+
+        let terrain = flat_terrain(2, 1);
+        let mut entities = EntityStore::new();
+        for (stable_id, category, rx) in [
+            (1, EntityCategory::Structure, 0),
+            (2, EntityCategory::Unit, 1),
+        ] {
+            entities.insert(GameEntity::new_at_frame_zero_for_test(
+                stable_id,
+                rx,
+                0,
+                0,
+                0,
+                InternedId::from_index(0),
+                Health {
+                    current: 10,
+                    max: 10,
+                },
+                InternedId::from_index(stable_id as u32),
+                category,
+                0,
+                0,
+                false,
+            ));
+        }
+        let mut occupancy = OccupancyGrid::new();
+        occupancy.add(
+            0,
+            0,
+            1,
+            MovementLayer::Bridge,
+            None,
+            CellListInsertion::AppendBuilding,
+        );
+        occupancy.add(
+            1,
+            0,
+            2,
+            MovementLayer::Ground,
+            None,
+            CellListInsertion::PrependNonBuilding,
+        );
+        for x in 0..=1 {
+            assert_eq!(
+                occupancy_blocker_at(
+                    &CellRectOccupancyContext {
+                        rect: CellRect::single(x, 0),
+                        reservation_arg: -1,
+                        reservations: None,
+                        occupancy: Some(&occupancy),
+                        entities: Some(&entities),
+                        terrain_object_cells: None,
+                        resolved_terrain: Some(&terrain),
+                        overlay_grid: None,
+                        map_size: Some((2, 1)),
+                        playfield_bounds: None,
+                    },
+                    i32::from(x),
+                    0,
+                    0,
+                ),
+                None
+            );
+        }
     }
 }

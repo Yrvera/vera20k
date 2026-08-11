@@ -14,7 +14,7 @@ use crate::app_commands::preferred_local_owner;
 use crate::app_entity_pick::{
     hover_target_at_point, pick_any_target_stable_id, pick_enemy_target_stable_id,
 };
-use crate::app_input::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_sorted};
+use crate::app_input::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order};
 use crate::app_types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -333,7 +333,7 @@ fn nearest_reachable_goal(
 /// that object's own type predicate. So a chorded click on an enemy tank sends
 /// the selection walking toward it in fighting order rather than charging it,
 /// while a member whose type refuses attack-move still commits the plain attack.
-fn object_click_payload(
+pub(crate) fn object_click_payload(
     order_mode: OrderMode,
     force_fire: bool,
     can_attack_move: bool,
@@ -403,13 +403,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut queued: Vec<CommandEnvelope> = Vec::new();
     let mut consumed_order_mode = false;
     // The one object that speaks the order-ack line. Retail lets only the first
-    // entry of the selection array speak; VERA's selection order is stable-id
-    // ascending, so this is its first selected entity.
+    // entry of the selection array speak.
     let mut speaker_id: Option<u64> = None;
+    let selected_ids = selected_stable_ids_in_order(state);
 
     if let Some(sim) = &mut state.simulation {
         let execute_tick = sim.session.tick;
-        let selected_ids: Vec<u64> = selected_stable_ids_sorted(sim.entities());
         if selected_ids.is_empty() {
             return false;
         }
@@ -438,8 +437,6 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 }
             }
         }
-        selected_units.sort_unstable();
-
         // The chord test fails — and the order resolves normally — unless every
         // selected object can accept an attack-move order. The walk covers the
         // whole selection, so a selected building or aircraft kills the chord.
@@ -518,11 +515,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     )
                     .is_some()
                 }
-                _ => sim
-                    .production
-                    .resource_nodes
-                    .get(&(target_rx, target_ry))
-                    .is_some_and(|node| node.remaining > 0),
+                _ => false,
             };
 
         if clicked_friendly_refinery && only_miners_selected {

@@ -45,12 +45,20 @@ fn spawn_turreted(sim: &mut Simulation, stable_id: u64, rx: u16, ry: u16, rot_by
     let mut entity = GameEntity::test_default(stable_id, "MTNK", "Americans", rx, ry);
     entity.barrel_facing = Some(FacingClass::new(body_facing_to_turret(0), rot_byte));
     sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(stable_id),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
 }
 
 /// Spawn a passive target at (rx, ry).
 fn spawn_target(sim: &mut Simulation, stable_id: u64, rx: u16, ry: u16) {
     let entity = GameEntity::test_default(stable_id, "GAPILE", "Soviet", rx, ry);
     sim.substrate.entities.insert(entity);
+    assert!(matches!(
+        sim.reveal(stable_id),
+        crate::sim::world::RevealOutcome::Revealed { .. }
+    ));
 }
 
 /// Replace sim's interner with the thread-local test interner so entity

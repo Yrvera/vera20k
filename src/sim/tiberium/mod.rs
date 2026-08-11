@@ -23,7 +23,9 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
 
+#[cfg(test)]
 const ORE_STOCK_PER_DENSITY: u16 = 120;
+#[cfg(test)]
 const GEM_STOCK_PER_DENSITY: u16 = 180;
 
 /// Mutable state needed to apply a shared tiberium reduction.
@@ -372,7 +374,7 @@ pub fn reduce_tiberium(
         return ReduceTiberiumOutcome::none();
     }
 
-    let native_view = match (
+    let Some(view) = (match (
         ctx.overlay_grid.as_deref(),
         ctx.overlay_registry,
         ctx.tiberium_types,
@@ -386,10 +388,11 @@ pub fn reduce_tiberium(
             Some(view)
         }
         _ => None,
-    };
-
-    let Some(view) = native_view else {
-        return reduce_legacy_resource_node(ctx, cell, amount);
+    }) else {
+        // Cell overlay identity plus raw OverlayData is the only production
+        // authority. An incompletely initialized caller cannot substitute the
+        // serialized compatibility node map.
+        return ReduceTiberiumOutcome::none();
     };
     let current = view.overlay_data;
 
@@ -483,7 +486,8 @@ pub fn reduce_tiberium(
 
 /// Preserve the old stock-map abstraction only for tests/fixtures that do not
 /// provide the production overlay + registry context.
-fn reduce_legacy_resource_node(
+#[cfg(test)]
+pub(crate) fn reduce_legacy_resource_node_for_tests(
     ctx: &mut ReduceTiberiumContext<'_>,
     cell: (u16, u16),
     amount: i32,
@@ -536,6 +540,7 @@ fn reduce_legacy_resource_node(
     }
 }
 
+#[cfg(test)]
 fn stock_per_density(resource_type: ResourceType) -> u16 {
     match resource_type {
         ResourceType::Ore => ORE_STOCK_PER_DENSITY,
@@ -567,6 +572,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    use crate::map::overlay::{OverlayDataPack, OverlayEntry};
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
     use crate::rules::ini_parser::IniFile;
@@ -577,6 +583,8 @@ mod tests {
     use crate::sim::intern::StringInterner;
     use crate::sim::occupancy::OccupancyGrid;
     use crate::sim::rng::SimRng;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::Simulation;
 
     fn ore_node(density: u16) -> ResourceNode {
         ResourceNode {
@@ -687,7 +695,7 @@ SpreadPercentage=.06
                 is_road: false,
                 accepts_smudge: true,
                 allows_tiberium: true,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 has_ramp: false,
                 canonical_ramp: None,
@@ -718,6 +726,21 @@ SpreadPercentage=.06
                 bridgehead_anchor_class_at_load: None,
             }],
         )
+    }
+
+    fn flat_clear_terrain_grid(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let mut seed = flat_clear_terrain();
+        let template = seed.cells.remove(0);
+        let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for ry in 0..height {
+            for rx in 0..width {
+                let mut cell = template.clone();
+                cell.rx = rx;
+                cell.ry = ry;
+                cells.push(cell);
+            }
+        }
+        ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
     #[test]
@@ -945,6 +968,171 @@ SpreadPercentage=.06
         assert_eq!(extra.resource_type, ResourceType::Ore);
         assert_eq!(extra.overlay_data, 7);
         assert_eq!(extra.nominal_value, 200);
+    }
+
+    #[test]
+    fn gsi_04_09_native_packed_map_snapshot_preserves_one_cell_authority() {
+        let (overlay_registry, tiberium_types) = native_tiberium_fixture();
+        let tib01 = overlay_registry.id_for_name("TIB01").expect("TIB01");
+        let gem12 = overlay_registry.id_for_name("GEM12").expect("GEM12");
+        let tib13 = overlay_registry.id_for_name("TIB13").expect("TIB13");
+        assert_eq!((tib01, gem12, tib13), (102, 38, 114));
+
+        let entries = [
+            OverlayEntry {
+                rx: 0,
+                ry: 0,
+                overlay_id: tib01,
+                frame: 99,
+            },
+            OverlayEntry {
+                rx: 1,
+                ry: 0,
+                overlay_id: gem12,
+                frame: 99,
+            },
+            OverlayEntry {
+                rx: 2,
+                ry: 0,
+                overlay_id: tib13,
+                frame: 99,
+            },
+            // Registered but unavailable art: pass one rejects identity while
+            // pass two must retain the raw byte.
+            OverlayEntry {
+                rx: 4,
+                ry: 0,
+                overlay_id: 0,
+                frame: 99,
+            },
+            // Bytes exist in both packs but the native cell slot is absent.
+            OverlayEntry {
+                rx: 5,
+                ry: 0,
+                overlay_id: tib01,
+                frame: 99,
+            },
+        ];
+        let build_grid = |empty_raw: u8| {
+            let mut terrain = flat_clear_terrain_grid(6, 1);
+            terrain.test_set_native_allocated_cells(&[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]);
+            let data = OverlayDataPack::from_cells([
+                (0, 0, 0),
+                (1, 0, 11),
+                (2, 0, 7),
+                (3, 0, empty_raw),
+                (4, 0, 0x5A),
+                (5, 0, 0xEE),
+            ]);
+            OverlayGrid::from_native_overlay_packs(
+                &entries,
+                &data,
+                &mut terrain,
+                &overlay_registry,
+                &BTreeSet::from([tib01, gem12, tib13]),
+                false,
+            )
+        };
+
+        let mut grid = build_grid(0xA5);
+        assert_eq!(
+            tiberium_cell_view(&grid, &overlay_registry, &tiberium_types, (0, 0))
+                .map(|view| (view.tiberium_type, view.overlay_data)),
+            Some((TiberiumTypeId(0), 0)),
+            "data zero remains a present ore cell"
+        );
+        assert_eq!(
+            tiberium_cell_view(&grid, &overlay_registry, &tiberium_types, (1, 0))
+                .map(|view| (view.tiberium_type, view.overlay_data)),
+            Some((TiberiumTypeId(1), 11))
+        );
+        assert_eq!(
+            tiberium_cell_view(&grid, &overlay_registry, &tiberium_types, (2, 0))
+                .map(|view| (view.tiberium_type, view.overlay_data)),
+            Some((TiberiumTypeId(0), 7)),
+            "TIB13 resolves through Riparius' extra range"
+        );
+        assert_eq!(
+            (grid.cell(3, 0).overlay_id, grid.cell(3, 0).overlay_data),
+            (None, 0xA5)
+        );
+        assert_eq!(
+            (grid.cell(4, 0).overlay_id, grid.cell(4, 0).overlay_data),
+            (None, 0x5A),
+            "rejected pass-one identity does not suppress pass-two data"
+        );
+        assert_eq!(
+            (grid.cell(5, 0).overlay_id, grid.cell(5, 0).overlay_data),
+            (None, 0),
+            "unallocated native slot receives neither pack"
+        );
+        assert_eq!(
+            grid.take_dirty_cells_with_passability_signal(),
+            (Vec::new(), false),
+            "map initialization creates no runtime mutation trace"
+        );
+
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(grid);
+        assert!(sim.production.resource_nodes.is_empty());
+        let expected_hash = sim.state_hash();
+        let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_09_packed.map", 0);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 69);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v69 packed-map snapshot")
+            .sim;
+        assert_eq!(restored.state_hash(), expected_hash);
+        let restored_grid = restored
+            .overlay_grid
+            .as_ref()
+            .expect("restored overlay grid");
+        for rx in 0..6 {
+            assert_eq!(
+                restored_grid.cell(rx, 0),
+                sim.overlay_grid.as_ref().unwrap().cell(rx, 0)
+            );
+        }
+
+        let mut raw_changed = restored;
+        raw_changed.overlay_grid = Some(build_grid(0xA6));
+        assert_ne!(
+            raw_changed.state_hash(),
+            expected_hash,
+            "identity-empty OverlayData remains serialized and hash-authoritative"
+        );
+    }
+
+    #[test]
+    fn gsi_04_09_missing_reducer_context_fails_closed_over_legacy_node() {
+        let mut nodes = BTreeMap::from([((5, 5), gem_node(4))]);
+        let mut growth = OreGrowthState::new(10, 10);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        let mut ctx = ReduceTiberiumContext {
+            resource_nodes: &mut nodes,
+            overlay_grid: None,
+            ore_growth_state: &mut growth,
+            overlay_registry: None,
+            tiberium_types: None,
+            resolved_terrain: None,
+            source_object_cells: None,
+            rng: None,
+            binary_frame: 0,
+            spread_enabled: false,
+            radar_dirty_cells: Some(&mut radar_dirty),
+            radar_dirty_generation: Some(&mut radar_generation),
+            tactical_dirty_cells: Some(&mut tactical_dirty),
+        };
+
+        assert_eq!(
+            reduce_tiberium(&mut ctx, (5, 5), 2),
+            ReduceTiberiumOutcome::none()
+        );
+        assert_eq!(nodes.get(&(5, 5)).copied(), Some(gem_node(4)));
+        assert!(radar_dirty.is_empty());
+        assert_eq!(radar_generation, 0);
+        assert!(tactical_dirty.is_empty());
     }
 
     #[test]
@@ -1193,7 +1381,7 @@ SpreadPercentage=.06
             tactical_dirty_cells: Some(&mut tactical_dirty),
         };
 
-        let outcome = reduce_tiberium(&mut ctx, (5, 5), 2);
+        let outcome = reduce_legacy_resource_node_for_tests(&mut ctx, (5, 5), 2);
 
         assert_eq!(outcome.removed_amount, 2);
         assert_eq!(outcome.resource_type, Some(ResourceType::Ore));
@@ -1235,7 +1423,7 @@ SpreadPercentage=.06
             tactical_dirty_cells: Some(&mut tactical_dirty),
         };
 
-        let outcome = reduce_tiberium(&mut ctx, (5, 5), 12);
+        let outcome = reduce_legacy_resource_node_for_tests(&mut ctx, (5, 5), 12);
 
         assert_eq!(outcome.removed_amount, 11);
         assert_eq!(outcome.resource_type, Some(ResourceType::Ore));
@@ -1277,7 +1465,7 @@ SpreadPercentage=.06
             tactical_dirty_cells: Some(&mut tactical_dirty),
         };
 
-        let outcome = reduce_tiberium(&mut ctx, (5, 5), 3);
+        let outcome = reduce_legacy_resource_node_for_tests(&mut ctx, (5, 5), 3);
 
         assert!(outcome.fully_removed);
         let queued: Vec<_> = growth
@@ -1427,7 +1615,7 @@ SpreadPercentage=.06
             tactical_dirty_cells: None,
         };
 
-        let outcome = reduce_tiberium(&mut ctx, (5, 5), 2);
+        let outcome = reduce_legacy_resource_node_for_tests(&mut ctx, (5, 5), 2);
 
         assert_eq!(outcome.removed_amount, 2);
         assert_eq!(outcome.resource_type, Some(ResourceType::Gem));

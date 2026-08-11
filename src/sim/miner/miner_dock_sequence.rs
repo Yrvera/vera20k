@@ -776,6 +776,7 @@ pub(super) fn handle_dock_sequence(
     rules: &RuleSet,
     config: &MinerConfig,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
 ) {
     let phase_before = snap.miner.dock_phase;
@@ -803,6 +804,7 @@ pub(super) fn handle_dock_sequence(
                 sim,
                 rules,
                 path_grid,
+                overlay_registry,
                 snap,
                 wait_queue,
                 ref_sid,
@@ -823,6 +825,7 @@ pub(super) fn handle_dock_sequence(
                 sim,
                 rules,
                 path_grid,
+                overlay_registry,
                 snap,
                 wait_queue,
                 accepted_cell,
@@ -882,6 +885,7 @@ fn phase_approach(
     sim: &mut Simulation,
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     wait_queue: (u16, u16),
     ref_sid: u64,
@@ -898,7 +902,15 @@ fn phase_approach(
     {
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
+                issue_move_if_idle(
+                    sim,
+                    rules,
+                    grid,
+                    snap.entity_id,
+                    wait_queue,
+                    snap.speed,
+                    overlay_registry,
+                );
             }
         }
         return;
@@ -934,7 +946,15 @@ fn phase_approach(
     schedule_approach_hello(sim, rules, snap);
     if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
         if let Some(grid) = path_grid {
-            issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
+            issue_move_if_idle(
+                sim,
+                rules,
+                grid,
+                snap.entity_id,
+                wait_queue,
+                snap.speed,
+                overlay_registry,
+            );
         }
     }
 }
@@ -943,6 +963,7 @@ fn phase_mission_enter(
     sim: &mut Simulation,
     rules: &RuleSet,
     path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     snap: &mut MinerSnapshot,
     wait_queue: (u16, u16),
     accepted_cell: (u16, u16),
@@ -980,7 +1001,15 @@ fn phase_mission_enter(
         snap.miner.dock_queued = true;
         if !is_adjacent_or_at((snap.rx, snap.ry), wait_queue) {
             if let Some(grid) = path_grid {
-                issue_move_if_idle(sim, rules, grid, snap.entity_id, wait_queue, snap.speed);
+                issue_move_if_idle(
+                    sim,
+                    rules,
+                    grid,
+                    snap.entity_id,
+                    wait_queue,
+                    snap.speed,
+                    overlay_registry,
+                );
             }
         }
         schedule_enter_retry(sim, rules, snap);
@@ -1439,6 +1468,7 @@ fn issue_move_if_idle(
     entity_id: u64,
     target: (u16, u16),
     speed: SimFixed,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
 ) {
     if target.0 >= grid.width() || target.1 >= grid.height() {
         return;
@@ -1451,14 +1481,17 @@ fn issue_move_if_idle(
         .and_then(|mt| mt.path.last().copied())
         .is_some_and(|goal| goal == target);
     if !already {
-        let blocker_neighbor_counts = movement::bump_crush::build_blocker_neighbor_counts(
-            &sim.substrate.entities,
-            grid.width(),
-            grid.height(),
-            sim.resolved_terrain.as_ref(),
-            &sim.interner,
-            Some(rules),
-        );
+        let blocker_neighbor_counts =
+            movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
+                &sim.substrate.entities,
+                grid.width(),
+                grid.height(),
+                sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
+                &sim.interner,
+                Some(rules),
+            );
         let _ = movement::issue_move_command_with_layered(
             &mut sim.substrate.entities,
             grid,

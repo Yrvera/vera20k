@@ -13,7 +13,7 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::object_type::ObjectCategory;
+use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::components::{
@@ -232,14 +232,13 @@ impl Simulation {
                 }
             }
 
-            if let Some(obj) = rules.and_then(|r| r.object(&map_ent.type_id)) {
-                ge.foundation = obj.foundation.clone();
-                ge.spotlight_capable = obj.has_spotlight;
-            }
+            stamp_building_cell_profile(&mut ge, obj);
             // TechnoClass::Init_Managers for map-placed parents.
             if let Some(ruleset) = rules
                 && let Some(obj) = ruleset.object(&map_ent.type_id)
             {
+                ge.capture_manager =
+                    crate::sim::capture_manager::init_capture_manager(obj, ruleset);
                 ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
                     obj,
                     ruleset,
@@ -473,10 +472,10 @@ impl Simulation {
             };
         }
 
-        ge.foundation = obj.foundation.clone();
-        ge.spotlight_capable = obj.has_spotlight;
+        stamp_building_cell_profile(&mut ge, Some(obj));
         // TechnoClass::Init_Managers — the spawn pool exists iff `Spawns=`
         // resolves. Children are created right after placement, below.
+        ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
         ge.spawn_manager = crate::sim::spawn_manager::init_spawn_manager(
             obj,
             rules,
@@ -625,6 +624,10 @@ impl Simulation {
             };
         }
 
+        stamp_building_cell_profile(&mut ge, Some(obj));
+
+        ge.capture_manager = crate::sim::capture_manager::init_capture_manager(obj, rules);
+
         let stable_id = self.create_limbo(ge);
         self.commit_spawn_harvest_mission(stable_id);
         Some(stable_id)
@@ -741,7 +744,7 @@ impl Simulation {
             let type_str = self.interner.resolve(entity.type_ref);
             let yard_type = construction_yard_type_for_mcv(type_str, rules)?;
             let yard_obj = rules.object(&yard_type)?;
-            let (spawn_rx, spawn_ry) = deploy_origin_from_center(
+            let (spawn_rx, spawn_ry) = deploy_origin_from_unit_cell(
                 entity.position.rx,
                 entity.position.ry,
                 &yard_obj.foundation,
@@ -866,7 +869,7 @@ impl Simulation {
             let unit_type = undeploy_target_for_building(type_str, rules)?;
             let obj = rules.object(type_str)?;
             let (center_rx, center_ry) =
-                undeploy_center_cell(entity.position.rx, entity.position.ry, &obj.foundation);
+                undeploy_unit_cell(entity.position.rx, entity.position.ry, &obj.foundation);
             Some((
                 entity.owner,
                 center_rx,
@@ -986,12 +989,25 @@ impl Simulation {
     }
 }
 
-fn deploy_origin_from_center(center_rx: u16, center_ry: u16, foundation: &str) -> (u16, u16) {
+/// Where a deploying unit's building lands, given the cell the unit is standing on.
+///
+/// gamemd takes a single step north-west, gated on the foundation being larger
+/// than 2 in either axis — the dimensions are read separately but only feed one
+/// OR, so a 3x3, a 4x4 and a 6x4 all get the same one-cell step and nothing is
+/// ever halved. The unit's cell is therefore NOT the footprint's centre for an
+/// even-sized building: a 4x4 Construction Yard puts it at local index (1,1),
+/// the north-west one of the four middle cells, leaving one cell of yard to the
+/// north-west and two to the south-east. That lopsidedness is authentic — it is
+/// what a 4x4 with a one-cell step has to look like.
+///
+/// Verified against gamemd 2026-08-05. See [`undeploy_unit_cell`] for the
+/// mirror; the two must stay inverses.
+fn deploy_origin_from_unit_cell(unit_rx: u16, unit_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
     if width > 2 || height > 2 {
-        (center_rx.saturating_sub(1), center_ry.saturating_sub(1))
+        (unit_rx.saturating_sub(1), unit_ry.saturating_sub(1))
     } else {
-        (center_rx, center_ry)
+        (unit_rx, unit_ry)
     }
 }
 
@@ -1011,11 +1027,29 @@ fn undeploy_target_for_building(type_id: &str, rules: &RuleSet) -> Option<String
     Some(target.to_string())
 }
 
-/// Compute the center cell of a foundation for MCV spawn during undeploy.
-/// Reverse of `deploy_origin_from_center`: origin + half_size = center.
-fn undeploy_center_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16, u16) {
+/// Where the unit reappears when a building undeploys, given the building's
+/// north-west footprint cell.
+///
+/// The exact mirror of [`deploy_origin_from_unit_cell`]: gamemd steps one cell
+/// south-east behind the same `> 2` foundation gate, so deploy-then-undeploy
+/// returns the vehicle to the cell it started on, for every foundation size.
+///
+/// This used to add `width / 2`, which is `+2` on the 4x4 Construction Yard
+/// against gamemd's `+1`. The two halves were not inverses, so every
+/// deploy/undeploy cycle walked the MCV one cell east and one cell south, and
+/// the error compounded across cycles until a redeploy could fail on terrain
+/// gamemd would never have put the vehicle on. The old name asserted the
+/// footprint had a centre cell; a 4x4 does not, and believing it did is what
+/// produced the wrong inverse.
+///
+/// Verified against gamemd 2026-08-05.
+fn undeploy_unit_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16, u16) {
     let (width, height) = foundation_dimensions(foundation);
-    (origin_rx + width / 2, origin_ry + height / 2)
+    if width > 2 || height > 2 {
+        (origin_rx.saturating_add(1), origin_ry.saturating_add(1))
+    } else {
+        (origin_rx, origin_ry)
+    }
 }
 
 /// Copy the rules-derived scoring flags onto a freshly built entity.
@@ -1026,4 +1060,20 @@ fn undeploy_center_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u1
 /// lifecycle authority, which deliberately holds no `RuleSet` borrow.
 fn stamp_scoring_flags(ge: &mut GameEntity, obj: Option<&crate::rules::object_type::ObjectType>) {
     ge.dont_score = obj.is_some_and(|o| o.dont_score);
+}
+
+fn stamp_building_cell_profile(
+    ge: &mut GameEntity,
+    obj: Option<&crate::rules::object_type::ObjectType>,
+) {
+    let Some(obj) = obj else {
+        return;
+    };
+    ge.foundation = obj.foundation.clone();
+    ge.spotlight_capable = obj.has_spotlight;
+    if ge.category == EntityCategory::Structure {
+        ge.building_hidden_occupancy = Some(obj.hidden_occupancy);
+        ge.base_reservation_spacing = obj.base_reservation_spacing;
+        ge.determines_waypoint_edge = obj.factory == Some(FactoryType::BuildingType);
+    }
 }

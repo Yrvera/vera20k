@@ -252,10 +252,20 @@ fn evaluate_shared_cell_leaf(
             .resolved_terrain
             .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
             .is_some_and(|cell| cell.bridge_facts.has_structural_bridge());
-    if ctx.terrain_layer == MovementLayer::Bridge && !structural_bridge {
-        // Bridgehead transitions are bridge-walkable without Cell Flags&0x100.
-        // This context does not carry the native numeric path height needed to
-        // select their level without inventing a base-plus-four bridge plane.
+    let bridge_transition = ctx
+        .path_grid
+        .and_then(|grid| grid.cell(ctx.target.0, ctx.target.1))
+        .is_some_and(|cell| cell.is_bridge_transition_cell())
+        || ctx
+            .resolved_terrain
+            .and_then(|terrain| terrain.cell(ctx.target.0, ctx.target.1))
+            .is_some_and(|cell| cell.is_bridge_transition_cell());
+    if bridge_transition || (ctx.terrain_layer == MovementLayer::Bridge && !structural_bridge) {
+        // Native `IsClearToMove` receives an integer level, not the engine's
+        // path-layer enum. A bridgehead can carry Ground while an already-on-
+        // bridge mover remains at deck height, so guessing base/base+4 here
+        // rejects the proved Body->Ramp->Ground transition. Until +0x1AC
+        // threads its numeric path height, retain the prior structural gate.
         return if land_passable {
             CanEnterCellResult::Clear
         } else {

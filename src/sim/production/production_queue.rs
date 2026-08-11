@@ -566,11 +566,13 @@ pub fn tick_production_with_overlay_registry(
                         .map(|l| l.speed_type);
                     let cost_grid = speed_type.and_then(|st| sim.terrain_costs.get(&st));
                     let blocker_neighbor_counts =
-                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts(
+                        crate::sim::movement::bump_crush::build_blocker_neighbor_counts_with_overlays(
                             &sim.substrate.entities,
                             grid.width(),
                             grid.height(),
                             sim.resolved_terrain.as_ref(),
+                            sim.overlay_grid.as_ref(),
+                            overlay_registry,
                             &sim.interner,
                             Some(rules),
                         );

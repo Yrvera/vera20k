@@ -6,10 +6,11 @@
 //! pattern used by ParticleType.warhead, ParticleSystemType.holds_what,
 //! ObjectType.damage_particle_systems, and GeneralRules.barrel_particle).
 //!
-//! The 9 fields below mirror the fixed RulesClass slots at +0x1018..+0x1038;
+//! The particle fields below mirror the fixed RulesClass slots at +0x1018..+0x1038;
 //! retail rulesmd.ini ships a 10th key (`DefaultFirestormExplosionSystem=`)
 //! that is not present in the verified RulesClass::ReadCombatDamage layout,
-//! so we don't parse it.
+//! so we don't parse it. The independent global DeathWeapon pointer is at
+//! RulesClass +0xFDC.
 //!
 //! ## Dependency rules
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
@@ -21,8 +22,14 @@ use crate::rules::ini_parser::IniSection;
 /// Each field is the section name of a `ParticleSystemType` (resolved later
 /// against `RuleSet::ps_type_id_by_name`). `None` means the key was absent
 /// or empty — consumers must supply their own fallback in that case.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CombatDamageDefaults {
+    /// Signed post-Verses cap used by ApplyWarheadDamage. The executable's
+    /// constructor default is 1000; stock rulesmd.ini overrides it to 10000.
+    pub max_damage: i32,
+    /// Global `DeathWeapon=` used only when a dying type has neither an
+    /// explicit death weapon nor a live current-weapon fallback.
+    pub death_weapon: Option<String>,
     /// Large grey smoke plume — buildings under heavy damage.
     pub default_large_grey_smoke_system: Option<String>,
     /// Small grey smoke plume.
@@ -47,20 +54,40 @@ impl CombatDamageDefaults {
     /// Parse from a `[CombatDamage]` `IniSection`. Missing keys become `None`.
     pub fn from_ini_section(section: &IniSection) -> Self {
         Self {
-            default_large_grey_smoke_system: read_psname(section, "DefaultLargeGreySmokeSystem"),
-            default_small_grey_smoke_system: read_psname(section, "DefaultSmallGreySmokeSystem"),
-            default_spark_system: read_psname(section, "DefaultSparkSystem"),
-            default_large_red_smoke_system: read_psname(section, "DefaultLargeRedSmokeSystem"),
-            default_small_red_smoke_system: read_psname(section, "DefaultSmallRedSmokeSystem"),
-            default_debris_smoke_system: read_psname(section, "DefaultDebrisSmokeSystem"),
-            default_fire_stream_system: read_psname(section, "DefaultFireStreamSystem"),
-            default_test_particle_system: read_psname(section, "DefaultTestParticleSystem"),
-            default_repair_particle_system: read_psname(section, "DefaultRepairParticleSystem"),
+            max_damage: section.get_i32("MaxDamage").unwrap_or(1000),
+            death_weapon: read_name(section, "DeathWeapon"),
+            default_large_grey_smoke_system: read_name(section, "DefaultLargeGreySmokeSystem"),
+            default_small_grey_smoke_system: read_name(section, "DefaultSmallGreySmokeSystem"),
+            default_spark_system: read_name(section, "DefaultSparkSystem"),
+            default_large_red_smoke_system: read_name(section, "DefaultLargeRedSmokeSystem"),
+            default_small_red_smoke_system: read_name(section, "DefaultSmallRedSmokeSystem"),
+            default_debris_smoke_system: read_name(section, "DefaultDebrisSmokeSystem"),
+            default_fire_stream_system: read_name(section, "DefaultFireStreamSystem"),
+            default_test_particle_system: read_name(section, "DefaultTestParticleSystem"),
+            default_repair_particle_system: read_name(section, "DefaultRepairParticleSystem"),
         }
     }
 }
 
-fn read_psname(section: &IniSection, key: &str) -> Option<String> {
+impl Default for CombatDamageDefaults {
+    fn default() -> Self {
+        Self {
+            max_damage: 1000,
+            death_weapon: None,
+            default_large_grey_smoke_system: None,
+            default_small_grey_smoke_system: None,
+            default_spark_system: None,
+            default_large_red_smoke_system: None,
+            default_small_red_smoke_system: None,
+            default_debris_smoke_system: None,
+            default_fire_stream_system: None,
+            default_test_particle_system: None,
+            default_repair_particle_system: None,
+        }
+    }
+}
+
+fn read_name(section: &IniSection, key: &str) -> Option<String> {
     section
         .get(key)
         .map(|s| s.trim().to_string())

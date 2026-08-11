@@ -57,6 +57,40 @@ fn insert_entity(sim: &mut Simulation, stable_id: u64, category: EntityCategory)
     sim.substrate.entities.insert(entity);
 }
 
+fn insert_reservation_building(
+    sim: &mut Simulation,
+    stable_id: u64,
+    owner_name: &str,
+    rx: u16,
+    ry: u16,
+    foundation: &str,
+    spacing: i32,
+) -> crate::sim::intern::InternedId {
+    let owner = sim.interner.intern(owner_name);
+    let type_ref = sim.interner.intern(&format!("BUILDING{stable_id}"));
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
+        stable_id,
+        rx,
+        ry,
+        0,
+        0,
+        owner,
+        Health {
+            current: 100,
+            max: 100,
+        },
+        type_ref,
+        EntityCategory::Structure,
+        0,
+        5,
+        false,
+    );
+    entity.foundation = foundation.to_string();
+    entity.base_reservation_spacing = Some(spacing);
+    sim.substrate.entities.insert(entity);
+    owner
+}
+
 fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
     RevealRequest {
         position: RevealPosition {
@@ -68,6 +102,83 @@ fn request(rx: u16, ry: u16, placement: PlacementEvidence) -> RevealRequest {
         },
         placement,
         logic_eligible: true,
+    }
+}
+
+#[test]
+fn gsi_04_11_structure_mark_clears_full_smudge_footprints_and_refinery_hole() {
+    let mut sim = Simulation::with_seed(1);
+    let stable_id = 41;
+    insert_reservation_building(&mut sim, stable_id, "Americans", 5, 5, "3x3Refinery", 0);
+
+    let mut grid = crate::sim::smudge_grid::SmudgeGrid::new(16, 16);
+    for (rx, ry, frame_offset) in [(4, 5, 0), (5, 5, 1), (4, 6, 2), (5, 6, 3)] {
+        grid.test_force_set(
+            rx,
+            ry,
+            crate::sim::smudge_grid::SmudgeCell {
+                type_id: Some(1),
+                footprint_origin: Some((4, 5)),
+                frame_offset,
+            },
+        );
+    }
+    grid.test_force_set(
+        7,
+        6,
+        crate::sim::smudge_grid::SmudgeCell {
+            type_id: Some(2),
+            footprint_origin: Some((7, 6)),
+            frame_offset: 0,
+        },
+    );
+    grid.test_force_set(
+        9,
+        9,
+        crate::sim::smudge_grid::SmudgeCell {
+            type_id: Some(3),
+            footprint_origin: Some((9, 9)),
+            frame_offset: 0,
+        },
+    );
+    let _ = grid.drain_dirty();
+    sim.smudge_grid = Some(grid);
+
+    assert!(matches!(
+        sim.try_reveal_entity(stable_id, request(5, 5, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let grid = sim.smudge_grid.as_ref().unwrap();
+    for cell in [(4, 5), (5, 5), (4, 6), (5, 6), (7, 6)] {
+        assert!(grid.cell(cell.0, cell.1).type_id.is_none(), "cell {cell:?}");
+    }
+    assert!(
+        grid.cell(9, 9).type_id.is_some(),
+        "a footprint outside the full refinery rectangle survives"
+    );
+    let expected = vec![(4, 5), (5, 5), (4, 6), (5, 6), (7, 6)];
+    assert_eq!(sim.tactical_dirty_cells, expected);
+    assert_eq!(sim.radar_terrain_dirty_cells, expected);
+    assert_eq!(sim.radar_terrain_dirty_generation, 5);
+}
+
+fn gsi_04_16_edge_gate_rules() -> crate::rules::ruleset::RuleSet {
+    let ini = crate::rules::ini_parser::IniFile::from_str(
+        "[BuildingTypes]\n0=GACNST\n1=CAOILD\n\
+         [GACNST]\nStrength=1000\nFactory=BuildingType\n\
+         [CAOILD]\nStrength=1000\n",
+    );
+    crate::rules::ruleset::RuleSet::from_ini(&ini).expect("edge-gate fixture rules")
+}
+
+fn gsi_04_16_dustbowl_bounds() -> crate::sim::cell_rect::PlayfieldBounds {
+    crate::sim::cell_rect::PlayfieldBounds {
+        base: 70,
+        off_fc: 2,
+        off_100: 8,
+        off_104: 65,
+        off_108: 62,
     }
 }
 
@@ -126,7 +237,7 @@ fn common_raw_terrain_cell(
         is_road: false,
         accepts_smudge: false,
         allows_tiberium: false,
-        is_cliff_redraw: false,
+        height_in_pixels: 0,
         variant: 0,
         has_ramp: false,
         canonical_ramp: None,
@@ -514,6 +625,57 @@ fn gsi_04_12_common_raw_occupation_building_foundation_is_ground_only() {
 }
 
 #[test]
+fn gsi_04_05_hidden_lifecycle_follows_base_lists_without_expanding_them() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    insert_entity(&mut sim, 1, EntityCategory::Structure);
+    {
+        let building = sim.substrate.entities.get_mut(1).expect("building");
+        building.foundation = "2x2".to_string();
+        let profile = building
+            .building_hidden_occupancy
+            .as_mut()
+            .expect("structure constructor profile");
+        profile.add_occupy[0] = Some((-1, 0));
+        profile.remove_occupy[0] = Some((1, 1));
+    }
+
+    let _ = sim.try_reveal_entity(1, common_raw_request(4, 4, 0, 128, 128));
+    assert!(sim.substrate.occupancy.contains_entity(5, 5, 1));
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.hidden_occupation.count(3, 4), 1);
+    assert_eq!(sim.substrate.hidden_occupation.count(5, 5), 0);
+    let linked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListLinked)
+        .expect("base lists linked");
+    let hidden = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::HiddenOccupationEntered)
+        .expect("hidden counters entered");
+    assert!(linked < hidden);
+
+    sim.lifecycle_test_events.clear();
+    let _ = sim.object_conceal(1);
+    assert!(!sim.substrate.occupancy.contains_entity(5, 5, 1));
+    assert_eq!(sim.substrate.hidden_occupation.entry_count(), 0);
+    let unlinked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("base lists unlinked");
+    let hidden = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::HiddenOccupationExited)
+        .expect("hidden counters exited");
+    assert!(unlinked < hidden);
+}
+
+#[test]
 fn gsi_04_12_common_raw_occupation_skips_transport_and_airborne_entities() {
     let mut sim = Simulation::new();
     insert_entity(&mut sim, 1, EntityCategory::Unit);
@@ -709,6 +871,51 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
         1
     );
     assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+}
+
+#[test]
+fn gsi_04_07_damage_air_spatial_entry_crossing_and_exit_keep_vector_order() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 40;
+    sim.session.map_height = 40;
+    install_common_raw_terrain(&mut sim, 40, 40, 0, None);
+    install_fly_aircraft(&mut sim, 20, SimFixed::from_num(4));
+    install_fly_aircraft(&mut sim, 10, SimFixed::from_num(4));
+
+    let _ = sim.try_reveal_entity(20, common_raw_request(2, 4, 4, 128, 128));
+    let _ = sim.try_reveal_entity(10, common_raw_request(3, 4, 4, 128, 128));
+    let first = sim.substrate.entities.get(20).unwrap();
+    let second = sim.substrate.entities.get(10).unwrap();
+    assert_eq!(first.air_spatial_bucket, second.air_spatial_bucket);
+    assert!(
+        first.air_spatial_enter_order < second.air_spatial_enter_order,
+        "same-bucket vector retains append order, not stable-ID order"
+    );
+    let first_order = first.air_spatial_enter_order;
+    let shared_bucket = second.air_spatial_bucket;
+    let second_order = second.air_spatial_enter_order;
+
+    sim.tick_air_movement_with_cell_lists_one(20);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(20)
+            .unwrap()
+            .air_spatial_enter_order,
+        first_order,
+        "Fly's temporary cell-list transaction is not an air-vector re-entry"
+    );
+
+    sim.substrate.entities.get_mut(20).unwrap().position.rx = 12;
+    sim.tick_air_movement_with_cell_lists_one(20);
+    let crossed = sim.substrate.entities.get(20).unwrap();
+    assert_ne!(crossed.air_spatial_bucket, shared_bucket);
+    assert!(crossed.air_spatial_enter_order > second_order);
+
+    let _ = sim.object_conceal(20);
+    let exited = sim.substrate.entities.get(20).unwrap();
+    assert_eq!(exited.air_spatial_bucket, None);
+    assert_eq!(exited.air_spatial_enter_order, 0);
 }
 
 fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
@@ -1978,6 +2185,275 @@ fn lifecycle_authority_immediate_uninit_releases_owned_count_once() {
     sim.uninit(1);
     assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
     assert!(sim.substrate.entities.get(1).unwrap().owned_count_released);
+}
+
+#[test]
+fn gsi_04_05_reservation_successful_reveal_marks_expanded_rect_after_lists() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 101, "Americans", 10, 20, "2x3", 1);
+    sim.session.house_order.push(owner);
+
+    assert!(matches!(
+        sim.try_reveal_entity(101, request(10, 20, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+    for x in 9..=12 {
+        for y in 19..=23 {
+            assert_eq!(sim.substrate.base_reservations.raw_mask(None, x, y), 1);
+        }
+    }
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 8, 20), 0);
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 13, 20), 0);
+
+    let cell_marked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::CellMarked)
+        .unwrap();
+    let reservation_marked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::BaseReservationMarked)
+        .unwrap();
+    let display = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RevealDisplayBoundary)
+        .unwrap();
+    assert!(cell_marked < reservation_marked && reservation_marked < display);
+}
+
+#[test]
+fn gsi_04_16_dustbowl_conyard_unlimbo_uses_local_size_edge() {
+    let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(gsi_04_16_dustbowl_bounds());
+    let rules = gsi_04_16_edge_gate_rules();
+    let owner = sim.interner.intern("Americans");
+    let mut house = HouseState::new(owner, 0, None, true, 0, 10);
+    house.base_center = Some((70, 116));
+    sim.houses.insert(owner, house);
+
+    let conyard = sim
+        .spawn_object("GACNST", "Americans", 69, 115, 0, &rules, &BTreeMap::new())
+        .expect("GACNST reveals");
+    assert!(
+        sim.substrate
+            .entities
+            .get(conyard)
+            .unwrap()
+            .determines_waypoint_edge,
+        "Factory=BuildingType must freeze onto the entity before Reveal"
+    );
+    let house = sim.houses.get(&owner).expect("launch house");
+    assert_eq!(house.base_center, Some((70, 116)));
+    assert_eq!(house.waypoint_edge, 2);
+}
+
+#[test]
+fn gsi_04_16_committed_structure_owner_change_refreshes_new_house_edge() {
+    let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(gsi_04_16_dustbowl_bounds());
+    let rules = gsi_04_16_edge_gate_rules();
+    let old_owner = sim.interner.intern("Americans");
+    let new_owner = sim.interner.intern("Soviets");
+    sim.houses
+        .insert(old_owner, HouseState::new(old_owner, 0, None, true, 0, 10));
+    let mut new_house = HouseState::new(new_owner, 1, None, false, 0, 10);
+    new_house.base_center = Some((68, 114));
+    sim.houses.insert(new_owner, new_house);
+    let conyard = sim
+        .spawn_object("GACNST", "Americans", 69, 115, 0, &rules, &BTreeMap::new())
+        .expect("GACNST reveals");
+
+    sim.change_owner(conyard, new_owner);
+
+    let new_house = sim.houses.get(&new_owner).expect("new owner house");
+    assert_eq!(new_house.base_center, Some((68, 114)));
+    assert_eq!(new_house.waypoint_edge, 2);
+}
+
+#[test]
+fn gsi_04_16_caoild_reveal_and_owner_change_preserve_waypoint_edges() {
+    let mut sim = Simulation::new();
+    sim.playfield_bounds = Some(gsi_04_16_dustbowl_bounds());
+    let rules = gsi_04_16_edge_gate_rules();
+    let old_owner = sim.interner.intern("Americans");
+    let new_owner = sim.interner.intern("Soviets");
+    let mut old_house = HouseState::new(old_owner, 0, None, true, 0, 10);
+    old_house.waypoint_edge = 1;
+    sim.houses.insert(old_owner, old_house);
+    let mut new_house = HouseState::new(new_owner, 1, None, false, 0, 10);
+    new_house.waypoint_edge = 3;
+    sim.houses.insert(new_owner, new_house);
+
+    let oil = sim
+        .spawn_object("CAOILD", "Americans", 69, 115, 0, &rules, &BTreeMap::new())
+        .expect("CAOILD reveals");
+    assert!(
+        !sim.substrate
+            .entities
+            .get(oil)
+            .unwrap()
+            .determines_waypoint_edge,
+        "missing Factory= must freeze as an ineligible edge profile"
+    );
+    assert_eq!(sim.houses.get(&old_owner).unwrap().waypoint_edge, 1);
+
+    sim.change_owner(oil, new_owner);
+
+    assert_eq!(sim.houses.get(&new_owner).unwrap().waypoint_edge, 3);
+}
+
+#[test]
+fn gsi_04_05_reservation_failed_reveal_never_writes() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 102, "Americans", 10, 20, "2x2", 1);
+    sim.session.house_order.push(owner);
+
+    assert_eq!(
+        sim.try_reveal_entity(102, request(10, 20, PlacementEvidence::MarkFailed)),
+        RevealOutcome::Failed(RevealFailure::MarkFailed)
+    );
+    assert_eq!(sim.substrate.base_reservations.entries().count(), 0);
+    assert_eq!(sim.substrate.base_reservations.dummy_mask(), 0);
+    assert!(
+        !sim.lifecycle_test_events
+            .contains(&LifecycleTestEvent::BaseReservationMarked)
+    );
+}
+
+#[test]
+fn gsi_04_05_reservation_limbo_clears_before_unlink_repairs_overlap_and_preserves_other_house() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 103, "Americans", 10, 10, "1x1", 1);
+    let other = sim.interner.intern("Russians");
+    sim.session.house_order.extend([owner, other]);
+    insert_reservation_building(&mut sim, 104, "Americans", 12, 10, "1x1", 1);
+    let _ = sim.try_reveal_entity(103, request(10, 10, PlacementEvidence::MarkSucceeded));
+    let _ = sim.try_reveal_entity(104, request(12, 10, PlacementEvidence::MarkSucceeded));
+    sim.substrate.base_reservations.reserve(None, 9, 10, 1);
+
+    sim.lifecycle_test_events.clear();
+    assert_eq!(sim.techno_limbo(103), super::ConcealOutcome::Concealed);
+
+    assert_eq!(
+        sim.substrate.base_reservations.raw_mask(None, 9, 10),
+        1 << 1,
+        "AND-not clears only the leaving owner's bit"
+    );
+    assert_eq!(
+        sim.substrate.base_reservations.raw_mask(None, 11, 10) & 1,
+        1,
+        "neighbor repair restores the same-house overlap"
+    );
+    let cleared = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::BaseReservationCleared)
+        .unwrap();
+    let unlinked = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .unwrap();
+    assert!(cleared < unlinked);
+}
+
+#[test]
+fn gsi_04_05_reservation_repair_scan_reaches_asymmetric_high_edge() {
+    assert_eq!(
+        super::lifecycle::building_base_reservation_repair_rect(10, 20, 4, 4, 1),
+        crate::sim::cell_rect::CellRect::new(8, 18, 9, 9),
+        "half-open repair bounds are [8,17) x [18,27)"
+    );
+    assert_eq!(
+        super::lifecycle::building_base_reservation_repair_rect(10, 20, 6, 6, -1),
+        crate::sim::cell_rect::CellRect::new(12, 22, 1, 1),
+        "signed negative spacing yields [12,13) x [22,23)"
+    );
+
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 107, "Americans", 10, 20, "4x4", 1);
+    sim.session.house_order.push(owner);
+    insert_reservation_building(&mut sim, 108, "Americans", 16, 20, "1x1", 2);
+    let _ = sim.try_reveal_entity(107, request(10, 20, PlacementEvidence::MarkSucceeded));
+    let _ = sim.try_reveal_entity(108, request(16, 20, PlacementEvidence::MarkSucceeded));
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 14, 20), 1);
+
+    assert_eq!(sim.techno_limbo(107), super::ConcealOutcome::Concealed);
+    assert_eq!(
+        sim.substrate.base_reservations.raw_mask(None, 14, 20),
+        1,
+        "the x=16 neighbor, omitted by the old [8,16) scan, re-marks its overlap"
+    );
+}
+
+#[test]
+fn gsi_04_05_reservation_final_house_order_rebuild_is_new_game_only_authority() {
+    let mut sim = Simulation::new();
+    let owner = insert_reservation_building(&mut sim, 105, "Americans", 5, 6, "1x1", 0);
+
+    // Map objects reveal before the HouseClass array exists and write nothing.
+    let _ = sim.try_reveal_entity(105, request(5, 6, PlacementEvidence::MarkSucceeded));
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 5, 6), 0);
+
+    let earlier_house = sim.interner.intern("Neutral");
+    sim.session.house_order.extend([earlier_house, owner]);
+    sim.substrate.base_reservations.reserve(None, 1, 1, 0);
+    sim.rebuild_base_reservations_for_new_game();
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 1, 1), 0);
+    assert_eq!(
+        sim.substrate.base_reservations.raw_mask(None, 5, 6),
+        1 << 1,
+        "house_order position, not side or map order, selects the bit"
+    );
+}
+
+#[test]
+fn gsi_04_05_reservation_art_foundation_recomputes_writer_before_lifecycle_mark() {
+    use crate::rules::art_data::ArtRegistry;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[AI]\nAIBaseSpacing=2\n\
+         [BuildingTypes]\n0=GACNST\n1=ONECNST\n\
+         [GACNST]\nUndeploysInto=AMCV\n\
+         [ONECNST]\nUndeploysInto=AMCV\n",
+    ))
+    .expect("split rules-side construction-yard data");
+    assert_eq!(
+        rules.object("GACNST").unwrap().base_reservation_spacing,
+        None,
+        "the provisional Rules-only 1x1 foundation is ineligible"
+    );
+
+    rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+        "[GACNST]\nFoundation=4x4\n\
+         [ONECNST]\nFoundation=1x1\n",
+    )));
+    let gacnst = rules.object("GACNST").unwrap();
+    assert_eq!(gacnst.foundation, "4x4");
+    assert_eq!(gacnst.base_reservation_spacing, Some(2));
+    assert_eq!(
+        rules.object("ONECNST").unwrap().base_reservation_spacing,
+        None,
+        "an effective ART 1x1 undeployer remains ineligible"
+    );
+    let foundation = gacnst.foundation.clone();
+    let spacing = gacnst.base_reservation_spacing.unwrap();
+
+    let mut sim = Simulation::new();
+    let owner =
+        insert_reservation_building(&mut sim, 106, "Americans", 30, 40, &foundation, spacing);
+    sim.session.house_order.push(owner);
+    assert!(matches!(
+        sim.try_reveal_entity(106, request(30, 40, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 28, 38), 1);
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 35, 45), 1);
+    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 36, 45), 0);
 }
 
 #[test]

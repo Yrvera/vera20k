@@ -20,6 +20,7 @@ use crate::sim::intern::InternedId;
 use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
 use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 use fixed::types::I48F16;
 use glam::IVec3;
 
@@ -80,6 +81,134 @@ impl Simulation {
         self.reveal_particle_system(stable_id);
         Some(stable_id)
     }
+
+    /// Maintain TechnoClass's attached damage-Smoke slot from the surviving
+    /// ReceiveDamage postlude (`TechnoClass +0x310`). This runs synchronously
+    /// before the receiver may retaliate or return to Infantry scatter.
+    pub(crate) fn maintain_damage_smoke_after_receive(
+        &mut self,
+        stable_id: u64,
+        state: crate::sim::combat::damage::DamageState,
+        rules: &RuleSet,
+    ) {
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return;
+        };
+        let above_yellow = i64::from(entity.health.current) * 1000
+            > i64::from(entity.health.max) * rules.general.condition_yellow_x1000;
+        let current_system = entity.damage_smoke_system_id;
+
+        if above_yellow {
+            if let Some(system_id) = current_system
+                && let Some(system) = self.particle_systems_mut().get_mut(system_id)
+            {
+                // ParticleSystemClass vtable +0xF8 is the mark-only Destroy
+                // entry. The owner slot remains live until pointer expiry at
+                // physical finalization, preventing a same-frame duplicate.
+                system.marked_for_deletion = true;
+            }
+            return;
+        }
+
+        if current_system.is_some()
+            || !matches!(
+                state,
+                crate::sim::combat::damage::DamageState::Yellow
+                    | crate::sim::combat::damage::DamageState::Red
+            )
+        {
+            return;
+        }
+
+        let Some((coords, owner_entity, system_types)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
+                let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                let offset = damage_smoke_offset(object);
+                let coords = IVec3::new(
+                    i32::from(entity.position.rx)
+                        .wrapping_mul(256)
+                        .wrapping_add(entity.position.sub_x.to_num::<i32>())
+                        .wrapping_add(offset.x),
+                    i32::from(entity.position.ry)
+                        .wrapping_mul(256)
+                        .wrapping_add(entity.position.sub_y.to_num::<i32>())
+                        .wrapping_add(offset.y),
+                    i32::from(entity.position.z).wrapping_add(offset.z),
+                );
+                let smoke = object
+                    .damage_particle_systems
+                    .iter()
+                    .rev()
+                    .filter_map(|name| rules.ps_type_id_by_name(name))
+                    .filter(|&id| {
+                        rules.particle_system_type(id).behaves_like
+                            == ParticleSystemBehavesLike::Smoke
+                    })
+                    .collect::<Vec<_>>();
+                Some((coords, stable_id, smoke))
+            })
+        else {
+            return;
+        };
+        if system_types.is_empty() {
+            return;
+        }
+
+        // The remaining native predicate is vtable +0x1C8 > -10. Rust has no
+        // represented negative special-state branch; every live GameEntity at
+        // this receiver seam is in the ordinary passing class.
+        let selected = self
+            .scenario_rng
+            .next_range_u32_inclusive(0, system_types.len().saturating_sub(1) as u32)
+            as usize;
+        let Some(system_id) = self.spawn_particle_system(
+            system_types[selected],
+            coords,
+            None,
+            Some(owner_entity),
+            IVec3::ZERO,
+            None,
+            rules,
+        ) else {
+            return;
+        };
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.damage_smoke_system_id = Some(system_id);
+        }
+    }
+}
+
+/// TechnoTypeClass::GetDamageParticleOffset @0x007178C0. The screen-relative
+/// arm first runs the retail isometric-pixel matrix, then folds authored Z
+/// into all three world axes through Sqrt_Approx/ftol.
+fn damage_smoke_offset(object: &crate::rules::object_type::ObjectType) -> IVec3 {
+    let offset = object.damage_smoke_offset;
+    if !object.dam_smk_off_scrn_rel {
+        return offset;
+    }
+
+    let a = f32::from_bits(0x4088_88CE);
+    let px = offset.x as f32;
+    let py = offset.y as f32;
+    let iso_x = (a * (px + 2.0 * py)) as i32;
+    let iso_y = (a * (-px + 2.0 * py)) as i32;
+
+    let z_times_ten = offset.z.wrapping_mul(10);
+    let z = X87Chop53::load_i32(z_times_ten);
+    let squared_twice = X87Chop53::add(X87Chop53::mul(z, z), X87Chop53::mul(z, z));
+    let root_bits = sqrt_approx_f32(squared_twice)
+        .expect("damage-smoke offset square stays finite in authored coordinate range");
+    let root = X87Chop53::load_f32(root_bits)
+        .expect("Sqrt_Approx damage-smoke offset is finite normal or zero");
+    let magnitude = X87Chop53::ftol_i64(root)
+        .expect("damage-smoke offset magnitude fits a signed integer") as i32;
+    let vertical = if offset.z >= 0 { -magnitude } else { magnitude };
+
+    IVec3::new(
+        iso_x.wrapping_sub(z_times_ten),
+        iso_y.wrapping_sub(z_times_ten),
+        vertical,
+    )
 }
 
 /// Append one particle to `sys.particles`. Returns `false` when the system's

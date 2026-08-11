@@ -8,8 +8,12 @@
 //! - Part of sim/ — depends on rules/, sim/components, sim/combat.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
+use crate::sim::combat::combat_aoe::{
+    AoELayerContext, TerrainCollectionView, apply_aoe_damage_with_terrain_and_scenario,
+    bridge_adjusted_impact_z,
+};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::world::{SimSoundEvent, Simulation};
@@ -20,13 +24,9 @@ const BOLT_ANIMS: &[&str] = &["WCLBOLT1", "WCLBOLT2", "WCLBOLT3"];
 /// Maximum retry attempts for scatter bolt placement (avoid infinite loop).
 const MAX_SCATTER_RETRIES: u32 = 10;
 
-/// Queued lightning storm request — activated when the current storm ends.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct QueuedLightningStorm {
-    pub owner: InternedId,
-    pub target_rx: u16,
-    pub target_ry: u16,
-}
+/// Rust-native representation of the explicit post-duration ending turn.
+/// `-1` remains the native infinite-duration sentinel.
+const ENDING_DURATION_SENTINEL: i32 = i32::MIN;
 
 /// Active lightning storm state.
 ///
@@ -54,8 +54,8 @@ pub struct LightningStormState {
     pub last_bolt_ry: u16,
 }
 
-/// Start a new lightning storm. If one is already active, queues the request
-/// so it activates when the current storm ends.
+/// Start a new lightning storm. An overlapping invocation retargets the one
+/// global storm without creating a second queued lifetime.
 pub fn start(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -63,13 +63,23 @@ pub fn start(
     target_rx: u16,
     target_ry: u16,
 ) -> bool {
-    if sim.lightning_storm.is_some() {
-        log::info!("Lightning Storm queued — one already active, will start when current ends");
-        sim.queued_lightning_storm = Some(QueuedLightningStorm {
-            owner,
-            target_rx,
-            target_ry,
-        });
+    if let Some(storm) = sim.lightning_storm.as_mut() {
+        storm.owner = owner;
+        storm.target_rx = target_rx;
+        storm.target_ry = target_ry;
+        if storm.deferment_remaining > 0 {
+            let requested_deferment = rules.general.lightning_deferment;
+            if requested_deferment <= storm.deferment_remaining {
+                storm.deferment_remaining = requested_deferment;
+            }
+            storm.duration_remaining = rules.general.lightning_storm_duration;
+            if storm.deferment_remaining <= 0 {
+                sim.session.lighting.select_ion();
+            }
+            log::info!("Deferred Lightning Storm retargeted to ({target_rx}, {target_ry})");
+        } else {
+            log::info!("Active Lightning Storm retargeted to ({target_rx}, {target_ry})");
+        }
         return true;
     }
 
@@ -85,7 +95,11 @@ pub fn start(
         last_bolt_ry: target_ry,
     };
 
+    let starts_active = state.deferment_remaining <= 0;
     sim.lightning_storm = Some(state);
+    if starts_active {
+        sim.session.lighting.select_ion();
+    }
 
     // Sound event for EVA warning.
     sim.sound_events.push(SimSoundEvent::SuperWeaponLaunched {
@@ -108,29 +122,58 @@ pub fn start(
 
 /// Process the active lightning storm for one tick.
 /// Called from `tick_superweapons()` each tick.
-pub fn process(sim: &mut Simulation, rules: &RuleSet) {
-    let Some(ref mut storm) = sim.lightning_storm else {
-        return;
-    };
-
+pub fn process(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+) {
     // Phase 1: deferment countdown.
-    if storm.deferment_remaining > 0 {
-        storm.deferment_remaining -= 1;
+    let activates_now = match sim.lightning_storm.as_mut() {
+        None => return,
+        Some(storm) if storm.deferment_remaining > 0 => {
+            storm.deferment_remaining -= 1;
+            if storm.deferment_remaining > 0 {
+                return;
+            }
+            true
+        }
+        Some(_) => false,
+    };
+    if activates_now {
+        sim.session.lighting.select_ion();
+        // Native Process calls Start and returns on the countdown-zero frame;
+        // expiry and bolt cadence begin on the next object tick.
         return;
     }
 
-    // Phase 2: active storm — decrement duration.
-    storm.duration_remaining -= 1;
-    if storm.duration_remaining <= 0 {
+    // Phase 2: active storm. A positive countdown owns exactly that many
+    // complete processing turns and cleanup occurs on the following turn.
+    // The native -1 sentinel stays active indefinitely.
+    let duration = sim
+        .lightning_storm
+        .as_ref()
+        .expect("storm remains present after deferment processing")
+        .duration_remaining;
+    if duration == ENDING_DURATION_SENTINEL {
         log::info!("Lightning Storm ended");
         sim.lightning_storm = None;
-        // Activate queued storm if one is waiting.
-        if let Some(queued) = sim.queued_lightning_storm.take() {
-            log::info!("Activating queued Lightning Storm");
-            start(sim, rules, queued.owner, queued.target_rx, queued.target_ry);
-        }
+        sim.session.lighting.select_normal();
         return;
     }
+    if duration == 0 {
+        // Native first enters its ending state and returns. With no modeled
+        // cloud objects, the following Process is the earliest cleanup turn.
+        sim.lightning_storm
+            .as_mut()
+            .expect("storm remains present while entering ending state")
+            .duration_remaining = ENDING_DURATION_SENTINEL;
+        return;
+    }
+
+    let storm = sim
+        .lightning_storm
+        .as_mut()
+        .expect("active storm remains present");
 
     // Extract storm fields for bolt generation (avoid borrow conflict).
     let target_rx = storm.target_rx;
@@ -157,19 +200,25 @@ pub fn process(sim: &mut Simulation, rules: &RuleSet) {
     let separation = rules.general.lightning_separation;
 
     if spawn_center {
-        spawn_bolt(sim, rules, target_rx, target_ry, owner);
+        spawn_bolt(sim, rules, target_rx, target_ry, owner, overlay_registry);
     }
 
     if spawn_scatter {
         let (rx, ry) = pick_scatter_cell(
             sim, target_rx, target_ry, last_rx, last_ry, spread, separation,
         );
-        spawn_bolt(sim, rules, rx, ry, owner);
+        spawn_bolt(sim, rules, rx, ry, owner, overlay_registry);
         // Update last bolt position on the storm state.
         if let Some(ref mut storm) = sim.lightning_storm {
             storm.last_bolt_rx = rx;
             storm.last_bolt_ry = ry;
         }
+    }
+
+    if let Some(storm) = sim.lightning_storm.as_mut()
+        && storm.duration_remaining > 0
+    {
+        storm.duration_remaining -= 1;
     }
 }
 
@@ -208,7 +257,14 @@ fn pick_scatter_cell(
 }
 
 /// Spawn a single lightning bolt at the given cell: visual effect + area damage.
-fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: InternedId) {
+fn spawn_bolt(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    rx: u16,
+    ry: u16,
+    owner: InternedId,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+) {
     // 1. Pick a random bolt animation.
     let anim_idx = sim
         .superweapon_rng()
@@ -242,36 +298,27 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
     // 2. Apply area damage via lightning warhead.
     let warhead_id = &rules.general.lightning_warhead;
     if let Some(warhead) = rules.warhead(warhead_id) {
-        let owner_str = sim.interner.resolve(owner).to_string();
+        let warhead_ref = sim.interner.intern(warhead_id);
         let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), rx, ry);
-        let hits = apply_aoe_damage(
-            &sim.substrate.entities,
+        let air_impact = crate::sim::combat::combat_aoe::air_impact_from_layer_z(
+            sim.resolved_terrain.as_ref(),
             rx,
             ry,
-            rules.general.lightning_damage,
-            warhead,
-            rules,
-            &sim.interner,
-            &owner_str,
-            AoELayerContext {
-                occupancy: Some(&sim.substrate.occupancy),
-                terrain: sim.resolved_terrain.as_ref(),
-                impact_z,
-            },
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            impact_z,
         );
+        let world_z_leptons = air_impact
+            .map(|impact| impact.z_leptons)
+            .unwrap_or_else(|| {
+                impact_z.wrapping_mul(crate::util::lepton::LEPTONS_PER_LEVEL as i32)
+            });
 
-        // Apply damage to entities.
-        for (stable_id, damage) in hits {
-            if let Some(entity) = sim.substrate.entities.get_mut(stable_id) {
-                entity.health.current = entity.health.current.saturating_sub(damage);
-                entity.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-            }
-        }
-
-        // Emit warhead AnimList anim + smudge for this bolt detonation,
-        // kill-independent. The bolt visual above is the strike sprite;
-        // this is the warhead's AnimList anim (e.g. EXPLOSION).
+        // GroundStrike selects and starts its explosion AnimClass before it
+        // enters Apply_area_damage. Commit the Anim's immediate smudge/RNG at
+        // that producer boundary; the later per-cell ore sweep must observe it.
         let mut explosions: Vec<crate::sim::combat::ExplosionEffect> = Vec::new();
+        let mut smudges = Vec::new();
         crate::sim::combat::emit_warhead_detonation_effects(
             warhead,
             rules.general.lightning_damage,
@@ -279,11 +326,15 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
             ry,
             crate::util::lepton::CELL_CENTER_LEPTON,
             crate::util::lepton::CELL_CENTER_LEPTON,
-            0,
+            crate::sim::combat::impact_z_byte(impact_z),
+            world_z_leptons,
             &mut sim.interner,
             &mut explosions,
-            &mut sim.pending_smudge_requests,
+            &mut smudges,
         );
+        for request in smudges {
+            sim.commit_smudge_request_inline(rules, overlay_registry, request);
+        }
         for fx in &explosions {
             let frames = sim
                 .effect_frame_counts
@@ -308,6 +359,63 @@ fn spawn_bolt(sim: &mut Simulation, rules: &RuleSet, rx: u16, ry: u16, owner: In
                 start_sound_emitted: false,
             });
         }
+
+        let scenario_no_damage = sim.session.no_damage;
+        let binary_frame = sim.session.binary_frame;
+        let spread_enabled = sim.production.ore_growth_config.spreads;
+        let mut ore_prelude = crate::sim::world::simulation_tiberium_cell_prelude(
+            rules,
+            warhead,
+            rules.general.lightning_damage,
+            true,
+            scenario_no_damage,
+            &mut sim.production.resource_nodes,
+            &mut sim.production.ore_growth_state,
+            &sim.production.tiberium_spawning_terrain_cells,
+            binary_frame,
+            spread_enabled,
+            &mut sim.radar_terrain_dirty_cells,
+            &mut sim.radar_terrain_dirty_generation,
+            &mut sim.tactical_dirty_cells,
+        );
+        let terrain_objects = TerrainCollectionView {
+            objects: &sim.production.terrain_objects,
+            cells: &sim.production.terrain_object_cells,
+        };
+        let aoe = apply_aoe_damage_with_terrain_and_scenario(
+            &mut sim.substrate.entities,
+            rx,
+            ry,
+            rules.general.lightning_damage,
+            warhead,
+            rules,
+            &sim.interner,
+            (
+                crate::sim::combat::RAD_NO_ATTACKER,
+                Some(owner),
+                warhead_ref,
+            ),
+            AoELayerContext {
+                occupancy: Some(&sim.substrate.occupancy),
+                terrain: sim.resolved_terrain.as_mut(),
+                overlay_grid: sim.overlay_grid.as_mut(),
+                overlay_registry,
+                scenario_rng: Some(&mut sim.scenario_rng),
+                air_impact,
+                impact_z,
+            },
+            Some(terrain_objects),
+            scenario_no_damage,
+            ore_prelude
+                .as_mut()
+                .map(|prelude| prelude as &mut dyn crate::sim::combat::combat_aoe::AoECellPrelude),
+        );
+
+        // GroundStrike enters the ordinary ReceiveDamage transaction for each
+        // hit before returning. In particular, a fatal carrier detonates its
+        // DeathWeapon (and mutates walls/RNG/targets) before the next bolt or
+        // LogicClass visit.
+        sim.commit_noncombat_aoe_receivers(rules, overlay_registry, &aoe.receivers);
     } else {
         log::warn!("Lightning warhead '{}' not found in rules", warhead_id);
     }
@@ -322,14 +430,205 @@ mod tests {
     use super::*;
     use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
     use crate::map::entities::EntityCategory;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::MovementLayer;
     use crate::sim::occupancy::CellListInsertion;
+    use crate::sim::overlay_grid::OverlayGrid;
+    use crate::sim::rng::SimRng;
+    use crate::sim::scenario_session::ScenarioLightingProfile;
     use crate::sim::world::Simulation;
+
+    fn lighting_timing_rules(deferment: i32, duration: i32, rate: &str) -> RuleSet {
+        RuleSet::from_ini(&IniFile::from_str(&format!(
+            "[General]\n\
+             LightningDeferment={deferment}\n\
+             LightningStormDuration={duration}\n\
+             LightningHitDelay=1000\n\
+             LightningScatterDelay=1000\n\
+             AmbientChangeRate={rate}\n\
+             AmbientChangeStep=.2\n"
+        )))
+        .expect("lighting timing rules should parse")
+    }
+
+    #[test]
+    fn gsi_04_20_deferment_activation_and_cleanup_follow_pre_ore_ambient_rung() {
+        let rules = lighting_timing_rules(1, 2, ".0012");
+        assert_eq!(rules.general.ambient_change_interval_frames, 1);
+        let mut sim = Simulation::with_seed(0x420);
+        let owner = sim.interner.intern("Americans");
+        let heights = std::collections::BTreeMap::new();
+        let rng_before = sim.scenario_rng.state();
+
+        assert!(start(&mut sim, &rules, owner, 8, 9));
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Normal,
+            "a deferred request must not select Ion"
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Ion,
+            "the decrement-to-zero frame activates the storm"
+        );
+        assert_eq!(sim.session.lighting.target_ambient, 87);
+        assert_eq!(
+            sim.session.lighting.current_ambient, 100,
+            "the pre-ore ambient rung already ran before activation"
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert!(sim.lightning_storm.is_some());
+        assert_eq!(sim.session.lighting.current_ambient, 87);
+        assert_eq!(
+            sim.lightning_storm
+                .as_ref()
+                .expect("first active duration turn")
+                .duration_remaining,
+            1
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert!(sim.lightning_storm.is_some());
+        assert_eq!(
+            sim.lightning_storm
+                .as_ref()
+                .expect("storm remains through both duration turns")
+                .duration_remaining,
+            0
+        );
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Ion
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert_eq!(
+            sim.lightning_storm
+                .as_ref()
+                .expect("explicit ending turn retains the storm")
+                .duration_remaining,
+            ENDING_DURATION_SENTINEL
+        );
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Ion,
+            "the explicit ending turn retains Ion lighting"
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert!(sim.lightning_storm.is_none());
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Normal
+        );
+        assert_eq!(sim.session.lighting.target_ambient, 100);
+        assert_eq!(
+            sim.session.lighting.current_ambient, 87,
+            "cleanup selects Normal after this frame's ambient rung"
+        );
+
+        sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        assert_eq!(sim.session.lighting.current_ambient, 100);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+    }
+
+    #[test]
+    fn gsi_04_20_minus_one_duration_remains_active_and_ion_selected() {
+        let rules = lighting_timing_rules(0, -1, ".2");
+        let mut sim = Simulation::with_seed(0x421);
+        let owner = sim.interner.intern("Americans");
+
+        assert!(start(&mut sim, &rules, owner, 8, 9));
+        for _ in 0..4 {
+            process(&mut sim, &rules, None);
+            assert_eq!(
+                sim.lightning_storm
+                    .as_ref()
+                    .expect("-1 storm remains active")
+                    .duration_remaining,
+                -1
+            );
+            assert_eq!(
+                sim.session.lighting.selected_profile,
+                ScenarioLightingProfile::Ion
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_04_20_deferred_retarget_preserves_earliest_countdown_and_rewrites_duration() {
+        let first_rules = lighting_timing_rules(5, 20, ".2");
+        let second_rules = lighting_timing_rules(9, 37, ".2");
+        let mut sim = Simulation::with_seed(0x422);
+        let first_owner = sim.interner.intern("Americans");
+        let second_owner = sim.interner.intern("Soviet");
+
+        assert!(start(&mut sim, &first_rules, first_owner, 4, 5));
+        sim.lightning_storm
+            .as_mut()
+            .expect("deferred storm")
+            .deferment_remaining = 3;
+        assert!(start(&mut sim, &second_rules, second_owner, 17, 19));
+
+        let storm = sim.lightning_storm.as_ref().expect("one deferred storm");
+        assert_eq!(storm.owner, second_owner);
+        assert_eq!((storm.target_rx, storm.target_ry), (17, 19));
+        assert_eq!(storm.deferment_remaining, 3);
+        assert_eq!(storm.duration_remaining, 37);
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Normal
+        );
+    }
+
+    #[test]
+    fn gsi_04_20_active_storm_start_retargets_without_a_queued_lifetime() {
+        let rules = lighting_timing_rules(0, 20, ".2");
+        let mut sim = Simulation::with_seed(1);
+        let first_owner = sim.interner.intern("Americans");
+        let second_owner = sim.interner.intern("Soviet");
+
+        assert!(start(&mut sim, &rules, first_owner, 4, 5));
+        assert_eq!(
+            sim.session.lighting.selected_profile,
+            ScenarioLightingProfile::Ion
+        );
+        let duration = sim.lightning_storm.as_ref().unwrap().duration_remaining;
+
+        assert!(start(&mut sim, &rules, second_owner, 17, 19));
+        let storm = sim
+            .lightning_storm
+            .as_ref()
+            .expect("one storm remains active");
+        assert_eq!(storm.owner, second_owner);
+        assert_eq!((storm.target_rx, storm.target_ry), (17, 19));
+        assert_eq!(storm.duration_remaining, duration);
+    }
+
+    #[test]
+    fn gsi_04_20_static_normal_map_does_not_advance_lighting_or_rng() {
+        let rules = lighting_timing_rules(250, 180, ".2");
+        let mut sim = Simulation::with_seed(0x42);
+        let lighting_before = sim.session.lighting;
+        let rng_before = sim.scenario_rng.state();
+        let heights = std::collections::BTreeMap::new();
+
+        for _ in 0..400 {
+            sim.advance_tick(&[], Some(&rules), &heights, None, None, 67);
+        }
+
+        assert_eq!(sim.session.lighting, lighting_before);
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+    }
 
     fn registry_only_warhead_lightning_test_setup() -> (Simulation, RuleSet) {
         // LWH is declared only by [Warheads]; no object or ordinary weapon
@@ -352,21 +651,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_only_warhead_lightning_strike_emits_anim_smudge_into_pending_requests() {
+    fn gsi_04_11_registry_only_lightning_anim_smudge_is_not_deferred() {
         let (mut sim, rules) = registry_only_warhead_lightning_test_setup();
         let owner = sim.interner.intern("Americans");
 
-        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+        spawn_bolt(&mut sim, &rules, 5, 5, owner, None);
 
-        let anim_count = sim
-            .pending_smudge_requests
-            .iter()
-            .filter(|r| matches!(r, crate::sim::combat::SmudgeSpawnRequest::Anim { .. }))
-            .count();
-        assert_eq!(
-            anim_count, 1,
-            "one bolt → one Anim smudge request in pending_smudge_requests"
-        );
+        assert!(sim.pending_smudge_requests.is_empty());
 
         let explosion_iid = sim.interner.intern("EXPLOSION");
         assert!(
@@ -378,12 +669,82 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_11_lightning_anim_precedes_per_cell_ore_reduction() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [Warheads]\n0=LWH\n\
+             [OverlayTypes]\n0=ORE\n\
+             [SmudgeTypes]\n0=CR1\n\
+             [Tiberiums]\n0=Riparius\n\
+             [General]\nLightningDamage=100\nLightningWarhead=LWH\n\
+             [LWH]\nCellSpread=0\nAnimList=EXPLOSION\nTiberium=yes\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+             [ORE]\nTiberium=yes\nChainReaction=yes\n\
+             [Riparius]\nImage=1\nValue=25\n\
+             [CR1]\nCrater=yes\nWidth=1\nHeight=1\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("ore-order lightning rules");
+        rules.art_registry = ArtRegistry::from_ini(&IniFile::from_str(
+            "[EXPLOSION]\nCrater=yes\nScorch=no\nFrameWidth=100\nFrameHeight=100\n",
+        ));
+        let overlay_registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let ore_id = overlay_registry.id_for_name("ORE").expect("ORE overlay id");
+
+        let mut sim = Simulation::with_seed(1);
+        let mut cells = Vec::new();
+        for ry in 0..10 {
+            for rx in 0..10 {
+                let mut cell = test_terrain_cell(rx, ry);
+                cell.filled_clear = true;
+                cell.accepts_smudge = true;
+                cell.allows_tiberium = true;
+                cells.push(cell);
+            }
+        }
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(10, 10, cells));
+        sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(10, 10));
+        sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(10, 10);
+        let mut overlay = OverlayGrid::new(10, 10);
+        // Raw data 9 represents ten density units. The pre-AoE crater reduces
+        // six but remains blocked by the surviving overlay; Damage=100 then
+        // clears the four units left by AnimClass::Start.
+        overlay.place_overlay(5, 5, ore_id, 9);
+        sim.overlay_grid = Some(overlay);
+        let owner = sim.interner.intern("Americans");
+
+        spawn_bolt(&mut sim, &rules, 5, 5, owner, Some(&overlay_registry));
+
+        assert_eq!(
+            sim.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id,
+            None,
+            "the later GroundStrike area pass still clears the partially reduced ore"
+        );
+        assert!(
+            sim.smudge_grid
+                .as_ref()
+                .unwrap()
+                .cell(5, 5)
+                .type_id
+                .is_none(),
+            "GroundStrike starts its crater Anim while dense ore still blocks placement"
+        );
+        assert!(sim.pending_smudge_requests.is_empty());
+
+        let mut expected_rng = SimRng::new(1);
+        let _ = expected_rng.next_range_u32(BOLT_ANIMS.len() as u32);
+        assert_eq!(sim.scenario_rng.state(), expected_rng.state());
+    }
+
+    #[test]
     fn lightning_bridge_strike_damages_only_bridge_layer() {
         let (mut sim, rules) = registry_only_warhead_lightning_test_setup();
         add_same_cell_bridge_targets(&mut sim, "DUMMY");
         let owner = sim.interner.intern("Americans");
 
-        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+        spawn_bolt(&mut sim, &rules, 5, 5, owner, None);
 
         assert_eq!(
             sim.substrate.entities.get(1).unwrap().health.current,
@@ -412,7 +773,7 @@ mod tests {
         };
         sim.substrate.entities.insert(building);
 
-        spawn_bolt(&mut sim, &rules, 5, 5, owner);
+        spawn_bolt(&mut sim, &rules, 5, 5, owner, None);
 
         let building = sim
             .substrate
@@ -421,6 +782,90 @@ mod tests {
             .expect("building remains in sim");
         assert_eq!(building.health.current, 50);
         assert!(building.building_damage_state_active);
+    }
+
+    #[test]
+    fn gsi_04_07_damage_lightning_fatal_uses_inline_death_transaction() {
+        fn run(carrier_hp: u16) -> (Simulation, u64) {
+            let ini = IniFile::from_str(
+                "[InfantryTypes]\n\
+                 [VehicleTypes]\n0=BOOMER\n\
+                 [AircraftTypes]\n\
+                 [BuildingTypes]\n\
+                 [Warheads]\n0=LightningWH\n1=WallWH\n\
+                 [OverlayTypes]\n0=TESTWALL\n\
+                 [BOOMER]\nStrength=101\nArmor=heavy\nExplodes=yes\nDeathWeapon=DeathBoom\n\
+                 [DeathBoom]\nDamage=214\nWarhead=WallWH\n\
+                 [General]\nLightningDamage=100\nLightningWarhead=LightningWH\n\
+                 [LightningWH]\nCellSpread=1\nPercentAtMax=1\n\
+                 Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+                 [WallWH]\nCellSpread=0\nWall=yes\n\
+                 Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+                 [TESTWALL]\nWall=yes\nArmor=concrete\nStrength=400\n",
+            );
+            let art = IniFile::from_str("[TESTWALL]\nDamageLevels=2\n");
+            let rules = RuleSet::from_ini(&ini).expect("lightning death transaction rules");
+            let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
+            assert!(rules.warhead("LightningWH").is_some());
+            assert!(rules.warhead("WallWH").is_some());
+            assert_eq!(
+                rules.object("BOOMER").unwrap().death_weapon.as_deref(),
+                Some("DeathBoom")
+            );
+            let mut sim = Simulation::with_seed(1);
+            let owner = sim.interner.intern("Americans");
+            let mut carrier = GameEntity::test_default(10, "BOOMER", "Soviet", 5, 5);
+            carrier.owner = sim.interner.intern("Soviet");
+            carrier.type_ref = sim.interner.intern("BOOMER");
+            carrier.health = Health {
+                current: carrier_hp,
+                max: carrier_hp,
+            };
+            sim.substrate.entities.insert(carrier);
+            let _ = sim.reveal(10);
+            let mut overlays = OverlayGrid::new(12, 12);
+            overlays.place_overlay(5, 5, 0, 0);
+            sim.overlay_grid = Some(overlays);
+
+            spawn_bolt(&mut sim, &rules, 5, 5, owner, Some(&registry));
+            let rng_state = sim.scenario_rng.state();
+            (sim, rng_state)
+        }
+
+        let (fatal, fatal_rng) = run(100);
+        assert!(fatal.substrate.entities.get(10).is_some_and(|entity| {
+            entity.health.current == 0 && entity.dying && !entity.in_logic_vector
+        }));
+        assert_eq!(
+            fatal.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id,
+            None
+        );
+        assert!(fatal.substrate.pending_delete.contains(&10));
+        assert!(!fatal.live_object_order_snapshot().contains(&10));
+        let mut expected_fatal_rng = SimRng::new(1);
+        let _ = expected_fatal_rng.next_range_u32(BOLT_ANIMS.len() as u32);
+        let _ = expected_fatal_rng.next_range_u32_inclusive(0, 400);
+        assert_eq!(fatal_rng, expected_fatal_rng.state());
+
+        let (boundary, boundary_rng) = run(101);
+        assert_eq!(
+            boundary
+                .overlay_grid
+                .as_ref()
+                .unwrap()
+                .cell(5, 5)
+                .overlay_id,
+            Some(0)
+        );
+        assert!(boundary.substrate.pending_delete.is_empty());
+        assert!(boundary.live_object_order_snapshot().contains(&10));
+        assert_eq!(
+            boundary.substrate.entities.get(10).unwrap().health.current,
+            1
+        );
+        let mut expected_boundary_rng = SimRng::new(1);
+        let _ = expected_boundary_rng.next_range_u32(BOLT_ANIMS.len() as u32);
+        assert_eq!(boundary_rng, expected_boundary_rng.state());
     }
 
     fn add_same_cell_bridge_targets(sim: &mut Simulation, type_name: &str) {
@@ -510,7 +955,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,

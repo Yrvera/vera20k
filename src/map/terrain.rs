@@ -184,9 +184,6 @@ pub struct TerrainCell {
     pub ry: u16,
     /// True when the resolved terrain classifies the cell as water.
     pub is_water: bool,
-    /// FinalAlert2 cliff redraw flag — this tile is drawn a second time after
-    /// entities so cliff face pixels occlude units behind them.
-    pub is_cliff_redraw: bool,
     /// Tile visual variant index: 0 = pristine, positive = suffix sibling.
     pub variant: u8,
     /// RGB color tint from map lighting. [1,1,1] = full brightness (default).
@@ -226,14 +223,24 @@ pub struct TerrainGrid {
     pub anchor_variant_table: Option<crate::map::theater::BridgeAnchorVariantTable>,
 }
 
-/// Convert isometric cell coordinates to screen-space pixel position.
+/// Convert isometric cell coordinates to screen-space pixel position — **the
+/// tile frame**.
 ///
-/// Returns the top-left corner of the tile's diamond bounding box.
-/// The original engine passes cell CENTER coords to its coordinate transform
-/// for tile positioning, placing the tile NW corner at the diamond center's
-/// screen Y:
+/// Returns the top-left corner of the tile's diamond bounding box, which is the
+/// point the original's terrain and overlay loops blit from:
 ///   X = 30*(rx-ry) - 30
 ///   Y = 15*(rx+ry) + 15 - z*15
+///
+/// This is *not* where an entity standing on the cell is drawn. An entity is
+/// drawn on the cell's diamond centre, `iso_to_screen + (TILE_WIDTH/2,
+/// TILE_HEIGHT/2)` — see `util::lepton::lepton_to_screen`. Callers that want to
+/// place something on the middle of a cell rather than on its tile art must add
+/// that half-tile themselves, as the smudge, sparkle and target-line paths do.
+///
+/// The `+ TILE_HEIGHT/2` in Y is a constant bias VERA carries on every world
+/// layer relative to the original's absolute tactical pixel; it is invisible
+/// because the camera absorbs it, but it must not be removed here alone — see
+/// `util::lepton::WORLD_ROW_BIAS_PX`.
 pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let sx: f32 = (rx as f32 - ry as f32) * TILE_WIDTH / 2.0 - TILE_WIDTH / 2.0;
     let sy: f32 = (rx as f32 + ry as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0
@@ -241,13 +248,20 @@ pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     (sx, sy)
 }
 
-/// Convert lepton-world coords to screen pixels with sub-cell precision.
+/// Convert absolute lepton-world coords to screen pixels with sub-cell
+/// precision — **the entity frame**, the absolute-lepton twin of
+/// `util::lepton::lepton_to_screen`.
 ///
-/// 256 leptons = 1 cell. Returns the cell-center screen position so callers
-/// can apply per-sprite anchor offsets without re-doing iso math.
+/// 256 leptons = 1 cell. A coordinate on a cell centre (`cell*256 + 128`)
+/// projects to that cell's diamond centre, i.e. `iso_to_screen +
+/// (TILE_WIDTH/2, TILE_HEIGHT/2)` — half a tile below the tile art's own row,
+/// exactly as the original projects an object's coordinate.
 ///
 ///   X = (cell_x - cell_y) * TILE_WIDTH/2 + sub_offset_x
 ///   Y = (cell_x + cell_y) * TILE_HEIGHT/2 + TILE_HEIGHT/2 + sub_offset_y - z_lift
+///
+/// The two projections agree at every sub-cell value;
+/// `matching_lepton_projections_agree` pins it so they cannot drift apart.
 ///
 /// Negative coords use `div_euclid` / `rem_euclid` so a particle drifting
 /// just outside the map's NW corner stays on the correct cell.
@@ -598,7 +612,6 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
             rx: cell.rx,
             ry: cell.ry,
             is_water: tile_id == 0,
-            is_cliff_redraw: false,
             variant: 0,
             tint: [1.0, 1.0, 1.0],
             radar_left: [0, 0, 0],
@@ -672,7 +685,6 @@ pub fn build_terrain_grid_from_resolved(
             rx: cell.rx,
             ry: cell.ry,
             is_water: cell.final_tile_index >= 0 && cell.is_water,
-            is_cliff_redraw: cell.is_cliff_redraw,
             variant: cell.variant,
             tint: [1.0, 1.0, 1.0],
             radar_left: cell.radar_left,
@@ -710,15 +722,10 @@ pub fn build_terrain_grid_from_resolved(
     }
 }
 
-/// Terrain instance sets: normal terrain drawn behind entities, and cliff-redraw
-/// terrain drawn after entities so cliff face pixels occlude units behind them.
-/// The cliff-redraw set contains copies of flagged tiles with a depth bias that
-/// places them in front of entities in the depth buffer.
+/// Visible ordinary terrain instances drawn in the base terrain pass.
 pub struct TerrainInstances {
-    /// Normal terrain — drawn in the first pass (behind entities).
+    /// Normal terrain — drawn in the base terrain pass.
     pub normal: Vec<SpriteInstance>,
-    /// Cliff-redraw terrain — drawn after entities (cliff occlusion pass).
-    pub cliff_redraw: Vec<SpriteInstance>,
 }
 
 fn visible_cell_slice(grid: &TerrainGrid, view_top: f32, view_bottom: f32) -> &[TerrainCell] {
@@ -758,7 +765,6 @@ pub fn build_visible_instances(
 
     let mut instances = TerrainInstances {
         normal: Vec::with_capacity(grid.cells.len() / 2),
-        cliff_redraw: Vec::new(),
     };
 
     for cell in visible_cell_slice(grid, view_top, view_bottom) {
@@ -860,13 +866,6 @@ pub fn build_visible_instances(
                 ..Default::default()
             };
             instances.normal.push(inst);
-            // Cliff-redraw: same tile redrawn AFTER sprites using zdepth shader
-            // with Less compare. Only cliff face pixels (z_sample > 0) pass the
-            // test — flat ground pixels have equal depth and fail Less, preserving
-            // sprites near cliff edges.
-            if cell.is_cliff_redraw {
-                instances.cliff_redraw.push(inst);
-            }
         }
     }
 
@@ -1250,7 +1249,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_visible_instances_culling() {
+    fn gsi_04_03c_terrain_instances_have_one_ordinary_bucket() {
         // Create a small grid manually.
         let grid: TerrainGrid = TerrainGrid {
             cells: vec![
@@ -1263,7 +1262,6 @@ mod tests {
                     rx: 1,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1279,7 +1277,6 @@ mod tests {
                     rx: 100,
                     ry: 100,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1299,7 +1296,6 @@ mod tests {
         let result: TerrainInstances =
             build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None, None);
         assert_eq!(result.normal.len(), 1);
-        assert_eq!(result.cliff_redraw.len(), 0);
     }
 
     #[test]
@@ -1315,7 +1311,6 @@ mod tests {
                     rx: 1,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1331,7 +1326,6 @@ mod tests {
                     rx: 2,
                     ry: 0,
                     is_water: false,
-                    is_cliff_redraw: false,
                     variant: 0,
                     tint: [1.0, 1.0, 1.0],
                     radar_left: [0, 0, 0],
@@ -1381,7 +1375,6 @@ mod tests {
                 rx: 0,
                 ry: 0,
                 is_water: false,
-                is_cliff_redraw: false,
                 variant: 0,
                 tint: [1.0; 3],
                 radar_left: [0; 3],

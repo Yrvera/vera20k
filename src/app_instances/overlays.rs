@@ -83,6 +83,26 @@ fn overlay_body_frame(is_crate: bool, overlay_data: u8) -> u8 {
     }
 }
 
+/// Resolve the CellClass overlay identity/data used by the tactical overlay
+/// draw. Low-bridge damage and repair mutate the identity in place, so a map
+/// pack entry is only the iteration anchor once live cell authority exists.
+fn overlay_render_identity(
+    static_overlay_id: u8,
+    static_overlay_data: u8,
+    live_cell: Option<&crate::sim::overlay_grid::OverlayCell>,
+) -> Option<(u8, u8)> {
+    let Some(live_cell) = live_cell else {
+        return Some((static_overlay_id, static_overlay_data));
+    };
+    if is_bridge_overlay_index(static_overlay_id) {
+        return live_cell
+            .overlay_id
+            .map(|overlay_id| (overlay_id, live_cell.overlay_data));
+    }
+    (live_cell.overlay_id == Some(static_overlay_id))
+        .then_some((static_overlay_id, live_cell.overlay_data))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverlayRenderBucket {
     Generic,
@@ -426,61 +446,50 @@ pub(crate) fn build_overlay_instances(
             }
         }
 
-        let Some(name) = state.overlay_names.get(&entry.overlay_id) else {
+        let Some(static_name) = state.overlay_names.get(&entry.overlay_id) else {
             continue;
         };
 
         // High-bridge bodies are emitted by `app_instances::bridges` reading
         // `BridgeRuntimeCell` post-tick. Skip them here so they don't double-
         // render via the static map overlay list.
+        if is_high_bridge_body_name(static_name) {
+            continue;
+        }
+
+        // Low bridges remain in the ordinary overlay pass, but CellClass's
+        // live identity—not the map-pack seed—selects damaged/collapsed art.
+        let live_overlay_cell = state
+            .simulation
+            .as_ref()
+            .and_then(|sim| sim.overlay_grid.as_ref())
+            .map(|grid| grid.cell(entry.rx, entry.ry));
+        let Some((render_overlay_id, live_overlay_data)) =
+            overlay_render_identity(entry.overlay_id, entry.frame, live_overlay_cell)
+        else {
+            continue;
+        };
+        let Some(name) = state.overlay_names.get(&render_overlay_id) else {
+            continue;
+        };
         if is_high_bridge_body_name(name) {
             continue;
         }
 
-        // Skip destroyed low-bridge overlays — the sim marks bridge cells
-        // destroyed but the overlay list is static map data. Without this
-        // check, destroyed low bridges continue rendering visually even
-        // though units can't cross.
-        if is_bridge_overlay_index(entry.overlay_id) {
-            if let Some(bridge_state) = state
-                .simulation
-                .as_ref()
-                .and_then(|s| s.bridge_state.as_ref())
-            {
-                if !bridge_state.is_bridge_walkable(entry.rx, entry.ry) {
-                    continue;
-                }
-            }
-        }
-
-        // Derive the live render frame for this overlay.
-        // If OverlayGrid is available, use its mutable state (handles ore density
-        // changes, wall damage, bridge frame stepping). Otherwise fall back to the
-        // old reverse-compute from ResourceNode for ore, or static map frame.
+        // Derive the live render data for this overlay. If OverlayGrid is
+        // available, its mutable identity/data owns ore density, wall damage,
+        // and low-bridge variants. Otherwise retain the loading-screen fallback.
         let upper = name.to_ascii_uppercase();
         let overlay_flags = state
             .overlay_registry
             .as_ref()
-            .and_then(|reg| reg.flags(entry.overlay_id));
+            .and_then(|reg| reg.flags(render_overlay_id));
         let is_wall: bool = overlay_flags.map(|f| f.wall).unwrap_or(false);
         let is_crate: bool = overlay_flags.map(|f| f.crate_type).unwrap_or(false);
         let is_resource = upper.starts_with("TIB") || upper.starts_with("GEM");
 
-        let render_frame: u8 = if let Some(overlay_grid) = state
-            .simulation
-            .as_ref()
-            .and_then(|sim| sim.overlay_grid.as_ref())
-        {
-            let live_cell = overlay_grid.cell(entry.rx, entry.ry);
-            if is_bridge_overlay_index(entry.overlay_id) {
-                // Bridge bytes remain owned by BridgeRuntimeState.
-                entry.frame
-            } else if live_cell.overlay_id == Some(entry.overlay_id) {
-                live_cell.overlay_data
-            } else {
-                // Live non-bridge state is authoritative over the map pack.
-                continue;
-            }
+        let render_frame: u8 = if live_overlay_cell.is_some() {
+            live_overlay_data
         } else {
             // No OverlayGrid — fall back to old behavior.
             if is_resource {
@@ -1141,8 +1150,8 @@ mod tests {
     use super::{
         ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, anim_instance_alpha,
         apply_shape_z_adjust, classify_overlay_render_bucket, garrison_flash_depth,
-        overlay_body_frame, terrain_object_is_render_visible, weapon_muzzle_flash_key,
-        world_effect_screen_position,
+        overlay_body_frame, overlay_render_identity, terrain_object_is_render_visible,
+        weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
     use crate::rules::art_data::ArtRegistry;
@@ -1150,6 +1159,7 @@ mod tests {
     use crate::rules::ruleset::RuleSet;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
     use crate::sim::intern::StringInterner;
+    use crate::sim::overlay_grid::OverlayCell;
     use crate::sim::production::ProductionState;
     use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
     use crate::util::fixed_math::SimFixed;
@@ -1260,6 +1270,46 @@ mod tests {
         assert_eq!(overlay_body_frame(true, 0), CRATE_BODY_FRAME);
         assert_eq!(overlay_body_frame(true, 7), CRATE_BODY_FRAME);
         assert_eq!(overlay_body_frame(true, 0x2F), CRATE_BODY_FRAME);
+    }
+
+    #[test]
+    fn gsi_04_13_low_overlay_renderer_follows_live_identity_through_terminal_collapse() {
+        let mut live = OverlayCell {
+            overlay_id: Some(0x50),
+            overlay_data: 0xA5,
+            wall_owner: None,
+        };
+
+        assert_eq!(overlay_render_identity(0x4A, 7, None), Some((0x4A, 7)));
+        assert_eq!(
+            overlay_render_identity(0x4A, 7, Some(&live)),
+            Some((0x50, 0xA5)),
+            "first-damaged low bridge must select the live overlay variant"
+        );
+
+        live.overlay_id = Some(0x64);
+        assert_eq!(
+            overlay_render_identity(0x4A, 7, Some(&live)),
+            Some((0x64, 0xA5)),
+            "terminal collapse remains a drawable overlay identity"
+        );
+
+        live.overlay_id = Some(0x4D);
+        assert_eq!(
+            overlay_render_identity(0x4A, 7, Some(&live)),
+            Some((0x4D, 0xA5)),
+            "repair art must follow the live healthy variant"
+        );
+
+        live.overlay_id = None;
+        assert_eq!(overlay_render_identity(0x4A, 7, Some(&live)), None);
+
+        live.overlay_id = Some(6);
+        assert_eq!(
+            overlay_render_identity(5, 3, Some(&live)),
+            None,
+            "ordinary overlays retain exact identity matching"
+        );
     }
 
     #[test]

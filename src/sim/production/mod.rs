@@ -49,16 +49,16 @@ pub use self::production_sell::{
 };
 pub use self::production_spawn::find_spawn_cell_for_owner;
 pub use self::production_tech::{
-    building_base_foundation_cells, building_footprint_cells, building_hidden_occupancy_cells,
-    building_movement_blocking_cells, building_movement_blocking_cells_for_state,
-    foundation_dimensions, is_matching_factory, producer_candidates_for_owner_category,
-    structure_satisfies_prerequisite,
+    building_base_foundation_cells, building_footprint_cells, building_movement_blocking_cells,
+    building_movement_blocking_cells_for_state, foundation_dimensions, is_matching_factory,
+    producer_candidates_for_owner_category, structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
 pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously
 // imported private submodules directly).
+#[cfg(test)]
 pub(crate) use self::production_economy::pick_best_resource_node;
 pub(in crate::sim) use self::production_queue::credits_entry_for_owner;
 

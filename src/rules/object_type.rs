@@ -138,6 +138,33 @@ pub struct DockPad {
     pub lepton_offset: (i32, i32, i32),
 }
 
+/// Native `AddOccupy1..8` / `RemoveOccupy1..8` storage cardinality.
+pub const HIDDEN_OCCUPY_SLOT_COUNT: usize = 8;
+
+/// Immutable building-type inputs for the separate hidden-object cell counter.
+///
+/// Missing numbered offsets remain `None` in their native slot instead of being
+/// compacted. This profile is copied onto placed objects because cell-list exit
+/// runs without borrowing the rules registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct BuildingHiddenOccupancyProfile {
+    pub can_hide_things: bool,
+    pub occupy_height: i32,
+    pub add_occupy: [Option<(i16, i16)>; HIDDEN_OCCUPY_SLOT_COUNT],
+    pub remove_occupy: [Option<(i16, i16)>; HIDDEN_OCCUPY_SLOT_COUNT],
+}
+
+impl Default for BuildingHiddenOccupancyProfile {
+    fn default() -> Self {
+        Self {
+            can_hide_things: true,
+            occupy_height: 2,
+            add_occupy: [None; HIDDEN_OCCUPY_SLOT_COUNT],
+            remove_occupy: [None; HIDDEN_OCCUPY_SLOT_COUNT],
+        }
+    }
+}
+
 /// A game object definition parsed from a rules.ini section.
 ///
 /// Fields use sensible defaults when the INI key is absent, matching
@@ -166,6 +193,8 @@ pub struct ObjectType {
     /// — the enslaved miners and the three spawner missiles, all of which die
     /// constantly in ordinary play.
     pub dont_score: bool,
+    /// `SpecialThreatValue=` candidate multiplier used by threat scoring.
+    pub special_threat_value: f64,
     /// Armor type name (e.g., "heavy", "light", "wood"). Determines damage
     /// multipliers from warhead Verses= values.
     pub armor: String,
@@ -253,6 +282,11 @@ pub struct ObjectType {
     pub build_cat: Option<BuildCategory>,
     /// Human placement radius away from existing base-normal structures.
     pub adjacent: i32,
+    /// `ProtectWithWall=` adds one cell to the active AI site's first-phase
+    /// CheckOccupancy border. It is distinct from `Wall=` segment identity.
+    pub protect_with_wall: bool,
+    /// `WantsExtraSpace=` adds the same one-cell first-phase AI site border.
+    pub wants_extra_space: bool,
     /// Whether this structure expands the owner's build area.
     pub base_normal: bool,
     /// Whether this structure can expand allied build area when BuildOffAlly is enabled.
@@ -354,9 +388,26 @@ pub struct ObjectType {
     /// Whether this unit fires a warhead at its own position on death (e.g.,
     /// Apocalypse Tank explosion damages nearby units).
     pub explodes: bool,
+    /// `EXPLODES` in `VeteranAbilities=`. Native treats this as an effective
+    /// death-explosion gate once the object is veteran.
+    pub veteran_explodes: bool,
+    /// `EXPLODES` in `EliteAbilities=`. Elite objects inherit the veteran
+    /// ability and additionally consult this list.
+    pub elite_explodes: bool,
+    /// `STRONGER` in the rank-selected ability list gates the receiver's
+    /// separate `VeteranArmor` divide.
+    pub veteran_stronger: bool,
+    pub elite_stronger: bool,
+    /// `SCATTER` in the rank-selected ability list lets player-owned Infantry
+    /// accept an unforced direct Scatter call even when PlayerScatter is off.
+    pub veteran_scatter: bool,
+    pub elite_scatter: bool,
     /// Specific weapon fired on death (overrides default explosion behavior).
     /// References a [WeaponName] section in rules.ini.
     pub death_weapon: Option<String>,
+    /// `DeathWeaponDamageModifier=` applied to explicit/current death weapons.
+    /// The native TechnoType constructor seeds this to 1.0.
+    pub death_weapon_damage_modifier: f32,
     /// Superweapon type ID granted when this building is completed (SuperWeapon= in rules.ini).
     /// References a section listed in [SuperWeaponTypes].
     pub super_weapon: Option<String>,
@@ -424,12 +475,12 @@ pub struct ObjectType {
     /// use this vec directly. Retail refineries (GAREFN/NAREFN/YAREFN) leave
     /// it empty.
     pub pads: Vec<DockPad>,
-    /// Cells added to the rectangular foundation (from art.ini AddOccupy1..N).
-    /// Merged from art.ini during init.
-    pub add_occupy: Vec<(i16, i16)>,
-    /// Cells removed from the rectangular foundation (from art.ini RemoveOccupy1..N).
-    /// Merged from art.ini during init.
-    pub remove_occupy: Vec<(i16, i16)>,
+    /// Art-driven inputs for the separate hidden-object counter. These never
+    /// alter normal foundation, placement, selection, or movement footprints.
+    pub hidden_occupancy: BuildingHiddenOccupancyProfile,
+    /// Immutable `[AI] AIBaseSpacing` snapshot for Building types that execute
+    /// the native base-reservation writer. `None` is the exact writer gate.
+    pub base_reservation_spacing: Option<i32>,
     /// Alternative VXL model displayed while unloading at a refinery (UnloadingClass= in rules.ini).
     /// e.g. HARV uses HORV (harvester without ore bin), CMIN uses CMON.
     pub unloading_class: Option<String>,
@@ -571,6 +622,20 @@ pub struct ObjectType {
     /// rules.ini. Also selects the deployed self-irradiate mission behaviour
     /// for deploy-fire units whose deploy weapon emits radiation.
     pub immune_to_radiation: bool,
+    /// Allows this object to be admitted as its own ground AoE receiver.
+    /// CrushWarhead independently admits self regardless of this flag.
+    pub damage_self: bool,
+    /// ObjectClass receiver immunity (`Immune=`). With defenses enabled this
+    /// rejects the request before the ordinary damage kernel and callbacks.
+    pub immune: bool,
+    /// Nullifies damage from an exact same-type, same-owner source object.
+    pub type_immune: bool,
+    /// Psychedelic/mind-control immunity. Buildings default true natively.
+    pub immune_to_psionics: bool,
+    /// PsychicDamage immunity. Buildings default true natively.
+    pub immune_to_psionic_weapons: bool,
+    /// Poison-warhead immunity.
+    pub immune_to_poison: bool,
 
     /// What type of objects this building can produce (Factory= in rules.ini).
     /// None for non-factory buildings/units. Data-driven replacement for
@@ -750,6 +815,10 @@ pub struct ObjectType {
     /// AMMOCRAT (Ammo Crate).
     pub can_c4: bool,
 
+    /// BuildingTypeClass `EligibleForDelayKill` (`+0x1551`). Native default
+    /// false; only eligible buildings can convert a fatal result to PostMortem.
+    pub eligible_for_delay_kill: bool,
+
     /// `Invisible=yes` on BuildingType. Live building rejection checks this
     /// plain invisible byte separately from `InvisibleInGame`.
     pub invisible: bool,
@@ -799,6 +868,12 @@ pub struct ObjectType {
     /// Wall buildings render as overlays (auto-tiled connectivity frames),
     /// not as normal SHP building sprites. GAWALL, NAWALL, GAFWLL etc.
     pub wall: bool,
+    /// ART `ToOverlay=` identity merged after rules parsing.
+    pub to_overlay: Option<String>,
+    /// `Unsellable=` BuildingType gate. Native default is false.
+    pub unsellable: bool,
+    /// `ClickRepairable=` BuildingType byte. Wall selling does not consult it.
+    pub click_repairable: bool,
 
     /// Whether the player may put this object into the selection group
     /// (`Selectable=` in rules.ini). gamemd reads this on the object *type* and
@@ -906,6 +981,14 @@ fn native_minutes_to_ticks(value: f32) -> u32 {
 }
 
 impl ObjectType {
+    /// BuildingType gate used by the native base-reservation setter.
+    pub fn base_reservation_writer_eligible(&self) -> bool {
+        self.category == ObjectCategory::Building
+            && (self.undeploys_into.is_none() || !self.resource_gatherer)
+            && !(self.undeploys_into.is_some()
+                && crate::rules::foundation::foundation_dimensions(&self.foundation) == (1, 1))
+    }
+
     /// gamemd's TechnoTypeClass `+0xC8F` — whether `AI_Update` runs the per-tick
     /// damage-Spark prob-roll for this type. Only `InfantryTypeClass::ReadINI`
     /// sets `+0xC8F` (from `Cyborg=`); all other leaves keep the ctor default 0,
@@ -983,6 +1066,7 @@ impl ObjectType {
             cost: section.get_i32("Cost").unwrap_or(0),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
+            special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
             weight: section
@@ -1039,6 +1123,8 @@ impl ObjectType {
                 .unwrap_or(0),
             build_cat: section.get("BuildCat").and_then(BuildCategory::from_ini),
             adjacent: section.get_i32("Adjacent").unwrap_or(3),
+            protect_with_wall: section.get_bool("ProtectWithWall").unwrap_or(false),
+            wants_extra_space: section.get_bool("WantsExtraSpace").unwrap_or(false),
             base_normal: section.get_bool("BaseNormal").unwrap_or(true),
             eligibile_for_ally_building: section
                 .get_bool("EligibileForAllyBuilding")
@@ -1083,7 +1169,16 @@ impl ObjectType {
             can_passive_acquire: section.get_bool("CanPassiveAquire").unwrap_or(true),
             distributed_fire: section.get_bool("DistributedFire").unwrap_or(false),
             explodes: section.get_bool("Explodes").unwrap_or(false),
+            veteran_explodes: ability_list_has(section.get_list("VeteranAbilities"), "EXPLODES"),
+            elite_explodes: ability_list_has(section.get_list("EliteAbilities"), "EXPLODES"),
+            veteran_stronger: ability_list_has(section.get_list("VeteranAbilities"), "STRONGER"),
+            elite_stronger: ability_list_has(section.get_list("EliteAbilities"), "STRONGER"),
+            veteran_scatter: ability_list_has(section.get_list("VeteranAbilities"), "SCATTER"),
+            elite_scatter: ability_list_has(section.get_list("EliteAbilities"), "SCATTER"),
             death_weapon: section.get("DeathWeapon").map(|s| s.to_string()),
+            death_weapon_damage_modifier: section
+                .get_f32("DeathWeaponDamageModifier")
+                .unwrap_or(1.0),
             super_weapon: section.get("SuperWeapon").map(|s| s.to_string()),
             super_weapon2: section.get("SuperWeapon2").map(|s| s.to_string()),
             spy_sat: section.get_bool("SpySat").unwrap_or(false),
@@ -1110,10 +1205,10 @@ impl ObjectType {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_ascii_uppercase())
                 .collect(),
-            queueing_cell: None,       // merged from art.ini later
-            pads: Vec::new(),          // merged from art.ini later
-            add_occupy: Vec::new(),    // merged from art.ini later
-            remove_occupy: Vec::new(), // merged from art.ini later
+            queueing_cell: None, // merged from art.ini later
+            pads: Vec::new(),    // merged from art.ini later
+            hidden_occupancy: BuildingHiddenOccupancyProfile::default(),
+            base_reservation_spacing: None,
             unloading_class: section.get("UnloadingClass").map(|s| s.to_string()),
             ammo: section.get_i32("Ammo").unwrap_or(-1),
 
@@ -1201,6 +1296,16 @@ impl ObjectType {
             omni_crusher: section.get_bool("OmniCrusher").unwrap_or(false),
             omni_crush_resistant: section.get_bool("OmniCrushResistant").unwrap_or(false),
             immune_to_radiation: section.get_bool("ImmuneToRadiation").unwrap_or(false),
+            damage_self: section.get_bool("DamageSelf").unwrap_or(false),
+            immune: section.get_bool("Immune").unwrap_or(false),
+            type_immune: section.get_bool("TypeImmune").unwrap_or(false),
+            immune_to_psionics: section
+                .get_bool("ImmuneToPsionics")
+                .unwrap_or(category == ObjectCategory::Building),
+            immune_to_psionic_weapons: section
+                .get_bool("ImmuneToPsionicWeapons")
+                .unwrap_or(category == ObjectCategory::Building),
+            immune_to_poison: section.get_bool("ImmuneToPoison").unwrap_or(false),
 
             deploys_into: section.get("DeploysInto").map(|s| s.to_string()),
             undeploys_into: section.get("UndeploysInto").map(|s| s.to_string()),
@@ -1282,6 +1387,7 @@ impl ObjectType {
             can_c4: section
                 .get_bool("CanC4")
                 .unwrap_or(category == ObjectCategory::Building),
+            eligible_for_delay_kill: section.get_bool("EligibleForDelayKill").unwrap_or(false),
             invisible: section.get_bool("Invisible").unwrap_or(false),
             invisible_in_game: section.get_bool("InvisibleInGame").unwrap_or(false),
             unit_repair: section.get_bool("UnitRepair").unwrap_or(false),
@@ -1300,6 +1406,9 @@ impl ObjectType {
             can_disguise: section.get_bool("CanDisguise").unwrap_or(false),
             disguise_when_still: section.get_bool("DisguiseWhenStill").unwrap_or(false),
             wall: section.get_bool("Wall").unwrap_or(false),
+            to_overlay: None,
+            unsellable: section.get_bool("Unsellable").unwrap_or(false),
+            click_repairable: section.get_bool("ClickRepairable").unwrap_or(true),
             // Selectable defaults to yes — the ObjectTypeClass constructor seeds
             // the field true and only the 67 stock types that spell out
             // `Selectable=no` turn it off.

@@ -20,7 +20,7 @@
 
 use crate::rules::ini_parser::IniSection;
 use crate::rules::ini_value::atoi_lenient;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
+use crate::util::fixed_math::{SimFixed, sim_from_f32};
 
 /// A warhead definition parsed from a rules.ini section.
 ///
@@ -45,13 +45,33 @@ pub struct WarheadType {
     pub verses_f64: [f64; 11],
     /// Splash damage radius in cells (SIM_ZERO = direct hit only).
     pub cell_spread: SimFixed,
+    /// Native `CellSpread` float widened to f64 for ApplyWarheadDamage.
+    pub cell_spread_f64: f64,
     /// Damage percentage at maximum spread distance (0–100).
     pub percent_at_max: u8,
+    /// Native `PercentAtMax` float widened to f64 for the receiver damage
+    /// kernel. The byte percentage above remains for legacy presentation and
+    /// callers that have not entered ApplyWarheadDamage.
+    pub percent_at_max_f64: f64,
+    /// Building fatal hits may enter the PostMortem delayed-death branch.
+    /// Native WarheadTypeClass `+0x130`; default false.
+    pub causes_delay_kill: bool,
+    /// Native signed PostMortem base duration (`+0x134`); default 5.
+    pub delay_kill_frames: i32,
+    /// Native binary32 `DelayKillAtMax` widened exactly to f64; default 1.0f.
+    pub delay_kill_at_max_f64: f64,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
     pub wall: bool,
     /// Whether this warhead can damage terrain objects with Wood armor gate.
     /// TerrainClass::Take_Damage requires this before applying damage.
     pub wood: bool,
+    /// Whether this warhead reaches a target installed in a bunker. The active
+    /// receiver has category-specific linked-building/occupant semantics.
+    pub penetrates_bunker: bool,
+    /// Whether this warhead can affect allied targets. Native default is true.
+    pub affects_allies: bool,
+    /// Psychic-damage immunity selector (distinct from Psychedelic).
+    pub psychic_damage: bool,
     /// Explosion animation names indexed by damage magnitude (AnimList= in rules.ini).
     /// The original engine selects by `damage / 25`, clamped to list length.
     /// Example: ["XGRYSML1","EXPLOSML","EXPLOMED","EXPLOLRG","TWLT070"].
@@ -73,8 +93,16 @@ pub struct WarheadType {
     pub tiberium: bool,
     /// Bright flash on detonation. Offset +0x14F.
     pub bright: bool,
-    /// Damage multiplier against prone infantry, stored as 1.0 = 10_000 basis points.
-    /// Examples: `50%` -> `5_000`, `100%` -> `10_000`, `300%` -> `30_000`.
+    /// Positive values override the damage-derived transient combat-light size.
+    /// Parsed through native `ReadDouble`, whose input is f32-first and whose
+    /// percent form therefore stores a fraction (`40%` -> widened f32 `0.4`).
+    pub combat_light_size_f64: f64,
+    /// Native `double` damage multiplier read by InfantryClass before it enters
+    /// the shared Foot/Techno/Object receiver. `50%` is stored as `0.5`.
+    pub prone_damage_f64: f64,
+    /// Legacy lossy view retained for callers/tests that have not moved to the
+    /// concrete Infantry receiver. The authoritative receiver uses the double
+    /// above.
     pub prone_damage_basis_points: u32,
     /// Instantly destroys any wall. Offset +0x151.
     pub wall_absolute_destroyer: bool,
@@ -134,14 +162,13 @@ impl WarheadType {
             .map(parse_verses_f64)
             .unwrap_or([1.0; 11]);
 
-        let cell_spread: SimFixed = section
-            .get_f32("CellSpread")
-            .map(sim_from_f32)
-            .unwrap_or(SIM_ZERO);
-        let percent_at_max: u8 = section
-            .get_f32("PercentAtMax")
-            .map(|v| (v * 100.0).round().clamp(0.0, 200.0) as u8)
-            .unwrap_or(100);
+        let cell_spread_native = section.get_f32("CellSpread").unwrap_or(0.0);
+        let cell_spread: SimFixed = sim_from_f32(cell_spread_native);
+        let cell_spread_f64 = f64::from(cell_spread_native);
+        let percent_at_max_native = section.get_f32("PercentAtMax").unwrap_or(1.0);
+        let percent_at_max: u8 = (percent_at_max_native * 100.0).round().clamp(0.0, 200.0) as u8;
+        let percent_at_max_f64 = f64::from(percent_at_max_native);
+        let delay_kill_at_max_f64 = f64::from(section.get_f32("DelayKillAtMax").unwrap_or(1.0));
 
         let anim_list: Vec<String> = section
             .get_list("AnimList")
@@ -171,9 +198,17 @@ impl WarheadType {
             verses,
             verses_f64,
             cell_spread,
+            cell_spread_f64,
             percent_at_max,
+            percent_at_max_f64,
+            causes_delay_kill: section.get_bool("CausesDelayKill").unwrap_or(false),
+            delay_kill_frames: section.get_i32("DelayKillFrames").unwrap_or(5),
+            delay_kill_at_max_f64,
             wall: section.get_bool("Wall").unwrap_or(false),
             wood: section.get_bool("Wood").unwrap_or(false),
+            penetrates_bunker: section.get_bool("PenetratesBunker").unwrap_or(false),
+            affects_allies: section.get_bool("AffectsAllies").unwrap_or(true),
+            psychic_damage: section.get_bool("PsychicDamage").unwrap_or(false),
             anim_list,
             inf_death: section.get_i32("InfDeath").unwrap_or(1).clamp(0, 10) as u8,
 
@@ -183,6 +218,8 @@ impl WarheadType {
             direct_rocker: section.get_bool("DirectRocker").unwrap_or(false),
             tiberium: section.get_bool("Tiberium").unwrap_or(false),
             bright: section.get_bool("Bright").unwrap_or(false),
+            combat_light_size_f64: section.read_double("CombatLightSize", 0.0),
+            prone_damage_f64: section.read_double("ProneDamage", 1.0),
             prone_damage_basis_points: parse_prone_damage_basis_points(section),
             wall_absolute_destroyer: section.get_bool("WallAbsoluteDestroyer").unwrap_or(false),
             temporal: section.get_bool("Temporal").unwrap_or(false),
@@ -368,10 +405,30 @@ mod tests {
         let wh: WarheadType = WarheadType::from_ini_section("Empty", section);
 
         assert!(wh.verses.is_empty());
-        assert_eq!(wh.cell_spread, SIM_ZERO);
+        assert_eq!(wh.cell_spread, sim_from_f32(0.0));
         assert_eq!(wh.percent_at_max, 100);
+        assert!(!wh.causes_delay_kill);
+        assert_eq!(wh.delay_kill_frames, 5);
+        assert_eq!(wh.delay_kill_at_max_f64, 1.0);
+        assert_eq!(wh.prone_damage_f64, 1.0);
         assert_eq!(wh.prone_damage_basis_points, 10_000);
         assert!(!wh.wall);
+    }
+
+    #[test]
+    fn postmortem_fields_preserve_signed_and_f32_inputs() {
+        let ini = IniFile::from_str(
+            "[OilExplosionWH]\nCellSpread=4\nCausesDelayKill=yes\n\
+             DelayKillFrames=-7\nDelayKillAtMax=7.1\n",
+        );
+        let wh =
+            WarheadType::from_ini_section("OilExplosionWH", ini.section("OilExplosionWH").unwrap());
+        assert!(wh.causes_delay_kill);
+        assert_eq!(wh.delay_kill_frames, -7);
+        assert_eq!(
+            wh.delay_kill_at_max_f64.to_bits(),
+            f64::from(7.1_f32).to_bits()
+        );
     }
 
     #[test]
@@ -409,6 +466,9 @@ mod tests {
         let gas = WarheadType::from_ini_section("Gas", ini.section("Gas").unwrap());
         let raw = WarheadType::from_ini_section("Raw", ini.section("Raw").unwrap());
 
+        assert_eq!(ap.prone_damage_f64, 0.5);
+        assert_eq!(gas.prone_damage_f64, 3.0);
+        assert_eq!(raw.prone_damage_f64, 1.25);
         assert_eq!(ap.prone_damage_basis_points, 5_000);
         assert_eq!(gas.prone_damage_basis_points, 30_000);
         assert_eq!(raw.prone_damage_basis_points, 12_500);

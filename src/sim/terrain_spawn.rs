@@ -826,7 +826,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: true,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
@@ -1568,6 +1568,7 @@ SpreadPercentage=.06
         let mut sim = Simulation::new();
         sim.interner = crate::sim::intern::test_interner();
         sim.input_delay_ticks = 0;
+        sim.resolved_terrain = Some(resolved_grid(64, 64));
         sim.substrate.entities.insert(attacker);
         assert!(matches!(
             sim.reveal(1),

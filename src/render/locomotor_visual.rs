@@ -59,6 +59,17 @@
 //! airborne. Kirovs, Harriers, Rocketeers, Nighthawks, every jumpjet, every
 //! paradrop and every missile in flight.
 //!
+//! ## Two anchors, half a tile apart
+//!
+//! [`screen_position`] is the entity anchor: the projection of the object's own
+//! coordinate, which lands on the centre of the cell's diamond. That is where
+//! gamemd draws every class — units, infantry, aircraft, animations,
+//! projectiles — and it is half a tile below the row a cell's tile art starts
+//! on (`map::terrain::iso_to_screen`).
+//!
+//! Buildings are the single exception, and [`BUILDING_ART_LIFT_PX`] is that
+//! exception's whole content.
+//!
 //! ## Dependency rules
 //! - Part of render/ — reads sim/ state read-only and writes none of it.
 //! - sim/ NEVER depends on render/, so nothing here may be called from sim/.
@@ -175,9 +186,23 @@ fn height_leptons(entity: &GameEntity) -> f32 {
     }
 }
 
+fn adjust_for_z_lift_px(leptons: f32) -> f32 {
+    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
+        1.0
+    } else {
+        0.0
+    };
+    // Native `ftol` truncates toward zero after the signed value receives its
+    // rounding bias. In particular, negative world Z must not be clamped.
+    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
+}
+
 /// Total upward screen lift for an entity, in pixels.
 ///
 /// Positive lifts the entity toward the top of the screen (screen Y decreases).
+///
+/// An exact object coordinate is total world Z and therefore replaces every
+/// decomposed height source below, including the coarse terrain level.
 ///
 /// The height term reproduces gamemd's `AdjustForZ` exactly, quantisation
 /// included: the scale, the extra pixel above [`EXTRA_PIXEL_HEIGHT_LEPTONS`],
@@ -187,17 +212,13 @@ fn height_leptons(entity: &GameEntity) -> f32 {
 /// flourish with no gamemd equivalent, and rounding a ±1px sine to whole pixels
 /// would turn it into a square wave.
 pub fn height_lift_px(entity: &GameEntity) -> f32 {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return adjust_for_z_lift_px(exact_z_leptons as f32);
+    }
     if height_source(entity) == HeightSource::Ground {
         return infantry_bob_px(entity);
     }
-    let leptons = height_leptons(entity);
-    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
-        1.0
-    } else {
-        0.0
-    };
-    // `ftol` truncates toward zero, so `+ 0.5` is gamemd's rounding.
-    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
+    adjust_for_z_lift_px(height_leptons(entity))
 }
 
 /// Where this entity is drawn, in world-space screen pixels.
@@ -205,9 +226,50 @@ pub fn height_lift_px(entity: &GameEntity) -> f32 {
 /// This is the one place that answers the question. Everything that draws an
 /// entity, brackets it, hangs a health bar over it or anchors an effect to it
 /// goes through here, so they cannot drift apart.
+///
+/// A building's *art* is the single exception, and it is a strict addition on
+/// top of this answer rather than a second one: see [`building_art_anchor`].
 pub fn screen_position(entity: &GameEntity) -> (f32, f32) {
-    let (sx, sy) = ground_screen_position(&entity.position);
+    let (sx, sy) = if entity.position.exact_z_leptons.is_some() {
+        z_free_screen_position(&entity.position)
+    } else {
+        ground_screen_position(&entity.position)
+    };
     (sx, sy - height_lift_px(entity))
+}
+
+/// How far up a building's art sits from the entity anchor, in screen pixels.
+///
+/// gamemd gives buildings their own answer to "where do I draw": of every
+/// class, only `BuildingClass` overrides that virtual, and its override takes
+/// half a cell off **both** coordinate axes — a pure `-128, -128` lepton step,
+/// applied before the projection. Equal steps on the two axes cancel
+/// horizontally and come to exactly half a tile up, moving the anchor from the
+/// centre of the north-west footprint cell to that cell's tile row. There is no
+/// X term and there must never be one.
+///
+/// This is the *whole* difference between a building's draw point and every
+/// other class's, and it is only correct on top of an entity anchor that sits
+/// on the cell's diamond centre — which is what
+/// [`crate::util::lepton::lepton_to_screen`] returns. Applying this shift while
+/// the entity anchor was still on the tile row double-counted it and left every
+/// building floating half a tile above its foundation; that was tried and
+/// reverted before the anchor was moved. The two belong together.
+///
+/// It applies to the building's **art** only — body, bib, overlay anims, voxel
+/// turret, and the depth those sort on. It does not apply to selection
+/// brackets, health pips, occupant pips or sensor rings: gamemd builds those
+/// from the foundation-centre coordinate (the `GetCoords` virtual), reached on
+/// a path that never consults the render-coordinate override, so they belong on
+/// the plain entity anchor.
+pub const BUILDING_ART_LIFT_PX: f32 = crate::map::terrain::TILE_HEIGHT / 2.0;
+
+/// A building's art anchor, given its plain entity anchor.
+///
+/// One owner for [`BUILDING_ART_LIFT_PX`] so the placement ghost and the
+/// building it previews cannot drift apart.
+pub fn building_art_anchor(sx: f32, sy: f32) -> (f32, f32) {
+    (sx, sy - BUILDING_ART_LIFT_PX)
 }
 
 /// The isometric projection alone, with no height lift applied.
@@ -221,6 +283,22 @@ pub fn ground_screen_position(position: &crate::sim::components::Position) -> (f
         position.sub_x,
         position.sub_y,
         position.z,
+    )
+}
+
+/// Planar X/Y projection before any Z term is applied.
+///
+/// An exact world Z is already the complete native coordinate, so combining it
+/// with the coarse terrain level would apply ground height twice. Keeping this
+/// row separate also lets the draw-key path recover native's Z-free sort row by
+/// adding [`height_lift_px`] back to the drawn row.
+fn z_free_screen_position(position: &crate::sim::components::Position) -> (f32, f32) {
+    crate::util::lepton::lepton_to_screen(
+        position.rx,
+        position.ry,
+        position.sub_x,
+        position.sub_y,
+        0,
     )
 }
 
@@ -239,6 +317,52 @@ mod tests {
         loco.altitude = SimFixed::from_num(altitude);
         entity.locomotor = Some(loco);
         entity
+    }
+
+    /// The whole reason this half-tile keeps going wrong, pinned on one cell.
+    ///
+    /// Three layers share cell (10, 4) at ground level, and gamemd puts them in
+    /// exactly this relation:
+    ///
+    /// ```text
+    ///   layer                    row              relative to the tile box top
+    ///   terrain tile / overlay   box top-left     (0, 0)
+    ///   unit / infantry / anim   diamond centre   (+30, +15)
+    ///   building art             box top edge     (+30,   0)
+    /// ```
+    ///
+    /// A unit stands in the *middle* of its tile; a building's art starts on the
+    /// same row the tile art does. Get either wrong and every unit on the map is
+    /// drawn half a tile off the ground it walks on — which is what this pins
+    /// against. The absolute numbers carry VERA's constant world-row bias (see
+    /// `util::lepton::WORLD_ROW_BIAS_PX`); the *relation* is what matters and is
+    /// what a player sees.
+    #[test]
+    fn the_three_world_layers_sit_where_gamemd_puts_them() {
+        use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
+
+        const RX: u16 = 10;
+        const RY: u16 = 4;
+
+        let (box_x, box_y) = terrain::iso_to_screen(RX, RY, 0);
+        assert_eq!((box_x, box_y), (150.0, 225.0), "tile bounding-box top-left");
+
+        let unit = GameEntity::test_default(1, "MTNK", "Americans", RX, RY);
+        let (unit_x, unit_y) = screen_position(&unit);
+        assert_eq!(
+            (unit_x - box_x, unit_y - box_y),
+            (TILE_WIDTH / 2.0, TILE_HEIGHT / 2.0),
+            "a unit stands on its cell's diamond centre, not the box top"
+        );
+
+        let (art_x, art_y) = building_art_anchor(unit_x, unit_y);
+        assert_eq!(
+            (art_x - box_x, art_y - box_y),
+            (TILE_WIDTH / 2.0, 0.0),
+            "a building's art anchor drops back onto the tile row — and the \
+             half-cell shift is Y-only, so X must not move"
+        );
+        assert_eq!(art_x, unit_x, "the building shift has no X term");
     }
 
     #[test]
@@ -297,6 +421,29 @@ mod tests {
         let at = height_lift_px(&air_unit(LocomotorKind::Fly, 728));
         assert_eq!(below, 104.0, "trunc(727 * k + 0.5)");
         assert_eq!(at, 105.0, "trunc(728 * k + 1 + 0.5) — the threshold fires");
+    }
+
+    #[test]
+    fn gsi_04_15_exact_signed_z_ignores_coarse_level_and_locomotor_altitude() {
+        let mut entity = air_unit(LocomotorKind::Fly, 1500);
+        entity.position.z = 9;
+        entity.position.exact_z_leptons = Some(-400);
+
+        let z_free = z_free_screen_position(&entity.position);
+        let drawn = screen_position(&entity);
+        assert_eq!(height_lift_px(&entity), -56.0);
+        assert_eq!(drawn, (z_free.0, z_free.1 + 56.0));
+        assert_eq!(drawn.1 + height_lift_px(&entity), z_free.1);
+    }
+
+    #[test]
+    fn gsi_04_15_exact_z_threshold_bonus_starts_at_728() {
+        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        entity.position.exact_z_leptons = Some(727);
+        assert_eq!(height_lift_px(&entity), 104.0);
+
+        entity.position.exact_z_leptons = Some(728);
+        assert_eq!(height_lift_px(&entity), 105.0);
     }
 
     #[test]
