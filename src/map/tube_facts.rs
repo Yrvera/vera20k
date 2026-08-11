@@ -30,10 +30,12 @@ pub enum TubeSource {
 pub struct TubeFact {
     pub entry: (u16, u16),
     pub exit: (u16, u16),
-    pub direction: u8,
+    /// Raw CRT-`atoi` direction stored by TubeClass. Movement consumers mask
+    /// path entries with `& 7`; the final-facing consumer uses this value raw.
+    pub direction: i32,
     /// Explicit `[Tubes]` can later populate this. Auto low-bridge tubes have
     /// path_len=0 and binary-fills the unused 100-slot buffer with -1.
-    pub path_steps: Vec<u8>,
+    pub path_steps: Vec<i32>,
     pub source: TubeSource,
 }
 
@@ -42,7 +44,7 @@ impl TubeFact {
         Self {
             entry: cell,
             exit: cell,
-            direction,
+            direction: i32::from(direction),
             path_steps: Vec::new(),
             source: TubeSource::AutoLowBridge,
         }
@@ -51,8 +53,8 @@ impl TubeFact {
     pub fn explicit(
         entry: (u16, u16),
         exit: (u16, u16),
-        direction: u8,
-        path_steps: Vec<u8>,
+        direction: i32,
+        path_steps: Vec<i32>,
     ) -> Self {
         Self {
             entry,
@@ -67,7 +69,7 @@ impl TubeFact {
         self.path_steps.len()
     }
 
-    pub fn path_steps(&self) -> &[u8] {
+    pub fn path_steps(&self) -> &[i32] {
         &self.path_steps
     }
 }

@@ -7,9 +7,10 @@
 //! cross the cell boundary (0 or 256 leptons).
 //!
 //! ## Coordinate update
-//! Every tick, screen position is recomputed from lepton coordinates via
-//! `lepton_to_screen()`, giving smooth sub-cell movement without render
-//! interpolation.
+//! Movement advances `rx`/`ry`/`sub_x`/`sub_y` only. Screen position is not
+//! stored and not written here — `render::locomotor_visual::screen_position`
+//! derives it from these leptons on read, which is what gives smooth sub-cell
+//! movement without render interpolation.
 //!
 //! ## Facing
 //! RA2 uses a 0-255 screen-relative DirStruct byte: 0=north on screen (iso -x,-y),
@@ -23,7 +24,6 @@
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity, sim/pathfinding.
-//! - Uses map/terrain::iso_to_screen for coordinate conversion.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use std::collections::BTreeMap;
@@ -73,8 +73,8 @@ pub mod parachute_descent;
 pub mod rocket_movement;
 pub mod scatter;
 pub mod teleport_movement;
-pub mod tunnel_movement;
 pub mod tube_movement;
+pub mod tunnel_movement;
 pub mod turret;
 
 pub use facing_class::FacingClass;

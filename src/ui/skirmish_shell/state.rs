@@ -39,8 +39,8 @@ pub use player_name::{
     update_player_name_scroll_for_caret,
 };
 pub use random_map_setup::{
-    AcceptOutcome, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo,
-    SetupComboItem, setup_combo_items,
+    AcceptOutcome, RandomMapSetupModalState, SETUP_COMBO_ROWS, SetupCombo, SetupComboItem,
+    setup_combo_items,
 };
 pub use saved_seed_browser::{SAVED_SEED_NAME_MAX_CHARS, SavedSeedBrowserState, SavedSeedOutcome};
 pub use trackbars::{

@@ -315,6 +315,12 @@ impl MinimapRenderer {
             }
 
             let (entity_sx, entity_sy) = super::locomotor_visual::screen_position(entity);
+            // `world_origin_y`/`world_height` bound the terrain grid, which is
+            // built from `iso_to_screen` tile corners. An entity is drawn half a
+            // tile below its cell's tile row, so that half-tile has to come back
+            // off before normalising or every dot sits a minimap pixel south of
+            // the terrain pixel it belongs to.
+            let entity_sy = entity_sy - crate::map::terrain::TILE_HEIGHT / 2.0;
             let (px, py): (u32, u32) = world_to_minimap_pixel(
                 entity_sx,
                 entity_sy,

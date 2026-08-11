@@ -155,22 +155,28 @@ CellSpread=0
 }
 
 /// Build a Simulation with a 100x100 fully-passable map and an "Americans"
-/// house anchored at (50, 90) → waypoint_edge=South. (Carrier will spawn
-/// from the south edge; opposite-edge exit = North.)
+/// house anchored at (50, 90) → waypoint_edge=North after transforming the
+/// playfield's native LocalSize reference points into cell space.
 fn build_sim(rules: &RuleSet) -> (Simulation, PathGrid) {
     let mut sim = Simulation::new();
     sim.fog.width = 100;
     sim.fog.height = 100;
+    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+        base: 100,
+        off_fc: 0,
+        off_100: 0,
+        off_104: 100,
+        off_108: 100,
+    });
     let owner_id = sim.interner.intern("Americans");
     let mut house = crate::sim::house_state::HouseState::new(
         owner_id, /*side_index*/ 0, /*country*/ None, /*is_human*/ true,
         /*credits*/ 10_000, /*tech_level*/ 10,
     );
     house.base_center = Some((50, 90));
-    house.waypoint_edge = crate::sim::house_state::closest_edge_for(
+    house.waypoint_edge = crate::sim::house_state::determine_waypoint_edge(
         (50, 90),
-        sim.fog.width as u32,
-        sim.fog.height as u32,
+        sim.playfield_bounds.expect("test playfield bounds"),
     );
     sim.houses.insert(owner_id, house);
     let _ = rules;
@@ -295,7 +301,7 @@ fn paradrop_launch_ignores_blocked_ground_spawn_edge() {
     let pdplane = sim.substrate.entities.get(pdplane_id).unwrap();
     assert_eq!(
         (pdplane.position.rx, pdplane.position.ry),
-        (99, 20),
+        (50, 0),
         "carrier spawn should still use the selected edge when ground cells are blocked"
     );
 }

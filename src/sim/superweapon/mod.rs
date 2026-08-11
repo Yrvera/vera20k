@@ -254,14 +254,18 @@ pub fn tick_superweapon_instances(sim: &mut Simulation, rules: &RuleSet) {
 
 /// Tick already-active global superweapon effects in their native pre-object
 /// scheduler slot.
-pub fn tick_active_superweapon_effects(sim: &mut Simulation, rules: &RuleSet) {
-    lightning_storm::process(sim, rules);
+pub fn tick_active_superweapon_effects(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) {
+    lightning_storm::process(sim, rules, overlay_registry);
 }
 
 /// Compatibility entry point for focused subsystem tests.
 pub fn tick_superweapons(sim: &mut Simulation, rules: &RuleSet) {
     tick_superweapon_instances(sim, rules);
-    tick_active_superweapon_effects(sim, rules);
+    tick_active_superweapon_effects(sim, rules, None);
 }
 
 /// Refresh superweapon grants for a specific owner by scanning their buildings.

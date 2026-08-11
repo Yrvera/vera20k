@@ -4,54 +4,20 @@
 //!
 //! Dependency rules: depends on rules/, map/, sim/. Never render/ui/audio/net.
 
-use std::sync::OnceLock;
-
+use crate::sim::combat::inviso_scatter::{coord_to_cell_truncating, random_direction_coord};
 use crate::sim::rng::SimRng;
 use crate::sim::smudge_grid::SimCoord;
 
-/// 256-entry unit-vector lookup table in Q16.16 fixed-point.
-/// Each entry is `(sin(angle) * 65536, -cos(angle) * 65536)` rounded to i32,
-/// where `angle = (i16(byte << 8) - 0x3FFF) * (-pi / 32768)`.
-///
-/// Built once at first use; deterministic across machines because it's
-/// computed from constants and frozen as i32.
-fn unit_vec_table() -> &'static [(i32, i32); 256] {
-    static TABLE: OnceLock<[(i32, i32); 256]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut t = [(0i32, 0i32); 256];
-        for b in 0u32..256 {
-            let raw = ((b << 8) as i16) as i32 - 0x3FFF;
-            let angle = raw as f64 * (-std::f64::consts::PI / 32768.0);
-            let sin_q16 = (angle.sin() * 65536.0).round() as i32;
-            let neg_cos_q16 = (-(angle.cos()) * 65536.0).round() as i32;
-            t[b as usize] = (sin_q16, neg_cos_q16);
-        }
-        t
-    })
-}
-
-/// Returns a (dx, dy) lepton offset at the given magnitude using one byte
-/// of RNG state. Z is unaffected.
-///
-/// Mirrors `FUN_0049F420(magnitude, flag=0)` from gamemd.exe.
-pub(crate) fn random_offset_at_radius(rng: &mut SimRng, magnitude_leptons: i32) -> (i32, i32) {
-    let b: u8 = (rng.next_u32() & 0xFF) as u8;
-    let (sin_q16, neg_cos_q16) = unit_vec_table()[b as usize];
-    let dx = ((sin_q16 as i64) * (magnitude_leptons as i64)) >> 16;
-    let dy = ((neg_cos_q16 as i64) * (magnitude_leptons as i64)) >> 16;
-    (dx as i32, dy as i32)
-}
-
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::art_data::ArtRegistry;
+use crate::rules::locomotor_type::SpeedType;
 use crate::rules::smudge_type::SmudgeTypeRegistry;
 use crate::sim::combat::SmudgeSpawnRequest;
 use crate::sim::intern::StringInterner;
 use crate::sim::miner::ResourceNode;
-use crate::sim::occupancy::OccupancyGrid;
+use crate::sim::occupancy::{OccupancyGrid, RawCellOccupationGrid};
 use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::smudge_grid::{SmudgeGrid, SmudgeKind};
 use crate::sim::tiberium::{ReduceTiberiumContext, reduce_tiberium};
 
@@ -231,8 +197,8 @@ fn rng_below_half_normalized(rng: &mut SimRng) -> bool {
 }
 
 /// Building destruction center smudge — fires once per >=2x2 building.
-/// Three RNG draws happen here (ledger #17): two are intentionally discarded
-/// to keep RNG advancement aligned with the original engine.
+/// Each dimension greater than two consumes one discarded ranged draw before
+/// the scorch/crater roll; a 2x2 foundation consumes only the roll.
 #[allow(clippy::too_many_arguments)]
 pub fn try_dispatch_building_destruction_smudges(
     rx: u16,
@@ -252,10 +218,12 @@ pub fn try_dispatch_building_destruction_smudges(
     if foundation_w < 2 || foundation_h < 2 {
         return;
     }
-    // Two discarded draws keep our RNG state aligned with the reference
-    // engine even though the values themselves are unused here.
-    let _ = rng.next_range_u32((foundation_w as u32).saturating_sub(1));
-    let _ = rng.next_range_u32((foundation_h as u32).saturating_sub(1));
+    if foundation_w > 2 {
+        let _ = rng.next_range_u32(u32::from(foundation_w) - 1);
+    }
+    if foundation_h > 2 {
+        let _ = rng.next_range_u32(u32::from(foundation_h) - 1);
+    }
     let roll: u32 = rng.next_range_u32(100);
     let center = SimCoord {
         x: (rx as i32) * 256 + 128,
@@ -276,7 +244,6 @@ pub fn try_dispatch_building_destruction_smudges(
             rng,
         );
     } else {
-        tiberium.reduce((rx, ry), CRATER_ORE_REDUCTION, terrain, rng);
         smudge_grid.try_place(
             SmudgeKind::Crater,
             center,
@@ -292,6 +259,43 @@ pub fn try_dispatch_building_destruction_smudges(
     }
 }
 
+fn survivor_smudge_cell_passable(
+    rx: u16,
+    ry: u16,
+    raw_occupation: &RawCellOccupationGrid,
+    terrain: &ResolvedTerrainGrid,
+    overlay: &OverlayGrid,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+) -> bool {
+    if overlay
+        .cell(rx, ry)
+        .overlay_id
+        .and_then(|id| overlay_registry.and_then(|registry| registry.flags(id)))
+        .is_some_and(|flags| flags.wall)
+    {
+        return false;
+    }
+
+    let Some(cell) = terrain.cell(rx, ry) else {
+        return false;
+    };
+    let structural_bridge = cell.bridge_facts.has_structural_bridge();
+    let occupation = if structural_bridge {
+        raw_occupation.deck_bits(rx, ry)
+    } else {
+        raw_occupation.ground_bits(rx, ry)
+    };
+    if occupation & 0x40 != 0 {
+        return false;
+    }
+
+    structural_bridge
+        || cell
+            .speed_costs
+            .cost_for_speed_type(SpeedType::Track)
+            .is_some_and(|cost| cost != 0)
+}
+
 /// Per-foundation-cell scattered smudges. For each cell that's passable,
 /// a 50/50 scorch/crater is rolled and placed at a random-offset cell within
 /// 1 cell of the foundation (mirrors `SpawnSurvivors` magnitude 0x80).
@@ -303,23 +307,28 @@ pub fn try_dispatch_building_survivor_smudges(
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
     terrain: &mut ResolvedTerrainGrid,
-    path_grid: &PathGrid,
+    raw_occupation: &RawCellOccupationGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
     let _ = art;
     for &(cell_rx, cell_ry) in foundation_cells {
-        if !path_grid.is_walkable(cell_rx, cell_ry) {
+        if !survivor_smudge_cell_passable(
+            cell_rx,
+            cell_ry,
+            raw_occupation,
+            terrain,
+            tiberium.overlay_grid(),
+            tiberium.overlay_registry,
+        ) {
             continue;
         }
         let roll: u32 = rng.next_range_u32(100);
-        let (dx, dy) = random_offset_at_radius(rng, SURVIVOR_OFFSET_MAGNITUDE);
         let base_x = (cell_rx as i32) * 256 + 128;
         let base_y = (cell_ry as i32) * 256 + 128;
-        let off_x = base_x + dx;
-        let off_y = base_y + dy;
-        let snap_rx = (off_x >> 8).clamp(0, smudge_grid.width() as i32 - 1) as u16;
-        let snap_ry = (off_y >> 8).clamp(0, smudge_grid.height() as i32 - 1) as u16;
+        let (off_x, off_y) = random_direction_coord(rng, base_x, base_y, SURVIVOR_OFFSET_MAGNITUDE);
+        let snap_rx = coord_to_cell_truncating(off_x) as u16;
+        let snap_ry = coord_to_cell_truncating(off_y) as u16;
         let coord = SimCoord {
             x: (snap_rx as i32) * 256 + 128,
             y: (snap_ry as i32) * 256 + 128,
@@ -339,12 +348,6 @@ pub fn try_dispatch_building_survivor_smudges(
                 rng,
             );
         } else {
-            tiberium.reduce(
-                (snap_rx, snap_ry),
-                CRATER_ORE_REDUCTION,
-                terrain,
-                rng,
-            );
             smudge_grid.try_place(
                 SmudgeKind::Crater,
                 coord,
@@ -361,13 +364,8 @@ pub fn try_dispatch_building_survivor_smudges(
     }
 }
 
-/// Drain a batch of `SmudgeSpawnRequest` events emitted by combat. Runs the
-/// per-request dispatcher (anim / building-center / building-survivor) for
-/// each, mutating `SmudgeGrid` + `resource_nodes` accordingly.
-///
-/// Called by `Simulation::advance_tick` after combat completes and before
-/// the ore-growth tick stage so any crater-path `Reduce_Tiberium(6)` lands
-/// before ore-growth reads tiberium density.
+/// Commit one producer-ordered batch of `SmudgeSpawnRequest` events, mutating
+/// `SmudgeGrid` and tiberium state before the producer returns.
 #[allow(clippy::too_many_arguments)]
 pub fn drain_smudge_spawn_requests(
     requests: &[SmudgeSpawnRequest],
@@ -377,7 +375,7 @@ pub fn drain_smudge_spawn_requests(
     smudge_grid: &mut SmudgeGrid,
     occupancy: &OccupancyGrid,
     terrain: &mut ResolvedTerrainGrid,
-    path_grid: &PathGrid,
+    raw_occupation: &RawCellOccupationGrid,
     tiberium: &mut SmudgeTiberiumContext<'_>,
     rng: &mut SimRng,
 ) {
@@ -389,20 +387,24 @@ pub fn drain_smudge_spawn_requests(
                 ry,
                 sub_x,
                 sub_y,
-                z,
+                world_z_leptons,
             } => {
                 let coord = SimCoord {
                     x: (*rx as i32) * 256 + sub_x.to_num::<i32>(),
                     y: (*ry as i32) * 256 + sub_y.to_num::<i32>(),
-                    z: *z,
+                    z: *world_z_leptons,
                 };
-                // Ground level is sourced from the resolved terrain cell; cells
-                // are stored at `level * 15` leptons (ledger #3 altitude gate
-                // measures the anim's z relative to this ground reference).
-                let ground_z: i32 = terrain
-                    .cell(*rx, *ry)
-                    .map(|c| c.level as i32 * 15)
-                    .unwrap_or(0);
+                let Some(cell) = terrain.cell(*rx, *ry) else {
+                    continue;
+                };
+                let Ok(ground_z) = crate::util::lepton::ground_height_leptons(
+                    cell.level,
+                    cell.slope_type,
+                    coord.x,
+                    coord.y,
+                ) else {
+                    continue;
+                };
                 let name = interner.resolve(*anim_name);
                 try_dispatch_anim_smudge(
                     art,
@@ -447,7 +449,7 @@ pub fn drain_smudge_spawn_requests(
                     smudge_grid,
                     occupancy,
                     terrain,
-                    path_grid,
+                    raw_occupation,
                     tiberium,
                     rng,
                 );
@@ -459,24 +461,6 @@ pub fn drain_smudge_spawn_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn approx_eq(a: i32, b: i32, tol: i32) -> bool {
-        (a - b).abs() <= tol
-    }
-
-    #[test]
-    fn unit_vec_table_byte_0_matches_reference() {
-        // byte=0: raw = 0 - 0x3FFF = -16383; angle = -16383 * -pi/32768 ≈ 1.5708 (~pi/2)
-        // sin(pi/2) ≈ 1.0, -cos(pi/2) ≈ 0.0
-        let (sin_q16, neg_cos_q16) = unit_vec_table()[0];
-        // sin*65536 ≈ 65536, -cos*65536 ≈ 0 (within rounding)
-        assert!(approx_eq(sin_q16, 65536, 50), "sin_q16 = {}", sin_q16);
-        assert!(
-            approx_eq(neg_cos_q16, 0, 50),
-            "neg_cos_q16 = {}",
-            neg_cos_q16
-        );
-    }
 
     #[test]
     fn smudge_5050_uses_ranged_draw_with_2pow30_threshold() {
@@ -500,45 +484,6 @@ mod tests {
             "draw2 below 2^30 selects scorch"
         );
     }
-
-    #[test]
-    fn unit_vec_table_byte_64_quarter_turn() {
-        // byte=64: (64<<8)=0x4000=16384; raw = 16384 - 0x3FFF = 1
-        // angle ≈ -pi/32768 ≈ -0.0000958
-        // sin(angle) ≈ -0.0000958, -cos(angle) ≈ -1.0
-        let (sin_q16, neg_cos_q16) = unit_vec_table()[64];
-        assert!(approx_eq(sin_q16, 0, 50), "sin_q16 = {}", sin_q16);
-        assert!(
-            approx_eq(neg_cos_q16, -65536, 50),
-            "neg_cos_q16 = {}",
-            neg_cos_q16
-        );
-    }
-
-    #[test]
-    fn random_offset_consumes_exactly_one_u32_advance() {
-        // Two RNGs at the same seed: one advances via random_offset_at_radius,
-        // the other advances via a single direct next_u32 call. After both
-        // operations, internal state must match — confirming exactly one
-        // RNG step was consumed.
-        let mut rng_a = SimRng::new(42);
-        let mut rng_b = SimRng::new(42);
-        let _ = random_offset_at_radius(&mut rng_a, 0x80);
-        let _ = rng_b.next_u32();
-        assert_eq!(rng_a.state(), rng_b.state());
-    }
-
-    #[test]
-    fn random_offset_per_axis_bounded() {
-        let mut rng = SimRng::new(7);
-        for _ in 0..100 {
-            let (dx, dy) = random_offset_at_radius(&mut rng, 0x80);
-            // Per-axis bound: each component is sin/cos*magnitude in Q16.16,
-            // so |dx|, |dy| ≤ magnitude (+1 lepton tolerance for rounding).
-            assert!(dx.abs() <= 0x80 + 1, "dx={} out of bound", dx);
-            assert!(dy.abs() <= 0x80 + 1, "dy={} out of bound", dy);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -546,6 +491,7 @@ mod dispatch_tests {
     use super::*;
     use crate::map::resolved_terrain::ResolvedTerrainCell;
     use crate::sim::ore_growth::OreGrowthState;
+    use crate::util::fixed_math::SimFixed;
 
     fn tiberium_ctx<'a>(
         resource_nodes: &'a mut BTreeMap<(u16, u16), ResourceNode>,
@@ -568,6 +514,23 @@ mod dispatch_tests {
             radar_dirty_generation,
             tactical_dirty_cells,
         }
+    }
+
+    fn native_tiberium_registries() -> (
+        crate::map::overlay_types::OverlayTypeRegistry,
+        crate::rules::tiberium_type::TiberiumTypeRegistry,
+    ) {
+        let ini = crate::rules::ini_parser::IniFile::from_bytes(
+            b"[Tiberiums]\n0=Riparius\n\
+              [Riparius]\nImage=1\nValue=25\n\
+              [OverlayTypes]\n0=ORE\n\
+              [ORE]\nTiberium=yes\n",
+        )
+        .unwrap();
+        (
+            crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None),
+            crate::rules::tiberium_type::TiberiumTypeRegistry::from_ini(&ini),
+        )
     }
 
     fn make_art(scorch: bool, crater: bool, force_big: bool) -> ArtRegistry {
@@ -623,12 +586,15 @@ mod dispatch_tests {
             render_offset_x: 0,
             render_offset_y: 0,
             terrain_class: Default::default(),
-            speed_costs: Default::default(),
+            speed_costs: crate::rules::terrain_rules::SpeedCostProfile {
+                track: Some(100),
+                ..Default::default()
+            },
             is_water: false,
             is_cliff_like: false,
             is_rough: false,
             is_road: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,
@@ -767,19 +733,168 @@ mod dispatch_tests {
     }
 
     #[test]
+    fn gsi_04_11_elevated_ground_uses_absolute_lepton_altitude_gate() {
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let mut terrain = flat_terrain(8, 8);
+        let cell = terrain.cell_mut(4, 4).unwrap();
+        cell.level = 3;
+        cell.slope_type = 0;
+        let world_x = 4 * 256 + 96;
+        let world_y = 4 * 256 + 160;
+        let ground_z = crate::util::lepton::ground_height_leptons(
+            cell.level,
+            cell.slope_type,
+            world_x,
+            world_y,
+        )
+        .unwrap();
+        let mut overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let raw_occupation = RawCellOccupationGrid::new();
+        let mut interner = StringInterner::new();
+        let anim_name = interner.intern("ANIM");
+        let mut rng = SimRng::new(41);
+        let before_reject = rng.logical_state();
+        let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        let mut tiberium = tiberium_ctx(
+            &mut nodes,
+            &mut overlay,
+            &mut growth,
+            &mut radar_dirty,
+            &mut radar_generation,
+            &mut tactical_dirty,
+        );
+
+        drain_smudge_spawn_requests(
+            &[SmudgeSpawnRequest::Anim {
+                anim_name,
+                rx: 4,
+                ry: 4,
+                sub_x: SimFixed::from_num(96),
+                sub_y: SimFixed::from_num(160),
+                world_z_leptons: ground_z + 30,
+            }],
+            &art,
+            &smudge_reg,
+            &interner,
+            &mut grid,
+            &occupancy,
+            &mut terrain,
+            &raw_occupation,
+            &mut tiberium,
+            &mut rng,
+        );
+        assert_eq!(rng.logical_state(), before_reject);
+        assert_eq!(grid.iter_occupied().count(), 0);
+
+        drain_smudge_spawn_requests(
+            &[SmudgeSpawnRequest::Anim {
+                anim_name,
+                rx: 4,
+                ry: 4,
+                sub_x: SimFixed::from_num(96),
+                sub_y: SimFixed::from_num(160),
+                world_z_leptons: ground_z,
+            }],
+            &art,
+            &smudge_reg,
+            &interner,
+            &mut grid,
+            &occupancy,
+            &mut terrain,
+            &raw_occupation,
+            &mut tiberium,
+            &mut rng,
+        );
+        assert_eq!(
+            rng.logical_state(),
+            before_reject,
+            "the sole placeable crater candidate uses RandomRanged(0, 0)"
+        );
+        assert_eq!(grid.iter_occupied().count(), 1);
+    }
+
+    #[test]
+    fn gsi_04_11_parachute_object_height_rejects_smudge_without_rng() {
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let mut terrain = flat_terrain(8, 8);
+        let mut entity =
+            crate::sim::game_entity::GameEntity::test_default(7, "E1", "Americans", 4, 4);
+        entity.parachute_state = Some(
+            crate::sim::movement::parachute_descent::ParachuteDescentState {
+                rate: -1,
+                altitude: SimFixed::from_num(64),
+            },
+        );
+        let world_z_leptons = crate::sim::combat::object_world_z_leptons(&entity, Some(&terrain));
+        assert_eq!(world_z_leptons, 64);
+
+        let mut overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+        let raw_occupation = RawCellOccupationGrid::new();
+        let mut interner = StringInterner::new();
+        let anim_name = interner.intern("ANIM");
+        let mut rng = SimRng::new(17);
+        let before_reject = rng.logical_state();
+        let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        let mut tiberium = tiberium_ctx(
+            &mut nodes,
+            &mut overlay,
+            &mut growth,
+            &mut radar_dirty,
+            &mut radar_generation,
+            &mut tactical_dirty,
+        );
+
+        drain_smudge_spawn_requests(
+            &[SmudgeSpawnRequest::Anim {
+                anim_name,
+                rx: entity.position.rx,
+                ry: entity.position.ry,
+                sub_x: entity.position.sub_x,
+                sub_y: entity.position.sub_y,
+                world_z_leptons,
+            }],
+            &art,
+            &smudge_reg,
+            &interner,
+            &mut grid,
+            &occupancy,
+            &mut terrain,
+            &raw_occupation,
+            &mut tiberium,
+            &mut rng,
+        );
+
+        assert_eq!(rng.logical_state(), before_reject);
+        assert_eq!(grid.iter_occupied().count(), 0);
+    }
+
+    #[test]
     fn crater_path_reduces_tiberium_even_when_can_place_fails() {
-        // Seed with 10 density levels (more than the 6-unit reduction) so
-        // the cell stays present after Reduce_Tiberium(6) — testing
-        // PARTIAL reduction. (If we seeded with <= 6 density levels,
-        // miner::reduce_tiberium would fully remove the node and the
-        // assertion shape would change to `is_none()`.)
+        // Seed the authoritative overlay byte with 10 density levels (raw 9),
+        // more than the 6-unit reduction, so the cell stays present after the
+        // native partial reduction.
         let art = make_art(false, true, false);
         let smudge_reg = make_smudge_registry();
         let mut grid = SmudgeGrid::new(8, 8);
         let mut terrain = flat_terrain(8, 8);
         let mut overlay = OverlayGrid::new(8, 8);
-        // Block placement by putting an overlay on the impact cell.
-        overlay.place_overlay(4, 4, 0, 10);
+        let (overlay_registry, tiberium_types) = native_tiberium_registries();
+        let ore_id = overlay_registry.id_for_name("ORE").unwrap();
+        overlay.place_overlay(4, 4, ore_id, 9);
         let occupancy = OccupancyGrid::new();
         let mut rng = SimRng::new(1);
         let mut nodes = BTreeMap::new();
@@ -787,13 +902,6 @@ mod dispatch_tests {
         let mut radar_dirty = Vec::new();
         let mut radar_generation = 0;
         let mut tactical_dirty = Vec::new();
-        nodes.insert(
-            (4, 4),
-            ResourceNode {
-                resource_type: crate::sim::miner::ResourceType::Ore,
-                remaining: 120 * 10, // 10 density levels of ore
-            },
-        );
         let coord = SimCoord {
             x: 4 * 256 + 128,
             y: 4 * 256 + 128,
@@ -808,6 +916,8 @@ mod dispatch_tests {
                 &mut radar_generation,
                 &mut tactical_dirty,
             );
+            tiberium.overlay_registry = Some(&overlay_registry);
+            tiberium.tiberium_types = Some(&tiberium_types);
             try_dispatch_anim_smudge(
                 &art,
                 &smudge_reg,
@@ -823,10 +933,58 @@ mod dispatch_tests {
         }
         // Smudge NOT placed (overlay blocks) but ore reduced by 6 density levels.
         assert_eq!(grid.iter_occupied().count(), 0);
-        assert_eq!(
-            nodes.get(&(4, 4)).unwrap().remaining,
-            120 * (10 - CRATER_ORE_REDUCTION as u16),
-        );
+        assert_eq!(overlay.cell(4, 4).overlay_id, Some(ore_id));
+        assert_eq!(overlay.cell(4, 4).overlay_data, 3);
+    }
+
+    #[test]
+    fn gsi_04_11_anim_crater_reduces_ore_before_zero_zero_sentinel_rejection() {
+        let art = make_art(false, true, false);
+        let smudge_reg = make_smudge_registry();
+        let mut grid = SmudgeGrid::new(8, 8);
+        let mut terrain = flat_terrain(8, 8);
+        let mut overlay = OverlayGrid::new(8, 8);
+        let (overlay_registry, tiberium_types) = native_tiberium_registries();
+        let ore_id = overlay_registry.id_for_name("ORE").unwrap();
+        overlay.place_overlay(0, 0, ore_id, 9);
+        let occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(1);
+        let mut nodes = BTreeMap::new();
+        let mut growth = OreGrowthState::new(8, 8);
+        let mut radar_dirty = Vec::new();
+        let mut radar_generation = 0;
+        let mut tactical_dirty = Vec::new();
+        {
+            let mut tiberium = tiberium_ctx(
+                &mut nodes,
+                &mut overlay,
+                &mut growth,
+                &mut radar_dirty,
+                &mut radar_generation,
+                &mut tactical_dirty,
+            );
+            tiberium.overlay_registry = Some(&overlay_registry);
+            tiberium.tiberium_types = Some(&tiberium_types);
+            try_dispatch_anim_smudge(
+                &art,
+                &smudge_reg,
+                "ANIM",
+                SimCoord {
+                    x: 128,
+                    y: 128,
+                    z: 0,
+                },
+                0,
+                &mut grid,
+                &occupancy,
+                &mut terrain,
+                &mut tiberium,
+                &mut rng,
+            );
+        }
+        assert_eq!(grid.iter_occupied().count(), 0);
+        assert_eq!(overlay.cell(0, 0).overlay_id, Some(ore_id));
+        assert_eq!(overlay.cell(0, 0).overlay_data, 3);
     }
 
     #[test]
@@ -918,12 +1076,7 @@ mod dispatch_tests {
             assert_eq!(grid.iter_occupied().count(), 0);
         }
 
-        #[test]
-        fn destruction_advances_rng_by_three_for_2x2() {
-            // Verify exactly 3 RNG draws happen (2 discarded + 1 roll) BEFORE
-            // try_place is called. We don't have direct rng-state introspection
-            // for the pre-place point, so we assert the smudge actually landed
-            // (try_place succeeded), which establishes the path was taken.
+        fn run_center_smudge(foundation_w: u8, foundation_h: u8) -> SimRng {
             let smudge_reg = make_smudge_registry();
             let mut grid = SmudgeGrid::new(8, 8);
             let art = ArtRegistry::empty();
@@ -943,31 +1096,267 @@ mod dispatch_tests {
                 &mut radar_generation,
                 &mut tactical_dirty,
             );
-
-            let mut rng_a = SimRng::new(42);
+            let mut rng = SimRng::new(42);
             try_dispatch_building_destruction_smudges(
                 4,
                 4,
                 0,
-                2,
-                2,
+                foundation_w,
+                foundation_h,
                 &art,
                 &smudge_reg,
                 &mut grid,
                 &occupancy,
                 &mut terrain,
                 &mut tiberium,
-                &mut rng_a,
+                &mut rng,
             );
-
-            // Probe RNG advanced by the same 3 calls the dispatcher makes
-            // before try_place: (W-1=1), (H-1=1), 100. Confirms the call
-            // shape is what we documented.
-            let mut rng_b = SimRng::new(42);
-            rng_b.next_range_u32(1);
-            rng_b.next_range_u32(1);
-            rng_b.next_range_u32(100);
             assert_eq!(grid.iter_occupied().count(), 1);
+            rng
+        }
+
+        #[test]
+        fn gsi_04_11_center_smudge_2x2_roll_only_3x3_discards_both_dimensions() {
+            let actual_2x2 = run_center_smudge(2, 2);
+            let mut expected_2x2 = SimRng::new(42);
+            expected_2x2.next_range_u32(100);
+            assert_eq!(actual_2x2.logical_state(), expected_2x2.logical_state());
+
+            let actual_3x3 = run_center_smudge(3, 3);
+            let mut expected_3x3 = SimRng::new(42);
+            expected_3x3.next_range_u32(2);
+            expected_3x3.next_range_u32(2);
+            expected_3x3.next_range_u32(100);
+            assert_eq!(actual_3x3.logical_state(), expected_3x3.logical_state());
+        }
+
+        #[test]
+        fn gsi_04_11_survivor_gate_uses_native_mask_wall_track_and_bridge_order() {
+            let mut terrain = flat_terrain(8, 8);
+            let mut overlay = OverlayGrid::new(8, 8);
+            let registry_ini = crate::rules::ini_parser::IniFile::from_str(
+                "[OverlayTypes]\n0=TESTWALL\n[TESTWALL]\nWall=yes\n",
+            );
+            let overlay_registry =
+                crate::map::overlay_types::OverlayTypeRegistry::from_ini(&registry_ini, None);
+            let mut raw = RawCellOccupationGrid::new();
+
+            raw.mark_ground(1, 1, 0x80);
+            assert!(survivor_smudge_cell_passable(
+                1,
+                1,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+
+            raw.mark_ground(1, 2, 0x40);
+            assert!(!survivor_smudge_cell_passable(
+                1,
+                2,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+
+            terrain.cell_mut(1, 3).unwrap().speed_costs.track = None;
+            assert!(!survivor_smudge_cell_passable(
+                1,
+                3,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+            terrain.cell_mut(1, 4).unwrap().speed_costs.track = Some(0);
+            assert!(!survivor_smudge_cell_passable(
+                1,
+                4,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+
+            let bridge = terrain.cell_mut(1, 5).unwrap();
+            bridge.speed_costs.track = Some(0);
+            bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            raw.mark_ground(1, 5, 0x40);
+            assert!(
+                survivor_smudge_cell_passable(
+                    1,
+                    5,
+                    &raw,
+                    &terrain,
+                    &overlay,
+                    Some(&overlay_registry),
+                ),
+                "a structural bridge selects the empty deck byte and bypasses Track=0"
+            );
+            raw.mark_deck(1, 5, 0x40);
+            assert!(!survivor_smudge_cell_passable(
+                1,
+                5,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+
+            let wall_bridge = terrain.cell_mut(1, 6).unwrap();
+            wall_bridge.speed_costs.track = Some(0);
+            wall_bridge.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            overlay.place_overlay(1, 6, 0, 0);
+            assert!(!survivor_smudge_cell_passable(
+                1,
+                6,
+                &raw,
+                &terrain,
+                &overlay,
+                Some(&overlay_registry),
+            ));
+
+            let smudge_reg = make_smudge_registry();
+            let art = ArtRegistry::empty();
+            let occupancy = OccupancyGrid::new();
+            let mut grid = SmudgeGrid::new(8, 8);
+            let mut nodes = BTreeMap::new();
+            let mut growth = OreGrowthState::new(8, 8);
+            let mut radar_dirty = Vec::new();
+            let mut radar_generation = 0;
+            let mut tactical_dirty = Vec::new();
+            let mut rng = SimRng::new(17);
+            let before = rng.logical_state();
+            let mut tiberium = SmudgeTiberiumContext {
+                resource_nodes: &mut nodes,
+                overlay_grid: &mut overlay,
+                ore_growth_state: &mut growth,
+                overlay_registry: Some(&overlay_registry),
+                tiberium_types: None,
+                source_object_cells: None,
+                binary_frame: 0,
+                spread_enabled: false,
+                radar_dirty_cells: &mut radar_dirty,
+                radar_dirty_generation: &mut radar_generation,
+                tactical_dirty_cells: &mut tactical_dirty,
+            };
+            try_dispatch_building_survivor_smudges(
+                &[(1, 6)],
+                &art,
+                &smudge_reg,
+                &mut grid,
+                &occupancy,
+                &mut terrain,
+                &raw,
+                &mut tiberium,
+                &mut rng,
+            );
+            assert_eq!(
+                rng.logical_state(),
+                before,
+                "a rejected cell consumes no RNG"
+            );
+        }
+
+        #[test]
+        fn gsi_04_11_only_anim_craters_reduce_ore_not_building_crater_paths() {
+            let crater_seed = (1_u64..100)
+                .find(|seed| {
+                    let mut probe = SimRng::new(*seed);
+                    probe.next_range_u32(100) >= 50
+                })
+                .expect("fixture has a crater-selecting seed");
+            let smudge_reg = make_smudge_registry();
+            let art = ArtRegistry::empty();
+            let occupancy = OccupancyGrid::new();
+
+            let mut center_grid = SmudgeGrid::new(8, 8);
+            let mut center_terrain = flat_terrain(8, 8);
+            let mut center_overlay = OverlayGrid::new(8, 8);
+            let mut center_nodes = BTreeMap::from([(
+                (4, 4),
+                ResourceNode {
+                    resource_type: crate::sim::miner::ResourceType::Ore,
+                    remaining: 1_200,
+                },
+            )]);
+            let mut center_growth = OreGrowthState::new(8, 8);
+            let mut center_radar = Vec::new();
+            let mut center_generation = 0;
+            let mut center_tactical = Vec::new();
+            let mut center_rng = SimRng::new(crater_seed);
+            {
+                let mut tiberium = tiberium_ctx(
+                    &mut center_nodes,
+                    &mut center_overlay,
+                    &mut center_growth,
+                    &mut center_radar,
+                    &mut center_generation,
+                    &mut center_tactical,
+                );
+                try_dispatch_building_destruction_smudges(
+                    4,
+                    4,
+                    0,
+                    2,
+                    2,
+                    &art,
+                    &smudge_reg,
+                    &mut center_grid,
+                    &occupancy,
+                    &mut center_terrain,
+                    &mut tiberium,
+                    &mut center_rng,
+                );
+            }
+            assert_eq!(center_nodes[&(4, 4)].remaining, 1_200);
+
+            let mut survivor_grid = SmudgeGrid::new(8, 8);
+            let mut survivor_terrain = flat_terrain(8, 8);
+            let mut survivor_overlay = OverlayGrid::new(8, 8);
+            let raw = RawCellOccupationGrid::new();
+            let mut survivor_nodes = BTreeMap::new();
+            for ry in 0..8 {
+                for rx in 0..8 {
+                    survivor_nodes.insert(
+                        (rx, ry),
+                        ResourceNode {
+                            resource_type: crate::sim::miner::ResourceType::Ore,
+                            remaining: 1_200,
+                        },
+                    );
+                }
+            }
+            let expected_nodes = survivor_nodes.clone();
+            let mut survivor_growth = OreGrowthState::new(8, 8);
+            let mut survivor_radar = Vec::new();
+            let mut survivor_generation = 0;
+            let mut survivor_tactical = Vec::new();
+            let mut survivor_rng = SimRng::new(crater_seed);
+            {
+                let mut tiberium = tiberium_ctx(
+                    &mut survivor_nodes,
+                    &mut survivor_overlay,
+                    &mut survivor_growth,
+                    &mut survivor_radar,
+                    &mut survivor_generation,
+                    &mut survivor_tactical,
+                );
+                try_dispatch_building_survivor_smudges(
+                    &[(4, 4)],
+                    &art,
+                    &smudge_reg,
+                    &mut survivor_grid,
+                    &occupancy,
+                    &mut survivor_terrain,
+                    &raw,
+                    &mut tiberium,
+                    &mut survivor_rng,
+                );
+            }
+            assert_eq!(survivor_nodes, expected_nodes);
         }
     }
 }

@@ -26,7 +26,9 @@ use crate::rules::jumpjet_params::JumpjetParams;
 use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::rules::object_type::ObjectType;
 use crate::sim::movement::locomotion::LocomotorSlot;
-use crate::sim::movement::locomotion::piggyback::{self, EndGateContext, LocomotorRuntime, StashedLocomotor};
+use crate::sim::movement::locomotion::piggyback::{
+    self, EndGateContext, LocomotorRuntime, StashedLocomotor,
+};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
 
 /// Which spatial layer the unit currently occupies.

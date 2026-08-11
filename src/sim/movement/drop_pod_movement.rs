@@ -6,7 +6,7 @@
 //! This module reports those effects; the world owner applies animation, damage,
 //! occupancy and lifecycle changes in the same master-frame rung.
 
-use crate::util::fixed_math::{SimFixed, SIM_ONE, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
 
 use super::rocket_movement::SpecialMovementOutcome;
 

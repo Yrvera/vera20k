@@ -31,7 +31,7 @@ pub(crate) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProces
 }
 
 pub(super) fn drive_requires_native_step(drive: &DriveLocomotionRuntime) -> bool {
-    drive.active_tube.is_some() || !drive.path.directions.is_empty() || drive.residual_budget != 0
+    !drive.path.directions.is_empty() || drive.residual_budget != 0
 }
 
 /// `ILocomotion::Is_Moving` (slot 4) for the Drive locomotor.
@@ -199,7 +199,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,

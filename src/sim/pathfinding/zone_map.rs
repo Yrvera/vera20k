@@ -133,6 +133,12 @@ impl ZoneMap {
         &mut self.zone_ids
     }
 
+    pub(crate) fn set_ground_zone_at_index(&mut self, index: usize, zone: ZoneId) {
+        if let Some(slot) = self.zone_ids.get_mut(index) {
+            *slot = zone;
+        }
+    }
+
     /// Replace the bridge redirect table (e.g. after incremental recomputation).
     pub(crate) fn set_bridge_redirect(&mut self, redirect: Option<Vec<Option<(u16, u16)>>>) {
         self.bridge_redirect = redirect;
@@ -192,6 +198,9 @@ pub struct ZoneGrid {
     super_zones: BTreeMap<MovementZone, SuperZoneMap>,
     /// One optional gamemd-style route-selection hierarchy shared by all rows.
     hierarchy: Option<ZoneHierarchy>,
+    /// Cell-owned reduced classes, shared base clusters, and the retained raw
+    /// per-row cluster mappings used by exact one-cell repair.
+    base_topology: Option<zone_build::BaseZoneTopology>,
     /// Map-load bridge records paired with the hierarchy snapshot. These are
     /// consumed only by hierarchy-coordinate projection.
     bridge_records: Vec<crate::sim::bridge_state::BridgeEndpointRecord>,
@@ -280,6 +289,7 @@ impl ZoneGrid {
             adjacency,
             super_zones,
             hierarchy,
+            base_topology,
             bridge_records: bridge_records.to_vec(),
             width,
             height,
@@ -306,6 +316,152 @@ impl ZoneGrid {
 
     pub(crate) fn bridge_records(&self) -> &[crate::sim::bridge_state::BridgeEndpointRecord] {
         &self.bridge_records
+    }
+
+    pub(crate) fn movement_classes_match(&self, terrain: &ResolvedTerrainGrid) -> bool {
+        let Some(base) = &self.base_topology else {
+            return false;
+        };
+        base.movement_classes.len() == self.width as usize * self.height as usize
+            && (0..self.height).all(|y| {
+                (0..self.width).all(|x| {
+                    let index = y as usize * self.width as usize + x as usize;
+                    base.movement_classes[index]
+                        == zone_build::movement_class_for_cell(terrain, x, y)
+                })
+            })
+    }
+
+    /// Project one RecalcAttributes cell into the retained base topology
+    /// without assigning a zone or rebuilding hierarchy. Mutation owners that
+    /// have a later native repair callback use this to make the new class
+    /// visible to earlier ordered neighbor repairs.
+    pub(crate) fn refresh_base_movement_class_at(
+        &mut self,
+        terrain: &ResolvedTerrainGrid,
+        x: u16,
+        y: u16,
+    ) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let index = y as usize * self.width as usize + x as usize;
+        let Some(base) = self.base_topology.as_mut() else {
+            return false;
+        };
+        let Some(slot) = base.movement_classes.get_mut(index) else {
+            return false;
+        };
+        *slot = zone_build::movement_class_for_cell(terrain, x, y);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn base_movement_class_at(&self, x: u16, y: u16) -> Option<u8> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.base_topology
+            .as_ref()?
+            .movement_classes
+            .get(y as usize * self.width as usize + x as usize)
+            .copied()
+    }
+
+    pub(crate) fn base_topology_mut(&mut self) -> Option<&mut zone_build::BaseZoneTopology> {
+        self.base_topology.as_mut()
+    }
+
+    pub(crate) fn base_and_hierarchy_mut(
+        &mut self,
+    ) -> Option<(&zone_build::BaseZoneTopology, &mut ZoneHierarchy)> {
+        Some((self.base_topology.as_ref()?, self.hierarchy.as_mut()?))
+    }
+
+    /// Project one adopted base cluster through the retained raw 13-row maps.
+    /// No topology, count, adjacency, or unrelated cell is rewritten.
+    pub(crate) fn project_adopted_base_cell(&mut self, cell_index: usize) {
+        let Some(base) = &self.base_topology else {
+            return;
+        };
+        let Some(&cluster) = base.zone_ids.get(cell_index) else {
+            return;
+        };
+        let (width, height) = (self.width, self.height);
+        for &movement_zone in MovementZone::all_ground() {
+            let row = movement_zone.matrix_row().expect("concrete movement row");
+            let raw = base.raw_zone_ids_by_row[row]
+                .get(cluster as usize)
+                .copied()
+                .unwrap_or(u16::MAX);
+            let projected = (raw > 1 && raw != u16::MAX)
+                .then_some(raw)
+                .unwrap_or(ZONE_INVALID);
+            if let Some(map) = self.maps.get_mut(&movement_zone) {
+                map.set_ground_zone_at_index(cell_index, projected);
+                let zone_info = zone_build::compute_zone_info(
+                    map.zone_ids_slice(),
+                    width,
+                    height,
+                    map.zone_count,
+                );
+                map.set_zone_info(zone_info);
+            }
+        }
+    }
+
+    pub(crate) fn replace_hierarchy(&mut self, hierarchy: ZoneHierarchy) {
+        self.hierarchy = Some(hierarchy);
+    }
+
+    /// Rebuild the products owned by the base connectivity pass while retaining
+    /// the hierarchy's append-only identifiers for the following local patch.
+    pub(crate) fn rebuild_base_connectivity_preserving_hierarchy(
+        &mut self,
+        path_grid: &PathGrid,
+        resolved_terrain: &ResolvedTerrainGrid,
+        bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+    ) {
+        let base_topology = zone_build::build_base_zone_topology(
+            path_grid,
+            resolved_terrain,
+            bridge_records,
+            self.width,
+            self.height,
+        );
+        let mut maps = BTreeMap::new();
+        let mut adjacency = BTreeMap::new();
+        let mut super_zones = BTreeMap::new();
+
+        for &movement_zone in MovementZone::all_ground() {
+            let (mut zone_map, graph) = zone_build::build_zone_map_from_base_topology(
+                &base_topology,
+                movement_zone,
+                self.width,
+                self.height,
+            );
+            if movement_zone.can_use_bridges() {
+                zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
+                    path_grid,
+                    Some(resolved_terrain),
+                    bridge_records,
+                    self.width,
+                    self.height,
+                ));
+            }
+            super_zones.insert(
+                movement_zone,
+                SuperZoneMap::from_adjacency(&graph, zone_map.zone_count),
+            );
+            maps.insert(movement_zone, zone_map);
+            adjacency.insert(movement_zone, graph);
+        }
+
+        self.maps = maps;
+        self.adjacency = adjacency;
+        self.super_zones = super_zones;
+        self.base_topology = Some(base_topology);
+        self.bridge_records = bridge_records.to_vec();
     }
 
     /// Mutable access to the zone map for a movement zone (for incremental updates).

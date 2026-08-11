@@ -172,6 +172,19 @@ impl Simulation {
             return true;
         }
 
+        // UnitClass::AI / InfantryClass::AI test the object-owned TubeMovement
+        // index before entering the ordinary Foot/mission body.  The active
+        // leaf runs later in this same LogicVector slot (the world host owns
+        // the mutable movement substrates), so this visit must contribute no
+        // mission-counter, queued-mission, cadence, or passive-target work.
+        if matches!(
+            entity.category,
+            EntityCategory::Unit | EntityCategory::Infantry
+        ) && entity.low_bridge_tube_state.is_some()
+        {
+            return true;
+        }
+
         let category = entity.category;
         techno_ai_shell(self, id, category, rules, ctx);
         true
@@ -286,6 +299,12 @@ fn techno_ai_shell(
             // promotion evaluates to not-ready (recorded residual).
             mission_common_step(sim, id, rules);
             passive_acquire_step(sim, id, rules);
+            // BuildingClass::Update consumes the shared C4/PostMortem latch at
+            // its late tail. Keep the forced receiver inline in this object's
+            // LogicVector visit so nested death effects precede the next slot.
+            if let Some(rules) = rules {
+                sim.tick_pending_building_detonation(id, rules, ctx.overlay_registry);
+            }
         }
         // AircraftClass::AI promotes via Ready→Commence (`0x00415058`).
         //
@@ -1682,7 +1701,9 @@ mod tests {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::aircraft::AircraftMission;
     use crate::sim::combat::{AttackTarget, TargetKind};
-    use crate::sim::components::{DriveLocomotionRuntime, MovementTarget, NavTargetRef};
+    use crate::sim::components::{
+        DriveCoord, DriveLocomotionRuntime, MovementTarget, NavTargetRef,
+    };
     use crate::sim::docking::building_dock::{DockPhase, DockState};
     use crate::sim::game_entity::{BunkerLink, GameEntity};
     use crate::sim::miner::{Miner, MinerConfig, MinerKind};
@@ -1693,7 +1714,7 @@ mod tests {
     };
     use crate::sim::movement::drive_track::begin_forced_turn_track;
     use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
-    use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+    use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
     use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
     use crate::sim::rng::SimRngLogicalState;
     use crate::sim::snapshot::GameSnapshot;
@@ -2058,18 +2079,13 @@ mod tests {
     fn idle_guard_unit_acquires_a_target_with_no_order_at_all() {
         // The headline behavior: a parked tank opens fire on an enemy that is
         // simply standing in range. No order, no damage taken, no attack-move.
-        // Both tanks find each other — the gate is symmetric. Neither type
-        // carries OpportunityFire, so this runs entirely through the Guard arm.
-        let sim = run_idle_pair("MTNK", "MTNK", 90);
+        // The target is unarmed so receiver-synchronous retaliation cannot
+        // replace the scanner-owned bookkeeping under test here.
+        let sim = run_idle_pair("MTNK", "UNARM", 90);
         let allied = sim.substrate.entities.get(1).expect("allied tank present");
-        let soviet = sim.substrate.entities.get(2).expect("soviet tank present");
         assert!(
             allied.attack_target.is_some(),
             "an idle Guard-mission unit must passively acquire a hostile in range"
-        );
-        assert!(
-            soviet.attack_target.is_some(),
-            "the hostile side acquires the same way"
         );
         assert!(
             allied.passively_acquired_target,
@@ -4021,12 +4037,7 @@ mod tests {
         if entity.dock_state.is_some() {
             return Err(HostTraceError::DockPath);
         }
-        if entity.low_bridge_tube_state.is_some()
-            || entity
-                .drive_locomotion
-                .as_ref()
-                .is_some_and(|drive| drive.active_tube.is_some())
-        {
+        if entity.low_bridge_tube_state.is_some() {
             return Err(HostTraceError::ActiveTube);
         }
         if entity.forced_drive_track.is_some() {
@@ -5040,30 +5051,14 @@ mod tests {
             .low_bridge_tube_state = Some(LowBridgeTubeMovementState {
             tube_id: TubeId(0),
             cursor: 0,
-            entry: (5, 5),
-            exit: (6, 5),
-            phase: LowBridgeTubePhase::Traversing,
+            target: DriveCoord {
+                x: 6 * 256 + 128,
+                y: 5 * 256 + 128,
+                z: 0,
+            },
         });
         assert_ordinary_drive_host_error(
             &low_bridge_tube,
-            &control,
-            120,
-            ordinary,
-            HostTraceError::ActiveTube,
-        );
-
-        let mut drive_tube = ordinary_drive_host_sim(13);
-        drive_tube
-            .substrate
-            .entities
-            .get_mut(ORDINARY_DRIVE_HOST_ID)
-            .unwrap()
-            .drive_locomotion
-            .as_mut()
-            .unwrap()
-            .active_tube = Some(Default::default());
-        assert_ordinary_drive_host_error(
-            &drive_tube,
             &control,
             120,
             ordinary,

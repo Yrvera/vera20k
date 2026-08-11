@@ -48,6 +48,18 @@ fn screen_of(store: &EntityStore, sid: u64) -> (f32, f32) {
     crate::render::locomotor_visual::screen_position(store.get(sid).expect("entity"))
 }
 
+fn encounter_order(store: &EntityStore) -> Vec<u64> {
+    store.values().map(|entity| entity.stable_id).collect()
+}
+
+fn selected_order(store: &EntityStore) -> Vec<u64> {
+    store
+        .values()
+        .filter(|entity| entity.selected)
+        .map(|entity| entity.stable_id)
+        .collect()
+}
+
 fn allied_fog_with_visible_cells(
     local_owner: &str,
     allied_owner: &str,
@@ -89,6 +101,8 @@ fn test_click_replace_selects_only_target() {
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let snapshot = compute_click_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
         None,
         cx,
@@ -102,7 +116,8 @@ fn test_click_replace_selects_only_target() {
         None,
     )
     .expect("snapshot");
-    assert_eq!(snapshot, vec![2]);
+    assert!(snapshot.clear);
+    assert_eq!(snapshot.select, vec![2]);
 }
 
 #[test]
@@ -116,6 +131,8 @@ fn test_click_additive_toggles_membership() {
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let added = compute_click_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
         None,
         second_x,
@@ -129,10 +146,12 @@ fn test_click_additive_toggles_membership() {
         None,
     )
     .expect("snapshot");
-    assert_eq!(added, vec![1, 2]);
+    assert_eq!(added.select, vec![2]);
 
     let removed = compute_click_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
         None,
         first_x,
@@ -146,7 +165,7 @@ fn test_click_additive_toggles_membership() {
         None,
     )
     .expect("snapshot");
-    assert_eq!(removed, Vec::<u64>::new());
+    assert_eq!(removed.deselect, vec![1]);
 }
 
 #[test]
@@ -180,10 +199,23 @@ fn test_box_additive_adds_only_and_excludes_structures() {
     // Select — a shift drag over units already in the group keeps them, so the
     // two selected units stay and the third joins.
     let snapshot = compute_box_selection_snapshot(
-        &store, None, None, -40.0, 300.0, 160.0, 400.0, true, None, None, None,
+        &store,
+        &encounter_order(&store),
+        &encounter_order(&store),
+        &selected_order(&store),
+        None,
+        None,
+        -40.0,
+        300.0,
+        160.0,
+        400.0,
+        true,
+        None,
+        None,
+        None,
     )
     .expect("snapshot");
-    assert_eq!(snapshot, vec![1, 2, 3]);
+    assert_eq!(snapshot.select, vec![3]);
 }
 
 #[test]
@@ -195,7 +227,20 @@ fn test_empty_box_leaves_the_selection_alone() {
     // object; an empty rectangle queues no selection change at all and the
     // release falls through to the ordinary click action.
     let snapshot = compute_box_selection_snapshot(
-        &store, None, None, 300.0, 300.0, 340.0, 340.0, false, None, None, None,
+        &store,
+        &encounter_order(&store),
+        &encounter_order(&store),
+        &selected_order(&store),
+        None,
+        None,
+        300.0,
+        300.0,
+        340.0,
+        340.0,
+        false,
+        None,
+        None,
+        None,
     );
     assert_eq!(snapshot, None);
 }
@@ -221,10 +266,14 @@ fn test_box_over_only_ineligible_objects_still_clears_the_selection() {
     // as non-empty, the clear runs, and the per-object filter then admits
     // nobody — the selection ends up empty rather than untouched.
     let (ex, ey) = screen_of(&store, 2);
+    let interner = crate::sim::intern::test_interner();
     let snapshot = compute_box_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
-        None,
+        Some("Americans"),
         ex - 20.0,
         ey - 20.0,
         ex + 20.0,
@@ -232,10 +281,10 @@ fn test_box_over_only_ineligible_objects_still_clears_the_selection() {
         false,
         None,
         Some(&houses),
-        None,
+        Some(&interner),
     )
     .expect("snapshot");
-    assert!(snapshot.is_empty());
+    assert!(snapshot.clear && snapshot.select.is_empty());
 }
 
 fn spawn_structure(
@@ -268,11 +317,18 @@ fn spawn_structure(
 }
 
 /// A box drawn around both units: `hi` is the id expected to survive the filter.
-fn box_over_two(store: &EntityStore, a: u64, b: u64) -> Option<Vec<u64>> {
+fn box_over_two(
+    store: &EntityStore,
+    a: u64,
+    b: u64,
+) -> Option<crate::app_entity_pick::SelectionMutation> {
     let (ax, ay) = screen_of(store, a);
     let (bx, by) = screen_of(store, b);
     compute_box_selection_snapshot(
         store,
+        &encounter_order(store),
+        &encounter_order(store),
+        &selected_order(store),
         None,
         None,
         ax.min(bx) - 20.0,
@@ -297,7 +353,7 @@ fn test_box_skips_a_miner_docked_on_a_refinery() {
     store.get_mut(2).expect("miner").dock_entered_with = Some(3);
 
     let snapshot = box_over_two(&store, 1, 2).expect("snapshot");
-    assert_eq!(snapshot, vec![1]);
+    assert_eq!(snapshot.select, vec![1]);
 }
 
 #[test]
@@ -313,7 +369,7 @@ fn test_box_keeps_a_vehicle_that_drove_clear_of_its_factory() {
     store.get_mut(2).expect("vehicle").dock_entered_with = Some(3);
 
     let snapshot = box_over_two(&store, 1, 2).expect("snapshot");
-    assert_eq!(snapshot, vec![1, 2]);
+    assert_eq!(snapshot.select, vec![1, 2]);
 }
 
 /// The drawn-object list the native emptiness test walks is only partly
@@ -356,6 +412,7 @@ fn test_band_emptiness_ignores_a_shrouded_unit_but_not_a_shrouded_building() {
     assert!(
         !band_rect_contains_drawn_object(
             &unit_only,
+            &encounter_order(&unit_only),
             Some(&fog),
             Some("Americans"),
             rect.0,
@@ -369,6 +426,7 @@ fn test_band_emptiness_ignores_a_shrouded_unit_but_not_a_shrouded_building() {
     assert!(
         band_rect_contains_drawn_object(
             &building_only,
+            &encounter_order(&building_only),
             Some(&fog),
             Some("Americans"),
             rect.0,
@@ -422,6 +480,9 @@ fn test_box_selection_excludes_selectable_no_types() {
     let (px, py) = screen_of(&store, 2);
     let snapshot = compute_box_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
         None,
         ux.min(px) - 20.0,
@@ -434,11 +495,11 @@ fn test_box_selection_excludes_selectable_no_types() {
         Some(&interner),
     )
     .expect("snapshot");
-    assert_eq!(snapshot, vec![1]);
+    assert_eq!(snapshot.select, vec![1]);
 }
 
 #[test]
-fn test_box_selection_excludes_ai_owned_entities() {
+fn item83_band_selection_is_exact_local_even_for_a_discovered_nonlocal_unit() {
     let mut store = EntityStore::new();
     spawn_mobile(&mut store, 1, 10, 10, "Americans", false);
     spawn_mobile(&mut store, 2, 11, 10, "Soviet", false);
@@ -453,14 +514,18 @@ fn test_box_selection_excludes_ai_owned_entities() {
         );
     }
 
-    // A box over both — gamemd's TechnoClass::Select refuses the AI-owned tank
-    // before the ObjectClass gates ever run.
+    // A box over both admits only the exact local owner. House human/AI flags
+    // are not the gate on this caller-specific path.
     let (mx, my) = screen_of(&store, 1);
     let (ex, ey) = screen_of(&store, 2);
+    let interner = crate::sim::intern::test_interner();
     let snapshot = compute_box_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &encounter_order(&store),
+        &selected_order(&store),
         None,
-        None,
+        Some("Americans"),
         mx.min(ex) - 20.0,
         my.min(ey) - 20.0,
         mx.max(ex) + 20.0,
@@ -468,10 +533,10 @@ fn test_box_selection_excludes_ai_owned_entities() {
         false,
         None,
         Some(&houses),
-        None,
+        Some(&interner),
     )
     .expect("snapshot");
-    assert_eq!(snapshot, vec![1]);
+    assert_eq!(snapshot.select, vec![1]);
 }
 
 #[test]
@@ -503,6 +568,8 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
     let empty_heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let snapshot = compute_click_selection_snapshot(
         &store,
+        &encounter_order(&store),
+        &selected_order(&store),
         Some(&fog),
         Some("Americans"),
         cx,
@@ -517,7 +584,7 @@ fn test_click_selection_allows_visible_allied_units_for_local_owner() {
     )
     .expect("snapshot");
 
-    assert_eq!(snapshot, vec![7]);
+    assert_eq!(snapshot.select, vec![7]);
 }
 
 #[test]

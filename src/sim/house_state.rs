@@ -7,8 +7,12 @@
 //! interned owner name for deterministic iteration (BTreeMap + InternedId give
 //! sorted order natively; all peers intern in the same order).
 
+use std::collections::BTreeMap;
+
+use crate::sim::cell_rect::PlayfieldBounds;
 use crate::sim::economy::Economy;
 use crate::sim::intern::InternedId;
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 /// Native per-house AI difficulty index stored by `HouseClass`.
 ///
@@ -62,12 +66,12 @@ pub struct HouseState {
     pub side_index: u8,
     /// Country interned ID from map INI `Country=` key (e.g., "Americans", "Russians").
     pub country: Option<InternedId>,
-    /// Collapsed player-control fact for the current Rust model.
-    ///
-    /// Native keeps `IsHuman` and `PlayerControl` as separate bytes and admits
-    /// EventClass records when either is set. Current scenario/skirmish
-    /// initialization folds both sources into this one boolean.
+    /// Native HouseClass `IsHuman` byte.
     pub is_human: bool,
+    /// Native HouseClass `PlayerControl` byte. It differs from `IsHuman` in
+    /// scenario modes and participates independently in EventClass admission.
+    #[serde(default)]
+    pub player_control: bool,
     /// Per-house native difficulty. Human houses retain Normal unless a map or
     /// game-mode initializer explicitly assigns another native value.
     #[serde(default)]
@@ -110,6 +114,14 @@ pub struct HouseState {
     /// shroud restoration can clear it again.
     #[serde(default)]
     pub map_is_clear: bool,
+    /// Aggregate active SpySat state for this house.
+    ///
+    /// This is the edge-trigger authority for whole-map reveal/restoration.
+    /// Individual uplinks do not own the transition. The first marked,
+    /// non-limbo, non-selling SpySat in house building order decides it:
+    /// warp-out clears the latch; otherwise that provider sets it.
+    #[serde(default)]
+    pub spy_sat_active: bool,
     /// Running count of owned buildings. Updated on spawn/despawn.
     pub owned_building_count: u32,
     /// Running count of owned non-building units. Updated on spawn/despawn.
@@ -118,9 +130,26 @@ pub struct HouseState {
     pub base_center: Option<(u16, u16)>,
     /// Max tech level for this player. From game options at match start.
     pub tech_level: i32,
+    /// Live HouseClass CurrentIQ (+0x24C), used by AI behavior thresholds.
+    ///
+    /// Named scenario houses read their own `IQ=`. Generated skirmish computer
+    /// houses are stamped from `[IQ] MaxIQLevels`; generated human and special
+    /// houses retain the native constructor value zero.
+    pub current_iq: i32,
+    /// Native `AngerStruct` scores keyed by the other house's stable identity.
+    ///
+    /// gamemd stores an O(N^2) vector in global HouseClass creation order. The
+    /// Rust house registry already owns that exact order in
+    /// `ScenarioSession::house_order`, so only touched scores live here; enemy
+    /// selection still scans session order, never this map's key order.
+    #[serde(default)]
+    pub grudge_scores: BTreeMap<InternedId, i32>,
+    /// House selected by `HouseClass::UpdateAngerNodes`, or native `-1` as None.
+    #[serde(default)]
+    pub enemy_house: Option<InternedId>,
     /// Edge of the playfield where this house spawns paradrop carriers.
-    /// Encoding: 0=N, 1=E, 2=S, 3=W. Computed at game start from base_center
-    /// via the closest-edge-of-bounds algorithm.
+    /// Encoding: 0=N, 1=E, 2=S, 3=W. Launch setup seeds it from the assigned
+    /// start anchor; committed structures refresh it through lifecycle authority.
     pub waypoint_edge: u8,
     /// End-of-match score-screen statistics (Kills / Losses / Built columns).
     ///
@@ -147,7 +176,7 @@ pub struct HouseState {
 impl HouseState {
     /// Active offline EventClass house-scan eligibility.
     pub const fn event_dispatch_eligible(&self) -> bool {
-        self.is_human
+        self.is_human || self.player_control
     }
 
     pub fn new(
@@ -163,6 +192,7 @@ impl HouseState {
             side_index,
             country,
             is_human,
+            player_control: is_human,
             difficulty: HouseDifficulty::Normal,
             multiplay_passive: false,
             credits,
@@ -171,10 +201,14 @@ impl HouseState {
             has_won: false,
             has_lost: false,
             map_is_clear: false,
+            spy_sat_active: false,
             owned_building_count: 0,
             owned_unit_count: 0,
             base_center: None,
             tech_level,
+            current_iq: 0,
+            grudge_scores: BTreeMap::new(),
+            enemy_house: None,
             waypoint_edge: 0,
             stats: MatchStatistics::default(),
             economy: Economy::default(),
@@ -347,31 +381,64 @@ pub fn resolve_multiplay_passive(
     key.is_some_and(|key| rules.country_multiplay_passive(key))
 }
 
-/// Compute the closest map edge to a given anchor cell.
-///
-/// Picks the minimum-distance edge from 4 reference points: top-edge midpoint,
-/// bottom-right corner, south extension midpoint, and left-edge midpoint.
-/// Encoding: 0=N, 1=E, 2=S, 3=W.
-pub fn closest_edge_for(anchor: (u16, u16), map_width: u32, map_height: u32) -> u8 {
-    let (ax, ay) = (anchor.0 as i64, anchor.1 as i64);
-    let w = map_width as i64;
-    let h = map_height as i64;
+/// Resolve a house type's `WallOwner=` permission. Missing data keeps the native
+/// constructor default of `true`; an absent `Country=` binds to registry entry zero.
+pub fn resolve_wall_owner(
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    country: Option<&str>,
+) -> bool {
+    let Some(rules) = rules else {
+        return true;
+    };
+    let key = match country {
+        Some(country) => Some(country),
+        None => rules.country_name(ABSENT_COUNTRY_IDX),
+    };
+    key.map_or(true, |key| rules.country_wall_owner(key))
+}
 
-    let refs: [(i64, i64); 4] = [
-        (w / 2, 1),     // 0: north — top edge midpoint
-        (w, h),         // 1: east  — bottom-right corner-ish
-        (w / 2, h * 2), // 2: south — south extension midpoint
-        (0, h),         // 3: west  — left edge midpoint
+/// Convert a LocalSize-relative coordinate into the native cell-grid frame.
+fn local_to_cell(local: (i32, i32), bounds: PlayfieldBounds) -> (i32, i32) {
+    let q = local.0.wrapping_add(bounds.off_fc);
+    let r = local.1.wrapping_add(bounds.off_100);
+    (
+        r.wrapping_add(1).wrapping_shr(1).wrapping_add(q),
+        bounds.base.wrapping_add(r >> 1).wrapping_sub(q),
+    )
+}
+
+/// Cell-space distance through the native Sqrt_Approx/Math::ftol pipeline.
+fn native_edge_distance(anchor: (u16, u16), reference: (i32, i32)) -> i32 {
+    let dx = X87Chop53::load_i32(i32::from(anchor.0 as i16).wrapping_sub(reference.0));
+    let dy = X87Chop53::load_i32(i32::from(anchor.1 as i16).wrapping_sub(reference.1));
+    let squared = X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy));
+    let root_bits =
+        sqrt_approx_f32(squared).expect("playfield edge distance stays in finite f32 range");
+    let root =
+        X87Chop53::load_f32(root_bits).expect("Sqrt_Approx always returns a finite normal or zero");
+    X87Chop53::ftol_i64(root).expect("playfield edge distance fits a signed integer") as i32
+}
+
+/// HouseClass-style playfield edge selection for a committed anchor cell.
+///
+/// The four asymmetric reference points live in the map's LocalSize frame and
+/// must be skewed into cell-grid coordinates before comparison. Strictly-better
+/// replacement preserves the native N/E/S/W tie order.
+pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBounds) -> u8 {
+    let references = [
+        (bounds.off_104 / 2, 1),
+        (bounds.off_104, bounds.off_108),
+        (bounds.off_104 / 2, bounds.off_108.wrapping_mul(2)),
+        (0, bounds.off_108),
     ];
     let mut best_edge = 0u8;
-    let mut best_dsq = i64::MAX;
-    for (i, &(rx, ry)) in refs.iter().enumerate() {
-        let dx = ax - rx;
-        let dy = ay - ry;
-        let dsq = dx * dx + dy * dy;
-        if dsq < best_dsq {
-            best_dsq = dsq;
-            best_edge = i as u8;
+    let mut best_distance = i32::MAX;
+    for (edge, local_reference) in references.into_iter().enumerate() {
+        let reference = local_to_cell(local_reference, bounds);
+        let distance = native_edge_distance(anchor, reference);
+        if distance < best_distance {
+            best_distance = distance;
+            best_edge = edge as u8;
         }
     }
     best_edge
@@ -400,6 +467,7 @@ mod difficulty_tests {
     fn new_house_defaults_to_normal_difficulty() {
         let house = HouseState::new(Default::default(), 0, None, false, 0, 10);
         assert_eq!(house.difficulty, HouseDifficulty::Normal);
+        assert_eq!(house.current_iq, 0);
     }
 }
 
@@ -457,21 +525,35 @@ mod multiplay_passive_tests {
 mod waypoint_edge_tests {
     use super::*;
 
-    #[test]
-    fn test_closest_edge_top_center_picks_north() {
-        let edge = closest_edge_for((50, 5), 100, 100);
-        assert_eq!(edge, 0);
+    fn square_bounds() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 100,
+            off_fc: 0,
+            off_100: 0,
+            off_104: 100,
+            off_108: 100,
+        }
     }
 
     #[test]
-    fn test_closest_edge_left_middle_picks_west() {
-        let edge = closest_edge_for((2, 50), 100, 100);
-        assert_eq!(edge, 3);
+    fn transformed_reference_points_select_their_corresponding_edges() {
+        let bounds = square_bounds();
+        assert_eq!(determine_waypoint_edge((51, 50), bounds), 0);
+        assert_eq!(determine_waypoint_edge((150, 50), bounds), 1);
+        assert_eq!(determine_waypoint_edge((150, 150), bounds), 2);
+        assert_eq!(determine_waypoint_edge((50, 150), bounds), 3);
     }
 
     #[test]
-    fn test_closest_edge_bottom_right_picks_east() {
-        let edge = closest_edge_for((95, 95), 100, 100);
-        assert_eq!(edge, 1);
+    fn gsi_04_16_dustbowl_local_size_skew_selects_south() {
+        let bounds = PlayfieldBounds {
+            base: 70,
+            off_fc: 2,
+            off_100: 8,
+            off_104: 65,
+            off_108: 62,
+        };
+        assert_eq!(local_to_cell((32, 124), bounds), (100, 102));
+        assert_eq!(determine_waypoint_edge((69, 115), bounds), 2);
     }
 }

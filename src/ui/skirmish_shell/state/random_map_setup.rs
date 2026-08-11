@@ -409,12 +409,8 @@ mod tests {
         let mut mapgen = crate::map::rmg::RmgRng::new(0x5678);
         let mut mapgen_reference = mapgen.clone();
 
-        let mut modal = RandomMapSetupModalState::open(
-            RmgOptions::default(),
-            None,
-            false,
-            &mut process_main,
-        );
+        let mut modal =
+            RandomMapSetupModalState::open(RmgOptions::default(), None, false, &mut process_main);
         let expected_seed = reference_main.next_range_u32_inclusive(0, 0xFFFF) as i32;
         assert_eq!(modal.options.seed, expected_seed);
         assert_eq!(process_main.logical_state(), reference_main.logical_state());

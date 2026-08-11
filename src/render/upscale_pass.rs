@@ -79,6 +79,11 @@ impl UpscalePass {
         &self.color_view
     }
 
+    /// Intermediate color texture receiving the completed tactical frame.
+    pub fn color_texture(&self) -> &wgpu::Texture {
+        &self.color_texture
+    }
+
     /// Cached view for the intermediate depth buffer.
     pub fn depth_view(&self) -> &wgpu::TextureView {
         &self.depth_view
@@ -133,7 +138,9 @@ fn create_color_texture(gpu: &GpuContext, width: u32, height: u32) -> wgpu::Text
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: gpu.surface_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }

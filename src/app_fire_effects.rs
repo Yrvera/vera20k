@@ -328,6 +328,33 @@ fn build_non_garrison_fire_effects(
     (flashes, sounds)
 }
 
+/// Height a shot aimed at a bare ground cell lands on, in **height levels**
+/// (signed, the unit `lepton_to_screen` and `FireOrigin::z` speak).
+///
+/// This derives nothing. It reads `sim::combat::attack_impact_z` — the same
+/// single value the detonation damaged at and the same value the impact
+/// animation is placed on — and narrows it with the sim's own
+/// `impact_z_byte`. The original engine forms one impact coordinate per
+/// detonation and hands that one coordinate to both area damage and animation
+/// placement, so a second derivation on the presentation side could only agree
+/// with the sim by coincidence; when this file derived its own, tracer and
+/// explosion sat 60 px apart on structural-bridge cells.
+///
+/// Two consequences, both deliberate: a level-0 cell still resolves to 0, so
+/// flat maps are unchanged; and the structural-bridge deck offset is absent
+/// here because it is absent in the sim — that shared residual, and the step
+/// that would settle it, are recorded on `attack_impact_z`.
+///
+/// Missing terrain (no map resolved yet) yields the same zero the sim helper
+/// returns; presentation has no better answer before load.
+fn cell_target_height_level(sim: &Simulation, rx: u16, ry: u16) -> u8 {
+    crate::sim::combat::impact_z_byte(crate::sim::combat::attack_impact_z(
+        TargetKind::Cell(rx, ry),
+        sim.entities(),
+        sim.resolved_terrain.as_ref(),
+    ))
+}
+
 fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireOrigin> {
     match target {
         TargetKind::Entity(id) => {
@@ -345,12 +372,17 @@ fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireO
             })
         }
         TargetKind::Cell(rx, ry) => {
+            // The entity arm above reads the target's own height; a bare cell has
+            // no object to ask, so the terrain answers for it. Height enters
+            // screen Y alone, so getting it wrong drops the impact straight down
+            // by a half tile per level with no sideways drift.
+            let z = cell_target_height_level(sim, rx, ry);
             let (screen_x, screen_y) = crate::util::lepton::lepton_to_screen(
                 rx,
                 ry,
                 crate::util::lepton::CELL_CENTER_LEPTON,
                 crate::util::lepton::CELL_CENTER_LEPTON,
-                0,
+                z,
             );
             Some(FireOrigin {
                 screen_x,
@@ -359,7 +391,7 @@ fn target_fire_destination(sim: &Simulation, target: TargetKind) -> Option<FireO
                 ry,
                 sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
                 sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
-                z: 0,
+                z,
                 branch: FireOriginBranch::Flh,
             })
         }
@@ -499,8 +531,11 @@ fn tick_projectile_visuals(projectiles: &mut Vec<ProjectileVisual>, dt_ms: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
     use crate::map::entities::EntityCategory;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::components::Health;
     use crate::sim::game_entity::GameEntity;
 
@@ -542,6 +577,7 @@ mod tests {
             rx: 10,
             ry: 11,
             z: 0,
+            exact_z_leptons: None,
             sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
             sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
         };
@@ -796,6 +832,254 @@ mod tests {
                 world_effect.1, projectile.screen_y,
                 "WorldEffect must land on its projectile endpoint"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ground-impact height
+    // -----------------------------------------------------------------------
+
+    fn flat_terrain_cell(rx: u16, ry: u16, level: u8) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: SpeedCostProfile::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            height_in_pixels: 0,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    /// A square map whose every cell sits at `level`.
+    fn sim_on_ground_at_level(level: u8) -> Simulation {
+        const SIZE: u16 = 32;
+        let mut cells = Vec::new();
+        for ry in 0..SIZE {
+            for rx in 0..SIZE {
+                cells.push(flat_terrain_cell(rx, ry, level));
+            }
+        }
+        let mut sim = Simulation::new();
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(SIZE, SIZE, cells));
+        sim
+    }
+
+    /// The same flat map with one structural-bridge span crossing `(rx, ry)`.
+    /// This is the cell the two halves disagreed on.
+    fn sim_with_structural_bridge_at(level: u8, rx: u16, ry: u16) -> Simulation {
+        let mut sim = sim_on_ground_at_level(level);
+        sim.resolved_terrain
+            .as_mut()
+            .and_then(|grid| grid.cell_mut(rx, ry))
+            .expect("bridge cell must be inside the fixture grid")
+            .bridge_facts = BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_STRUCTURAL,
+            ..BridgeCellFacts::default()
+        };
+        sim
+    }
+
+    /// The impact height the sim resolved for this cell, narrowed exactly as
+    /// production narrows it. Tests anchor on this, never on the render half's
+    /// own output — an assertion that feeds a projection its own result proves
+    /// nothing.
+    fn sim_impact_z_byte(sim: &Simulation, rx: u16, ry: u16) -> u8 {
+        crate::sim::combat::impact_z_byte(crate::sim::combat::attack_impact_z(
+            TargetKind::Cell(rx, ry),
+            sim.entities(),
+            sim.resolved_terrain.as_ref(),
+        ))
+    }
+
+    /// Level-0 ground is the case the old hardcoded zero got right, and it must
+    /// stay right: resolving the terrain must not shift a flat-map impact.
+    ///
+    /// Catches a fix that lifts every impact by a constant instead of by the
+    /// cell's own height.
+    #[test]
+    fn ground_impact_on_level_zero_terrain_is_unshifted() {
+        let sim = sim_on_ground_at_level(0);
+
+        for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16), (5_u16, 30_u16)] {
+            let dest =
+                target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
+            let flat = crate::util::lepton::lepton_to_screen(
+                rx,
+                ry,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                crate::util::lepton::CELL_CENTER_LEPTON,
+                0,
+            );
+            assert_eq!(dest.z, 0, "level-0 cell ({rx},{ry}) must resolve height 0");
+            assert_eq!((dest.screen_x, dest.screen_y), flat);
+        }
+    }
+
+    /// The reported bug: a shot landing on raised ground drew a whole tile low,
+    /// straight down with no sideways drift, because the cell arm answered 0 for
+    /// every terrain height.
+    ///
+    /// Height enters screen Y alone, one half tile (15 px) per level — so this
+    /// pins the exact per-level cadence and pins screen X as untouched, which is
+    /// the asymmetry that identified the fault as a height fault rather than a
+    /// planar one. Catches both a reintroduced constant height and a wrong
+    /// per-level step (e.g. a whole tile, or leptons fed in where levels belong).
+    #[test]
+    fn ground_impact_lifts_one_half_tile_per_terrain_height_level() {
+        const HALF_TILE_PX: f32 = crate::map::terrain::TILE_HEIGHT / 2.0;
+        let (rx, ry) = (23_u16, 20_u16);
+        let ground_row =
+            target_fire_destination(&sim_on_ground_at_level(0), TargetKind::Cell(rx, ry))
+                .expect("cell target");
+
+        for level in 0..=6_u8 {
+            let dest =
+                target_fire_destination(&sim_on_ground_at_level(level), TargetKind::Cell(rx, ry))
+                    .expect("cell target");
+            assert_eq!(dest.z, level, "cell height must reach the impact point");
+            assert_eq!(
+                dest.screen_x, ground_row.screen_x,
+                "height must not drift the impact sideways at level {level}",
+            );
+            assert_eq!(
+                dest.screen_y,
+                ground_row.screen_y - HALF_TILE_PX * f32::from(level),
+                "level {level} must lift the impact by {level} half-tiles",
+            );
+        }
+    }
+
+    /// A structural bridge span must not move the tracer endpoint on its own.
+    ///
+    /// The impact coordinate is the projectile's location clamped to the cell's
+    /// ground height; the deck-adding accessor is the *aim* point for a live
+    /// object target, a different quantity. Presentation therefore takes the
+    /// sim's impact height unchanged, deck or no deck.
+    ///
+    /// Catches the split this test replaced: the render half calling the
+    /// deck-adjusted helper while the sim half returns the bare floor, which
+    /// ends the tracer four levels — 60 px, two full tiles — above its own
+    /// explosion.
+    #[test]
+    fn ground_impact_on_structural_bridge_cell_takes_the_sim_impact_height() {
+        let (rx, ry) = (12_u16, 9_u16);
+        let open_water = sim_on_ground_at_level(0);
+        let spanned = sim_with_structural_bridge_at(0, rx, ry);
+
+        let deck =
+            target_fire_destination(&spanned, TargetKind::Cell(rx, ry)).expect("cell target");
+        let surface =
+            target_fire_destination(&open_water, TargetKind::Cell(rx, ry)).expect("cell target");
+
+        assert_eq!(
+            deck.z,
+            sim_impact_z_byte(&spanned, rx, ry),
+            "presentation must carry the sim's impact height, not one of its own",
+        );
+        assert_eq!(
+            (deck.screen_x, deck.screen_y),
+            (surface.screen_x, surface.screen_y),
+            "a span alone moves neither axis while the deck term is unmodelled \
+             on both halves",
+        );
+        assert_ne!(
+            i32::from(deck.z as i8),
+            crate::sim::combat::combat_aoe::bridge_adjusted_impact_z(
+                spanned.resolved_terrain.as_ref(),
+                rx,
+                ry,
+            ),
+            "the aim-point helper is a different quantity; if presentation ever \
+             matches it, the deck residual was closed on one half only",
+        );
+    }
+
+    /// The impact animation and the projectile that produced it must land on the
+    /// same pixel — the two projectors are reached by different call paths and
+    /// drifted apart before.
+    ///
+    /// The expected pixel is projected from the **sim's** impact height, so this
+    /// is an agreement check between the two halves rather than a projection fed
+    /// its own output. The structural-bridge row is the case that fails when
+    /// either half derives its own height.
+    #[test]
+    fn world_effect_anchor_matches_the_sim_impact_height() {
+        let cases: [(&str, Simulation); 5] = [
+            ("flat", sim_on_ground_at_level(0)),
+            ("level 1", sim_on_ground_at_level(1)),
+            ("level 2", sim_on_ground_at_level(2)),
+            ("level 5", sim_on_ground_at_level(5)),
+            (
+                "structural bridge over level-0 ground",
+                sim_with_structural_bridge_at(0, 10, 10),
+            ),
+        ];
+
+        for (label, sim) in cases {
+            for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16)] {
+                let projectile =
+                    target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
+                let world_effect = crate::app_instances::world_effect_screen_position(
+                    rx,
+                    ry,
+                    crate::util::lepton::CELL_CENTER_LEPTON,
+                    crate::util::lepton::CELL_CENTER_LEPTON,
+                    sim_impact_z_byte(&sim, rx, ry),
+                );
+                assert_eq!(
+                    (world_effect.0, world_effect.1),
+                    (projectile.screen_x, projectile.screen_y),
+                    "{label}: cell ({rx},{ry}) — the explosion the sim places and \
+                     the tracer endpoint the app draws must be one point",
+                );
+            }
         }
     }
 }

@@ -40,7 +40,7 @@ fn make_bridge_terrain() -> ResolvedTerrainGrid {
             speed_costs: SpeedCostProfile::default(),
             is_water: false,
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,
@@ -142,7 +142,7 @@ fn make_bridge_with_bridgeheads_terrain() -> ResolvedTerrainGrid {
             speed_costs: SpeedCostProfile::default(),
             is_water: false,
             is_cliff_like: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             is_rough: false,
             is_road: false,
@@ -568,8 +568,7 @@ fn gsi_04_12_topology_structural_gap_preserves_intact_plain_gap_clears_it() {
             cell.final_sub_tile = 4;
         }
         if cell.rx == 2 {
-            cell.bridge_facts.raw_flags =
-                crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+            cell.bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
         }
     });
     let mut mixed = BridgeRuntimeState::from_resolved_terrain(&mixed_gap, true, 300);
@@ -880,7 +879,7 @@ fn stamped_high_bridge_facts_create_anchor_span_without_bridge_layer() {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -1518,7 +1517,7 @@ fn make_bridgehead_terrain_ns() -> crate::map::resolved_terrain::ResolvedTerrain
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -1839,7 +1838,7 @@ fn bridgehead_advance_h_gt_4_ew_absorbs_with_no_change() {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -1964,7 +1963,7 @@ fn make_terrain_at_level(rx: u16, ry: u16, level: u8) -> ResolvedTerrainGrid {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -2217,7 +2216,7 @@ fn flood_fill_terrain(width: u16, height: u16, tile_id: i32) -> ResolvedTerrainG
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -2439,7 +2438,7 @@ fn make_pre_class_terrain(pre_class: Option<BridgeheadAnchorClass>) -> ResolvedT
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,

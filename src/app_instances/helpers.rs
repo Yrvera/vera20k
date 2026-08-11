@@ -7,6 +7,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
+use crate::map::entities::EntityCategory;
 use crate::map::terrain;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::Position;
@@ -14,6 +15,184 @@ use crate::sim::game_entity::GameEntity;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 use crate::util::fixed_math::SIM_ZERO;
+
+/// Produce the one entity encounter order shared by tactical rendering and
+/// input picking. Layer/Y-sort comes from `TacticalDrawPlan`; equal keys retain
+/// the live ObjectClass registration order rather than falling back to map-key
+/// order. Entities absent from the live vector are appended in creation order
+/// solely so pre-reveal test/dev objects retain the renderer's old visibility.
+pub(crate) fn tactical_entity_encounter_order(sim: &crate::sim::world::Simulation) -> Vec<u64> {
+    use crate::render::tactical_draw_plan::{
+        BlitPolicy, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput, TacticalDrawPlan,
+        TacticalLayer,
+    };
+
+    let mut registered = Vec::with_capacity(sim.entities().len());
+    let mut seen = std::collections::BTreeSet::new();
+    for &id in sim.tactical_registration_order() {
+        if sim.entities().get(id).is_some() && seen.insert(id) {
+            registered.push(id);
+        }
+    }
+    for entity in sim.entities().values() {
+        if seen.insert(entity.stable_id) {
+            registered.push(entity.stable_id);
+        }
+    }
+
+    let inputs = registered
+        .iter()
+        .enumerate()
+        .filter_map(|(registration, id)| {
+            let entity = sim.entities().get(*id)?;
+            let layer = match entity_draw_band(entity) {
+                EntityDrawBand::Ground => 2,
+                EntityDrawBand::Top => 4,
+            };
+            Some(TacticalDrawInput::Object(ObjectDraw {
+                id: *id,
+                layer: TacticalLayer(layer),
+                coord: TacticalCoord {
+                    x: i32::from(entity.position.rx) * 256
+                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
+                    y: i32::from(entity.position.ry) * 256
+                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_y),
+                    z: i32::from(entity.position.z),
+                },
+                y_sort_adjust: 0,
+                registration_order: registration as u64,
+                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
+            }))
+        });
+    TacticalDrawPlan::build(inputs)
+        .object_layers
+        .into_iter()
+        .flat_map(|layer| layer.entries.into_iter().map(|entry| entry.object().id))
+        .collect()
+}
+
+/// Common admission into the tactical render-tracked object set. SHP, voxel,
+/// and input consumers share this exact gate so hidden passengers, limboed
+/// objects, shrouded enemies, and invisible draw states cannot drift between
+/// what is rendered and what can seed tactical selection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tactical_entity_render_admission(
+    entity: &GameEntity,
+    owner: &str,
+    local_owner: Option<&str>,
+    local_owner_id: Option<InternedId>,
+    fog: &FogState,
+    ignore_visibility: bool,
+    current_frame: u32,
+    remap_row: u32,
+) -> Option<crate::render::draw_state::DrawDecision> {
+    if entity.lifecycle.in_limbo
+        || entity.passenger_role.is_inside_transport()
+        || !is_entity_visible_for_local_owner(
+            local_owner,
+            fog,
+            &entity.position,
+            owner,
+            ignore_visibility,
+            local_owner_id,
+        )
+    {
+        return None;
+    }
+    let decision =
+        crate::render::draw_state::DrawState::for_entity(entity, current_frame, remap_row);
+    decision.visible.then_some(decision)
+}
+
+/// The current visible-object window in the same encounter order used above.
+/// Retail registration rejects anchors more than 32 screen pixels outside the
+/// tactical viewport. Keep that bound here so TypeSelect's screen stage and
+/// held exact-type scope cannot pull objects from elsewhere on the map.
+pub(crate) fn tactical_screen_entity_encounter_order(state: &AppState) -> Vec<u64> {
+    tactical_bounded_entity_encounter_order(state, false)
+}
+
+/// Native band-box caught-anything source: render-tracked mobiles plus the
+/// live building array registered in bulk without a shroud test.
+pub(crate) fn tactical_band_preflight_entity_encounter_order(state: &AppState) -> Vec<u64> {
+    tactical_bounded_entity_encounter_order(state, true)
+}
+
+fn tactical_bounded_entity_encounter_order(
+    state: &AppState,
+    bulk_register_live_buildings: bool,
+) -> Vec<u64> {
+    let Some(sim) = &state.simulation else {
+        return Vec::new();
+    };
+    let zoom = state.zoom_level.max(f32::EPSILON);
+    let margin = 32.0 / zoom;
+    let (width_px, height_px) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let min_x = state.camera_x - margin;
+    let min_y = state.camera_y - margin;
+    let max_x = state.camera_x + width_px as f32 / zoom + margin;
+    let max_y = state.camera_y + height_px as f32 / zoom + margin;
+    let local_owner = crate::app_commands::preferred_local_owner_name(state);
+    let local_owner_id = local_owner
+        .as_deref()
+        .and_then(|owner| sim.interner.get(owner));
+
+    compose_tactical_screen_entity_encounter_order(
+        sim,
+        (min_x, min_y, max_x, max_y),
+        local_owner.as_deref(),
+        local_owner_id,
+        &sim.fog,
+        state.sandbox_full_visibility,
+        sim.session.binary_frame,
+        bulk_register_live_buildings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_tactical_screen_entity_encounter_order(
+    sim: &crate::sim::world::Simulation,
+    bounds: (f32, f32, f32, f32),
+    local_owner: Option<&str>,
+    local_owner_id: Option<InternedId>,
+    fog: &FogState,
+    ignore_visibility: bool,
+    current_frame: u32,
+    bulk_register_live_buildings: bool,
+) -> Vec<u64> {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    tactical_entity_encounter_order(sim)
+        .into_iter()
+        .filter(|id| {
+            sim.entities().get(*id).is_some_and(|entity| {
+                let owner = sim.interner.resolve(entity.owner);
+                let admitted = if bulk_register_live_buildings
+                    && entity.category == EntityCategory::Structure
+                {
+                    entity.lifecycle.object_alive && !entity.lifecycle.in_limbo
+                } else {
+                    tactical_entity_render_admission(
+                        entity,
+                        owner,
+                        local_owner,
+                        local_owner_id,
+                        fog,
+                        ignore_visibility,
+                        current_frame,
+                        0,
+                    )
+                    .is_some()
+                };
+                if !admitted {
+                    return false;
+                }
+                let (x, y) = interpolated_screen_position_entity(entity);
+                x >= min_x && x <= max_x && y >= min_y && y <= max_y
+            })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CellVisibilityState {
@@ -309,6 +488,196 @@ mod tests {
     }
 
     #[test]
+    fn item83_equal_tactical_keys_keep_live_registration_order() {
+        let mut sim = crate::sim::world::Simulation::new();
+        sim.entities_mut()
+            .insert(GameEntity::test_default(1, "E1", "Americans", 10, 10));
+        sim.entities_mut()
+            .insert(GameEntity::test_default(2, "E1", "Americans", 10, 10));
+        sim.set_logic_order_for_test(vec![2, 1]);
+        assert_eq!(tactical_entity_encounter_order(&sim), [2, 1]);
+    }
+
+    #[test]
+    fn item83_shared_render_admission_excludes_hidden_passenger_and_limbo() {
+        use crate::sim::passenger::PassengerRole;
+
+        let fog = FogState::default();
+        let local_owner_id = crate::sim::intern::test_intern("Americans");
+        let mut entity = GameEntity::test_default(1, "AMCV", "Americans", 10, 10);
+        entity.lifecycle.object_alive = true;
+        entity.lifecycle.in_limbo = false;
+
+        let admitted = |entity: &GameEntity, owner: &str, ignore_visibility: bool| {
+            tactical_entity_render_admission(
+                entity,
+                owner,
+                Some("Americans"),
+                Some(local_owner_id),
+                &fog,
+                ignore_visibility,
+                0,
+                0,
+            )
+            .is_some()
+        };
+
+        assert!(admitted(&entity, "Americans", false));
+        entity.passenger_role = PassengerRole::Inside { transport_id: 9 };
+        assert!(!admitted(&entity, "Americans", false));
+        entity.passenger_role = PassengerRole::None;
+        entity.lifecycle.in_limbo = true;
+        assert!(!admitted(&entity, "Americans", false));
+
+        entity.lifecycle.in_limbo = false;
+        assert!(admitted(&entity, "Americans", false));
+        entity.owner = crate::sim::intern::test_intern("Soviet");
+        assert!(
+            !admitted(&entity, "Soviet", false),
+            "an unrevealed enemy is absent from every screen selection consumer"
+        );
+        assert!(
+            admitted(&entity, "Soviet", true),
+            "the same entity is admitted when the renderer's visibility override is active"
+        );
+    }
+
+    #[test]
+    fn item83_band_preflight_source_bulk_registers_hidden_live_building_only() {
+        use crate::app_entity_pick::compute_box_selection_snapshot;
+        use crate::sim::components::Health;
+
+        let mut sim = crate::sim::world::Simulation::new();
+        let local_owner = sim.interner.intern("Americans");
+        let enemy_owner = sim.interner.intern("Soviet");
+        let mobile_type = sim.interner.intern("E1");
+        let building_type = sim.interner.intern("NAPOWR");
+
+        let mut hidden_mobile = GameEntity::new_at_frame_zero_for_test(
+            1,
+            10,
+            10,
+            0,
+            0,
+            enemy_owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            mobile_type,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        let mut hidden_building = GameEntity::new_at_frame_zero_for_test(
+            2,
+            20,
+            20,
+            0,
+            0,
+            enemy_owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            building_type,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        hidden_mobile.lifecycle.in_limbo = false;
+        hidden_building.lifecycle.in_limbo = false;
+        let mobile_anchor = interpolated_screen_position_entity(&hidden_mobile);
+        let building_anchor = interpolated_screen_position_entity(&hidden_building);
+        sim.entities_mut().insert(hidden_mobile);
+        sim.entities_mut().insert(hidden_building);
+        sim.set_logic_order_for_test(vec![1, 2]);
+
+        let bounds = (
+            mobile_anchor.0.min(building_anchor.0) - 32.0,
+            mobile_anchor.1.min(building_anchor.1) - 32.0,
+            mobile_anchor.0.max(building_anchor.0) + 32.0,
+            mobile_anchor.1.max(building_anchor.1) + 32.0,
+        );
+        let visible = compose_tactical_screen_entity_encounter_order(
+            &sim,
+            bounds,
+            Some("Americans"),
+            Some(local_owner),
+            &sim.fog,
+            false,
+            0,
+            false,
+        );
+        let preflight = compose_tactical_screen_entity_encounter_order(
+            &sim,
+            bounds,
+            Some("Americans"),
+            Some(local_owner),
+            &sim.fog,
+            false,
+            0,
+            true,
+        );
+
+        assert!(
+            visible.is_empty(),
+            "neither shrouded enemy is render-tracked"
+        );
+        assert_eq!(
+            preflight,
+            [2],
+            "only the live building is bulk-registered for band preflight"
+        );
+
+        let building_box = compute_box_selection_snapshot(
+            sim.entities(),
+            &preflight,
+            &visible,
+            &[],
+            Some(&sim.fog),
+            Some("Americans"),
+            building_anchor.0 - 1.0,
+            building_anchor.1 - 1.0,
+            building_anchor.0 + 1.0,
+            building_anchor.1 + 1.0,
+            false,
+            None,
+            None,
+            Some(&sim.interner),
+        )
+        .expect("the hidden building must consume a non-Shift band release");
+        assert!(building_box.clear);
+        assert!(
+            building_box.select.is_empty(),
+            "bulk registration affects caught-anything only, not band candidates"
+        );
+
+        assert!(
+            compute_box_selection_snapshot(
+                sim.entities(),
+                &preflight,
+                &visible,
+                &[],
+                Some(&sim.fog),
+                Some("Americans"),
+                mobile_anchor.0 - 1.0,
+                mobile_anchor.1 - 1.0,
+                mobile_anchor.0 + 1.0,
+                mobile_anchor.1 + 1.0,
+                false,
+                None,
+                None,
+                Some(&sim.interner),
+            )
+            .is_none(),
+            "a shrouded mobile leaves the band truly empty for click fallback"
+        );
+    }
+
+    #[test]
     fn a_cruising_aircraft_leaves_the_ground_band() {
         // Black Eagle at the stock flight level.
         let beag = entity_with_locomotor(
@@ -444,8 +813,9 @@ mod tests {
         let (_, ground_y) = ground_screen_position(&beag.position);
         let (_, drawn_y) = screen_position(&beag);
 
-        // Cell (40, 40) at ground level projects to row 15*(40+40)+15.
-        assert_eq!(ground_y, 1215.0);
+        // Cell (40, 40) at ground level: an entity is drawn on its diamond
+        // centre, row 15*(40+40) + 15 + 15.
+        assert_eq!(ground_y, 1230.0);
         // The stock flight level lifts the drawing 216 px — ~14 iso rows.
         assert_eq!(ground_y - drawn_y, 216.0);
         assert_eq!(ground_sort_row(&beag, drawn_y), ground_y);
@@ -478,8 +848,10 @@ mod tests {
         );
         let (_, drawn_y) = screen_position(&beag);
 
-        // A building's key row is its NW cell origin: 15*(35+35)+15 - 30/2.
-        let building_row: f32 = 1050.0;
+        // A building's key row is its NW cell's tile row — the entity anchor
+        // (15*(35+35) + 15 + 15) with the render-coordinate lift of 30/2 taken
+        // back off.
+        let building_row: f32 = 1065.0;
         let building_depth =
             compute_sprite_depth_params(MAP_ORIGIN_Y, MAP_WORLD_HEIGHT, building_row, 0);
 

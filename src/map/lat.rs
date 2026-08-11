@@ -159,19 +159,14 @@ pub fn parse_lat_config(ini_data: &[u8], lookup: &TilesetLookup) -> LatConfig {
             lookup,
             general.and_then(|section| section.get_i32(base_key)),
         )
-            .map_or(-1, |bounds| i32::from(bounds.start));
-        let lat_base = tileset_bounds(
-            lookup,
-            general.and_then(|section| section.get_i32(lat_key)),
-        )
+        .map_or(-1, |bounds| i32::from(bounds.start));
+        let lat_base = tileset_bounds(lookup, general.and_then(|section| section.get_i32(lat_key)))
             .map_or(-1, |bounds| i32::from(bounds.start));
         let exemptions = exemption_defs
             .iter()
             .filter_map(|&(key, last_offset)| {
-                let bounds = tileset_bounds(
-                    lookup,
-                    general.and_then(|section| section.get_i32(key)),
-                )?;
+                let bounds =
+                    tileset_bounds(lookup, general.and_then(|section| section.get_i32(key)))?;
                 // Retail Lunar leaves these two ordinal sections present with
                 // zero tiles, while native theater init clears their effective
                 // LAT globals. Do not expand their shared next-tile start into
@@ -276,11 +271,7 @@ fn apply_lat_cell(
 }
 
 fn ramp_range_contains(tile: i32, base: i32, last_offset: i32) -> bool {
-    let end = if base == -1 {
-        -1
-    } else {
-        base + last_offset
-    };
+    let end = if base == -1 { -1 } else { base + last_offset };
     base <= tile && tile <= end
 }
 
@@ -306,8 +297,7 @@ pub(crate) fn slope_fixed_tile(
         _ => None,
     };
     let mask = neighbor_pair.map_or(0, |(first, second)| {
-        u8::from(cardinal_slopes[first] == 0)
-            | (u8::from(cardinal_slopes[second] == 0) << 1)
+        u8::from(cardinal_slopes[first] == 0) | (u8::from(cardinal_slopes[second] == 0) << 1)
     });
 
     if mask != 0 {
@@ -324,12 +314,7 @@ pub(crate) fn slope_fixed_tile(
     }
 }
 
-fn neighbor_slope(
-    slopes: &[u8],
-    by_coord: &HashMap<(u16, u16), usize>,
-    x: i32,
-    y: i32,
-) -> u8 {
+fn neighbor_slope(slopes: &[u8], by_coord: &HashMap<(u16, u16), usize>, x: i32, y: i32) -> u8 {
     if x < 0 || y < 0 || x > i32::from(u16::MAX) || y > i32::from(u16::MAX) {
         return 0;
     }
@@ -370,9 +355,8 @@ fn apply_recalc_sweeps(
             slopes[cell_index] =
                 pristine_slope(cells[cell_index].tile_index, cells[cell_index].sub_tile);
             apply_lat_cell(cells, &by_coord, cell_index, lat_config);
-            let cardinal = CARDINAL_OFFSETS.map(|(dx, dy)| {
-                neighbor_slope(&slopes, &by_coord, x + dx, y + dy)
-            });
+            let cardinal =
+                CARDINAL_OFFSETS.map(|(dx, dy)| neighbor_slope(&slopes, &by_coord, x + dx, y + dy));
             cells[cell_index].tile_index = slope_fixed_tile(
                 cells[cell_index].tile_index,
                 slopes[cell_index],
@@ -553,14 +537,20 @@ RoughConnectTo=14
         );
         let mut cells = center_cells(1, [0, 1, 1, 1]);
         apply_lat(&mut cells, &config, &lookup);
-        assert_eq!(cells[0].tile_index, 0, "missing LAT base writes -1 + mask 1");
+        assert_eq!(
+            cells[0].tile_index, 0,
+            "missing LAT base writes -1 + mask 1"
+        );
     }
 
     #[test]
     fn gsi_04_03a_nonrough_groups_gate_only_on_lat_global() {
         let (_, missing_ground) = fixture("ClearToSandLat=2\n", &COUNTS);
         let sand = missing_ground.grounds[1].clone();
-        assert_eq!((sand.base_tile, sand.lat_base, sand.is_enabled()), (-1, 2, true));
+        assert_eq!(
+            (sand.base_tile, sand.lat_base, sand.is_enabled()),
+            (-1, 2, true)
+        );
         assert_eq!(
             center_result(2, [0, 2, 2, 2], sand),
             3,
@@ -690,12 +680,7 @@ RoughConnectTo=14
                     500 + i32::from(block)
                 };
                 assert_eq!(
-                    slope_fixed_tile(
-                        100,
-                        slope,
-                        cardinal_slopes_for_mask(slope, mask),
-                        config,
-                    ),
+                    slope_fixed_tile(100, slope, cardinal_slopes_for_mask(slope, mask), config,),
                     expected,
                     "slope {slope}, mask {mask}",
                 );

@@ -127,6 +127,8 @@ pub fn high_bridge_direction(id: u8) -> Option<u8> {
 pub struct OverlayTypeFlags {
     /// Tiberium=yes — rendered with unit palette, gets -12px Y offset.
     pub tiberium: bool,
+    /// ChainReaction=yes permits Apply_area_damage resource reduction.
+    pub chain_reaction: bool,
     /// Wall=yes — rendered with unit palette, gets -12px Y offset.
     pub wall: bool,
     /// Overlay `Armor=wood`, used by the Wood warhead wall-damage route.
@@ -141,6 +143,10 @@ pub struct OverlayTypeFlags {
     pub crushable: bool,
     /// Crate=yes — gets -12px Y offset.
     pub crate_type: bool,
+    /// `Overrides=yes` protects an existing overlay from ordinary runtime placement.
+    pub overrides: bool,
+    /// A non-empty `CellAnim=` supplies valid overlay art even when no SHP resolves.
+    pub has_cell_anim: bool,
     /// IsRubble=yes — explicitly returns reduced ZoneType 0 after earlier overlay checks.
     pub is_rubble: bool,
     /// IsARock=yes — reduced ZoneType 6.
@@ -176,6 +182,7 @@ impl Default for OverlayTypeFlags {
     fn default() -> Self {
         Self {
             tiberium: false,
+            chain_reaction: false,
             wall: false,
             armor_is_wood: false,
             is_veins: false,
@@ -183,6 +190,8 @@ impl Default for OverlayTypeFlags {
             is_gate: false,
             crushable: false,
             crate_type: false,
+            overrides: false,
+            has_cell_anim: false,
             is_rubble: false,
             is_a_rock: false,
             land_wheel_speed_zero: false,
@@ -310,6 +319,7 @@ impl OverlayTypeRegistry {
                     .unwrap_or(1);
                 flags.push(OverlayTypeFlags {
                     tiberium,
+                    chain_reaction: type_section.get_bool("ChainReaction").unwrap_or(false),
                     wall: type_section.get_bool("Wall").unwrap_or(false),
                     armor_is_wood: type_section
                         .get("Armor")
@@ -321,6 +331,10 @@ impl OverlayTypeRegistry {
                     is_gate: type_section.get_bool("Gate").unwrap_or(false),
                     crushable: type_section.get_bool("Crushable").unwrap_or(false),
                     crate_type: type_section.get_bool("Crate").unwrap_or(false),
+                    overrides: type_section.get_bool("Overrides").unwrap_or(false),
+                    has_cell_anim: type_section
+                        .get("CellAnim")
+                        .is_some_and(|value| !value.trim().is_empty()),
                     is_rubble: type_section.get_bool("IsRubble").unwrap_or(false),
                     is_a_rock: type_section.get_bool("IsARock").unwrap_or(false),
                     land_wheel_speed_zero,
@@ -499,26 +513,27 @@ fn parse_land_type(value: &str) -> Option<LandType> {
         .find(|land_type| value.eq_ignore_ascii_case(land_type.section_name()))
 }
 
-/// Whether RecalcAttributes removes this resource overlay before retaining Land.
-pub(crate) fn clears_tiberium_on_slope(flags: &OverlayTypeFlags, slope_type: u8) -> bool {
-    flags.tiberium
-        && slope_type != 0
-        && (flags.land == LandType::Wall
-            || flags.land == LandType::Railroad
-            || flags.no_use_tile_land_type
-            || slope_type >= 5)
+/// Exact predicate for RecalcAttributes' early overlay-Land branch.
+pub(crate) fn uses_early_recalc_land_branch(flags: &OverlayTypeFlags) -> bool {
+    flags.land == LandType::Wall || flags.land == LandType::Railroad || flags.no_use_tile_land_type
 }
 
-/// Cell land retained after the overlay portion of RecalcAttributes.
+/// Whether RecalcAttributes removes this resource overlay object/index/data.
+pub(crate) fn clears_tiberium_on_slope(flags: &OverlayTypeFlags, slope_type: u8) -> bool {
+    flags.tiberium && slope_type != 0 && (uses_early_recalc_land_branch(flags) || slope_type >= 5)
+}
+
+/// Cell land retained by the current RecalcAttributes invocation.
+///
+/// The early branch copies overlay Land before it removes a sloped resource,
+/// so that invocation keeps the copied land even though the overlay pointer is
+/// gone. A normal/nonclaiming resource removed on slope 5+ restores tile land.
 pub(crate) fn retained_overlay_land(flags: &OverlayTypeFlags, slope_type: u8) -> Option<LandType> {
-    if clears_tiberium_on_slope(flags, slope_type) {
+    let uses_early_branch = uses_early_recalc_land_branch(flags);
+    if clears_tiberium_on_slope(flags, slope_type) && !uses_early_branch {
         return None;
     }
-    (flags.land == LandType::Wall
-        || flags.land == LandType::Railroad
-        || flags.no_use_tile_land_type
-        || flags.tiberium)
-        .then_some(flags.land)
+    (uses_early_branch || flags.tiberium).then_some(flags.land)
 }
 
 /// Generate candidate SHP filenames for an overlay name.
@@ -777,6 +792,21 @@ NoUseTileLandType=no
     }
 
     #[test]
+    fn gsi_04_11_chain_reaction_ctor_default_is_false_and_ini_key_overrides() {
+        let ini = IniFile::from_str(
+            "[OverlayTypes]\n0=GREEN\n1=CHAIN\n2=BLUE\n\
+             [GREEN]\nTiberium=yes\n\
+             [CHAIN]\nTiberium=yes\nChainReaction=yes\n\
+             [BLUE]\nTiberium=yes\nChainReaction=no\n",
+        );
+        let reg = OverlayTypeRegistry::from_ini(&ini, None);
+
+        assert!(!reg.flags(0).unwrap().chain_reaction);
+        assert!(reg.flags(1).unwrap().chain_reaction);
+        assert!(!reg.flags(2).unwrap().chain_reaction);
+    }
+
+    #[test]
     fn gsi_04_04_overlay_land_retention_matches_recalc_attributes() {
         let mut ordinary = OverlayTypeFlags {
             land: LandType::Road,
@@ -786,6 +816,7 @@ NoUseTileLandType=no
         assert_eq!(retained_overlay_land(&ordinary, 0), None);
 
         ordinary.no_use_tile_land_type = true;
+        assert!(uses_early_recalc_land_branch(&ordinary));
         assert_eq!(retained_overlay_land(&ordinary, 0), Some(LandType::Road));
 
         for land in [LandType::Wall, LandType::Railroad] {
@@ -794,6 +825,7 @@ NoUseTileLandType=no
                 no_use_tile_land_type: false,
                 ..OverlayTypeFlags::default()
             };
+            assert!(uses_early_recalc_land_branch(&flags));
             assert_eq!(retained_overlay_land(&flags, 0), Some(land));
         }
 
@@ -820,7 +852,7 @@ NoUseTileLandType=no
         };
         assert_eq!(
             [0, 1, 4, 5].map(|slope| retained_overlay_land(&stock_default, slope)),
-            [Some(LandType::Tiberium), None, None, None]
+            [Some(LandType::Tiberium); 4]
         );
 
         for land in [LandType::Wall, LandType::Railroad] {
@@ -831,7 +863,7 @@ NoUseTileLandType=no
                 ..OverlayTypeFlags::default()
             };
             assert_eq!(retained_overlay_land(&authoritative, 0), Some(land));
-            assert_eq!(retained_overlay_land(&authoritative, 1), None);
+            assert_eq!(retained_overlay_land(&authoritative, 1), Some(land));
         }
     }
 

@@ -18,7 +18,8 @@
 use crate::sim::entity_store::EntityStore;
 
 /// Drag phase tracks the two-stage selection state machine:
-/// mouse-down sets `Pending`, crossing a 4px threshold activates band-box.
+/// mouse-down sets `Pending`, reaching the effective 5px threshold activates
+/// band-box.
 #[derive(Debug, Clone, Copy)]
 pub enum DragPhase {
     /// No drag in progress.
@@ -32,7 +33,7 @@ pub enum DragPhase {
 /// Tracks the player's current selection drag state.
 ///
 /// Two-phase state machine:
-/// 1. `Pending` -- left mouse pressed, waiting for 4px drag threshold.
+/// 1. `Pending` -- left mouse pressed, waiting for the effective 5px threshold.
 /// 2. `BandBoxActive` -- threshold crossed, drawing the selection rectangle.
 ///
 /// On release: `Pending` -> `Click`, `BandBoxActive` -> `BoxSelect`.
@@ -45,9 +46,10 @@ pub struct SelectionState {
     pub drag_current: Option<(f32, f32)>,
 }
 
-/// Minimum drag distance (pixels) to activate band-box selection.
-/// 4 pixels Euclidean distance threshold.
-const MIN_DRAG_DISTANCE: f32 = 4.0;
+/// Minimum effective drag distance (pixels) to activate band-box selection.
+/// Native truncates the Euclidean distance and tests the integer result `> 4`,
+/// so every distance below 5 stays pending and 5 activates.
+const MIN_DRAG_DISTANCE: f32 = 5.0;
 
 /// Returned by `update_drag` when the drag crosses the activation threshold.
 ///
@@ -79,7 +81,7 @@ impl SelectionState {
 
     /// Begin a selection drag at the given screen position.
     /// Sets phase to `Pending` — band-box won't activate until the mouse
-    /// moves more than 4 pixels from this point.
+    /// reaches 5 pixels from this point.
     pub fn begin_drag(&mut self, screen_x: f32, screen_y: f32) {
         self.phase = DragPhase::Pending {
             start_x: screen_x,
@@ -90,7 +92,7 @@ impl SelectionState {
 
     /// Update the current drag position (called on mouse move while dragging).
     ///
-    /// If in `Pending` phase and the mouse has moved > 4px from start,
+    /// If in `Pending` phase and the mouse has moved at least 5px from start,
     /// transitions to `BandBoxActive` and returns `DragTransition::Activated`
     /// so the caller knows the rectangle is now live.
     pub fn update_drag(&mut self, screen_x: f32, screen_y: f32) -> DragTransition {
@@ -99,7 +101,7 @@ impl SelectionState {
                 let dx = screen_x - start_x;
                 let dy = screen_y - start_y;
                 let dist = (dx * dx + dy * dy).sqrt();
-                if dist > MIN_DRAG_DISTANCE {
+                if dist >= MIN_DRAG_DISTANCE {
                     self.phase = DragPhase::BandBoxActive { start_x, start_y };
                     self.drag_current = Some((screen_x, screen_y));
                     DragTransition::Activated
@@ -258,10 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn test_drag_threshold_4px() {
+    fn test_drag_threshold_matches_native_truncated_distance() {
         let mut sel = SelectionState::new();
         sel.begin_drag(100.0, 100.0);
-        let t = sel.update_drag(102.0, 102.0);
+        let t = sel.update_drag(104.9, 100.0);
         assert_eq!(t, DragTransition::NoChange);
         assert!(!sel.is_band_box_active());
         let t = sel.update_drag(104.0, 103.0);

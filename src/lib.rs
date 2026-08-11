@@ -49,6 +49,8 @@ pub mod app;
 // Extracted from app.rs to keep the orchestrator under 600 lines.
 pub mod app_init;
 pub mod app_init_helpers;
+/// Headless retail-scenario loading for parity runs (no GPU, no window).
+pub mod headless_scenario;
 pub mod app_launch;
 pub mod app_list_maps;
 pub mod app_loading;
@@ -77,6 +79,7 @@ pub mod skirmish_scenarios;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
+pub mod app_hotkeys;
 pub mod app_types;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
@@ -127,8 +130,8 @@ pub mod app_commands;
 
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
-pub mod app_sim_tick;
 pub mod app_frame_pacer;
+pub mod app_sim_tick;
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.
@@ -140,6 +143,9 @@ pub mod app_building_anim;
 
 // Weapon fire presentation: non-garrison muzzle flashes and FLH-positioned reports.
 pub mod app_fire_effects;
+
+// App-owned presentation runtime for the native transient combat-light vector.
+pub mod app_combat_lights;
 
 // Parachute SHP animation lifecycle for descending paradropped infantry.
 pub mod app_chute_anim;

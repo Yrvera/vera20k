@@ -23,8 +23,7 @@ use crate::render::gpu::GpuContext;
 const BATCH_SHADER: &str = include_str!("batch_shader.wgsl");
 
 /// WGSL shader with per-pixel Z-depth output via @builtin(frag_depth).
-/// Samples a parallel R8 depth atlas to compute per-pixel depth for terrain
-/// tiles (cliff occlusion) and overlays.
+/// Samples a parallel R8 depth atlas to compute per-pixel terrain depth.
 const ZDEPTH_SHADER: &str = include_str!("zdepth_shader.wgsl");
 
 /// WGSL voxel-sprite shader: byte → (palette | house_ramp) → fx pipeline.
@@ -207,13 +206,13 @@ impl InstanceBufferPool {
 ///
 /// Pipelines:
 /// - `pipeline` / `zdepth_pipeline` (terrain): depth write ON — terrain writes Z-data.
-/// - `overlay_pipeline` (cliff redraw, UI): depth write ON, LessEqual — for passes
-///   that must write depth (cliff face redraw after entities).
+/// - `overlay_pipeline` (UI/debug): depth write ON, LessEqual — for passes that
+///   intentionally update the shared depth buffer.
 pub struct BatchRenderer {
     /// Render pipeline for terrain (depth write + Less compare).
     pipeline: wgpu::RenderPipeline,
     /// Render pipeline with depth write ON, LessEqual compare.
-    /// Used for cliff redraw (must write depth) and UI passes.
+    /// Used for UI/debug passes that intentionally write depth.
     overlay_pipeline: wgpu::RenderPipeline,
     /// Render pipeline with per-pixel Z-depth (frag_depth output, Less compare).
     /// Used for terrain tiles with TMP Z-data.
@@ -222,6 +221,13 @@ pub struct BatchRenderer {
     /// depth write OFF. Overlays draw unconditionally over terrain because
     /// tiles without Z-data skip Z-testing entirely.
     overlay_passthrough_pipeline: wgpu::RenderPipeline,
+    /// Depth-only pipeline: colour target fully masked, depth write ON, Less
+    /// compare. Stamps a sprite's opaque silhouette so a later depth-testing
+    /// pass can be clipped by it, without disturbing colour compositing order.
+    depth_stamp_pipeline: wgpu::RenderPipeline,
+    /// Depth-testing pipeline: colour ON, depth write OFF, Less compare. The
+    /// read-only counterpart of `depth_stamp_pipeline`.
+    depth_test_pipeline: wgpu::RenderPipeline,
     /// Layout for texture bind groups (group 1).
     texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Layout for zdepth texture bind groups (group 1): color + sampler + R8 depth.
@@ -468,8 +474,7 @@ impl BatchRenderer {
                 });
 
         // Overlay pipeline: depth write ON, LessEqual compare.
-        // Used for cliff redraw (must write depth to occlude sprites behind cliffs)
-        // and UI passes that don't interact with game depth.
+        // Used for UI/debug passes that intentionally update depth.
         let overlay_pipeline: wgpu::RenderPipeline =
             gpu.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -548,6 +553,98 @@ impl BatchRenderer {
                         format: wgpu::TextureFormat::Depth32Float,
                         depth_write_enabled: false,
                         depth_compare: wgpu::CompareFunction::Always,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
+        // Building bodies stamp their silhouette here so the post-shroud
+        // selection-bracket redraw can be clipped by the art it stands behind.
+        // Colour is masked off entirely, so this pass cannot perturb the
+        // painter's-order compositing the Ground band depends on — only the
+        // depth attachment changes.
+        let depth_stamp_pipeline: wgpu::RenderPipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Batch Pipeline (Depth Stamp)"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: INSTANCE_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: gpu.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            // The whole point: contribute depth, never colour.
+                            write_mask: wgpu::ColorWrites::empty(),
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: true,
+                        depth_compare: wgpu::CompareFunction::Less,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
+        // Read-only counterpart: bracket pixels compare against whatever the
+        // stamp left and drop the ones that lose, but never write depth
+        // themselves — gamemd gates its own line Z-store behind a caller flag
+        // that this path leaves clear.
+        let depth_test_pipeline: wgpu::RenderPipeline =
+            gpu.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Batch Pipeline (Depth Test)"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[wgpu::VertexBufferLayout {
+                            array_stride: INSTANCE_STRIDE,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &instance_attrs,
+                        }],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: gpu.surface_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: false,
+                        depth_compare: wgpu::CompareFunction::Less,
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -774,6 +871,8 @@ impl BatchRenderer {
             overlay_pipeline,
             zdepth_pipeline,
             overlay_passthrough_pipeline,
+            depth_stamp_pipeline,
+            depth_test_pipeline,
             texture_bind_group_layout,
             zdepth_texture_bind_group_layout,
             unit_atlas_bind_group_layout,
@@ -1253,7 +1352,7 @@ impl BatchRenderer {
 
     /// Draw instances using the overlay pipeline (LessEqual, depth write ON).
     ///
-    /// Used for cliff redraw (must write depth) and UI passes.
+    /// Used for UI/debug passes that intentionally write depth.
     pub fn draw_with_buffer_no_depth<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
@@ -1385,6 +1484,57 @@ impl BatchRenderer {
         }
         render_pass.set_pipeline(&self.overlay_passthrough_pipeline);
         render_pass.set_bind_group(0, &self.ui_camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &texture.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, 0..count);
+    }
+
+    /// Stamp a sprite's opaque silhouette into the depth buffer, writing no
+    /// colour at all.
+    ///
+    /// This is how a building body gets to occlude the selection-bracket
+    /// redraw. gamemd's building blit tests and writes the Z-buffer as it
+    /// paints, so the shape's own transparent pixels leave Z untouched; here
+    /// the fragment shader's existing alpha discard does that job and the
+    /// colour target is masked off, so the pass contributes depth and nothing
+    /// else. Compare is `Less` for the same reason gamemd's blitter tests
+    /// before it stores — a body behind nearer terrain must not stamp through
+    /// it.
+    pub fn draw_with_buffer_depth_stamp<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture: &'a BatchTexture,
+        buffer: &'a wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.depth_stamp_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &texture.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..6, 0..count);
+    }
+
+    /// Draw sprites that test the depth buffer but never write it.
+    ///
+    /// gamemd's line rasteriser does exactly this: it compares every pixel
+    /// against the Z-buffer and skips the ones that lose, while the store back
+    /// into Z is gated behind a separate caller flag that the bracket path
+    /// leaves clear. Used for the post-shroud bracket redraw.
+    pub fn draw_with_buffer_depth_test<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture: &'a BatchTexture,
+        buffer: &'a wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.depth_test_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, &texture.bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..6, 0..count);

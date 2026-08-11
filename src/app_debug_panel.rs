@@ -127,7 +127,6 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
             let mouse_keys: &[(&str, &str)] = &[
                 ("LMB", "Select / Place"),
                 ("RMB", "Order / Deselect"),
-                ("MMB drag", "Pan camera"),
                 ("Wheel", "Scroll sidebar"),
             ];
             for (key, desc) in mouse_keys {

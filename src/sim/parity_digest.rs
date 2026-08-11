@@ -71,6 +71,12 @@ pub struct ParityDigest {
     /// FNV-1a over each entity's current health and absolute X/Y sub-cell position, in
     /// stable-id order.
     pub entity_state_hash: u64,
+    /// Scenario-stream cursors. The main pair above mirrors the original's main RNG, but
+    /// this engine routes most gameplay draws to the scenario stream, so a comparison that
+    /// reads only the main pair is blind wherever the two engines split a draw differently.
+    /// The original's counterpart lives on its ScenarioClass instance.
+    pub scenario_rng_index_a: i32,
+    pub scenario_rng_index_b: i32,
 }
 
 /// Absolute sub-cell position of an entity on one axis.
@@ -87,12 +93,15 @@ impl ParityDigest {
     ///
     /// Iteration order is the entity store's stable-id order and the house map's key
     /// order, both deterministic — the hash must not depend on traversal accidents.
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         tick: u64,
         entities: &EntityStore,
         houses: &BTreeMap<InternedId, HouseState>,
         rng_index_a: i32,
         rng_index_b: i32,
+        scenario_rng_index_a: i32,
+        scenario_rng_index_b: i32,
     ) -> Self {
         let mut entity_state_hash = FNV1A64_OFFSET_BASIS;
         let mut entity_count: u32 = 0;
@@ -120,6 +129,8 @@ impl ParityDigest {
             rng_index_a,
             rng_index_b,
             entity_state_hash,
+            scenario_rng_index_a,
+            scenario_rng_index_b,
         }
     }
 
@@ -199,7 +210,7 @@ mod tests {
     use super::*;
 
     fn empty_digest() -> ParityDigest {
-        ParityDigest::capture(0, &EntityStore::new(), &BTreeMap::new(), 0, 0)
+        ParityDigest::capture(0, &EntityStore::new(), &BTreeMap::new(), 0, 0, 0, 0)
     }
 
     #[test]
@@ -274,6 +285,8 @@ mod tests {
             rng_index_a: 211,
             rng_index_b: 64,
             entity_state_hash: 0x9CEB_C227_CE30_BEAF,
+            scenario_rng_index_a: 144,
+            scenario_rng_index_b: 32,
         };
         let line = digest.to_json_line().unwrap();
         assert!(!line.contains('\n'), "a JSON line must stay on one line");

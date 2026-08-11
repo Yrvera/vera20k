@@ -42,6 +42,7 @@ use crate::sim::passenger::PassengerRole;
 use crate::sim::radio::Contacts;
 use crate::sim::slave_miner::SlaveHarvester;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
+use crate::util::native_x87::NativeF64Bits;
 
 /// Frames the passive target-scan timer is armed for at object construction.
 /// The original's Techno constructor anchors the timer at the current frame and
@@ -81,6 +82,10 @@ fn default_true() -> bool {
 
 fn default_foundation() -> String {
     "1x1".to_string()
+}
+
+fn default_armor_multiplier() -> NativeF64Bits {
+    NativeF64Bits::ONE
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -207,6 +212,20 @@ impl Default for ObjectLifecycle {
     }
 }
 
+/// Accepted Psychedelic-warhead state owned by TechnoClass.
+///
+/// `active` mirrors the byte at native `Techno+0x298`; `timer` mirrors the
+/// signed dword at `+0x29C`. The latter is the exact distance-zero damage
+/// kernel result, so it deliberately remains signed rather than becoming a
+/// Rust duration type.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct BerserkState {
+    pub active: bool,
+    pub timer: i32,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -250,8 +269,25 @@ pub struct GameEntity {
     /// RuleSet borrow.
     #[serde(default = "default_foundation")]
     pub foundation: String,
+    /// Immutable type inputs needed to reverse this building's hidden-counter
+    /// contribution during cell-list exit without a RuleSet borrow.
+    #[serde(default)]
+    pub building_hidden_occupancy:
+        Option<crate::rules::object_type::BuildingHiddenOccupancyProfile>,
+    /// Immutable writer-profile snapshot for CellClass house base reservations.
+    /// `None` is the exact native BuildingType eligibility gate.
+    #[serde(default)]
+    pub base_reservation_spacing: Option<i32>,
+    /// Immutable BuildingType profile for the House edge refresh callback.
+    /// True only when the parsed type has `Factory=BuildingType`.
+    #[serde(default)]
+    pub determines_waypoint_edge: bool,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
     pub veterancy: u16,
+    /// Mutable Techno instance armor multiplier. Native construction seeds
+    /// this double to 1.0; armor powerups are its active non-neutral writer.
+    #[serde(default = "default_armor_multiplier")]
+    pub armor_multiplier: NativeF64Bits,
     /// House credited with destroying this object, captured at the instant its
     /// health reached zero.
     ///
@@ -320,6 +356,15 @@ pub struct GameEntity {
     /// is the authoritative fact needed to reconstruct its linked-list order.
     #[serde(default)]
     pub occupancy_enter_order: u64,
+    /// Bucket membership in gamemd's independent 20 x 20 airborne-object
+    /// spatial grid. Air movement updates this only on entry, exit, or a real
+    /// bucket crossing; the ordinary cell-list insertion order is separate.
+    #[serde(default)]
+    pub air_spatial_bucket: Option<u16>,
+    /// Append order inside `air_spatial_bucket`. The native bucket is a vector,
+    /// so crossing into a bucket moves the object to that vector's tail.
+    #[serde(default)]
+    pub air_spatial_enter_order: u64,
 
     // --- Optional subsystem components ---
     /// Locomotor state — present on movable entities (speed > 0 in rules.ini).
@@ -334,6 +379,15 @@ pub struct GameEntity {
     pub navigation: NavigationState,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
+    /// TechnoClass `CurrentWeaponNumber`: the last live weapon slot selected
+    /// for this object. Slot zero is the constructor state. Fatal receiver
+    /// logic reuses this exact slot for the Suicide gate and death fallback.
+    #[serde(default)]
+    pub current_weapon_index: u8,
+    /// Actual weapon identity returned by the most recent live selection.
+    /// Class overrides can make this differ from the type's static slot.
+    #[serde(default)]
+    pub current_weapon_ref: Option<InternedId>,
     /// RadioClass-style live contacts for this entity, stored as stable IDs.
     /// Used by runtime building-entry/pathing exceptions such as contacted
     /// war factory exits and refinery dock entry. Kept per mover; a building
@@ -353,6 +407,11 @@ pub struct GameEntity {
     pub rally_target: Option<(u16, u16)>,
     /// Stable ID of the last entity that dealt damage (for retaliation).
     pub last_attacker_id: Option<u64>,
+    /// Persistent TechnoClass hostile-hit latch (`WasAttackedByEnemy`, native
+    /// byte +0x3D1). It is independent of retaliation's transient attacker
+    /// pointer and is consumed by the building AI low-credit sell decision.
+    #[serde(default)]
+    pub was_attacked_by_enemy: bool,
     /// Independent turret/barrel facing — only on entities with Turret=yes in rules.ini.
     /// Timer-based 16-bit interpolator mirroring gamemd's BarrelFacing primitive.
     pub barrel_facing: Option<crate::sim::movement::FacingClass>,
@@ -409,6 +468,11 @@ pub struct GameEntity {
     /// legacy and was removed as unreachable in stock YR.
     #[serde(default)]
     pub low_bridge_tube_state: Option<LowBridgeTubeMovementState>,
+    /// Controller-owned reversible mind-control manager (`TechnoClass+0x2BC`).
+    /// Capacity and ordered victim links are authoritative runtime state; they
+    /// cannot be reconstructed from victim-side `mind_controlled` flags.
+    #[serde(default)]
+    pub capture_manager: Option<crate::sim::capture_manager::CaptureManagerState>,
     /// Spawn-manager pool carried by a `Spawns=` parent (V3 Launcher,
     /// Dreadnought, Boomer, Aircraft Carrier, Destroyer). Mirrors the native
     /// `TechnoClass+0x2D0` manager pointer: present iff `Spawns=` resolved.
@@ -444,6 +508,9 @@ pub struct GameEntity {
     /// Native `TechnoClass::IsMindControlled` gate surrogate.
     #[serde(default)]
     pub mind_controlled: bool,
+    /// Psychedelic/chaos runtime, separate from reversible mind control.
+    #[serde(default)]
+    pub berserk: BerserkState,
     /// Active drive track curve state — present when a Drive vehicle is
     /// following a pre-computed curved path between cells.
     pub drive_track: Option<DriveTrackState>,
@@ -548,12 +615,11 @@ pub struct GameEntity {
     /// `None` for non-C4 attackers or attackers not currently planting.
     #[serde(default)]
     pub c4_plant: Option<C4PlantState>,
-    /// Active C4 detonation timer on this building. Set by `tick_c4_plants`
-    /// when a C4-capable attacker arrives on this building's cell. Once set,
-    /// `tick_c4_plants` Phase 2 fires C4Warhead damage every tick after
-    /// the wrapping native-frame delay elapses until the building dies.
+    /// Shared Building C4/PostMortem detonation latch. Infantry planting owns
+    /// one producer; qualifying delayed-death receiver results own the other.
+    /// The Building LogicVector visit consumes expiry synchronously.
     /// Never cleared in the C4 path — matches gamemd marker semantics.
-    /// `None` for non-buildings or buildings not currently being C4'd.
+    /// IronCurtain/ForceShield entry cancels it; `None` means no shared latch.
     #[serde(default)]
     pub pending_c4_detonation: Option<PendingC4Detonation>,
     /// Stable ID of the unit installed in a `Bunker=yes` building.
@@ -631,6 +697,12 @@ pub struct GameEntity {
     /// [`crate::rules::object_type::ObjectType::emits_damage_spark`].
     #[serde(default)]
     pub damage_particle_live_until: u64,
+    /// Active TechnoClass damage-Smoke `ParticleSystemClass` identity
+    /// (`TechnoClass +0x310`). The system is created synchronously by the
+    /// surviving ReceiveDamage postlude and explicitly UnInit when health
+    /// recovers above `ConditionYellow`.
+    #[serde(default)]
+    pub damage_smoke_system_id: Option<u64>,
     /// Debug event log — records movement/state transitions for the inspector panel.
     /// Only allocated when debug inspector is active (X hotkey). Not included in state hashing.
     #[serde(skip)]
@@ -825,6 +897,7 @@ impl GameEntity {
                 rx,
                 ry,
                 z,
+                exact_z_leptons: None,
                 sub_x: init_sub_x,
                 sub_y: init_sub_y,
             },
@@ -836,7 +909,12 @@ impl GameEntity {
             type_ref,
             category,
             foundation: default_foundation(),
+            building_hidden_occupancy: (category == EntityCategory::Structure)
+                .then(crate::rules::object_type::BuildingHiddenOccupancyProfile::default),
+            base_reservation_spacing: None,
+            determines_waypoint_edge: false,
             veterancy,
+            armor_multiplier: NativeF64Bits::ONE,
             vision_range,
             is_voxel,
             selected: false,
@@ -847,14 +925,19 @@ impl GameEntity {
             occupier: false,
             owned_count_released: false,
             occupancy_enter_order: stable_id,
+            air_spatial_bucket: None,
+            air_spatial_enter_order: stable_id,
             locomotor: None,
             movement_target: None,
             navigation: NavigationState::default(),
             attack_target: None,
+            current_weapon_index: 0,
+            current_weapon_ref: None,
             radio_contacts: Contacts::default(),
             dock_entered_with: None,
             rally_target: None,
             last_attacker_id: None,
+            was_attacked_by_enemy: false,
             barrel_facing: None,
             building_up: None,
             building_down: None,
@@ -874,6 +957,7 @@ impl GameEntity {
             teleport_state: None,
             tunnel_state: None,
             low_bridge_tube_state: None,
+            capture_manager: None,
             spawn_manager: None,
             spawn_owner_id: None,
             rocket_state: None,
@@ -882,6 +966,7 @@ impl GameEntity {
             parachute_state: None,
             invulnerability: None,
             mind_controlled: false,
+            berserk: BerserkState::default(),
             drive_track: None,
             drive_locomotion: None,
             ship_locomotion: None,
@@ -938,6 +1023,7 @@ impl GameEntity {
             suspended_attack_target: None,
             object_is_falling_down: 0,
             damage_particle_live_until: 0,
+            damage_smoke_system_id: None,
             debug_log: None,
         }
     }
@@ -1152,6 +1238,7 @@ mod tests {
         assert!(e.radio_contacts.is_empty());
         assert_eq!(e.rally_target, None);
         assert!(e.last_attacker_id.is_none());
+        assert!(!e.was_attacked_by_enemy);
         assert!(e.barrel_facing.is_none());
         assert!(e.miner.is_none());
         assert!(e.order_intent.is_none());
@@ -1324,11 +1411,12 @@ mod tests {
             5,
             true,
         );
-        // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15)
+        // An entity is drawn on its cell's diamond centre, half a tile east and
+        // half a tile south of that cell's tile corner.
         let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
         let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
-        assert!((sx - (corner_sx + 30.0)).abs() < 0.01);
-        assert!((sy - corner_sy).abs() < 0.01);
+        assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 0.01);
+        assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 0.01);
     }
 }
 

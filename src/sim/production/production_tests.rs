@@ -286,7 +286,7 @@ pub(super) fn water_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
                 speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
                 is_water: true,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,

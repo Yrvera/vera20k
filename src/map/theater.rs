@@ -767,8 +767,7 @@ impl BridgeRampTileTable {
 
 impl TheaterData {
     pub fn is_special_terrain_tile(&self, tile_id: u16, sub_tile: u8) -> bool {
-        self.cliff_ranges
-            .is_special_terrain_tile(tile_id, sub_tile)
+        self.cliff_ranges.is_special_terrain_tile(tile_id, sub_tile)
     }
 
     pub fn is_on_bridge_ramp_tile(&self, tile_id: u16, slope_byte: u8) -> bool {
@@ -1141,12 +1140,7 @@ fn apply_lunar_global_zeroing(
     rmg_tiles.water_set = None;
 }
 
-fn waterfall_is_special(
-    start: Option<u16>,
-    tile_id: u16,
-    sub_tile: u8,
-    ordinary: &[u8],
-) -> bool {
+fn waterfall_is_special(start: Option<u16>, tile_id: u16, sub_tile: u8, ordinary: &[u8]) -> bool {
     waterfall_blocks(start, tile_id, sub_tile, ordinary)
 }
 

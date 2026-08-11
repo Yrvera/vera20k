@@ -170,6 +170,35 @@ pub fn foundation_dimensions(value: &str) -> (u16, u16) {
     (def.width, def.height)
 }
 
+/// Exact sentinel-list contents for one native foundation, without the final
+/// `(0x7FFF, 0x7FFF)` terminator.
+///
+/// All table entries are row-major rectangles except `3x3Refinery`, whose
+/// native list deliberately omits `(2, 1)`. `0x0` has no cell offsets.
+pub fn foundation_cell_offsets(value: &str) -> Vec<(i16, i16)> {
+    let def = foundation_def(value);
+    if def.id == 9 {
+        return vec![
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ];
+    }
+
+    let mut offsets = Vec::with_capacity(usize::from(def.width) * usize::from(def.height));
+    for dy in 0..def.height {
+        for dx in 0..def.width {
+            offsets.push((dx as i16, dy as i16));
+        }
+    }
+    offsets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +219,27 @@ mod tests {
     fn zero_foundation_is_table_entry() {
         assert_eq!(foundation_id("0x0"), 21);
         assert_eq!(foundation_dimensions("0x0"), (0, 0));
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_foundation_offsets_match_native_special_lists() {
+        assert_eq!(
+            foundation_cell_offsets("3x3Refinery"),
+            vec![
+                (0, 0),
+                (1, 0),
+                (2, 0),
+                (0, 1),
+                (1, 1),
+                (0, 2),
+                (1, 2),
+                (2, 2),
+            ]
+        );
+        assert!(foundation_cell_offsets("0x0").is_empty());
+        assert_eq!(
+            foundation_cell_offsets("2x2"),
+            vec![(0, 0), (1, 0), (0, 1), (1, 1)]
+        );
     }
 }

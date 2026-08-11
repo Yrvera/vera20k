@@ -54,7 +54,7 @@ use super::movement_occupancy::{
 use super::movement_path::{find_move_path, supports_layered_bridge_pathing};
 use super::movement_step;
 use super::path_markers::{BridgeMarkerContext, snapshot_bridge_marker_peers};
-use super::tube_movement::{self, TubePathStepResult};
+use super::tube_movement;
 use super::{
     MIN_BRAKE_FRACTION, MovementConfig, MovementTickStats, MoverSnapshot, PATH_STUCK_INIT,
     PathfindingContext, PendingCrushKill, facing_from_delta, walking_to_subcell_dest,
@@ -66,6 +66,7 @@ use crate::sim::occupancy::{
 fn tick_forced_drive_tracks(
     entities: &mut EntityStore,
     entity_order: &[u64],
+    tube_processed: &BTreeSet<u64>,
     occupancy: &mut OccupancyGrid,
     cell_occupation: &mut CellOccupationGrid,
     next_occupancy_enter_order: &mut EnterOrderCounter,
@@ -77,7 +78,10 @@ fn tick_forced_drive_tracks(
         let Some(entity) = entities.get_mut(entity_id) else {
             continue;
         };
-        if entity.forced_drive_track.is_none() || entity.low_bridge_tube_state.is_some() {
+        if tube_processed.contains(&entity_id)
+            || entity.forced_drive_track.is_none()
+            || entity.low_bridge_tube_state.is_some()
+        {
             continue;
         }
         if entity.movement_layer_or_ground() != MovementLayer::Ground {
@@ -136,6 +140,7 @@ fn tick_forced_drive_tracks(
         }
         entity.facing = advance.facing;
         entity.facing_target = None;
+        let prior_subcell = (entity.position.sub_x, entity.position.sub_y);
         entity.position.sub_x = advance.sub_x;
         entity.position.sub_y = advance.sub_y;
         if !advance.finished
@@ -150,6 +155,9 @@ fn tick_forced_drive_tracks(
         {
             entity.position.sub_x = interp.sub_x;
             entity.position.sub_y = interp.sub_y;
+        }
+        if (entity.position.sub_x, entity.position.sub_y) != prior_subcell {
+            entity.position.exact_z_leptons = None;
         }
         processed.insert(entity_id);
         stats.movers_total = stats.movers_total.saturating_add(1);
@@ -195,6 +203,7 @@ fn tick_forced_drive_tracks(
                     entity.position.ry = target_ry;
                     entity.position.sub_x = SimFixed::from_num(head.x.rem_euclid(256));
                     entity.position.sub_y = SimFixed::from_num(head.y.rem_euclid(256));
+                    entity.position.exact_z_leptons = None;
                     if let Ok(z) = u8::try_from(head.z) {
                         entity.position.z = z;
                     }
@@ -1399,6 +1408,8 @@ pub(crate) fn tick_movement_with_grids(
         native_frame,
         zone_grid,
         resolved_terrain,
+        None,
+        None,
         playfield_bounds,
         terrain_speed_config,
         close_enough,
@@ -1428,6 +1439,8 @@ pub(crate) fn tick_movement_object_with_grids(
     native_frame: u32,
     zone_grid: Option<&ZoneGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     playfield_bounds: Option<PlayfieldBounds>,
     terrain_speed_config: &TerrainSpeedConfig,
     close_enough: SimFixed,
@@ -1453,6 +1466,8 @@ pub(crate) fn tick_movement_object_with_grids(
         native_frame,
         zone_grid,
         resolved_terrain,
+        overlay_grid,
+        overlay_registry,
         playfield_bounds,
         terrain_speed_config,
         close_enough,
@@ -1482,6 +1497,8 @@ fn tick_movement_with_grids_scoped(
     native_frame: u32,
     zone_grid: Option<&ZoneGrid>,
     resolved_terrain: Option<&ResolvedTerrainGrid>,
+    overlay_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     playfield_bounds: Option<PlayfieldBounds>,
     terrain_speed_config: &TerrainSpeedConfig,
     close_enough: SimFixed,
@@ -1500,11 +1517,13 @@ fn tick_movement_with_grids_scoped(
         return stats;
     }
     let blocker_neighbor_counts = path_grid.map(|grid| {
-        bump_crush::build_blocker_neighbor_counts(
+        bump_crush::build_blocker_neighbor_counts_with_overlays(
             entities,
             grid.width(),
             grid.height(),
             resolved_terrain,
+            overlay_grid,
+            overlay_registry,
             interner,
             rules,
         )
@@ -1542,10 +1561,24 @@ fn tick_movement_with_grids_scoped(
     // preventing duplicate scatter commands from multiple movers.
     let mut already_scattered: BTreeSet<u64> = BTreeSet::new();
 
+    // Active TubeMovement owns the entire object turn. Capture this before any
+    // helper can mutate navigation state, because a successful final clears
+    // the payload but still must not resume ordinary processing this tick.
+    let tube_active_at_start: BTreeSet<u64> = entity_order
+        .iter()
+        .copied()
+        .filter(|&entity_id| {
+            entities
+                .get(entity_id)
+                .is_some_and(|entity| entity.low_bridge_tube_state.is_some())
+        })
+        .collect();
+
     let drive_reaims: Vec<(u64, crate::sim::components::DriveCoord)> =
         drive_locomotion::drive_entity_nav_targets(entities)
             .into_iter()
             .filter(|(mover_id, _)| entity_order.contains(mover_id))
+            .filter(|(mover_id, _)| !tube_active_at_start.contains(mover_id))
             .filter_map(|(mover_id, target)| {
                 super::navcom::resolve_entity_nav_target_drive_coord(target, entities)
                     .map(|coord| (mover_id, coord))
@@ -1557,23 +1590,43 @@ fn tick_movement_with_grids_scoped(
         }
     }
 
+    let mut tube_processed = tube_active_at_start;
     if let Some(terrain) = resolved_terrain {
-        tube_movement::tick_low_bridge_tube_movement_in_order(
-            entities,
-            occupancy,
-            terrain,
-            entity_order,
-        );
+        for &entity_id in entity_order {
+            if tube_movement::tick_active_tube_object(
+                entities,
+                entity_id,
+                terrain,
+                path_grid,
+                occupancy,
+                cell_occupation,
+                raw_cell_occupation,
+                next_occupancy_enter_order,
+                rules,
+                interner,
+                rng,
+                native_frame,
+            ) {
+                tube_processed.insert(entity_id);
+                stats.movers_total = stats.movers_total.saturating_add(1);
+            }
+        }
     }
     let forced_drive_processed = tick_forced_drive_tracks(
         entities,
         entity_order,
+        &tube_processed,
         occupancy,
         cell_occupation,
         next_occupancy_enter_order,
         dt,
         &mut stats,
     );
+    let ordinary_entry_order: Vec<u64> = entity_order
+        .iter()
+        .copied()
+        .filter(|entity_id| !tube_processed.contains(entity_id))
+        .collect();
 
     // Collect movers in live object order: ground/bridge entities with a movement_target.
     let mut movers: Vec<u64> = Vec::new();
@@ -1585,6 +1638,7 @@ fn tick_movement_with_grids_scoped(
                 mover_owners.insert(entity.owner);
             }
             if forced_drive_processed.contains(&id)
+                || tube_processed.contains(&id)
                 || entity.movement_target.is_none()
                 || entity.low_bridge_tube_state.is_some()
             {
@@ -1629,7 +1683,7 @@ fn tick_movement_with_grids_scoped(
 
     process_pending_drive_arrivals(
         entities,
-        entity_order,
+        &ordinary_entry_order,
         ctx,
         terrain_costs,
         &entity_block_sets,
@@ -1641,6 +1695,7 @@ fn tick_movement_with_grids_scoped(
     for &id in entity_order {
         if let Some(entity) = entities.get(id) {
             if forced_drive_processed.contains(&id)
+                || tube_processed.contains(&id)
                 || entity.movement_target.is_none()
                 || entity.low_bridge_tube_state.is_some()
             {
@@ -1698,17 +1753,7 @@ fn tick_movement_with_grids_scoped(
         let live_building_entry_skips =
             build_live_building_entry_skip_map(entities, entity_id, interner, rules);
         let marker_peers = snapshot_bridge_marker_peers(entities, rules, interner);
-        let marker_context = path_grid.map(|grid| BridgeMarkerContext {
-            // PathfinderClass+0x03 is initialized to one by the process-static
-            // constructor and has no active writer that clears it.
-            enabled: true,
-            peers: &marker_peers,
-            raw_occupation: raw_cell_occupation,
-            grid,
-            terrain: resolved_terrain,
-            playfield_bounds,
-            native_frame,
-        });
+        let marker_context;
 
         let mut aborted_for_stuck: bool = false;
         let mut active_layer: MovementLayer;
@@ -1772,15 +1817,31 @@ fn tick_movement_with_grids_scoped(
                 PathExhaustionResult::NotExhausted => {}
             }
 
-            match tube_movement::try_begin_path_tube_step(
-                &mut entity.low_bridge_tube_state,
+            if let Some(tube_id) = tube_movement::pending_path_tube_id(
                 target,
                 &entity.position,
+                active_layer,
                 resolved_terrain,
             ) {
-                TubePathStepResult::NotTubeStep => {}
-                TubePathStepResult::Began => {
-                    if let Some(&exit) = target.path.get(target.next_index)
+                let exit = target.path.get(target.next_index).copied();
+                let terrain = resolved_terrain.expect("tube admission resolved terrain");
+                if tube_movement::begin_path_tube_step(
+                    entity_id,
+                    entity.category,
+                    &mut entity.position,
+                    &mut entity.drive_locomotion,
+                    &mut entity.low_bridge_tube_state,
+                    target,
+                    &mut entity.lifecycle.cell_marked,
+                    tube_id,
+                    terrain,
+                    occupancy,
+                    cell_occupation,
+                    raw_cell_occupation,
+                )
+                .is_ok()
+                {
+                    if let Some(exit) = exit
                         && let Some(drive) = entity.drive_locomotion.as_mut()
                     {
                         super::path_markers::accept_path_replay(
@@ -1789,9 +1850,23 @@ fn tick_movement_with_grids_scoped(
                             1,
                         );
                     }
+                    tube_processed.insert(entity_id);
                     continue;
                 }
             }
+
+            marker_context = path_grid.map(|grid| BridgeMarkerContext {
+                // PathfinderClass+0x03 is initialized to one by the
+                // process-static constructor and has no active writer that
+                // clears it.
+                enabled: true,
+                peers: &marker_peers,
+                raw_occupation: raw_cell_occupation,
+                grid,
+                terrain: resolved_terrain,
+                playfield_bounds,
+                native_frame,
+            });
 
             // Steering / rotation. Hover steers continuously toward the current
             // waypoint (facing-lagged curves, turn-stall braking) and never
@@ -2052,7 +2127,13 @@ fn tick_movement_with_grids_scoped(
             } else {
                 MovementLayer::Ground
             };
-            match movement_step::advance_lepton_position(
+            let prior_position = (
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+            );
+            let advance_result = movement_step::advance_lepton_position(
                 target,
                 &mut entity.position,
                 &mut entity.facing,
@@ -2075,7 +2156,17 @@ fn tick_movement_with_grids_scoped(
                 },
                 current_occupation_layer,
                 path_grid,
-            ) {
+            );
+            if (
+                entity.position.rx,
+                entity.position.ry,
+                entity.position.sub_x,
+                entity.position.sub_y,
+            ) != prior_position
+            {
+                entity.position.exact_z_leptons = None;
+            }
+            match advance_result {
                 movement_step::AdvanceResult::DriveTrackActive => continue,
                 movement_step::AdvanceResult::DriveTrackCellJump { cell_dx, cell_dy } => {
                     // Drive track coordinates crossed a cell boundary.
@@ -2653,7 +2744,12 @@ fn tick_movement_with_grids_scoped(
         resolved_terrain,
         cell_occupation,
     );
-    update_locomotor_phases(entities, entity_order, &crush_kills, sim_tick);
+    let ordinary_tail_order: Vec<u64> = entity_order
+        .iter()
+        .copied()
+        .filter(|entity_id| !tube_processed.contains(entity_id))
+        .collect();
+    update_locomotor_phases(entities, &ordinary_tail_order, &crush_kills, sim_tick);
 
     // Hover vertical controller — every hover unit, moving OR parked (idle
     // units still float at cruise height and bob). Runs after the XY stage so
@@ -2673,7 +2769,7 @@ fn tick_movement_with_grids_scoped(
             SimFixed::from_num(0.4),
             3, // engine code default; stock [AudioVisual] overrides to 6
         ));
-    for &entity_id in entity_order {
+    for &entity_id in &ordinary_tail_order {
         if contains_crush_victim(&crush_kills, entity_id) {
             continue;
         }
@@ -2819,8 +2915,12 @@ fn finalize_finished_entities(
                 .as_ref()
                 .and_then(|l| l.subcell_dest)
                 .unwrap_or_else(|| crate::util::lepton::subcell_lepton_offset(entity.sub_cell));
+            let prior_subcell = (entity.position.sub_x, entity.position.sub_y);
             entity.position.sub_x = snap_x;
             entity.position.sub_y = snap_y;
+            if (snap_x, snap_y) != prior_subcell {
+                entity.position.exact_z_leptons = None;
+            }
             let old_phase = entity.locomotor.as_ref().map(|l| l.phase);
             if let Some(ref mut loco) = entity.locomotor {
                 loco.phase = GroundMovePhase::Idle;
@@ -2914,6 +3014,7 @@ mod distance_tests {
             rx,
             ry,
             z: 0,
+            exact_z_leptons: None,
             sub_x: CELL_CENTER_LEPTON,
             sub_y: CELL_CENTER_LEPTON,
         }
@@ -2967,6 +3068,8 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
         blocker.category = EntityCategory::Unit;
+        blocker.lifecycle.in_limbo = false;
+        blocker.lifecycle.cell_marked = true;
         entities.insert(blocker);
         // Clone the test interner AFTER the entity is created so it can resolve
         // the just-interned owner string.
@@ -3020,6 +3123,8 @@ mod drive_track_chain_tests {
         let mut entities = EntityStore::new();
         let mut blocker = GameEntity::test_default(10, "HTNK", "Americans", 5, 5);
         blocker.category = EntityCategory::Unit;
+        blocker.lifecycle.in_limbo = false;
+        blocker.lifecycle.cell_marked = true;
         entities.insert(blocker);
         let interner = test_interner();
         let owner = test_intern("Americans");

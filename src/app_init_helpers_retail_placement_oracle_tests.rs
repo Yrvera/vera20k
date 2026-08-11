@@ -20,8 +20,8 @@ use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::tick_power_states;
 use crate::sim::production::{
-    foundation_dimensions, placement_preview_for_owner_without_overlays,
-    ready_buildings_for_owner, seed_resource_nodes_from_overlays,
+    foundation_dimensions, placement_preview_for_owner_without_overlays, ready_buildings_for_owner,
+    seed_resource_nodes_from_overlays,
 };
 use crate::sim::world::Simulation;
 

@@ -28,6 +28,7 @@ use crate::sim::world::Simulation;
 use super::concrete_effects::{
     AuthorityUnavailable, ConcreteMissionEffects, ConcreteSetterRequest,
     RepresentedConcreteMissionEffects, UnavailableConcreteMissionEffects,
+    represented_assign_destination_mode_one, represented_assign_target,
 };
 use super::readiness::{
     AircraftReadyView, BuildingReadyView, InfantryReadyView, ReadyLeptonPoint, ReadyResult,
@@ -40,6 +41,48 @@ use super::{MissionCom, MissionId};
 
 mod ready_private {
     pub trait Sealed {}
+}
+
+/// Entity-local Restore transaction used by detach sweeps that already own a
+/// bare `EntityStore` (notably area-damage cell-target invalidation).
+///
+/// It is the same represented write set as `mission_restore_on_target_detach`:
+/// Restore selector first, then archived Target, then mode-one destination.
+pub(crate) fn restore_entity_on_target_detach(
+    entity: &mut crate::sim::game_entity::GameEntity,
+) -> bool {
+    if entity.mission.suspended() == MissionId::NONE {
+        return false;
+    }
+
+    let saved_target = entity.suspended_attack_target;
+    let saved_destination = entity.navigation.suspended_nav_com;
+    let category = entity.category;
+    let restored = verb::restore_base(&mut entity.mission);
+    debug_assert!(restored);
+    represented_assign_target(entity, saved_target);
+    if category != EntityCategory::Structure {
+        represented_assign_destination_mode_one(entity, saved_destination);
+        if saved_destination.is_some() {
+            entity.navigation.pending_arrival_clear = true;
+        }
+    }
+    true
+}
+
+/// Entity-local category wrapper for `Queue_Mission(requested, false)`.
+///
+/// Receiver special-damage branches already hold the target's mutable entity
+/// and must make the queued selector visible before the next ordered receiver.
+/// `commence=false` performs no readiness query or synchronous promotion.
+pub(crate) fn queue_entity_mission_deferred(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    requested: MissionId,
+) -> bool {
+    if !aircraft_allows(entity, requested) {
+        return false;
+    }
+    verb::queue_base(&mut entity.mission, requested) == QueueContinuation::Continue
 }
 
 /// The blocked-step Override, over bare storage.
@@ -78,19 +121,71 @@ pub(crate) fn override_mission_on_blocked_step(
     let Some(entity) = entities.get_mut(mover) else {
         return false;
     };
+    let archived_destination = represented_archived_destination(entity);
+    override_entity_to_attack(
+        entity,
+        blocker,
+        archived_destination,
+        false, // the calling locomotor owns its active-path stop
+    )
+}
+
+/// Entity-local `Override(Attack, attacker, NULL)` used by the synchronous
+/// ReceiveDamage retaliation path.
+///
+/// `TechnoClass::ReceiveDamage @ 0x00701900` dispatches the concrete Mission
+/// wrapper before returning to its caller. Buildings archive/set only TarCom;
+/// Foot-derived objects archive NavCom first and assign the null destination
+/// after the target. Keeping this transaction over bare storage lets an
+/// ordered receiver make the new mission visible to a later live-order combat
+/// slot in the same frame.
+pub(crate) fn override_mission_on_damage_response(
+    entities: &mut crate::sim::entity_store::EntityStore,
+    receiver: u64,
+    attacker: u64,
+) -> bool {
+    if entities.get(attacker).is_none() {
+        return false;
+    }
+    let Some(entity) = entities.get_mut(receiver) else {
+        return false;
+    };
+    let archived_destination = entity.navigation.nav_com;
+    override_entity_to_attack(entity, attacker, archived_destination, true)
+}
+
+/// One represented concrete Mission wrapper transaction shared by bare-store
+/// callers. The caller supplies the already-resolved NavCom archive because a
+/// locomotor obstruction has a VERA-specific walking-path fallback, while the
+/// ReceiveDamage wrapper reads the ordinary Foot NavCom field directly.
+fn override_entity_to_attack(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    attacker: u64,
+    archived_destination: Option<NavTargetRef>,
+    stop_active_path: bool,
+) -> bool {
     if !aircraft_allows(entity, MISSION_ATTACK) {
         return false;
     }
 
-    // Save order is NavCom, then TarCom, then the mission fields, then the two
-    // concrete setters. The archived destination is what the mover gets back
-    // when something later restores it.
-    entity.navigation.suspended_nav_com = blocked_step_archived_destination(entity);
+    // Concrete order: Foot NavCom archive, Techno TarCom archive, base verb,
+    // Target setter, then Foot destination setter. Building skips both Foot
+    // writes; an Aircraft gate above suppresses the transaction atomically.
+    if entity.category != EntityCategory::Structure {
+        entity.navigation.suspended_nav_com = archived_destination;
+    }
     entity.suspended_attack_target = entity.attack_target.as_ref().map(|target| target.target);
     verb::override_base(&mut entity.mission, MISSION_ATTACK);
-    super::concrete_effects::represented_assign_target(entity, Some(TargetKind::Entity(blocker)));
-    // NULL destination: the mover stops where it is.
-    super::concrete_effects::represented_assign_destination_mode_one(entity, None);
+    represented_assign_target(entity, Some(TargetKind::Entity(attacker)));
+    if entity.category != EntityCategory::Structure {
+        if stop_active_path {
+            // Native has one NavCom. VERA's active path executor is a second
+            // representation, so ReceiveDamage's concrete NULL destination
+            // must stop it in the same transaction.
+            entity.movement_target = None;
+        }
+        represented_assign_destination_mode_one(entity, None);
+    }
     true
 }
 
@@ -107,7 +202,7 @@ pub(crate) fn override_mission_on_blocked_step(
 ///
 /// VERA-internal bridge over VERA's split representation; the original has a
 /// single field, so it has no equivalent to check against.
-fn blocked_step_archived_destination(
+fn represented_archived_destination(
     entity: &crate::sim::game_entity::GameEntity,
 ) -> Option<NavTargetRef> {
     if let Some(nav_com) = entity.navigation.nav_com {

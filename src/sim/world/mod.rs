@@ -23,6 +23,8 @@ mod world_orders;
 mod world_spawn;
 
 #[cfg(test)]
+mod gsi_04_18_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod team_script_vm_tests;
@@ -61,12 +63,12 @@ use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
-use crate::sim::intern::InternedId;
+use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::movement;
+use crate::sim::movement::drop_pod_movement::{self, DropPodLanding};
 use crate::sim::movement::group_destination;
 use crate::sim::movement::homing_movement;
-use crate::sim::movement::drop_pod_movement::{self, DropPodLanding};
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::movement::parachute_descent;
 use crate::sim::movement::rocket_movement;
@@ -75,7 +77,7 @@ use crate::sim::movement::tunnel_movement::{self, TunnelProcessContext};
 use crate::sim::movement::turret;
 use crate::sim::occupancy::OccupancyGrid;
 use crate::sim::ore_growth;
-use crate::sim::overlay_grid::{WallDamageEvent, cleanup_wall_neighbors, damage_wall_overlay};
+use crate::sim::overlay_grid::{WallDamageEvent, damage_wall_overlay, recalc_overlay_passability};
 use crate::sim::passenger;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::pathfinding::terrain_cost::{TerrainCostGrid, build_canonical_terrain_cost_grids};
@@ -97,6 +99,12 @@ use crate::util::fixed_math::SimFixed;
 /// Dev/test fallback seed. Real launches negotiate a per-match seed through
 /// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
+
+#[derive(Default)]
+struct ActiveVisionStructures {
+    spy_sat_owners: Vec<InternedId>,
+    gap_generators: Vec<(InternedId, u16, u16, i32)>,
+}
 
 /// Bounded `BulletClass::AI` terrain collision admission.
 ///
@@ -259,6 +267,9 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
+    /// Global `[AudioVisual] SellSound=` for a successful wall-sale event.
+    /// The EventClass receiver can differ from the wall owner.
+    WallSold { receiver: InternedId },
     /// A deploy command failed target placement validation.
     /// App layer gates this to the local human player and plays
     /// `EVA_CannotDeployHere`.
@@ -481,8 +492,7 @@ pub struct Simulation {
     /// resolves them. Filled during the movement pass, drained after combat in
     /// the same tick.
     #[serde(skip)]
-    pub(crate) pending_missile_detonations:
-        Vec<crate::sim::spawn_manager::MissileDetonation>,
+    pub(crate) pending_missile_detonations: Vec<crate::sim::spawn_manager::MissileDetonation>,
     /// Internal order proof; release builds carry no ledger or recording branch.
     #[cfg(test)]
     #[serde(skip)]
@@ -502,14 +512,19 @@ pub struct Simulation {
     /// muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
+    /// Native IC/ForceShield impact combat-light requests emitted in receiver
+    /// order during the current master frame. The native object has no owner
+    /// and is distinct from AnimClass/ParticleSystemClass, so this remains a
+    /// dedicated presentation handoff rather than fabricated world state.
+    #[serde(skip)]
+    pub invulnerability_impact_effects: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
     /// Persistent ordinary shots. This is authoritative save/hash state, not
     /// the render-side fire-event approximation.
     #[serde(default)]
     pub projectiles: crate::sim::projectile::ProjectileStore,
-    /// Smudge spawn requests emitted by callsites that don't return through
-    /// `CombatTickResult` (superweapons, etc.). Drained alongside combat-emitted
-    /// smudge requests in the post-combat drain block. Ephemeral — never
-    /// persists across ticks.
+    /// Hookless-test adapter retained for old fixture callsites. Production
+    /// combat and superweapons commit smudges inline, so this remains empty and
+    /// never persists across ticks.
     #[serde(skip)]
     pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
     /// Bale deposit events emitted during refinery dock unloading — drained
@@ -594,9 +609,6 @@ pub struct Simulation {
         BTreeMap<InternedId, BTreeMap<InternedId, crate::sim::superweapon::SuperWeaponInstance>>,
     /// Active lightning storm state (global — only one at a time).
     pub lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
-    /// Queued lightning storm — activates when the current storm ends.
-    pub queued_lightning_storm:
-        Option<crate::sim::superweapon::lightning_storm::QueuedLightningStorm>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
     pub super_weapons_initialized: bool,
     /// Per-cell terrain speed modifier config (slope climb/descend).
@@ -653,7 +665,753 @@ impl Default for Simulation {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn dispatch_tiberium_reduction_inline(
+    request: &crate::sim::combat::TiberiumReductionRequest,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    scenario_rng: &mut SimRng,
+    resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+    overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+    terrain: Option<&mut ResolvedTerrainGrid>,
+    ore_growth_state: &mut crate::sim::ore_growth::OreGrowthState,
+    source_object_cells: &BTreeSet<(u16, u16)>,
+    binary_frame: u32,
+    spread_enabled: bool,
+    radar_dirty_cells: &mut Vec<(u16, u16)>,
+    radar_dirty_generation: &mut u64,
+    tactical_dirty_cells: &mut Vec<(u16, u16)>,
+) {
+    let mut context = crate::sim::tiberium::ReduceTiberiumContext {
+        resource_nodes,
+        overlay_grid,
+        ore_growth_state,
+        overlay_registry,
+        tiberium_types: Some(&rules.tiberium_types),
+        resolved_terrain: terrain,
+        source_object_cells: Some(source_object_cells),
+        rng: Some(scenario_rng),
+        binary_frame,
+        spread_enabled,
+        radar_dirty_cells: Some(radar_dirty_cells),
+        radar_dirty_generation: Some(radar_dirty_generation),
+        tactical_dirty_cells: Some(tactical_dirty_cells),
+    };
+    let _ = crate::sim::tiberium::reduce_tiberium(
+        &mut context,
+        (request.rx, request.ry),
+        request.amount,
+    );
+}
+
+/// World-owned half of Apply_area_damage's per-cell tiberium prelude for
+/// non-combat producers. Overlay/terrain/RNG are lent by AoELayerContext at
+/// each spread entry; this value owns only the disjoint Simulation fields the
+/// reducer also needs.
+pub(crate) struct SimulationTiberiumCellPrelude<'a> {
+    rules: &'a RuleSet,
+    amount: i32,
+    resource_nodes: &'a mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+    ore_growth_state: &'a mut crate::sim::ore_growth::OreGrowthState,
+    source_object_cells: &'a BTreeSet<(u16, u16)>,
+    binary_frame: u32,
+    spread_enabled: bool,
+    radar_dirty_cells: &'a mut Vec<(u16, u16)>,
+    radar_dirty_generation: &'a mut u64,
+    tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+}
+
+impl crate::sim::combat::combat_aoe::AoECellPrelude for SimulationTiberiumCellPrelude<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn before_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        terrain: Option<&mut ResolvedTerrainGrid>,
+        scenario_rng: Option<&mut SimRng>,
+    ) {
+        if !crate::sim::combat::combat_aoe::tiberium_reduction_cell_admitted(
+            overlay_grid.as_deref(),
+            overlay_registry,
+            rx,
+            ry,
+        ) {
+            return;
+        }
+        let scenario_rng = scenario_rng
+            .expect("production Apply_area_damage tiberium prelude requires scenario RNG");
+        dispatch_tiberium_reduction_inline(
+            &crate::sim::combat::TiberiumReductionRequest {
+                rx,
+                ry,
+                amount: self.amount,
+            },
+            self.rules,
+            overlay_registry,
+            scenario_rng,
+            self.resource_nodes,
+            overlay_grid,
+            terrain,
+            self.ore_growth_state,
+            self.source_object_cells,
+            self.binary_frame,
+            self.spread_enabled,
+            self.radar_dirty_cells,
+            self.radar_dirty_generation,
+            self.tactical_dirty_cells,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simulation_tiberium_cell_prelude<'a>(
+    rules: &'a RuleSet,
+    warhead: &crate::rules::warhead_type::WarheadType,
+    base_damage: i32,
+    affect_resource: bool,
+    scenario_no_damage: bool,
+    resource_nodes: &'a mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+    ore_growth_state: &'a mut crate::sim::ore_growth::OreGrowthState,
+    source_object_cells: &'a BTreeSet<(u16, u16)>,
+    binary_frame: u32,
+    spread_enabled: bool,
+    radar_dirty_cells: &'a mut Vec<(u16, u16)>,
+    radar_dirty_generation: &'a mut u64,
+    tactical_dirty_cells: &'a mut Vec<(u16, u16)>,
+) -> Option<SimulationTiberiumCellPrelude<'a>> {
+    let amount = base_damage / 10;
+    if scenario_no_damage || !affect_resource || !warhead.tiberium || amount <= 0 {
+        return None;
+    }
+    Some(SimulationTiberiumCellPrelude {
+        rules,
+        amount,
+        resource_nodes,
+        ore_growth_state,
+        source_object_cells,
+        binary_frame,
+        spread_enabled,
+        radar_dirty_cells,
+        radar_dirty_generation,
+        tactical_dirty_cells,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_smudge_inline(
+    request: &crate::sim::combat::SmudgeSpawnRequest,
+    rules: &RuleSet,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    interner: &StringInterner,
+    occupancy: &OccupancyGrid,
+    raw_occupation: &crate::sim::occupancy::RawCellOccupationGrid,
+    scenario_rng: &mut SimRng,
+    resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+    overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+    terrain: Option<&mut ResolvedTerrainGrid>,
+    smudge_grid: Option<&mut crate::sim::smudge_grid::SmudgeGrid>,
+    ore_growth_state: &mut crate::sim::ore_growth::OreGrowthState,
+    source_object_cells: &BTreeSet<(u16, u16)>,
+    binary_frame: u32,
+    spread_enabled: bool,
+    radar_dirty_cells: &mut Vec<(u16, u16)>,
+    radar_dirty_generation: &mut u64,
+    tactical_dirty_cells: &mut Vec<(u16, u16)>,
+) {
+    let (Some(smudge_grid), Some(overlay_grid), Some(terrain)) =
+        (smudge_grid, overlay_grid, terrain)
+    else {
+        return;
+    };
+    let mut tiberium = crate::sim::combat::smudge_dispatch::SmudgeTiberiumContext {
+        resource_nodes,
+        overlay_grid,
+        ore_growth_state,
+        overlay_registry,
+        tiberium_types: Some(&rules.tiberium_types),
+        source_object_cells: Some(source_object_cells),
+        binary_frame,
+        spread_enabled,
+        radar_dirty_cells,
+        radar_dirty_generation,
+        tactical_dirty_cells,
+    };
+    crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
+        std::slice::from_ref(request),
+        &rules.art_registry,
+        &rules.smudge_types,
+        interner,
+        smudge_grid,
+        occupancy,
+        terrain,
+        raw_occupation,
+        &mut tiberium,
+        scenario_rng,
+    );
+}
+
+/// Single mutable bridge back into Simulation while combat owns the moved-out
+/// receiver transaction. It deliberately implements both lifecycle and smudge
+/// callbacks so no pair of closures can alias `&mut Simulation`.
+struct SimulationCombatInlineHooks<'a> {
+    sim: &'a mut Simulation,
+}
+
+impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn fatal_lifecycle(
+        &mut self,
+        rules: &RuleSet,
+        stage: crate::sim::combat::FatalLifecycleStage,
+        stable_id: u64,
+        category: EntityCategory,
+        borrowed_entities: &mut EntityStore,
+        borrowed_occupancy: &mut OccupancyGrid,
+        borrowed_interner: &mut StringInterner,
+        borrowed_scenario_rng: &mut SimRng,
+        mut borrowed_terrain_area_state: Option<&mut crate::sim::terrain_object::TerrainAreaState>,
+        borrowed_sound_events: Option<&mut Vec<SimSoundEvent>>,
+    ) {
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        if let Some(state) = borrowed_terrain_area_state.as_deref_mut() {
+            state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+        if let Some(events) = borrowed_sound_events {
+            std::mem::swap(&mut self.sim.sound_events, events);
+            self.sim
+                .apply_fatal_lifecycle_stage(rules, stage, stable_id, category);
+            std::mem::swap(&mut self.sim.sound_events, events);
+        } else {
+            self.sim
+                .apply_fatal_lifecycle_stage(rules, stage, stable_id, category);
+        }
+        if let Some(state) = borrowed_terrain_area_state.as_deref_mut() {
+            state.swap_authority(
+                &mut self.sim.production,
+                &mut self.sim.substrate.raw_cell_occupation,
+            );
+        }
+        std::mem::swap(&mut self.sim.scenario_rng, borrowed_scenario_rng);
+        std::mem::swap(&mut self.sim.interner, borrowed_interner);
+        std::mem::swap(&mut self.sim.substrate.occupancy, borrowed_occupancy);
+        std::mem::swap(&mut self.sim.substrate.entities, borrowed_entities);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_tiberium_reduction(
+        &mut self,
+        rules: &RuleSet,
+        request: crate::sim::combat::TiberiumReductionRequest,
+        scenario_rng: &mut SimRng,
+        resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+        overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        terrain: Option<&mut ResolvedTerrainGrid>,
+        terrain_area_state: Option<&crate::sim::terrain_object::TerrainAreaState>,
+    ) {
+        let Some(terrain_area_state) = terrain_area_state else {
+            return;
+        };
+        let binary_frame = self.sim.session.binary_frame;
+        let spread_enabled = self.sim.production.ore_growth_config.spreads;
+        dispatch_tiberium_reduction_inline(
+            &request,
+            rules,
+            overlay_registry,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid,
+            terrain,
+            &mut self.sim.production.ore_growth_state,
+            terrain_area_state.tiberium_spawning_terrain_cells(),
+            binary_frame,
+            spread_enabled,
+            &mut self.sim.radar_terrain_dirty_cells,
+            &mut self.sim.radar_terrain_dirty_generation,
+            &mut self.sim.tactical_dirty_cells,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_smudge(
+        &mut self,
+        rules: &RuleSet,
+        request: crate::sim::combat::SmudgeSpawnRequest,
+        occupancy: &OccupancyGrid,
+        interner: &StringInterner,
+        scenario_rng: &mut SimRng,
+        resource_nodes: &mut BTreeMap<(u16, u16), crate::sim::miner::ResourceNode>,
+        overlay_grid: Option<&mut crate::sim::overlay_grid::OverlayGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        terrain: Option<&mut ResolvedTerrainGrid>,
+        terrain_area_state: Option<&crate::sim::terrain_object::TerrainAreaState>,
+    ) {
+        let Some(terrain_area_state) = terrain_area_state else {
+            return;
+        };
+        let binary_frame = self.sim.session.binary_frame;
+        let spread_enabled = self.sim.production.ore_growth_config.spreads;
+        dispatch_smudge_inline(
+            &request,
+            rules,
+            overlay_registry,
+            interner,
+            occupancy,
+            terrain_area_state.raw_occupation(),
+            scenario_rng,
+            resource_nodes,
+            overlay_grid,
+            terrain,
+            self.sim.smudge_grid.as_mut(),
+            &mut self.sim.production.ore_growth_state,
+            terrain_area_state.tiberium_spawning_terrain_cells(),
+            binary_frame,
+            spread_enabled,
+            &mut self.sim.radar_terrain_dirty_cells,
+            &mut self.sim.radar_terrain_dirty_generation,
+            &mut self.sim.tactical_dirty_cells,
+        );
+        self.sim.flush_smudge_dirty();
+    }
+}
+
 impl Simulation {
+    /// Combat borrows a staged house map while fatal lifecycle hooks temporarily
+    /// re-enter `Simulation`. Merge only the receiver-owned anger fields back so
+    /// live lifecycle mutations to counts, economy, or defeat state are kept.
+    fn merge_receiver_anger_state(
+        &mut self,
+        staged: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+    ) {
+        for (&owner, staged_house) in staged {
+            if let Some(live_house) = self.houses.get_mut(&owner) {
+                live_house.grudge_scores = staged_house.grudge_scores.clone();
+                live_house.enemy_house = staged_house.enemy_house;
+            }
+        }
+    }
+
+    fn apply_fatal_lifecycle_stage(
+        &mut self,
+        rules: &RuleSet,
+        stage: crate::sim::combat::FatalLifecycleStage,
+        stable_id: u64,
+        category: EntityCategory,
+    ) {
+        match stage {
+            crate::sim::combat::FatalLifecycleStage::MaintainDamageSmoke { state } => {
+                self.maintain_damage_smoke_after_receive(stable_id, state, rules);
+            }
+            crate::sim::combat::FatalLifecycleStage::PostMortemExactZero { killer_owner } => {
+                self.postmortem_exact_zero_callbacks(stable_id, killer_owner, rules);
+            }
+            crate::sim::combat::FatalLifecycleStage::BeforeDeathEffects => {
+                if !matches!(category, EntityCategory::Unit | EntityCategory::Structure) {
+                    return;
+                }
+                let garrison = self.substrate.entities.get(stable_id).and_then(|entity| {
+                    if category != EntityCategory::Structure {
+                        return None;
+                    }
+                    let object = rules.object(self.interner.resolve(entity.type_ref))?;
+                    let passenger_ids = entity
+                        .passenger_role
+                        .cargo()
+                        .map(|cargo| cargo.passengers.clone())
+                        .unwrap_or_default();
+                    if !object.can_be_occupied || passenger_ids.is_empty() {
+                        return None;
+                    }
+                    let (foundation_w, foundation_h) =
+                        crate::sim::production::foundation_dimensions(&object.foundation);
+                    Some(crate::sim::combat::DestroyedGarrisonBuilding {
+                        building_id: stable_id,
+                        type_id: entity.type_ref,
+                        owner: entity.owner,
+                        rx: entity.position.rx,
+                        ry: entity.position.ry,
+                        z: entity.position.z,
+                        foundation_w,
+                        foundation_h,
+                        passenger_ids,
+                    })
+                });
+                if let Some(event) = garrison {
+                    production::eject_destruction_garrison(self, rules, &event);
+                } else {
+                    self.purge_carried_passengers_for_fatal(stable_id);
+                }
+            }
+            crate::sim::combat::FatalLifecycleStage::AfterDeathEffects => {
+                if !matches!(category, EntityCategory::Unit | EntityCategory::Structure) {
+                    return;
+                }
+                if category == EntityCategory::Structure
+                    && self
+                        .substrate
+                        .entities
+                        .get(stable_id)
+                        .and_then(|building| building.bunker_occupant)
+                        .is_some()
+                {
+                    crate::sim::docking::bunker_link::release_sell_destroy(self, stable_id);
+                }
+                self.release_move_sound(stable_id);
+                self.uninit(stable_id);
+            }
+        }
+    }
+
+    fn tick_combat_with_fatal_lifecycle(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        tick_ms: u32,
+        logic_order: &[u64],
+        fire_suppressed: &BTreeSet<u64>,
+        projectile_detonations: &[crate::sim::projectile::ProjectileDetonation],
+    ) -> crate::sim::combat::CombatTickResult {
+        let mut entities = std::mem::take(&mut self.substrate.entities);
+        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
+        let mut interner = std::mem::take(&mut self.interner);
+        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
+        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
+        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
+        let mut overlay_grid = self.overlay_grid.take();
+        let mut resolved_terrain = self.resolved_terrain.take();
+        let mut radiation = std::mem::take(&mut self.radiation);
+        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
+            &mut self.production,
+            &mut self.substrate.raw_cell_occupation,
+        );
+        let missile_detonations = std::mem::take(&mut self.pending_missile_detonations);
+        let mut sound_events = std::mem::take(&mut self.sound_events);
+        let mut houses = self.houses.clone();
+        let house_order = self.session.house_order.clone();
+        let house_alliances = self.house_alliances.clone();
+        let fog = self.fog.clone();
+        let power_states = self.power_states.clone();
+        let current_tick = u64::from(self.session.binary_frame);
+        let binary_frame = self.session.binary_frame;
+        let scenario_no_damage = self.session.no_damage;
+
+        let combat_result = {
+            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            combat::tick_combat_with_fog_and_main_rng_with_terrain_area(
+                &mut entities,
+                &mut occupancy,
+                rules,
+                &mut interner,
+                Some(&fog),
+                &power_states,
+                &mut houses,
+                &house_order,
+                &house_alliances,
+                Some(&mut sound_events),
+                &mut resource_nodes,
+                overlay_grid.as_mut(),
+                overlay_registry,
+                resolved_terrain.as_mut(),
+                scenario_no_damage,
+                current_tick,
+                tick_ms,
+                binary_frame,
+                logic_order,
+                fire_suppressed,
+                projectile_detonations,
+                Some(&mut radiation),
+                &missile_detonations,
+                &mut scenario_rng,
+                &mut main_rng,
+                Some(&mut inline_hooks),
+                Some(&mut terrain_area_state),
+            )
+        };
+
+        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
+            &mut self.production,
+            &mut self.substrate.raw_cell_occupation,
+        );
+
+        self.substrate.entities = entities;
+        self.substrate.occupancy = occupancy;
+        self.interner = interner;
+        self.main_rng = main_rng;
+        self.scenario_rng = scenario_rng;
+        self.production.resource_nodes = resource_nodes;
+        self.overlay_grid = overlay_grid;
+        self.resolved_terrain = resolved_terrain;
+        self.radiation = radiation;
+        self.sound_events = sound_events;
+        self.merge_receiver_anger_state(&houses);
+        let mut combat_result = combat_result;
+        combat_result.terrain_navigation_changed_cells = terrain_navigation_changed_cells;
+        combat_result
+    }
+
+    /// Commit one non-combat Apply_area_damage hit list through the ordinary
+    /// ReceiveDamage -> death transaction, then hand its deferred outputs back
+    /// to the world owner. `hits` remains in CellClass/object-list order; the
+    /// combat helper enters a nested DeathWeapon before advancing to the next
+    /// hit.
+    pub(crate) fn commit_noncombat_aoe_hits(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        hits: &[crate::sim::combat::EntityDamageEvent],
+    ) {
+        let receivers = hits
+            .iter()
+            .copied()
+            .map(crate::sim::combat::combat_aoe::AreaDamageReceiver::Entity)
+            .collect::<Vec<_>>();
+        self.commit_noncombat_aoe_receivers(rules, overlay_registry, &receivers);
+    }
+
+    /// World-owned entry for a complete non-combat Apply_area_damage receiver
+    /// vector, including TerrainClass records in captured object-list order.
+    pub(crate) fn commit_noncombat_aoe_receivers(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
+    ) {
+        let mut entities = std::mem::take(&mut self.substrate.entities);
+        let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
+        let mut interner = std::mem::take(&mut self.interner);
+        let mut main_rng = std::mem::replace(&mut self.main_rng, SimRng::new(0));
+        let mut scenario_rng = std::mem::replace(&mut self.scenario_rng, SimRng::new(0));
+        let mut resource_nodes = std::mem::take(&mut self.production.resource_nodes);
+        let mut overlay_grid = self.overlay_grid.take();
+        let mut resolved_terrain = self.resolved_terrain.take();
+        let mut sound_events = std::mem::take(&mut self.sound_events);
+        let mut terrain_area_state = crate::sim::terrain_object::TerrainAreaState::take_from(
+            &mut self.production,
+            &mut self.substrate.raw_cell_occupation,
+        );
+        let mut houses = self.houses.clone();
+        let house_order = self.session.house_order.clone();
+        let house_alliances = self.house_alliances.clone();
+        let current_tick = u64::from(self.session.binary_frame);
+        let scenario_no_damage = self.session.no_damage;
+        let mut handled_deaths = Vec::new();
+        let (effects, under_attack_events) = {
+            let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
+            let mut inline_hooks: Option<&mut dyn crate::sim::combat::CombatInlineHooks> =
+                Some(&mut inline_hooks);
+            let mut sound_sink = Some(&mut sound_events);
+            crate::sim::combat::commit_area_damage_receivers_with_scenario(
+                receivers,
+                &mut entities,
+                &mut occupancy,
+                rules,
+                &mut interner,
+                &mut houses,
+                &house_order,
+                &house_alliances,
+                &mut main_rng,
+                &mut scenario_rng,
+                &mut handled_deaths,
+                &mut resource_nodes,
+                overlay_grid.as_mut(),
+                overlay_registry,
+                resolved_terrain.as_mut(),
+                Some(&mut terrain_area_state),
+                scenario_no_damage,
+                current_tick,
+                &mut inline_hooks,
+                &mut sound_sink,
+            )
+        };
+        let terrain_navigation_changed_cells = terrain_area_state.restore_into(
+            &mut self.production,
+            &mut self.substrate.raw_cell_occupation,
+        );
+        self.substrate.entities = entities;
+        self.substrate.occupancy = occupancy;
+        self.interner = interner;
+        self.main_rng = main_rng;
+        self.scenario_rng = scenario_rng;
+        self.production.resource_nodes = resource_nodes;
+        self.overlay_grid = overlay_grid;
+        self.resolved_terrain = resolved_terrain;
+        self.sound_events = sound_events;
+        self.merge_receiver_anger_state(&houses);
+        self.absorb_noncombat_damage_effects(
+            rules,
+            overlay_registry,
+            effects,
+            under_attack_events,
+            terrain_navigation_changed_cells,
+        );
+    }
+
+    /// World-owned half of a non-combat damage transaction. Physical death
+    /// consequences already happened recursively in combat; this consumes the
+    /// same lifecycle/presentation/terrain outputs without leaving an alternate
+    /// zero-HP object registered for the next LogicClass visit.
+    fn absorb_noncombat_damage_effects(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        mut effects: crate::sim::combat::DeathEffects,
+        under_attack_events: Vec<crate::sim::combat::UnderAttackEvent>,
+        terrain_navigation_changed_cells: Vec<(u16, u16)>,
+    ) {
+        let dead_infos: Vec<(InternedId, EntityCategory)> = effects
+            .despawned_ids
+            .iter()
+            .filter_map(|&dead_id| {
+                self.substrate
+                    .entities
+                    .get(dead_id)
+                    .map(|entity| (entity.owner, entity.category))
+            })
+            .collect();
+
+        for event in &effects.destroyed_garrison_buildings {
+            production::eject_destruction_garrison(self, rules, event);
+        }
+        for &dead_id in &effects.immediate_uninit_ids {
+            if self
+                .substrate
+                .entities
+                .get(dead_id)
+                .and_then(|building| building.bunker_occupant)
+                .is_some()
+            {
+                crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
+            }
+            self.release_move_sound(dead_id);
+            self.uninit(dead_id);
+        }
+
+        let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
+            self,
+            rules,
+            &effects.bridge_damage_events,
+            overlay_registry,
+        );
+        debug_assert!(effects.tiberium_reduction_requests.is_empty());
+        for request in &effects.tiberium_reduction_requests {
+            self.reduce_tiberium_at_with_native_context(
+                (request.rx, request.ry),
+                request.amount,
+                Some(rules),
+                overlay_registry,
+            );
+        }
+        for detonation in effects.rad_detonations.drain(..) {
+            self.radiation.apply_detonation(
+                detonation,
+                self.session.binary_frame,
+                &rules.radiation,
+                self.resolved_terrain.as_ref(),
+            );
+        }
+
+        let mut navigation_changed_cells = self
+            .overlay_grid
+            .as_mut()
+            .map(|grid| grid.take_synchronous_navigation_cells())
+            .unwrap_or_default();
+        for cell in terrain_navigation_changed_cells {
+            if !navigation_changed_cells.contains(&cell) {
+                navigation_changed_cells.push(cell);
+            }
+        }
+        if !navigation_changed_cells.is_empty() {
+            let prior_path_grid = self.prev_path_grid.clone();
+            let _ = self.refresh_navigation_after_terrain_changes(
+                prior_path_grid.as_ref(),
+                &navigation_changed_cells,
+            );
+        }
+
+        for building in &effects.destroyed_crewed_buildings {
+            production::eject_destruction_survivors(
+                self,
+                rules,
+                building.type_id,
+                building.owner,
+                building.rx,
+                building.ry,
+                building.z,
+            );
+        }
+        if self.session.game_options.super_weapons && effects.structure_destroyed {
+            let mut refreshed = Vec::new();
+            for &(owner, category) in &dead_infos {
+                if category == EntityCategory::Structure && !refreshed.contains(&owner) {
+                    refreshed.push(owner);
+                    crate::sim::superweapon::refresh_super_weapons_for_owner(self, rules, owner);
+                }
+            }
+        }
+
+        for fx in &effects.explosion_effects {
+            let frames = self
+                .effect_frame_counts
+                .get(&fx.shp_name)
+                .copied()
+                .unwrap_or(20);
+            self.world_effects.push(WorldEffect {
+                anim_spawn: None,
+                shp_name: fx.shp_name,
+                rx: fx.rx,
+                ry: fx.ry,
+                sub_x: fx.sub_x,
+                sub_y: fx.sub_y,
+                z: fx.z,
+                frame: 0,
+                total_frames: frames,
+                frame_delay: 1,
+                elapsed_frames: 0,
+                translucent: true,
+                delay_frames: 0,
+                start_sound_id: None,
+                start_sound_emitted: false,
+            });
+        }
+        self.invulnerability_impact_effects
+            .append(&mut effects.invulnerability_impact_effects);
+        for (die_sound_id, rx, ry) in effects.death_sounds.drain(..) {
+            self.sound_events.push(SimSoundEvent::EntityDied {
+                die_sound_id,
+                rx,
+                ry,
+            });
+        }
+        for event in under_attack_events {
+            let event_type = if event.miner {
+                RadarEventType::HarvesterUnderAttack
+            } else {
+                RadarEventType::BaseUnderAttack
+            };
+            let eva_allowed =
+                self.radar_events
+                    .push_owned(event_type, event.rx, event.ry, Some(event.owner));
+            self.sound_events.push(SimSoundEvent::UnderAttack {
+                rx: event.rx,
+                ry: event.ry,
+                owner: event.owner,
+                miner: event.miner,
+                eva_allowed,
+            });
+        }
+        debug_assert!(effects.smudge_spawn_requests.is_empty());
+        self.pending_smudge_requests
+            .append(&mut effects.smudge_spawn_requests);
+    }
+
     /// Borrow all three logical RNG objects without exposing mutation.
     pub fn rng_views(&self) -> SimulationRngViews<'_> {
         SimulationRngViews {
@@ -669,13 +1427,15 @@ impl Simulation {
     /// enabling capture cannot perturb the run being measured. The RNG cursor comes from
     /// the main stream, which is the one the original engine exposes globally.
     pub fn parity_digest(&self) -> crate::sim::parity_digest::ParityDigest {
-        let main = self.rng_views().main;
+        let views = self.rng_views();
         crate::sim::parity_digest::ParityDigest::capture(
             self.session.tick,
             self.entities(),
             &self.houses,
-            main.index_a,
-            main.index_b,
+            views.main.index_a,
+            views.main.index_b,
+            views.scenario.index_a,
+            views.scenario.index_b,
         )
     }
 
@@ -784,6 +1544,7 @@ impl Simulation {
             master_frame_test_trace: Vec::new(),
             sound_events: Vec::new(),
             fire_events: Vec::new(),
+            invulnerability_impact_effects: Vec::new(),
             projectiles: crate::sim::projectile::ProjectileStore::new(),
             pending_smudge_requests: Vec::new(),
             bale_events: Vec::new(),
@@ -810,7 +1571,6 @@ impl Simulation {
             power_states: BTreeMap::new(),
             super_weapons: BTreeMap::new(),
             lightning_storm: None,
-            queued_lightning_storm: None,
             super_weapons_initialized: false,
             terrain_speed_config: terrain_speed::TerrainSpeedConfig::default(),
             close_enough: SimFixed::from_num(576), // 2.25 cells × 256 lep/cell
@@ -912,6 +1672,13 @@ impl Simulation {
         &self.substrate.entities
     }
 
+    /// Current ObjectClass registration order used by the tactical layer.
+    /// Presentation code may sort registered objects into LayerClass order,
+    /// but must not reconstruct equal-key ordering from EntityStore keys.
+    pub(crate) fn tactical_registration_order(&self) -> &[u64] {
+        self.substrate.logic.as_slice()
+    }
+
     /// Mutable entity-store access for above-sim callers.
     pub fn entities_mut(&mut self) -> &mut EntityStore {
         &mut self.substrate.entities
@@ -950,18 +1717,85 @@ impl Simulation {
         }
     }
 
-    pub(crate) fn reduce_tiberium_at(
+    pub(crate) fn flush_smudge_dirty(&mut self) {
+        let dirty = self
+            .smudge_grid
+            .as_mut()
+            .map(crate::sim::smudge_grid::SmudgeGrid::drain_dirty)
+            .unwrap_or_default();
+        for cell in dirty {
+            self.tactical_dirty_cells.push(cell);
+            self.mark_radar_terrain_dirty_cells([cell]);
+        }
+    }
+
+    /// Commit a non-combat AnimClass smudge at its producer boundary. Combat
+    /// uses `SimulationCombatInlineHooks` because its map authority is moved
+    /// out; superweapons call this after their receiver transaction restores
+    /// the same fields to Simulation.
+    pub(crate) fn commit_smudge_request_inline(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        request: crate::sim::combat::SmudgeSpawnRequest,
+    ) {
+        let binary_frame = self.session.binary_frame;
+        let spread_enabled = self.production.ore_growth_config.spreads;
+        dispatch_smudge_inline(
+            &request,
+            rules,
+            overlay_registry,
+            &self.interner,
+            &self.substrate.occupancy,
+            &self.substrate.raw_cell_occupation,
+            &mut self.scenario_rng,
+            &mut self.production.resource_nodes,
+            self.overlay_grid.as_mut(),
+            self.resolved_terrain.as_mut(),
+            self.smudge_grid.as_mut(),
+            &mut self.production.ore_growth_state,
+            &self.production.tiberium_spawning_terrain_cells,
+            binary_frame,
+            spread_enabled,
+            &mut self.radar_terrain_dirty_cells,
+            &mut self.radar_terrain_dirty_generation,
+            &mut self.tactical_dirty_cells,
+        );
+        self.flush_smudge_dirty();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reduce_legacy_tiberium_at_for_tests(
         &mut self,
         cell: (u16, u16),
         amount: u16,
     ) -> crate::sim::tiberium::ReduceTiberiumOutcome {
-        self.reduce_tiberium_at_with_native_context(cell, amount, None, None)
+        let mut ctx = crate::sim::tiberium::ReduceTiberiumContext {
+            resource_nodes: &mut self.production.resource_nodes,
+            overlay_grid: self.overlay_grid.as_mut(),
+            ore_growth_state: &mut self.production.ore_growth_state,
+            overlay_registry: None,
+            tiberium_types: None,
+            resolved_terrain: self.resolved_terrain.as_mut(),
+            source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
+            rng: Some(&mut self.scenario_rng),
+            binary_frame: self.session.binary_frame,
+            spread_enabled: self.production.ore_growth_config.spreads,
+            radar_dirty_cells: Some(&mut self.radar_terrain_dirty_cells),
+            radar_dirty_generation: Some(&mut self.radar_terrain_dirty_generation),
+            tactical_dirty_cells: Some(&mut self.tactical_dirty_cells),
+        };
+        crate::sim::tiberium::reduce_legacy_resource_node_for_tests(
+            &mut ctx,
+            cell,
+            i32::from(amount),
+        )
     }
 
-    pub(crate) fn reduce_tiberium_at_with_native_context(
+    pub(crate) fn reduce_tiberium_at_with_native_context<A: Into<i32>>(
         &mut self,
         cell: (u16, u16),
-        amount: u16,
+        amount: A,
         rules: Option<&RuleSet>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> crate::sim::tiberium::ReduceTiberiumOutcome {
@@ -982,7 +1816,7 @@ impl Simulation {
             radar_dirty_generation: Some(&mut self.radar_terrain_dirty_generation),
             tactical_dirty_cells: Some(&mut self.tactical_dirty_cells),
         };
-        crate::sim::tiberium::reduce_tiberium(&mut ctx, cell, i32::from(amount))
+        crate::sim::tiberium::reduce_tiberium(&mut ctx, cell, amount.into())
     }
 
     /// Intern a string, returning its InternedId.
@@ -1150,6 +1984,17 @@ impl Simulation {
                         // UNCHECKED. See `contending_house_count`.
                         || (self.contending_house_count() > 1 && house.has_won))
             })
+    }
+
+    /// Advance the global ambient scalar before ore and active superweapons.
+    /// A storm selecting Ion later in this frame can first move it next frame.
+    fn tick_scenario_lighting_transition(&mut self, rules: &RuleSet) {
+        self.session.lighting.advance_transition_if_due(
+            self.session.binary_frame,
+            rules.general.ambient_change_rate_nonzero,
+            rules.general.ambient_change_interval_frames,
+            rules.general.ambient_change_step,
+        );
     }
 
     fn tick_ore_growth_rungs(
@@ -1697,6 +2542,7 @@ impl Simulation {
         // shooting at what is now its own structure.
         self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 
     /// Legacy non-lifecycle contact scrub retained only for separately classified
@@ -1841,16 +2687,39 @@ impl Simulation {
     /// `rebuild_zone_grid()` as part of the normal tick flow.
     pub fn rebuild_caches_after_load(
         &mut self,
-        resolved_terrain: ResolvedTerrainGrid,
+        mut resolved_terrain: ResolvedTerrainGrid,
         terrain_speed_config: terrain_speed::TerrainSpeedConfig,
         bridge_explosions: Vec<InternedId>,
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
         effect_frame_counts: BTreeMap<InternedId, u16>,
-        terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
+        _terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
     ) {
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.
+        // The supplied map grid predates runtime Terrain lifecycle changes, so
+        // serialized Terrain objects must overwrite that derived projection.
+        // Clear every known source first so Limbo/Destroyed objects stay absent,
+        // then replay only live objects through the shared occupation writer.
+        let terrain_objects: Vec<_> = self.production.terrain_objects.values().cloned().collect();
+        for terrain in &terrain_objects {
+            crate::sim::terrain_object::unmark_terrain_occupation(
+                &mut self.production,
+                terrain,
+                Some(&mut resolved_terrain),
+            );
+        }
+        for terrain in &terrain_objects {
+            if terrain.is_live() {
+                crate::sim::terrain_object::mark_terrain_occupation(
+                    &mut self.production,
+                    terrain,
+                    Some(&mut resolved_terrain),
+                );
+            }
+        }
+        let terrain_costs = build_canonical_terrain_cost_grids(&resolved_terrain);
+
         self.resolved_terrain = Some(resolved_terrain);
         self.terrain_speed_config = terrain_speed_config;
         self.bridge_explosions = bridge_explosions;
@@ -1902,22 +2771,31 @@ impl Simulation {
         // Try incremental update if we have previous state.
         if let (Some(prev), Some(zones)) = (&self.prev_path_grid, &mut self.zone_grid) {
             if let Some(changed) = prev.diff_cells(path_grid) {
-                if changed.is_empty() {
-                    // No cells changed — zones are still valid.
+                if changed.is_empty()
+                    && self
+                        .resolved_terrain
+                        .as_ref()
+                        .is_some_and(|terrain| zones.movement_classes_match(terrain))
+                {
+                    // PathGrid does not carry CellClass reduced zone type.
+                    // Boolean path state and retained base classes must both
+                    // match before connectivity can be reused.
                     self.prev_path_grid = Some(path_grid.clone());
                     return;
                 }
-                if crate::sim::pathfinding::zone_incremental::try_incremental_update(
-                    zones,
-                    &changed,
-                    path_grid,
-                    &self.terrain_costs,
-                    self.resolved_terrain.as_ref(),
-                    self.bridge_state
-                        .as_ref()
-                        .map(|bs| bs.endpoint_records())
-                        .unwrap_or(&[]),
-                ) {
+                if !changed.is_empty()
+                    && crate::sim::pathfinding::zone_incremental::try_incremental_update(
+                        zones,
+                        &changed,
+                        path_grid,
+                        &self.terrain_costs,
+                        self.resolved_terrain.as_ref(),
+                        self.bridge_state
+                            .as_ref()
+                            .map(|bs| bs.endpoint_records())
+                            .unwrap_or(&[]),
+                    )
+                {
                     log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
                     self.prev_path_grid = Some(path_grid.clone());
                     return;
@@ -1952,14 +2830,14 @@ impl Simulation {
         self.prev_path_grid = Some(path_grid.clone());
     }
 
-    /// Refresh navigation authority after one or more terrain objects were
-    /// destroyed during combat. The incoming grid carries dynamic structure
-    /// and wall blockers, so only cells whose terrain object died are replaced
-    /// from the current resolved-terrain/bridge projection.
-    fn refresh_navigation_after_terrain_deaths(
+    /// Refresh navigation authority after inline overlay mutation or terrain
+    /// object destruction. The incoming grid carries dynamic structure and
+    /// wall blockers, so only synchronously changed cells are replaced from the
+    /// current resolved-terrain/bridge projection.
+    fn refresh_navigation_after_terrain_changes(
         &mut self,
         input_path_grid: Option<&PathGrid>,
-        destroyed_cells: &[(u16, u16)],
+        changed_cells: &[(u16, u16)],
     ) -> Option<PathGrid> {
         let (resolved_path_grid, terrain_costs) = {
             let terrain = self.resolved_terrain.as_ref()?;
@@ -1976,9 +2854,9 @@ impl Simulation {
                     && grid.height() == resolved_path_grid.height()
             })
             .cloned()?;
-        for &(rx, ry) in destroyed_cells {
+        for &(rx, ry) in changed_cells {
             let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, rx, ry);
-            debug_assert!(replaced, "destroyed terrain cell must be inside the map");
+            debug_assert!(replaced, "changed terrain cell must be inside the map");
         }
         self.rebuild_zone_grid_full(&tail_path_grid);
         Some(tail_path_grid)
@@ -2038,8 +2916,21 @@ impl Simulation {
                 &mut self.scenario_rng,
             );
 
-            for &cell in &result.destroyed_cells {
-                let _ = cleanup_wall_neighbors(grid, overlay_registry, cell.0, cell.1);
+            if let Some(terrain) = self.resolved_terrain.as_mut() {
+                for mutation in &result.mutations {
+                    let changed = recalc_overlay_passability(
+                        grid,
+                        terrain,
+                        overlay_registry,
+                        mutation.rx,
+                        mutation.ry,
+                    );
+                    grid.record_synchronous_passability_change_at(
+                        mutation.rx,
+                        mutation.ry,
+                        changed,
+                    );
+                }
             }
         }
     }
@@ -2102,13 +2993,9 @@ impl Simulation {
                 .and_then(|oid| registry.flags(oid))
                 .is_some_and(|f| f.wall);
             if has_wall && seen.insert((rx, ry)) {
-                // damage == u16::MAX = forced instant removal, bypassing the
+                // damage == -1 = forced instant removal, bypassing the
                 // probabilistic Strength gate the weapon path uses.
-                events.push(WallDamageEvent {
-                    rx,
-                    ry,
-                    damage: u16::MAX,
-                });
+                events.push(WallDamageEvent { rx, ry, damage: -1 });
             }
         }
 
@@ -2127,6 +3014,143 @@ impl Simulation {
             EntityCategory::Aircraft => 8,
             EntityCategory::Structure => 7,
         }
+    }
+
+    /// Find houses with at least one native-eligible SpySat provider. This is
+    /// the House-rung edge detector; consumers read the persisted house latch.
+    fn collect_spy_sat_candidate_owners(&self, rules: &RuleSet) -> BTreeSet<InternedId> {
+        let selling = crate::sim::mission::MissionId::from_known(
+            crate::sim::mission::MissionType::Selling,
+        );
+        let mut active = BTreeSet::new();
+        let mut scanned_houses = BTreeSet::new();
+        for &owner in self.session.house_order.iter().chain(self.houses.keys()) {
+            if !self.houses.contains_key(&owner) || !scanned_houses.insert(owner) {
+                continue;
+            }
+            for &stable_id in self.substrate.entities.ids_for_owner(owner) {
+                let Some(entity) = self.substrate.entities.get(stable_id) else {
+                    continue;
+                };
+                let coarse_candidate = entity.category == EntityCategory::Structure
+                    && !entity.lifecycle.in_limbo
+                    && entity.lifecycle.cell_marked
+                    && entity.mission.current() != selling
+                    && entity.mission.queued() != selling
+                    && self
+                        .object_type(entity.type_ref, rules)
+                        .is_some_and(|object| object.spy_sat);
+                if !coarse_candidate {
+                    continue;
+                }
+                // The first coarse candidate decides the house. Warp-out is a
+                // blocking result, not a reason to continue to a later uplink.
+                if !entity
+                    .teleport_state
+                    .as_ref()
+                    .is_some_and(|state| state.warp_out_active())
+                {
+                    active.insert(owner);
+                }
+                break;
+            }
+        }
+        active
+    }
+
+    /// Materialize vision effects from their final authorities: the persisted
+    /// per-house SpySat latch and freshly qualified powered Gap generators.
+    fn collect_active_vision_structures(&self, rules: &RuleSet) -> ActiveVisionStructures {
+        let mut effects = ActiveVisionStructures {
+            spy_sat_owners: self
+                .houses
+                .iter()
+                .filter_map(|(&owner, house)| house.spy_sat_active.then_some(owner))
+                .collect(),
+            gap_generators: Vec::new(),
+        };
+        for entity in self.substrate.entities.values() {
+            if entity.dying || entity.category != EntityCategory::Structure {
+                continue;
+            }
+            let Some(obj) = self.object_type(entity.type_ref, rules) else {
+                continue;
+            };
+            if entity.building_up.is_some() {
+                continue;
+            }
+            if obj.gap_generator
+                && power_system::is_building_powered(
+                    &self.power_states,
+                    rules,
+                    entity,
+                    &self.interner,
+                )
+            {
+                effects.gap_generators.push((
+                    entity.owner,
+                    entity.position.rx,
+                    entity.position.ry,
+                    i32::from(obj.gap_radius_in_cells),
+                ));
+            }
+        }
+        effects
+    }
+
+    fn apply_active_vision_structures(&mut self, effects: &ActiveVisionStructures) {
+        // Phase 3 already clears these transient bits while rebuilding sight,
+        // but the later House rung must replace that earlier result after any
+        // combat/lifecycle changes before it reapplies the final effect set.
+        self.fog.clear_gap_flags();
+        if !effects.spy_sat_owners.is_empty() {
+            if let Some(terrain) = self.resolved_terrain.as_ref() {
+                for &owner in &effects.spy_sat_owners {
+                    self.fog.reveal_cells_for_owner(
+                        owner,
+                        terrain.iter().map(|cell| (cell.rx, cell.ry)),
+                    );
+                }
+            } else {
+                // Synthetic fixtures without production terrain retain the
+                // rectangular fallback owned by the visibility subsystem.
+                vision::apply_spy_sat(
+                    &mut self.fog,
+                    &effects.spy_sat_owners,
+                    &self.interner,
+                );
+            }
+        }
+        if !effects.gap_generators.is_empty() {
+            vision::apply_gap_generators(
+                &mut self.fog,
+                &effects.gap_generators,
+                &self.interner,
+            );
+        }
+    }
+
+    /// Commit aggregate SpySat transitions at the House update rung, then
+    /// materialize the House-rung SpySat -> Gap result. EventClass commands
+    /// execute later and therefore become visible to this scan next frame.
+    fn reconcile_active_vision_structures(&mut self, rules: &RuleSet) {
+        let active_owners = self.collect_spy_sat_candidate_owners(rules);
+        let mut owners_losing_last_uplink = Vec::new();
+        for (&owner, house) in &mut self.houses {
+            let active = active_owners.contains(&owner);
+            if house.spy_sat_active && !active {
+                owners_losing_last_uplink.push(owner);
+            }
+            if house.spy_sat_active != active {
+                house.map_is_clear = active;
+            }
+            house.spy_sat_active = active;
+        }
+        for owner in owners_losing_last_uplink {
+            self.fog.restore_shroud_after_spy_sat_loss(owner);
+        }
+        let effects = self.collect_active_vision_structures(rules);
+        self.apply_active_vision_structures(&effects);
     }
 
     fn refresh_fog(
@@ -2156,48 +3180,8 @@ impl Simulation {
 
         // Apply SpySat and Gap Generator effects if rules are available.
         if let Some(rules) = rules {
-            let mut spy_sat_owners: Vec<InternedId> = Vec::new();
-            let mut gap_generators: Vec<(InternedId, u16, u16, i32)> = Vec::new();
-
-            for entity in self.substrate.entities.values() {
-                // A Dying SpySat/GapGen corpse must not reveal the map or shroud
-                // an area for the tick after it is destroyed/sold.
-                if entity.dying {
-                    continue;
-                }
-                if entity.category != EntityCategory::Structure {
-                    continue;
-                }
-                if let Some(obj) = self.object_type(entity.type_ref, rules) {
-                    let active = power_system::is_building_powered(
-                        &self.power_states,
-                        rules,
-                        entity,
-                        &self.interner,
-                    ) && entity.building_up.is_none();
-                    if obj.spy_sat && active {
-                        spy_sat_owners.push(entity.owner);
-                    }
-                    if obj.gap_generator && active {
-                        // Native radius source is the building's own GapRadiusInCells
-                        // (TechnoType+0xCD2), not the global [General] GapRadius.
-                        gap_generators.push((
-                            entity.owner,
-                            entity.position.rx,
-                            entity.position.ry,
-                            i32::from(obj.gap_radius_in_cells),
-                        ));
-                    }
-                }
-            }
-
-            // Apply in order: SpySat first, then Gap Generator (gap wins in contested areas).
-            if !spy_sat_owners.is_empty() {
-                vision::apply_spy_sat(&mut self.fog, &spy_sat_owners, &self.interner);
-            }
-            if !gap_generators.is_empty() {
-                vision::apply_gap_generators(&mut self.fog, &gap_generators, &self.interner);
-            }
+            let effects = self.collect_active_vision_structures(rules);
+            self.apply_active_vision_structures(&effects);
         }
 
         // Diagnostic: log fog grid stats on first tick to debug coverage issues.
@@ -2609,10 +3593,6 @@ impl Simulation {
                         entity.category,
                         EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
                     ) || entity.low_bridge_tube_state.is_some()
-                        || entity
-                            .drive_locomotion
-                            .as_ref()
-                            .is_some_and(|drive| drive.active_tube.is_some())
                     {
                         continue;
                     }
@@ -2695,6 +3675,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut tail_path_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
 
         let mut house_order = self.session.house_order.clone();
         for command in commands
@@ -2717,10 +3698,13 @@ impl Simulation {
                 let (spawned, destroyed) = self.apply_one_due_command(
                     command,
                     rules,
-                    path_grid,
+                    tail_path_grid.as_ref(),
                     height_map,
                     overlay_registry,
                 );
+                if matches!(command.payload, Command::SellWallAtCell { .. }) {
+                    tail_path_grid = self.prev_path_grid.clone();
+                }
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
                 executed_commands += 1;
@@ -2735,12 +3719,12 @@ impl Simulation {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            self.adjust_staged_megamission_destinations(&mut staged, path_grid);
+            self.adjust_staged_megamission_destinations(&mut staged, tail_path_grid.as_ref());
             for command in &staged {
                 let (spawned, destroyed) = self.apply_one_due_command(
                     command,
                     rules,
-                    path_grid,
+                    tail_path_grid.as_ref(),
                     height_map,
                     overlay_registry,
                 );
@@ -2772,6 +3756,9 @@ impl Simulation {
     ) -> bool {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
+        if let Some(rules) = rules {
+            self.reconcile_active_vision_structures(rules);
+        }
         // --- Phase 8: Defeat detection (runs BEFORE AI) ---
         // gamemd evaluates each house's defeat before its AI manage/produce step,
         // so a house that lost its last building/unit this tick can issue NO AI
@@ -2990,6 +3977,7 @@ impl Simulation {
         animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> TickResult {
+        self.invulnerability_impact_effects.clear();
         // The wrapping native frame counter is committed LATE (end of this fn,
         // beside self.session.tick) so every phase sees the same pre-increment
         // frame N. execute_tick stays here: command scheduling below filters on
@@ -3030,9 +4018,14 @@ impl Simulation {
         // pre-pass): reservations held by/on dying objects release before the
         // Harvest dispatches run.
         if let Some(rules) = rules {
+            self.tick_scenario_lighting_transition(rules);
             self.tick_ore_growth_rungs(rules, path_grid, overlay_registry);
             if self.session.game_options.super_weapons {
-                crate::sim::superweapon::tick_active_superweapon_effects(self, rules);
+                crate::sim::superweapon::tick_active_superweapon_effects(
+                    self,
+                    rules,
+                    overlay_registry,
+                );
             }
             self.radiation.tick_decay(
                 self.session.binary_frame,
@@ -3057,8 +4050,37 @@ impl Simulation {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::LogicVector);
         let mut movement_stats = movement::MovementTickStats::default();
+        let mut tube_turn_owned_ids = BTreeSet::new();
         self.for_each_live_object(|sim, stable_id| {
+            // UnitClass::AI / InfantryClass::AI give an active TubeMovement
+            // object the whole live-object turn.  Capture before the leaf:
+            // successful finalization clears the payload but must still skip
+            // every ordinary locomotor tail and the second mission checkpoint.
+            let tube_active_at_entry = sim.substrate.entities.get(stable_id).is_some_and(
+                |entity| {
+                    !entity.dying
+                        && matches!(
+                            entity.category,
+                            EntityCategory::Unit | EntityCategory::Infantry
+                        )
+                        && entity.low_bridge_tube_state.is_some()
+                },
+            );
+            let was_structure = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.category == EntityCategory::Structure);
             sim.object_ai_visit_one(stable_id, rules, object_ctx);
+            if was_structure
+                && sim
+                    .substrate
+                    .entities
+                    .get(stable_id)
+                    .is_none_or(|entity| entity.dying)
+            {
+                destroyed_structure = true;
+            }
             if sim
                 .substrate
                 .entities
@@ -3085,6 +4107,8 @@ impl Simulation {
                 sim.session.binary_frame,
                 sim.zone_grid.as_ref(),
                 sim.resolved_terrain.as_ref(),
+                sim.overlay_grid.as_ref(),
+                overlay_registry,
                 sim.playfield_bounds,
                 &sim.terrain_speed_config,
                 sim.close_enough,
@@ -3095,6 +4119,22 @@ impl Simulation {
                 &mut sim.sound_events,
                 &mut sim.pending_lifecycle_requests,
             ));
+
+            // A direction-8 producer also ends this object's ordinary turn as
+            // soon as it arms TubeMovement.  The leaf itself starts on the
+            // object's next visit; an entry-active leaf may have cleared the
+            // payload above, hence the captured half of this predicate.
+            let tube_owns_whole_turn = tube_active_at_entry
+                || sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+                    matches!(
+                        entity.category,
+                        EntityCategory::Unit | EntityCategory::Infantry
+                    ) && entity.low_bridge_tube_state.is_some()
+                });
+            if tube_owns_whole_turn {
+                tube_turn_owned_ids.insert(stable_id);
+                return;
+            }
 
             sim.tick_air_movement_with_cell_lists_one(stable_id);
             if let Some(rules) = rules {
@@ -3121,13 +4161,12 @@ impl Simulation {
                     None,
                 );
             }
-            sim.pending_rocket_detonations.extend(
-                rocket_movement::tick_rocket_movement(
+            sim.pending_rocket_detonations
+                .extend(rocket_movement::tick_rocket_movement(
                     &mut sim.substrate.entities,
                     &one,
                     sim.session.tick,
-                ),
-            );
+                ));
             sim.tick_tunnel_locomotor_one(stable_id, path_grid);
             sim.tick_drop_pod_locomotor_one(stable_id);
             let _ = homing_movement::tick_homing_movement(
@@ -3346,31 +4385,48 @@ impl Simulation {
             // walk-up intent into a state change on arrival. Detonation damage
             // is applied here so combat-pre conditions (invulnerability, dying)
             // are honored before tick_combat runs.
-            // PRODUCES: damage, deaths, bridge damage, fire events, last_attacker_id.
+            // PRODUCES: damage, deaths, bridge damage, fire events. Ordered
+            // ReceiveDamage retaliation is committed inline; only legacy
+            // precomputed damage producers can still write last_attacker_id.
             // tick_bridge_repair_orders runs BEFORE tick_capture_orders so
             // engineers targeting BridgeRepairHut buildings are consumed by
             // repair, not by capture. tick_capture_orders has an explicit
             // BridgeRepairHut skip as defense in depth.
-            let bridge_repaired = self.tick_bridge_repair_orders(rules);
-            spawned_entities |= self.tick_capture_orders(rules);
-            let c4_outcome = self.tick_c4_plants(rules);
+            let bridge_repaired = self.tick_bridge_repair_orders_with_overlay_registry(
+                rules,
+                overlay_registry,
+                &tube_turn_owned_ids,
+            );
+            spawned_entities |= self.tick_capture_orders(rules, &tube_turn_owned_ids);
+            let c4_outcome = self.tick_c4_plants_with_overlay_registry(
+                rules,
+                overlay_registry,
+                &tube_turn_owned_ids,
+            );
             destroyed_structure |= c4_outcome.destroyed_structure;
             bridge_state_changed |= bridge_repaired | c4_outcome.bridge_state_changed;
-            self.tick_order_intents_pre_combat(rules);
+            self.tick_order_intents_pre_combat(rules, &tube_turn_owned_ids);
             // Pursuit: walk units with out-of-range attack_target into range,
             // halt movement on range entry. Must run before combat so combat
             // sees the up-to-date movement_target this tick.
-            self.tick_attack_pursuit(rules, path_grid);
+            self.tick_attack_pursuit_with_overlay_registry(
+                rules,
+                path_grid,
+                overlay_registry,
+                &tube_turn_owned_ids,
+            );
             // LogicClass live-object order drives the firing/damage/kill-credit
             // resolution sequence. Snapshot is owned, so it does not conflict
             // with the &mut self.entities borrow below.
             let logic_order = self.live_object_order_snapshot();
+            let terrain = self.resolved_terrain.as_ref();
             let projectile_targets = self
                 .substrate
                 .entities
                 .iter_sorted()
                 .filter(|(_, entity)| entity.is_alive() && !entity.dying)
                 .map(|(id, entity)| {
+                    let world_z_leptons = combat::object_world_z_leptons(entity, terrain);
                     (
                         id,
                         crate::sim::projectile::ProjectileCoord::new(
@@ -3378,14 +4434,13 @@ impl Simulation {
                                 + entity.position.sub_x.to_num::<i32>(),
                             i32::from(entity.position.ry) * 256
                                 + entity.position.sub_y.to_num::<i32>(),
-                            i32::from(entity.position.z),
+                            world_z_leptons,
                         ),
                     )
                 })
                 .collect();
             // YR BulletClass::AI: existing bullets advance before this frame's
             // newly accepted weapon fire, so a spawn cannot move recursively.
-            let terrain = self.resolved_terrain.as_ref();
             let overlay_grid = self.overlay_grid.as_ref();
             let projectile_detonations = self
                 .projectiles
@@ -3399,30 +4454,14 @@ impl Simulation {
                     )
                 })
                 .detonations;
-            let combat_result = combat::tick_combat_with_fog_and_main_rng(
-                &mut self.substrate.entities,
-                &mut self.substrate.occupancy,
+            let combat_result = self.tick_combat_with_fatal_lifecycle(
                 rules,
-                &mut self.interner,
-                Some(&self.fog),
-                &self.power_states,
-                &self.houses,
-                Some(&mut self.sound_events),
-                &mut self.production.resource_nodes,
-                self.overlay_grid.as_ref(),
                 overlay_registry,
-                self.resolved_terrain.as_ref(),
-                u64::from(self.session.binary_frame),
                 tick_ms,
-                self.session.binary_frame,
                 &logic_order,
+                &tube_turn_owned_ids,
                 &projectile_detonations,
-                Some(&mut self.radiation),
-                &self.pending_missile_detonations,
-                &mut self.scenario_rng,
-                &mut self.main_rng,
             );
-            self.pending_missile_detonations.clear();
             for projectile in combat_result.projectile_spawns.iter().copied() {
                 self.projectiles.spawn(projectile);
             }
@@ -3451,7 +4490,16 @@ impl Simulation {
             // immediately after the combat phase preserves that
             // "target set, then manager reads it" ordering within the tick;
             // the manager self-gates to every 10 frames regardless.
-            crate::sim::spawn_manager::tick_spawn_managers(self, rules, &logic_order);
+            let ordinary_logic_order = logic_order
+                .iter()
+                .copied()
+                .filter(|id| !tube_turn_owned_ids.contains(id))
+                .collect::<Vec<_>>();
+            crate::sim::spawn_manager::tick_spawn_managers(
+                self,
+                rules,
+                &ordinary_logic_order,
+            );
             destroyed_structure |= combat_result.structure_destroyed;
             let combat_dead_infos: Vec<(InternedId, EntityCategory)> = combat_result
                 .despawned_ids
@@ -3501,16 +4549,13 @@ impl Simulation {
             // → TriggerEvent 31 → zone rebuild). Replaces the legacy
             // 2-call pipeline.
             bridge_state_changed |=
-                crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
+                crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
                     self,
                     rules,
                     &combat_result.bridge_damage_events,
+                    overlay_registry,
                 );
-            // Wall damage: feed combat-emitted wall hits through the authoritative
-            // per-cell pipeline. OverlayType supplies Strength/DamageLevels.
-            if let Some(reg) = overlay_registry {
-                self.apply_wall_damage_events(&combat_result.wall_damage_events, reg);
-            }
+            debug_assert!(combat_result.tiberium_reduction_requests.is_empty());
             for req in &combat_result.tiberium_reduction_requests {
                 self.reduce_tiberium_at_with_native_context(
                     (req.rx, req.ry),
@@ -3519,45 +4564,28 @@ impl Simulation {
                     overlay_registry,
                 );
             }
-            let mut destroyed_terrain_cells = Vec::new();
-            for event in &combat_result.terrain_damage_events {
-                let Some(warhead) = rules.warhead(self.interner.resolve(event.warhead_ref)) else {
-                    continue;
-                };
-                let result = crate::sim::terrain_object::damage_terrain_object_at_cell(
-                    &mut self.production,
-                    &mut self.substrate.raw_cell_occupation,
-                    rules,
-                    &self.interner,
-                    (event.rx, event.ry),
-                    event.damage,
-                    warhead,
-                    self.resolved_terrain.as_mut(),
-                );
-                if matches!(
-                    result,
-                    crate::sim::terrain_object::TerrainDamageResult::Destroyed
-                ) {
-                    destroyed_structure = true;
-                    let cell = (event.rx, event.ry);
-                    if !destroyed_terrain_cells.contains(&cell) {
-                        destroyed_terrain_cells.push(cell);
-                    }
+            let mut navigation_changed_cells = self
+                .overlay_grid
+                .as_mut()
+                .map(|grid| grid.take_synchronous_navigation_cells())
+                .unwrap_or_default();
+            for cell in combat_result
+                .terrain_navigation_changed_cells
+                .iter()
+                .copied()
+            {
+                if !navigation_changed_cells.contains(&cell) {
+                    navigation_changed_cells.push(cell);
                 }
             }
-            if !destroyed_terrain_cells.is_empty() {
+            if !navigation_changed_cells.is_empty() {
                 tail_path_grid = self
-                    .refresh_navigation_after_terrain_deaths(path_grid, &destroyed_terrain_cells);
+                    .refresh_navigation_after_terrain_changes(path_grid, &navigation_changed_cells);
             }
             let post_terrain_path_grid = tail_path_grid.as_ref().or(path_grid);
             // Apply RevealOnFire events from combat.
             for ev in &combat_result.reveal_events {
                 vision::reveal_radius(&mut self.fog, ev.owner, ev.rx, ev.ry, ev.radius);
-            }
-            // SpySat reshroud: when a SpySat building is destroyed, fully reshroud
-            // its owner. Current LOS will re-reveal on the next vision tick.
-            for &owner_id in &combat_result.spy_sat_reshroud_owners {
-                self.fog.reset_explored_for_owner(owner_id);
             }
             // Eject survivors from crewed buildings destroyed in combat.
             for bldg in &combat_result.destroyed_crewed_buildings {
@@ -3603,6 +4631,8 @@ impl Simulation {
                 });
             }
             // Collect fire events for render-side muzzle flash / projectile origin.
+            self.invulnerability_impact_effects
+                .extend(combat_result.invulnerability_impact_effects.iter().copied());
             self.fire_events.extend(combat_result.fire_events);
             // Emit radar events for combat occurrences.
             for ev in &combat_result.reveal_events {
@@ -3628,61 +4658,12 @@ impl Simulation {
                     eva_allowed,
                 });
             }
-            // Drain combat-emitted smudge requests in emission order. Native
-            // ore growth/spread already ran in the pre-object ladder, so crater
-            // tiberium reduction becomes input to the next frame's drivers.
-            // Skipped when the optional grids/path_grid aren't bound.
-            if let (Some(smudge_grid), Some(overlay), Some(terrain), Some(pg)) = (
-                self.smudge_grid.as_mut(),
-                self.overlay_grid.as_mut(),
-                self.resolved_terrain.as_mut(),
-                post_terrain_path_grid,
-            ) {
-                let mut tiberium_ctx = crate::sim::combat::smudge_dispatch::SmudgeTiberiumContext {
-                    resource_nodes: &mut self.production.resource_nodes,
-                    overlay_grid: overlay,
-                    ore_growth_state: &mut self.production.ore_growth_state,
-                    overlay_registry,
-                    tiberium_types: Some(&rules.tiberium_types),
-                    source_object_cells: Some(&self.production.tiberium_spawning_terrain_cells),
-                    binary_frame: self.session.binary_frame,
-                    spread_enabled: self.production.ore_growth_config.spreads,
-                    radar_dirty_cells: &mut self.radar_terrain_dirty_cells,
-                    radar_dirty_generation: &mut self.radar_terrain_dirty_generation,
-                    tactical_dirty_cells: &mut self.tactical_dirty_cells,
-                };
-                // Phase 4.5 superweapon-emitted smudges first, then Phase 5
-                // combat-emitted. Drain order matches emission order so the
-                // RNG cursor advances deterministically.
-                crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
-                    &self.pending_smudge_requests,
-                    &rules.art_registry,
-                    &rules.smudge_types,
-                    &self.interner,
-                    smudge_grid,
-                    &self.substrate.occupancy,
-                    terrain,
-                    pg,
-                    &mut tiberium_ctx,
-                    // destruction smudge — scenario stream. Direct field: co-borrows
-                    // &mut smudge_grid/tiberium_ctx.
-                    &mut self.scenario_rng,
-                );
-                crate::sim::combat::smudge_dispatch::drain_smudge_spawn_requests(
-                    &combat_result.smudge_spawn_requests,
-                    &rules.art_registry,
-                    &rules.smudge_types,
-                    &self.interner,
-                    smudge_grid,
-                    &self.substrate.occupancy,
-                    terrain,
-                    pg,
-                    &mut tiberium_ctx,
-                    // destruction smudge — scenario stream. Direct field: co-borrows
-                    // &mut smudge_grid/tiberium_ctx.
-                    &mut self.scenario_rng,
-                );
-            }
+            // Production commits every request at its native producer. The
+            // vectors remain only on hookless combat fixtures; a live world
+            // request here would be an ordering regression.
+            debug_assert!(self.pending_smudge_requests.is_empty());
+            debug_assert!(combat_result.smudge_spawn_requests.is_empty());
+            self.flush_smudge_dirty();
             // Always clear pending — even if grids were unbound (headless
             // tests). The vec is per-tick ephemeral state.
             self.pending_smudge_requests.clear();
@@ -3694,8 +4675,10 @@ impl Simulation {
             // repairs, retaliation, miner, aircraft) are dying-gated. Combat
             // post-processing above still reads the dead ids while resolvable
             // (count decrement, owner snapshot) — that runs before this point.
-            // --- Phase 6: Retaliation + Passengers ---
-            // DEPENDS ON: combat (sets last_attacker_id read by retaliation).
+            // --- Phase 6: Legacy retaliation + Passengers ---
+            // DEPENDS ON: non-receiver damage producers that still use the
+            // transitional last_attacker_id handoff. Ordered area/direct
+            // receiver hits already completed Mission Override inline.
             let phase_six_path_grid = post_terrain_path_grid;
             let logic_order = self.live_object_order_snapshot();
             combat::tick_retaliation(
@@ -3705,7 +4688,12 @@ impl Simulation {
                 &logic_order,
             );
             passenger_ownership_changed = passenger::tick_passenger_system(self, rules);
-            self.tick_order_intents_post_combat(phase_six_path_grid, Some(rules));
+            self.tick_order_intents_post_combat_with_overlay_registry(
+                phase_six_path_grid,
+                Some(rules),
+                overlay_registry,
+                &tube_turn_owned_ids,
+            );
             // --- Phase 7: Scatter + Production + Repairs + Docks + Ore ---
             // DEPENDS ON: combat (dead entities removed), movement (positions stable).
             // PRODUCES: new entities (spawned units), credit changes, ore growth.
@@ -3844,18 +4832,16 @@ impl Simulation {
     /// object before it enters state 3, then restores that same object-list
     /// membership before Foot's state-7 abort-motion cleanup.
     fn tick_tunnel_locomotor_one(&mut self, stable_id: u64, path_grid: Option<&PathGrid>) {
-        let Some((mut state, position, movement_target, cell_marked, layer)) = self
-            .substrate
-            .entities
-            .get(stable_id)
-            .and_then(|entity| {
+        let Some((mut state, position, movement_target, cell_marked, layer)) =
+            self.substrate.entities.get(stable_id).and_then(|entity| {
                 entity.tunnel_state.map(|state| {
                     (
                         state,
                         (entity.position.rx, entity.position.ry),
-                        entity.movement_target.as_ref().map(|target| {
-                            (target.next_index, target.path.len())
-                        }),
+                        entity
+                            .movement_target
+                            .as_ref()
+                            .map(|target| (target.next_index, target.path.len())),
                         entity.lifecycle.cell_marked,
                         entity.locomotor.as_ref().map(|locomotor| locomotor.layer),
                     )
@@ -3875,10 +4861,11 @@ impl Simulation {
             .unwrap_or(true);
         let surface_cell_available = path_grid.map_or(true, |grid| {
             grid.is_walkable_on_layer(position.0, position.1, MovementLayer::Ground)
-        }) && self
-            .substrate
-            .occupancy
-            .is_empty_on_layer(position.0, position.1, MovementLayer::Ground);
+        }) && self.substrate.occupancy.is_empty_on_layer(
+            position.0,
+            position.1,
+            MovementLayer::Ground,
+        );
         let mut context = TunnelProcessContext {
             destination_reached,
             surface_cell_available,
@@ -3987,6 +4974,7 @@ impl Simulation {
                     entity.position.rx = rx;
                     entity.position.ry = ry;
                     entity.position.z = 0;
+                    entity.position.exact_z_leptons = None;
                     if let Some(locomotor) = entity.locomotor.as_mut() {
                         locomotor.layer = MovementLayer::Ground;
                     }
@@ -3998,10 +4986,11 @@ impl Simulation {
                 if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
                     entity.health.current = 0;
                 }
-                self.pending_lifecycle_requests.push(LifecycleRequest::Uninit {
-                    stable_id,
-                    reason: crate::sim::lifecycle_request::UninitReason::Crush,
-                });
+                self.pending_lifecycle_requests
+                    .push(LifecycleRequest::Uninit {
+                        stable_id,
+                        reason: crate::sim::lifecycle_request::UninitReason::Crush,
+                    });
             }
         }
     }

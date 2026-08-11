@@ -48,6 +48,9 @@ pub struct SpecialFlagsSection {
     pub tiberium_spreads: Option<bool>,
     /// Map-level override: are bridges destroyable? (DestroyableBridges=)
     pub destroyable_bridges: Option<bool>,
+    /// Campaign/editor `ScenarioFlags` bit 0x20. While set, direct and area
+    /// damage return before mutating world state (`Inert=`).
+    pub inert: Option<bool>,
 }
 
 impl SpecialFlagsSection {
@@ -91,6 +94,7 @@ pub fn parse_special_flags_section(ini: &IniFile) -> SpecialFlagsSection {
         tiberium_grows: section.get_bool("TiberiumGrows"),
         tiberium_spreads: section.get_bool("TiberiumSpreads"),
         destroyable_bridges: section.get_bool("DestroyableBridges"),
+        inert: section.get_bool("Inert"),
     }
 }
 
@@ -125,7 +129,7 @@ mod tests {
     #[test]
     fn parse_special_flags_bridge_override() {
         let ini = IniFile::from_str(
-            "[SpecialFlags]\nMCVDeploy=yes\nInitialVeteran=yes\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\n",
+            "[SpecialFlags]\nMCVDeploy=yes\nInitialVeteran=yes\nTiberiumGrows=yes\nTiberiumSpreads=no\nDestroyableBridges=no\nInert=yes\n",
         );
         let flags = parse_special_flags_section(&ini);
         assert_eq!(flags.mcv_deploy, Some(true));
@@ -133,6 +137,23 @@ mod tests {
         assert_eq!(flags.tiberium_grows, Some(true));
         assert_eq!(flags.tiberium_spreads, Some(false));
         assert_eq!(flags.destroyable_bridges, Some(false));
+        assert_eq!(flags.inert, Some(true));
+    }
+
+    #[test]
+    fn gsi_04_10_special_flags_inert_is_optional_scenario_authority() {
+        assert_eq!(
+            parse_special_flags_section(&IniFile::from_str("[SpecialFlags]\nInert=yes\n")).inert,
+            Some(true)
+        );
+        assert_eq!(
+            parse_special_flags_section(&IniFile::from_str("[SpecialFlags]\nInert=no\n")).inert,
+            Some(false)
+        );
+        assert_eq!(
+            parse_special_flags_section(&IniFile::from_str("[Basic]\nName=Ordinary\n")).inert,
+            None
+        );
     }
 
     #[test]

@@ -239,10 +239,10 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
 /// If there are selected mobile units, issue a move command to the minimap
 /// click location and return true. Otherwise return false (caller does camera drag).
 fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
+    let selected_ids = crate::app_input::selected_stable_ids_in_order(state);
     let Some(sim) = &state.simulation else {
         return false;
     };
-    let selected_ids = crate::app_input::selected_stable_ids_sorted(sim.entities());
     if selected_ids.is_empty() {
         return false;
     }
@@ -314,8 +314,10 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
 /// Returns None if no minimap is available.
 fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
     let minimap = state.minimap.as_ref()?;
-    let sw = state.render_width() as f32;
-    let sh = state.render_height() as f32;
+    let (tactical_w, tactical_h) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let tactical_w = tactical_w as f32;
+    let tactical_h = tactical_h as f32;
     let z = state.zoom_level;
     let rect = active_minimap_screen_rect(state);
     // camera_top_left_for_screen_point_in_rect returns the camera top-left that
@@ -324,16 +326,16 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
     let (cam_x, cam_y) = minimap.camera_top_left_for_screen_point_in_rect(
         state.cursor_x,
         state.cursor_y,
-        sw / z,
-        sh / z,
+        tactical_w / z,
+        tactical_h / z,
         rect.x,
         rect.y,
         rect.w,
         rect.h,
     );
     // The center of the viewport is what was clicked.
-    let world_x = cam_x + sw / (2.0 * z);
-    let world_y = cam_y + sh / (2.0 * z);
+    let world_x = cam_x + tactical_w / (2.0 * z);
+    let world_y = cam_y + tactical_h / (2.0 * z);
     Some(crate::app_sim_tick::world_point_to_cell(
         world_x,
         world_y,
@@ -348,13 +350,15 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     };
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
+    let (tactical_w, tactical_h) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let z = state.zoom_level;
     let rect = active_minimap_screen_rect(state);
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
         state.cursor_x,
         state.cursor_y,
-        sw / z,
-        sh / z,
+        tactical_w as f32 / z,
+        tactical_h as f32 / z,
         rect.x,
         rect.y,
         rect.w,
@@ -511,6 +515,37 @@ pub(crate) fn begin_main_pass<'a>(
             stencil_ops: None,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }),
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    })
+}
+
+/// Resume the tactical composition after a destination-dependent encoded-byte
+/// surface edit. Both attachments retain the work produced by the first pass.
+pub(crate) fn begin_main_load_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    view: &'a wgpu::TextureView,
+    depth_view: &'a wgpu::TextureView,
+) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Main Pass (resume after combat lights)"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth_view,
+            stencil_ops: None,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             }),
         }),

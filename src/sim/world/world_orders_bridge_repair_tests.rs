@@ -51,7 +51,7 @@ fn dummy_resolved_terrain() -> ResolvedTerrainGrid {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -501,7 +501,7 @@ fn advance_until_c4_claim(
             .get(target_id)
             .and_then(|b| b.pending_c4_detonation)
         {
-            return pending.plant_start_tick;
+            return pending.start_frame as u64;
         }
     }
     panic!("C4 plant was not claimed after entering the target building cell");
@@ -944,8 +944,9 @@ fn c4_on_cabhut_without_bridge_clears_pending_marker() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let mut bridge_state_changed_seen = false;
@@ -978,8 +979,9 @@ fn c4_on_invulnerable_cabhut_still_dispatches_bridge_and_clears_pending() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
     sim.substrate
         .entities
@@ -1025,8 +1027,9 @@ fn c4_on_cabhut_bridgehead_fallback_collapses_bridge() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1054,8 +1057,9 @@ fn c4_on_cabhut_pure_bridgehead_fallback_uses_opposite_anchor_offset() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1090,8 +1094,9 @@ fn c4_on_cabhut_fallback_rejects_anchor_or_direction_flags_alone() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1118,8 +1123,9 @@ fn stock_high_cabhut_no_overlay_fallback_collapses_bridge() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1147,8 +1153,9 @@ fn stock_low_cabhut_no_overlay_fallback_collapses_bridge() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1176,8 +1183,9 @@ fn stock_cabhut_no_overlay_without_starter_is_noop() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1206,8 +1214,9 @@ fn c4_on_cabhut_low_overlay_collapses_low_bridge() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1242,8 +1251,9 @@ fn c4_on_cabhut_low_terminal_overlay_0x65_uses_overlay_first_scan() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1274,8 +1284,9 @@ fn c4_on_cabhut_high_terminal_overlay_0xe8_uses_overlay_first_scan() {
         .get_mut(cabhut)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let bridge_state_changed_seen = advance_pending_c4_to_detonation(&mut sim, &rules, &heights);
@@ -1325,7 +1336,7 @@ fn damaged_data_resolved_terrain(tile_id: i32) -> ResolvedTerrainGrid {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -1591,7 +1602,7 @@ fn build_ns_bridge_with_bridgehead_for_dispatch() -> (
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,

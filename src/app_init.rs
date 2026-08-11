@@ -20,19 +20,21 @@ use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
-    apply_explicit_skirmish_launch_session, build_overlay_atlas_from_map,
+    PreloadedBattleStartPlan, apply_explicit_skirmish_launch_session,
+    apply_preloaded_battle_launch_session, build_overlay_atlas_from_map,
     house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
 
 use crate::assets::asset_manager::AssetManager;
+use crate::assets::shp_file::ShpFile;
 use crate::map::actions::ActionMap;
 use crate::map::basic::{BasicSection, BridgeDestroyabilityMode};
 use crate::map::briefing::BriefingSection;
 use crate::map::cell_tags::CellTagMap;
 use crate::map::events::EventMap;
 use crate::map::houses::{self, HouseColorMap, HouseRoster};
-use crate::map::lighting::{self, CellLightGrid, LightingConfig, PointLight};
+use crate::map::lighting::{self, CellLightGrid, LightingConfig, LightingProfileUnits, PointLight};
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -61,6 +63,709 @@ use crate::rules::ruleset::{GeneralRules, RuleSet};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
+
+fn resolved_overlay_shp_ids(
+    registry: &OverlayTypeRegistry,
+    rules_ini: &IniFile,
+    art: &ArtRegistry,
+    asset_manager: &AssetManager,
+    theater_ext: &str,
+    theater_name: &str,
+) -> BTreeSet<u8> {
+    let mut available = BTreeSet::new();
+    for raw_id in 0..registry.len().min(usize::from(u8::MAX) + 1) {
+        let overlay_id = raw_id as u8;
+        let Some(name) = registry.name(overlay_id) else {
+            continue;
+        };
+        let image_id = art.resolve_overlay_image_id(name, rules_ini);
+        let native_names = crate::rules::art_data::native_overlay_shp_names(
+            art,
+            &image_id,
+            theater_ext,
+            theater_name,
+        );
+        if native_names
+            .iter()
+            .filter_map(|candidate| asset_manager.load_file_from_mix(candidate))
+            .any(|loaded| ShpFile::from_bytes(&loaded.bytes).is_ok())
+        {
+            available.insert(overlay_id);
+        }
+    }
+    available
+}
+
+/// BuildingClass::GetCoords projects the stored north-west anchor to the
+/// foundation centre before distance consumers receive it.
+fn project_building_get_coords_xy(
+    northwest_x: i32,
+    northwest_y: i32,
+    foundation_width: u16,
+    foundation_height: u16,
+) -> (i32, i32) {
+    let x_offset = i32::from(foundation_width)
+        .wrapping_sub(1)
+        .wrapping_mul(128);
+    let y_offset = i32::from(foundation_height)
+        .wrapping_sub(1)
+        .wrapping_mul(128);
+    (
+        northwest_x.wrapping_add(x_offset),
+        northwest_y.wrapping_add(y_offset),
+    )
+}
+
+fn map_wall_owner_candidate_from_building(
+    entity: &crate::sim::game_entity::GameEntity,
+    resolved_terrain: &ResolvedTerrainGrid,
+    house_wall_owner: bool,
+) -> crate::sim::overlay_grid::MapWallOwnerCandidate {
+    let northwest_x = i32::from(entity.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let northwest_y = i32::from(entity.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    let world_z = resolved_terrain
+        .cell(entity.position.rx, entity.position.ry)
+        .and_then(|cell| {
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                northwest_x,
+                northwest_y,
+            )
+            .ok()
+        })
+        .unwrap_or(i32::from(entity.position.z) * crate::util::lepton::LEPTONS_PER_LEVEL as i32);
+    let (foundation_width, foundation_height) =
+        crate::sim::production::foundation_dimensions(&entity.foundation);
+    let (world_x, world_y) = project_building_get_coords_xy(
+        northwest_x,
+        northwest_y,
+        foundation_width,
+        foundation_height,
+    );
+
+    crate::sim::overlay_grid::MapWallOwnerCandidate {
+        owner: entity.owner,
+        world_x,
+        world_y,
+        world_z,
+        foundation_width,
+        foundation_height,
+        object_alive: entity.lifecycle.object_alive,
+        cell_marked: entity.lifecycle.cell_marked,
+        house_wall_owner,
+    }
+}
+
+#[cfg(test)]
+mod native_overlay_shp_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn with_asset(label: &str, filename: &str) -> Self {
+            let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-overlay-get-shp-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create overlay SHP test directory");
+            std::fs::write(path.join(filename), valid_test_shp())
+                .expect("write overlay SHP test asset");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn valid_test_shp() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+
+        let data_offset = 32u32;
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&[0u8; 11]);
+        data.extend_from_slice(&data_offset.to_le_bytes());
+        data.extend_from_slice(&[1, 2, 3, 0]);
+        data
+    }
+
+    fn theater_overlay_fixture() -> (OverlayTypeRegistry, IniFile, ArtRegistry) {
+        let rules_ini = IniFile::from_str("[OverlayTypes]\n0=NAME\n");
+        let art_ini = IniFile::from_str("[NAME]\nTheater=yes\n");
+        let registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
+        let art = ArtRegistry::from_ini(&art_ini);
+        (registry, rules_ini, art)
+    }
+
+    #[test]
+    fn gsi_04_07_placement_map_pack_get_shp_uses_native_primary_and_generic_retry() {
+        let (registry, rules_ini, art) = theater_overlay_fixture();
+        assert_eq!(
+            crate::rules::art_data::native_overlay_shp_names(&art, "NAME", "TEM", "TEMPERATE"),
+            ["NAME.TEM".to_string(), "NGME.TEM".to_string()]
+        );
+
+        for (label, filename, expected_available) in [
+            ("native-extension", "NAME.TEM", true),
+            ("ineligible-shp-alternative", "NAME.SHP", false),
+            ("generic-letter-retry", "NGME.TEM", true),
+        ] {
+            let directory = TestDirectory::with_asset(label, filename);
+            let asset_manager = AssetManager::from_loose_root_for_test(directory.path());
+            let available = resolved_overlay_shp_ids(
+                &registry,
+                &rules_ini,
+                &art,
+                &asset_manager,
+                "TEM",
+                "TEMPERATE",
+            );
+
+            assert_eq!(
+                available.contains(&0),
+                expected_available,
+                "only {filename} is present"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod map_wall_owner_candidate_tests {
+    use super::*;
+    use crate::map::entities::EntityCategory;
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
+    use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
+    use crate::sim::components::{BuildingUp, Health};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::overlay_grid::{MapWallOwnerCandidate, OverlayGrid};
+    use crate::sim::power_system::PowerState;
+    use crate::sim::radiation::RadDetonation;
+
+    fn flat_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+        let land = LandType::Clear.as_index();
+        let speed_costs = SpeedCostProfile::default();
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: true,
+            tileset_index: None,
+            land_type: land,
+            yr_cell_land_type: land,
+            slope_type: 0,
+            template_height: 0,
+            height_in_pixels: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs,
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: true,
+            allows_tiberium: false,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: zone_class::GROUND,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: land,
+            base_yr_cell_land_type: land,
+            base_terrain_class: TerrainClass::Clear,
+            base_speed_costs: speed_costs,
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn flat_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
+        let cells = (0..height)
+            .flat_map(|ry| (0..width).map(move |rx| flat_cell(rx, ry)))
+            .collect();
+        ResolvedTerrainGrid::from_cells(width, height, cells)
+    }
+
+    fn building(
+        stable_id: u64,
+        type_id: &str,
+        owner: &str,
+        rx: u16,
+        ry: u16,
+        foundation: &str,
+    ) -> GameEntity {
+        let mut entity = GameEntity::test_default(stable_id, type_id, owner, rx, ry);
+        entity.category = EntityCategory::Structure;
+        entity.foundation = foundation.to_string();
+        entity.lifecycle.object_alive = true;
+        entity.lifecycle.cell_marked = true;
+        entity
+    }
+
+    #[test]
+    fn gsi_04_07_placement_production_wall_owner_uses_building_get_coords_center() {
+        let terrain = flat_terrain(15, 10);
+        let gacnst = building(1, "GACNST", "GDI", 8, 8, "4x4");
+        let gaspot = building(2, "GASPOT", "Neutral", 14, 9, "1x1");
+        let gacnst_candidate = map_wall_owner_candidate_from_building(&gacnst, &terrain, true);
+        let gaspot_candidate = map_wall_owner_candidate_from_building(&gaspot, &terrain, true);
+
+        assert_eq!(
+            (gacnst_candidate.world_x, gacnst_candidate.world_y),
+            (8 * 256 + 128 + 3 * 128, 8 * 256 + 128 + 3 * 128)
+        );
+        assert_eq!(
+            (gaspot_candidate.world_x, gaspot_candidate.world_y),
+            (14 * 256 + 128, 9 * 256 + 128),
+            "a 1x1 foundation has zero GetCoords projection"
+        );
+        assert_eq!(
+            (
+                gacnst_candidate.foundation_width,
+                gacnst_candidate.foundation_height
+            ),
+            (4, 4),
+            "candidate uses the dimensions stamped on the entity"
+        );
+
+        let registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str("[OverlayTypes]\n0=GAWALL\n[GAWALL]\nWall=yes\n"),
+            None,
+        );
+        let mut projected_grid = OverlayGrid::new(15, 10);
+        projected_grid.place_overlay(12, 9, 0, 0);
+        projected_grid.reconstruct_map_wall_owners(
+            &terrain,
+            &registry,
+            &[gacnst_candidate, gaspot_candidate],
+        );
+        assert_eq!(projected_grid.cell(12, 9).wall_owner, Some(gacnst.owner));
+
+        let mut northwest_grid = OverlayGrid::new(15, 10);
+        northwest_grid.place_overlay(12, 9, 0, 0);
+        northwest_grid.reconstruct_map_wall_owners(
+            &terrain,
+            &registry,
+            &[
+                MapWallOwnerCandidate {
+                    world_x: 8 * 256 + 128,
+                    world_y: 8 * 256 + 128,
+                    ..gacnst_candidate
+                },
+                MapWallOwnerCandidate {
+                    world_x: 14 * 256 + 128,
+                    world_y: 9 * 256 + 128,
+                    ..gaspot_candidate
+                },
+            ],
+        );
+        assert_eq!(
+            northwest_grid.cell(12, 9).wall_owner,
+            Some(gaspot.owner),
+            "the former north-west candidate coordinates select the wrong owner"
+        );
+    }
+
+    #[test]
+    fn gsi_04_10_all_terrain_clears_same_cell_tiberium_before_entity_admission() {
+        let ini = IniFile::from_str(
+            "[General]\nTreeStrength=200\n\
+             [TerrainTypes]\n0=TREE01\n1=TIBTRE01\n\
+             [TREE01]\nSpawnsTiberium=no\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\n\
+             [OverlayTypes]\n0=ORE\n1=ROCK\n\
+             [ORE]\nTiberium=yes\n\
+             [ROCK]\nIsARock=yes\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        assert!(
+            !rules
+                .terrain_object_type_case_insensitive("TREE01")
+                .expect("ordinary tree type")
+                .spawns_tiberium
+        );
+        let mut sim = Simulation::with_seed(0x0410);
+        let rng_before = sim.scenario_rng.state();
+
+        let mut terrain = flat_terrain(6, 3);
+        let mut overlays = OverlayGrid::new(6, 3);
+        overlays.place_overlay(1, 1, 0, 7);
+        overlays.place_overlay(2, 1, 0, 8);
+        overlays.place_overlay(3, 1, 1, 9);
+        overlays.place_overlay(4, 1, 0, 10);
+        for rx in 1..=4 {
+            crate::sim::overlay_grid::recalc_overlay_passability(
+                &mut overlays,
+                &mut terrain,
+                &registry,
+                rx,
+                1,
+            );
+        }
+        assert_eq!(
+            terrain.cell(1, 1).unwrap().terrain_class,
+            TerrainClass::Tiberium
+        );
+        assert_eq!(
+            terrain.cell(2, 1).unwrap().terrain_class,
+            TerrainClass::Tiberium
+        );
+        assert_eq!(
+            terrain.cell(4, 1).unwrap().terrain_class,
+            TerrainClass::Tiberium,
+            "the unknown Terrain fixture starts with the same projected ore state"
+        );
+        overlays.take_dirty_cells();
+        let terrain_objects = [
+            TerrainObject {
+                rx: 1,
+                ry: 1,
+                name: "TREE01".to_string(),
+            },
+            TerrainObject {
+                rx: 2,
+                ry: 1,
+                name: "TIBTRE01".to_string(),
+            },
+            TerrainObject {
+                rx: 3,
+                ry: 1,
+                name: "TREE01".to_string(),
+            },
+            TerrainObject {
+                rx: 4,
+                ry: 1,
+                name: "UNKNOWN".to_string(),
+            },
+        ];
+
+        let cleared = clear_tiberium_source_cells_for_terrain(
+            &mut overlays,
+            &mut terrain,
+            &terrain_objects,
+            &rules,
+            &registry,
+        );
+
+        assert_eq!(cleared, BTreeSet::from([(1, 1), (2, 1)]));
+        assert_eq!(overlays.cell(1, 1).overlay_id, None);
+        assert_eq!(overlays.cell(1, 1).overlay_data, 0);
+        assert_eq!(overlays.cell(2, 1).overlay_id, None);
+        assert_eq!(overlays.cell(2, 1).overlay_data, 0);
+        assert_eq!(overlays.cell(3, 1).overlay_id, Some(1));
+        assert_eq!(overlays.cell(3, 1).overlay_data, 9);
+        assert_eq!(overlays.cell(4, 1).overlay_id, Some(0));
+        assert_eq!(overlays.cell(4, 1).overlay_data, 10);
+        assert_eq!(
+            terrain.cell(1, 1).unwrap().terrain_class,
+            TerrainClass::Clear
+        );
+        assert_eq!(
+            terrain.cell(2, 1).unwrap().terrain_class,
+            TerrainClass::Clear
+        );
+        assert_eq!(
+            terrain.cell(4, 1).unwrap().terrain_class,
+            TerrainClass::Tiberium,
+            "an unknown TerrainType leaves the resolved ore projection intact"
+        );
+        assert!(
+            overlays.take_dirty_cells().is_empty(),
+            "map-load TerrainClass::Unlimbo clearing must not emit runtime dirtiness"
+        );
+
+        let constructed = crate::sim::terrain_spawn::construct_terrain_objects(
+            &mut sim,
+            &terrain_objects,
+            &rules,
+            false,
+        );
+        assert_eq!(constructed, 3);
+        assert_eq!(
+            sim.production.terrain_object_cells,
+            BTreeMap::from([((1, 1), 1), ((2, 1), 2), ((3, 1), 3)]),
+            "recognized Terrain entries construct in source order while UNKNOWN is skipped"
+        );
+        assert_eq!(sim.scenario_rng.state(), rng_before);
+    }
+
+    fn lighting_rules() -> RuleSet {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[BuildingTypes]\n0=LAMP\n\
+             [LAMP]\nStrength=100\nPowered=yes\nPower=-100\n\
+             LightVisibility=2048\nLightIntensity=.2\n\
+             LightRedTint=.1\nLightGreenTint=.2\nLightBlueTint=.3\n",
+        ))
+        .expect("lighting rules");
+        rules.radiation = crate::rules::ruleset::RadiationRules {
+            duration_multiple: 1,
+            application_delay: 16,
+            level_max: 500,
+            level_delay: 90,
+            light_delay: 90,
+            level_factor: 0.2,
+            light_factor: crate::util::fixed_math::sim_from_f32(0.1),
+            tint_factor: crate::util::fixed_math::sim_from_f32(1.0),
+            color: (0, 255, 0),
+            site_warhead: "RadSite".to_string(),
+        };
+        rules
+    }
+
+    fn seed_live_lamp(sim: &mut Simulation) -> crate::sim::intern::InternedId {
+        let owner = sim.interner.intern("House");
+        let type_ref = sim.interner.intern("LAMP");
+        let mut lamp = GameEntity::new_at_frame_zero_for_test(
+            41,
+            4,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            0,
+            false,
+        );
+        lamp.lifecycle.object_alive = true;
+        lamp.lifecycle.in_limbo = false;
+        lamp.lifecycle.cell_marked = true;
+        lamp.building_up = Some(BuildingUp {
+            elapsed_ticks: 1,
+            total_ticks: 10,
+        });
+        sim.entities_mut().insert(lamp);
+        owner
+    }
+
+    #[test]
+    fn gsi_04_20_building_lamp_fingerprint_tracks_lifecycle_power_and_detail() {
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x420);
+        let owner = seed_live_lamp(&mut sim);
+        let config = LightingConfig::default();
+
+        let lit = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert_eq!(
+            lit.point_lights.len(),
+            1,
+            "BuildingUp does not suppress LightSource"
+        );
+        let low_detail = derive_lighting_view(&config, Some(&sim), Some(&rules), 1);
+        assert!(low_detail.point_lights.is_empty());
+        assert_ne!(lit.fingerprint, low_detail.fingerprint);
+
+        sim.power_states.insert(
+            owner,
+            PowerState {
+                is_low_power: true,
+                ..PowerState::default()
+            },
+        );
+        let offline = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(offline.point_lights.is_empty());
+        assert_ne!(lit.fingerprint, offline.fingerprint);
+
+        sim.power_states
+            .get_mut(&owner)
+            .expect("power state")
+            .is_low_power = false;
+        let restored = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert_eq!(restored.point_lights.len(), 1);
+        assert_eq!(lit.fingerprint, restored.fingerprint);
+
+        sim.entities_mut()
+            .get_mut(41)
+            .expect("lamp")
+            .lifecycle
+            .in_limbo = true;
+        let limbo = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(limbo.point_lights.is_empty());
+        sim.entities_mut()
+            .get_mut(41)
+            .expect("lamp")
+            .lifecycle
+            .in_limbo = false;
+        sim.entities_mut().get_mut(41).expect("lamp").dying = true;
+        let dying = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(dying.point_lights.is_empty());
+    }
+
+    #[test]
+    fn gsi_04_20_building_lamp_tracks_capture_power_and_sale_lifecycle() {
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x4201);
+        let _original_owner = seed_live_lamp(&mut sim);
+        let captured_owner = sim.interner.intern("Captured");
+        let config = LightingConfig::default();
+
+        let before_capture = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert_eq!(before_capture.point_lights.len(), 1);
+
+        sim.power_states.insert(
+            captured_owner,
+            PowerState {
+                is_low_power: true,
+                ..PowerState::default()
+            },
+        );
+        sim.change_owner(41, captured_owner);
+        let captured_offline = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(captured_offline.point_lights.is_empty());
+        assert_ne!(before_capture.fingerprint, captured_offline.fingerprint);
+
+        sim.power_states
+            .get_mut(&captured_owner)
+            .expect("captured owner power state")
+            .is_low_power = false;
+        let captured_online = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert_eq!(captured_online.point_lights.len(), 1);
+        assert_eq!(before_capture.fingerprint, captured_online.fingerprint);
+
+        assert!(crate::sim::production::sell_building(&mut sim, &rules, 41));
+        let sold = derive_lighting_view(&config, Some(&sim), Some(&rules), 2);
+        assert!(sold.point_lights.is_empty());
+        assert_ne!(captured_online.fingerprint, sold.fingerprint);
+    }
+
+    #[test]
+    fn gsi_04_20_composed_scenario_lamp_and_radiation_reach_world_tint_consumer() {
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x4202);
+        seed_live_lamp(&mut sim);
+        sim.session.lighting.current_ambient = 80;
+        sim.session.lighting.target_ambient = sim.session.lighting.ion.ambient_percent;
+        sim.session.lighting.selected_profile =
+            crate::sim::scenario_session::ScenarioLightingProfile::Ion;
+        sim.radiation.apply_detonation(
+            RadDetonation {
+                rx: 4,
+                ry: 5,
+                rad_level: 500,
+                spread: 10,
+            },
+            0,
+            &rules.radiation,
+            None,
+        );
+
+        let terrain = flat_terrain(10, 10);
+        let view = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
+        assert_eq!(view.profile.ambient_percent, 80);
+        assert_eq!(
+            view.point_lights.len(),
+            2,
+            "lamp and RadSite are both present"
+        );
+
+        let base = lighting::build_cell_light_grid_from_heights_and_units_with_detail(
+            terrain.iter().map(|cell| ((cell.rx, cell.ry), cell.level)),
+            view.profile,
+            view.detail_level,
+        );
+        let composed = build_lighting_grid_from_view(&terrain, &view);
+        let center = composed.cell_light_at((4, 5)).expect("composed cell light");
+        assert_eq!(
+            center.raw_additive_intensity,
+            view.point_lights
+                .iter()
+                .map(|light| light.intensity)
+                .sum::<i32>(),
+            "both centered sources accumulate over the selected scenario profile"
+        );
+        assert_ne!(
+            composed.unit_tint_at((4, 5)),
+            base.unit_tint_at((4, 5)),
+            "the world-instance unit tint consumer observes the composed grid"
+        );
+    }
+
+    #[test]
+    fn gsi_04_20_same_cell_radiation_merge_changes_complete_light_fingerprint() {
+        let rules = lighting_rules();
+        let mut sim = Simulation::with_seed(0x421);
+        let detonation = RadDetonation {
+            rx: 10,
+            ry: 11,
+            rad_level: 500,
+            spread: 10,
+        };
+        sim.radiation
+            .apply_detonation(detonation, 0, &rules.radiation, None);
+        let old_epoch =
+            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation);
+        let first = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
+        assert_eq!(first.point_lights.len(), 1);
+
+        sim.radiation
+            .apply_detonation(detonation, 0, &rules.radiation, None);
+        assert_eq!(
+            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation,),
+            old_epoch,
+            "the former center-plus-step epoch cannot see a same-cell rearm"
+        );
+        let merged = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
+        assert_eq!(merged.point_lights.len(), 1);
+        assert_ne!(first.fingerprint, merged.fingerprint);
+        assert_ne!(
+            first.point_lights[0].intensity,
+            merged.point_lights[0].intensity
+        );
+    }
+}
 
 /// All data produced by loading a map: terrain, tile atlas, entities, and camera.
 pub struct MapLoadResult {
@@ -174,49 +879,140 @@ pub(crate) fn load_csf(
     Ok(csf)
 }
 
-/// Rebuild transient app lighting from base map light plus the current live entities.
+/// Fully-derived render-facing lighting view. The simulation owns only the
+/// scenario controller and source inputs; the per-cell grid remains app state.
+pub(crate) struct DerivedLightingView {
+    pub(crate) profile: LightingProfileUnits,
+    pub(crate) point_lights: Vec<PointLight>,
+    pub(crate) detail_level: u32,
+    pub(crate) fingerprint: u64,
+}
+
+/// Derive the complete visible lighting input from one committed world view.
+pub(crate) fn derive_lighting_view(
+    lighting_config: &LightingConfig,
+    simulation: Option<&Simulation>,
+    rules: Option<&RuleSet>,
+    detail_level: u32,
+) -> DerivedLightingView {
+    let mut fingerprint = LightingFingerprint::new();
+    let profile = simulation.map_or_else(
+        || lighting::normal_profile_units(lighting_config),
+        |sim| {
+            let state = &sim.session.lighting;
+            let selected = match state.selected_profile {
+                crate::sim::scenario_session::ScenarioLightingProfile::Normal => state.normal,
+                crate::sim::scenario_session::ScenarioLightingProfile::Ion => state.ion,
+            };
+            fingerprint.mix_i32(state.target_ambient);
+            fingerprint.mix_u64(match state.selected_profile {
+                crate::sim::scenario_session::ScenarioLightingProfile::Normal => 0,
+                crate::sim::scenario_session::ScenarioLightingProfile::Ion => 1,
+            });
+            fingerprint.mix_i32(state.transition_timer.start_frame());
+            fingerprint.mix_i32(state.transition_timer.duration());
+            LightingProfileUnits {
+                ambient_percent: state.current_ambient,
+                red_percent: selected.red_percent,
+                green_percent: selected.green_percent,
+                blue_percent: selected.blue_percent,
+                ground_units: selected.ground_units,
+                level_units: selected.level_units,
+            }
+        },
+    );
+    fingerprint.mix_profile(profile);
+    fingerprint.mix_u64(u64::from(detail_level));
+
+    let building_lights = collect_live_building_lights(simulation, rules, detail_level);
+    let radiation_lights = match (simulation, rules) {
+        (Some(sim), Some(rules)) => {
+            crate::app_radiation_light::collect_radiation_lights(sim, rules)
+        }
+        _ => Vec::new(),
+    };
+
+    let mut point_lights = Vec::with_capacity(building_lights.len() + radiation_lights.len());
+    for (stable_id, light) in building_lights {
+        fingerprint.mix_u64(0x42);
+        fingerprint.mix_u64(stable_id);
+        fingerprint.mix_point_light(&light);
+        point_lights.push(light);
+    }
+    for light in radiation_lights {
+        fingerprint.mix_u64(0x52);
+        fingerprint.mix_point_light(&light);
+        point_lights.push(light);
+    }
+
+    DerivedLightingView {
+        profile,
+        point_lights,
+        detail_level: detail_level.min(2),
+        fingerprint: fingerprint.finish(),
+    }
+}
+
+/// Build the cell grid for an already-derived complete view.
+pub(crate) fn build_lighting_grid_from_view(
+    resolved_terrain: &ResolvedTerrainGrid,
+    view: &DerivedLightingView,
+) -> CellLightGrid {
+    let mut grid = lighting::build_cell_light_grid_from_heights_and_units_with_detail(
+        resolved_terrain
+            .iter()
+            .map(|cell| ((cell.rx, cell.ry), cell.level)),
+        view.profile,
+        view.detail_level,
+    );
+    lighting::accumulate_point_lights(&mut grid, &view.point_lights);
+    grid
+}
+
+/// Rebuild transient app lighting from the selected scenario profile plus the
+/// current live building and radiation sources.
 pub(crate) fn rebuild_lighting_grid_from_sim(
     resolved_terrain: &ResolvedTerrainGrid,
     lighting_config: &LightingConfig,
     simulation: Option<&Simulation>,
     rules: Option<&RuleSet>,
+    detail_level: u32,
 ) -> CellLightGrid {
-    let mut lighting_grid = lighting::build_cell_light_grid_from_heights(
-        resolved_terrain
-            .iter()
-            .map(|cell| ((cell.rx, cell.ry), cell.level)),
-        lighting_config,
-    );
-    let mut point_lights = collect_live_building_lights(simulation, rules);
-    // Radiation green glow: one green point light per live radiation site,
-    // accumulated additively alongside building lamps (render-only).
-    if let (Some(sim), Some(rules)) = (simulation, rules) {
-        point_lights.extend(crate::app_radiation_light::collect_radiation_lights(
-            sim, rules,
-        ));
-    }
-    lighting::accumulate_point_lights(&mut lighting_grid, &point_lights);
-    lighting_grid
+    let view = derive_lighting_view(lighting_config, simulation, rules, detail_level);
+    build_lighting_grid_from_view(resolved_terrain, &view)
 }
 
 fn collect_live_building_lights(
     simulation: Option<&Simulation>,
     rules: Option<&RuleSet>,
-) -> Vec<PointLight> {
+    detail_level: u32,
+) -> Vec<(u64, PointLight)> {
     let (Some(sim), Some(rules)) = (simulation, rules) else {
         return Vec::new();
     };
+    if detail_level < 2 {
+        return Vec::new();
+    }
     sim.entities()
         .values()
         .filter(|entity| {
             entity.category == crate::map::entities::EntityCategory::Structure
+                && entity.lifecycle.object_alive
+                && !entity.lifecycle.in_limbo
+                && entity.lifecycle.cell_marked
                 && !entity.dying
                 && entity.health.current > 0
+                && crate::sim::power_system::is_building_powered(
+                    &sim.power_states,
+                    rules,
+                    entity,
+                    &sim.interner,
+                )
         })
         .filter_map(|entity| {
             let type_id = sim.interner.resolve(entity.type_ref);
             let obj = rules.object(type_id)?;
-            lighting::point_light_from_object(
+            let light = lighting::point_light_from_object(
                 entity.position.rx,
                 entity.position.ry,
                 obj.light_visibility,
@@ -226,73 +1022,101 @@ fn collect_live_building_lights(
                     obj.light_green_tint,
                     obj.light_blue_tint,
                 ],
-            )
+            )?;
+            Some((entity.stable_id, light))
         })
         .collect()
 }
 
-fn clear_tiberium_source_cells_for_spawning_terrain(
-    sim: &mut Simulation,
+struct LightingFingerprint(u64);
+
+impl LightingFingerprint {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    fn mix_u64(&mut self, value: u64) {
+        for byte in value.to_le_bytes() {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn mix_i32(&mut self, value: i32) {
+        self.mix_u64(u64::from(value as u32));
+    }
+
+    fn mix_profile(&mut self, profile: LightingProfileUnits) {
+        self.mix_i32(profile.ambient_percent);
+        self.mix_i32(profile.red_percent);
+        self.mix_i32(profile.green_percent);
+        self.mix_i32(profile.blue_percent);
+        self.mix_i32(profile.ground_units);
+        self.mix_i32(profile.level_units);
+    }
+
+    fn mix_point_light(&mut self, light: &PointLight) {
+        self.mix_u64(u64::from(light.rx));
+        self.mix_u64(u64::from(light.ry));
+        self.mix_i32(light.center_x);
+        self.mix_i32(light.center_y);
+        self.mix_i32(light.radius_leptons);
+        self.mix_i32(light.intensity);
+        for tint in light.tint {
+            self.mix_i32(tint);
+        }
+        self.mix_u64(u64::from(u8::from(light.active)));
+        self.mix_u64(u64::from(u8::from(light.detail)));
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+fn clear_tiberium_source_cells_for_terrain(
+    overlay_grid: &mut crate::sim::overlay_grid::OverlayGrid,
     resolved_terrain: &mut ResolvedTerrainGrid,
     terrain_objects: &[TerrainObject],
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
 ) -> BTreeSet<(u16, u16)> {
-    let source_cells: BTreeSet<(u16, u16)> = terrain_objects
-        .iter()
-        .filter(|obj| {
-            rules
-                .terrain_object_type_case_insensitive(&obj.name)
-                .is_some_and(|terrain_type| terrain_type.spawns_tiberium)
-        })
-        .map(|obj| (obj.rx, obj.ry))
-        .collect();
-    if source_cells.is_empty() {
-        return BTreeSet::new();
-    }
-
     let mut cleared_cells = BTreeSet::new();
+    for terrain_object in terrain_objects {
+        if rules
+            .terrain_object_type_case_insensitive(&terrain_object.name)
+            .is_none()
+        {
+            continue;
+        }
+        let Some(overlay_id) = overlay_grid
+            .cell(terrain_object.rx, terrain_object.ry)
+            .overlay_id
+        else {
+            continue;
+        };
+        if !overlay_registry
+            .flags(overlay_id)
+            .is_some_and(|flags| flags.tiberium)
+        {
+            continue;
+        }
 
-    let mut overlay_cleared = Vec::new();
-    if let Some(grid) = sim.overlay_grid.as_mut() {
-        for &(rx, ry) in &source_cells {
-            let cell = *grid.cell(rx, ry);
-            let Some(overlay_id) = cell.overlay_id else {
-                continue;
-            };
-            if !overlay_registry
-                .flags(overlay_id)
-                .is_some_and(|flags| flags.tiberium)
-            {
-                continue;
-            }
-            grid.clear_overlay(rx, ry);
-            overlay_cleared.push((rx, ry));
-            cleared_cells.insert((rx, ry));
-        }
-    }
-
-    if let Some(grid) = sim.overlay_grid.as_mut() {
-        for &(rx, ry) in &overlay_cleared {
-            crate::sim::overlay_grid::recalc_overlay_passability(
-                grid,
-                resolved_terrain,
-                overlay_registry,
-                rx,
-                ry,
-            );
-        }
-        if let Some(sim_terrain) = sim.resolved_terrain.as_mut() {
-            for &(rx, ry) in &overlay_cleared {
-                crate::sim::overlay_grid::recalc_overlay_passability(
-                    grid,
-                    sim_terrain,
-                    overlay_registry,
-                    rx,
-                    ry,
-                );
-            }
-        }
+        // TerrainClass::Unlimbo clears the cell's Tiberium during map load.
+        // Write the initialization grid directly so this does not become a
+        // runtime dirty-cell mutation after Simulation construction.
+        *overlay_grid.cell_mut(terrain_object.rx, terrain_object.ry) = Default::default();
+        crate::sim::overlay_grid::recalc_overlay_passability(
+            overlay_grid,
+            resolved_terrain,
+            overlay_registry,
+            terrain_object.rx,
+            terrain_object.ry,
+        );
+        cleared_cells.insert((terrain_object.rx, terrain_object.ry));
     }
 
     cleared_cells
@@ -326,6 +1150,12 @@ pub(crate) fn load_map_initial_with_assets(
     requested_map: Option<&str>,
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> Result<MapLoadInitial> {
+    // TubeMovement and random-map geometry share the retail executable's
+    // sine/cosine table.  Install it before selecting the map source: explicit
+    // `[Tubes]` are valid in ordinary .map/.mpr/.mmx content, not just .SED
+    // random maps.  OnceLock keeps repeated map loads read-only and cheap.
+    crate::map::rmg::trig::install_from_dir(&ra2_dir);
+
     // Check RA2_QUICKPLAY env var: if it names a .map/.mpr file, load that directly.
     // UI-selected map name/path (requested_map) takes precedence.
     // Default: try testmap1.map in the project directory first, then fall back to .mmx files.
@@ -370,7 +1200,6 @@ pub(crate) fn load_map_initial_with_assets(
         // start-placement time, before any rock/rough/cliff terrain exists), but
         // it is resolved faithfully from `rulesmd.ini` when present; a missing
         // file falls back to the passable defaults.
-        crate::map::rmg::trig::install_from_dir(&ra2_dir);
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
@@ -491,6 +1320,7 @@ pub(crate) fn load_map_from_initial(
     asset_manager: &mut AssetManager,
     initial: MapLoadInitial,
     startup: LoadingStartup,
+    preloaded_battle_start_plan: Option<PreloadedBattleStartPlan>,
     skirmish_settings: &crate::ui::main_menu::SkirmishSettings,
     theater_cache_mismatch: bool,
     runtime_color_scheme_count: usize,
@@ -639,6 +1469,13 @@ pub(crate) fn load_map_from_initial(
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
     let mut terrain_scenario_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    if let Some(plan) = preloaded_battle_start_plan.as_ref() {
+        // Native constructs houses and resolves Battle starts before the first
+        // loading composition; terrain Fill continues that same Scenario
+        // stream afterwards. Validate the launch cursor before installing the
+        // immutable pre-render prefix so it can never be consumed twice.
+        plan.install_before_terrain(&mut terrain_scenario_rng)?;
+    }
     let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
     let mut scenario_fill_ranged =
         |low, high| terrain_scenario_rng.next_range_u32_inclusive(low, high);
@@ -671,8 +1508,9 @@ pub(crate) fn load_map_from_initial(
             theater.rmg_tiles.water_set,
         );
     }
-    let terrain_load_advanced_scenario_rng =
-        (map_fill_scenario_advances != 0).then_some(terrain_scenario_rng);
+    let terrain_load_advanced_scenario_rng = (preloaded_battle_start_plan.is_some()
+        || map_fill_scenario_advances != 0)
+        .then_some(terrain_scenario_rng);
     let variant_advanced_main_rng = variant_table_generated.then_some(variant_main_rng);
     log::info!(
         "Map terrain load: {} Scenario Fill cursor advances; TMP variant table {} this load, {} raw Main draws",
@@ -700,6 +1538,7 @@ pub(crate) fn load_map_from_initial(
 
     // Build per-cell lighting from map [Lighting] section.
     let lighting_config = lighting::parse_lighting(&map_data.ini);
+    let lighting_profiles = lighting::parse_lighting_profiles(&map_data.ini);
     // [Basic]/lighting read complete (gamemd Read_INI_Basic milestones).
     progress.milestone(58);
     progress.milestone(60);
@@ -722,6 +1561,37 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(65);
 
     let art_fallback: ArtRegistry = ArtRegistry::empty();
+    let overlay_shp_ids = resolved_overlay_shp_ids(
+        &overlay_registry,
+        &rules_ini,
+        art.as_ref().unwrap_or(&art_fallback),
+        &asset_manager,
+        theater_ext,
+        &map_data.header.theater,
+    );
+    let mut overlay_grid = crate::sim::overlay_grid::OverlayGrid::from_native_overlay_packs(
+        &map_data.overlays,
+        &map_data.overlay_data,
+        &mut resolved_terrain,
+        &overlay_registry,
+        &overlay_shp_ids,
+        skirmish_launch_session.is_some(),
+    );
+    let cleared_terrain_overlay_cells = rules.as_ref().map_or_else(BTreeSet::new, |rules| {
+        clear_tiberium_source_cells_for_terrain(
+            &mut overlay_grid,
+            &mut resolved_terrain,
+            &map_data.terrain_objects,
+            rules,
+            &overlay_registry,
+        )
+    });
+    if !cleared_terrain_overlay_cells.is_empty() {
+        log::info!(
+            "Cleared {} same-cell tiberium overlay cell(s) for recognized terrain",
+            cleared_terrain_overlay_cells.len(),
+        );
+    }
 
     // Parse house color assignments from map INI ([Houses] + per-house Color=).
     // Color=<name> resolves against the rules `[Colors]` list (entry index).
@@ -784,6 +1654,12 @@ pub(crate) fn load_map_from_initial(
             .or_else(|| map_data.basic.name.clone())
             .unwrap_or_default(),
         theater: map_data.header.theater.clone(),
+        game_mode_nonzero: skirmish_launch_session.is_some(),
+        // Campaign/editor reads `[SpecialFlags] Inert=`. Nonzero game modes
+        // replace active SpecialFlags from session staging; ordinary skirmish
+        // has no writer for bit 0x20 and therefore starts false.
+        no_damage: skirmish_launch_session.is_none()
+            && map_data.special_flags.inert.unwrap_or(false),
         // CANONICAL CELL-ARRAY FRAME, not [Map] Size=. Sim cell coordinates
         // (entities, waypoints, vision) live in the iso array whose extent is
         // ~(SizeW+SizeH); seeding bounds from Size= verbatim leaves most of
@@ -799,6 +1675,24 @@ pub(crate) fn load_map_from_initial(
             .into_iter()
             .map(|wp| (wp.index, (wp.rx, wp.ry)))
             .collect(),
+        lighting: crate::sim::scenario_session::ScenarioLightingState::new(
+            crate::sim::scenario_session::ScenarioLightProfileUnits {
+                ambient_percent: lighting_profiles.normal.ambient_percent,
+                red_percent: lighting_profiles.normal.red_percent,
+                green_percent: lighting_profiles.normal.green_percent,
+                blue_percent: lighting_profiles.normal.blue_percent,
+                ground_units: lighting_profiles.normal.ground_units,
+                level_units: lighting_profiles.normal.level_units,
+            },
+            crate::sim::scenario_session::ScenarioLightProfileUnits {
+                ambient_percent: lighting_profiles.ion.ambient_percent,
+                red_percent: lighting_profiles.ion.red_percent,
+                green_percent: lighting_profiles.ion.green_percent,
+                blue_percent: lighting_profiles.ion.blue_percent,
+                ground_units: lighting_profiles.ion.ground_units,
+                level_units: lighting_profiles.ion.level_units,
+            },
+        ),
     };
     log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
 
@@ -845,16 +1739,25 @@ pub(crate) fn load_map_from_initial(
                         fallback_side,
                     )
                 });
-                let is_human = house.player_control == Some(true);
+                let player_control = house.player_control == Some(true);
                 let name_id = sim.interner.intern(&house.name);
                 let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
                 let mut house_state = crate::sim::house_state::HouseState::new(
                     name_id,
                     side_idx,
                     country_id,
-                    is_human,
+                    false,
                     sim.session.game_options.starting_credits,
                     sim.session.game_options.tech_level,
+                );
+                house_state.player_control = player_control;
+                // HouseClass::Read_Scenario_INI reads `IQ=` from this exact
+                // named house section, defaults it to zero, and changes an
+                // above-MaxIQLevels value to literal one before storing
+                // CurrentIQ (+0x24C).
+                house_state.current_iq = rules.as_ref().map_or_else(
+                    || house.iq.unwrap_or(0),
+                    |rules| house.scenario_current_iq(rules.general.max_iq_levels),
                 );
                 // MultiplayPassive lives on the country/house type; stamp it now,
                 // while a RuleSet is in hand, so the defeat check never has to
@@ -868,6 +1771,9 @@ pub(crate) fn load_map_from_initial(
                 sim.houses.insert(name_id, house_state);
                 sim.session.house_order.push(name_id);
             }
+            // Map objects were revealed before HouseClass array indices existed.
+            // Build CellClass base reservations once, from the final native-order roster.
+            sim.rebuild_base_reservations_for_new_game();
         }
     }
     // Pre-intern all rule type IDs so that build_option_for_owner can resolve
@@ -894,18 +1800,32 @@ pub(crate) fn load_map_from_initial(
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
             let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
-                // Every shell session is resolved before loading on the app-owned
-                // frontend Scenario cursor. Map loading must never advance the
-                // freshly seeded gameplay stream for lobby assignments.
-                let result = apply_explicit_skirmish_launch_session(
-                    sim,
-                    &map_data,
-                    &house_roster,
-                    ruleset,
-                    &height_map,
-                    &resolved_terrain,
-                    session,
-                );
+                // Complete standard-Battle vectors were resolved before the
+                // first loading frame and terrain continued their post-plan
+                // Scenario cursor. Other modes/deficient maps retain the
+                // terrain-dependent runtime resolver below.
+                let result = if let Some(plan) = preloaded_battle_start_plan.as_ref() {
+                    apply_preloaded_battle_launch_session(
+                        sim,
+                        &map_data,
+                        &house_roster,
+                        ruleset,
+                        &height_map,
+                        &resolved_terrain,
+                        session,
+                        plan,
+                    )
+                } else {
+                    apply_explicit_skirmish_launch_session(
+                        sim,
+                        &map_data,
+                        &house_roster,
+                        ruleset,
+                        &height_map,
+                        &resolved_terrain,
+                        session,
+                    )
+                };
                 initial_local_owner = result.local_owner;
                 result.spawned_mcvs > 0
             } else {
@@ -1075,43 +1995,43 @@ pub(crate) fn load_map_from_initial(
         } else {
             log::warn!("No rules loaded — skipping terrain spawner seeding");
         }
-        // Seed mutable overlay grid from map overlay data.
-        if let Some(rt) = &sim.resolved_terrain {
-            let grid_width = rt.width();
-            let grid_height = rt.height();
-            sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::from_overlay_packs(
-                &map_data.overlays,
-                &map_data.overlay_data,
-                grid_width,
-                grid_height,
-            ));
+        // Move the already-resolved CellClass overlay state into Simulation,
+        // then reconstruct map-wall ownership now that buildings exist.
+        if sim.resolved_terrain.is_some() {
+            let (grid_width, grid_height) = (overlay_grid.width(), overlay_grid.height());
+            let rt = sim
+                .resolved_terrain
+                .as_ref()
+                .expect("terrain checked above");
+            let buildings: Vec<crate::sim::overlay_grid::MapWallOwnerCandidate> = sim
+                .substrate
+                .entities
+                .values()
+                .filter(|entity| entity.category == crate::map::entities::EntityCategory::Structure)
+                .map(|entity| {
+                    let country = sim
+                        .houses
+                        .get(&entity.owner)
+                        .and_then(|house| house.country)
+                        .map(|country| sim.interner.resolve(country));
+                    map_wall_owner_candidate_from_building(
+                        entity,
+                        rt,
+                        crate::sim::house_state::resolve_wall_owner(rules.as_ref(), country),
+                    )
+                })
+                .collect();
+            overlay_grid.reconstruct_map_wall_owners(rt, &overlay_registry, &buildings);
+            overlays_connected.retain(|entry| {
+                overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id)
+            });
+            sim.overlay_grid = Some(overlay_grid);
             log::info!(
                 "Overlay grid initialized: {}x{}, {} entries",
                 grid_width,
                 grid_height,
                 map_data.overlays.len(),
             );
-        }
-        if let Some(rules_for_terrain) = rules.as_ref() {
-            let cleared_cells = clear_tiberium_source_cells_for_spawning_terrain(
-                sim,
-                &mut resolved_terrain,
-                &map_data.terrain_objects,
-                rules_for_terrain,
-                &overlay_registry,
-            );
-            if !cleared_cells.is_empty() {
-                overlays_connected.retain(|entry| {
-                    !cleared_cells.contains(&(entry.rx, entry.ry))
-                        || !overlay_registry
-                            .flags(entry.overlay_id)
-                            .is_some_and(|flags| flags.tiberium)
-                });
-                log::info!(
-                    "Cleared {} same-cell tiberium overlay source cell(s) for spawning terrain",
-                    cleared_cells.len(),
-                );
-            }
         }
         // Seed smudge grid from map [Smudge] entries. Requires terrain +
         // overlay grids built above so placement gates (slope, overlay,
@@ -1131,6 +2051,7 @@ pub(crate) fn load_map_from_initial(
                 grid_width,
                 grid_height,
             ));
+            sim.flush_smudge_dirty();
             log::info!(
                 "Smudge grid initialized: {}x{}, {} entries",
                 grid_width,
@@ -1330,6 +2251,7 @@ pub(crate) fn load_map_from_initial(
         &lighting_config,
         simulation.as_ref(),
         rules.as_ref(),
+        2,
     );
     // Final post-map-init milestones (cell attributes, beacon art, post-map
     // init, tactical cleanup, final pre-render refresh). 100 is emitted by the

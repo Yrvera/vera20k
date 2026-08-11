@@ -205,6 +205,8 @@ impl Simulation {
         }
 
         self.hash_raw_cell_occupation(&mut hasher);
+        self.hash_hidden_occupation(&mut hasher);
+        self.hash_base_reservations(&mut hasher);
 
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
@@ -277,6 +279,33 @@ impl Simulation {
         }
     }
 
+    fn hash_hidden_occupation(&self, hasher: &mut impl Hasher) {
+        let entry_count = self.substrate.hidden_occupation.entry_count();
+        if entry_count == 0 {
+            return;
+        }
+
+        b"hidden-cell-occupation-v1".hash(hasher);
+        entry_count.hash(hasher);
+        for (rx, ry, count) in self.substrate.hidden_occupation.entries() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            count.hash(hasher);
+        }
+    }
+
+    fn hash_base_reservations(&self, hasher: &mut impl Hasher) {
+        b"building-base-reservation-v1".hash(hasher);
+        let entry_count = self.substrate.base_reservations.entries().count();
+        entry_count.hash(hasher);
+        for (rx, ry, mask) in self.substrate.base_reservations.entries() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            mask.hash(hasher);
+        }
+        self.substrate.base_reservations.dummy_mask().hash(hasher);
+    }
+
     /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
     /// the pre-session hash prefix order is preserved (SC-2). The clock and
     /// game options keep their original fold positions above; this fold adds
@@ -287,6 +316,12 @@ impl Simulation {
         s.seed.hash(hasher);
         s.map_name.hash(hasher);
         s.theater.hash(hasher);
+        s.game_mode_nonzero.hash(hasher);
+        // Preserve the legacy default-false hash stream while still making
+        // the native ScenarioFlags 0x20 state lockstep-visible.
+        if s.no_damage {
+            b"scenario-no-damage-v1".hash(hasher);
+        }
         (s.map_width, s.map_height).hash(hasher);
         (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
         s.mp_start_waypoints.len().hash(hasher);
@@ -300,6 +335,28 @@ impl Simulation {
             owner.hash(hasher);
         }
         s.house_order.hash(hasher);
+
+        let lighting = &s.lighting;
+        lighting.normal.ambient_percent.hash(hasher);
+        lighting.normal.red_percent.hash(hasher);
+        lighting.normal.green_percent.hash(hasher);
+        lighting.normal.blue_percent.hash(hasher);
+        lighting.normal.ground_units.hash(hasher);
+        lighting.normal.level_units.hash(hasher);
+        lighting.ion.ambient_percent.hash(hasher);
+        lighting.ion.red_percent.hash(hasher);
+        lighting.ion.green_percent.hash(hasher);
+        lighting.ion.blue_percent.hash(hasher);
+        lighting.ion.ground_units.hash(hasher);
+        lighting.ion.level_units.hash(hasher);
+        lighting.current_ambient.hash(hasher);
+        lighting.target_ambient.hash(hasher);
+        match lighting.selected_profile {
+            crate::sim::scenario_session::ScenarioLightingProfile::Normal => 0u8.hash(hasher),
+            crate::sim::scenario_session::ScenarioLightingProfile::Ion => 1u8.hash(hasher),
+        }
+        lighting.transition_timer.start_frame().hash(hasher);
+        lighting.transition_timer.duration().hash(hasher);
     }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
@@ -379,14 +436,23 @@ impl Simulation {
             house.economy.purifier_count.hash(hasher);
             house.side_index.hash(hasher);
             house.is_human.hash(hasher);
+            house.player_control.hash(hasher);
             (house.difficulty as i32).hash(hasher);
             house.is_defeated.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
             house.map_is_clear.hash(hasher);
+            house.spy_sat_active.hash(hasher);
             house.owned_building_count.hash(hasher);
             house.owned_unit_count.hash(hasher);
             house.tech_level.hash(hasher);
+            house.current_iq.hash(hasher);
+            house.grudge_scores.len().hash(hasher);
+            for (other, score) in &house.grudge_scores {
+                other.hash(hasher);
+                score.hash(hasher);
+            }
+            house.enemy_house.hash(hasher);
             if let Some((rx, ry)) = house.rally_point {
                 1u8.hash(hasher);
                 rx.hash(hasher);
@@ -401,6 +467,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            house.waypoint_edge.hash(hasher);
         }
     }
 
@@ -430,8 +497,19 @@ impl Simulation {
         self.hash_factory_registry(hasher); // P5b: the authoritative factory registry
 
         // Live ore/gem identity and quantity are already folded by
-        // `hash_overlay_grid`. `resource_nodes` is a legacy test-fixture seam,
-        // not production authority and therefore must not affect sync state.
+        // `hash_overlay_grid`. The compatibility map remains serialized and
+        // still has compiled legacy growth/spawner consumers, so it must also
+        // remain lockstep-visible until those consumers and the field retire
+        // together. BTreeMap supplies canonical cell order.
+        for (&(rx, ry), node) in &self.production.resource_nodes {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            match node.resource_type {
+                crate::sim::miner::ResourceType::Ore => 0u8.hash(hasher),
+                crate::sim::miner::ResourceType::Gem => 1u8.hash(hasher),
+            }
+            node.remaining.hash(hasher);
+        }
         self.production.ore_growth_state.hash_state(hasher);
         // Hash terrain spawners (TIBTRE-style ore generators).
         for (&(rx, ry), spawner) in &self.production.terrain_spawners {
@@ -689,13 +767,6 @@ impl Simulation {
             ls.last_bolt_rx.hash(hasher);
             ls.last_bolt_ry.hash(hasher);
         }
-        // Hash queued lightning storm.
-        self.queued_lightning_storm.is_some().hash(hasher);
-        if let Some(ref qs) = self.queued_lightning_storm {
-            qs.owner.hash(hasher);
-            qs.target_rx.hash(hasher);
-            qs.target_ry.hash(hasher);
-        }
     }
 
     /// Hash all entity components in stable-entity-ID order.
@@ -709,6 +780,8 @@ impl Simulation {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
             entity.occupancy_enter_order.hash(hasher);
+            entity.air_spatial_bucket.hash(hasher);
+            entity.air_spatial_enter_order.hash(hasher);
             if include_lifecycle_v28 {
                 // Independent lifecycle axes and deterministic Rust bookkeeping.
                 // Keep this order fixed: it is part of the lockstep hash contract.
@@ -724,6 +797,13 @@ impl Simulation {
             entity.position.rx.hash(hasher);
             entity.position.ry.hash(hasher);
             entity.position.z.hash(hasher);
+            // Most objects have no exact coordinate-Z override. Preserve their
+            // pre-v62 hash stream while making TubeMovement's signed lepton Z
+            // authoritative whenever it is present.
+            if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+                b"exact-object-z-leptons-v1".hash(hasher);
+                exact_z_leptons.hash(hasher);
+            }
             entity.position.sub_x.hash(hasher);
             entity.position.sub_y.hash(hasher);
             entity.facing.hash(hasher);
@@ -741,6 +821,13 @@ impl Simulation {
             entity.type_ref.hash(hasher);
             (entity.category as u8).hash(hasher);
             entity.foundation.hash(hasher);
+            entity.building_hidden_occupancy.hash(hasher);
+            entity.base_reservation_spacing.hash(hasher);
+            entity.determines_waypoint_edge.hash(hasher);
+            entity.veterancy.hash(hasher);
+            entity.armor_multiplier.bits().hash(hasher);
+            entity.berserk.hash(hasher);
+            entity.was_attacked_by_enemy.hash(hasher);
             entity.regular_crusher.hash(hasher);
             entity.drive_accelerates.hash(hasher);
             entity.building_damage_state_active.hash(hasher);
@@ -820,7 +907,10 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.on_bridge.hash(hasher);
-            entity.runtime_bridge_transition.pending_mismatch.hash(hasher);
+            entity
+                .runtime_bridge_transition
+                .pending_mismatch
+                .hash(hasher);
             entity.low_bridge_tube_state.hash(hasher);
             hash_teleport_state(entity.teleport_state.as_ref(), hasher);
             hash_tunnel_state(entity.tunnel_state.as_ref(), hasher);
@@ -850,6 +940,8 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            entity.current_weapon_index.hash(hasher);
+            entity.current_weapon_ref.map(|id| id.index()).hash(hasher);
 
             // Slot-indexed fold: capacity + each slot's Option (null holes and
             // pad positions are hash-relevant). Replaces the old len + ordered-id
@@ -867,7 +959,16 @@ impl Simulation {
             entity.rally_target.hash(hasher);
             entity.capture_target.hash(hasher);
             entity.c4_plant.hash(hasher);
-            entity.pending_c4_detonation.hash(hasher);
+            match entity.pending_c4_detonation {
+                Some(pending) => {
+                    true.hash(hasher);
+                    pending
+                        .remaining_at(self.session.binary_frame as i32)
+                        .hash(hasher);
+                    pending.source_entity_id.hash(hasher);
+                }
+                None => false.hash(hasher),
+            }
             entity.bunker_occupant.hash(hasher);
             // Reciprocal link + install machine are authoritative lifecycle state.
             entity.bunker_link.hash(hasher);
@@ -1006,6 +1107,13 @@ impl Simulation {
                 2u8.hash(hasher);
                 owner_id.hash(hasher);
             }
+            // CaptureManager capacity and MCNode order gate future fire/mission
+            // decisions. As with SpawnManager, absent managers add no bytes so
+            // worlds without a mind-control controller keep legacy hashes.
+            if let Some(ref manager) = entity.capture_manager {
+                3u8.hash(hasher);
+                manager.hash(hasher);
+            }
             // Homing missile flight state. `HomingState` has a manual `Hash`
             // impl that excludes the render-only `pitch: f32` field — see
             // sim::movement::homing_movement.
@@ -1065,6 +1173,9 @@ impl Simulation {
             // it gates future scenario_rng draws (a divergence here desyncs the
             // stream). Zero for every entity in stock YR (the gate is Cyborg-only).
             entity.damage_particle_live_until.hash(hasher);
+            // ReceiveDamage damage-Smoke `+0x310` identity. This gates later
+            // spawn/RNG and remains set while a marked system drains.
+            entity.damage_smoke_system_id.hash(hasher);
         }
     }
 
@@ -1182,9 +1293,7 @@ fn hash_drop_pod_state(
 mod teleport_rocket_hash_tests {
     use super::Simulation;
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::movement::rocket_movement::{
-        RocketFlightParameters, RocketPhase, RocketState,
-    };
+    use crate::sim::movement::rocket_movement::{RocketFlightParameters, RocketPhase, RocketState};
     use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
     use crate::util::fixed_math::SimFixed;
 
@@ -1348,6 +1457,7 @@ mod raw_cell_occupation_hash_tests {
 mod overlay_grid_hash_tests {
     use super::Simulation;
     use crate::map::overlay::OverlayDataPack;
+    use crate::sim::miner::{ResourceNode, ResourceType};
     use crate::sim::overlay_grid::OverlayGrid;
 
     #[test]
@@ -1376,6 +1486,67 @@ mod overlay_grid_hash_tests {
         assert!(a.iter_occupied().next().is_none());
         assert!(b.iter_occupied().next().is_none());
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+    }
+
+    #[test]
+    fn gsi_04_09_serialized_compatibility_nodes_are_deterministically_hashed() {
+        let mut forward = Simulation::new();
+        forward.production.resource_nodes.insert(
+            (8, 3),
+            ResourceNode {
+                resource_type: ResourceType::Gem,
+                remaining: 540,
+            },
+        );
+        forward.production.resource_nodes.insert(
+            (2, 7),
+            ResourceNode {
+                resource_type: ResourceType::Ore,
+                remaining: 360,
+            },
+        );
+
+        let mut reverse = Simulation::new();
+        reverse.production.resource_nodes.insert(
+            (2, 7),
+            ResourceNode {
+                resource_type: ResourceType::Ore,
+                remaining: 360,
+            },
+        );
+        reverse.production.resource_nodes.insert(
+            (8, 3),
+            ResourceNode {
+                resource_type: ResourceType::Gem,
+                remaining: 540,
+            },
+        );
+        assert_eq!(
+            forward.state_hash(),
+            reverse.state_hash(),
+            "BTreeMap cell order, not insertion order, owns the compatibility fold"
+        );
+
+        reverse
+            .production
+            .resource_nodes
+            .get_mut(&(8, 3))
+            .unwrap()
+            .remaining = 541;
+        assert_ne!(forward.state_hash(), reverse.state_hash());
+        reverse
+            .production
+            .resource_nodes
+            .get_mut(&(8, 3))
+            .unwrap()
+            .remaining = 540;
+        reverse
+            .production
+            .resource_nodes
+            .get_mut(&(8, 3))
+            .unwrap()
+            .resource_type = ResourceType::Ore;
+        assert_ne!(forward.state_hash(), reverse.state_hash());
     }
 }
 
@@ -1777,6 +1948,27 @@ mod rally_hash_tests {
 
         assert_ne!(sim_a.state_hash(), sim_b.state_hash());
     }
+
+    #[test]
+    fn gsi_04_16_waypoint_edge_is_lockstep_hash_authority() {
+        use crate::sim::house_state::HouseState;
+
+        let mut north = Simulation::new();
+        let mut south = Simulation::new();
+        let north_owner = north.interner.intern("Player");
+        let south_owner = south.interner.intern("Player");
+        assert_eq!(north_owner, south_owner);
+
+        let mut north_house = HouseState::new(north_owner, 0, None, true, 0, 10);
+        north_house.waypoint_edge = 0;
+        north.houses.insert(north_owner, north_house);
+
+        let mut south_house = HouseState::new(south_owner, 0, None, true, 0, 10);
+        south_house.waypoint_edge = 2;
+        south.houses.insert(south_owner, south_house);
+
+        assert_ne!(north.state_hash(), south.state_hash());
+    }
 }
 
 #[cfg(test)]
@@ -2038,45 +2230,95 @@ mod particle_hash_tests {
 mod tube_movement_hash_tests {
     use super::Simulation;
     use crate::map::tube_facts::TubeId;
-    use crate::sim::components::Health;
+    use crate::sim::components::{DriveCoord, Health};
     use crate::sim::game_entity::GameEntity;
-    use crate::sim::movement::tube_movement::{LowBridgeTubeMovementState, LowBridgeTubePhase};
+    use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 
-    #[test]
-    fn active_low_bridge_tube_state_changes_hash() {
-        let mut sim_a = Simulation::new();
-        let mut sim_b = Simulation::new();
-        let owner = sim_a.interner.intern("Allies");
-        let type_ref = sim_a.interner.intern("MTNK");
-        let mut entity_a = GameEntity::new_at_frame_zero_for_test(
+    fn fixture_entity() -> GameEntity {
+        GameEntity::new_at_frame_zero_for_test(
             1,
             0,
             0,
             0,
             0,
-            owner,
+            crate::sim::intern::test_intern("Allies"),
             Health {
                 current: 100,
                 max: 100,
             },
-            type_ref,
+            crate::sim::intern::test_intern("MTNK"),
             crate::map::entities::EntityCategory::Unit,
             0,
             5,
             true,
-        );
-        let entity_b = entity_a.clone();
-        entity_a.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+        )
+    }
+
+    fn hash_entity(entity: GameEntity) -> u64 {
+        let mut sim = Simulation::new();
+        sim.substrate.entities.insert(entity);
+        sim.state_hash()
+    }
+
+    #[test]
+    fn gsi_04_15_exact_z_and_live_tube_payload_are_fully_hashed() {
+        let fixture = fixture_entity();
+        let default_hash = hash_entity(fixture.clone());
+
+        let mut exact_z = fixture.clone();
+        exact_z.position.exact_z_leptons = Some(-37);
+        let exact_z_hash = hash_entity(exact_z.clone());
+        assert_ne!(default_hash, exact_z_hash);
+        exact_z.position.exact_z_leptons = Some(-36);
+        assert_ne!(exact_z_hash, hash_entity(exact_z));
+
+        let state = LowBridgeTubeMovementState {
             tube_id: TubeId(3),
             cursor: 1,
-            entry: (0, 0),
-            exit: (4, 0),
-            phase: LowBridgeTubePhase::Traversing,
-        });
-        sim_a.substrate.entities.insert(entity_a);
-        sim_b.substrate.entities.insert(entity_b);
+            target: DriveCoord {
+                x: 640,
+                y: 128,
+                z: -19,
+            },
+        };
+        let mut active = fixture;
+        active.position.exact_z_leptons = Some(-37);
+        active.low_bridge_tube_state = Some(state);
+        let active_hash = hash_entity(active.clone());
+        assert_ne!(exact_z_hash, active_hash);
 
-        assert_ne!(sim_a.state_hash(), sim_b.state_hash());
+        let variants = [
+            LowBridgeTubeMovementState {
+                tube_id: TubeId(4),
+                ..state
+            },
+            LowBridgeTubeMovementState { cursor: 2, ..state },
+            LowBridgeTubeMovementState {
+                target: DriveCoord {
+                    x: 641,
+                    ..state.target
+                },
+                ..state
+            },
+            LowBridgeTubeMovementState {
+                target: DriveCoord {
+                    y: 129,
+                    ..state.target
+                },
+                ..state
+            },
+            LowBridgeTubeMovementState {
+                target: DriveCoord {
+                    z: -18,
+                    ..state.target
+                },
+                ..state
+            },
+        ];
+        for variant in variants {
+            active.low_bridge_tube_state = Some(variant);
+            assert_ne!(active_hash, hash_entity(active.clone()));
+        }
     }
 }
 
@@ -2610,8 +2852,9 @@ mod c4_hash_tests {
             .get_mut(id)
             .unwrap()
             .pending_c4_detonation = Some(PendingC4Detonation {
-            plant_start_tick: 100,
-            attacker_id: 7,
+            start_frame: 100,
+            duration_frames: 30,
+            source_entity_id: Some(7),
         });
         let h_with_pending = sim.state_hash();
         assert_ne!(

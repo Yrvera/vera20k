@@ -45,12 +45,13 @@ mod combat_pursuit_tests;
 #[path = "combat_turret_facing_tests.rs"]
 mod combat_turret_facing_tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sim::miner::ResourceNode;
 
 use self::combat_weapon::{WeaponSlot, select_deploy_fire_weapon, select_weapon_with_override};
 use crate::map::entities::EntityCategory;
+use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -60,16 +61,25 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
 use crate::sim::infantry;
 use crate::sim::intern::{InternedId, StringInterner};
-use crate::sim::overlay_grid::{OverlayGrid, WallDamageEvent};
+use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
+use crate::sim::mission::authority::{
+    override_mission_on_damage_response, queue_entity_mission_deferred,
+};
+use crate::sim::mission::concrete_effects::represented_assign_target;
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::overlay_grid::{OverlayGrid, WallMutation};
 use crate::sim::power_system::PowerState;
 use crate::sim::projectile::{
     ProjectileCollisionPolicy, ProjectileCoord, ProjectileDetonation, ProjectilePayload,
     ProjectileSpawn, ProjectileTarget, TargetExpiryPolicy,
 };
 use crate::sim::rng::SimRng;
+use crate::sim::terrain_object::{TerrainAreaReceiveResult, TerrainAreaState};
 use crate::sim::vision::FogState;
 use crate::sim::world::{FireOriginSnapshot, SimFireEvent, SimSoundEvent};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_to_i32};
+use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
+use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53};
 
 use super::animation::SequenceKind;
 use super::deploy::DeployPhase;
@@ -281,22 +291,35 @@ fn warhead_damages_wall(
     warhead.wall || warhead.wall_absolute_destroyer || (warhead.wood && wall_flags.armor_is_wood)
 }
 
-pub(crate) fn apply_prone_damage_modifier(
-    target_prone_infantry: bool,
+fn infantry_prone_area_raw_damage(
+    target: &GameEntity,
     warhead: &WarheadType,
     damage: i32,
-) -> u16 {
-    if damage <= 0 {
-        return 0;
+    ignore_defenses: bool,
+) -> i32 {
+    if target.category != EntityCategory::Infantry
+        || !infantry::is_prone_for_damage(target)
+        || damage <= 0
+        || ignore_defenses
+    {
+        return damage;
     }
 
-    let scaled = if target_prone_infantry {
-        (damage as u64 * warhead.prone_damage_basis_points as u64 / 10_000) as i32
-    } else {
-        damage
+    let Ok(multiplier) =
+        X87Chop53::load_f64(NativeF64Bits::from_bits(warhead.prone_damage_f64.to_bits()))
+    else {
+        // FISTP's native indefinite result is negative and the wrapper's
+        // immediate minimum-one clamp therefore converts it to one.
+        return 1;
     };
-
-    scaled.clamp(0, u16::MAX as i32) as u16
+    let product = X87Chop53::mul(X87Chop53::load_i32(damage), multiplier);
+    let scaled = X87Chop53::ftol_i64(product)
+        .ok()
+        .and_then(|value| i32::try_from(value).ok())
+        // A native out-of-range FISTP yields the signed indefinite value,
+        // which the immediately following minimum-one clamp replaces with 1.
+        .unwrap_or(i32::MIN);
+    scaled.max(1)
 }
 
 /// What an `AttackTarget` is pointing at — an entity or a ground cell.
@@ -315,6 +338,100 @@ pub enum TargetKind {
 /// entity ids start at 1, so 0 is never a live attacker; retaliation treats
 /// it as "attacker gone" and the last-attacker bookkeeping skips it.
 pub(crate) const RAD_NO_ATTACKER: u64 = 0;
+
+/// The two receiver booleans carried by one native concrete `ReceiveDamage`
+/// call. Their semantic names are intentionally limited to the verified ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReceiverCallFlags {
+    pub(crate) ignore_defenses: bool,
+    pub(crate) arg6: bool,
+}
+
+/// One ordered damage call. Area and direct-receiver records retain the raw
+/// signed damage, native lepton distance, and concrete receiver flags until
+/// dispatch; legacy direct callers retain their already-resolved amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EntityDamageEvent {
+    pub(crate) target_id: u64,
+    pub(crate) damage: i32,
+    pub(crate) attacker_id: u64,
+    /// ReceiveDamage's sourceHouse ABI argument captured when the detonation
+    /// enters Apply_area_damage. This remains valid if the source object is
+    /// uninitialized by an earlier ordered receiver record.
+    pub(crate) source_house: Option<InternedId>,
+    pub(crate) warhead_ref: InternedId,
+    pub(crate) distance_leptons: Option<i32>,
+    pub(crate) receiver_flags: Option<ReceiverCallFlags>,
+    /// This record belongs to an Apply_area_damage transaction whose captured
+    /// CellSpread is at most 0.5. The receiver commit uses this transient fact
+    /// to reproduce the native near-center Iron Curtain isolation scan; it is
+    /// deliberately false for direct-receiver and legacy precomputed calls.
+    pub(crate) near_center_ic_isolation_eligible: bool,
+}
+
+impl EntityDamageEvent {
+    pub(crate) fn precomputed(
+        target_id: u64,
+        damage: u16,
+        attacker_id: u64,
+        warhead_ref: InternedId,
+    ) -> Self {
+        Self {
+            target_id,
+            damage: i32::from(damage),
+            attacker_id,
+            source_house: None,
+            warhead_ref,
+            distance_leptons: None,
+            receiver_flags: None,
+            near_center_ic_isolation_eligible: false,
+        }
+    }
+
+    pub(crate) fn area(
+        target_id: u64,
+        raw_damage: i32,
+        distance_leptons: i32,
+        attacker_id: u64,
+        source_house: Option<InternedId>,
+        warhead_ref: InternedId,
+    ) -> Self {
+        Self {
+            target_id,
+            damage: raw_damage,
+            attacker_id,
+            source_house,
+            warhead_ref,
+            distance_leptons: Some(distance_leptons),
+            receiver_flags: Some(ReceiverCallFlags {
+                ignore_defenses: false,
+                arg6: false,
+            }),
+            near_center_ic_isolation_eligible: false,
+        }
+    }
+
+    pub(crate) fn direct_receiver(
+        target_id: u64,
+        raw_damage: i32,
+        distance_leptons: i32,
+        attacker_id: u64,
+        source_house: Option<InternedId>,
+        warhead_ref: InternedId,
+        receiver_flags: ReceiverCallFlags,
+    ) -> Self {
+        Self {
+            target_id,
+            damage: raw_damage,
+            attacker_id,
+            source_house,
+            warhead_ref,
+            distance_leptons: Some(distance_leptons),
+            receiver_flags: Some(receiver_flags),
+            near_center_ic_isolation_eligible: false,
+        }
+    }
+}
 
 /// Infantry shot waiting for its current fire animation to reach the discharge frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -817,10 +934,27 @@ pub struct ExplosionEffect {
     pub z: u8,
 }
 
-/// A deferred smudge spawn request emitted from combat death-handling.
-/// Drained in `Simulation::advance_tick` after combat resolves but before
-/// the ore-growth tick stage so that crater-path `Reduce_Tiberium(6)`
-/// land before ore-growth reads tiberium density.
+/// One transient combat-light request emitted when active IronCurtain or
+/// ForceShield rejects a positive receiver call. `FUN_0048A620` creates an
+/// unowned screen-space light, not an AnimClass/ParticleSystem, so this record
+/// retains the exact call inputs without inventing an attachment or house.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvulnerabilityImpactEffect {
+    /// Receiver provenance only; this is not native effect ownership.
+    pub target_id: u64,
+    /// Post-defender-transform damage shifted left once before the helper call.
+    pub doubled_damage: i32,
+    pub warhead_ref: InternedId,
+    pub coord: ProjectileCoord,
+    /// Native helper force/create argument (literal true on this callsite).
+    pub force_create: bool,
+    /// Native raw draw flags: IC=1, ForceShield=6.
+    pub flags: u32,
+}
+
+/// One smudge producer payload. Production commits it synchronously through
+/// `CombatInlineHooks`; hookless combat fixtures retain it in their result as
+/// a test adapter.
 #[derive(Debug, Clone)]
 pub enum SmudgeSpawnRequest {
     /// Emitted alongside ExplosionEffect when a warhead's AnimList anim spawns.
@@ -831,7 +965,10 @@ pub enum SmudgeSpawnRequest {
         ry: u16,
         sub_x: SimFixed,
         sub_y: SimFixed,
-        z: i32,
+        /// Exact absolute CoordStruct Z. ExplosionEffect keeps its separate
+        /// coarse presentation byte; the native smudge altitude gate is in
+        /// leptons and must never reconstruct this value from that byte.
+        world_z_leptons: i32,
     },
     /// Emitted once per >=2x2 building destruction (DestructionEffects path).
     BuildingCenter {
@@ -843,6 +980,67 @@ pub enum SmudgeSpawnRequest {
     },
     /// Emitted per surviving foundation cell (SpawnSurvivors path).
     BuildingSurvivor { cell_rx: u16, cell_ry: u16 },
+}
+
+fn append_building_smudge_requests(
+    requests: &mut Vec<SmudgeSpawnRequest>,
+    rx: u16,
+    ry: u16,
+    building_z: i32,
+    foundation: &str,
+) {
+    let (foundation_w, foundation_h) = foundation_dimensions(foundation);
+    requests.push(SmudgeSpawnRequest::BuildingCenter {
+        rx,
+        ry,
+        building_z,
+        foundation_w: foundation_w as u8,
+        foundation_h: foundation_h as u8,
+    });
+    for (dx, dy) in crate::rules::foundation::foundation_cell_offsets(foundation) {
+        let cell_rx = i32::from(rx) + i32::from(dx);
+        let cell_ry = i32::from(ry) + i32::from(dy);
+        let (Ok(cell_rx), Ok(cell_ry)) = (u16::try_from(cell_rx), u16::try_from(cell_ry)) else {
+            continue;
+        };
+        requests.push(SmudgeSpawnRequest::BuildingSurvivor { cell_rx, cell_ry });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_infantry_death_anim(
+    general: &crate::rules::ruleset::GeneralRules,
+    inf_death: u8,
+    rx: u16,
+    ry: u16,
+    sub_x: SimFixed,
+    sub_y: SimFixed,
+    z: u8,
+    world_z_leptons: i32,
+    interner: &mut StringInterner,
+    explosion_effects: &mut Vec<ExplosionEffect>,
+    smudge_spawn_requests: &mut Vec<SmudgeSpawnRequest>,
+) {
+    let Some(anim_name) = general.infantry_death_anim(inf_death) else {
+        return;
+    };
+    let anim_name = interner.intern(anim_name);
+    explosion_effects.push(ExplosionEffect {
+        shp_name: anim_name,
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        z,
+    });
+    smudge_spawn_requests.push(SmudgeSpawnRequest::Anim {
+        anim_name,
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        world_z_leptons,
+    });
 }
 
 /// Emit the warhead's AnimList animation and a paired smudge spawn request
@@ -862,6 +1060,7 @@ pub(crate) fn emit_warhead_detonation_effects(
     sub_x: SimFixed,
     sub_y: SimFixed,
     z: u8,
+    world_z_leptons: i32,
     interner: &mut StringInterner,
     explosion_effects: &mut Vec<ExplosionEffect>,
     smudge_spawn_requests: &mut Vec<SmudgeSpawnRequest>,
@@ -886,25 +1085,33 @@ pub(crate) fn emit_warhead_detonation_effects(
         ry,
         sub_x,
         sub_y,
-        z: z as i32,
+        world_z_leptons,
     });
 }
 
-/// Terrain object impact cells emitted by combat and applied by `World`.
+/// One captured TerrainClass receiver in a fixed Apply_area_damage transaction.
+///
+/// Transient only: stable identity, cell, distance, and isolation scope are
+/// captured during collection so dispatch never rescans a later world state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerrainDamageEvent {
+    pub stable_id: u64,
     pub rx: u16,
     pub ry: u16,
     pub damage: i32,
+    pub distance_leptons: i32,
     pub warhead_ref: InternedId,
+    /// True when the parent AoE used native binary32 CellSpread <= 0.5.
+    /// Terrain cannot arm IC isolation, but an armed transaction skips it.
+    pub near_center_ic_isolation_eligible: bool,
 }
 
-/// Tiberium reduction request emitted by combat and applied by `World`.
+/// Hookless compatibility record for one admitted per-cell tiberium reduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiberiumReductionRequest {
     pub rx: u16,
     pub ry: u16,
-    pub amount: u16,
+    pub amount: i32,
 }
 
 /// Result of a combat tick: reveal events + stable IDs of despawned entities.
@@ -920,14 +1127,16 @@ pub struct CombatTickResult {
     pub immediate_uninit_ids: Vec<u64>,
     /// A structure was destroyed — PathGrid needs footprint unblock.
     pub structure_destroyed: bool,
-    /// Owners who lost their last SpySat building — need full reshroud.
-    pub spy_sat_reshroud_owners: Vec<InternedId>,
     /// Bridge impact cells that should apply terrain damage after combat resolution.
     pub bridge_damage_events: Vec<BridgeDamageEvent>,
-    /// Wall overlay impact cells that should apply wall damage after combat resolution.
-    pub wall_damage_events: Vec<WallDamageEvent>,
-    /// Terrain object impact cells that should apply Wood/Immune terrain damage.
-    pub terrain_damage_events: Vec<TerrainDamageEvent>,
+    /// Wall writes committed inline in exact cell/recursive cleanup order.
+    pub wall_mutations: Vec<WallMutation>,
+    /// Scanned-cell target detach visits committed inline, descending stable ID.
+    pub cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
+    /// Terrain cells whose inline receiver removed live spatial authority.
+    /// World rebuilds cost/path/zone caches from the already-mutated resolved
+    /// terrain before later same-frame consumers.
+    pub terrain_navigation_changed_cells: Vec<(u16, u16)>,
     /// Tiberium cells that should be reduced through the shared cell reducer.
     pub tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     /// Fire events for render-side muzzle flash / projectile origin computation.
@@ -939,13 +1148,16 @@ pub struct CombatTickResult {
     pub destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
     /// Explosion animations to spawn at death/impact locations.
     pub explosion_effects: Vec<ExplosionEffect>,
-    /// Smudge spawn requests collected during death-handling. Drained by
-    /// `Simulation::advance_tick` between combat and ore-growth.
+    /// Receiver-ordered IC/ForceShield transient combat-light requests.
+    pub invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
+    /// Hookless-test adapter for smudge requests. Empty on the production world
+    /// path because each producer commits before returning.
     pub smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
-    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
-    /// per-object window (pre-death state; own-retarget visible), applied
-    /// post-batch by `unit_post::apply_unit_facing`. Transient — never stored,
-    /// serialized, or hashed.
+    /// (unit_id, desired 16-bit barrel destination) — captured at Phase-2
+    /// entry before current-frame attacker damage; that Unit's own explicit
+    /// retarget/remove may replace it. Applied post-batch by
+    /// `unit_post::apply_unit_facing`. Transient — never stored, serialized, or
+    /// hashed.
     pub unit_facing: Vec<(u64, u16)>,
     /// Base-structure / harvester enemy-damage pings produced at the damage
     /// apply site. Drained by the world into BaseUnderAttack/MinerUnderAttack
@@ -965,56 +1177,555 @@ pub struct UnderAttackEvent {
     pub miner: bool,
 }
 
-/// Resolve an attack's impact z (tile-step level units, signed) for the
-/// bridge state-machine Z-height gate. Entity targets carry their position
-/// z. Cell targets have no entity z; we return 0 and let the orchestrator
-/// clamp against the terrain cell's level (state-machine Z-gate is a
-/// 3-level window centered on the cell).
-fn attack_impact_z(target: TargetKind, entities: &EntityStore) -> i32 {
-    if let TargetKind::Entity(eid) = target {
-        if let Some(e) = entities.get(eid) {
-            return e.position.z as i32;
-        }
+/// Exact ObjectClass-style world Z for effect and projectile coordinates.
+///
+/// This is deliberately distinct from [`in_range::effective_z_leptons`]: the
+/// range helper applies low-flight targeting rules, while native animation and
+/// bullet coordinates retain the object's actual airborne height. An explicit
+/// exact coordinate is already absolute. Otherwise the base is exact sloped
+/// terrain plus the object-owned bridge deck, followed by the one active
+/// object/locomotor altitude source in presentation precedence order.
+pub(crate) fn object_world_z_leptons(
+    entity: &GameEntity,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> i32 {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return exact_z_leptons;
     }
-    0
+
+    let world_x = i32::from(entity.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let world_y = i32::from(entity.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    let base_z = terrain
+        .and_then(|terrain| terrain.cell(entity.position.rx, entity.position.ry))
+        .and_then(|cell| ground_height_leptons(cell.level, cell.slope_type, world_x, world_y).ok())
+        .map(|ground_z| {
+            ground_z.wrapping_add(if entity.on_bridge {
+                BRIDGE_DECK_HEIGHT_LEPTONS
+            } else {
+                0
+            })
+        })
+        // Position.z is already the effective layer level (including a bridge
+        // deck), so the mapless fallback must not add OnBridge a second time.
+        .unwrap_or_else(|| i32::from(entity.position.z).wrapping_mul(LEPTONS_PER_LEVEL as i32));
+
+    let altitude = entity
+        .parachute_state
+        .as_ref()
+        .map(|state| state.altitude.to_num::<i32>())
+        .or_else(|| {
+            entity
+                .rocket_state
+                .as_ref()
+                .map(|state| state.altitude.to_num::<i32>())
+        })
+        .or_else(|| {
+            entity
+                .drop_pod_state
+                .as_ref()
+                .filter(|state| {
+                    state.phase == crate::sim::movement::drop_pod_movement::DropPodPhase::Descending
+                })
+                .map(|state| state.altitude.to_num::<i32>())
+        })
+        .or_else(|| {
+            entity
+                .locomotor
+                .as_ref()
+                .filter(|locomotor| {
+                    locomotor.layer == crate::sim::movement::locomotor::MovementLayer::Air
+                        && locomotor.kind != crate::rules::locomotor_type::LocomotorKind::Rocket
+                })
+                .map(|locomotor| locomotor.altitude.to_num::<i32>())
+        })
+        .unwrap_or(0);
+
+    base_z.wrapping_add(altitude)
 }
 
-/// Look up death weapon AoE data from an ObjectType.
-/// Returns (damage, warhead_id) if the entity should deal AoE damage on death.
-/// Checks DeathWeapon first, then falls back to primary weapon if Explodes=yes.
+/// The **one** impact height for an attack, in tile-step level units (signed).
+///
+/// The original engine forms a single impact coordinate per detonation and
+/// hands that same coordinate to area damage and to the animation placement —
+/// there is no second Z anywhere on the path. This function is VERA's
+/// equivalent single value, and every consumer reads it rather than deriving
+/// its own: the AoE object-layer selector, the bridge-damage Z gate, the
+/// persistent-projectile impact coordinate, the impact-animation height, and
+/// (through `app_fire_effects`) the pixel the tracer ends on. A second
+/// derivation could only agree with this one by coincidence.
+///
+/// Three native quantities sit close together here and are not the same
+/// thing:
+/// * a cell's **own** coordinate — cell centre on both axes, terrain floor
+///   height for Z;
+/// * the **aim point** for a cell target — that, plus a four-level structural
+///   bridge deck offset when a span crosses the cell;
+/// * the **impact** coordinate — the projectile's own location, whose Z the
+///   flight step clamps to the plain cell ground-height lookup at the moment
+///   of ground contact. The resolution ladder that can substitute a target's
+///   bridge-aware aim point runs only when there is a live *object* target;
+///   for a shot at bare ground it is skipped entirely.
+///
+/// VERA models the impact, so a ground cell contributes its terrain floor
+/// level and nothing else. There is no branch yielding zero: zero is what a
+/// level-0 cell is worth, never a stand-in for a height we failed to look up.
+/// VERA carries this quantity in whole tile-step levels along the entire
+/// impact path; native carries the same step count scaled into leptons.
+///
+/// **Residual DRIFT — the structural-bridge deck term is unmodelled here.**
+/// A force-fire at a bridge cell therefore damages the ground occupant list
+/// and draws its explosion at ground height rather than four levels up on the
+/// deck. It is not a one-line addition, because two VERA consumers want
+/// opposite values: `combat_aoe::select_object_damage_layer` picks the bridge
+/// occupant list only for an impact well above the cell's ground level (it
+/// wants the deck term), while `bridge_state`'s path Z gate accepts only an
+/// impact within one level of the cell's *ground* level (it rejects the deck
+/// term outright). With ground-only Z that gate now admits every cell target:
+/// it is **disabled, not widened** — a gate that can no longer reject
+/// anything is not a modelled gate. That is RNG-visible: a path that newly
+/// matches consumes a bridge-strength draw from the scenario stream, so a
+/// replay containing a `Wall=yes` force-fire at a bridge over ground level ≥ 2
+/// diverges from one recorded before this change. Trigger frequency: needs
+/// deliberate bridge-cutting over raised ground, uncommon per match but a real
+/// tactic on bridge maps.
+/// *Settling step:* walk the bridge block of the native area-damage routine
+/// and establish which reference **its** Z comparisons use — cell ground
+/// height or deck plane — before either the gate or the deck term moves. The
+/// VERA gate's native equivalent is UNCHECKED and is not authority for
+/// dropping a verified native term.
+///
+/// `terrain` is `None` only where combat runs without a loaded map (headless
+/// fixtures). With no map there is no cell to read — a VERA API boundary, not
+/// a game rule.
+pub(crate) fn attack_impact_z(
+    target: TargetKind,
+    entities: &EntityStore,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> i32 {
+    match target {
+        TargetKind::Entity(eid) => entities
+            .get(eid)
+            .map(|entity| i32::from(entity.position.z))
+            .unwrap_or(0),
+        TargetKind::Cell(rx, ry) => terrain
+            .and_then(|grid| grid.cell(rx, ry))
+            .map(|cell| i32::from(cell.level))
+            .unwrap_or(0),
+    }
+}
+
+fn attack_air_impact(
+    target: TargetKind,
+    impact_rx: u16,
+    impact_ry: u16,
+    impact_sub_x: SimFixed,
+    impact_sub_y: SimFixed,
+    entities: &EntityStore,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> Option<combat_aoe::AoEAirImpact> {
+    match target {
+        TargetKind::Entity(entity_id) => {
+            combat_aoe::air_impact_from_entity(entities.get(entity_id)?, terrain)
+        }
+        TargetKind::Cell(_, _) => combat_aoe::air_impact_from_layer_z(
+            terrain,
+            impact_rx,
+            impact_ry,
+            impact_sub_x,
+            impact_sub_y,
+            attack_impact_z(target, entities, terrain),
+        ),
+    }
+}
+
+fn attack_world_z_leptons(
+    target: TargetKind,
+    impact_rx: u16,
+    impact_ry: u16,
+    impact_sub_x: SimFixed,
+    impact_sub_y: SimFixed,
+    entities: &EntityStore,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> i32 {
+    match target {
+        TargetKind::Entity(entity_id) => entities
+            .get(entity_id)
+            .map(|entity| object_world_z_leptons(entity, terrain))
+            .unwrap_or_else(|| {
+                attack_impact_z(target, entities, terrain).wrapping_mul(LEPTONS_PER_LEVEL as i32)
+            }),
+        TargetKind::Cell(_, _) => combat_aoe::air_impact_from_layer_z(
+            terrain,
+            impact_rx,
+            impact_ry,
+            impact_sub_x,
+            impact_sub_y,
+            attack_impact_z(target, entities, terrain),
+        )
+        .map(|impact| impact.z_leptons)
+        .unwrap_or_else(|| {
+            attack_impact_z(target, entities, terrain).wrapping_mul(LEPTONS_PER_LEVEL as i32)
+        }),
+    }
+}
+
+/// Narrow an impact z into the byte the presentation path carries it in.
+///
+/// The projection that turns that byte into a pixel decodes it with `as i8`
+/// (`util::lepton::lepton_to_screen`), so the byte is a *signed* level count
+/// and the only correct saturation is into `i8` range: clamping into `u8`
+/// range instead would let 200 through, which decodes as -56 levels and throws
+/// the sprite most of a screen away. One definition, so the sim's animation
+/// height and the app's tracer endpoint cannot narrow the same number
+/// differently.
+///
+/// Known mismatch, outside this file: the sprite depth key reads the same byte
+/// as unsigned. The two readings agree over 0..=127, which covers every map
+/// height, so it is latent — but a negative impact z would sort by one rule
+/// and draw by the other.
+pub(crate) fn impact_z_byte(impact_z: i32) -> u8 {
+    impact_z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8 as u8
+}
+
+fn death_weapon_ftol_product_i32_f32(value: i32, multiplier: f32) -> Option<i32> {
+    let multiplier = X87Chop53::load_f32(NativeF32Bits::from_bits(multiplier.to_bits())).ok()?;
+    let product = X87Chop53::mul(X87Chop53::load_i32(value), multiplier);
+    i32::try_from(X87Chop53::ftol_i64(product).ok()?).ok()
+}
+
+fn death_weapon_half_strength(strength: i32) -> Option<i32> {
+    let half = X87Chop53::load_f64(NativeF64Bits::HALF).ok()?;
+    let product = X87Chop53::mul(X87Chop53::load_i32(strength), half);
+    i32::try_from(X87Chop53::ftol_i64(product).ok()?).ok()
+}
+
+/// Resolve the active fatal-receiver death producer. The reachability gate is
+/// independent of `DeathWeapon=`: native consults effective Explodes abilities
+/// and the receiver's live `CurrentWeaponNumber` Suicide flag first. Once
+/// admitted, selection is explicit type weapon, current weapon, then the Rules
+/// default, with distinct native damage formulas for the first two vs default.
 fn death_weapon_aoe(
     rules: &RuleSet,
     obj: &ObjectType,
+    veterancy: u16,
+    current_weapon_index: u8,
+    current_weapon_ref: Option<InternedId>,
     interner: &mut StringInterner,
-) -> Option<(i32, InternedId)> {
-    if let Some(ref dw_id) = obj.death_weapon {
-        let dw = rules.weapon(dw_id)?;
-        let wh_id = dw.warhead.as_ref()?;
-        return Some((dw.damage, interner.intern(wh_id)));
+) -> Option<(i32, InternedId, InternedId)> {
+    let selected_current_weapon =
+        current_weapon_ref.and_then(|weapon_id| rules.weapon(interner.resolve(weapon_id)));
+    let slot_current_weapon =
+        combat_weapon::weapon_for_slot_index(obj, veterancy, i32::from(current_weapon_index))
+            .and_then(|(weapon_id, _)| rules.weapon(weapon_id));
+    let current_weapon = selected_current_weapon.or(slot_current_weapon);
+    let effective_explodes = obj.explodes
+        || (veterancy >= 100 && obj.veteran_explodes)
+        || (veterancy >= 200 && obj.elite_explodes);
+    if !effective_explodes && !current_weapon.is_some_and(|weapon| weapon.suicide) {
+        return None;
     }
-    if obj.explodes {
-        let pri = rules.weapon(obj.primary.as_ref()?)?;
-        let wh_id = pri.warhead.as_ref()?;
-        return Some((pri.damage, interner.intern(wh_id)));
+
+    if let Some(explicit) = obj
+        .death_weapon
+        .as_deref()
+        .and_then(|weapon_id| rules.weapon(weapon_id))
+    {
+        let damage =
+            death_weapon_ftol_product_i32_f32(explicit.damage, obj.death_weapon_damage_modifier)?;
+        let warhead_ref = interner.intern(explicit.warhead.as_ref()?);
+        let weapon_ref = interner.intern(&explicit.id);
+        return Some((damage, warhead_ref, weapon_ref));
     }
-    None
+    if let Some(current) = current_weapon {
+        let damage =
+            death_weapon_ftol_product_i32_f32(current.damage, obj.death_weapon_damage_modifier)?;
+        let warhead_ref = interner.intern(current.warhead.as_ref()?);
+        let weapon_ref = interner.intern(&current.id);
+        return Some((damage, warhead_ref, weapon_ref));
+    }
+    let fallback = rules
+        .combat_damage
+        .death_weapon
+        .as_deref()
+        .and_then(|weapon_id| rules.weapon(weapon_id))?;
+    let warhead_ref = interner.intern(fallback.warhead.as_ref()?);
+    let weapon_ref = interner.intern(&fallback.id);
+    Some((
+        death_weapon_half_strength(obj.strength)?,
+        warhead_ref,
+        weapon_ref,
+    ))
 }
 
 /// Collected side-effects from processing entity deaths in a single tick.
-struct DeathEffects {
-    despawned_ids: Vec<u64>,
-    immediate_uninit_ids: Vec<u64>,
-    structure_destroyed: bool,
-    spy_sat_reshroud_owners: Vec<InternedId>,
-    destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
-    destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
-    explosion_effects: Vec<ExplosionEffect>,
-    bridge_damage_events: Vec<BridgeDamageEvent>,
-    wall_damage_events: Vec<WallDamageEvent>,
-    terrain_damage_events: Vec<TerrainDamageEvent>,
-    tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
-    death_sounds: Vec<(InternedId, u16, u16)>,
-    smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+#[derive(Default)]
+pub(crate) struct DeathEffects {
+    pub(crate) despawned_ids: Vec<u64>,
+    pub(crate) immediate_uninit_ids: Vec<u64>,
+    pub(crate) structure_destroyed: bool,
+    pub(crate) destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding>,
+    pub(crate) destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding>,
+    pub(crate) explosion_effects: Vec<ExplosionEffect>,
+    pub(crate) invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect>,
+    pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
+    pub(crate) wall_mutations: Vec<WallMutation>,
+    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
+    pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
+    pub(crate) death_sounds: Vec<(InternedId, u16, u16)>,
+    pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
+    pub(crate) rad_detonations: Vec<crate::sim::radiation::RadDetonation>,
+    pub(crate) under_attack_events: Vec<UnderAttackEvent>,
+    #[cfg(test)]
+    pub(crate) receiver_stage_trace: Vec<ReceiverStageTrace>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReceiverStageTrace {
+    HouseThreat { target_id: u64, delta: i32 },
+    PostMortem { target_id: u64 },
+    ShouldRetaliate { target_id: u64 },
+}
+
+/// World-owned lifecycle work that brackets the native death helper for a
+/// concrete fatal receiver. Passenger teardown precedes the nested death
+/// weapon; represented UnInit follows it before the next outer receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FatalLifecycleStage {
+    /// Surviving Techno ReceiveDamage postlude, before Infantry scatter and
+    /// synchronous retaliation. The world owns ParticleSystem storage and the
+    /// shared LogicVector, so maintenance crosses the existing inline hook.
+    MaintainDamageSmoke {
+        state: damage::DamageState,
+    },
+    /// ObjectClass's exact-zero callback transaction for an eligible delayed
+    /// death. It runs while the target is still represented and Health is
+    /// exactly zero, before TechnoClass arms/shortens the shared C4 timer and
+    /// restores Alive/Health=1.
+    PostMortemExactZero {
+        killer_owner: Option<InternedId>,
+    },
+    BeforeDeathEffects,
+    AfterDeathEffects,
+}
+
+/// World bridge for synchronous side effects whose authoritative
+/// storage lives outside combat's move-out transaction. One object owns both
+/// methods so `Simulation` is borrowed only once while combat temporarily owns
+/// entities, map grids, and the scenario RNG.
+pub(crate) trait CombatInlineHooks {
+    #[allow(clippy::too_many_arguments)]
+    fn fatal_lifecycle(
+        &mut self,
+        rules: &RuleSet,
+        stage: FatalLifecycleStage,
+        stable_id: u64,
+        category: EntityCategory,
+        entities: &mut EntityStore,
+        occupancy: &mut OccupancyGrid,
+        interner: &mut StringInterner,
+        scenario_rng: &mut SimRng,
+        terrain_area_state: Option<&mut TerrainAreaState>,
+        sound_sink: Option<&mut Vec<SimSoundEvent>>,
+    );
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_tiberium_reduction(
+        &mut self,
+        rules: &RuleSet,
+        request: TiberiumReductionRequest,
+        scenario_rng: &mut SimRng,
+        resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+        overlay_grid: Option<&mut OverlayGrid>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        terrain_area_state: Option<&TerrainAreaState>,
+    );
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_smudge(
+        &mut self,
+        rules: &RuleSet,
+        request: SmudgeSpawnRequest,
+        occupancy: &OccupancyGrid,
+        interner: &StringInterner,
+        scenario_rng: &mut SimRng,
+        resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+        overlay_grid: Option<&mut OverlayGrid>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        terrain_area_state: Option<&TerrainAreaState>,
+    );
+}
+
+fn tiberium_reduction_amount(
+    base_damage: i32,
+    affect_resource: bool,
+    warhead: &WarheadType,
+) -> Option<i32> {
+    if !affect_resource || !warhead.tiberium {
+        return None;
+    }
+    let amount = base_damage / 10;
+    (amount > 0).then_some(amount)
+}
+
+/// Apply_area_damage's Reduce_Tiberium call belongs inside the spread-cell
+/// walk: it precedes that cell's wall RNG and receiver-list capture. The hook
+/// owns World-only ore-growth/dirty state; combat_aoe lends the map and RNG
+/// fields it already owns for the duration of one cell.
+struct CombatTiberiumCellPrelude<'a, 'hook> {
+    amount: i32,
+    deferred: &'a mut Vec<TiberiumReductionRequest>,
+    inline_hooks: &'a mut Option<&'hook mut dyn CombatInlineHooks>,
+    rules: &'a RuleSet,
+    resource_nodes: &'a mut BTreeMap<(u16, u16), ResourceNode>,
+    terrain_area_state: Option<&'a TerrainAreaState>,
+}
+
+impl self::combat_aoe::AoECellPrelude for CombatTiberiumCellPrelude<'_, '_> {
+    #[allow(clippy::too_many_arguments)]
+    fn before_cell(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_grid: Option<&mut OverlayGrid>,
+        overlay_registry: Option<&OverlayTypeRegistry>,
+        terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+        scenario_rng: Option<&mut SimRng>,
+    ) {
+        if !self::combat_aoe::tiberium_reduction_cell_admitted(
+            overlay_grid.as_deref(),
+            overlay_registry,
+            rx,
+            ry,
+        ) {
+            return;
+        }
+        let request = TiberiumReductionRequest {
+            rx,
+            ry,
+            amount: self.amount,
+        };
+        if let Some(hooks) = self.inline_hooks.as_deref_mut() {
+            let scenario_rng = scenario_rng
+                .expect("production Apply_area_damage tiberium prelude requires scenario RNG");
+            hooks.commit_tiberium_reduction(
+                self.rules,
+                request,
+                scenario_rng,
+                self.resource_nodes,
+                overlay_grid,
+                overlay_registry,
+                terrain,
+                self.terrain_area_state,
+            );
+        } else {
+            self.deferred.push(request);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_smudge_or_defer(
+    request: SmudgeSpawnRequest,
+    deferred: &mut Vec<SmudgeSpawnRequest>,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    rules: &RuleSet,
+    occupancy: &OccupancyGrid,
+    interner: &StringInterner,
+    scenario_rng: &mut SimRng,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_area_state: Option<&TerrainAreaState>,
+) {
+    if let Some(hooks) = inline_hooks.as_deref_mut() {
+        hooks.commit_smudge(
+            rules,
+            request,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid,
+            overlay_registry,
+            terrain,
+            terrain_area_state,
+        );
+    } else {
+        deferred.push(request);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_smudge_batch_or_defer(
+    requests: Vec<SmudgeSpawnRequest>,
+    deferred: &mut Vec<SmudgeSpawnRequest>,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    rules: &RuleSet,
+    occupancy: &OccupancyGrid,
+    interner: &StringInterner,
+    scenario_rng: &mut SimRng,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_area_state: Option<&TerrainAreaState>,
+) {
+    for request in requests {
+        commit_smudge_or_defer(
+            request,
+            deferred,
+            inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state,
+        );
+    }
+}
+
+impl DeathEffects {
+    fn append(&mut self, mut other: Self) {
+        self.despawned_ids.append(&mut other.despawned_ids);
+        self.immediate_uninit_ids
+            .append(&mut other.immediate_uninit_ids);
+        self.structure_destroyed |= other.structure_destroyed;
+        self.destroyed_crewed_buildings
+            .append(&mut other.destroyed_crewed_buildings);
+        self.destroyed_garrison_buildings
+            .append(&mut other.destroyed_garrison_buildings);
+        self.explosion_effects.append(&mut other.explosion_effects);
+        self.invulnerability_impact_effects
+            .append(&mut other.invulnerability_impact_effects);
+        self.bridge_damage_events
+            .append(&mut other.bridge_damage_events);
+        self.wall_mutations.append(&mut other.wall_mutations);
+        self.cell_target_detaches
+            .append(&mut other.cell_target_detaches);
+        self.tiberium_reduction_requests
+            .append(&mut other.tiberium_reduction_requests);
+        self.death_sounds.append(&mut other.death_sounds);
+        self.smudge_spawn_requests
+            .append(&mut other.smudge_spawn_requests);
+        self.rad_detonations.append(&mut other.rad_detonations);
+        self.under_attack_events
+            .append(&mut other.under_attack_events);
+        #[cfg(test)]
+        self.receiver_stage_trace
+            .append(&mut other.receiver_stage_trace);
+    }
 }
 
 fn append_selected_death_sounds(
@@ -1040,6 +1751,27 @@ fn append_selected_death_sounds(
     append_choice(&object_type.die_sounds);
 }
 
+/// Concrete-class death work that native runs only after the shared Techno
+/// death-weapon transaction has returned. Keeping the plan data-only avoids
+/// consuming smudge RNG (or interning the InfDeath AnimType) too early.
+enum ConcreteDeathSmudgePlan {
+    Infantry {
+        inf_death: u8,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        z: u8,
+        world_z_leptons: i32,
+    },
+    Building {
+        rx: u16,
+        ry: u16,
+        z: i32,
+        foundation: String,
+    },
+}
+
 /// Process combat-owned death effects and classify the lifecycle handoff.
 ///
 /// Extracts death side-effects into a `DeathEffects` struct so the caller can apply them
@@ -1049,17 +1781,31 @@ fn handle_entity_deaths(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    houses: &BTreeMap<InternedId, HouseState>,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
     main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
     dead_entities: &[u64],
-    damage_events: &[(u64, u16, u64, InternedId)],
-    _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-    overlay_grid: Option<&OverlayGrid>,
+    damage_events: &[EntityDamageEvent],
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_area_state: &mut Option<&mut TerrainAreaState>,
+    scenario_no_damage: bool,
     current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> DeathEffects {
+    debug_assert!(
+        dead_entities.len() <= 1,
+        "ReceiveDamage enters one concrete fatal postlude at a time"
+    );
     let mut death_sounds: Vec<(InternedId, u16, u16)> = Vec::new();
+    #[cfg(test)]
+    let mut receiver_stage_trace = Vec::new();
     let mut tiberium_reduction_requests: Vec<TiberiumReductionRequest> = Vec::new();
     // Death-weapon detonations use the destroyed object's game-space position.
     // The cell and z still drive damage/smudge dispatch; sub-cell leptons keep
@@ -1071,24 +1817,41 @@ fn handle_entity_deaths(
         SimFixed,
         u8,
         i32,
+        Option<combat_aoe::AoEAirImpact>,
+        i32,
         InternedId,
+        InternedId,
+        u64,
         InternedId,
     )> = Vec::new();
     let mut despawned_ids: Vec<u64> = Vec::new();
     let mut immediate_uninit_ids: Vec<u64> = Vec::new();
-    let mut spy_sat_reshroud_owners: Vec<InternedId> = Vec::new();
     let mut destroyed_crewed_buildings: Vec<DestroyedCrewedBuilding> = Vec::new();
     let mut destroyed_garrison_buildings: Vec<DestroyedGarrisonBuilding> = Vec::new();
     let mut explosion_effects: Vec<ExplosionEffect> = Vec::new();
+    let mut invulnerability_impact_effects: Vec<InvulnerabilityImpactEffect> = Vec::new();
     let mut bridge_damage_events: Vec<BridgeDamageEvent> = Vec::new();
-    let mut wall_damage_events: Vec<WallDamageEvent> = Vec::new();
+    let mut wall_mutations: Vec<WallMutation> = Vec::new();
+    let mut cell_target_detaches: Vec<combat_aoe::CellTargetDetach> = Vec::new();
     let mut smudge_spawn_requests: Vec<SmudgeSpawnRequest> = Vec::new();
+    let mut concrete_smudge_plans: Vec<ConcreteDeathSmudgePlan> = Vec::new();
+    let mut rad_detonations: Vec<crate::sim::radiation::RadDetonation> = Vec::new();
+    let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
     let mut structure_destroyed: bool = false;
     for &dead_id in dead_entities {
+        // ReceiveDamage enters the death helper exactly once at the fatal
+        // transition. Non-animated objects remain in the store until the
+        // world-owned UnInit handoff, so keep this tick-local guard explicit.
+        if handled_deaths.contains(&dead_id) {
+            continue;
+        }
+        handled_deaths.push(dead_id);
         let dead_info = entities.get(dead_id).map(|e| {
             if e.category == EntityCategory::Structure {
                 structure_destroyed = true;
             }
+            let air_impact = combat_aoe::air_impact_from_entity(e, terrain.as_deref());
+            let world_z_leptons = object_world_z_leptons(e, terrain.as_deref());
             (
                 e.type_ref,
                 e.position.rx,
@@ -1096,13 +1859,33 @@ fn handle_entity_deaths(
                 e.position.sub_x,
                 e.position.sub_y,
                 e.position.z,
+                world_z_leptons,
+                air_impact,
                 e.owner,
                 e.animation.is_some(),
                 e.category,
+                e.veterancy,
+                e.current_weapon_index,
+                e.current_weapon_ref,
             )
         });
 
-        if let Some((type_id, rx, ry, sub_x, sub_y, z, owner, has_animation, category)) = dead_info
+        if let Some((
+            type_id,
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            z,
+            world_z_leptons,
+            air_impact,
+            owner,
+            has_animation,
+            category,
+            veterancy,
+            current_weapon_index,
+            current_weapon_ref,
+        )) = dead_info
         {
             let type_id_str = interner.resolve(type_id);
             if let Some(obj) = rules.object(type_id_str) {
@@ -1115,11 +1898,28 @@ fn handle_entity_deaths(
                     ry,
                     &mut death_sounds,
                 );
-                if let Some((dmg, wh_id)) = death_weapon_aoe(rules, obj, interner) {
-                    death_aoe.push((rx, ry, sub_x, sub_y, z, dmg, wh_id, owner));
-                }
-                if obj.spy_sat {
-                    spy_sat_reshroud_owners.push(owner);
+                if let Some((dmg, wh_id, weapon_id)) = death_weapon_aoe(
+                    rules,
+                    obj,
+                    veterancy,
+                    current_weapon_index,
+                    current_weapon_ref,
+                    interner,
+                ) {
+                    death_aoe.push((
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        z,
+                        world_z_leptons,
+                        air_impact,
+                        dmg,
+                        wh_id,
+                        weapon_id,
+                        dead_id,
+                        owner,
+                    ));
                 }
                 // Crewed structures eject infantry survivors on destruction.
                 if obj.crewed && category == EntityCategory::Structure {
@@ -1180,36 +1980,27 @@ fn handle_entity_deaths(
             // the per-shot fire site (and at the death-AoE loop), not here.
             let killing_warhead = damage_events
                 .iter()
-                .rfind(|(tid, _, _, _)| *tid == dead_id)
-                .and_then(|(_, dmg, _, wh_id)| {
-                    rules.warhead(interner.resolve(*wh_id)).map(|wh| (wh, *dmg))
+                .rfind(|event| event.target_id == dead_id)
+                .and_then(|event| {
+                    rules
+                        .warhead(interner.resolve(event.warhead_ref))
+                        .map(|wh| (wh, event.damage))
                 });
 
-            // Building-destruction smudges: emit one BuildingCenter event plus
-            // one BuildingSurvivor event per foundation cell. Drained by
-            // `Simulation::advance_tick` (Task 13.5) to write into SmudgeGrid.
+            // BuildingClass runs DestructionEffects/SpawnSurvivors only after
+            // TechnoClass's synchronous death weapon has returned. Capture the
+            // immutable plan now; placement and all RNG stay at that postlude.
             if category == EntityCategory::Structure {
                 let foundation = rules
                     .object(interner.resolve(type_id))
-                    .map(|obj| foundation_dimensions(&obj.foundation))
-                    .unwrap_or((1, 1));
-                let foundation_w = foundation.0 as u8;
-                let foundation_h = foundation.1 as u8;
-                smudge_spawn_requests.push(SmudgeSpawnRequest::BuildingCenter {
+                    .map(|obj| obj.foundation.as_str())
+                    .unwrap_or("1x1");
+                concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Building {
                     rx,
                     ry,
-                    building_z: z as i32,
-                    foundation_w,
-                    foundation_h,
+                    z: i32::from(z),
+                    foundation: foundation.to_owned(),
                 });
-                for dy in 0..foundation_h as u16 {
-                    for dx in 0..foundation_w as u16 {
-                        smudge_spawn_requests.push(SmudgeSpawnRequest::BuildingSurvivor {
-                            cell_rx: rx + dx,
-                            cell_ry: ry + dy,
-                        });
-                    }
-                }
             }
 
             if has_animation {
@@ -1221,6 +2012,17 @@ fn handle_entity_deaths(
                     .as_ref()
                     .map(|(wh, _)| wh.inf_death)
                     .unwrap_or(1);
+                if category == EntityCategory::Infantry {
+                    concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry {
+                        inf_death,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        z,
+                        world_z_leptons,
+                    });
+                }
                 if let Some(entity) = entities.get_mut(dead_id) {
                     entity.dying = true;
                     if let Some(ref mut anim) = entity.animation {
@@ -1244,81 +2046,136 @@ fn handle_entity_deaths(
     }
 
     // Apply death explosion AoE damage.
-    for (rx, ry, sub_x, sub_y, z, dmg, wh_id, owner_id) in &death_aoe {
+    for (
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        z,
+        world_z_leptons,
+        air_impact,
+        dmg,
+        wh_id,
+        weapon_id,
+        source_id,
+        owner_id,
+    ) in &death_aoe
+    {
         if let Some(warhead) = rules.warhead(interner.resolve(*wh_id)) {
-            if *dmg > 0 {
-                let damage_u16 = (*dmg).max(0) as u16;
-                let wall_flags = wall_overlay_flags_at(overlay_grid, overlay_registry, *rx, *ry);
-                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                    wall_damage_events.push(WallDamageEvent {
-                        rx: *rx,
-                        ry: *ry,
-                        damage: damage_u16,
-                    });
-                } else if wall_flags.is_none() && warhead.wall {
-                    let wh_iid = *wh_id;
-                    bridge_damage_events.push(BridgeDamageEvent {
-                        rx: *rx,
-                        ry: *ry,
-                        damage: damage_u16,
-                        warhead_ref: wh_iid,
-                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z: *z as i32,
-                    });
+            let routed_wall =
+                wall_overlay_flags_at(overlay_grid.as_deref(), overlay_registry, *rx, *ry)
+                    .is_some_and(|flags| warhead_damages_wall(warhead, flags));
+            let ore_amount = if scenario_no_damage {
+                None
+            } else {
+                tiberium_reduction_amount(*dmg, true, warhead)
+            };
+            let terrain_collection = terrain_area_state.as_deref().map(|state| {
+                self::combat_aoe::TerrainCollectionView {
+                    objects: state.terrain_objects(),
+                    cells: state.terrain_object_cells(),
                 }
+            });
+            let aoe = {
+                let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
+                    amount,
+                    deferred: &mut tiberium_reduction_requests,
+                    inline_hooks,
+                    rules,
+                    resource_nodes,
+                    terrain_area_state: terrain_area_state.as_deref(),
+                });
+                self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
+                    entities,
+                    *rx,
+                    *ry,
+                    *dmg,
+                    warhead,
+                    rules,
+                    interner,
+                    (*source_id, Some(*owner_id), *wh_id),
+                    self::combat_aoe::AoELayerContext {
+                        occupancy: Some(&*occupancy),
+                        terrain: terrain.as_deref_mut(),
+                        overlay_grid: overlay_grid.as_deref_mut(),
+                        overlay_registry,
+                        scenario_rng: Some(&mut *scenario_rng),
+                        air_impact: *air_impact,
+                        impact_z: *z as i32,
+                    },
+                    terrain_collection,
+                    scenario_no_damage,
+                    ore_prelude
+                        .as_mut()
+                        .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+                )
+            };
+            wall_mutations.extend(aoe.wall_mutations);
+            cell_target_detaches.extend(aoe.cell_target_detaches);
+            if !scenario_no_damage && !routed_wall && warhead.wall && *dmg > 0 {
+                let wh_iid = *wh_id;
+                bridge_damage_events.push(BridgeDamageEvent {
+                    rx: *rx,
+                    ry: *ry,
+                    damage: (*dmg).min(i32::from(u16::MAX)) as u16,
+                    warhead_ref: wh_iid,
+                    is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                    impact_z: *z as i32,
+                });
             }
-            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+            if let Some(weapon) = rules.weapon(interner.resolve(*weapon_id))
+                && weapon.rad_level > 0
+            {
+                rad_detonations.push(crate::sim::radiation::RadDetonation {
+                    rx: *rx,
+                    ry: *ry,
+                    rad_level: weapon.rad_level,
+                    spread: warhead.cell_spread.to_num::<i32>(),
+                });
+            }
+            // One native Apply_area_damage owns the whole fixed record vector.
+            // The commit loop still enters ReceiveDamage/death effects inline
+            // per record, while retaining transaction-wide IC isolation.
+            let (mut nested, mut pings) = commit_area_damage_receivers_with_scenario(
+                &aoe.receivers,
                 entities,
-                *rx,
-                *ry,
-                *dmg,
-                warhead,
+                occupancy,
                 rules,
                 interner,
-                interner.resolve(*owner_id),
-                self::combat_aoe::AoELayerContext {
-                    occupancy: Some(&*occupancy),
-                    terrain,
-                    impact_z: *z as i32,
-                },
+                houses,
+                house_order,
+                alliances,
+                main_rng,
+                scenario_rng,
+                handled_deaths,
+                resource_nodes,
+                overlay_grid.as_deref_mut(),
+                overlay_registry,
+                terrain.as_deref_mut(),
+                terrain_area_state.as_deref_mut(),
+                scenario_no_damage,
+                current_tick,
+                inline_hooks,
+                sound_sink,
             );
-            for (target_id, aoe_dmg) in aoe_hits {
-                if let Some(target) = entities.get_mut(target_id) {
-                    if crate::sim::superweapon::invulnerability::is_invulnerable(
-                        target.invulnerability.as_ref(),
-                        current_tick as u32,
-                    ) {
-                        continue;
-                    }
-                    target.health.current = target.health.current.saturating_sub(aoe_dmg);
-                    target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-                    if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
-                        infantry::apply_fear_from_damage(
-                            obj,
-                            target,
-                            aoe_dmg,
-                            false,
-                            rules.general.condition_red_x1000,
-                            rules.general.condition_yellow_x1000,
-                        );
-                    }
-                    // A death explosion kills on behalf of the object that
-                    // carried it — a Demo Truck's owner is credited with what its
-                    // detonation destroys, and so is the owner of anything caught
-                    // in a chain reaction. This path subtracts damage inline
-                    // rather than going through the damage-event loop, so the
-                    // capture has to happen here too.
-                    capture_kill_credit(target, Some(*owner_id), rules, interner);
-                }
-            }
-            // Ore destruction from death explosion.
-            destroy_ore_at_impact(
-                &mut tiberium_reduction_requests,
-                *rx,
-                *ry,
-                *dmg,
-                warhead.cell_spread,
-            );
+            despawned_ids.append(&mut nested.despawned_ids);
+            immediate_uninit_ids.append(&mut nested.immediate_uninit_ids);
+            structure_destroyed |= nested.structure_destroyed;
+            destroyed_crewed_buildings.append(&mut nested.destroyed_crewed_buildings);
+            destroyed_garrison_buildings.append(&mut nested.destroyed_garrison_buildings);
+            explosion_effects.append(&mut nested.explosion_effects);
+            invulnerability_impact_effects.append(&mut nested.invulnerability_impact_effects);
+            bridge_damage_events.append(&mut nested.bridge_damage_events);
+            wall_mutations.append(&mut nested.wall_mutations);
+            cell_target_detaches.append(&mut nested.cell_target_detaches);
+            tiberium_reduction_requests.append(&mut nested.tiberium_reduction_requests);
+            death_sounds.append(&mut nested.death_sounds);
+            smudge_spawn_requests.append(&mut nested.smudge_spawn_requests);
+            rad_detonations.append(&mut nested.rad_detonations);
+            #[cfg(test)]
+            receiver_stage_trace.append(&mut nested.receiver_stage_trace);
+            under_attack_events.append(&mut pings);
+            let outer_anim_start = smudge_spawn_requests.len();
             emit_warhead_detonation_effects(
                 warhead,
                 *dmg,
@@ -1327,61 +2184,1278 @@ fn handle_entity_deaths(
                 *sub_x,
                 *sub_y,
                 *z,
+                *world_z_leptons,
                 interner,
                 &mut explosion_effects,
                 &mut smudge_spawn_requests,
             );
+            let outer_anim_requests = smudge_spawn_requests.split_off(outer_anim_start);
+            commit_smudge_batch_or_defer(
+                outer_anim_requests,
+                &mut smudge_spawn_requests,
+                inline_hooks,
+                rules,
+                occupancy,
+                interner,
+                scenario_rng,
+                resource_nodes,
+                overlay_grid.as_deref_mut(),
+                overlay_registry,
+                terrain.as_deref_mut(),
+                terrain_area_state.as_deref(),
+            );
         }
+    }
+
+    // Concrete InfDeath AnimClass and building destruction smudges are the
+    // receiver postlude. The structure is intentionally still represented and
+    // its raw occupation bytes are still in TerrainAreaState during dispatch.
+    for plan in concrete_smudge_plans {
+        let mut requests = Vec::new();
+        match plan {
+            ConcreteDeathSmudgePlan::Infantry {
+                inf_death,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                z,
+                world_z_leptons,
+            } => emit_infantry_death_anim(
+                &rules.general,
+                inf_death,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                z,
+                world_z_leptons,
+                interner,
+                &mut explosion_effects,
+                &mut requests,
+            ),
+            ConcreteDeathSmudgePlan::Building {
+                rx,
+                ry,
+                z,
+                foundation,
+            } => append_building_smudge_requests(&mut requests, rx, ry, z, &foundation),
+        }
+        commit_smudge_batch_or_defer(
+            requests,
+            &mut smudge_spawn_requests,
+            inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref(),
+        );
     }
 
     DeathEffects {
         despawned_ids,
         immediate_uninit_ids,
         structure_destroyed,
-        spy_sat_reshroud_owners,
         destroyed_crewed_buildings,
         destroyed_garrison_buildings,
         explosion_effects,
+        invulnerability_impact_effects,
         bridge_damage_events,
-        wall_damage_events,
-        terrain_damage_events: Vec::new(),
+        wall_mutations,
+        cell_target_detaches,
         tiberium_reduction_requests,
         death_sounds,
         smudge_spawn_requests,
+        rad_detonations,
+        under_attack_events,
+        #[cfg(test)]
+        receiver_stage_trace,
     }
 }
 
-/// Destroy ore/gem resources at cells affected by a warhead detonation.
-///
-/// Iterates cells in the warhead's CellSpread radius and reduces ore density
-/// by `base_damage / 10` at each cell. Matches gamemd's `Apply_area_damage`
-/// ore destruction logic (0x00489280).
-///
-/// ALL warheads destroy ore unconditionally — the `Tiberium=` INI flag only
-/// gates vein destruction (not implemented).
-fn destroy_ore_at_impact(
-    requests: &mut Vec<TiberiumReductionRequest>,
-    impact_rx: u16,
-    impact_ry: u16,
-    base_damage: i32,
-    cell_spread: SimFixed,
-) {
-    let ore_damage = (base_damage / 10).max(0) as u16;
-    if ore_damage == 0 {
-        return;
+/// Build the native ReceiveDamage value ABI for one ordered area or direct
+/// receiver record and run the shared receiver exactly once. The returned
+/// signed HP delta is the only health input consumed by `commit_damage_events`.
+#[derive(Debug, Clone, Copy)]
+struct ResolvedReceiveDamage {
+    outcome: damage::DamageOutcome,
+    invulnerability_impact: Option<InvulnerabilityImpactEffect>,
+}
+
+fn receiver_effect_coord(
+    target: &GameEntity,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> ProjectileCoord {
+    let x = i32::from(target.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(target.position.sub_x.to_num::<i32>());
+    let y = i32::from(target.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(target.position.sub_y.to_num::<i32>());
+    let z = object_world_z_leptons(target, terrain);
+    ProjectileCoord::new(x, y, z)
+}
+
+fn resolve_receive_damage(
+    event: &EntityDamageEvent,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &BTreeMap<InternedId, HouseState>,
+    alliances: &HouseAllianceMap,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> Option<ResolvedReceiveDamage> {
+    let distance_leptons = event.distance_leptons?;
+    let receiver_flags = event.receiver_flags?;
+    let target = entities.get(event.target_id)?;
+    let warhead = rules.warhead(interner.resolve(event.warhead_ref))?;
+    let target_type = rules.object(interner.resolve(target.type_ref));
+    let source = (event.attacker_id != RAD_NO_ATTACKER)
+        .then(|| entities.get(event.attacker_id))
+        .flatten();
+    let source_house = event
+        .source_house
+        .or_else(|| source.map(|entity| entity.owner));
+    // InfantryClass mutates the positive raw i32 before forwarding to the
+    // shared Techno receiver. Its sign is therefore Techno's original-sign
+    // snapshot used by the IC/FS gate below.
+    let receiver_input = infantry_prone_area_raw_damage(
+        target,
+        warhead,
+        event.damage,
+        receiver_flags.ignore_defenses,
+    );
+
+    let allied = |asker: InternedId, other: InternedId| {
+        crate::map::houses::is_allied_with(
+            alliances,
+            interner.resolve(asker),
+            interner.resolve(other),
+        )
+    };
+    let attacker_is_allied = source_house.is_some_and(|owner| allied(owner, target.owner));
+    let source_house_is_allied = source_house.is_some_and(|owner| allied(target.owner, owner));
+
+    let target_is_building = target.category == EntityCategory::Structure;
+    let target_view = damage::TargetDamageView {
+        armor: damage::ArmorClass(
+            target_type
+                .map(|object| armor_index(&object.armor))
+                .unwrap_or(0) as u8,
+        ),
+        strength: target_type
+            .map(|object| object.strength)
+            .filter(|&strength| strength > 0)
+            .unwrap_or(i32::from(target.health.max)),
+        current_hp: i32::from(target.health.current),
+        object_immune: target_type.is_some_and(|object| object.immune),
+        is_building: target_is_building,
+        can_c4: target_type
+            .map(|object| object.can_c4)
+            .unwrap_or(target_is_building),
+    };
+    let type_immune = target_type.is_some_and(|object| object.type_immune)
+        && source.is_some_and(|source| {
+            source.type_ref == target.type_ref && source.owner == target.owner
+        });
+    let bunker_blocked = if target_is_building && target.bunker_occupant.is_some() {
+        // Linked Building branch is intentionally the inverse of the installed
+        // non-Building branch in TechnoClass::ReceiveDamage.
+        warhead.penetrates_bunker
+    } else {
+        target.bunker_link.installed_in().is_some() && !warhead.penetrates_bunker
+    };
+    let active_invulnerability = target.invulnerability.as_ref().filter(|_| {
+        crate::sim::superweapon::invulnerability::is_invulnerable(
+            target.invulnerability.as_ref(),
+            current_tick as u32,
+        )
+    });
+    let gates = damage::ImmunityInputs {
+        ignore_defenses: receiver_flags.ignore_defenses,
+        attacker_present: event.attacker_id != RAD_NO_ATTACKER,
+        type_immune,
+        // IC/FS checks original sign and precedes WarpingOut. Warping does not
+        // share the negative/healing exemption; both honor ignoreDefenses.
+        invulnerable: !receiver_flags.ignore_defenses
+            && receiver_input >= 0
+            && active_invulnerability.is_some(),
+        warping_out: !receiver_flags.ignore_defenses
+            && target
+                .teleport_state
+                .as_ref()
+                .is_some_and(|state| state.warp_out_active()),
+        bunker_blocked,
+        radiation_immune: warhead.radiation
+            && target_type.is_some_and(|object| object.immune_to_radiation),
+        psychic_immune: warhead.psychic_damage
+            && target_type.is_some_and(|object| object.immune_to_psionic_weapons),
+        poison_immune: warhead.poison && target_type.is_some_and(|object| object.immune_to_poison),
+        affects_allies: warhead.affects_allies,
+        attacker_is_allied,
+        source_house_is_allied,
+        psychedelic: warhead.psychedelic,
+        psionics_immune: target_type.is_some_and(|object| object.immune_to_psionics),
+        target_is_building,
+    };
+    let defender_country_armor = houses.get(&target.owner).map_or(1.0, |house| {
+        let difficulty_armor = rules.general.difficulty_armor[house.difficulty.table_index()];
+        let country_name = house
+            .country
+            .map(|country| interner.resolve(country))
+            .unwrap_or_else(|| interner.resolve(target.owner));
+        let (country_armor, category_armor) = target_type
+            .map(|object| rules.country_armor_factors(country_name, object))
+            .unwrap_or((1.0, 1.0));
+        let house_armor = difficulty_armor * country_armor;
+        house_armor * category_armor
+    });
+    let defender_vet_armor = target_type
+        .is_some_and(|object| {
+            if target.veterancy >= ELITE_VETERANCY {
+                object.veteran_stronger || object.elite_stronger
+            } else {
+                target.veterancy >= VETERAN_VETERANCY && object.veteran_stronger
+            }
+        })
+        .then_some(rules.general.veteran_armor)
+        .unwrap_or(1.0);
+    let combat_mods = damage::CombatMods {
+        defender_country_armor,
+        defender_unit_armor: f64::from_bits(target.armor_multiplier.bits()),
+        defender_vet_armor,
+        ..damage::CombatMods::default()
+    };
+    // `arg6` is forwarded by the concrete ABI. Its only verified Unit-class
+    // consumer gates a crew-survivor branch that this lifecycle does not
+    // model; periodic radiation's true value is nevertheless retained on the
+    // ordered call rather than erased at collection time.
+    let _receiver_arg6 = receiver_flags.arg6;
+    let outcome = damage::receive::receive_damage(
+        receiver_input,
+        warhead.cell_spread_f64,
+        warhead.percent_at_max_f64,
+        &warhead.verses_f64,
+        &target_view,
+        &combat_mods,
+        &gates,
+        distance_leptons,
+        scenario_no_damage,
+        rules.combat_damage.max_damage,
+        f64::from(rules.general.condition_red),
+    );
+    let invulnerability_impact = outcome.invulnerability_impact_damage.map(|doubled_damage| {
+        let flags = match active_invulnerability
+            .expect("receiver gate retained active state")
+            .kind
+        {
+            crate::sim::superweapon::invulnerability::InvulnKind::IronCurtain => 1,
+            crate::sim::superweapon::invulnerability::InvulnKind::ForceShield => 6,
+        };
+        InvulnerabilityImpactEffect {
+            target_id: target.stable_id,
+            doubled_damage,
+            warhead_ref: event.warhead_ref,
+            coord: receiver_effect_coord(target, terrain),
+            force_create: true,
+            flags,
+        }
+    });
+    Some(ResolvedReceiveDamage {
+        outcome,
+        invulnerability_impact,
+    })
+}
+
+/// TechnoClass::ReceiveDamage builds the anger-node increment from the final
+/// ObjectClass damage packet, not from raw weapon damage. The x87 keeps the
+/// division result live, multiplies by the type's virtual cost, then Math__ftol
+/// returns an i64 whose low dword is passed to HouseClass.
+fn receiver_anger_delta(final_damage: i32, strength: i32, cost: i32) -> i32 {
+    if strength == 0 {
+        return 0;
     }
-    // gamemd cell sweep: count_table[ftol(CellSpread + 0.99)] entries, exact order.
-    for &(dx, dy) in self::cell_spread::splash_cells(cell_spread) {
-        let cx = impact_rx as i32 + dx as i32;
-        let cy = impact_ry as i32 + dy as i32;
-        if cx >= 0 && cy >= 0 {
-            requests.push(TiberiumReductionRequest {
-                rx: cx as u16,
-                ry: cy as u16,
-                amount: ore_damage,
-            });
+    let ratio = X87Chop53::div(
+        X87Chop53::load_i32(final_damage),
+        X87Chop53::load_i32(strength),
+    )
+    .expect("live Techno strength is nonzero");
+    X87Chop53::ftol_i64(X87Chop53::mul(ratio, X87Chop53::load_i32(cost)))
+        .expect("i32 damage/cost ratio fits native ftol i64") as i32
+}
+
+/// TechnoClass::ReceiveDamage PostMortem interpolation at 0x00701ED0.
+/// `CellSpread` and `DelayKillAtMax` are native binary32 inputs; every other
+/// operand is signed i32 and the two ftol results use their low dword.
+fn postmortem_delay_duration(warhead: &WarheadType, distance_leptons: i32) -> i32 {
+    let base = X87Chop53::load_i32(warhead.delay_kill_frames);
+    let at_max = X87Chop53::load_f32(NativeF32Bits::from_bits(
+        (warhead.delay_kill_at_max_f64 as f32).to_bits(),
+    ))
+    .expect("DelayKillAtMax parser retains a finite native f32");
+    let slope = X87Chop53::sub(X87Chop53::mul(at_max, base), base);
+    let spread = X87Chop53::load_f32(NativeF32Bits::from_bits(
+        (warhead.cell_spread_f64 as f32).to_bits(),
+    ))
+    .expect("CellSpread parser retains a finite native f32");
+    let spread_i32 =
+        X87Chop53::ftol_i64(spread).expect("finite CellSpread converts through native ftol") as i32;
+    let denominator = spread_i32.wrapping_shl(8);
+    let Ok(slope_per_lepton) = X87Chop53::div(slope, X87Chop53::load_i32(denominator)) else {
+        // Masked x87 divide-by-zero/non-finite conversion yields the integer
+        // indefinite qword; Math__ftol returns its low dword, which is zero.
+        return 0;
+    };
+    let delay = X87Chop53::add(
+        base,
+        X87Chop53::mul(X87Chop53::load_i32(distance_leptons), slope_per_lepton),
+    );
+    X87Chop53::ftol_i64(delay).unwrap_or(i64::MIN) as i32
+}
+
+fn postmortem_duration_for_event(
+    event: &EntityDamageEvent,
+    target: &GameEntity,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    outcome: damage::DamageOutcome,
+) -> Option<i32> {
+    if outcome.state != damage::DamageState::Dead || target.category != EntityCategory::Structure {
+        return None;
+    }
+    let warhead = rules.warhead(interner.resolve(event.warhead_ref))?;
+    let object = rules.object(interner.resolve(target.type_ref))?;
+    (warhead.causes_delay_kill && object.eligible_for_delay_kill)
+        .then(|| postmortem_delay_duration(warhead, event.distance_leptons.unwrap_or(0)))
+}
+
+/// Type vtable `+0xAC` value used by receiver anger feedback. Unit, Infantry,
+/// and Aircraft types return `Cost=` directly; BuildingType applies its active
+/// bundled-pad and `FreeUnit=` deductions.
+fn receiver_type_value(target: &GameEntity, object: &ObjectType, rules: &RuleSet) -> i32 {
+    if target.category != EntityCategory::Structure {
+        return object.cost;
+    }
+    rules.building_actual_cost(object)
+}
+
+/// Exact active subset of HouseClass::UpdateAngerNodes @ 0x00504790.
+///
+/// Native stores one node for every other HouseClass in global creation order.
+/// Rust keeps touched scores keyed by identity, but scans `house_order` for the
+/// strict-greater winner so equal scores preserve the same earlier house.
+fn update_receiver_anger_nodes(
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    interner: &StringInterner,
+    victim_owner: InternedId,
+    source_owner: InternedId,
+    delta: i32,
+) {
+    let source_is_registered = source_owner != victim_owner
+        && house_order.iter().any(|&owner| owner == source_owner)
+        && houses.contains_key(&source_owner);
+    if source_is_registered && let Some(victim) = houses.get_mut(&victim_owner) {
+        // Native pre-creates every other-house node. In the sparse Rust form,
+        // an absent key therefore already means native score zero: a zero
+        // update must not materialize new serialized/hashed state. Once a key
+        // exists it remains represented even when its score is zero.
+        if delta != 0 || victim.grudge_scores.contains_key(&source_owner) {
+            let score = victim.grudge_scores.entry(source_owner).or_insert(0);
+            *score = score.wrapping_add(delta);
         }
     }
+
+    let Some(victim) = houses.get(&victim_owner) else {
+        return;
+    };
+    let mut best_score = 0;
+    let mut best_house = None;
+    for &candidate_id in house_order {
+        if candidate_id == victim_owner {
+            continue;
+        }
+        let Some(candidate) = houses.get(&candidate_id) else {
+            continue;
+        };
+        let score = victim
+            .grudge_scores
+            .get(&candidate_id)
+            .copied()
+            .unwrap_or(0);
+        if score > best_score
+            && !candidate.is_defeated
+            && !crate::map::houses::is_allied_with(
+                alliances,
+                interner.resolve(victim_owner),
+                interner.resolve(candidate_id),
+            )
+        {
+            best_score = score;
+            best_house = Some(candidate_id);
+        }
+    }
+    if let Some(victim) = houses.get_mut(&victim_owner) {
+        victim.enemy_house = best_house;
+    }
+}
+
+fn has_active_area_invulnerability(entity: &GameEntity, current_tick: u64) -> bool {
+    // Every GameEntity is a TechnoClass-derived object, so the native
+    // AbstractFlags +0x14 bit-0 identity test is inherent in this store. The
+    // virtual +0x160 result is the existing passive IC/FS timer predicate.
+    crate::sim::superweapon::invulnerability::is_invulnerable(
+        entity.invulnerability.as_ref(),
+        current_tick as u32,
+    )
+}
+
+fn near_center_ic_isolation_armed(
+    damage_events: &[EntityDamageEvent],
+    entities: &EntityStore,
+    current_tick: u64,
+) -> bool {
+    damage_events.iter().any(|event| {
+        event.near_center_ic_isolation_eligible
+            && event.distance_leptons.is_some_and(|distance| distance < 85)
+            && entities.get(event.target_id).is_some_and(|target| {
+                has_active_area_invulnerability(target, current_tick)
+                    && target.invulnerability.as_ref().is_some_and(|state| {
+                        state.kind
+                            == crate::sim::superweapon::invulnerability::InvulnKind::IronCurtain
+                    })
+            })
+    })
+}
+
+fn area_near_center_ic_isolation_armed(
+    receivers: &[combat_aoe::AreaDamageReceiver],
+    entities: &EntityStore,
+    current_tick: u64,
+) -> bool {
+    receivers.iter().any(|receiver| {
+        let combat_aoe::AreaDamageReceiver::Entity(event) = receiver else {
+            return false;
+        };
+        event.near_center_ic_isolation_eligible
+            && event.distance_leptons.is_some_and(|distance| distance < 85)
+            && entities.get(event.target_id).is_some_and(|target| {
+                has_active_area_invulnerability(target, current_tick)
+                    && target.invulnerability.as_ref().is_some_and(|state| {
+                        state.kind
+                            == crate::sim::superweapon::invulnerability::InvulnKind::IronCurtain
+                    })
+            })
+    })
+}
+
+/// Commit one complete native Apply_area_damage receiver vector. Collection is
+/// finished before this function runs, so the Iron Curtain pre-scan can affect
+/// records that precede the arming Techno while dispatch itself remains in the
+/// captured CellClass/object-list order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_area_damage_receivers(
+    receivers: &[combat_aoe::AreaDamageReceiver],
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_area_state: Option<&mut TerrainAreaState>,
+    current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
+) -> (DeathEffects, Vec<UnderAttackEvent>) {
+    commit_area_damage_receivers_with_scenario(
+        receivers,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        houses,
+        house_order,
+        alliances,
+        main_rng,
+        scenario_rng,
+        handled_deaths,
+        resource_nodes,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        terrain_area_state,
+        false,
+        current_tick,
+        inline_hooks,
+        sound_sink,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_area_damage_receivers_with_scenario(
+    receivers: &[combat_aoe::AreaDamageReceiver],
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    mut terrain_area_state: Option<&mut TerrainAreaState>,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
+) -> (DeathEffects, Vec<UnderAttackEvent>) {
+    let isolation_armed = area_near_center_ic_isolation_armed(receivers, entities, current_tick);
+    let mut effects = DeathEffects::default();
+    let mut under_attack_events = Vec::new();
+
+    for receiver in receivers {
+        match *receiver {
+            combat_aoe::AreaDamageReceiver::Entity(event) => {
+                let (nested, mut pings) = commit_damage_events_with_isolation(
+                    std::slice::from_ref(&event),
+                    Some(isolation_armed),
+                    entities,
+                    occupancy,
+                    rules,
+                    interner,
+                    houses,
+                    house_order,
+                    alliances,
+                    main_rng,
+                    scenario_rng,
+                    handled_deaths,
+                    resource_nodes,
+                    overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    terrain.as_deref_mut(),
+                    terrain_area_state.as_deref_mut(),
+                    scenario_no_damage,
+                    current_tick,
+                    inline_hooks,
+                    sound_sink,
+                );
+                effects.append(nested);
+                under_attack_events.append(&mut pings);
+            }
+            combat_aoe::AreaDamageReceiver::Terrain(event) => {
+                if isolation_armed && event.near_center_ic_isolation_eligible {
+                    continue;
+                }
+                let Some(state) = terrain_area_state.as_deref_mut() else {
+                    continue;
+                };
+                let Some(warhead) = rules.warhead(interner.resolve(event.warhead_ref)).cloned()
+                else {
+                    continue;
+                };
+                let receive = state.receive_area_damage_with_scenario(
+                    event.stable_id,
+                    (event.rx, event.ry),
+                    event.damage,
+                    event.distance_leptons,
+                    &warhead,
+                    rules,
+                    interner,
+                    scenario_no_damage,
+                );
+                let TerrainAreaReceiveResult::Lethal(lethal) = receive else {
+                    continue;
+                };
+
+                if lethal.spawns_tiberium
+                    && let Some(c4_warhead) = rules.warhead(&rules.bridge_warheads.c4_name).cloned()
+                {
+                    let c4_id = interner.intern(&c4_warhead.id);
+                    let impact_z = terrain
+                        .as_deref()
+                        .and_then(|grid| grid.cell(lethal.cell.0, lethal.cell.1))
+                        .map_or(0, |cell| i32::from(cell.level));
+                    let ore_amount = if scenario_no_damage {
+                        None
+                    } else {
+                        tiberium_reduction_amount(100, true, &c4_warhead)
+                    };
+                    let terrain_collection = combat_aoe::TerrainCollectionView {
+                        objects: state.terrain_objects(),
+                        cells: state.terrain_object_cells(),
+                    };
+                    let aoe = {
+                        let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
+                            amount,
+                            deferred: &mut effects.tiberium_reduction_requests,
+                            inline_hooks,
+                            rules,
+                            resource_nodes,
+                            terrain_area_state: Some(&*state),
+                        });
+                        combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
+                            entities,
+                            lethal.cell.0,
+                            lethal.cell.1,
+                            100,
+                            &c4_warhead,
+                            rules,
+                            interner,
+                            (RAD_NO_ATTACKER, None, c4_id),
+                            combat_aoe::AoELayerContext {
+                                occupancy: Some(&*occupancy),
+                                terrain: terrain.as_deref_mut(),
+                                overlay_grid: overlay_grid.as_deref_mut(),
+                                overlay_registry,
+                                scenario_rng: Some(&mut *scenario_rng),
+                                air_impact: None,
+                                impact_z,
+                            },
+                            Some(terrain_collection),
+                            scenario_no_damage,
+                            ore_prelude
+                                .as_mut()
+                                .map(|prelude| prelude as &mut dyn combat_aoe::AoECellPrelude),
+                        )
+                    };
+                    effects.wall_mutations.extend(aoe.wall_mutations);
+                    effects
+                        .cell_target_detaches
+                        .extend(aoe.cell_target_detaches);
+                    let (nested, mut pings) = commit_area_damage_receivers_with_scenario(
+                        &aoe.receivers,
+                        entities,
+                        occupancy,
+                        rules,
+                        interner,
+                        houses,
+                        house_order,
+                        alliances,
+                        main_rng,
+                        scenario_rng,
+                        handled_deaths,
+                        resource_nodes,
+                        overlay_grid.as_deref_mut(),
+                        overlay_registry,
+                        terrain.as_deref_mut(),
+                        Some(&mut *state),
+                        scenario_no_damage,
+                        current_tick,
+                        inline_hooks,
+                        sound_sink,
+                    );
+                    effects.append(nested);
+                    under_attack_events.append(&mut pings);
+                }
+
+                let _ = state.finalize_lethal(lethal, terrain.as_deref_mut());
+            }
+        }
+    }
+
+    (effects, under_attack_events)
+}
+
+/// Commit one native-order damage slice and synchronously enter the death
+/// helper at each live-to-dead transition. Object storage/removal remains the
+/// world-owned deferred lifecycle handoff; only ReceiveDamage consequences are
+/// recursive here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_damage_events(
+    damage_events: &[EntityDamageEvent],
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
+) -> (DeathEffects, Vec<UnderAttackEvent>) {
+    commit_damage_events_with_isolation(
+        damage_events,
+        None,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        houses,
+        house_order,
+        alliances,
+        main_rng,
+        scenario_rng,
+        handled_deaths,
+        resource_nodes,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        None,
+        false,
+        current_tick,
+        inline_hooks,
+        sound_sink,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_damage_events_with_isolation(
+    damage_events: &[EntityDamageEvent],
+    near_center_ic_isolation_override: Option<bool>,
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    mut terrain_area_state: Option<&mut TerrainAreaState>,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
+) -> (DeathEffects, Vec<UnderAttackEvent>) {
+    let mut death = DeathEffects::default();
+    let mut under_attack_events = Vec::new();
+    // Apply_area_damage finishes collecting its fixed target/distance records
+    // before dispatch. A qualifying near-center Iron Curtain therefore
+    // isolates the entire eligible transaction, including records collected
+    // before the arming record. The per-record check below remains live so an
+    // earlier receiver or nested death effect can change later protection.
+    let near_center_ic_isolation = near_center_ic_isolation_override
+        .unwrap_or_else(|| near_center_ic_isolation_armed(damage_events, entities, current_tick));
+
+    for event in damage_events {
+        if near_center_ic_isolation
+            && event.near_center_ic_isolation_eligible
+            && !entities
+                .get(event.target_id)
+                .is_some_and(|target| has_active_area_invulnerability(target, current_tick))
+        {
+            continue;
+        }
+        let target_id = event.target_id;
+        let attacker_id = event.attacker_id;
+        // ReceiveDamage carries sourceHouse separately from the source object.
+        // Area records snapshot it at detonation; legacy precomputed records
+        // retain the former live-source lookup. Periodic radiation supplies
+        // both null source object and null source house explicitly.
+        let attacker_owner: Option<InternedId> = event.source_house.or_else(|| {
+            (attacker_id != RAD_NO_ATTACKER)
+                .then(|| entities.get(attacker_id).map(|attacker| attacker.owner))
+                .flatten()
+        });
+        // UpdateAngerNodes reads source->Owner directly; the separately
+        // captured source-house ABI argument is not used by this callback.
+        let live_source_owner = (attacker_id != RAD_NO_ATTACKER)
+            .then(|| entities.get(attacker_id).map(|source| source.owner))
+            .flatten();
+        let receiver_outcome = event.distance_leptons.map(|_| {
+            resolve_receive_damage(
+                event,
+                entities,
+                rules,
+                interner,
+                houses,
+                alliances,
+                scenario_no_damage,
+                current_tick,
+                terrain.as_deref(),
+            )
+        });
+        if let Some(effect) = receiver_outcome
+            .flatten()
+            .and_then(|resolved| resolved.invulnerability_impact)
+        {
+            death.invulnerability_impact_effects.push(effect);
+        }
+        let postmortem_duration = receiver_outcome.flatten().and_then(|resolved| {
+            let target = entities.get(target_id)?;
+            postmortem_duration_for_event(event, target, rules, interner, resolved.outcome)
+        });
+        let mut became_fatal = false;
+        let mut reached_exact_zero = false;
+        let mut postmortem_candidate = None;
+        let mut fatal_category = EntityCategory::Unit;
+        let mut positive_postlude: Option<(u16, bool, bool)> = None;
+        let mut synchronous_retaliation = false;
+        let mut smoke_maintenance: Option<(EntityCategory, damage::DamageState)> = None;
+        let mut healing_only = false;
+        let mut latch_hostile_hit = false;
+        let mut threat_feedback: Option<(InternedId, InternedId, i32, i32, i32)> = None;
+        if let Some(target) = entities.get_mut(target_id) {
+            if event.distance_leptons.is_none()
+                && crate::sim::superweapon::invulnerability::is_invulnerable(
+                    target.invulnerability.as_ref(),
+                    current_tick as u32,
+                )
+            {
+                // Damage fully nullified by IronCurtain/ForceShield.
+                // Flash-effect spawn deferred (see design doc Open Questions).
+                if attacker_id != RAD_NO_ATTACKER {
+                    target.last_attacker_id = Some(attacker_id);
+                }
+                continue;
+            }
+
+            let receive_outcome = match receiver_outcome {
+                Some(Some(resolved)) => Some(resolved.outcome),
+                Some(None) => continue,
+                None => None,
+            };
+            if let Some(value) = receive_outcome.and_then(|outcome| outcome.psychedelic_value) {
+                // TechnoClass writes the signed kernel result first. The
+                // first inactive->active transition then runs its callbacks
+                // in order: optional team-member detach (not represented on
+                // GameEntity), archived target clear, deferred Hunt queue.
+                // Passenger cargo is unrelated and remains intact.
+                target.berserk.timer = value;
+                if !target.berserk.active {
+                    target.berserk.active = true;
+                    represented_assign_target(target, None);
+                    queue_entity_mission_deferred(target, MissionId::from_known(MissionType::Hunt));
+                }
+                continue;
+            }
+            let reached_survivor_postlude =
+                receive_outcome.is_some_and(|outcome| outcome.reached_survivor_postlude);
+            let receive_state = receive_outcome.map(|outcome| outcome.state);
+            // TechnoClass's persistent hostile-hit byte is written in the
+            // shared surviving post-Object tail. The source object must be
+            // non-null, and alliance direction is target owner -> captured
+            // source house. This is deliberately separate from retaliation's
+            // transient `last_attacker_id`.
+            let hostile_source = attacker_id != RAD_NO_ATTACKER
+                && attacker_owner.is_some_and(|source_owner| {
+                    !crate::map::houses::is_allied_with(
+                        alliances,
+                        interner.resolve(target.owner),
+                        interner.resolve(source_owner),
+                    )
+                });
+            let resolved_damage = receive_outcome.map_or(event.damage, |outcome| outcome.hp_delta);
+            if reached_survivor_postlude
+                && let Some(source_owner) = live_source_owner
+                && let Some(final_damage) =
+                    receive_outcome.and_then(|outcome| outcome.post_object_damage)
+                && let Some(target_type) = rules.object(interner.resolve(target.type_ref))
+            {
+                threat_feedback = Some((
+                    target.owner,
+                    source_owner,
+                    final_damage,
+                    target_type.strength,
+                    receiver_type_value(target, target_type, rules),
+                ));
+            }
+            if resolved_damage == 0 {
+                if reached_survivor_postlude && target.health.current > 0 && hostile_source {
+                    latch_hostile_hit = true;
+                }
+                if reached_survivor_postlude && target.health.current > 0 {
+                    smoke_maintenance = receive_state.map(|state| (target.category, state));
+                }
+                synchronous_retaliation = event.distance_leptons.is_some()
+                    && event.damage >= 0
+                    && reached_survivor_postlude
+                    && target.health.current > 0;
+            } else if resolved_damage < 0 {
+                let healing = resolved_damage.unsigned_abs().min(u32::from(u16::MAX)) as u16;
+                target.health.current = target
+                    .health
+                    .current
+                    .saturating_add(healing)
+                    .min(target.health.max);
+                if reached_survivor_postlude && target.health.current > 0 && hostile_source {
+                    latch_hostile_hit = true;
+                }
+                target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+                if reached_survivor_postlude && target.health.current > 0 {
+                    smoke_maintenance = receive_state.map(|state| (target.category, state));
+                }
+                healing_only = true;
+            } else {
+                let damage = resolved_damage.min(i32::from(u16::MAX)) as u16;
+                let was_alive = target.health.current > 0;
+                target.health.current = target.health.current.saturating_sub(damage);
+                target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+                became_fatal = was_alive && target.health.current == 0;
+                reached_exact_zero = became_fatal;
+                if became_fatal {
+                    fatal_category = target.category;
+                }
+                synchronous_retaliation = event.distance_leptons.is_some()
+                    && event.damage >= 0
+                    && reached_survivor_postlude
+                    && target.health.current > 0;
+                if reached_survivor_postlude && target.health.current > 0 {
+                    if hostile_source {
+                        latch_hostile_hit = true;
+                    }
+                    smoke_maintenance = receive_state.map(|state| (target.category, state));
+                }
+                positive_postlude = Some((damage, reached_survivor_postlude, hostile_source));
+                if became_fatal && let Some(duration_frames) = postmortem_duration {
+                    // Do not restore here. Native first executes ObjectClass's
+                    // exact-zero kill/Destroy callbacks, then victim-house anger,
+                    // and only afterward arms the timer and writes Alive/HP=1.
+                    postmortem_candidate = Some(duration_frames);
+                    positive_postlude = None;
+                    synchronous_retaliation = false;
+                    smoke_maintenance = None;
+                    latch_hostile_hit = false;
+                }
+            }
+        }
+
+        if reached_exact_zero && let Some(target) = entities.get_mut(target_id) {
+            // ObjectClass routes its kill callback while Health is exactly zero,
+            // before Destroy's reference notification and before TechnoClass's
+            // victim-house anger callback.
+            capture_kill_credit(target, attacker_owner, rules, interner);
+        }
+        if postmortem_candidate.is_some()
+            && let Some(hook) = inline_hooks.as_deref_mut()
+        {
+            hook.fatal_lifecycle(
+                rules,
+                FatalLifecycleStage::PostMortemExactZero {
+                    killer_owner: attacker_owner,
+                },
+                target_id,
+                fatal_category,
+                entities,
+                occupancy,
+                interner,
+                scenario_rng,
+                terrain_area_state.as_deref_mut(),
+                sound_sink.as_deref_mut(),
+            );
+        }
+        if let Some((victim_owner, source_owner, final_damage, strength, cost)) = threat_feedback {
+            let delta = receiver_anger_delta(final_damage, strength, cost);
+            update_receiver_anger_nodes(
+                houses,
+                house_order,
+                alliances,
+                interner,
+                victim_owner,
+                source_owner,
+                delta,
+            );
+            #[cfg(test)]
+            death
+                .receiver_stage_trace
+                .push(ReceiverStageTrace::HouseThreat { target_id, delta });
+        }
+        if let Some(duration_frames) = postmortem_candidate {
+            let current_frame = current_tick as u32 as i32;
+            let target = entities
+                .get_mut(target_id)
+                .expect("PostMortem exact-zero callbacks retain the represented target");
+            // RecordKill already consumed this exact-zero attribution in the
+            // synchronous PostMortem hook. Native retains no killer on the
+            // restored object: a fresh null-source timer expiry must stay
+            // uncredited, while a later sourced lethal hit captures anew.
+            target.killed_by = None;
+            target.kill_award_points = 0;
+            let replace = target
+                .pending_c4_detonation
+                .is_none_or(|pending| duration_frames < pending.remaining_at(current_frame));
+            if replace {
+                let retained_source = target
+                    .pending_c4_detonation
+                    .and_then(|pending| pending.source_entity_id);
+                target.pending_c4_detonation = Some(crate::sim::components::PendingC4Detonation {
+                    start_frame: current_frame,
+                    duration_frames,
+                    source_entity_id: retained_source,
+                });
+            }
+            target.lifecycle.object_alive = true;
+            target.health.current = 1;
+            target.dying = false;
+            target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
+            #[cfg(test)]
+            death
+                .receiver_stage_trace
+                .push(ReceiverStageTrace::PostMortem { target_id });
+            continue;
+        }
+        if latch_hostile_hit && let Some(target) = entities.get_mut(target_id) {
+            target.was_attacked_by_enemy = true;
+        }
+
+        if let Some((category, state)) = smoke_maintenance
+            && let Some(hook) = inline_hooks.as_deref_mut()
+        {
+            hook.fatal_lifecycle(
+                rules,
+                FatalLifecycleStage::MaintainDamageSmoke { state },
+                target_id,
+                category,
+                entities,
+                occupancy,
+                interner,
+                scenario_rng,
+                terrain_area_state.as_deref_mut(),
+                sound_sink.as_deref_mut(),
+            );
+        }
+        if healing_only {
+            continue;
+        }
+
+        if let Some((damage, reached_survivor_postlude, hostile_source)) = positive_postlude {
+            // InfantryClass's concrete receiver dispatches Scatter only for a
+            // surviving result state (1..=3), after HP has changed and before
+            // fear or the shared Techno postlude. The attacker coordinate is
+            // read while the source is still represented, including nested
+            // DeathWeapon receiver recursion.
+            let surviving_infantry_result = receiver_outcome.flatten().is_some_and(|resolved| {
+                matches!(
+                    resolved.outcome.state,
+                    damage::DamageState::Damaged
+                        | damage::DamageState::Yellow
+                        | damage::DamageState::Red
+                )
+            });
+            let attacker_coord = (attacker_id != RAD_NO_ATTACKER)
+                .then(|| entities.get(attacker_id))
+                .flatten()
+                .map(|attacker| {
+                    (
+                        i32::from(attacker.position.rx)
+                            .wrapping_mul(256)
+                            .wrapping_add(attacker.position.sub_x.to_num::<i32>()),
+                        i32::from(attacker.position.ry)
+                            .wrapping_mul(256)
+                            .wrapping_add(attacker.position.sub_y.to_num::<i32>()),
+                    )
+                });
+            let scatter = if surviving_infantry_result {
+                attacker_coord.and_then(|attacker_coord| {
+                    let target = entities.get(target_id)?;
+                    let target_type = rules.object(interner.resolve(target.type_ref));
+                    let infantry_is_fraidycat = target_type.is_some_and(|object| object.fraidycat);
+                    let has_scatter_ability = target_type.is_some_and(|object| {
+                        (target.veterancy >= VETERAN_VETERANCY && object.veteran_scatter)
+                            || (target.veterancy >= ELITE_VETERANCY && object.elite_scatter)
+                    });
+                    crate::sim::movement::bump_crush::select_infantry_damage_scatter(
+                        target,
+                        attacker_coord,
+                        terrain.as_deref(),
+                        occupancy,
+                        rules,
+                        houses
+                            .get(&target.owner)
+                            .is_some_and(|house| house.is_human),
+                        infantry_is_fraidycat,
+                        has_scatter_ability,
+                        scenario_rng,
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(scatter) = scatter {
+                if let Some(target) = entities.get_mut(target_id) {
+                    queue_entity_mission_deferred(target, MissionId::from_known(MissionType::Move));
+                    crate::sim::mission::concrete_effects::represented_assign_destination_mode_one(
+                        target,
+                        Some(crate::sim::components::NavTargetRef::cell(
+                            scatter.destination.0,
+                            scatter.destination.1,
+                        )),
+                    );
+                }
+                let _ = crate::sim::movement::issue_direct_move(
+                    entities,
+                    target_id,
+                    scatter.destination,
+                    scatter.speed,
+                );
+            }
+
+            let Some(target) = entities.get_mut(target_id) else {
+                continue;
+            };
+            if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
+                infantry::apply_fear_from_damage(
+                    obj,
+                    target,
+                    damage,
+                    true,
+                    rules.general.condition_red_x1000,
+                    rules.general.condition_yellow_x1000,
+                );
+            }
+            if damage > 0 && attacker_owner.is_some_and(|ao| ao != target.owner) {
+                let miner = target.miner.is_some();
+                if miner || target.category == EntityCategory::Structure {
+                    under_attack_events.push(UnderAttackEvent {
+                        rx: target.position.rx,
+                        ry: target.position.ry,
+                        owner: target.owner,
+                        miner,
+                    });
+                }
+            }
+            // Legacy precomputed callers have not yet entered the authoritative
+            // receiver ABI, so retain their Phase-6 handoff. Ordered area/direct
+            // receiver hits make their retaliation decision synchronously below.
+            if attacker_id != RAD_NO_ATTACKER && event.distance_leptons.is_none() {
+                target.last_attacker_id = Some(attacker_id);
+            }
+        }
+
+        if synchronous_retaliation && attacker_id != RAD_NO_ATTACKER {
+            #[cfg(test)]
+            death
+                .receiver_stage_trace
+                .push(ReceiverStageTrace::ShouldRetaliate { target_id });
+            if combat_targeting::should_retaliate_from_damage(
+                entities,
+                target_id,
+                attacker_id,
+                rules,
+                interner,
+                houses,
+                alliances,
+                terrain.as_deref(),
+            ) {
+                override_mission_on_damage_response(entities, target_id, attacker_id);
+            }
+        }
+
+        if became_fatal {
+            if let Some(hook) = inline_hooks.as_deref_mut() {
+                hook.fatal_lifecycle(
+                    rules,
+                    FatalLifecycleStage::BeforeDeathEffects,
+                    target_id,
+                    fatal_category,
+                    entities,
+                    occupancy,
+                    interner,
+                    scenario_rng,
+                    terrain_area_state.as_deref_mut(),
+                    sound_sink.as_deref_mut(),
+                );
+            }
+            let mut nested = handle_entity_deaths(
+                entities,
+                occupancy,
+                rules,
+                interner,
+                houses,
+                house_order,
+                alliances,
+                main_rng,
+                scenario_rng,
+                handled_deaths,
+                &[target_id],
+                std::slice::from_ref(event),
+                resource_nodes,
+                overlay_grid.as_deref_mut(),
+                overlay_registry,
+                terrain.as_deref_mut(),
+                &mut terrain_area_state,
+                scenario_no_damage,
+                current_tick,
+                inline_hooks,
+                sound_sink,
+            );
+            under_attack_events.append(&mut nested.under_attack_events);
+            if matches!(
+                fatal_category,
+                EntityCategory::Unit | EntityCategory::Structure
+            ) {
+                let mut lifecycle_handled = false;
+                if let Some(hook) = inline_hooks.as_deref_mut() {
+                    hook.fatal_lifecycle(
+                        rules,
+                        FatalLifecycleStage::AfterDeathEffects,
+                        target_id,
+                        fatal_category,
+                        entities,
+                        occupancy,
+                        interner,
+                        scenario_rng,
+                        terrain_area_state.as_deref_mut(),
+                        sound_sink.as_deref_mut(),
+                    );
+                    lifecycle_handled = true;
+                }
+                if lifecycle_handled {
+                    nested
+                        .immediate_uninit_ids
+                        .retain(|&dead_id| dead_id != target_id);
+                }
+            }
+            death.append(nested);
+        }
+    }
+
+    (death, under_attack_events)
+}
+
+/// Keep physical death consequences in the emission trace at the exact source
+/// boundary while retaining lifecycle requests for the tick's deferred handoff.
+fn absorb_inline_death_effects(
+    out: &mut CombatEmit,
+    lifecycle: &mut DeathEffects,
+    mut death: DeathEffects,
+) {
+    out.bridge_damage_events
+        .append(&mut death.bridge_damage_events);
+    out.wall_mutations.append(&mut death.wall_mutations);
+    out.cell_target_detaches
+        .append(&mut death.cell_target_detaches);
+    out.tiberium_reduction_requests
+        .append(&mut death.tiberium_reduction_requests);
+    out.explosion_effects.append(&mut death.explosion_effects);
+    out.smudge_spawn_requests
+        .append(&mut death.smudge_spawn_requests);
+    out.rad_detonations.append(&mut death.rad_detonations);
+    lifecycle.append(death);
 }
 
 /// Transient per-tick bag of the Phase-2 fire-emission outputs. Bundles the
@@ -1393,8 +3467,8 @@ pub(crate) struct CombatEmit {
     /// Persistent ordinary bullets admitted by accepted weapon fire. The world
     /// inserts them only after this frame's BulletClass pass has completed.
     pub(crate) projectile_spawns: Vec<ProjectileSpawn>,
-    /// (target_id, damage, attacker_id, warhead_id)
-    pub(crate) damage_events: Vec<(u64, u16, u64, InternedId)>,
+    /// Native-order ReceiveDamage calls, including raw area records.
+    pub(crate) damage_events: Vec<combat_aoe::AreaDamageReceiver>,
     /// Radiation-emitting detonations (weapon RadLevel > 0), folded into
     /// `RadiationState` before the damage-application phase.
     pub(crate) rad_detonations: Vec<crate::sim::radiation::RadDetonation>,
@@ -1404,8 +3478,8 @@ pub(crate) struct CombatEmit {
     pub(crate) fire_events: Vec<SimFireEvent>,
     pub(crate) reveal_events: Vec<RevealEvent>,
     pub(crate) bridge_damage_events: Vec<BridgeDamageEvent>,
-    pub(crate) wall_damage_events: Vec<WallDamageEvent>,
-    pub(crate) terrain_damage_events: Vec<TerrainDamageEvent>,
+    pub(crate) wall_mutations: Vec<WallMutation>,
+    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     pub(crate) tiberium_reduction_requests: Vec<TiberiumReductionRequest>,
     pub(crate) explosion_effects: Vec<ExplosionEffect>,
     pub(crate) smudge_spawn_requests: Vec<SmudgeSpawnRequest>,
@@ -1417,9 +3491,13 @@ pub(crate) struct CombatEmit {
     pub(crate) garrison_advance: Vec<u64>,
     pub(crate) pending_infantry_updates: Vec<(u64, Option<PendingInfantryFire>)>,
     pub(crate) animation_switches: Vec<(u64, SequenceKind)>,
-    /// (unit_id, desired 16-bit barrel destination) — computed in the Phase-2
-    /// per-object window (pre-death state; own-retarget visible), applied
-    /// post-batch by `unit_post::apply_unit_facing`.
+    /// Native `CurrentWeaponNumber` writes emitted by live weapon selection.
+    /// The per-attacker host commits these before that attack's receivers run.
+    pub(crate) current_weapon_updates: Vec<(u64, u8, InternedId)>,
+    /// (unit_id, desired 16-bit barrel destination) — captured at Phase-2
+    /// entry before current-frame attacker damage; that Unit's own explicit
+    /// retarget/remove may replace it. Applied post-batch by
+    /// `unit_post::apply_unit_facing`.
     pub(crate) unit_facing: Vec<(u64, u16)>,
     /// (parent_id, target) — a `Spawner=yes` weapon reached its fire point.
     /// gamemd's `Fire_At` hands the target to the parent's `SpawnManager` and
@@ -1447,9 +3525,15 @@ fn emit_projectile_detonations(
     occupancy: &OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    overlay_grid: Option<&OverlayGrid>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
+    terrain_area_state: Option<&TerrainAreaState>,
+    scenario_no_damage: bool,
+    scenario_rng: &mut SimRng,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
 ) {
     for detonation in detonations {
@@ -1461,17 +3545,36 @@ fn emit_projectile_detonations(
             );
             continue;
         };
-        let (impact_rx, impact_ry, impact_sub_x, impact_sub_y, impact_z) =
+        let (impact_rx, impact_ry, impact_sub_x, impact_sub_y, world_z_leptons) =
             projectile_impact_cell(detonation.impact);
-        let direct_target = match detonation.target {
-            ProjectileTarget::Entity(id) => entities
-                .get(id)
-                .filter(|entity| entity.is_alive() && !entity.dying),
-            ProjectileTarget::Cell(_) => None,
+        let impact_z = world_z_leptons.div_euclid(LEPTONS_PER_LEVEL as i32);
+        let air_impact = Some(combat_aoe::AoEAirImpact {
+            sub_x: impact_sub_x,
+            sub_y: impact_sub_y,
+            z_leptons: world_z_leptons,
+        });
+        let routed_wall = wall_overlay_flags_at(
+            overlay_grid.as_deref(),
+            overlay_registry,
+            impact_rx,
+            impact_ry,
+        )
+        .is_some_and(|flags| warhead_damages_wall(warhead, flags));
+        let ore_amount = if scenario_no_damage {
+            None
+        } else {
+            tiberium_reduction_amount(detonation.payload.base_damage, true, warhead)
         };
-
-        if warhead.cell_spread > SIM_ZERO {
-            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+        let aoe = {
+            let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
+                amount,
+                deferred: &mut out.tiberium_reduction_requests,
+                inline_hooks,
+                rules,
+                resource_nodes,
+                terrain_area_state,
+            });
+            self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                 entities,
                 impact_rx,
                 impact_ry,
@@ -1479,52 +3582,35 @@ fn emit_projectile_detonations(
                 warhead,
                 rules,
                 interner,
-                interner.resolve(detonation.payload.owner),
+                (
+                    detonation.source_id,
+                    Some(detonation.payload.owner),
+                    detonation.payload.warhead,
+                ),
                 self::combat_aoe::AoELayerContext {
                     occupancy: Some(occupancy),
-                    terrain,
+                    terrain: terrain.as_deref_mut(),
+                    overlay_grid: overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    scenario_rng: Some(&mut *scenario_rng),
+                    air_impact,
                     impact_z,
                 },
-            );
-            for (target_id, damage) in aoe_hits {
-                out.damage_events.push((
-                    target_id,
-                    damage,
-                    detonation.source_id,
-                    detonation.payload.warhead,
-                ));
-            }
-        } else if let Some(target) = direct_target {
-            let armor = rules
-                .object(interner.resolve(target.type_ref))
-                .map(|object| object.armor.as_str())
-                .unwrap_or("none");
-            let raw_damage =
-                detonation.payload.base_damage * warhead.verses[armor_index(armor)] as i32 / 100;
-            let prone = target.category == EntityCategory::Infantry
-                && infantry::is_prone_for_damage(target);
-            let actual_damage = apply_prone_damage_modifier(prone, warhead, raw_damage);
-            if actual_damage > 0 {
-                out.damage_events.push((
-                    target.stable_id,
-                    actual_damage,
-                    detonation.source_id,
-                    detonation.payload.warhead,
-                ));
-            }
-        }
+                terrain_objects,
+                scenario_no_damage,
+                ore_prelude
+                    .as_mut()
+                    .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+            )
+        };
+        out.wall_mutations.extend(aoe.wall_mutations);
+        out.cell_target_detaches.extend(aoe.cell_target_detaches);
 
-        if detonation.payload.base_damage > 0 {
+        out.damage_events.extend(aoe.receivers);
+
+        if !scenario_no_damage && detonation.payload.base_damage > 0 {
             let damage = detonation.payload.base_damage.min(i32::from(u16::MAX)) as u16;
-            let wall_flags =
-                wall_overlay_flags_at(overlay_grid, overlay_registry, impact_rx, impact_ry);
-            if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                out.wall_damage_events.push(WallDamageEvent {
-                    rx: impact_rx,
-                    ry: impact_ry,
-                    damage,
-                });
-            } else if wall_flags.is_none() && warhead.wall {
+            if !routed_wall && warhead.wall {
                 out.bridge_damage_events.push(BridgeDamageEvent {
                     rx: impact_rx,
                     ry: impact_ry,
@@ -1535,21 +3621,6 @@ fn emit_projectile_detonations(
                 });
             }
         }
-        if warhead.wood && detonation.payload.base_damage > 0 {
-            out.terrain_damage_events.push(TerrainDamageEvent {
-                rx: impact_rx,
-                ry: impact_ry,
-                damage: detonation.payload.base_damage,
-                warhead_ref: detonation.payload.warhead,
-            });
-        }
-        destroy_ore_at_impact(
-            &mut out.tiberium_reduction_requests,
-            impact_rx,
-            impact_ry,
-            detonation.payload.base_damage,
-            warhead.cell_spread,
-        );
         if let Some(weapon) = rules.weapon(interner.resolve(detonation.payload.weapon))
             && weapon.rad_level > 0
         {
@@ -1568,11 +3639,126 @@ fn emit_projectile_detonations(
             impact_ry,
             impact_sub_x,
             impact_sub_y,
-            impact_z.clamp(0, i32::from(u8::MAX)) as u8,
+            impact_z_byte(impact_z),
+            world_z_leptons,
             interner,
             &mut out.explosion_effects,
             &mut out.smudge_spawn_requests,
         );
+    }
+}
+
+/// Spawn-manager rockets move before the ordinary per-object fire walk too.
+/// Their completed impacts therefore commit shared area-damage wall state at
+/// the same pre-attacker boundary as ordinary persistent bullets.
+#[allow(clippy::too_many_arguments)]
+fn emit_missile_detonations(
+    detonations: &[crate::sim::spawn_manager::MissileDetonation],
+    entities: &mut EntityStore,
+    occupancy: &OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
+    terrain_area_state: Option<&TerrainAreaState>,
+    scenario_no_damage: bool,
+    scenario_rng: &mut SimRng,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    out: &mut CombatEmit,
+) {
+    for det in detonations {
+        let warhead_name = interner.resolve(det.warhead).to_string();
+        let Some(warhead) = rules.warhead(&warhead_name) else {
+            continue;
+        };
+        let wh_iid = interner.intern(&warhead.id);
+        let impact_z = combat_aoe::bridge_adjusted_impact_z(terrain.as_deref(), det.rx, det.ry);
+        let air_impact = combat_aoe::air_impact_from_layer_z(
+            terrain.as_deref(),
+            det.rx,
+            det.ry,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            impact_z,
+        );
+        let world_z_leptons = air_impact
+            .map(|impact| impact.z_leptons)
+            .unwrap_or_else(|| impact_z.wrapping_mul(LEPTONS_PER_LEVEL as i32));
+        let mut outer_explosions = Vec::new();
+        let mut outer_smudges = Vec::new();
+        emit_warhead_detonation_effects(
+            warhead,
+            det.damage,
+            det.rx,
+            det.ry,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            crate::util::lepton::CELL_CENTER_LEPTON,
+            impact_z_byte(impact_z),
+            world_z_leptons,
+            interner,
+            &mut outer_explosions,
+            &mut outer_smudges,
+        );
+        out.explosion_effects.extend(outer_explosions);
+        commit_smudge_batch_or_defer(
+            outer_smudges,
+            &mut out.smudge_spawn_requests,
+            inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state,
+        );
+        let ore_amount = if scenario_no_damage {
+            None
+        } else {
+            tiberium_reduction_amount(det.damage, true, warhead)
+        };
+        let aoe = {
+            let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
+                amount,
+                deferred: &mut out.tiberium_reduction_requests,
+                inline_hooks,
+                rules,
+                resource_nodes,
+                terrain_area_state,
+            });
+            combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
+                entities,
+                det.rx,
+                det.ry,
+                det.damage,
+                warhead,
+                rules,
+                interner,
+                (det.firer_id, Some(det.owner), wh_iid),
+                combat_aoe::AoELayerContext {
+                    occupancy: Some(occupancy),
+                    terrain: terrain.as_deref_mut(),
+                    overlay_grid: overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    scenario_rng: Some(&mut *scenario_rng),
+                    air_impact,
+                    impact_z,
+                },
+                terrain_objects,
+                scenario_no_damage,
+                ore_prelude
+                    .as_mut()
+                    .map(|prelude| prelude as &mut dyn combat_aoe::AoECellPrelude),
+            )
+        };
+        out.wall_mutations.extend(aoe.wall_mutations);
+        out.cell_target_detaches.extend(aoe.cell_target_detaches);
+        out.damage_events.extend(aoe.receivers);
     }
 }
 
@@ -1581,7 +3767,7 @@ fn emit_projectile_detonations(
 ///
 /// `overlay_grid` and `overlay_registry` are used to discriminate wall-overlay
 /// cells from bridge cells when a wall-warhead detonates (so the right event
-/// stream — WallDamageEvent vs BridgeDamageEvent — gets populated). Pass
+/// path — immediate wall mutation vs BridgeDamageEvent — is selected). Pass
 /// `None` to skip wall-cell discrimination (legacy bridge-only routing).
 ///
 /// `scenario_rng` is the persistent `ScenarioClass::Random` authority used
@@ -1596,9 +3782,9 @@ pub fn tick_combat_with_fog(
     power_states: &BTreeMap<InternedId, PowerState>,
     sound_sink: Option<&mut Vec<SimSoundEvent>>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-    overlay_grid: Option<&OverlayGrid>,
+    overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
@@ -1607,6 +3793,7 @@ pub fn tick_combat_with_fog(
     scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     let mut unused_main_rng = SimRng::new(0);
+    let mut empty_houses = BTreeMap::new();
     tick_combat_with_fog_and_main_rng(
         entities,
         occupancy,
@@ -1614,7 +3801,9 @@ pub fn tick_combat_with_fog(
         interner,
         fog,
         power_states,
-        &BTreeMap::new(),
+        &mut empty_houses,
+        &[],
+        &HouseAllianceMap::new(),
         sound_sink,
         resource_nodes,
         overlay_grid,
@@ -1629,6 +3818,7 @@ pub fn tick_combat_with_fog(
         &[],
         scenario_rng,
         &mut unused_main_rng,
+        None,
     )
 }
 
@@ -1636,19 +3826,21 @@ pub fn tick_combat_with_fog(
 ///
 /// Main-RNG death-sound selection is independent from Scenario-RNG projectile
 /// and impact effects, so both streams are explicit at the production seam.
-pub fn tick_combat_with_fog_and_main_rng(
+pub(crate) fn tick_combat_with_fog_and_main_rng(
     entities: &mut EntityStore,
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
     fog: Option<&FogState>,
     power_states: &BTreeMap<InternedId, PowerState>,
-    houses: &BTreeMap<InternedId, HouseState>,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
     sound_sink: Option<&mut Vec<SimSoundEvent>>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
-    overlay_grid: Option<&OverlayGrid>,
+    overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
@@ -1658,6 +3850,70 @@ pub fn tick_combat_with_fog_and_main_rng(
     missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
     scenario_rng: &mut SimRng,
     main_rng: &mut SimRng,
+    inline_hooks: Option<&mut dyn CombatInlineHooks>,
+) -> CombatTickResult {
+    tick_combat_with_fog_and_main_rng_with_terrain_area(
+        entities,
+        occupancy,
+        rules,
+        interner,
+        fog,
+        power_states,
+        houses,
+        house_order,
+        alliances,
+        sound_sink,
+        resource_nodes,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        false,
+        current_tick,
+        tick_ms,
+        binary_frame,
+        live_order,
+        &BTreeSet::new(),
+        projectile_detonations,
+        radiation,
+        missile_detonations,
+        scenario_rng,
+        main_rng,
+        inline_hooks,
+        None,
+    )
+}
+
+/// World-owned combat entry that also lends the transient Terrain authority
+/// required by ordered Apply_area_damage receivers and fatal callbacks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    fog: Option<&FogState>,
+    power_states: &BTreeMap<InternedId, PowerState>,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    mut sound_sink: Option<&mut Vec<SimSoundEvent>>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    tick_ms: u32,
+    binary_frame: u32,
+    live_order: &[u64],
+    fire_suppressed: &BTreeSet<u64>,
+    projectile_detonations: &[ProjectileDetonation],
+    mut radiation: Option<&mut crate::sim::radiation::RadiationState>,
+    missile_detonations: &[crate::sim::spawn_manager::MissileDetonation],
+    scenario_rng: &mut SimRng,
+    main_rng: &mut SimRng,
+    mut inline_hooks: Option<&mut dyn CombatInlineHooks>,
+    mut terrain_area_state: Option<&mut TerrainAreaState>,
 ) -> CombatTickResult {
     if tick_ms == 0 {
         return CombatTickResult {
@@ -1666,20 +3922,152 @@ pub fn tick_combat_with_fog_and_main_rng(
             despawned_ids: Vec::new(),
             immediate_uninit_ids: Vec::new(),
             structure_destroyed: false,
-            spy_sat_reshroud_owners: Vec::new(),
             bridge_damage_events: Vec::new(),
-            wall_damage_events: Vec::new(),
-            terrain_damage_events: Vec::new(),
+            wall_mutations: Vec::new(),
+            cell_target_detaches: Vec::new(),
+            terrain_navigation_changed_cells: Vec::new(),
             tiberium_reduction_requests: Vec::new(),
             fire_events: Vec::new(),
             destroyed_crewed_buildings: Vec::new(),
             destroyed_garrison_buildings: Vec::new(),
             explosion_effects: Vec::new(),
+            invulnerability_impact_effects: Vec::new(),
             smudge_spawn_requests: Vec::new(),
             unit_facing: Vec::new(),
             under_attack_events: Vec::new(),
         };
     }
+
+    // Completed prior-frame bullets physically advanced before this frame's
+    // object AI/fire walk. Each detonation commits ReceiveDamage and any
+    // recursive death weapon before the next detonation or attacker reads
+    // wall, target, health, or RNG state.
+    let mut emit = CombatEmit::default();
+    let mut death = DeathEffects::default();
+    let mut handled_deaths = Vec::new();
+    let mut under_attack_events = Vec::new();
+    for detonation in projectile_detonations {
+        let damage_start = emit.damage_events.len();
+        let explosion_start = emit.explosion_effects.len();
+        let smudge_start = emit.smudge_spawn_requests.len();
+        let terrain_objects =
+            terrain_area_state
+                .as_deref()
+                .map(|state| combat_aoe::TerrainCollectionView {
+                    objects: state.terrain_objects(),
+                    cells: state.terrain_object_cells(),
+                });
+        emit_projectile_detonations(
+            std::slice::from_ref(detonation),
+            entities,
+            occupancy,
+            rules,
+            interner,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_objects,
+            terrain_area_state.as_deref(),
+            scenario_no_damage,
+            scenario_rng,
+            &mut inline_hooks,
+            &mut emit,
+        );
+        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
+        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
+        let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
+            &emit.damage_events[damage_start..],
+            entities,
+            occupancy,
+            rules,
+            interner,
+            houses,
+            house_order,
+            alliances,
+            main_rng,
+            scenario_rng,
+            &mut handled_deaths,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref_mut(),
+            scenario_no_damage,
+            current_tick,
+            &mut inline_hooks,
+            &mut sound_sink,
+        );
+        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
+        emit.explosion_effects.extend(outer_explosion_effects);
+        commit_smudge_batch_or_defer(
+            outer_anim_requests,
+            &mut emit.smudge_spawn_requests,
+            &mut inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref(),
+        );
+        under_attack_events.append(&mut pings);
+    }
+    for detonation in missile_detonations {
+        let damage_start = emit.damage_events.len();
+        let terrain_objects =
+            terrain_area_state
+                .as_deref()
+                .map(|state| combat_aoe::TerrainCollectionView {
+                    objects: state.terrain_objects(),
+                    cells: state.terrain_object_cells(),
+                });
+        emit_missile_detonations(
+            std::slice::from_ref(detonation),
+            entities,
+            occupancy,
+            rules,
+            interner,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_objects,
+            terrain_area_state.as_deref(),
+            scenario_no_damage,
+            scenario_rng,
+            &mut inline_hooks,
+            &mut emit,
+        );
+        let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
+            &emit.damage_events[damage_start..],
+            entities,
+            occupancy,
+            rules,
+            interner,
+            houses,
+            house_order,
+            alliances,
+            main_rng,
+            scenario_rng,
+            &mut handled_deaths,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref_mut(),
+            scenario_no_damage,
+            current_tick,
+            &mut inline_hooks,
+            &mut sound_sink,
+        );
+        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
+        under_attack_events.append(&mut pings);
+    }
+
     // Pre-scan: collect entities blocked from firing by locomotor or power state.
     let fire_blocked = combat_fire_gate::collect_fire_blocked_entities(
         entities,
@@ -1702,6 +4090,9 @@ pub fn tick_combat_with_fog_and_main_rng(
         let mut set_self_target: Vec<u64> = Vec::new();
         let mut clear_self_target: Vec<u64> = Vec::new();
         for &id in &keys {
+            if fire_suppressed.contains(&id) {
+                continue;
+            }
             let Some(entity) = entities.get(id) else {
                 continue;
             };
@@ -1901,6 +4292,12 @@ pub fn tick_combat_with_fog_and_main_rng(
     // Phase 1: snapshot all attackers and advance cooldowns / burst delays.
     let mut snapshots: Vec<AttackerSnapshot> = Vec::new();
     for &id in &keys {
+        // TubeMovement owns this object's complete AI turn.  The active state
+        // may already have cleared on finalization, so the world host carries
+        // the entry-time suppression set into this phased combat adapter.
+        if fire_suppressed.contains(&id) {
+            continue;
+        }
         // Mutable borrow: tick cooldowns and capture the per-attacker scalars +
         // garrison cargo info. Entity field-reads move into `build_attacker_snapshot`
         // (pure) below, after this borrow releases.
@@ -2015,38 +4412,142 @@ pub fn tick_combat_with_fog_and_main_rng(
         )
     });
 
+    // UnitClass Facing_Update runs immediately after this object's Fire_At_Target,
+    // before any bullet created by the fire reaches its later LogicVector slot.
+    // Capture that read window for every Unit up front: VERA's unsupported-
+    // projectile immediate path may enter fatal lifecycle synchronously below,
+    // but that approximation must not make this frame's barrel destination
+    // observe a target loss native Facing_Update cannot yet see.
+    for snap in &snapshots {
+        let Some(entity) = entities.get(snap.stable_id).filter(|entity| {
+            entity.category == EntityCategory::Unit && entity.barrel_facing.is_some()
+        }) else {
+            continue;
+        };
+        let Some(desired) = crate::sim::movement::turret::desired_turret_facing(entity, entities)
+        else {
+            continue;
+        };
+        emit.unit_facing.push((snap.stable_id, desired));
+    }
+
     // Phase 2: per-attacker fire decision + emission, in live-LOGIC snapshot
     // order. Each attacker is resolved through `resolve_attacker_fire` (the
     // reusable per-object fire body); emission order is identical to the prior
     // inline loop, preserving both event order and inline Scenario-RNG draws.
     // Fire is category-agnostic (Units fire through the same body here); Unit
-    // FACING destinations are computed per-object right after each Unit's own
-    // resolution (S3 post-Foot Fire→Facing order) and applied post-batch by
+    // FACING destinations use the preseeded native read window above, with
+    // own-retarget/remove replacement below, then are applied post-batch by
     // `unit_post::apply_unit_facing`.
-    let mut emit = CombatEmit::default();
     for snap in &snapshots {
+        let Some(live_attack) = entities
+            .get(snap.stable_id)
+            .filter(|entity| entity.is_alive() && !entity.dying)
+            .and_then(|entity| entity.attack_target.as_ref())
+            .map(|attack| {
+                (
+                    attack.target,
+                    attack.cooldown_ticks,
+                    attack.burst_remaining,
+                    attack.burst_delay_ticks,
+                    attack.pending_infantry_fire,
+                )
+            })
+        else {
+            continue;
+        };
+        let mut live_snap = snap.clone();
+        live_snap.target = live_attack.0;
+        live_snap.cooldown_ticks = live_attack.1;
+        live_snap.burst_remaining = live_attack.2;
+        live_snap.burst_delay_ticks = live_attack.3;
+        live_snap.pending_infantry_fire = live_attack.4;
+
         let n_retarget = emit.retarget_events.len();
         let n_remove = emit.remove_attack.len();
+        let damage_start = emit.damage_events.len();
+        let explosion_start = emit.explosion_effects.len();
+        let smudge_start = emit.smudge_spawn_requests.len();
+        let current_weapon_start = emit.current_weapon_updates.len();
+        let terrain_objects =
+            terrain_area_state
+                .as_deref()
+                .map(|state| combat_aoe::TerrainCollectionView {
+                    objects: state.terrain_objects(),
+                    cells: state.terrain_object_cells(),
+                });
         resolve_attacker_fire(
-            snap,
+            &live_snap,
             entities,
             rules,
             interner,
+            resource_nodes,
             fog,
             occupancy,
-            overlay_grid,
+            overlay_grid.as_deref_mut(),
             overlay_registry,
-            terrain,
+            terrain.as_deref_mut(),
+            terrain_objects,
+            terrain_area_state.as_deref(),
+            scenario_no_damage,
             binary_frame,
             tick_ms,
             scenario_rng,
+            &mut inline_hooks,
             &mut emit,
         );
-        // S3: per-object barrel destination for Unit attackers, read in the
-        // per-object window — deaths/clears (Phases 3-6) are not yet applied,
-        // so a unit whose target dies this tick still aims at it (idle-return
-        // begins next tick); a unit whose own resolution retargeted aims at
-        // the new target now; one whose own resolution cleared returns to body.
+        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
+        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
+        for &(entity_id, weapon_index, weapon_ref) in
+            &emit.current_weapon_updates[current_weapon_start..]
+        {
+            if let Some(entity) = entities.get_mut(entity_id) {
+                entity.current_weapon_index = weapon_index;
+                entity.current_weapon_ref = Some(weapon_ref);
+            }
+        }
+        let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
+            &emit.damage_events[damage_start..],
+            entities,
+            occupancy,
+            rules,
+            interner,
+            houses,
+            house_order,
+            alliances,
+            main_rng,
+            scenario_rng,
+            &mut handled_deaths,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref_mut(),
+            scenario_no_damage,
+            current_tick,
+            &mut inline_hooks,
+            &mut sound_sink,
+        );
+        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
+        emit.explosion_effects.extend(outer_explosion_effects);
+        commit_smudge_batch_or_defer(
+            outer_anim_requests,
+            &mut emit.smudge_spawn_requests,
+            &mut inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref(),
+        );
+        under_attack_events.append(&mut pings);
+        // S3: only this Unit's explicit retarget/remove may replace its seeded
+        // destination. Synchronous target expiry from VERA's immediate-delivery
+        // approximation is deliberately not visible to native Facing_Update.
         let Some(e) = entities
             .get(snap.stable_id)
             .filter(|e| e.category == EntityCategory::Unit && e.barrel_facing.is_some())
@@ -2058,8 +4559,8 @@ pub fn tick_combat_with_fog_and_main_rng(
             .find(|&&(aid, _)| aid == snap.stable_id)
             .map(|&(_, tid)| tid);
         let own_removed = emit.remove_attack[n_remove..].contains(&snap.stable_id);
-        let desired: u16 = if let Some(tid) = own_retarget {
-            match entities.get(tid) {
+        let replacement: Option<u16> = if let Some(tid) = own_retarget {
+            Some(match entities.get(tid) {
                 Some(t) => crate::sim::movement::turret::facing_toward_lepton(
                     e.position.rx,
                     e.position.ry,
@@ -2071,29 +4572,34 @@ pub fn tick_combat_with_fog_and_main_rng(
                     t.position.sub_y,
                 ),
                 None => crate::sim::movement::turret::body_facing_to_turret(e.facing),
-            }
+            })
         } else if own_removed {
-            crate::sim::movement::turret::body_facing_to_turret(e.facing)
+            Some(crate::sim::movement::turret::body_facing_to_turret(
+                e.facing,
+            ))
         } else {
-            match crate::sim::movement::turret::desired_turret_facing(e, entities) {
-                Some(d) => d,
-                // Unreachable: barrel_facing presence checked above.
-                None => continue,
-            }
+            None
         };
-        emit.unit_facing.push((snap.stable_id, desired));
+        if let Some(replacement) = replacement {
+            let (_, desired) = emit
+                .unit_facing
+                .iter_mut()
+                .find(|(id, _)| *id == snap.stable_id)
+                .expect("turreted Unit attacker was seeded before fire");
+            *desired = replacement;
+        }
     }
     // S3 residual: every Unit not in the attacker snapshot set (target-less,
-    // or in-transport holders excluded at the snapshot build). Iterates the
-    // SAME keys_sorted() coverage the legacy tick_unit_facing pass had —
-    // including limbo/dying Units — so the only output delta vs. the legacy
-    // pass is the pre-death read window (placement before Phases 3-6 is
-    // semantic: those phases clear attack_target on finished attackers and
-    // dead targets). Per-entity independent → id order is output-neutral.
+    // or in-transport holders excluded at the snapshot build). This runs after
+    // all attack ReceiveDamage/death-helper calls, so its target read observes
+    // the same live state the next native object window would expose.
     {
         let mut computed: Vec<u64> = emit.unit_facing.iter().map(|&(id, _)| id).collect();
         computed.sort_unstable();
         for &id in &keys {
+            if fire_suppressed.contains(&id) {
+                continue;
+            }
             if computed.binary_search(&id).is_ok() {
                 continue;
             }
@@ -2108,20 +4614,10 @@ pub fn tick_combat_with_fog_and_main_rng(
             emit.unit_facing.push((id, desired));
         }
     }
-    // YR BulletClass::Detonate: completed prior-frame bullets enter the same
-    // combat damage/death pipeline as all other authoritative detonations.
-    emit_projectile_detonations(
-        projectile_detonations,
-        entities,
-        occupancy,
-        rules,
-        interner,
-        overlay_grid,
-        overlay_registry,
-        terrain,
-        &mut emit,
-    );
-    // Destructure back into the named locals so Phases 3-6 are untouched.
+    // Every projectile, missile, and live-order attack damage event emitted so
+    // far is already committed. Only periodic radiation appended below remains.
+    let committed_damage_event_count = emit.damage_events.len();
+    // Destructure back into the named locals for post-fire state updates.
     let CombatEmit {
         projectile_spawns,
         mut damage_events,
@@ -2131,8 +4627,8 @@ pub fn tick_combat_with_fog_and_main_rng(
         fire_events,
         reveal_events,
         mut bridge_damage_events,
-        mut wall_damage_events,
-        mut terrain_damage_events,
+        mut wall_mutations,
+        mut cell_target_detaches,
         mut tiberium_reduction_requests,
         mut explosion_effects,
         mut smudge_spawn_requests,
@@ -2141,6 +4637,7 @@ pub fn tick_combat_with_fog_and_main_rng(
         garrison_advance,
         pending_infantry_updates,
         animation_switches,
+        current_weapon_updates: _,
         unit_facing,
         spawn_target_updates,
     } = emit;
@@ -2217,9 +4714,9 @@ pub fn tick_combat_with_fog_and_main_rng(
     // the phased engine collects it here so deaths route through the same
     // death pipeline as weapon damage (death anim selection via the
     // RadSiteWarhead, owned-count bookkeeping, survivor ejection).
-    if let Some(rad) = radiation {
+    if let Some(rad) = radiation.as_deref_mut() {
         for &det in &rad_detonations {
-            rad.apply_detonation(det, binary_frame, &rules.radiation, terrain);
+            rad.apply_detonation(det, binary_frame, &rules.radiation, terrain.as_deref());
         }
         if !rad.is_empty() && binary_frame.is_multiple_of(rules.radiation.application_delay as u32)
         {
@@ -2259,148 +4756,68 @@ pub fn tick_combat_with_fog_and_main_rng(
                     if level <= 0 {
                         continue;
                     }
-                    // trunc(level × RadLevelFactor), then the live-path Verses
-                    // scaling against the victim's armor.
+                    // FootClass::AI @ 0x004DA530 passes the signed two-stage
+                    // ftol result directly to concrete ReceiveDamage at
+                    // distance zero. Verses and live defender modifiers belong
+                    // to that receiver, not this producer.
                     let base = (level as f64 * rules.radiation.level_factor) as i32;
-                    if base <= 0 {
-                        continue;
-                    }
-                    let armor = rules
-                        .object(interner.resolve(entity.type_ref))
-                        .map(|o| o.armor.as_str())
-                        .unwrap_or("none");
-                    let verses_pct = rad_warhead
-                        .verses
-                        .get(armor_index(armor))
-                        .copied()
-                        .unwrap_or(100);
-                    let dmg = base * verses_pct as i32 / 100;
-                    if dmg > 0 {
-                        damage_events.push((
+                    damage_events.push(combat_aoe::AreaDamageReceiver::Entity(
+                        EntityDamageEvent::direct_receiver(
                             id,
-                            dmg.min(u16::MAX as i32) as u16,
+                            base,
+                            0,
                             RAD_NO_ATTACKER,
+                            None,
                             wh_iid,
-                        ));
-                    }
+                            ReceiverCallFlags {
+                                ignore_defenses: false,
+                                arg6: true,
+                            },
+                        ),
+                    ));
                 }
             }
         }
     }
 
-    // Phase 3.9: spawn-manager missile impacts recorded during this tick's
-    // movement pass. gamemd's `RocketLocomotion::Detonate` calls the engine's
-    // shared area-damage routine, so the impact must reach the same
-    // damage → death → despawn pipeline as any other detonation — including
-    // death weapons, crew ejection and kill credit. Folded in here, ahead of
-    // Phase 4, in the order the missiles landed.
-    for det in missile_detonations {
-        let warhead_name = interner.resolve(det.warhead).to_string();
-        let Some(warhead) = rules.warhead(&warhead_name) else {
-            continue;
-        };
-        let owner_house = interner.resolve(det.owner).to_string();
-        let impact_z = combat_aoe::bridge_adjusted_impact_z(terrain, det.rx, det.ry);
-        let hits = combat_aoe::apply_aoe_damage(
-            entities,
-            det.rx,
-            det.ry,
-            det.damage,
-            warhead,
-            rules,
-            interner,
-            &owner_house,
-            combat_aoe::AoELayerContext {
-                occupancy: Some(&*occupancy),
-                terrain,
-                impact_z,
-            },
-        );
-        let wh_iid = interner.intern(&warhead.id);
-        for (target_id, damage) in hits {
-            damage_events.push((target_id, damage, det.firer_id, wh_iid));
-        }
-        emit_warhead_detonation_effects(
-            warhead,
-            det.damage,
-            det.rx,
-            det.ry,
-            crate::util::lepton::CELL_CENTER_LEPTON,
-            crate::util::lepton::CELL_CENTER_LEPTON,
-            0,
-            interner,
-            &mut explosion_effects,
-            &mut smudge_spawn_requests,
-        );
-    }
-
-    // Phase 4: apply damage to targets and track last attacker for retaliation.
-    let mut dead_entities: Vec<u64> = Vec::new();
-    let mut under_attack_events: Vec<UnderAttackEvent> = Vec::new();
-    for (target_id, damage, attacker_id, _wh_id) in &damage_events {
-        // Attacker owner read before the target's mutable borrow. None for
-        // sourceless damage (radiation) or an already-despawned attacker.
-        let attacker_owner: Option<InternedId> = if *attacker_id != RAD_NO_ATTACKER {
-            entities.get(*attacker_id).map(|a| a.owner)
-        } else {
-            None
-        };
-        if let Some(target) = entities.get_mut(*target_id) {
-            if crate::sim::superweapon::invulnerability::is_invulnerable(
-                target.invulnerability.as_ref(),
-                current_tick as u32,
-            ) {
-                // Damage fully nullified by IronCurtain/ForceShield.
-                // Flash-effect spawn deferred (see design doc Open Questions).
-                if *attacker_id != RAD_NO_ATTACKER {
-                    target.last_attacker_id = Some(*attacker_id);
-                }
-                continue;
-            }
-            target.health.current = target.health.current.saturating_sub(*damage);
-            target.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-            if let Some(obj) = rules.object(interner.resolve(target.type_ref)) {
-                infantry::apply_fear_from_damage(
-                    obj,
-                    target,
-                    *damage,
-                    true,
-                    rules.general.condition_red_x1000,
-                    rules.general.condition_yellow_x1000,
-                );
-            }
-            if target.health.current == 0 {
-                dead_entities.push(*target_id);
-                // Score-screen kill record, taken here because this is the
-                // instant of destruction — the same point gamemd records a kill.
-                // Reading it later would be unsafe: the retaliation pass clears
-                // `last_attacker_id` unconditionally later this tick, and dying
-                // infantry stay in the logic vector through their death
-                // animation, so they would reach removal with no attacker left.
-                capture_kill_credit(target, attacker_owner, rules, interner);
-            }
-            // Under-attack ping: another house damaged a base structure or a
-            // harvester. Owner-differs is the hostility gate — alliances are
-            // not in scope in this pass; allied splash is rare and self-damage
-            // never pings, which matches the observable contract.
-            if *damage > 0 && attacker_owner.is_some_and(|ao| ao != target.owner) {
-                let miner = target.miner.is_some();
-                if miner || target.category == EntityCategory::Structure {
-                    under_attack_events.push(UnderAttackEvent {
-                        rx: target.position.rx,
-                        ry: target.position.ry,
-                        owner: target.owner,
-                        miner,
-                    });
-                }
-            }
-            // Sourceless damage (radiation field) never arms retaliation and
-            // must not overwrite a real attacker recorded this tick.
-            if *attacker_id != RAD_NO_ATTACKER {
-                target.last_attacker_id = Some(*attacker_id);
-            }
+    // Periodic radiation is the only damage appended after the native-order
+    // projectile/missile/object windows above. Commit that late slice in its
+    // existing live-victim order and enter any fatal death helper immediately.
+    let (mut late_death, mut late_pings) = commit_area_damage_receivers_with_scenario(
+        &damage_events[committed_damage_event_count..],
+        entities,
+        occupancy,
+        rules,
+        interner,
+        houses,
+        house_order,
+        alliances,
+        main_rng,
+        scenario_rng,
+        &mut handled_deaths,
+        resource_nodes,
+        overlay_grid.as_deref_mut(),
+        overlay_registry,
+        terrain.as_deref_mut(),
+        terrain_area_state.as_deref_mut(),
+        scenario_no_damage,
+        current_tick,
+        &mut inline_hooks,
+        &mut sound_sink,
+    );
+    if let Some(rad) = radiation.as_deref_mut() {
+        for det in late_death.rad_detonations.drain(..) {
+            rad.apply_detonation(det, binary_frame, &rules.radiation, terrain.as_deref());
         }
     }
+    bridge_damage_events.append(&mut late_death.bridge_damage_events);
+    wall_mutations.append(&mut late_death.wall_mutations);
+    cell_target_detaches.append(&mut late_death.cell_target_detaches);
+    tiberium_reduction_requests.append(&mut late_death.tiberium_reduction_requests);
+    explosion_effects.append(&mut late_death.explosion_effects);
+    smudge_spawn_requests.append(&mut late_death.smudge_spawn_requests);
+    death.append(late_death);
+    under_attack_events.append(&mut late_pings);
 
     // Phase 5: remove AttackTarget from finished attackers.
     remove_attack.sort_unstable();
@@ -2413,30 +4830,8 @@ pub fn tick_combat_with_fog_and_main_rng(
         }
     }
 
-    // Phase 6: handle death effects — death weapons, passengers, explosions, despawn.
-    let death = handle_entity_deaths(
-        entities,
-        occupancy,
-        rules,
-        interner,
-        houses,
-        main_rng,
-        &dead_entities,
-        &damage_events,
-        resource_nodes,
-        overlay_grid,
-        overlay_registry,
-        terrain,
-        current_tick,
-    );
-    bridge_damage_events.extend(death.bridge_damage_events);
-    wall_damage_events.extend(death.wall_damage_events);
-    terrain_damage_events.extend(death.terrain_damage_events);
-    tiberium_reduction_requests.extend(death.tiberium_reduction_requests);
-    explosion_effects.extend(death.explosion_effects);
-    smudge_spawn_requests.extend(death.smudge_spawn_requests);
-
-    // Phase 7: push sound events to the sink.
+    // Push the synchronously selected death sounds to the presentation sink;
+    // entity UnInit itself remains the world-owned deferred handoff.
     if let Some(sink) = sound_sink {
         for (die_id, rx, ry) in death.death_sounds {
             sink.push(SimSoundEvent::EntityDied {
@@ -2451,7 +4846,7 @@ pub fn tick_combat_with_fog_and_main_rng(
         log::trace!(
             "Combat tick: {} shots fired, {} entities destroyed",
             damage_events.len(),
-            dead_entities.len(),
+            handled_deaths.len(),
         );
     }
 
@@ -2461,15 +4856,19 @@ pub fn tick_combat_with_fog_and_main_rng(
         despawned_ids: death.despawned_ids,
         immediate_uninit_ids: death.immediate_uninit_ids,
         structure_destroyed: death.structure_destroyed,
-        spy_sat_reshroud_owners: death.spy_sat_reshroud_owners,
         bridge_damage_events,
-        wall_damage_events,
-        terrain_damage_events,
+        wall_mutations,
+        cell_target_detaches,
+        terrain_navigation_changed_cells: terrain_area_state
+            .as_deref()
+            .map(|state| state.navigation_changed_cells().to_vec())
+            .unwrap_or_default(),
         tiberium_reduction_requests,
         fire_events,
         destroyed_crewed_buildings: death.destroyed_crewed_buildings,
         destroyed_garrison_buildings: death.destroyed_garrison_buildings,
         explosion_effects,
+        invulnerability_impact_effects: death.invulnerability_impact_effects,
         smudge_spawn_requests,
         unit_facing,
         under_attack_events,
@@ -2498,6 +4897,7 @@ pub(crate) fn build_attacker_snapshot(
         pos_rx: entity.position.rx,
         pos_ry: entity.position.ry,
         pos_z: entity.position.z,
+        pos_exact_z_leptons: entity.position.exact_z_leptons,
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,
@@ -2568,9 +4968,11 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
 /// victim's health, with the house that should be credited.
 ///
 /// No-ops unless the victim is actually at zero health, and the first writer
-/// wins — a second lethal hit in the same tick cannot re-credit the kill to a
-/// different house. The award is resolved here because the rules are in hand and
-/// the veterancy is still the value the object died at.
+/// wins within one fatal transaction. A qualifying PostMortem callback consumes
+/// and clears this deferred-UnInit latch before restoring the object, so a later
+/// independent lethal transaction can attribute freshly. The award is resolved
+/// here because the rules are in hand and the veterancy is still the value the
+/// object died at.
 ///
 /// Routed today: the projectile/damage-event loop, death-explosion area damage,
 /// and crushing. Spawner missiles arrive through the damage loop with the firer
@@ -2610,24 +5012,29 @@ pub(crate) fn capture_kill_credit(
 }
 
 /// Resolve one attacker's Phase-2 fire decision + emission for the current tick.
-/// READ-ONLY w.r.t. entities/occupancy (HP/death are applied later in the batched
-/// Phase 4/6); it reads target/rules/occupancy/fog and pushes events into `out`.
+/// The caller immediately commits the newly emitted damage slice and nested
+/// fatal consequences before advancing to the next live-order attacker.
 /// Interns warhead/weapon/anim strings (hence `&mut StringInterner`). Pure w.r.t.
 /// iteration order: the caller invokes it once per snapshot in live-LOGIC order,
 /// preserving emission order exactly.
 pub(crate) fn resolve_attacker_fire(
     snap: &AttackerSnapshot,
-    entities: &EntityStore,
+    entities: &mut EntityStore,
     rules: &RuleSet,
     interner: &mut StringInterner,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     fog: Option<&FogState>,
     occupancy: &OccupancyGrid,
-    overlay_grid: Option<&OverlayGrid>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
-    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
+    terrain_area_state: Option<&TerrainAreaState>,
+    scenario_no_damage: bool,
     binary_frame: u32,
     tick_ms: u32,
     scenario_rng: &mut SimRng,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
 ) {
     // Pre-compute garrison scan range for retargeting (includes +1 buffer).
@@ -2708,7 +5115,7 @@ pub(crate) fn resolve_attacker_fire(
         target_cat,
         target_type_ref,
         target_owner,
-        target_prone_infantry,
+        _target_prone_infantry,
     ) = match target_data {
         Some((rx, ry, sx, sy, hp, cat, tr, own, prone)) if hp > 0 => {
             (rx, ry, sx, sy, hp, cat, tr, own, prone)
@@ -2722,7 +5129,7 @@ pub(crate) fn resolve_attacker_fire(
                 obj,
                 fog,
                 garrison_retarget_range,
-                terrain,
+                terrain.as_deref(),
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -2784,6 +5191,14 @@ pub(crate) fn resolve_attacker_fire(
         }
     };
     let weapon = selected.weapon;
+    out.current_weapon_updates.push((
+        snap.stable_id,
+        match selected.slot {
+            WeaponSlot::Primary => 0,
+            WeaponSlot::Secondary => 1,
+        },
+        interner.intern(selected.weapon_id),
+    ));
 
     // Friendly-fire and visibility-driven retarget logic only applies to
     // Entity targets. Cell targets are an explicit player force-fire — the
@@ -2802,7 +5217,7 @@ pub(crate) fn resolve_attacker_fire(
                 obj,
                 fog,
                 garrison_retarget_range,
-                terrain,
+                terrain.as_deref(),
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -2819,7 +5234,7 @@ pub(crate) fn resolve_attacker_fire(
                 obj,
                 fog,
                 garrison_retarget_range,
-                terrain,
+                terrain.as_deref(),
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -2862,7 +5277,7 @@ pub(crate) fn resolve_attacker_fire(
     // this tick's fire attempt and lets the unit close the gap.
     let in_range_for_fire = if !is_garrison && effective_range == weapon.range {
         // Standard fire: 3D check via compute_in_range when terrain available.
-        match (terrain, entities.get(snap.stable_id)) {
+        match (terrain.as_deref(), entities.get(snap.stable_id)) {
             (Some(t), Some(attacker_entity)) => {
                 let Some(source_z) = in_range::effective_z_leptons(attacker_entity, t) else {
                     return;
@@ -3043,10 +5458,24 @@ pub(crate) fn resolve_attacker_fire(
         collision,
     } = persistent_delivery
     {
+        let impact_world_z_leptons = attack_world_z_leptons(
+            snap.target,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+            entities,
+            terrain.as_deref(),
+        );
+        let origin_world_z_leptons = entities
+            .get(snap.stable_id)
+            .map(|entity| object_world_z_leptons(entity, terrain.as_deref()))
+            .or(snap.pos_exact_z_leptons)
+            .unwrap_or_else(|| i32::from(snap.pos_z).wrapping_mul(LEPTONS_PER_LEVEL as i32));
         let impact = ProjectileCoord::new(
             i32::from(target_rx) * 256 + target_sub_x.to_num::<i32>(),
             i32::from(target_ry) * 256 + target_sub_y.to_num::<i32>(),
-            attack_impact_z(snap.target, entities),
+            impact_world_z_leptons,
         );
         let target = match snap.target {
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
@@ -3057,7 +5486,7 @@ pub(crate) fn resolve_attacker_fire(
             origin: ProjectileCoord::new(
                 i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
                 i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
-                i32::from(snap.pos_z),
+                origin_world_z_leptons,
             ),
             target,
             initial_target_position: impact,
@@ -3075,9 +5504,48 @@ pub(crate) fn resolve_attacker_fire(
             collision,
         });
     } else {
-        let impact_z = attack_impact_z(snap.target, entities);
-        if warhead.cell_spread > SIM_ZERO {
-            let aoe_hits = self::combat_aoe::apply_aoe_damage(
+        let impact_z = attack_impact_z(snap.target, entities, terrain.as_deref());
+        let air_impact = attack_air_impact(
+            snap.target,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+            entities,
+            terrain.as_deref(),
+        );
+        let world_z_leptons = attack_world_z_leptons(
+            snap.target,
+            target_rx,
+            target_ry,
+            target_sub_x,
+            target_sub_y,
+            entities,
+            terrain.as_deref(),
+        );
+        let routed_wall = wall_overlay_flags_at(
+            overlay_grid.as_deref(),
+            overlay_registry,
+            target_rx,
+            target_ry,
+        )
+        .is_some_and(|flags| warhead_damages_wall(warhead, flags));
+        let wh_iid = interner.intern(&warhead.id);
+        let ore_amount = if scenario_no_damage {
+            None
+        } else {
+            tiberium_reduction_amount(base_damage, true, warhead)
+        };
+        let aoe = {
+            let mut ore_prelude = ore_amount.map(|amount| CombatTiberiumCellPrelude {
+                amount,
+                deferred: &mut out.tiberium_reduction_requests,
+                inline_hooks,
+                rules,
+                resource_nodes,
+                terrain_area_state,
+            });
+            self::combat_aoe::apply_aoe_damage_with_terrain_and_scenario(
                 entities,
                 target_rx,
                 target_ry,
@@ -3085,107 +5553,38 @@ pub(crate) fn resolve_attacker_fire(
                 warhead,
                 rules,
                 interner,
-                interner.resolve(snap.owner),
+                (snap.stable_id, Some(snap.owner), wh_iid),
                 self::combat_aoe::AoELayerContext {
                     occupancy: Some(&*occupancy),
-                    terrain,
+                    terrain: terrain.as_deref_mut(),
+                    overlay_grid: overlay_grid.as_deref_mut(),
+                    overlay_registry,
+                    scenario_rng: Some(&mut *scenario_rng),
+                    air_impact,
                     impact_z,
                 },
-            );
-            for (target_id, dmg) in aoe_hits {
-                let wh_iid = interner.intern(&warhead.id);
-                out.damage_events
-                    .push((target_id, dmg, snap.stable_id, wh_iid));
-            }
-            if base_damage > 0 {
-                let damage_u16 = base_damage as u16;
-                let wall_flags =
-                    wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
-                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                    out.wall_damage_events.push(WallDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                    });
-                } else if wall_flags.is_none() && warhead.wall {
-                    let wh_iid = interner.intern(&warhead.id);
-                    out.bridge_damage_events.push(BridgeDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                        warhead_ref: wh_iid,
-                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z,
-                    });
-                }
-            }
-            if warhead.wood && base_damage > 0 {
-                out.terrain_damage_events.push(TerrainDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: base_damage,
-                    warhead_ref: interner.intern(&warhead.id),
-                });
-            }
-        } else {
-            // Integer damage: base_damage * verses_pct / 100.
-            // base_damage already includes OccupyDamageMultiplier for garrison.
-            let raw_damage: i32 = base_damage * selected.verses_pct as i32 / 100;
-            let actual_damage: u16 =
-                apply_prone_damage_modifier(target_prone_infantry, warhead, raw_damage);
-            // Direct-hit damage only applies to Entity targets. For Cell
-            // targets (force-fire on terrain), splash logic via warhead
-            // CellSpread handles AoE damage at the impact cell — there's no
-            // primary target entity to damage.
-            if actual_damage > 0 {
-                if let TargetKind::Entity(target_id) = snap.target {
-                    let wh_iid = interner.intern(&warhead.id);
-                    out.damage_events
-                        .push((target_id, actual_damage, snap.stable_id, wh_iid));
-                }
-            }
-            if base_damage > 0 {
-                let damage_u16 = base_damage as u16;
-                let wall_flags =
-                    wall_overlay_flags_at(overlay_grid, overlay_registry, target_rx, target_ry);
-                if wall_flags.is_some_and(|flags| warhead_damages_wall(warhead, flags)) {
-                    out.wall_damage_events.push(WallDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                    });
-                } else if wall_flags.is_none() && warhead.wall {
-                    let wh_iid = interner.intern(&warhead.id);
-                    out.bridge_damage_events.push(BridgeDamageEvent {
-                        rx: target_rx,
-                        ry: target_ry,
-                        damage: damage_u16,
-                        warhead_ref: wh_iid,
-                        is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
-                        impact_z,
-                    });
-                }
-            }
-            if warhead.wood && base_damage > 0 {
-                out.terrain_damage_events.push(TerrainDamageEvent {
-                    rx: target_rx,
-                    ry: target_ry,
-                    damage: base_damage,
-                    warhead_ref: interner.intern(&warhead.id),
-                });
-            }
+                terrain_objects,
+                scenario_no_damage,
+                ore_prelude
+                    .as_mut()
+                    .map(|prelude| prelude as &mut dyn self::combat_aoe::AoECellPrelude),
+            )
+        };
+        out.wall_mutations.extend(aoe.wall_mutations);
+        out.cell_target_detaches.extend(aoe.cell_target_detaches);
+
+        out.damage_events.extend(aoe.receivers);
+        if !scenario_no_damage && base_damage > 0 && !routed_wall && warhead.wall {
+            let wh_iid = interner.intern(&warhead.id);
+            out.bridge_damage_events.push(BridgeDamageEvent {
+                rx: target_rx,
+                ry: target_ry,
+                damage: base_damage.min(i32::from(u16::MAX)) as u16,
+                warhead_ref: wh_iid,
+                is_ion_cannon: wh_iid == rules.ion_cannon_warhead_id(),
+                impact_z,
+            });
         }
-
-        // Ore destruction: all warheads unconditionally destroy ore at impact cells.
-        // CellSpreadTable[0] = 1, so even CellSpread=0 weapons check the center cell.
-        destroy_ore_at_impact(
-            &mut out.tiberium_reduction_requests,
-            target_rx,
-            target_ry,
-            base_damage,
-            warhead.cell_spread,
-        );
-
         // Radiation-emitting detonation: one site request per shot at the impact
         // cell. Spread is the warhead's CellSpread truncated to whole cells.
         if weapon.rad_level > 0 {
@@ -3198,12 +5597,13 @@ pub(crate) fn resolve_attacker_fire(
                 });
         }
 
-        // Cell-target force-fire on terrain has no entity z; the dispatcher
-        // re-derives ground_z from terrain.cell(rx,ry).level, so 0 is safe.
-        let impact_z: u8 = match snap.target {
-            TargetKind::Entity(eid) => entities.get(eid).map(|e| e.position.z).unwrap_or(0),
-            TargetKind::Cell(_, _) => 0,
-        };
+        // One impact coordinate: the original engine hands the SAME resolved
+        // coord to the area-damage call and to the AnimList placement, so the
+        // animation height is the impact height that fed the damage above,
+        // never a separately derived value. (Only the smudge dispatcher
+        // re-derives a ground reference of its own; the animation is drawn at
+        // this z.)
+        let effect_z: u8 = impact_z_byte(impact_z);
         // BulletClass::Detonate randomizes only the visible CoordStruct for an
         // Inviso projectile. The draw happens before AnimList selection, so this
         // must run even when the warhead has no animation to emit.
@@ -3230,7 +5630,8 @@ pub(crate) fn resolve_attacker_fire(
             effect_ry,
             effect_sub_x,
             effect_sub_y,
-            impact_z,
+            effect_z,
+            world_z_leptons,
             interner,
             &mut out.explosion_effects,
             &mut out.smudge_spawn_requests,
@@ -3386,3 +5787,376 @@ fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};
+
+/// Impact-height tests: a shot that lands on a ground cell must take that
+/// cell's terrain floor height, not a constant. Kept inline because they pin
+/// `attack_impact_z` and the single-impact-coordinate wiring that lives in
+/// this file.
+#[cfg(test)]
+mod impact_height_tests {
+    use super::*;
+    use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+    use crate::rules::ini_parser::IniFile;
+    use crate::sim::intern::test_interner;
+
+    const TEST_GRID: u16 = 16;
+    /// Terrain floor used by every raised-ground case here. Chosen because two
+    /// levels is what the reported screenshot showed: one whole tile of
+    /// vertical error.
+    const RAISED_LEVEL: u8 = 2;
+
+    #[test]
+    fn gsi_04_11_refinery_survivor_requests_follow_native_sentinel_offsets() {
+        let mut requests = Vec::new();
+        append_building_smudge_requests(&mut requests, 10, 20, 3, "3x3Refinery");
+        let SmudgeSpawnRequest::BuildingCenter {
+            foundation_w,
+            foundation_h,
+            ..
+        } = &requests[0]
+        else {
+            panic!("first request must be the destruction-center mark");
+        };
+        assert_eq!((*foundation_w, *foundation_h), (3, 3));
+        let survivor_cells: Vec<_> = requests[1..]
+            .iter()
+            .map(|request| match request {
+                SmudgeSpawnRequest::BuildingSurvivor { cell_rx, cell_ry } => (*cell_rx, *cell_ry),
+                _ => panic!("remaining requests must be survivor marks"),
+            })
+            .collect();
+        assert_eq!(
+            survivor_cells,
+            vec![
+                (10, 20),
+                (11, 20),
+                (12, 20),
+                (10, 21),
+                (11, 21),
+                (10, 22),
+                (11, 22),
+                (12, 22),
+            ]
+        );
+        assert!(!survivor_cells.contains(&(12, 21)));
+    }
+
+    #[test]
+    fn gsi_04_11_fatal_infantry_special_anim_emits_effect_and_smudge_request() {
+        let mut interner = test_interner();
+        let general = crate::rules::ruleset::GeneralRules::default();
+        let cases = [
+            (1, None),
+            (2, None),
+            (3, Some("S_BANG34")),
+            (4, Some("FLAMEGUY")),
+            (5, Some("ELECTRO")),
+            (6, Some("YURIDIE")),
+            (7, Some("NUKEDIE")),
+            (8, Some("VIRUSD")),
+            (9, Some("GENDEATH")),
+            (10, Some("BRUTDIE")),
+        ];
+        for (inf_death, expected_name) in cases {
+            let mut effects = Vec::new();
+            let mut smudges = Vec::new();
+            emit_infantry_death_anim(
+                &general,
+                inf_death,
+                7,
+                8,
+                SimFixed::from_num(64),
+                SimFixed::from_num(192),
+                2,
+                208,
+                &mut interner,
+                &mut effects,
+                &mut smudges,
+            );
+            let Some(expected_name) = expected_name else {
+                assert!(effects.is_empty(), "InfDeath {inf_death}");
+                assert!(smudges.is_empty(), "InfDeath {inf_death}");
+                continue;
+            };
+            assert_eq!(effects.len(), 1, "InfDeath {inf_death}");
+            assert_eq!(smudges.len(), 1, "InfDeath {inf_death}");
+            assert_eq!(interner.resolve(effects[0].shp_name), expected_name);
+            assert_eq!((effects[0].rx, effects[0].ry, effects[0].z), (7, 8, 2));
+            let SmudgeSpawnRequest::Anim {
+                anim_name,
+                rx,
+                ry,
+                sub_x,
+                sub_y,
+                world_z_leptons,
+            } = &smudges[0]
+            else {
+                panic!("special death effect must run the Anim smudge start path");
+            };
+            assert_eq!(interner.resolve(*anim_name), expected_name);
+            assert_eq!(
+                (
+                    *rx,
+                    *ry,
+                    sub_x.to_num::<i32>(),
+                    sub_y.to_num::<i32>(),
+                    *world_z_leptons,
+                ),
+                (7, 8, 64, 192, 208)
+            );
+        }
+    }
+
+    fn terrain_cell(rx: u16, ry: u16, level: u8) -> ResolvedTerrainCell {
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level,
+            filled_clear: true,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: Default::default(),
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            height_in_pixels: 0,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: BridgeCellFacts::default(),
+            tube_index: None,
+            radar_left: [0; 3],
+            radar_right: [0; 3],
+            accepts_smudge: true,
+            allows_tiberium: false,
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    fn terrain_at_level(level: u8) -> ResolvedTerrainGrid {
+        let cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
+            .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, level)))
+            .collect();
+        ResolvedTerrainGrid::from_cells(TEST_GRID, TEST_GRID, cells)
+    }
+
+    /// Armed tank plus a warhead that emits an impact animation, so a
+    /// force-fire produces an observable `ExplosionEffect`.
+    fn impact_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "\
+[VehicleTypes]\n0=MTNK\n\n\
+[InfantryTypes]\n\n\
+[AircraftTypes]\n\n\
+[BuildingTypes]\n\n\
+[Warheads]\n0=AP\n\n\
+[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=105mm\n\n\
+[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n\n\
+[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\nAnimList=TWLT070\n",
+        );
+        RuleSet::from_ini(&ini).expect("impact rules should parse")
+    }
+
+    #[test]
+    fn cell_target_impact_z_is_the_cells_terrain_floor() {
+        let entities = EntityStore::new();
+        let flat = terrain_at_level(0);
+        let raised = terrain_at_level(RAISED_LEVEL);
+
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&raised)),
+            i32::from(RAISED_LEVEL),
+            "a ground-cell impact takes the cell's terrain floor height; a \
+             constant 0 here renders the impact one whole tile below the ground \
+             it landed on"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&flat)),
+            0,
+            "level-0 ground is still zero — that is the value, not the fallback"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, None),
+            0,
+            "no loaded map means no cell to read"
+        );
+        assert_eq!(
+            attack_impact_z(
+                TargetKind::Cell(TEST_GRID + 5, TEST_GRID + 5),
+                &entities,
+                Some(&raised)
+            ),
+            0,
+            "VERA API boundary, no native equivalent: an off-map cell is not a \
+             targetable cell in the first place, so this pins only that the \
+             helper stays total, not a game rule about off-map heights"
+        );
+    }
+
+    #[test]
+    fn cell_target_impact_z_is_the_ground_floor_not_the_bridge_aim_point() {
+        // A structural bridge cell whose ground floor is RAISED_LEVEL and whose
+        // deck sits a full deck height above it.
+        let mut cells: Vec<ResolvedTerrainCell> = (0..TEST_GRID)
+            .flat_map(|ry| (0..TEST_GRID).map(move |rx| terrain_cell(rx, ry, RAISED_LEVEL)))
+            .collect();
+        let idx = 9 * TEST_GRID as usize + 7;
+        cells[idx].bridge_facts = BridgeCellFacts {
+            raw_flags: BRIDGE_FLAG_STRUCTURAL,
+            ..BridgeCellFacts::default()
+        };
+        cells[idx].has_bridge_deck = true;
+        cells[idx].bridge_walkable = true;
+        cells[idx].bridge_deck_level = RAISED_LEVEL + 4;
+        let terrain = ResolvedTerrainGrid::from_cells(TEST_GRID, TEST_GRID, cells);
+
+        let entities = EntityStore::new();
+        assert_eq!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&terrain)),
+            i32::from(RAISED_LEVEL),
+            "the impact coordinate is the projectile's own location clamped to \
+             the cell's ground height, not the bridge-aware aim point — the \
+             deck-adding accessor is reached only for a live object target. The \
+             deck term is a recorded residual on `attack_impact_z`, not an \
+             oversight"
+        );
+        assert_ne!(
+            attack_impact_z(TargetKind::Cell(7, 9), &entities, Some(&terrain)),
+            combat_aoe::bridge_adjusted_impact_z(Some(&terrain), 7, 9),
+            "the aim-point helper is a different quantity; if these two ever \
+             agree, the deck residual was closed and the bridge-damage Z gate \
+             has to be settled in the same change"
+        );
+    }
+
+    /// The impact byte is a signed level count on both sides of the sim/app
+    /// boundary, because the projection decodes it with `as i8`.
+    ///
+    /// Catches the two-narrowings shape error: clamping into `u8` range lets
+    /// 200 through, which the projection reads back as -56 levels and draws
+    /// 840 px away, while clamping into `i8` range saturates at the top of the
+    /// domain the reader actually decodes.
+    #[test]
+    fn impact_z_byte_saturates_in_the_signed_domain_the_projection_decodes() {
+        for level in [0_i32, 1, 2, 14, 127] {
+            assert_eq!(
+                i32::from(impact_z_byte(level) as i8),
+                level,
+                "every reachable map height must survive the round trip"
+            );
+        }
+        assert_eq!(
+            impact_z_byte(200) as i8,
+            i8::MAX,
+            "an over-range height saturates at the top of the signed domain, it \
+             does not wrap to a large negative one"
+        );
+        assert_eq!(impact_z_byte(-40) as i8, -40, "below-ground z stays signed");
+        assert_eq!(impact_z_byte(-9000) as i8, i8::MIN);
+    }
+
+    #[test]
+    fn entity_target_impact_z_still_reads_the_entity_height() {
+        let mut entities = EntityStore::new();
+        let mut on_deck = GameEntity::test_default(1, "MTNK", "Americans", 7, 9);
+        on_deck.position.z = 6;
+        entities.insert(on_deck);
+        let terrain = terrain_at_level(RAISED_LEVEL);
+
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(1), &entities, Some(&terrain)),
+            6,
+            "an object target still contributes its own height, terrain or not"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(1), &entities, None),
+            6,
+            "entity height does not depend on the terrain grid"
+        );
+        assert_eq!(
+            attack_impact_z(TargetKind::Entity(404), &entities, Some(&terrain)),
+            0,
+            "a vanished target contributes nothing"
+        );
+    }
+
+    #[test]
+    fn force_fire_on_raised_ground_places_the_explosion_at_the_terrain_height() {
+        let rules = impact_rules();
+        let mut terrain = terrain_at_level(RAISED_LEVEL);
+        let mut store = EntityStore::new();
+        // `test_interner` snapshots the thread-local, so the entity's type and
+        // owner strings must be interned before the snapshot is taken.
+        store.insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        let mut interner = test_interner();
+        assert!(
+            issue_attack_cell_command(&mut store, 1, 5, 6, Some(&rules), &interner),
+            "armed tank should accept a force-fire order on an adjacent cell"
+        );
+
+        let mut scenario_rng = SimRng::new(1);
+        let result = tick_combat_with_fog(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            None,
+            &BTreeMap::<InternedId, PowerState>::new(),
+            None,
+            &mut BTreeMap::new(),
+            None,
+            None,
+            Some(&mut terrain),
+            0,
+            100,
+            0,
+            &[1],
+            None,
+            &mut scenario_rng,
+        );
+
+        let effect = result
+            .explosion_effects
+            .first()
+            .expect("force-fire should emit the warhead's impact animation");
+        assert_eq!((effect.rx, effect.ry), (5, 6));
+        assert_eq!(
+            effect.z, RAISED_LEVEL,
+            "the impact animation is placed at the impact height; a constant 0 \
+             draws it 15 screen pixels per level below the ground it hit"
+        );
+    }
+}

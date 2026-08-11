@@ -225,7 +225,7 @@ fn clear_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         speed_costs: SpeedCostProfile::default(),
         is_water: false,
         is_cliff_like: false,
-        is_cliff_redraw: false,
+        height_in_pixels: 0,
         variant: 0,
         is_rough: false,
         is_road: false,
@@ -332,6 +332,85 @@ fn deploy_mcv_uses_gamemd_large_foundation_origin_offset() {
             .entities
             .values()
             .any(|e| { e.type_ref == gacnst_id && e.position.rx == 19 && e.position.ry == 21 })
+    );
+}
+
+/// Deploy and undeploy have to be exact inverses, so an MCV that deploys and
+/// undeploys ends up on the cell it started on.
+///
+/// gamemd steps one cell north-west on deploy and one cell south-east on
+/// undeploy, both behind the same `foundation > 2` gate. VERA used to add
+/// `width / 2` on the way back, which is `+2` on the 4x4 Construction Yard, so
+/// each cycle walked the vehicle one cell south-east — and it compounded, since
+/// nothing ever pulled it back. Verified against gamemd 2026-08-05.
+#[test]
+fn deploy_then_undeploy_returns_the_mcv_to_its_original_cell() {
+    let rules = make_mcv_rules();
+    let mut sim = Simulation::new();
+    add_house(&mut sim, "Americans", true);
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+    let start = (20u16, 22u16);
+    let mcv = sim
+        .spawn_object(
+            "AMCV",
+            "Americans",
+            start.0,
+            start.1,
+            128,
+            &rules,
+            &height_map,
+        )
+        .expect("spawn MCV");
+    assert!(
+        sim.apply_command(
+            "Americans",
+            &Command::DeployMcv { entity_id: mcv },
+            Some(&rules),
+            None,
+            &height_map,
+        ),
+        "clear ConYard footprint should deploy"
+    );
+    sim.flush_pending_delete();
+    // A yard still playing its build-up cannot undeploy, so let it settle.
+    tick_n(&mut sim, &rules, 60);
+
+    let gacnst_id = sim.interner.get("GACNST").expect("GACNST interned");
+    let yard = sim
+        .substrate
+        .entities
+        .values()
+        .find(|e| e.type_ref == gacnst_id)
+        .map(|e| e.stable_id)
+        .expect("ConYard should exist after deploy");
+
+    assert!(
+        sim.apply_command(
+            "Americans",
+            &Command::UndeployBuilding { entity_id: yard },
+            Some(&rules),
+            None,
+            &height_map,
+        ),
+        "the yard we just deployed should undeploy"
+    );
+    // Undeploy runs the build-up animation in reverse and only spawns the
+    // vehicle when it finishes, so the cell under test does not exist yet.
+    tick_n(&mut sim, &rules, 40);
+    sim.flush_pending_delete();
+
+    let amcv_id = sim.interner.get("AMCV").expect("AMCV interned");
+    let landed = sim
+        .substrate
+        .entities
+        .values()
+        .find(|e| e.type_ref == amcv_id)
+        .map(|e| (e.position.rx, e.position.ry))
+        .expect("MCV should exist again after undeploy");
+    assert_eq!(
+        landed, start,
+        "deploy/undeploy must round-trip; drifting here compounds every cycle"
     );
 }
 

@@ -8,8 +8,8 @@ use super::{
     cycle_active_producer_for_owner_category, find_spawn_cell_for_owner, foundation_dimensions,
     place_ready_building_with_overlays, place_ready_building_without_overlays,
     placement_preview_for_owner_with_overlays, placement_preview_for_owner_without_overlays,
-    producer_candidates_for_owner_category,
-    ready_buildings_for_owner, sell_building, tick_production,
+    producer_candidates_for_owner_category, ready_buildings_for_owner, sell_building,
+    tick_production,
 };
 use crate::map::bridge_facts::BRIDGE_FLAG_DESTROYED_OR_RAMP;
 use crate::map::entities::EntityCategory;
@@ -182,6 +182,84 @@ fn unit_ids(sim: &Simulation, owner: &str, type_id: &str) -> Vec<u64> {
         .collect()
 }
 
+/// Facing byte a FreeUnit placed on the primary cell carries. Under the project
+/// convention 0xC0 is west. Spelled out here rather than imported from the code
+/// under test: a test that reads the production constant would accept any value
+/// that constant is later changed to.
+const FREE_UNIT_FACING_PRIMARY: u8 = 0xC0;
+/// Facing byte a FreeUnit placed by the nearby-cell search carries — 0xA0,
+/// southwest. Same reason as [`FREE_UNIT_FACING_PRIMARY`] for restating it.
+const FREE_UNIT_FACING_FALLBACK: u8 = 0xA0;
+
+/// The nearby-cell search's candidate pool for the stock 4x3 refinery fixture
+/// below, in the search's own visit order.
+///
+/// The search is seeded from the building's NORTH-WEST footprint cell — (20,20)
+/// here — and walks square Chebyshev rings: segment 1 emits North then South for
+/// `d = -r..=r`, segment 2 emits West then East for the interior rows. Ring 0 is
+/// the seed itself, which the refinery occupies. On ring 1 the three cells that
+/// fall on the 4x3 footprint — (20,21), (21,21) and (21,20) — are refused for the
+/// same reason, leaving these five in this order. The fixture grid is flat, so
+/// every survivor classifies as a direct candidate and the per-ring early-out
+/// stops collection at ring 1: this list IS the pool the frame-counter modulo
+/// indexes, not merely a subset of it. On raised ground the direct
+/// classification — and with it the early-out — is a recorded residual of the
+/// shared search port, so the pool there is wider than this.
+///
+/// UNCHECKED as parity: which cell gamemd's own search returns for a completed
+/// stock refinery has not been derived. This pool is what VERA's search produces,
+/// so these tests are a regression ratchet on the search mechanism (seed, ring
+/// order, occupancy, frame-counter selection) — NOT evidence that the landing cell
+/// matches gamemd's.
+const STOCK_4X3_FALLBACK_POOL: [(u16, u16); 5] = [(19, 19), (19, 21), (20, 19), (21, 19), (19, 20)];
+
+/// Build the stock Allied refinery-completion fixture and run the single tick that
+/// completes it, returning the simulation and the refinery's stable id.
+///
+/// `start_frame` pins `session.binary_frame` before anything spawns. The nearby-cell
+/// search consumes no RNG and selects `pool[frame % pool.len()]`, so a fixture that
+/// leaves the frame implicit is really asserting a cell chosen by however many ticks
+/// it happened to run — pinning it is what makes the landing cell a statement about
+/// the mechanism instead of about the fixture.
+///
+/// `extra_blockers` are live ground occupants spawned after the refinery is placed
+/// and before it completes. They are invisible to the static path grid, so they are
+/// only excluded by a search that reads occupancy at placement time.
+fn complete_stock_allied_refinery(
+    start_frame: u32,
+    extra_blockers: &[(u16, u16)],
+) -> (Simulation, u64) {
+    let mut sim = Simulation::new();
+    sim.session.binary_frame = start_frame;
+    let rules = stock_refinery_completion_rules();
+    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+    let mut grid = PathGrid::new(64, 64);
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let refinery_id = ready_and_place(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAREFN",
+        20,
+        20,
+        &grid,
+        &height_map,
+    );
+    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
+    for &(rx, ry) in extra_blockers {
+        sim.spawn_object("BLOCKER", "Russians", rx, ry, 0, &rules, &height_map)
+            .expect("fixture blocker should spawn");
+    }
+    set_ticks_until_completion(&mut sim, refinery_id, 1);
+
+    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
+    assert!(
+        completion.spawned_entities,
+        "frame {start_frame}: refinery completion should report the free unit"
+    );
+    (sim, refinery_id)
+}
+
 fn resolved_clear_grid_with_override(
     width: u16,
     height: u16,
@@ -211,7 +289,7 @@ fn resolved_clear_grid_with_override(
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -742,58 +820,138 @@ fn stock_refinery_free_unit_spawns_on_building_up_completion_once() {
 }
 
 #[test]
-fn stock_4x3_refinery_free_unit_uses_native_primary_cell() {
+fn stock_4x3_refinery_free_unit_is_refused_its_footprint_and_placed_by_the_nearby_search() {
+    // The primary cell is `(bx + W/2, by + H/2 + 1)`, which for a 4x3 refinery at
+    // (20,20) is (22,22) — inside the building's own footprint. The cell-entry test
+    // grants the placing building no exemption, so the refinery is itself the
+    // occupant that refuses its free unit: the nearby search is the ORDINARY path on
+    // every stock refinery, not an exception, and the unit lands beside the building
+    // with the fallback facing rather than on the primary cell with 0xC0.
+    //
+    // The frame sweep is the point of the loop: selection is `pool[frame % len]` over
+    // the ring-ordered pool, so walking the counter must walk the pool and must never
+    // leave it.
+    const PRIMARY_CELL: (u16, u16) = (22, 22);
+    for frame in 0..(STOCK_4X3_FALLBACK_POOL.len() as u32 * 2) {
+        let (sim, refinery_id) = complete_stock_allied_refinery(frame, &[]);
+        let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+        assert_eq!(
+            cmin_ids.len(),
+            1,
+            "frame {frame}: completion constructs exactly one FreeUnit"
+        );
+        let miner = sim
+            .substrate
+            .entities
+            .get(cmin_ids[0])
+            .expect("the placed FreeUnit should be alive");
+        let cell = (miner.position.rx, miner.position.ry);
+
+        assert!(
+            sim.substrate
+                .occupancy
+                .contains_entity(PRIMARY_CELL.0, PRIMARY_CELL.1, refinery_id),
+            "frame {frame}: the refinery is the occupant that refuses the primary cell"
+        );
+        assert_ne!(
+            cell, PRIMARY_CELL,
+            "frame {frame}: the primary cell sits on the footprint and must be refused"
+        );
+        assert!(
+            !sim.substrate.occupancy.contains_entity(
+                PRIMARY_CELL.0,
+                PRIMARY_CELL.1,
+                miner.stable_id
+            ),
+            "frame {frame}: a refused primary must leave no occupancy residue"
+        );
+
+        assert_eq!(
+            cell,
+            STOCK_4X3_FALLBACK_POOL[(frame as usize) % STOCK_4X3_FALLBACK_POOL.len()],
+            "frame {frame}: the nearby search selects pool[frame % len] in ring order"
+        );
+        assert!(
+            sim.substrate
+                .occupancy
+                .contains_entity(cell.0, cell.1, miner.stable_id),
+            "frame {frame}: the committed fallback cell must be marked"
+        );
+        assert_eq!(
+            miner.facing, FREE_UNIT_FACING_FALLBACK,
+            "frame {frame}: a placement made by the nearby search uses the fallback facing"
+        );
+        assert_eq!(miner.mission.current().known(), Some(MissionType::Harvest));
+    }
+}
+
+#[test]
+fn refinery_whose_primary_cell_clears_its_footprint_keeps_the_primary_cell_and_facing() {
+    // Guard against "fixed" meaning "the primary attempt was deleted". The same
+    // `(bx + W/2, by + H/2 + 1)` arithmetic puts a 1x1 refinery's primary cell one
+    // row SOUTH of the building, off its own footprint, where nothing refuses it —
+    // and there the free unit is placed on the primary cell with the primary facing
+    // and the nearby search never runs. Stock has no 1x1 refinery; this exists to
+    // pin the order of the two mechanisms, not a shipping configuration.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         0=MODHARV\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         0=GACNST\n\
+         1=MODPROC\n\
+         [GACNST]\n\
+         Foundation=2x2\n\
+         [MODPROC]\n\
+         Refinery=yes\n\
+         FreeUnit=MODHARV\n\
+         Foundation=1x1\n\
+         [MODHARV]\n\
+         Harvester=yes\n\
+         Dock=MODPROC\n\
+         Speed=4\n",
+    ))
+    .expect("1x1 refinery rules should parse");
     let mut sim = Simulation::new();
-    let rules = stock_refinery_completion_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let mut grid = PathGrid::new(64, 64);
-    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
+    let grid = PathGrid::new(64, 64);
+
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 18, 18);
     let refinery_id = ready_and_place(
         &mut sim,
         &rules,
         "Americans",
-        "GAREFN",
+        "MODPROC",
         20,
         20,
         &grid,
         &height_map,
     );
-    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
     set_ticks_until_completion(&mut sim, refinery_id, 1);
 
     let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
     assert!(completion.spawned_entities);
-    let miner = sim
+    let free_unit_ids = unit_ids(&sim, "Americans", "MODHARV");
+    assert_eq!(free_unit_ids.len(), 1);
+    let free_unit = sim
         .substrate
         .entities
-        .values()
-        .find(|entity| {
-            entity.category == EntityCategory::Unit
-                && entity.position.rx == 22
-                && entity.position.ry == 22
-                && sim
-                    .interner
-                    .resolve(entity.owner)
-                    .eq_ignore_ascii_case("Americans")
-                && sim
-                    .interner
-                    .resolve(entity.type_ref)
-                    .eq_ignore_ascii_case("CMIN")
-        })
-        .expect("stock Allied FreeUnit should use the 4x3 native primary cell");
-    assert_eq!(miner.facing, 0xC0);
-    assert_eq!(miner.mission.current().known(), Some(MissionType::Harvest));
+        .get(free_unit_ids[0])
+        .expect("the placed FreeUnit should be alive");
+    assert_eq!(
+        (free_unit.position.rx, free_unit.position.ry),
+        (20, 21),
+        "an admissible primary cell is used as-is; no nearby search runs"
+    );
+    assert_eq!(
+        free_unit.facing, FREE_UNIT_FACING_PRIMARY,
+        "a primary placement keeps the primary facing"
+    );
     assert!(
-        !sim.substrate.entities.values().any(|entity| {
-            entity.category == EntityCategory::Unit
-                && entity.position.rx == 22
-                && entity.position.ry == 23
-                && sim
-                    .interner
-                    .resolve(entity.type_ref)
-                    .eq_ignore_ascii_case("CMIN")
-        }),
-        "FreeUnit must not use the old south-edge heuristic"
+        sim.substrate
+            .occupancy
+            .contains_entity(20, 21, free_unit.stable_id)
     );
 }
 
@@ -851,50 +1009,61 @@ fn occupied_primary_bay_uses_one_fallback_without_overlap() {
 }
 
 #[test]
-fn occupied_first_fallback_retries_same_unit_at_second_candidate() {
-    let mut sim = Simulation::new();
-    let rules = stock_refinery_completion_rules();
-    let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let mut grid = PathGrid::new(64, 64);
-    spawn_structure(&mut sim, 1, "Americans", "GACNST", 14, 20);
-    let refinery_id = ready_and_place(
-        &mut sim,
-        &rules,
-        "Americans",
-        "GAREFN",
-        20,
-        20,
-        &grid,
-        &height_map,
-    );
-    block_building_foundation(&mut grid, &rules, "GAREFN", 20, 20);
-    sim.spawn_object("BLOCKER", "Russians", 22, 22, 0, &rules, &height_map)
-        .expect("dynamic primary blocker should spawn");
-    sim.spawn_object("BLOCKER", "Russians", 19, 19, 0, &rules, &height_map)
-        .expect("first compatibility fallback blocker should spawn");
-    set_ticks_until_completion(&mut sim, refinery_id, 1);
-
-    let completion = sim.advance_tick(&[], Some(&rules), &height_map, Some(&grid), None, 67);
-    assert!(completion.spawned_entities);
-    let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+fn live_occupant_on_a_candidate_cell_drops_that_cell_from_the_fallback_pool() {
+    // The nearby search runs AFTER the primary placement is refused and reads live
+    // occupancy — it is not precomputed off the static path grid before the primary
+    // is attempted. A vehicle parked on ring-1 candidate (19,19) is invisible to the
+    // path grid but present in occupancy, so only a search that runs at placement
+    // time can drop it. Proof: that one cell disappears from the pool and the
+    // frame-counter modulo walks the remaining four in unchanged ring order — the
+    // whole pool shifts by one entry, which a precomputed or occupancy-blind search
+    // could not produce.
+    const OCCUPIED_CANDIDATE: (u16, u16) = (19, 19);
+    let expected_pool: Vec<(u16, u16)> = STOCK_4X3_FALLBACK_POOL
+        .iter()
+        .copied()
+        .filter(|cell| *cell != OCCUPIED_CANDIDATE)
+        .collect();
     assert_eq!(
-        cmin_ids.len(),
-        1,
-        "fallback retries must not allocate another FreeUnit"
+        expected_pool.len(),
+        STOCK_4X3_FALLBACK_POOL.len() - 1,
+        "the fixture blocker must sit on exactly one pool entry"
     );
-    let miner = sim
-        .substrate
-        .entities
-        .get(cmin_ids[0])
-        .expect("second-fallback miner should remain alive");
-    assert_eq!((miner.position.rx, miner.position.ry), (20, 19));
-    assert_eq!(miner.facing, 0xA0);
-    assert!(
-        !sim.substrate
-            .occupancy
-            .contains_entity(19, 19, miner.stable_id),
-        "failed first fallback must leave no occupancy residue"
-    );
+
+    for frame in 0..(expected_pool.len() as u32 * 2) {
+        let (sim, _refinery_id) = complete_stock_allied_refinery(frame, &[OCCUPIED_CANDIDATE]);
+        let cmin_ids = unit_ids(&sim, "Americans", "CMIN");
+        assert_eq!(
+            cmin_ids.len(),
+            1,
+            "frame {frame}: completion constructs exactly one FreeUnit"
+        );
+        let miner = sim
+            .substrate
+            .entities
+            .get(cmin_ids[0])
+            .expect("the placed FreeUnit should be alive");
+        let cell = (miner.position.rx, miner.position.ry);
+
+        assert_ne!(
+            cell, OCCUPIED_CANDIDATE,
+            "frame {frame}: an occupied candidate must never be selected"
+        );
+        assert_eq!(
+            cell,
+            expected_pool[(frame as usize) % expected_pool.len()],
+            "frame {frame}: the shortened pool keeps ring order and is walked by the frame counter"
+        );
+        assert_eq!(miner.facing, FREE_UNIT_FACING_FALLBACK);
+        assert!(
+            !sim.substrate.occupancy.contains_entity(
+                OCCUPIED_CANDIDATE.0,
+                OCCUPIED_CANDIDATE.1,
+                miner.stable_id
+            ),
+            "frame {frame}: the rejected candidate must hold no occupancy residue"
+        );
+    }
 }
 
 #[test]
@@ -964,7 +1133,14 @@ fn free_unit_total_placement_failure_refunds_once_and_leaves_no_entity() {
 
 #[test]
 fn stock_soviet_refinery_completion_spawns_harv() {
+    // The Soviet refinery is the same 4x3 shape as the Allied one, so its primary
+    // cell (22,22) also lands on its own footprint and is refused; only the FreeUnit
+    // type differs. The frame is pinned because selection is `pool[frame % len]` —
+    // and deliberately not 0, so an implementation that always returned the first
+    // pool entry would not pass.
+    const SELECTION_FRAME: u32 = 3;
     let mut sim = Simulation::new();
+    sim.session.binary_frame = SELECTION_FRAME;
     let rules = stock_refinery_completion_rules();
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     let mut grid = PathGrid::new(64, 64);
@@ -993,8 +1169,17 @@ fn stock_soviet_refinery_completion_spawns_harv() {
         .entities
         .get(harvester_id)
         .expect("spawned HARV should exist");
-    assert_eq!((harvester.position.rx, harvester.position.ry), (22, 22));
-    assert_eq!(harvester.facing, 0xC0);
+    assert_ne!(
+        (harvester.position.rx, harvester.position.ry),
+        (22, 22),
+        "the primary cell sits on the NAREFN footprint and must be refused"
+    );
+    assert_eq!(
+        (harvester.position.rx, harvester.position.ry),
+        STOCK_4X3_FALLBACK_POOL[(SELECTION_FRAME as usize) % STOCK_4X3_FALLBACK_POOL.len()],
+        "the Soviet refinery walks the same ring-ordered pool as the Allied one"
+    );
+    assert_eq!(harvester.facing, FREE_UNIT_FACING_FALLBACK);
     assert_eq!(
         harvester.mission.current().known(),
         Some(MissionType::Harvest)

@@ -15,8 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
+use crate::sim::cell_rect::CellReservationGrid;
 use crate::sim::entity_store::EntityStore;
-use crate::sim::occupancy::{CellOccupationGrid, OccupancyGrid, RawCellOccupationGrid};
+use crate::sim::occupancy::{
+    CellOccupationGrid, HiddenOccupationGrid, OccupancyGrid, RawCellOccupationGrid,
+};
 use crate::sim::particles::ParticleSystemStore;
 
 const FIRST_MULTIPLAYER_FEEDBACK_ANIM_ID: u64 = 1 << 63;
@@ -86,6 +89,15 @@ pub(crate) struct ObjectSubstrate {
     /// serialized verbatim and are never rebuilt from entity lists.
     #[serde(default)]
     pub(crate) raw_cell_occupation: RawCellOccupationGrid,
+    /// Separate authoritative building hidden-object counters. Serialized
+    /// verbatim because RemoveOccupy's enter-only cancellation is not
+    /// reconstructible from the currently placed entity set.
+    #[serde(default)]
+    pub(crate) hidden_occupation: HiddenOccupationGrid,
+    /// Authoritative CellClass `+0xDC` per-house Building base reservations,
+    /// including the single shared dummy CellClass mask.
+    #[serde(default)]
+    pub(crate) base_reservations: CellReservationGrid,
     /// Plain-struct entity storage (`BTreeMap<u64, GameEntity>` + by_owner index).
     /// The authoritative object store — serialized verbatim (NOT skipped).
     pub(crate) entities: EntityStore,
@@ -125,6 +137,8 @@ impl ObjectSubstrate {
             occupancy: OccupancyGrid::new(),
             cell_occupation: CellOccupationGrid::new(),
             raw_cell_occupation: RawCellOccupationGrid::new(),
+            hidden_occupation: HiddenOccupationGrid::new(),
+            base_reservations: CellReservationGrid::new(),
             entities: EntityStore::new(),
             anims: AnimStore::default(),
             multiplayer_feedback_anims: AnimStore::default(),

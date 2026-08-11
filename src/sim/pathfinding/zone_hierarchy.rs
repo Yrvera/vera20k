@@ -152,11 +152,63 @@ impl ZoneLevelGraph {
         }
     }
 
+    /// Append one replacement record without reusing stale slots. Native local
+    /// hierarchy repair keeps cleared records as holes and advances the
+    /// one-past-highest identifier.
+    pub(crate) fn append_record(&mut self, record: ZoneRecord) -> bool {
+        let Ok(expected) = ZoneId::try_from(self.records.len()) else {
+            return false;
+        };
+        if record.zone_id != expected {
+            return false;
+        }
+        self.records.push(Some(record));
+        self.edges.push(Vec::new());
+        true
+    }
+
     #[allow(dead_code)]
     pub(crate) fn push_edge(&mut self, zone: ZoneId, edge: ZoneEdgeRecord) {
         let idx = zone as usize;
         if idx < self.edges.len() {
             self.edges[idx].push(edge);
+        }
+    }
+
+    pub(crate) fn record_slot_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub(crate) fn clear_edges(&mut self, zone: ZoneId) {
+        if let Some(edges) = self.edges.get_mut(zone as usize) {
+            edges.clear();
+        }
+    }
+
+    /// Remove the last reciprocal occurrence while preserving every surviving
+    /// edge's relative order.
+    pub(crate) fn remove_last_edge_to(&mut self, zone: ZoneId, neighbor: ZoneId) {
+        let Some(edges) = self.edges.get_mut(zone as usize) else {
+            return;
+        };
+        if let Some(index) = edges.iter().rposition(|edge| edge.neighbor == neighbor) {
+            edges.remove(index);
+        }
+    }
+
+    pub(crate) fn set_parent(&mut self, zone: ZoneId, parent: ZoneId) {
+        if let Some(Some(record)) = self.records.get_mut(zone as usize) {
+            record.parent = parent;
+        }
+    }
+
+    pub(crate) fn set_zone_at(&mut self, x: i32, y: i32, zone: ZoneId) {
+        if x < 0 || y < 0 || x >= i32::from(self.width) || y >= i32::from(self.height) {
+            return;
+        }
+        let index = y as usize * self.width as usize + x as usize;
+        if let Some(slot) = self.cell_zone_ids.get_mut(index) {
+            *slot = zone;
         }
     }
 
@@ -182,6 +234,14 @@ impl ZoneLevelGraph {
         let idx = y as usize * self.width as usize + x as usize;
         self.cell_zone_ids.get(idx).copied().unwrap_or(ZONE_INVALID)
     }
+
+    pub(crate) fn cell_zone_ids(&self) -> &[ZoneId] {
+        &self.cell_zone_ids
+    }
+
+    pub(crate) fn cell_zone_ids_mut(&mut self) -> &mut [ZoneId] {
+        &mut self.cell_zone_ids
+    }
 }
 
 /// Three-level hierarchy searched by gamemd-style `Zone_precheck`.
@@ -205,6 +265,10 @@ impl ZoneHierarchy {
 
     pub(crate) fn level(&self, level: usize) -> Option<&ZoneLevelGraph> {
         self.levels.get(level)
+    }
+
+    pub(crate) fn levels_mut(&mut self) -> &mut [ZoneLevelGraph; ZONE_PRECHECK_LEVELS] {
+        &mut self.levels
     }
 
     fn ancestors_from_level0(&self, zone: ZoneId) -> Option<[ZoneId; ZONE_PRECHECK_LEVELS]> {

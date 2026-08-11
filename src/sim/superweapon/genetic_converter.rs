@@ -11,8 +11,12 @@
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
 use crate::map::entities::EntityCategory;
+use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
-use crate::sim::combat::combat_aoe::{AoELayerContext, apply_aoe_damage, bridge_adjusted_impact_z};
+use crate::sim::combat::combat_aoe::{
+    AoELayerContext, AreaDamageReceiver, TerrainCollectionView,
+    apply_aoe_damage_with_terrain_and_scenario, bridge_adjusted_impact_z,
+};
 use crate::sim::components::WorldEffect;
 use crate::sim::intern::InternedId;
 use crate::sim::superweapon::cell_grid::iter_cells_3x3;
@@ -22,10 +26,9 @@ use crate::sim::world::{SimSoundEvent, Simulation};
 /// when the full AnimClass death-to-infantry pipeline is implemented.
 const BRUTE_TYPE_REF: &str = "BRUTE";
 
-/// Mutate damage constant — large enough to kill any infantry in one hit.
-/// Matches the design intent of the original engine's case-9 AoE path (exact
-/// binary constant not yet extracted).
-const MUTATE_AOE_DAMAGE: i32 = 9999;
+/// Exact signed damage loaded by SuperClass::Launch case 9 immediately before
+/// its direct Apply_area_damage call (`MOV EDX, 0x2710`).
+const MUTATE_AOE_DAMAGE: i32 = 10_000;
 
 /// Launch GeneticConverter at (target_rx, target_ry). Mutates infantry in area.
 pub fn launch(
@@ -34,13 +37,14 @@ pub fn launch(
     owner: InternedId,
     target_rx: u16,
     target_ry: u16,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> bool {
     // 1. Spawn invoke anim (IonBlast equivalent).
     spawn_invoke_anim(sim, "IONBLAST", target_rx, target_ry);
 
     // 2. Collect infantry IDs + their positions BEFORE damage (for Brute spawn).
     let (killed_infantry_cells, kill_count) = if rules.general.mutate_explosion {
-        apply_mutate_explosion(sim, rules, target_rx, target_ry, owner)
+        apply_mutate_explosion(sim, rules, target_rx, target_ry, owner, overlay_registry)
     } else {
         apply_mutate_per_cell(sim, rules, target_rx, target_ry)
     };
@@ -77,94 +81,91 @@ fn apply_mutate_explosion(
     target_rx: u16,
     target_ry: u16,
     owner: InternedId,
+    overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> (Vec<(u16, u16)>, usize) {
     let warhead_id = rules.general.mutate_explosion_warhead.clone();
     let Some(warhead) = rules.warhead(&warhead_id) else {
         log::warn!("MutateExplosionWarhead '{}' not found in rules", warhead_id);
         return (Vec::new(), 0);
     };
-    let owner_str = sim.interner.resolve(owner).to_string();
+    let warhead_ref = sim.interner.intern(&warhead_id);
     let base_damage: i32 = MUTATE_AOE_DAMAGE;
     let impact_z = bridge_adjusted_impact_z(sim.resolved_terrain.as_ref(), target_rx, target_ry);
-    let hits = apply_aoe_damage(
-        &sim.substrate.entities,
+    let air_impact = crate::sim::combat::combat_aoe::air_impact_from_layer_z(
+        sim.resolved_terrain.as_ref(),
+        target_rx,
+        target_ry,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        crate::util::lepton::CELL_CENTER_LEPTON,
+        impact_z,
+    );
+    // Native SuperClass::Launch already constructed the launch-level
+    // MutateExplosion animation before this direct Apply_area_damage call and
+    // passes affect_resource=false. There is no Warhead AnimList producer here.
+    let scenario_no_damage = sim.session.no_damage;
+    let terrain_objects = TerrainCollectionView {
+        objects: &sim.production.terrain_objects,
+        cells: &sim.production.terrain_object_cells,
+    };
+    let aoe = apply_aoe_damage_with_terrain_and_scenario(
+        &mut sim.substrate.entities,
         target_rx,
         target_ry,
         base_damage,
         warhead,
         rules,
         &sim.interner,
-        &owner_str,
+        (
+            crate::sim::combat::RAD_NO_ATTACKER,
+            Some(owner),
+            warhead_ref,
+        ),
         AoELayerContext {
             occupancy: Some(&sim.substrate.occupancy),
-            terrain: sim.resolved_terrain.as_ref(),
+            terrain: sim.resolved_terrain.as_mut(),
+            overlay_grid: sim.overlay_grid.as_mut(),
+            overlay_registry,
+            scenario_rng: Some(&mut sim.scenario_rng),
+            air_impact,
             impact_z,
         },
+        Some(terrain_objects),
+        scenario_no_damage,
+        None,
     );
+    let receivers = aoe.receivers;
 
-    // Emit warhead AnimList anim + smudge for the Mutate detonation,
-    // kill-independent. Runs even if no infantry is in range.
-    let mut explosions: Vec<crate::sim::combat::ExplosionEffect> = Vec::new();
-    crate::sim::combat::emit_warhead_detonation_effects(
-        warhead,
-        base_damage,
-        target_rx,
-        target_ry,
-        crate::util::lepton::CELL_CENTER_LEPTON,
-        crate::util::lepton::CELL_CENTER_LEPTON,
-        0,
-        &mut sim.interner,
-        &mut explosions,
-        &mut sim.pending_smudge_requests,
-    );
-    for fx in &explosions {
-        let frames = sim
-            .effect_frame_counts
-            .get(&fx.shp_name)
-            .copied()
-            .unwrap_or(20);
-        sim.world_effects.push(WorldEffect {
-            anim_spawn: None,
-            shp_name: fx.shp_name,
-            rx: fx.rx,
-            ry: fx.ry,
-            sub_x: fx.sub_x,
-            sub_y: fx.sub_y,
-            z: fx.z,
-            frame: 0,
-            total_frames: frames,
-            frame_delay: 1,
-            elapsed_frames: 0,
-            translucent: true,
-            delay_frames: 0,
-            start_sound_id: None,
-            start_sound_emitted: false,
-        });
-    }
+    // Mutation is infantry-only, but its damage still enters the ordinary
+    // ReceiveDamage -> death helper transaction. Snapshot the transformation
+    // cells first, preserve the AoE's object-list order, then create Brutes only
+    // after every nested death detonation has returned.
+    let candidates: Vec<(u64, u16, u16)> = receivers
+        .iter()
+        .filter_map(|receiver| {
+            let AreaDamageReceiver::Entity(event) = receiver else {
+                return None;
+            };
+            sim.substrate
+                .entities
+                .get(event.target_id)
+                .and_then(|entity| {
+                    (entity.category == EntityCategory::Infantry)
+                        .then(|| (event.target_id, entity.position.rx, entity.position.ry))
+                })
+        })
+        .collect();
+    sim.commit_noncombat_aoe_receivers(rules, overlay_registry, &receivers);
 
-    let mut killed: Vec<(u16, u16)> = Vec::new();
-    for (id, dmg) in &hits {
-        // Pre-snapshot category + position + HP BEFORE mutating.
-        let snapshot = sim
-            .substrate
-            .entities
-            .get(*id)
-            .map(|e| (e.category, e.position.rx, e.position.ry, e.health.current));
-        let Some((cat, rx, ry, hp)) = snapshot else {
-            continue;
-        };
-        if cat != EntityCategory::Infantry {
-            continue;
-        }
-        if let Some(e) = sim.substrate.entities.get_mut(*id) {
-            let new_hp = hp.saturating_sub(*dmg);
-            e.health.current = new_hp;
-            if new_hp == 0 && !e.dying {
-                e.dying = true;
-                killed.push((rx, ry));
-            }
-        }
-    }
+    let killed: Vec<(u16, u16)> = candidates
+        .into_iter()
+        .filter_map(|(id, rx, ry)| {
+            sim.substrate
+                .entities
+                .get(id)
+                .is_some_and(|entity| entity.health.current == 0 && entity.dying)
+                .then_some((rx, ry))
+        })
+        .collect();
     let count = killed.len();
     (killed, count)
 }
@@ -252,6 +253,7 @@ fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
 mod tests {
     use super::*;
     use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
@@ -259,6 +261,8 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::MovementLayer;
     use crate::sim::occupancy::CellListInsertion;
+    use crate::sim::overlay_grid::OverlayGrid;
+    use crate::sim::rng::SimRng;
 
     #[test]
     fn mutate_explosion_bridge_target_mutates_only_bridge_layer() {
@@ -267,7 +271,7 @@ mod tests {
         add_same_cell_bridge_infantry(&mut sim);
         let owner = sim.interner.intern("Americans");
 
-        let (killed, count) = apply_mutate_explosion(&mut sim, &rules, 5, 5, owner);
+        let (killed, count) = apply_mutate_explosion(&mut sim, &rules, 5, 5, owner, None);
 
         assert_eq!(count, 1);
         assert_eq!(killed, vec![(5, 5)]);
@@ -283,6 +287,124 @@ mod tests {
         );
         assert!(!sim.substrate.entities.get(1).unwrap().dying);
         assert!(sim.substrate.entities.get(2).unwrap().dying);
+    }
+
+    #[test]
+    fn gsi_04_07_damage_gsi_04_11_mutate_explosion_exact_boundary_and_death_transaction() {
+        fn run(victim_hp: u16) -> (Simulation, Vec<(u16, u16)>, usize, u64) {
+            let ini = IniFile::from_str(
+                "[InfantryTypes]\n0=BOOMER\n1=BRUTE\n\
+                 [VehicleTypes]\n0=TANK\n\
+                 [AircraftTypes]\n\
+                 [BuildingTypes]\n\
+                 [Warheads]\n0=MutateExplosion\n1=WallWH\n\
+                 [OverlayTypes]\n0=TESTWALL\n\
+                 [General]\nMutateExplosion=yes\n\
+                 [CombatDamage]\nMaxDamage=10000\nMutateExplosionWarhead=MutateExplosion\n\
+                 [BOOMER]\nStrength=10000\nArmor=none\nSpeed=4\nExplodes=yes\nDeathWeapon=DeathBoom\n\
+                 [TANK]\nStrength=10000\nArmor=heavy\nSpeed=4\nExplodes=yes\nDeathWeapon=DeathBoom\n\
+                 [BRUTE]\nStrength=200\nArmor=none\nSpeed=4\n\
+                 [DeathBoom]\nDamage=400\nWarhead=WallWH\n\
+                 [MutateExplosion]\nCellSpread=1\nPercentAtMax=1\n\
+                 Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+                 [WallWH]\nCellSpread=0\nWall=yes\n\
+                 Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+                 [TESTWALL]\nWall=yes\nArmor=concrete\nStrength=400\n",
+            );
+            let art = IniFile::from_str("[TESTWALL]\nDamageLevels=2\n");
+            let rules = RuleSet::from_ini(&ini).expect("mutation death transaction rules");
+            let registry = OverlayTypeRegistry::from_ini(&ini, Some(&art));
+            assert!(rules.warhead("MutateExplosion").is_some());
+            assert!(rules.warhead("WallWH").is_some());
+            for object_id in ["BOOMER", "TANK"] {
+                assert_eq!(
+                    rules.object(object_id).unwrap().death_weapon.as_deref(),
+                    Some("DeathBoom")
+                );
+            }
+
+            let mut sim = Simulation::with_seed(1);
+            let owner = sim.interner.intern("Americans");
+            let soviet = sim.interner.intern("Soviet");
+            let mut infantry = GameEntity::test_default(10, "BOOMER", "Soviet", 5, 5);
+            infantry.owner = soviet;
+            infantry.type_ref = sim.interner.intern("BOOMER");
+            infantry.category = EntityCategory::Infantry;
+            infantry.is_voxel = false;
+            infantry.health = Health {
+                current: victim_hp,
+                max: victim_hp,
+            };
+            sim.substrate.entities.insert(infantry);
+            let _ = sim.reveal(10);
+
+            let mut unit = GameEntity::test_default(20, "TANK", "Soviet", 6, 5);
+            unit.owner = soviet;
+            unit.type_ref = sim.interner.intern("TANK");
+            unit.health = Health {
+                current: victim_hp,
+                max: victim_hp,
+            };
+            sim.substrate.entities.insert(unit);
+            let _ = sim.reveal(20);
+
+            let mut overlays = OverlayGrid::new(12, 12);
+            overlays.place_overlay(5, 5, 0, 0);
+            overlays.place_overlay(6, 5, 0, 0);
+            sim.overlay_grid = Some(overlays);
+
+            let (killed, count) =
+                apply_mutate_explosion(&mut sim, &rules, 5, 5, owner, Some(&registry));
+            let rng_state = sim.scenario_rng.state();
+            (sim, killed, count, rng_state)
+        }
+
+        let (fatal, killed, count, fatal_rng) = run(MUTATE_AOE_DAMAGE as u16);
+        for id in [10, 20] {
+            assert!(fatal.substrate.entities.get(id).is_some_and(|entity| {
+                entity.health.current == 0 && entity.dying && !entity.in_logic_vector
+            }));
+            assert!(!fatal.live_object_order_snapshot().contains(&id));
+        }
+        assert_eq!((killed, count), (vec![(5, 5)], 1));
+        for cell in [(5, 5), (6, 5)] {
+            assert_eq!(
+                fatal
+                    .overlay_grid
+                    .as_ref()
+                    .unwrap()
+                    .cell(cell.0, cell.1)
+                    .overlay_id,
+                None
+            );
+        }
+        assert_eq!(
+            fatal.substrate.pending_delete,
+            vec![20, 10],
+            "concrete Unit UnInit is inline; the synthetic non-animated Infantry fixture drains later"
+        );
+        assert_eq!(fatal_rng, SimRng::new(1).state());
+
+        let (boundary, killed, count, boundary_rng) = run(MUTATE_AOE_DAMAGE as u16 + 1);
+        assert_eq!((killed, count), (Vec::new(), 0));
+        for (id, cell) in [(10, (5, 5)), (20, (6, 5))] {
+            assert_eq!(
+                boundary
+                    .overlay_grid
+                    .as_ref()
+                    .unwrap()
+                    .cell(cell.0, cell.1)
+                    .overlay_id,
+                Some(0)
+            );
+            assert!(boundary.live_object_order_snapshot().contains(&id));
+            assert_eq!(
+                boundary.substrate.entities.get(id).unwrap().health.current,
+                1
+            );
+        }
+        assert!(boundary.substrate.pending_delete.is_empty());
+        assert_eq!(boundary_rng, SimRng::new(1).state());
     }
 
     fn genetic_test_rules() -> RuleSet {
@@ -393,7 +515,7 @@ mod tests {
             is_road: false,
             accepts_smudge: false,
             allows_tiberium: false,
-            is_cliff_redraw: false,
+            height_in_pixels: 0,
             variant: 0,
             has_ramp: false,
             canonical_ramp: None,

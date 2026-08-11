@@ -19,8 +19,56 @@ use crate::sim::vision::FogState;
 /// Height= multiplier: 1 art.ini Height unit = 15 screen pixels (HeightFactor * AdjustForZ).
 const HEIGHT_PX: f32 = 15.0;
 
-/// Bracket stub depth — drawn flat in the no-depth overlay pass.
-const BRACKET_DEPTH: f32 = 0.0006;
+/// A bracket endpoint: where it lands on screen, and how far above the ground
+/// plane it sits.
+///
+/// The height is carried separately from the screen point because it is what
+/// makes a bracket pixel's depth recoverable. gamemd gives each line endpoint
+/// the depth `14 - AdjustForZ(z)` while its screen Y has already had
+/// `AdjustForZ(z)` subtracted, so the two terms cancel and every pixel of the
+/// box — roof corners included — ends up carrying the depth of the ground
+/// corner beneath it. Adding `height` back to the plotted row reproduces that
+/// ground row exactly, which is why a vertical edge comes out at one constant
+/// depth along its whole length.
+#[derive(Clone, Copy)]
+struct Corner {
+    pt: ScreenPt,
+    height: f32,
+}
+
+/// Maps a bracket pixel's ground row to the same depth axis the sprite bodies
+/// sort and stamp on, so the two are directly comparable in the depth test.
+#[derive(Clone, Copy)]
+struct BracketDepthCtx {
+    origin_y: f32,
+    world_height: f32,
+    cell_z: u8,
+}
+
+impl BracketDepthCtx {
+    fn from_state(state: &AppState, cell_z: u8) -> Self {
+        let (origin_y, world_height) = state
+            .terrain_grid
+            .as_ref()
+            .map(|g| (g.origin_y, g.world_height))
+            .unwrap_or((0.0, 1.0));
+        Self {
+            origin_y,
+            world_height,
+            cell_z,
+        }
+    }
+
+    /// Depth for a pixel plotted at `row` that stands `height` px above ground.
+    fn depth_at(&self, row: i32, height: f32) -> f32 {
+        crate::app_instances::compute_sprite_depth_params(
+            self.origin_y,
+            self.world_height,
+            row as f32 + height,
+            self.cell_z,
+        )
+    }
+}
 
 /// Bracket line color — solid white, fully opaque.
 const BRACKET_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -90,7 +138,14 @@ fn is_visible(
 /// Compute the 8 corners of a building's isometric bounding box in screen space.
 ///
 /// Returns `(ground_corners, roof_corners)` where each is `[FL, FR, BL, BR]`.
-/// Coordinates are absolute screen pixels (entity screen pos + foundation offset).
+///
+/// `sx`/`sy` must be the **plain entity anchor** — the projection of the
+/// building's own coordinate, i.e. the diamond centre of its north-west
+/// footprint cell. It is deliberately *not* the building's art anchor: gamemd
+/// builds this cuboid from the foundation-centre coordinate (`GetCoords`), on a
+/// draw path that reads the object coordinate directly and never consults the
+/// render-coordinate override the art takes. Applying that override here would
+/// float the whole box half a tile above the footprint it encloses.
 fn compute_box_corners(
     sx: f32,
     sy: f32,
@@ -98,9 +153,13 @@ fn compute_box_corners(
     fh: f32,
     z_screen: f32,
 ) -> ([ScreenPt; 4], [ScreenPt; 4]) {
-    // Foundation center offset from entity screen position (NW corner cell center).
-    // Raw lepton offset: (fw-1)*128, (fh-1)*128.
-    // Projected: cx = sx + (fw-fh)*15, cy = sy + 7.5*(fw+fh) - 15.
+    // From Location (leptons): the foundation centre sits ((fw-1)*128, (fh-1)*128)
+    // from the north-west cell centre. Projected through the isometric transform
+    // (dx_px = 30*(dx-dy)/256, dy_px = 15*(dx+dy)/256) that is:
+    //   cx = sx + (fw - fh)*15
+    //   cy = sy + (fw + fh)*7.5 - 15
+    // The trailing -15 is the `-1` on each axis of that lepton offset, NOT a
+    // correction between the tile and entity frames.
     let cx = sx + (fw - fh) * 15.0;
     let cy = sy + (fw + fh) * 7.5 - 15.0;
 
@@ -173,7 +232,7 @@ fn screen_i32(v: f32) -> i32 {
     v.trunc() as i32
 }
 
-fn emit_pixel(instances: &mut Vec<SpriteInstance>, x: i32, y: i32, tint: [f32; 3]) {
+fn emit_pixel(instances: &mut Vec<SpriteInstance>, x: i32, y: i32, tint: [f32; 3], depth: f32) {
     instances.push(SpriteInstance {
         position: [x as f32, y as f32],
         size: [1.0, 1.0],
@@ -181,7 +240,7 @@ fn emit_pixel(instances: &mut Vec<SpriteInstance>, x: i32, y: i32, tint: [f32; 3
         uv_size: [1.0, 1.0],
         tint,
         alpha: BRACKET_COLOR[3],
-        depth: BRACKET_DEPTH,
+        depth,
         ..Default::default()
     });
 }
@@ -192,20 +251,30 @@ fn emit_pixel(instances: &mut Vec<SpriteInstance>, x: i32, y: i32, tint: [f32; 3
 /// bracket segments: integer endpoints, start pixel included, final endpoint
 /// excluded, Bresenham-style x/y stepping. The optional filter handles the
 /// post-shroud final-front bracket redraw's ABuffer pixel predicate.
-fn emit_line(instances: &mut Vec<SpriteInstance>, a: ScreenPt, b: ScreenPt) {
-    emit_line_with_filter(instances, a, b, None);
-}
-
-fn emit_line_with_filter(
+fn emit_line(
     instances: &mut Vec<SpriteInstance>,
-    a: ScreenPt,
-    b: ScreenPt,
+    a: Corner,
+    b: Corner,
+    ctx: &BracketDepthCtx,
     filter: Option<&BracketPixelFilter<'_>>,
 ) {
-    let mut x = screen_i32(a.x);
-    let mut y = screen_i32(a.y);
-    let end_x = screen_i32(b.x);
-    let end_y = screen_i32(b.y);
+    // gamemd reorders every segment left-to-right before it plots, then steps x
+    // unconditionally upward and stops one short of the far end. So the
+    // SMALLER-X endpoint is always the one that gets a pixel and the larger-x
+    // one is always dropped, whichever way the caller handed the segment over.
+    // Walking in the caller's order instead slides the whole run one pixel
+    // every time a stub points leftward. Ties keep the caller's order, matching
+    // the `JLE` that guards the swap.
+    let (a, b) = if screen_i32(a.pt.x) <= screen_i32(b.pt.x) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+
+    let mut x = screen_i32(a.pt.x);
+    let mut y = screen_i32(a.pt.y);
+    let end_x = screen_i32(b.pt.x);
+    let end_y = screen_i32(b.pt.y);
     if x == end_x && y == end_y {
         return;
     }
@@ -215,6 +284,12 @@ fn emit_line_with_filter(
     let sx = if x < end_x { 1 } else { -1 };
     let sy = if y < end_y { 1 } else { -1 };
     let mut err = dx + dy;
+    // Bresenham reaches the excluded far endpoint after max(|dx|,|dy|) plotted
+    // pixels, so that count is the parameter the two endpoint heights blend
+    // over. On a vertical edge the height gained cancels the row lost, which is
+    // what keeps the whole edge at its ground corner's depth.
+    let steps: f32 = dx.max(-dy).max(1) as f32;
+    let mut step: f32 = 0.0;
 
     while x != end_x || y != end_y {
         let tint = match filter {
@@ -222,7 +297,8 @@ fn emit_line_with_filter(
             None => Some([BRACKET_COLOR[0], BRACKET_COLOR[1], BRACKET_COLOR[2]]),
         };
         if let Some(tint) = tint {
-            emit_pixel(instances, x, y, tint);
+            let height: f32 = a.height + (b.height - a.height) * (step / steps);
+            emit_pixel(instances, x, y, tint, ctx.depth_at(y, height));
         }
         let e2 = err * 2;
         if e2 >= dy {
@@ -233,23 +309,25 @@ fn emit_line_with_filter(
             err += dx;
             y += sy;
         }
+        step += 1.0;
     }
 }
 
 /// Emit a bracket stub: a 25% line from corner `a` toward `b`.
-fn emit_stub(instances: &mut Vec<SpriteInstance>, a: ScreenPt, b: ScreenPt) {
-    let qp = quarter_point(a, b);
-    emit_line(instances, a, qp);
-}
-
-fn emit_stub_with_filter(
+fn emit_stub(
     instances: &mut Vec<SpriteInstance>,
-    a: ScreenPt,
-    b: ScreenPt,
-    filter: &BracketPixelFilter<'_>,
+    a: Corner,
+    b: Corner,
+    ctx: &BracketDepthCtx,
+    filter: Option<&BracketPixelFilter<'_>>,
 ) {
-    let qp = quarter_point(a, b);
-    emit_line_with_filter(instances, a, qp, Some(filter));
+    let qp = Corner {
+        pt: quarter_point(a.pt, b.pt),
+        // The stub's far end stands a quarter of the way up the edge, so its
+        // height blends on the same (3a + b) / 4 ratio as its position.
+        height: (a.height * 3.0 + b.height) * 0.25,
+    };
+    emit_line(instances, a, qp, ctx, filter);
 }
 
 /// Build bracket instances for all selected buildings.
@@ -332,46 +410,97 @@ pub(crate) fn build_selection_bracket_instances(
         }
         // --- 12 edges of the isometric bounding box ---
         // Indices: FL=0, FR=1, BL=2, BR=3
+        let ctx = BracketDepthCtx::from_state(state, e.position.z);
+        let gc: [Corner; 4] = [
+            Corner {
+                pt: g[0],
+                height: 0.0,
+            },
+            Corner {
+                pt: g[1],
+                height: 0.0,
+            },
+            Corner {
+                pt: g[2],
+                height: 0.0,
+            },
+            Corner {
+                pt: g[3],
+                height: 0.0,
+            },
+        ];
+        let rc: [Corner; 4] = [
+            Corner {
+                pt: r[0],
+                height: z_screen,
+            },
+            Corner {
+                pt: r[1],
+                height: z_screen,
+            },
+            Corner {
+                pt: r[2],
+                height: z_screen,
+            },
+            Corner {
+                pt: r[3],
+                height: z_screen,
+            },
+        ];
+        let front = Some(&final_front_filter);
 
-        // DrawBehind edges (5): stubs at both ends, behind sprite (hidden by building art).
-        // These are drawn anyway — the building sprite naturally occludes them.
-        emit_stub(&mut out.back, g[2], r[2]); // Edge 1: BL ground->BL roof (BL vertical)
-        emit_stub(&mut out.back, r[2], g[2]);
-        emit_stub(&mut out.back, g[3], g[2]); // Edge 2: BR ground->BL ground (back ground)
-        emit_stub(&mut out.back, g[2], g[3]);
-        emit_stub(&mut out.back, g[2], g[0]); // Edge 3: BL ground->FL ground (left ground)
-        emit_stub(&mut out.back, g[0], g[2]);
-        emit_stub(&mut out.back, r[0], r[2]); // Edge 4: FL roof->BL roof (left roof)
-        emit_stub(&mut out.back, r[2], r[0]);
-        emit_stub(&mut out.back, r[3], r[2]); // Edge 5: BR roof->BL roof (back roof)
-        emit_stub(&mut out.back, r[2], r[3]);
+        // --- Three corner brackets, roof level only ---
+        //
+        // WHAT A PLAYER SEES, which is what this reproduces: a selected building
+        // carries three corner marks, each radiating along the three isometric
+        // axes, and nothing anywhere near the floor. Reported from live play and
+        // confirmed from a screenshot 2026-08-05. The near (FR) roof corner is
+        // bare.
+        //
+        // DRIFT, deliberate and recorded. gamemd's draw code emits more than
+        // this: `TechnoClass__DrawBracketCorner` puts a stub at BOTH ends of
+        // each edge it is given, its nine callsites are nine of the cuboid's
+        // twelve edges, and `DrawExtras` inlines the remaining three as
+        // single-ended stubs — 21 stubs in all, seven of the eight corners, six
+        // of them anchored on the ground plane. Those ground-anchored stubs are
+        // not visible in play, and the mechanism that removes them has not been
+        // established. The leading hypothesis is per-pixel depth: bracket lines
+        // are Z-tested by `Surface__DrawLine_ABufModulated_ZClipped` and
+        // building bodies write Z, so the ground marks would lose against the
+        // art standing over them. That is a hypothesis. An implementation of it
+        // (the depth stamp in `app_render/draw_passes.rs`) did not hide them,
+        // which is evidence the hypothesis is at least incomplete.
+        //
+        // So this emits the observed subset directly rather than the full set
+        // plus an occlusion pass that does not yet work. Restoring the other
+        // twelve stubs is a one-commit revert once the removal mechanism is
+        // understood; until then, do not "fix" this by adding them back on the
+        // strength of the callsite list alone.
+        //
+        // Corner arms, three each:
+        //   BL roof — vertical down, toward FL roof, toward BR roof
+        //   FL roof — vertical down, toward BL roof, toward FR roof
+        //   BR roof — vertical down, toward BL roof, toward FR roof
 
-        // DrawExtras bracket corner edges (4): stubs at both ends, in front of sprite.
-        emit_stub(&mut out.front_first, g[0], g[1]); // Edge 6: FL ground->FR ground (front ground)
-        emit_stub_with_filter(&mut out.front, g[0], g[1], &final_front_filter);
-        emit_stub(&mut out.front_first, g[1], g[0]);
-        emit_stub_with_filter(&mut out.front, g[1], g[0], &final_front_filter);
-        emit_stub(&mut out.front_first, g[3], g[1]); // Edge 7: BR ground->FR ground (right ground)
-        emit_stub_with_filter(&mut out.front, g[3], g[1], &final_front_filter);
-        emit_stub(&mut out.front_first, g[1], g[3]);
-        emit_stub_with_filter(&mut out.front, g[1], g[3], &final_front_filter);
-        emit_stub(&mut out.front_first, r[0], g[0]); // Edge 8: FL roof->FL ground (FL vertical)
-        emit_stub_with_filter(&mut out.front, r[0], g[0], &final_front_filter);
-        emit_stub(&mut out.front_first, g[0], r[0]);
-        emit_stub_with_filter(&mut out.front, g[0], r[0], &final_front_filter);
-        emit_stub(&mut out.front_first, r[3], g[3]); // Edge 9: BR roof->BR ground (BR vertical)
-        emit_stub_with_filter(&mut out.front, r[3], g[3], &final_front_filter);
-        emit_stub(&mut out.front_first, g[3], r[3]);
-        emit_stub_with_filter(&mut out.front, g[3], r[3], &final_front_filter);
+        // Submitted before the object bodies, where the SHP merge can occlude
+        // them — gamemd's DrawBehind phase.
+        emit_stub(&mut out.back, rc[2], gc[2], &ctx, None); // BL roof, vertical
+        emit_stub(&mut out.back, rc[2], rc[0], &ctx, None); // BL roof -> FL roof
+        emit_stub(&mut out.back, rc[2], rc[3], &ctx, None); // BL roof -> BR roof
+        emit_stub(&mut out.back, rc[0], rc[2], &ctx, None); // FL roof -> BL roof
+        emit_stub(&mut out.back, rc[3], rc[2], &ctx, None); // BR roof -> BL roof
 
-        // DrawExtras single-stub edges (3): only stub at the visible end.
-        // All converge at hidden FR_roof corner.
-        emit_stub(&mut out.front_first, r[0], r[1]); // Edge 10: FL roof->FR roof (front roof, stub at FL)
-        emit_stub_with_filter(&mut out.front, r[0], r[1], &final_front_filter);
-        emit_stub(&mut out.front_first, r[3], r[1]); // Edge 11: BR roof->FR roof (right roof, stub at BR)
-        emit_stub_with_filter(&mut out.front, r[3], r[1], &final_front_filter);
-        emit_stub(&mut out.front_first, g[1], r[1]); // Edge 12: FR ground->FR roof (FR vertical, stub at FR ground)
-        emit_stub_with_filter(&mut out.front, g[1], r[1], &final_front_filter);
+        // gamemd's first object pass submits these before the body draw and its
+        // DrawExtras phase submits them again, so each goes into both buckets;
+        // only the second submission carries the post-shroud ABuffer predicate.
+        emit_stub(&mut out.front_first, rc[0], gc[0], &ctx, None); // FL roof, vertical
+        emit_stub(&mut out.front, rc[0], gc[0], &ctx, front);
+        emit_stub(&mut out.front_first, rc[0], rc[1], &ctx, None); // FL roof -> FR roof
+        emit_stub(&mut out.front, rc[0], rc[1], &ctx, front);
+        emit_stub(&mut out.front_first, rc[3], gc[3], &ctx, None); // BR roof, vertical
+        emit_stub(&mut out.front, rc[3], gc[3], &ctx, front);
+        emit_stub(&mut out.front_first, rc[3], rc[1], &ctx, None); // BR roof -> FR roof
+        emit_stub(&mut out.front, rc[3], rc[1], &ctx, front);
     }
 
     out
@@ -379,12 +508,24 @@ pub(crate) fn build_selection_bracket_instances(
 
 #[cfg(test)]
 mod tests {
-    use super::{ScreenPt, emit_line};
+    use super::{BracketDepthCtx, Corner, ScreenPt, emit_line};
     use crate::render::batch::SpriteInstance;
+
+    fn test_ctx() -> BracketDepthCtx {
+        BracketDepthCtx {
+            origin_y: 0.0,
+            world_height: 1000.0,
+            cell_z: 0,
+        }
+    }
+
+    fn ground(pt: ScreenPt) -> Corner {
+        Corner { pt, height: 0.0 }
+    }
 
     fn line_positions(a: ScreenPt, b: ScreenPt) -> Vec<(i32, i32)> {
         let mut instances: Vec<SpriteInstance> = Vec::new();
-        emit_line(&mut instances, a, b);
+        emit_line(&mut instances, ground(a), ground(b), &test_ctx(), None);
         instances
             .iter()
             .map(|i| (i.position[0] as i32, i.position[1] as i32))
@@ -397,10 +538,79 @@ mod tests {
         assert_eq!(pts, vec![(0, 0), (1, 0), (2, 0)]);
     }
 
+    /// A segment handed over right-to-left plots the SAME pixels as the same
+    /// segment handed over left-to-right.
+    ///
+    /// gamemd canonicalises every segment before plotting and then steps x
+    /// unconditionally upward, stopping one short of the far end, so the
+    /// smaller-x endpoint is always the one that survives regardless of the
+    /// order the caller used. Walking in caller order instead — which is what
+    /// this test used to assert — slides the whole run one pixel every time a
+    /// stub points leftward, and roughly half of the box's stubs do.
     #[test]
-    fn emit_line_handles_reverse_direction() {
-        let pts = line_positions(ScreenPt { x: 3.0, y: 0.0 }, ScreenPt { x: 0.0, y: 0.0 });
-        assert_eq!(pts, vec![(3, 0), (2, 0), (1, 0)]);
+    fn emit_line_canonicalises_right_to_left_segments() {
+        let leftward = line_positions(ScreenPt { x: 3.0, y: 0.0 }, ScreenPt { x: 0.0, y: 0.0 });
+        assert_eq!(leftward, vec![(0, 0), (1, 0), (2, 0)]);
+        let rightward = line_positions(ScreenPt { x: 0.0, y: 0.0 }, ScreenPt { x: 3.0, y: 0.0 });
+        assert_eq!(
+            leftward, rightward,
+            "the plotted run must not depend on which end the caller passed first"
+        );
+    }
+
+    /// A vertical box edge must come out at one single depth along its whole
+    /// length. Each pixel climbs one row and gains one pixel of height, and the
+    /// two cancel — the same cancellation gamemd gets from pairing a
+    /// `14 - AdjustForZ(z)` endpoint depth with a screen Y that already had
+    /// `AdjustForZ(z)` taken off it. If this ever splits, roof-corner marks
+    /// start testing against the wrong row and clip against their own building.
+    #[test]
+    fn vertical_edge_pixels_all_carry_the_ground_corner_depth() {
+        let mut instances: Vec<SpriteInstance> = Vec::new();
+        let base = ScreenPt { x: 10.0, y: 100.0 };
+        emit_line(
+            &mut instances,
+            Corner {
+                pt: base,
+                height: 0.0,
+            },
+            Corner {
+                pt: ScreenPt { x: 10.0, y: 80.0 },
+                height: 20.0,
+            },
+            &test_ctx(),
+            None,
+        );
+        assert_eq!(instances.len(), 20, "one pixel per row climbed");
+        let ground_depth = test_ctx().depth_at(100, 0.0);
+        for (i, inst) in instances.iter().enumerate() {
+            assert!(
+                (inst.depth - ground_depth).abs() < 1e-6,
+                "pixel {i} at row {} drifted to {} (ground corner is {ground_depth})",
+                inst.position[1],
+                inst.depth,
+            );
+        }
+    }
+
+    /// A ground edge is the control case: no height anywhere, so depth has to
+    /// track the plotted row and nothing else. Rows are taken from the middle
+    /// of the world so the depth axis is not sitting on its own clamp.
+    #[test]
+    fn ground_edge_depth_tracks_the_row() {
+        let mut instances: Vec<SpriteInstance> = Vec::new();
+        emit_line(
+            &mut instances,
+            ground(ScreenPt { x: 0.0, y: 400.0 }),
+            ground(ScreenPt { x: 0.0, y: 404.0 }),
+            &test_ctx(),
+            None,
+        );
+        let depths: Vec<f32> = instances.iter().map(|i| i.depth).collect();
+        assert_eq!(depths.len(), 4);
+        for pair in depths.windows(2) {
+            assert!(pair[1] < pair[0], "moving south must move nearer: {pair:?}");
+        }
     }
 
     #[test]

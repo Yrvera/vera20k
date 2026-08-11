@@ -22,6 +22,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
+use crate::sim::cell_rect::{CellRect, CellRectOccupancyContext, check_occupancy_rect};
 use crate::sim::command::{Command, CommandEnvelope, QueueMode};
 use crate::sim::intern::InternedId;
 use crate::sim::pathfinding::PathGrid;
@@ -573,12 +574,17 @@ fn find_placement_cell(
     type_id: &str,
     center_rx: u16,
     center_ry: u16,
-    _fw: u16,
-    _fh: u16,
+    fw: u16,
+    fh: u16,
     path_grid: Option<&PathGrid>,
     height_map: &BTreeMap<(u16, u16), u8>,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> Option<(u16, u16)> {
+    // Standard overlay walls get their candidates from the AI base-perimeter
+    // scan, not the ordinary building-site helper's reservation phase. The
+    // shared placement preview below remains the final wall-cell predicate.
+    let requires_base_site_reservation = !rules.object(type_id).is_some_and(|object| object.wall);
+
     // Try placement in a spiral pattern around the base center.
     let max_radius: i32 = 12;
     for r in 0..=max_radius {
@@ -590,6 +596,11 @@ fn find_placement_cell(
         // Only check the perimeter of this ring.
         for x in min_x..=max_x {
             for y in [min_y, max_y] {
+                if requires_base_site_reservation
+                    && !ai_base_reservation_candidate_ok(sim, rules, owner, type_id, x, y, fw, fh)
+                {
+                    continue;
+                }
                 let preview = production::placement_preview_for_owner_with_overlays(
                     sim,
                     rules,
@@ -608,6 +619,11 @@ fn find_placement_cell(
         }
         for y in (min_y + 1)..max_y {
             for x in [min_x, max_x] {
+                if requires_base_site_reservation
+                    && !ai_base_reservation_candidate_ok(sim, rules, owner, type_id, x, y, fw, fh)
+                {
+                    continue;
+                }
                 let preview = production::placement_preview_for_owner_with_overlays(
                     sim,
                     rules,
@@ -626,6 +642,67 @@ fn find_placement_cell(
         }
     }
     None
+}
+
+fn ai_base_reservation_candidate_ok(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: &str,
+    type_id: &str,
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+) -> bool {
+    let Some(owner_id) = sim.interner.get(owner) else {
+        return false;
+    };
+    let Some(house_index) = sim.base_reservation_house_index(owner_id) else {
+        return false;
+    };
+    let Some(building_type) = rules.object(type_id) else {
+        return false;
+    };
+    let extra = i32::from(building_type.protect_with_wall || building_type.wants_extra_space);
+    let border = rules.ai_base_spacing.wrapping_add(extra);
+    let twice_border = border.wrapping_mul(2);
+    let candidate_x = x as i16 as i32;
+    let candidate_y = y as i16 as i32;
+    let candidate = CellRect::new(
+        candidate_x.wrapping_sub(border),
+        candidate_y.wrapping_sub(border),
+        i32::from(width).wrapping_add(twice_border),
+        i32::from(height).wrapping_add(twice_border),
+    );
+
+    if !check_occupancy_rect(CellRectOccupancyContext {
+        rect: candidate,
+        reservation_arg: house_index,
+        reservations: Some(&sim.substrate.base_reservations),
+        occupancy: Some(&sim.substrate.occupancy),
+        entities: Some(&sim.substrate.entities),
+        terrain_object_cells: Some(&sim.production.terrain_object_cells),
+        resolved_terrain: sim.resolved_terrain.as_ref(),
+        overlay_grid: sim.overlay_grid.as_ref(),
+        map_size: Some((sim.session.map_width, sim.session.map_height)),
+        playfield_bounds: sim.playfield_bounds,
+    }) {
+        return false;
+    }
+
+    // FUN_50B760's ordinary active game path requires connectivity to this
+    // house's reservation network. Simulation has no verified raw game-mode-0
+    // analogue, so no shortcut is synthesized here.
+    let spacing = rules.ai_base_spacing;
+    let max_extra = spacing.wrapping_mul(2);
+    sim.substrate.base_reservations.has_reservation_inclusive(
+        sim.resolved_terrain.as_ref(),
+        x.wrapping_sub(spacing).wrapping_sub(1),
+        y.wrapping_sub(spacing).wrapping_sub(1),
+        x.wrapping_add(i32::from(width)).wrapping_add(max_extra),
+        y.wrapping_add(i32::from(height)).wrapping_add(max_extra),
+        house_index,
+    )
 }
 
 fn find_buildable_matching<F>(
@@ -923,9 +1000,24 @@ mod tests {
         let height_map = BTreeMap::new();
         let mut sim = Simulation::new();
         sim.session.binary_frame = 1;
+        sim.session.map_width = 32;
+        sim.session.map_height = 32;
         sim.overlay_grid = Some(OverlayGrid::new(32, 32));
         spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
         let owner = sim.interner.intern("Americans");
+        sim.session.house_order.push(owner);
+        let conyard_profile = rules.object("GACNST").expect("ConYard profile");
+        let conyard_foundation = conyard_profile.foundation.clone();
+        let conyard_spacing = conyard_profile
+            .base_reservation_spacing
+            .expect("BaseNormal ConYard reservation spacing");
+        let conyard = sim.substrate.entities.get_mut(1).expect("spawned ConYard");
+        conyard.foundation = conyard_foundation;
+        conyard.base_reservation_spacing = Some(conyard_spacing);
+        assert!(matches!(
+            sim.reveal(1),
+            crate::sim::world::RevealOutcome::Revealed { .. }
+        ));
         let wall_type = sim.interner.intern("GAWALL");
         sim.production
             .ready_by_owner
@@ -943,16 +1035,18 @@ mod tests {
             Some(&registry),
         );
         let (rx, ry) = match commands.as_slice() {
-            [CommandEnvelope {
-                payload:
-                    Command::PlaceReadyBuilding {
-                        owner: command_owner,
-                        type_id,
-                        rx,
-                        ry,
-                    },
-                ..
-            }] => {
+            [
+                CommandEnvelope {
+                    payload:
+                        Command::PlaceReadyBuilding {
+                            owner: command_owner,
+                            type_id,
+                            rx,
+                            ry,
+                        },
+                    ..
+                },
+            ] => {
                 assert_eq!(*command_owner, owner);
                 assert_eq!(*type_id, wall_type);
                 (*rx, *ry)
@@ -1353,5 +1447,82 @@ mod tests {
         );
         assert_eq!(miner.home_refinery, Some(refinery_sid));
         assert_eq!(count_refineries(&sim, "Americans", &rules), 1);
+    }
+
+    #[test]
+    fn gsi_04_05_reservation_ai_requires_free_candidate_then_same_house_near() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[AI]\nAIBaseSpacing=1\n\
+             [BuildingTypes]\n0=NORMAL\n1=PROTECTED\n2=SPACIOUS\n\
+             [NORMAL]\nFoundation=2x2\n\
+             [PROTECTED]\nFoundation=2x2\nProtectWithWall=yes\n\
+             [SPACIOUS]\nFoundation=2x2\nWantsExtraSpace=yes\n",
+        ))
+        .expect("AI reservation rules");
+        let normal = rules.object("NORMAL").unwrap();
+        assert!(!normal.protect_with_wall);
+        assert!(!normal.wants_extra_space);
+        assert!(!normal.wall, "ProtectWithWall is not Wall identity");
+        assert!(rules.object("PROTECTED").unwrap().protect_with_wall);
+        assert!(rules.object("SPACIOUS").unwrap().wants_extra_space);
+        let mut sim = Simulation::new();
+        sim.session.map_width = 64;
+        sim.session.map_height = 64;
+        let owner = sim.interner.intern("Americans");
+        let other = sim.interner.intern("Russians");
+        sim.session.house_order.extend([owner, other]);
+
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "NORMAL", 10, 10, 2, 2),
+            "isolated candidate has no same-house network"
+        );
+        sim.substrate.base_reservations.reserve(None, 8, 10, 1);
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "NORMAL", 10, 10, 2, 2),
+            "another house's nearby bit is not connectivity"
+        );
+        sim.substrate.base_reservations.reserve(None, 8, 10, 0);
+        assert!(ai_base_reservation_candidate_ok(
+            &sim,
+            &rules,
+            "Americans",
+            "NORMAL",
+            10,
+            10,
+            2,
+            2
+        ));
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "PROTECTED", 10, 10, 2, 2),
+            "ProtectWithWall expands b from 1 to 2, so (8,10) blocks first phase"
+        );
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "SPACIOUS", 10, 10, 2, 2),
+            "WantsExtraSpace uses the same one-cell extra border"
+        );
+
+        sim.substrate.base_reservations.reserve(None, 9, 10, 0);
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "NORMAL", 10, 10, 2, 2),
+            "normal b=1 first-phase CheckOccupancy includes (9,10)"
+        );
+        sim.substrate.base_reservations.clear(None, 9, 10, 0);
+
+        sim.substrate.base_reservations.reserve(None, 10, 10, 0);
+        assert!(
+            !ai_base_reservation_candidate_ok(&sim, &rules, "Americans", "NORMAL", 10, 10, 2, 2),
+            "CheckOccupancy rejects same-house overlap before the near test"
+        );
+        sim.substrate.base_reservations.clear(None, 10, 10, 0);
+        assert!(ai_base_reservation_candidate_ok(
+            &sim,
+            &rules,
+            "Americans",
+            "NORMAL",
+            10,
+            10,
+            2,
+            2
+        ));
     }
 }

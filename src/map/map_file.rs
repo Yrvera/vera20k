@@ -542,21 +542,17 @@ fn parse_map_smudges(ini: &IniFile) -> Vec<MapSmudgeEntry> {
     let mut out: Vec<MapSmudgeEntry> = Vec::new();
     for value in section.get_values() {
         let parts: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
-        if parts.len() < 4 {
+        if parts.len() < 3 {
             continue;
         }
-        let is_baked: i32 = parts[3].parse::<i32>().unwrap_or(0);
+        let is_baked = parts
+            .get(3)
+            .map_or(0, |value| crate::rules::ini_value::atoi_lenient(value));
         if is_baked != 0 {
             continue;
         }
-        let rx: u16 = match parts[1].parse::<u16>() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let ry: u16 = match parts[2].parse::<u16>() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let rx = crate::rules::ini_value::atoi_lenient(parts[1]) as i16 as u16;
+        let ry = crate::rules::ini_value::atoi_lenient(parts[2]) as i16 as u16;
         out.push(MapSmudgeEntry {
             type_name: parts[0].to_uppercase(),
             rx,
@@ -605,12 +601,29 @@ mod smudge_parse_tests {
         )
         .unwrap();
         let smudges = parse_map_smudges(&ini);
-        // Only entry 3 fully valid; entry 1 has empty type_name (kept as "" — uppercase of empty).
-        // Entry 0 fails (only 3 parts), entry 2 fails (X not a number).
+        // Three-token entries default IsBaked to zero; malformed numerics use atoi's zero.
         // Entry 1: empty type_name accepted by parser but won't resolve to a registered SmudgeType later.
+        assert_eq!(smudges.len(), 4);
+        assert_eq!(smudges[0].type_name, "CR1");
+        assert_eq!((smudges[0].rx, smudges[0].ry), (5, 6));
+        assert_eq!(smudges[1].type_name, "");
+        assert_eq!((smudges[2].rx, smudges[2].ry), (0, 6));
+        assert_eq!(smudges[3].type_name, "CR1");
+    }
+
+    #[test]
+    fn gsi_04_11_smudge_parser_accepts_three_tokens_atoi_and_signed_short_narrowing() {
+        let ini = IniFile::from_str(
+            "[Smudge]\n\
+             0=CR1,-1,5cells\n\
+             1=CR2,40000,+7,0junk\n\
+             2=BAKED,2,3,1tail\n",
+        );
+        let smudges = parse_map_smudges(&ini);
         assert_eq!(smudges.len(), 2);
-        assert_eq!(smudges[0].type_name, "");
-        assert_eq!(smudges[1].type_name, "CR1");
+        assert_eq!((smudges[0].rx, smudges[0].ry), (u16::MAX, 5));
+        assert_eq!(smudges[1].rx, (40_000_i32 as i16) as u16);
+        assert_eq!(smudges[1].ry, 7);
     }
 }
 

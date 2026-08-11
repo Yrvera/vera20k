@@ -28,6 +28,7 @@ pub mod map_file;
 pub mod overlay;
 pub mod overlay_types;
 pub mod preview;
+pub mod retail_trig;
 pub mod resolved_terrain;
 pub mod rmg;
 pub mod tags;

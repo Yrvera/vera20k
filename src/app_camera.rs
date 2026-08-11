@@ -6,7 +6,11 @@
 //! Three frames meet in this file and mixing them is the classic bug here:
 //! * **World pixels** — what `terrain::iso_to_screen` / `terrain::lepton_to_screen`
 //!   produce. `camera_x`/`camera_y` live in this frame and name the world point
-//!   drawn at window pixel `(0, 0)`.
+//!   drawn at window pixel `(0, 0)`. Within world pixels there are two anchors
+//!   that differ by half a tile: `iso_to_screen` gives a cell's *tile* corner,
+//!   while an entity standing on that cell is drawn on the cell's diamond
+//!   centre. `cell_centre_world_point` converts the first into the second and
+//!   is what every camera move targets.
 //! * **Window pixels** — `render_width()` × `render_height()`, cursor position,
 //!   sidebar width. The batch shader maps `screen = (world - camera) * zoom`, so
 //!   converting a window-pixel extent into world pixels is a divide by `zoom`.
@@ -18,8 +22,13 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
+use crate::app_types::ScrollDir;
 use crate::map::terrain;
-use crate::sidebar::SidebarChromeLayoutSpec;
+
+/// Stock YR reserves a fixed 168-pixel right sidebar and a fixed 32-pixel
+/// bottom strip when it builds the tactical view rectangle.
+const TACTICAL_SIDEBAR_WIDTH_PX: u32 = 168;
+const TACTICAL_BOTTOM_STRIP_HEIGHT_PX: u32 = 32;
 
 /// Arrow-key scroll distance in world pixels per frame.
 ///
@@ -64,13 +73,8 @@ const ZOOM_STEP: f32 = 1.15;
 /// least `ScrollRate + 1`, and the options slider never reports `ScrollRate` below 0.
 const EDGE_SCROLL_SPEED_TABLE: [i32; 9] = [448, 384, 320, 256, 192, 128, 64, 32, 16];
 
-/// `[AudioVisual] ScrollMultiplier`, stock `.07` in both `rules.ini` and
-/// `rulesmd.ini`. Scales the raw table into pixels per frame, giving the retail
-/// ramp `1, 2, 4, 8, 13, 17, 22, 26` px/frame for coast levels 0..7.
-///
-/// VERA-internal: `GeneralRules` has no `ScrollMultiplier` field yet, so the
-/// stock value is inlined. Wire this to the rules parser when that key lands.
-const SCROLL_MULTIPLIER: f64 = 0.07;
+/// Constructor fallback for `[AudioVisual] ScrollMultiplier`.
+const DEFAULT_SCROLL_MULTIPLIER: f64 = 0.07;
 
 /// Fraction of the window width that splits the nine-zone direction bands on X.
 const EDGE_SCROLL_ZONE_FRACTION_X: f64 = 0.16;
@@ -154,6 +158,10 @@ impl EdgeScrollState {
             self.coast_level = (self.coast_level - 1).max(0);
         }
     }
+
+    fn coasting_direction(&self) -> Option<ScrollDir> {
+        (self.coast_level > 0).then(|| scroll_dir_from_octant(self.octant))
+    }
 }
 
 /// Nine-zone reference coordinate for one axis.
@@ -197,6 +205,48 @@ fn edge_scroll_octant(x: i32, y: i32, view_w: i32, view_h: i32) -> usize {
     ((usize::from(dir8 >> 4) + 1) >> 1) & 7
 }
 
+fn scroll_dir_from_octant(octant: usize) -> ScrollDir {
+    match octant & 7 {
+        0 => ScrollDir::N,
+        1 => ScrollDir::NE,
+        2 => ScrollDir::E,
+        3 => ScrollDir::SE,
+        4 => ScrollDir::S,
+        5 => ScrollDir::SW,
+        6 => ScrollDir::W,
+        _ => ScrollDir::NW,
+    }
+}
+
+fn scroll_dir_octant(dir: ScrollDir) -> usize {
+    match dir {
+        ScrollDir::N => 0,
+        ScrollDir::NE => 1,
+        ScrollDir::E => 2,
+        ScrollDir::SE => 3,
+        ScrollDir::S => 4,
+        ScrollDir::SW => 5,
+        ScrollDir::W => 6,
+        ScrollDir::NW => 7,
+    }
+}
+
+/// Active edge-scroll intent for a cursor position. The trigger is exactly the
+/// outermost integer pixel of the whole window, sidebar included.
+pub(crate) fn edge_scroll_intent(
+    cursor: (f32, f32),
+    view_w: i32,
+    view_h: i32,
+) -> Option<ScrollDir> {
+    if view_w <= 0 || view_h <= 0 {
+        return None;
+    }
+    let x = cursor.0.floor() as i32;
+    let y = cursor.1.floor() as i32;
+    (x <= 0 || y <= 0 || x >= view_w - 1 || y >= view_h - 1)
+        .then(|| scroll_dir_from_octant(edge_scroll_octant(x, y, view_w, view_h)))
+}
+
 /// One edge-scroll step. Returns the camera delta in **window pixels**.
 ///
 /// `view_w`/`view_h` are the full window, sidebar included: gamemd's at-edge
@@ -206,19 +256,76 @@ fn edge_scroll_octant(x: i32, y: i32, view_w: i32, view_h: i32) -> usize {
 ///
 /// `scroll_rate` is the internal `[Options] ScrollRate` (0 fastest .. 6 slowest).
 ///
-/// Two verified native behaviours are **not** reproduced here, both recorded as
-/// open DRIFT:
-/// * **Blocked-scroll ramp gate.** gamemd asks whether the move is possible
-///   before scrolling. When it is not — the camera is already pinned at a map
-///   border — it swaps in the barred cursor and skips the whole timer block, so
-///   the counter does not charge. VERA ramps unconditionally, so holding the
-///   cursor against a map edge winds the counter to the cap and the next scroll
-///   in a different direction starts at full speed instead of creeping. Fires
-///   whenever a player pushes into a map border, which is routine.
-/// * **Right-button slowdown.** With the right button held, gamemd bumps the
-///   table index one step slower and clamps it into `4..=8`, capping edge scroll
-///   at 13 px/frame. VERA has no persistent right-button-held flag to read.
-pub(crate) fn edge_scroll_step(
+/// `movement_allowed` is the one-pixel preflight through the tactical clamp.
+/// A blocked active edge skips the timer block; a blocked coast still decays.
+/// `right_button_held` selects the slower `clamp(index + 1, 4, 8)` lane.
+fn edge_scroll_step_with_context(
+    state: &mut EdgeScrollState,
+    cursor: (f32, f32),
+    view_w: i32,
+    view_h: i32,
+    scroll_rate: u32,
+    scroll_multiplier: f64,
+    right_button_held: bool,
+    movement_allowed: bool,
+    now: u32,
+) -> (f32, f32) {
+    let active_direction = edge_scroll_intent(cursor, view_w, view_h);
+
+    // ScrollRate caps the peak speed by flooring the table index, and the coast
+    // counter is written back clamped so it cannot run away above the cap.
+    // Native applies this cap before a blocked active-edge request returns.
+    // The array clamp also makes a user-edited value outside the stock slider
+    // range safe without changing ordinary 0..=6 behavior.
+    let rate_floor = i32::try_from(scroll_rate)
+        .unwrap_or(i32::MAX)
+        .saturating_add(1);
+    let base_index = ((8 - state.coast_level).max(rate_floor))
+        .clamp(0, EDGE_SCROLL_SPEED_TABLE.len() as i32 - 1);
+    state.coast_level = 8 - base_index;
+
+    if active_direction.is_some() && !movement_allowed {
+        // A blocked active edge returns after the cap but before direction,
+        // timer, or ramp state changes.
+        return (0.0, 0.0);
+    }
+
+    if let Some(direction) = active_direction {
+        state.octant = scroll_dir_octant(direction);
+    } else if state.coast_level == 0 {
+        // Idle: nothing moves, but the decay timer is still serviced.
+        state.decay(now);
+        return (0.0, 0.0);
+    }
+
+    let index = if right_button_held {
+        base_index.saturating_add(1).clamp(4, 8)
+    } else {
+        base_index
+    };
+
+    // Truncating float-to-long, matching gamemd's chop rounding mode: the stock
+    // multiplier turns the table into 1, 2, 4, 8, 13, 17, 22, 26, 31 px/frame.
+    let distance =
+        (f64::from(EDGE_SCROLL_SPEED_TABLE[index as usize]) * scroll_multiplier).trunc() as f32;
+
+    if active_direction.is_some() {
+        state.ramp_up(now);
+    } else {
+        state.decay(now);
+    }
+
+    if !movement_allowed {
+        // A blocked coast still reaches the normal decay above.
+        return (0.0, 0.0);
+    }
+
+    let (dx, dy) = OCTANT_DELTA[state.octant];
+    (dx * distance, dy * distance)
+}
+
+#[cfg(test)]
+fn edge_scroll_step(
     state: &mut EdgeScrollState,
     cursor: (f32, f32),
     view_w: i32,
@@ -226,41 +333,17 @@ pub(crate) fn edge_scroll_step(
     scroll_rate: u32,
     now: u32,
 ) -> (f32, f32) {
-    // The native test is on integer mouse coordinates; VERA's cursor is scaled
-    // into render space as a float, so floor before comparing.
-    let x = cursor.0.floor() as i32;
-    let y = cursor.1.floor() as i32;
-    let at_edge = x <= 0 || y <= 0 || x >= view_w - 1 || y >= view_h - 1;
-
-    if at_edge {
-        state.octant = edge_scroll_octant(x, y, view_w, view_h);
-    } else if state.coast_level == 0 {
-        // Idle: nothing moves, but the decay timer is still serviced.
-        state.decay(now);
-        return (0.0, 0.0);
-    }
-
-    // ScrollRate caps the peak speed by flooring the table index, and the coast
-    // counter is written back clamped so it cannot run away above the cap.
-    // The `clamp` only guards the array bound — the options slider is 0..=6, so
-    // the index never exceeds 7 in a stock game.
-    let index = ((8 - state.coast_level).max(scroll_rate as i32 + 1))
-        .clamp(0, EDGE_SCROLL_SPEED_TABLE.len() as i32 - 1);
-    state.coast_level = 8 - index;
-
-    // Truncating float-to-long, matching gamemd's chop rounding mode: the stock
-    // multiplier turns the table into 1, 2, 4, 8, 13, 17, 22, 26, 31 px/frame.
-    let distance =
-        (f64::from(EDGE_SCROLL_SPEED_TABLE[index as usize]) * SCROLL_MULTIPLIER).trunc() as f32;
-
-    if at_edge {
-        state.ramp_up(now);
-    } else {
-        state.decay(now);
-    }
-
-    let (dx, dy) = OCTANT_DELTA[state.octant];
-    (dx * distance, dy * distance)
+    edge_scroll_step_with_context(
+        state,
+        cursor,
+        view_w,
+        view_h,
+        scroll_rate,
+        DEFAULT_SCROLL_MULTIPLIER,
+        false,
+        true,
+        now,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -312,10 +395,10 @@ impl ViewBookmarks {
 /// bookmark records where the player is looking rather than where the mouse
 /// happens to sit.
 fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
-    let tactical_w =
-        tactical_viewport_width_px(state.render_width(), state.sidebar_layout_spec) as f32;
-    let world_x = state.camera_x + tactical_w / (2.0 * state.zoom_level);
-    let world_y = state.camera_y + state.render_height() as f32 / (2.0 * state.zoom_level);
+    let (tactical_w, tactical_h) =
+        tactical_viewport_size_px(state.render_width(), state.render_height());
+    let world_x = state.camera_x + tactical_w as f32 / (2.0 * state.zoom_level);
+    let world_y = state.camera_y + tactical_h as f32 / (2.0 * state.zoom_level);
     crate::app_sim_tick::world_point_to_cell(
         world_x,
         world_y,
@@ -351,14 +434,49 @@ pub(crate) fn seed_view_bookmarks_from_current_view(state: &mut AppState) {
 // Right-drag map pan.
 // ---------------------------------------------------------------------------
 
-/// `2 * SM_CXDRAG` / `2 * SM_CYDRAG` — the displacement a right drag must exceed
-/// before it becomes a map pan, and before the release stops running the
-/// cancel/deselect ladder. Windows ships 4 for both metrics, so the live
-/// threshold is 8 px on a default install.
-///
-/// VERA-internal: the live system metric is not queried, the default is used.
-/// gamemd equivalent UNCHECKED for a machine whose drag metrics were customised.
-const RIGHT_DRAG_THRESHOLD_PX: f32 = 8.0;
+/// Default `SM_CXDRAG` / `SM_CYDRAG` value used by the non-Windows development
+/// fallback. The retail Windows path reads the live per-machine metrics.
+#[cfg(not(windows))]
+const DEFAULT_SYSTEM_DRAG_METRIC_PX: i32 = 4;
+
+#[cfg(windows)]
+const SM_CXDRAG: i32 = 68;
+#[cfg(windows)]
+const SM_CYDRAG: i32 = 69;
+
+#[cfg(windows)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetSystemMetrics(index: i32) -> i32;
+}
+
+/// Current Windows drag metrics, or the ordinary Windows default on development
+/// targets that do not expose `GetSystemMetrics`.
+fn system_drag_metrics_px() -> (i32, i32) {
+    #[cfg(windows)]
+    {
+        // SAFETY: GetSystemMetrics is a process-wide read with no pointer
+        // arguments. SM_CXDRAG and SM_CYDRAG return pixel counts.
+        unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) }
+    }
+    #[cfg(not(windows))]
+    {
+        (DEFAULT_SYSTEM_DRAG_METRIC_PX, DEFAULT_SYSTEM_DRAG_METRIC_PX)
+    }
+}
+
+/// gamemd crosses the right-drag latch when either axis is strictly greater
+/// than twice its corresponding Windows drag metric. This is per-axis, not a
+/// Euclidean-distance test.
+fn right_drag_threshold_crossed(
+    delta_x: f32,
+    delta_y: f32,
+    drag_metric_x: i32,
+    drag_metric_y: i32,
+) -> bool {
+    delta_x.abs() > drag_metric_x.saturating_mul(2) as f32
+        || delta_y.abs() > drag_metric_y.saturating_mul(2) as f32
+}
 
 /// gamemd divides the anchor displacement by `ScrollRate + 1` and truncates, so
 /// a right drag held 100 px from its anchor with the stock rate moves the camera
@@ -482,9 +600,14 @@ fn update_right_drag_pan(state: &mut AppState) {
     }
     let anchor = state.tactical_mouse.right_anchor;
     let cursor = (state.cursor_x, state.cursor_y);
+    let (drag_metric_x, drag_metric_y) = system_drag_metrics_px();
     if !state.tactical_mouse.right_threshold_crossed
-        && ((cursor.0 - anchor.0).abs() > RIGHT_DRAG_THRESHOLD_PX
-            || (cursor.1 - anchor.1).abs() > RIGHT_DRAG_THRESHOLD_PX)
+        && right_drag_threshold_crossed(
+            cursor.0 - anchor.0,
+            cursor.1 - anchor.1,
+            drag_metric_x,
+            drag_metric_y,
+        )
     {
         state.tactical_mouse.right_threshold_crossed = true;
     }
@@ -562,21 +685,38 @@ pub(crate) fn update_camera(state: &mut AppState) {
     }
 
     update_right_drag_pan(state);
+    // Each native scroll request reaches the clamp before the next source
+    // probes. Keep the current point valid before edge/coast preflight.
+    clamp_camera_to_playable_area(state, sw, sh);
 
     // gamemd's edge scroll early-returns while any tactical mouse button holds
     // the capture, so the map is frozen for the whole of a band-box or
-    // right-drag gesture. The minimap-drag and middle-pan inhibits are
-    // VERA-internal: neither gesture exists in gamemd (gamemd equivalent
-    // UNCHECKED), and both already own the camera while they run.
-    if !state.tactical_mouse.captured && !state.minimap_dragging && !state.middle_mouse_panning {
+    // right-drag gesture. The minimap-drag inhibit is VERA-internal: gamemd's
+    // minimap re-centres only on press, while this flag owns the gesture here.
+    if !state.tactical_mouse.captured && !state.minimap_dragging {
         let now = state.edge_scroll.radar_timer();
         let scroll_rate = state.in_game_options.scroll_rate;
-        let (dx, dy) = edge_scroll_step(
+        let active_direction =
+            edge_scroll_intent((state.cursor_x, state.cursor_y), sw as i32, sh as i32);
+        let requested_direction =
+            active_direction.or_else(|| state.edge_scroll.coasting_direction());
+        let movement_allowed = requested_direction
+            .is_none_or(|direction| camera_scroll_direction_allowed(state, direction, sw, sh));
+        let scroll_multiplier = state
+            .rules
+            .as_ref()
+            .map_or(DEFAULT_SCROLL_MULTIPLIER, |rules| {
+                rules.general.scroll_multiplier
+            });
+        let (dx, dy) = edge_scroll_step_with_context(
             &mut state.edge_scroll,
             (state.cursor_x, state.cursor_y),
             sw as i32,
             sh as i32,
             scroll_rate,
+            scroll_multiplier,
+            state.in_game_gadgets.right_held,
+            movement_allowed,
             now,
         );
         // The speed table is in window pixels. Stock YR has no world zoom, so
@@ -657,22 +797,17 @@ pub(crate) fn animate_zoom(state: &mut AppState) {
 /// Camera top-left, in world pixels, that puts `world` at the centre of the
 /// **tactical** viewport rather than the centre of the window.
 ///
-/// `world` is in world pixels; `window_w`, `window_h` and `sidebar_w` are window
-/// pixels, so the half-extents are divided by `zoom` to come back to world
-/// pixels. Only X loses width: the sidebar is a full-height column on the right,
-/// which is why gamemd's own clamp carries `viewport_width / 2` on X but the
-/// full height on Y.
+/// The tactical extents are window pixels, so their half-extents are divided by
+/// `zoom` to come back to world pixels.
 pub(crate) fn tactical_camera_top_left(
     world: (f32, f32),
-    window_w: f32,
-    window_h: f32,
-    sidebar_w: f32,
+    tactical_w: f32,
+    tactical_h: f32,
     zoom: f32,
 ) -> (f32, f32) {
-    let tactical_w = (window_w - sidebar_w).max(1.0);
     (
         world.0 - tactical_w / (2.0 * zoom),
-        world.1 - window_h / (2.0 * zoom),
+        world.1 - tactical_h / (2.0 * zoom),
     )
 }
 
@@ -691,39 +826,21 @@ pub(crate) fn tactical_camera_top_left(
 /// across the full window and only *covered* by whatever sidebar art happens to
 /// be opaque that frame.
 ///
-/// Height is the full target on purpose. The native rect is 32 px shorter than
-/// the screen; what owns that band is unresolved, and reserving it here would
-/// blank a strip of battlefield that is currently drawn.
 pub(crate) fn tactical_viewport_px(state: &AppState) -> (u32, u32, u32, u32) {
-    let rw = state.render_width();
-    let rh = state.render_height();
-    (
-        0,
-        0,
-        tactical_viewport_width_px(rw, state.sidebar_layout_spec),
-        rh,
-    )
+    let (width, height) = tactical_viewport_size_px(state.render_width(), state.render_height());
+    (0, 0, width, height)
 }
 
-/// Width of the tactical viewport in render-target pixels — the one definition
-/// of where the battlefield ends and the sidebar column begins.
-///
-/// This is the same expression `sidebar::compute_layout_with_spec` uses for
-/// `sidebar_x`, `x_offset` included, so the scissor edge and the sidebar's left
-/// edge cannot drift apart. The camera clamp and the scenario-start cursor
-/// centring call this rather than recomputing it, which is what makes "the
-/// camera, the clamp and the clip all mean the same viewport" true by
-/// construction instead of by convention.
-///
-/// Never widens past the target and never collapses to zero: a zero-width
-/// scissor would silently drop the whole battlefield if a layout ever put the
-/// sidebar's left edge at or past the window's.
-pub(crate) fn tactical_viewport_width_px(render_w: u32, spec: SidebarChromeLayoutSpec) -> u32 {
-    let sidebar_left = render_w as f32 - spec.sidebar_width + spec.x_offset;
-    if !sidebar_left.is_finite() {
-        return render_w.max(1);
-    }
-    (sidebar_left.round() as i64).clamp(1, i64::from(render_w.max(1))) as u32
+/// Active YR tactical dimensions. The right sidebar and bottom strip are fixed
+/// native-pixel reservations at every supported resolution. Degenerate test
+/// targets retain a one-pixel scissor rather than producing an invalid extent.
+pub(crate) fn tactical_viewport_size_px(render_w: u32, render_h: u32) -> (u32, u32) {
+    (
+        render_w.saturating_sub(TACTICAL_SIDEBAR_WIDTH_PX).max(1),
+        render_h
+            .saturating_sub(TACTICAL_BOTTOM_STRIP_HEIGHT_PX)
+            .max(1),
+    )
 }
 
 /// World-pixel position of a cell's **projected cell coordinate** — the point a
@@ -732,17 +849,22 @@ pub(crate) fn tactical_viewport_width_px(render_w: u32, spec: SidebarChromeLayou
 ///
 /// gamemd's camera-set builds the cell-centre lepton coordinate `(cell << 8) +
 /// 0x80` on both axes and projects it. VERA's reproduction of that same point is
-/// `util::lepton::lepton_to_screen` at the cell centre, which equals
-/// `iso_to_screen + (30, 0)`: X shifts by half a tile because `iso_to_screen`
-/// anchors the NW corner of the tile's diamond bounding box, while Y already
-/// carries the `+15` from the cell-centre projection.
+/// `util::lepton::lepton_to_screen` at the cell centre, which is the centre of
+/// the cell's diamond: `iso_to_screen + (TILE_WIDTH/2, TILE_HEIGHT/2)`. Both
+/// half-tiles are needed because `iso_to_screen` anchors the north-west corner
+/// of the tile's diamond bounding box, and the projected cell coordinate sits
+/// half a tile east and half a tile south of it.
 ///
-/// There is deliberately **no** `+TILE_HEIGHT/2` here. That would be the centre
-/// of the tile diamond, which is not the projected cell coordinate and is 15 px
-/// below where the entity path puts a unit.
+/// Keeping this identical to the entity projection is the whole contract:
+/// centring on a cell has to put a unit standing there at the tactical centre,
+/// and `centring_lands_a_unit_on_that_cell_at_the_tactical_centre` fails the
+/// moment the two drift apart.
 pub(crate) fn cell_centre_world_point(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     let (nw_x, nw_y) = terrain::iso_to_screen(rx, ry, z);
-    (nw_x + terrain::TILE_WIDTH / 2.0, nw_y)
+    (
+        nw_x + terrain::TILE_WIDTH / 2.0,
+        nw_y + terrain::TILE_HEIGHT / 2.0,
+    )
 }
 
 pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
@@ -750,11 +872,12 @@ pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
     let world = cell_centre_world_point(rx, ry, z);
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
+    let (tactical_w, tactical_h) =
+        tactical_viewport_size_px(state.render_width(), state.render_height());
     let (cx, cy) = tactical_camera_top_left(
         world,
-        sw,
-        sh,
-        state.sidebar_layout_spec.sidebar_width,
+        tactical_w as f32,
+        tactical_h as f32,
         state.zoom_level,
     );
     state.camera_x = cx;
@@ -763,8 +886,20 @@ pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
 }
 
 pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f32) {
+    let (camera_x, camera_y) =
+        clamp_camera_point_for_state(state, (state.camera_x, state.camera_y), sw, sh);
+    state.camera_y = camera_y;
+    state.camera_x = camera_x;
+}
+
+fn clamp_camera_point_for_state(
+    state: &AppState,
+    point: (f32, f32),
+    sw: f32,
+    sh: f32,
+) -> (f32, f32) {
     let Some(grid) = &state.terrain_grid else {
-        return;
+        return point;
     };
     let (area_x, area_y, area_w, area_h) = match grid.local_bounds {
         Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),
@@ -775,27 +910,85 @@ pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f
             grid.world_height,
         ),
     };
-    // Visible world area = screen pixels / zoom.
-    let zoom = state.zoom_level;
-    let clamp_axis = |origin: f32, world_size: f32, viewport: f32| -> (f32, f32) {
-        let visible = viewport / zoom;
-        if world_size <= visible {
-            let center: f32 = origin + (world_size - visible) / 2.0;
-            (center, center)
-        } else {
-            (origin, origin + world_size - visible)
-        }
-    };
-    // Use game viewport width (excluding sidebar) for X clamping, not full window width.
-    // The sidebar covers the right portion of the window and isn't part of the game view.
-    // Same call the tactical scissor makes, so the camera can never push the
-    // battlefield to an edge the clip disagrees with.
-    let game_viewport_w: f32 =
-        tactical_viewport_width_px(sw.max(0.0) as u32, state.sidebar_layout_spec) as f32;
-    let (cx_min, cx_max) = clamp_axis(area_x, area_w, game_viewport_w);
-    let (cy_min, cy_max) = clamp_axis(area_y, area_h, sh);
-    state.camera_x = state.camera_x.clamp(cx_min, cx_max);
-    state.camera_y = state.camera_y.clamp(cy_min, cy_max);
+    let (viewport_w, viewport_h) =
+        tactical_viewport_size_px(sw.max(0.0) as u32, sh.max(0.0) as u32);
+    clamp_camera_point_to_local_bounds(
+        point,
+        (area_x, area_y, area_w, area_h),
+        (viewport_w as f32, viewport_h as f32),
+        state.zoom_level,
+    )
+}
+
+fn clamp_camera_point_to_local_bounds(
+    point: (f32, f32),
+    area: (f32, f32, f32, f32),
+    viewport: (f32, f32),
+    zoom: f32,
+) -> (f32, f32) {
+    let (area_x, area_y, area_w, area_h) = area;
+    let visible_w = viewport.0 / zoom;
+    let visible_h = viewport.1 / zoom;
+    let x_min = area_x - 30.0;
+    let x_max = x_min + area_w - visible_w;
+    let y_min = area_y;
+    let y_max = y_min + area_h - visible_h - 15.0;
+
+    // Native comparison order is Y low/high, then X low/high. Each side is a
+    // strict comparison, so an exact boundary remains untouched. Do not invent
+    // a centred fallback when a custom map is smaller than the viewport.
+    let mut x = point.0;
+    let mut y = point.1;
+    if y < y_min {
+        y = y_min;
+    } else if y > y_max {
+        y = y_max;
+    }
+    if x < x_min {
+        x = x_min;
+    } else if x > x_max {
+        x = x_max;
+    }
+    (x, y)
+}
+
+fn camera_scroll_direction_allowed(
+    state: &AppState,
+    direction: ScrollDir,
+    sw: f32,
+    sh: f32,
+) -> bool {
+    if state.terrain_grid.is_none() {
+        return true;
+    }
+    let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];
+    let candidate = (
+        state.camera_x + dx / state.zoom_level,
+        state.camera_y + dy / state.zoom_level,
+    );
+    let clamped = clamp_camera_point_for_state(state, candidate, sw, sh);
+    requested_scroll_survives_clamp((state.camera_x, state.camera_y), clamped, direction)
+}
+
+fn requested_scroll_survives_clamp(
+    current: (f32, f32),
+    clamped: (f32, f32),
+    direction: ScrollDir,
+) -> bool {
+    let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];
+    (dx != 0.0 && clamped.0 != current.0) || (dy != 0.0 && clamped.1 != current.1)
+}
+
+/// Active edge intent plus whether the tactical clamp removes all requested
+/// components. Cursor feedback and motion both use this exact probe.
+pub(crate) fn edge_scroll_cursor_state(state: &AppState) -> Option<(ScrollDir, bool)> {
+    let sw = state.render_width() as f32;
+    let sh = state.render_height() as f32;
+    let direction = edge_scroll_intent((state.cursor_x, state.cursor_y), sw as i32, sh as i32)?;
+    Some((
+        direction,
+        !camera_scroll_direction_allowed(state, direction, sw, sh),
+    ))
 }
 
 #[cfg(test)]
@@ -805,6 +998,8 @@ mod tests {
     const WINDOW_W: f32 = 1024.0;
     const WINDOW_H: f32 = 768.0;
     const SIDEBAR_W: f32 = 168.0;
+    const TACTICAL_W: f32 = WINDOW_W - SIDEBAR_W;
+    const TACTICAL_H: f32 = WINDOW_H - TACTICAL_BOTTOM_STRIP_HEIGHT_PX as f32;
 
     /// Screen position the batch shader gives a world point for a camera.
     fn screen_of(world: (f32, f32), camera: (f32, f32), zoom: f32) -> (f32, f32) {
@@ -829,82 +1024,84 @@ mod tests {
             let unit = entity_world_point(rx, ry, z);
             let camera = tactical_camera_top_left(
                 cell_centre_world_point(rx, ry, z),
-                WINDOW_W,
-                WINDOW_H,
-                SIDEBAR_W,
+                TACTICAL_W,
+                TACTICAL_H,
                 1.0,
             );
             let (sx, sy) = screen_of(unit, camera, 1.0);
             assert!(
-                (sx - (WINDOW_W - SIDEBAR_W) / 2.0).abs() < 1e-3,
+                (sx - TACTICAL_W / 2.0).abs() < 1e-3,
                 "cell ({rx},{ry},z={z}): sx {sx}"
             );
             assert!(
-                (sy - WINDOW_H / 2.0).abs() < 1e-3,
+                (sy - TACTICAL_H / 2.0).abs() < 1e-3,
                 "cell ({rx},{ry},z={z}): sy {sy}"
             );
         }
     }
 
+    /// The centring target IS the tile diamond's centre, because that is where
+    /// gamemd projects a cell's coordinate and therefore where it draws a unit
+    /// standing on that cell.
+    ///
+    /// This test previously asserted the opposite — that the target was the tile
+    /// row, 15 px above the diamond centre — and it was right about the *code*
+    /// and wrong about the *engine*: the entity projection it was checked
+    /// against was itself half a tile high, so both sides agreed on the wrong
+    /// row. With the entity anchor now on the diamond centre, the target follows
+    /// it there. The invariant the pair really encodes is the assertion below
+    /// that the two are equal; the literals are the hand-walked fixture.
     #[test]
-    fn centring_target_is_the_projected_cell_coordinate_not_the_tile_diamond_centre() {
+    fn centring_target_is_the_tile_diamond_centre_where_a_unit_stands() {
         // Hand-walked fixture: cell (10, 10) at ground level.
-        //   iso_to_screen           = (30*(10-10) - 30, 15*(10+10) + 15) = (-30, 315)
-        //   projected cell coord    = iso_to_screen + (30, 0)            = (0, 315)
-        // The tile diamond's centre would be (0, 330); that is 15 px below the
-        // unit and is NOT what gamemd centres on.
-        assert_eq!(cell_centre_world_point(10, 10, 0), (0.0, 315.0));
+        //   iso_to_screen        = (30*(10-10) - 30, 15*(10+10) + 15) = (-30, 315)
+        //   diamond centre       = iso_to_screen + (30, 15)           = (  0, 330)
+        assert_eq!(cell_centre_world_point(10, 10, 0), (0.0, 330.0));
         assert_eq!(
             cell_centre_world_point(10, 10, 0),
-            entity_world_point(10, 10, 0)
+            entity_world_point(10, 10, 0),
+            "centring on a cell must target exactly where a unit on it is drawn"
         );
 
         let camera = tactical_camera_top_left(
             cell_centre_world_point(10, 10, 0),
-            WINDOW_W,
-            WINDOW_H,
-            SIDEBAR_W,
+            TACTICAL_W,
+            TACTICAL_H,
             1.0,
         );
         // Tactical rect is 1024 - 168 = 856 wide, so its centre is x = 428.
-        assert_eq!(camera, (-428.0, -69.0));
+        assert_eq!(camera, (-428.0, -38.0));
         // Guard against the pre-fix behaviour, which anchored on the window
         // centre and put the target 84 px east of the tactical centre.
         assert_ne!(camera.0, 0.0 - WINDOW_W / 2.0);
     }
 
     #[test]
-    fn centring_stays_on_the_tactical_centre_across_ui_scale_and_zoom() {
-        // 0.5 and 1.5 are the only scales `auto_detect_ui_scale` produces, so
-        // 84 and 252 are the real sidebar widths in the field; 168 is the
-        // unscaled base.
+    fn centring_stays_on_the_tactical_centre_across_zoom() {
         for zoom in [0.25_f32, 0.5, 1.0, 2.0, 4.0] {
-            for sidebar in [0.0_f32, 84.0, 168.0, 252.0] {
-                let unit = entity_world_point(37, 12, 3);
-                let camera = tactical_camera_top_left(
-                    cell_centre_world_point(37, 12, 3),
-                    WINDOW_W,
-                    WINDOW_H,
-                    sidebar,
-                    zoom,
-                );
-                let (sx, sy) = screen_of(unit, camera, zoom);
-                assert!(
-                    (sx - (WINDOW_W - sidebar) / 2.0).abs() < 1e-3,
-                    "zoom {zoom} sidebar {sidebar}: sx {sx}"
-                );
-                assert!((sy - WINDOW_H / 2.0).abs() < 1e-3);
-            }
+            let unit = entity_world_point(37, 12, 3);
+            let camera = tactical_camera_top_left(
+                cell_centre_world_point(37, 12, 3),
+                TACTICAL_W,
+                TACTICAL_H,
+                zoom,
+            );
+            let (sx, sy) = screen_of(unit, camera, zoom);
+            assert!((sx - TACTICAL_W / 2.0).abs() < 1e-3, "zoom {zoom}: sx {sx}");
+            assert!((sy - TACTICAL_H / 2.0).abs() < 1e-3);
         }
     }
 
+    /// Half a tile on **both** axes from the tile corner — the Y half is the one
+    /// that used to be missing, which put every camera move 15 px north of the
+    /// unit it was supposed to centre on.
     #[test]
-    fn cell_centre_shifts_only_in_x_from_the_tile_corner() {
+    fn cell_centre_shifts_half_a_tile_on_both_axes_from_the_tile_corner() {
         for (rx, ry, z) in [(0_u16, 0_u16, 0_u8), (5, 9, 2), (63, 1, 0)] {
             let (nw_x, nw_y) = terrain::iso_to_screen(rx, ry, z);
             let (cx, cy) = cell_centre_world_point(rx, ry, z);
             assert_eq!(cx - nw_x, terrain::TILE_WIDTH / 2.0);
-            assert_eq!(cy - nw_y, 0.0);
+            assert_eq!(cy - nw_y, terrain::TILE_HEIGHT / 2.0);
         }
     }
 
@@ -950,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_band_is_one_pixel_and_the_east_band_is_past_the_sidebar() {
+    fn item82_edge_band_is_one_pixel_and_east_is_the_outer_window_edge() {
         let mut st = state();
         // Ten pixels in from the left does nothing — the pre-fix 10 px band did.
         assert_eq!(
@@ -1119,71 +1316,152 @@ mod tests {
         assert_eq!((dx, dy), (-1.0, -1.0));
     }
 
-    fn spec_with(sidebar_width: f32, x_offset: f32) -> SidebarChromeLayoutSpec {
-        SidebarChromeLayoutSpec {
-            sidebar_width,
-            x_offset,
-            ..SidebarChromeLayoutSpec::stock()
-        }
+    #[test]
+    fn item82_blocked_active_edge_caps_coast_without_changing_direction_or_timer() {
+        let mut st = state();
+        st.coast_level = 5;
+        st.octant = 3;
+        st.last_coast_change = Some(2);
+        let before = (st.octant, st.last_coast_change);
+        assert_eq!(
+            edge_scroll_step_with_context(
+                &mut st,
+                (0.0, 300.0),
+                VIEW_W,
+                VIEW_H,
+                DEFAULT_SCROLL_RATE,
+                DEFAULT_SCROLL_MULTIPLIER,
+                false,
+                false,
+                7,
+            ),
+            (0.0, 0.0),
+        );
+        assert_eq!(st.coast_level, 4, "ScrollRate cap still applies");
+        assert_eq!((st.octant, st.last_coast_change), before);
     }
 
-    /// The scissor edge and the sidebar's left edge are the same boundary. The
-    /// native engine cannot get this wrong — the battlefield and the sidebar are
-    /// different surfaces — but VERA composes both into one target, so if these
-    /// two ever disagree the frame grows either a strip of battlefield inside
-    /// the sidebar column or a black gutter beside it.
-    ///
-    /// `x_offset` is in here because it is the RON's nudge knob for exactly this
-    /// edge: it lands in `sidebar_x`, so it has to land in the scissor too. The
-    /// shipped value is 0, which is precisely why an all-zero test would not
-    /// notice the day someone changes it.
     #[test]
-    fn tactical_scissor_edge_is_the_sidebar_left_edge() {
-        use crate::sidebar::compute_layout_with_spec;
-        for spec in [
-            SidebarChromeLayoutSpec::stock(),
-            SidebarChromeLayoutSpec::stock().with_scale(2.0),
-            // Live default: auto UI scale is 0.5 at 1024x768.
-            SidebarChromeLayoutSpec::stock().with_scale(0.5),
-            spec_with(168.0, 24.0),
-            spec_with(168.0, -12.0),
-        ] {
-            for (w, h) in [(1024u32, 768u32), (800, 600), (1920, 1080)] {
-                let layout = compute_layout_with_spec(spec, w as f32, h as f32, 6);
-                assert_eq!(
-                    tactical_viewport_width_px(w, spec) as f32,
-                    layout.sidebar_x,
-                    "width {} offset {} at {w}x{h}",
-                    spec.sidebar_width,
-                    spec.x_offset
-                );
-            }
+    fn item82_blocked_coast_still_decays() {
+        let mut st = state();
+        for tick in 0..5 {
+            edge_scroll_step_with_context(
+                &mut st,
+                (0.0, 300.0),
+                VIEW_W,
+                VIEW_H,
+                DEFAULT_SCROLL_RATE,
+                DEFAULT_SCROLL_MULTIPLIER,
+                false,
+                true,
+                tick,
+            );
         }
+        let before = st.coast_level;
+        assert!(before > 0);
+        assert_eq!(
+            edge_scroll_step_with_context(
+                &mut st,
+                (500.0, 300.0),
+                VIEW_W,
+                VIEW_H,
+                DEFAULT_SCROLL_RATE,
+                DEFAULT_SCROLL_MULTIPLIER,
+                false,
+                false,
+                5,
+            ),
+            (0.0, 0.0),
+        );
+        // The ScrollRate cap first pulls the overshot 5 back to 4, then the
+        // ordinary off-edge timer decay takes it to 3.
+        assert_eq!((before, st.coast_level), (5, 3));
+    }
+
+    #[test]
+    fn item82_diagonal_probe_slides_when_one_component_survives() {
+        assert!(requested_scroll_survives_clamp(
+            (70.0, 300.0),
+            (70.0, 299.0),
+            ScrollDir::NW,
+        ));
+        assert!(!requested_scroll_survives_clamp(
+            (70.0, 200.0),
+            (70.0, 200.0),
+            ScrollDir::NW,
+        ));
+    }
+
+    #[test]
+    fn item82_uncaptured_rmb_caps_edge_speed_at_thirteen() {
+        let mut st = state();
+        st.coast_level = 7;
+        let (dx, dy) = edge_scroll_step_with_context(
+            &mut st,
+            ((VIEW_W - 1) as f32, 300.0),
+            VIEW_W,
+            VIEW_H,
+            0,
+            DEFAULT_SCROLL_MULTIPLIER,
+            true,
+            true,
+            0,
+        );
+        assert_eq!((dx, dy), (13.0, 0.0));
+    }
+
+    #[test]
+    fn item82_edge_distance_uses_loaded_scroll_multiplier() {
+        let mut st = state();
+        assert_eq!(
+            edge_scroll_step_with_context(
+                &mut st,
+                ((VIEW_W - 1) as f32, 300.0),
+                VIEW_W,
+                VIEW_H,
+                DEFAULT_SCROLL_RATE,
+                0.125,
+                false,
+                true,
+                0,
+            ),
+            (2.0, 0.0),
+        );
+    }
+
+    /// Fixed view dimensions returned by the active right-sidebar path.
+    #[test]
+    fn item82_tactical_view_is_fixed_168_by_32_inset() {
+        assert_eq!(tactical_viewport_size_px(800, 600), (632, 568));
+        assert_eq!(tactical_viewport_size_px(640, 480), (472, 448));
+        assert_eq!(tactical_viewport_size_px(1920, 1080), (1752, 1048));
+    }
+
+    #[test]
+    fn item82_local_clamp_uses_native_minus_30_and_minus_15_bounds() {
+        let area = (100.0, 200.0, 1_000.0, 800.0);
+        let viewport = (632.0, 568.0);
+        assert_eq!(
+            clamp_camera_point_to_local_bounds((-999.0, -999.0), area, viewport, 1.0),
+            (70.0, 200.0),
+        );
+        assert_eq!(
+            clamp_camera_point_to_local_bounds((9_999.0, 9_999.0), area, viewport, 1.0),
+            (438.0, 417.0),
+        );
+        assert_eq!(
+            clamp_camera_point_to_local_bounds((70.0, 417.0), area, viewport, 1.0),
+            (70.0, 417.0),
+            "equality is not clamped",
+        );
     }
 
     /// A degenerate layout must not scissor the battlefield out of existence —
     /// a zero-width scissor drops every tactical draw call silently.
     #[test]
     fn tactical_viewport_width_never_collapses_or_overruns_the_target() {
-        assert_eq!(tactical_viewport_width_px(168, spec_with(168.0, 0.0)), 1);
-        assert_eq!(tactical_viewport_width_px(100, spec_with(900.0, 0.0)), 1);
-        assert_eq!(tactical_viewport_width_px(800, spec_with(0.0, 0.0)), 800);
-        assert_eq!(tactical_viewport_width_px(800, spec_with(-5.0, 0.0)), 800);
-        assert_eq!(
-            tactical_viewport_width_px(800, spec_with(f32::NAN, 0.0)),
-            800
-        );
-        // An offset that shoves the sidebar off the right edge cannot widen the
-        // scissor past the target.
-        assert_eq!(
-            tactical_viewport_width_px(800, spec_with(168.0, 400.0)),
-            800
-        );
-        // Rounds to whole pixels rather than truncating toward zero.
-        assert_eq!(
-            tactical_viewport_width_px(800, spec_with(167.6, 0.0)),
-            800 - 168
-        );
+        assert_eq!(tactical_viewport_size_px(168, 32), (1, 1));
+        assert_eq!(tactical_viewport_size_px(100, 20), (1, 1));
     }
 
     // -- camera bookmarks ----------------------------------------------------
@@ -1218,14 +1496,13 @@ mod tests {
         let (rx, ry) = marks.get(1).expect("slot 1");
         let camera = tactical_camera_top_left(
             cell_centre_world_point(rx, ry, 0),
-            WINDOW_W,
-            WINDOW_H,
-            SIDEBAR_W,
+            TACTICAL_W,
+            TACTICAL_H,
             1.0,
         );
         let (sx, sy) = screen_of(entity_world_point(rx, ry, 0), camera, 1.0);
-        assert!((sx - (WINDOW_W - SIDEBAR_W) / 2.0).abs() < 1e-3, "sx {sx}");
-        assert!((sy - WINDOW_H / 2.0).abs() < 1e-3, "sy {sy}");
+        assert!((sx - TACTICAL_W / 2.0).abs() < 1e-3, "sx {sx}");
+        assert!((sy - TACTICAL_H / 2.0).abs() < 1e-3, "sy {sy}");
     }
 
     // -- keyboard scroll -----------------------------------------------------
@@ -1260,6 +1537,16 @@ mod tests {
     const PAN_VIEW_H: f32 = 768.0;
     /// Stock `[Options] ScrollRate` default (0 fastest .. 6 slowest).
     const PAN_SCROLL_RATE: u32 = 3;
+
+    /// The native threshold is strict and independent for each axis. A custom
+    /// 4x6 system metric therefore requires more than 8px X or more than 12px Y.
+    #[test]
+    fn right_drag_threshold_is_strict_and_axis_independent() {
+        assert!(!right_drag_threshold_crossed(8.0, 12.0, 4, 6));
+        assert!(right_drag_threshold_crossed(8.01, 0.0, 4, 6));
+        assert!(right_drag_threshold_crossed(0.0, -12.01, 4, 6));
+        assert!(!right_drag_threshold_crossed(7.0, 11.0, 4, 6));
+    }
 
     /// The pan is measured from the anchor, not from the previous frame, so
     /// holding the cursor still keeps the map sliding at a constant rate.

@@ -8,6 +8,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::DestroyedGarrisonBuilding;
 use crate::sim::components::{Health, Position};
 use crate::sim::intern::InternedId;
+use crate::sim::mission::MissionType;
 use crate::sim::movement;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::passenger::PassengerRole;
@@ -742,11 +743,7 @@ pub fn sell_building(sim: &mut Simulation, rules: &RuleSet, stable_id: u64) -> b
         crate::sim::docking::bunker_link::release_sell_destroy(sim, stable_id);
     }
     sim.uninit(stable_id);
-    // SpySat sold: fully reshroud the owner so only current LOS remains visible.
     let owner_id = sim.interner.intern(&owner_name);
-    if obj.spy_sat {
-        sim.fog.reset_explored_for_owner(owner_id);
-    }
     // Refresh superweapon grants — sold building may have been providing a SW.
     if sim.session.game_options.super_weapons {
         crate::sim::superweapon::refresh_super_weapons_for_owner(sim, rules, owner_id);
@@ -789,8 +786,77 @@ const REPAIR_COST_PERCENT: u32 = 25;
 /// HP healed per sim tick (at 15 Hz this is ~60 HP/sec).
 const REPAIR_HP_PER_TICK: u16 = 4;
 
+/// Run the `WasAttackedByEnemy` consumer from
+/// `BuildingClass::UpdateRepairAndPower @ 0x00450630` in stable building order.
+///
+/// CurrentIQ is persisted per house because named scenario houses can carry a
+/// lower `IQ=` than generated skirmish computer houses. The sale itself uses
+/// the existing authoritative building-sale transaction.
+fn tick_ai_low_credit_sell_decisions(sim: &mut Simulation, rules: &RuleSet) {
+    let building_ids: Vec<u64> = sim
+        .substrate
+        .entities
+        .values()
+        .filter(|entity| entity.category == EntityCategory::Structure)
+        .map(|entity| entity.stable_id)
+        .collect();
+
+    for stable_id in building_ids {
+        let Some((owner, eligible_building)) =
+            sim.substrate.entities.get(stable_id).map(|entity| {
+                let mission = entity.mission.current().known();
+                let below_red = entity.health.max != 0
+                    && f64::from(entity.health.current) / f64::from(entity.health.max)
+                        < f64::from(rules.general.condition_red);
+                (
+                    entity.owner,
+                    entity.is_active()
+                        && !entity.lifecycle.in_limbo
+                        && entity.was_attacked_by_enemy
+                        && !matches!(
+                            mission,
+                            Some(MissionType::Selling | MissionType::Construction)
+                        )
+                        && below_red,
+                )
+            })
+        else {
+            continue;
+        };
+        if !eligible_building {
+            continue;
+        }
+
+        let Some(house) = sim.houses.get(&owner) else {
+            continue;
+        };
+        let house_iq = house.current_iq;
+        if house_iq < rules.general.iq_repair_sell
+            || house.credits >= rules.general.credit_reserve
+            || house_iq < rules.general.iq_sell_back
+        {
+            continue;
+        }
+        // Native draws inclusive RandomRanged(0, 0x32), then performs an
+        // unsigned comparison against HouseClass TechLevel.
+        let roll = sim.scenario_rng.next_range_u32_inclusive(0, 0x32);
+        if roll >= house.tech_level as u32 {
+            continue;
+        }
+
+        // The native vslot starts the Building sell/construction path. VERA's
+        // existing building-sale authority completes that same gameplay
+        // transaction synchronously; keeping it here preserves stable-ID and
+        // RNG/credit visibility for the next building decision.
+        let _ = sell_building(sim, rules, stable_id);
+    }
+}
+
 /// Tick all repairing buildings: heal HP and deduct credits.
 pub fn tick_repairs(sim: &mut Simulation, rules: &RuleSet) {
+    // UpdateRepairAndPower evaluates the low-credit sale arm before its active
+    // repair tick for the same building.
+    tick_ai_low_credit_sell_decisions(sim, rules);
     // Collect snapshot of repairing structures.
     let actions: Vec<(u64, String, String, u16, u16)> = sim
         .substrate

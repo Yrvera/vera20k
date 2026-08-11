@@ -104,7 +104,7 @@ fn test_from_ini_parses_entries() {
 }
 
 #[test]
-fn parses_hidden_occupancy_art_fields() {
+fn gsi_04_05_hidden_absent_occupy_height_inherits_resolved_height() {
     let ini: IniFile = IniFile::from_str(
         "[GAREFN]\nCanHideThings=no\nOccupyHeight=4\n\n[GAPOWR]\nHeight=3\n\n[NAPOWR]\n",
     );
@@ -115,7 +115,8 @@ fn parses_hidden_occupancy_art_fields() {
     assert!(reg.can_hide_things("GAPOWR"));
     assert_eq!(reg.occupy_height("GAPOWR"), 3);
     assert!(reg.can_hide_things("NAPOWR"));
-    assert_eq!(reg.occupy_height("NAPOWR"), 0);
+    // Neither key is authored, so both resolved fields retain constructor 2.
+    assert_eq!(reg.occupy_height("NAPOWR"), 2);
     assert!(reg.can_hide_things("MISSING"));
     assert_eq!(reg.occupy_height("MISSING"), 2);
 }
@@ -464,8 +465,11 @@ fn parses_add_occupy_from_ini() {
         IniFile::from_str("[GAREFN]\nAddOccupy1=-1,0\nAddOccupy2=-1,-1\nRemoveOccupy1=3,1\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("GAREFN").expect("GAREFN");
-    assert_eq!(entry.add_occupy, vec![(-1, 0), (-1, -1)]);
-    assert_eq!(entry.remove_occupy, vec![(3, 1)]);
+    assert_eq!(entry.add_occupy[0], Some((-1, 0)));
+    assert_eq!(entry.add_occupy[1], Some((-1, -1)));
+    assert!(entry.add_occupy[2..].iter().all(Option::is_none));
+    assert_eq!(entry.remove_occupy[0], Some((3, 1)));
+    assert!(entry.remove_occupy[1..].iter().all(Option::is_none));
 }
 
 #[test]
@@ -473,8 +477,8 @@ fn add_remove_occupy_empty_when_no_keys() {
     let ini: IniFile = IniFile::from_str("[FOO]\nFoundation=2x2\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
-    assert!(entry.add_occupy.is_empty());
-    assert!(entry.remove_occupy.is_empty());
+    assert!(entry.add_occupy.iter().all(Option::is_none));
+    assert!(entry.remove_occupy.iter().all(Option::is_none));
 }
 
 #[test]
@@ -488,8 +492,11 @@ fn add_remove_occupy_scans_sparse_numbered_keys() {
     );
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
-    assert_eq!(entry.add_occupy, vec![(-1, 0), (2, 3)]);
-    assert_eq!(entry.remove_occupy, vec![(4, 5), (-2, -3)]);
+    assert_eq!(entry.add_occupy[0], Some((-1, 0)));
+    assert_eq!(entry.add_occupy[1], None);
+    assert_eq!(entry.add_occupy[2], Some((2, 3)));
+    assert_eq!(entry.remove_occupy[0], Some((4, 5)));
+    assert_eq!(entry.remove_occupy[3], Some((-2, -3)));
 }
 
 #[test]
@@ -498,7 +505,34 @@ fn add_occupy_skips_malformed_entries() {
         IniFile::from_str("[FOO]\nAddOccupy1=not_a_pair\nAddOccupy2=1,2\nAddOccupy4=3,4\n");
     let registry: ArtRegistry = ArtRegistry::from_ini(&ini);
     let entry: &ArtEntry = registry.get("FOO").expect("FOO");
-    assert_eq!(entry.add_occupy, vec![(1, 2), (3, 4)]);
+    assert_eq!(entry.add_occupy[0], None);
+    assert_eq!(entry.add_occupy[1], Some((1, 2)));
+    assert_eq!(entry.add_occupy[3], Some((3, 4)));
+}
+
+#[test]
+fn gsi_04_05_hidden_object_id_gate_is_distinct_from_image_metadata() {
+    let ini = IniFile::from_str(
+        "[TESTBLD]\nImage=TESTART\nCanHideThings=no\nOccupyHeight=99\nAddOccupy1=9,9\n\
+         \n[TESTART]\nCanHideThings=yes\nHeight=5\nAddOccupy3=-2,1\nRemoveOccupy8=3,1\n",
+    );
+    let registry = ArtRegistry::from_ini(&ini);
+    let profile = registry.building_hidden_occupancy_profile("TESTBLD", "TESTART");
+
+    assert!(
+        !profile.can_hide_things,
+        "gate comes from object-ID section"
+    );
+    assert_eq!(
+        profile.occupy_height, 5,
+        "image Height is the absent-key OccupyHeight default"
+    );
+    assert_eq!(
+        profile.add_occupy[0], None,
+        "type-ID offsets are not consumed"
+    );
+    assert_eq!(profile.add_occupy[2], Some((-2, 1)));
+    assert_eq!(profile.remove_occupy[7], Some((3, 1)));
 }
 
 #[test]

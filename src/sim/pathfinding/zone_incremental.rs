@@ -1,15 +1,15 @@
-//! Incremental zone updates — avoids full map rebuild when few cells change.
+//! Incremental zone updates and exact one-cell topology repair.
 //!
-//! When a building is placed or sold, only a small region of cells changes
-//! walkability. Instead of rebuilding all 12 non-Fly movement zones from scratch, this
-//! module:
+//! Terrain-aware mutation owners use the explicit packed-coordinate
+//! `AssignOrphaned` / `MergeAdjacent` contract and shared hierarchy patcher.
+//! The older PathGrid-only compatibility path still batches a small region:
 //! 1. Identifies which zone IDs are affected (have cells in the changed region).
 //! 2. Clears those zone IDs everywhere on the map.
 //! 3. Re-flood-fills the cleared cells to assign new zone IDs.
 //! 4. Rebuilds adjacency and super-zone labels for affected categories.
 //!
-//! Falls back to full rebuild if too many cells changed, resolved-terrain zoning
-//! is active, or zone IDs are getting exhausted.
+//! It falls back to full rebuild if too many cells changed, terrain-aware
+//! provenance is unavailable, or its legacy IDs approach exhaustion.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/zone_map, sim/zone_build, sim/zone_hierarchy.
@@ -20,12 +20,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::PathGrid;
 use super::terrain_cost::TerrainCostGrid;
 use super::zone_build::{
-    BridgeRecordFilter, build_bridge_redirect, compute_zone_info, extract_adjacency, flood_fill,
-    inject_bridge_adjacency, is_passable,
+    BridgeRecordFilter, LocalHierarchyPatchResult, build_bridge_redirect, build_zone_hierarchy,
+    compute_zone_info, extract_adjacency, flood_fill,
+    incremental_rebuild_zone_hierarchy_around_cell, inject_bridge_adjacency, is_passable,
 };
 use super::zone_hierarchy::SuperZoneMap;
 use super::zone_map::{ZONE_INVALID, ZoneGrid, ZoneId};
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::movement::locomotor::MovementLayer;
 
@@ -37,6 +38,193 @@ const ZONE_ID_COMPACTION_THRESHOLD: u16 = 60_000;
 
 /// Padding around changed cells for the affected bounding box.
 const BBOX_PADDING: u16 = 2;
+
+/// Native `CellStruct`: signed X in the low word, signed Y in the high word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PackedZoneCoord(u32);
+
+impl PackedZoneCoord {
+    pub(crate) const fn new(x: i16, y: i16) -> Self {
+        Self((x as u16 as u32) | ((y as u16 as u32) << 16))
+    }
+
+    pub(crate) const fn unpack(self) -> (i16, i16) {
+        (self.0 as u16 as i16, (self.0 >> 16) as u16 as i16)
+    }
+}
+
+/// Provenance selects the two distinct native one-cell helpers. It is never
+/// inferred from the target's current class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoneRepairKind {
+    AssignOrphaned,
+    MergeAdjacent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoneRepairOutcome {
+    OutsideNoOp,
+    SentinelNoOp,
+    Adopted { cluster: ZoneId },
+    FullRebuild,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BaseRepairDecision {
+    SentinelNoOp,
+    Adopt(ZoneId),
+    FullRebuild,
+}
+
+/// Apply one verified base-cluster repair and then the shared local hierarchy
+/// updater. Current mutation owners wire the explicit provenance in their own
+/// Phase-3 items; callers without it must keep using a full rebuild.
+pub(crate) fn repair_zone_cell(
+    zone_grid: &mut ZoneGrid,
+    packed_coord: PackedZoneCoord,
+    kind: ZoneRepairKind,
+    path_grid: &PathGrid,
+    _terrain_costs: &BTreeMap<SpeedType, TerrainCostGrid>,
+    resolved_terrain: &ResolvedTerrainGrid,
+    bridge_records: &[crate::sim::bridge_state::BridgeEndpointRecord],
+) -> ZoneRepairOutcome {
+    let coord = packed_coord.unpack();
+    let (x, y) = (i32::from(coord.0), i32::from(coord.1));
+    let width = zone_grid.width;
+    let height = zone_grid.height;
+    if x < 0
+        || y < 0
+        || x >= i32::from(width)
+        || y >= i32::from(height)
+        || resolved_terrain
+            .cell(x as u16, y as u16)
+            .is_none_or(|cell| cell.outside_playfield)
+    {
+        return ZoneRepairOutcome::OutsideNoOp;
+    }
+    let index = y as usize * width as usize + x as usize;
+    let current_type = resolved_terrain
+        .cell(x as u16, y as u16)
+        .map_or(zone_class::OUTSIDE, |cell| cell.zone_type);
+
+    let decision = zone_grid
+        .base_topology_mut()
+        .map(|base| {
+            base.movement_classes[index] = current_type;
+            decide_base_zone_repair(base, index, x, y, width, height, kind)
+        })
+        .unwrap_or(BaseRepairDecision::FullRebuild);
+
+    let outcome = match decision {
+        BaseRepairDecision::SentinelNoOp => ZoneRepairOutcome::SentinelNoOp,
+        BaseRepairDecision::Adopt(cluster) => {
+            if let Some(base) = zone_grid.base_topology_mut() {
+                base.zone_ids[index] = cluster;
+            }
+            zone_grid.project_adopted_base_cell(index);
+            ZoneRepairOutcome::Adopted { cluster }
+        }
+        BaseRepairDecision::FullRebuild => {
+            zone_grid.rebuild_base_connectivity_preserving_hierarchy(
+                path_grid,
+                resolved_terrain,
+                bridge_records,
+            );
+            ZoneRepairOutcome::FullRebuild
+        }
+    };
+
+    let patch_result = zone_grid
+        .base_and_hierarchy_mut()
+        .map(|(base, hierarchy)| {
+            incremental_rebuild_zone_hierarchy_around_cell(
+                hierarchy,
+                base,
+                path_grid,
+                resolved_terrain,
+                bridge_records,
+                coord,
+                width,
+                height,
+            )
+        })
+        .unwrap_or(LocalHierarchyPatchResult::NeedsFullRebuild);
+    if patch_result == LocalHierarchyPatchResult::NeedsFullRebuild
+        && let Some(base) = zone_grid.base_topology_mut().map(|base| base.clone())
+    {
+        zone_grid.replace_hierarchy(build_zone_hierarchy(
+            &base,
+            path_grid,
+            Some(resolved_terrain),
+            bridge_records,
+            width,
+            height,
+        ));
+    }
+
+    outcome
+}
+
+fn decide_base_zone_repair(
+    base: &super::zone_build::BaseZoneTopology,
+    target_index: usize,
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+    kind: ZoneRepairKind,
+) -> BaseRepairDecision {
+    let target_type = base.movement_classes[target_index];
+    if target_type == zone_class::OUTSIDE {
+        return BaseRepairDecision::SentinelNoOp;
+    }
+
+    let neighbors: [(u8, ZoneId); 8] = std::array::from_fn(|neighbor_index| {
+        let (dx, dy, _) = super::zone_build::NEIGHBORS[neighbor_index];
+        let nx = x + dx;
+        let ny = y + dy;
+        if nx < 0 || ny < 0 || nx >= i32::from(width) || ny >= i32::from(height) {
+            return (zone_class::OUTSIDE, ZONE_INVALID);
+        }
+        let index = ny as usize * width as usize + nx as usize;
+        (
+            base.movement_classes[index],
+            base.zone_ids.get(index).copied().unwrap_or(ZONE_INVALID),
+        )
+    });
+
+    let candidate = neighbors.iter().find(|&&(neighbor_type, _)| match kind {
+        ZoneRepairKind::AssignOrphaned => neighbor_type == zone_class::GROUND,
+        ZoneRepairKind::MergeAdjacent => neighbor_type == target_type,
+    });
+    let Some(&(_, candidate_cluster)) = candidate else {
+        return BaseRepairDecision::FullRebuild;
+    };
+
+    let row0 = &base.raw_zone_ids_by_row[0];
+    let mapped = |cluster: ZoneId| {
+        if cluster == ZONE_INVALID {
+            u16::MAX
+        } else {
+            row0.get(cluster as usize).copied().unwrap_or(u16::MAX)
+        }
+    };
+    let mut previous_cluster = ZONE_INVALID;
+    let mut transitions = 0u8;
+    for &(neighbor_type, cluster) in &neighbors {
+        if mapped(cluster) != mapped(previous_cluster) && neighbor_type != zone_class::OUTSIDE {
+            transitions += 1;
+            previous_cluster = cluster;
+        }
+    }
+    if transitions >= 4
+        || (kind == ZoneRepairKind::AssignOrphaned && target_type != zone_class::GROUND)
+    {
+        BaseRepairDecision::FullRebuild
+    } else {
+        BaseRepairDecision::Adopt(candidate_cluster)
+    }
+}
 
 /// Attempt an incremental zone update for the given changed cells.
 ///
@@ -54,9 +242,9 @@ pub(crate) fn try_incremental_update(
         return true;
     }
     if resolved_terrain.is_some() {
-        // TODO(RE): terrain-aware zoning now rebuilds nodeIndex + zoneIdByNodeIndex tables on
-        // full rebuilds. We have not closed the exact localized invalidation/update contract for
-        // that model yet, so dynamic changes conservatively fall back to a full rebuild.
+        // A batch carries no verified Assign-vs-Merge provenance. Exact
+        // terrain-aware callers use `repair_zone_cell`; this generic path must
+        // full-rebuild rather than infer the helper from current class.
         return false;
     }
     if changed_cells.len() > INCREMENTAL_THRESHOLD {
@@ -222,13 +410,7 @@ fn update_category(
 
     // Rebuild bridge redirect.
     let bridge_redirect = if mz.can_use_bridges() {
-        build_bridge_redirect(
-            path_grid,
-            resolved_terrain,
-            bridge_records,
-            width,
-            height,
-        )
+        build_bridge_redirect(path_grid, resolved_terrain, bridge_records, width, height)
     } else {
         None
     };

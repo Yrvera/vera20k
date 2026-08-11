@@ -11,7 +11,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
 use crate::sim::movement::facing_from_delta;
 use crate::util::fixed_math::{
-    int_distance_to_sim, native_movement_frame_fraction, sim_to_f32, SimFixed, SIM_ONE, SIM_ZERO,
+    SIM_ONE, SIM_ZERO, SimFixed, int_distance_to_sim, native_movement_frame_fraction, sim_to_f32,
 };
 
 const IGNITION_FRAMES: u16 = 1;
@@ -434,6 +434,7 @@ mod tests {
             rx: 0,
             ry: 0,
             z: 0,
+            exact_z_leptons: None,
             sub_x: SIM_ZERO,
             sub_y: SIM_ZERO,
         };

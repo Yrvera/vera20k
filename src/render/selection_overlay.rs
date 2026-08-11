@@ -630,9 +630,17 @@ impl SelectionOverlay {
         } else {
             [1.0, 0.5, 0.5]
         };
-        // iso_to_screen gives tile NW corner. Entity = iso + (TILE_WIDTH/2, 0).
-        let ghost_x: f32 = sx + TILE_WIDTH / 2.0 + entry.offset_x;
-        let ghost_y: f32 = sy + entry.offset_y;
+        // The ghost has to land exactly where the placed building's art will.
+        // `iso_to_screen` gives the tile corner; the entity anchor is the cell's
+        // diamond centre, half a tile east and south of it, and a building's art
+        // then takes the render-coordinate lift back off. Routed through the same
+        // helper the real building uses so the preview cannot drift from it.
+        let (anchor_x, anchor_y) = crate::render::locomotor_visual::building_art_anchor(
+            sx + TILE_WIDTH / 2.0,
+            sy + TILE_HEIGHT / 2.0,
+        );
+        let ghost_x: f32 = anchor_x + entry.offset_x;
+        let ghost_y: f32 = anchor_y + entry.offset_y;
         Some((
             SpriteInstance {
                 position: [ghost_x, ghost_y],

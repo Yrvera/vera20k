@@ -26,13 +26,14 @@ pub use self::factory::{
 };
 pub use self::production_economy::is_harvester_type;
 pub(crate) use self::production_placement::structure_occupies_cell;
-pub(crate) use self::production_refinery::spawn_completed_refinery_free_units;
 pub use self::production_placement::{
     active_producer_for_owner_category, cycle_active_producer_for_owner_category,
     place_ready_building_with_overlays, place_ready_building_without_overlays,
     placement_preview_for_owner_with_overlays, placement_preview_for_owner_without_overlays,
     toggle_pause_for_owner_category,
 };
+#[cfg(test)]
+pub use self::production_queue::seed_resource_nodes_from_overlays;
 pub use self::production_queue::{
     build_options_for_owner, cancel_by_type_for_owner, cancel_last_for_owner, credits_for_owner,
     enqueue_by_type, enqueue_default_unit_for_owner, has_strict_build_option_for_owner,
@@ -40,8 +41,7 @@ pub use self::production_queue::{
     ready_buildings_for_owner, set_rally_point_for_owner, theoretical_power_for_owner,
     tick_production, tick_production_with_overlay_registry,
 };
-#[cfg(test)]
-pub use self::production_queue::seed_resource_nodes_from_overlays;
+pub(crate) use self::production_refinery::spawn_completed_refinery_free_units;
 pub(crate) use self::production_sell::eject_red_hp_garrison;
 pub use self::production_sell::{
     eject_destruction_garrison, eject_destruction_survivors, sell_building, tick_repairs,
@@ -49,16 +49,16 @@ pub use self::production_sell::{
 };
 pub use self::production_spawn::find_spawn_cell_for_owner;
 pub use self::production_tech::{
-    building_base_foundation_cells, building_footprint_cells, building_hidden_occupancy_cells,
-    building_movement_blocking_cells, building_movement_blocking_cells_for_state,
-    foundation_dimensions, is_matching_factory, producer_candidates_for_owner_category,
-    structure_satisfies_prerequisite,
+    building_base_foundation_cells, building_footprint_cells, building_movement_blocking_cells,
+    building_movement_blocking_cells_for_state, foundation_dimensions, is_matching_factory,
+    producer_candidates_for_owner_category, structure_satisfies_prerequisite,
 };
 pub use self::production_types::*;
 pub use self::war_factory_exit::tick_war_factory_exit_contacts;
 
 // Re-exports for external consumers (files outside production/ that previously
 // imported private submodules directly).
+#[cfg(test)]
 pub(crate) use self::production_economy::pick_best_resource_node;
 pub(in crate::sim) use self::production_queue::credits_entry_for_owner;
 

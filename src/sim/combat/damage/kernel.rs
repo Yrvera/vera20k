@@ -51,10 +51,10 @@ pub(crate) fn apply_warhead_damage(
     if damage == 0 || scenario_no_damage {
         return 0;
     }
-    // D2 healing: negative bypasses falloff+Verses; armor index >= 8 (concrete,
-    // special_1, special_2) cannot heal (verified `CMP EDI,0x8; SETGE; DEC; AND`).
+    // D2 healing: negative bypasses falloff+Verses and is admitted only within
+    // eight leptons. EDI is the distance parameter in the verified active body.
     if damage < 0 {
-        return if armor.0 >= 8 { 0 } else { damage };
+        return if distance_leptons < 8 { damage } else { 0 };
     }
 
     // D3 distance falloff. cs_leptons = ftol(CellSpread * 256.0) (interior ftol #1).
@@ -127,14 +127,13 @@ mod tests {
     }
 
     #[test]
-    fn kernel_healing_blocked_special_armor() {
-        // armor 9 (special_1) cannot heal; armor 5 heals by the full negative.
-        let nine = apply_warhead_damage(-40, 0.0, 1.0, &[1.0; 11], ArmorClass(9), 0, false, MAXD);
-        let eight = apply_warhead_damage(-40, 0.0, 1.0, &[1.0; 11], ArmorClass(8), 0, false, MAXD);
-        let five = apply_warhead_damage(-40, 0.0, 1.0, &[1.0; 11], ArmorClass(5), 0, false, MAXD);
-        assert_eq!(nine, 0);
-        assert_eq!(eight, 0); // index 8 = concrete is ALSO blocked (>= 8)
-        assert_eq!(five, -40);
+    fn kernel_healing_uses_point_blank_distance_gate() {
+        let concrete_near =
+            apply_warhead_damage(-40, 0.0, 1.0, &[1.0; 11], ArmorClass(8), 7, false, MAXD);
+        let ordinary_edge =
+            apply_warhead_damage(-40, 0.0, 1.0, &[1.0; 11], ArmorClass(5), 8, false, MAXD);
+        assert_eq!(concrete_near, -40);
+        assert_eq!(ordinary_edge, 0);
     }
 
     #[test]

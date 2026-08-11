@@ -213,7 +213,7 @@ pub fn sequence_kind_from_ini_key(key: &str) -> Option<SequenceKind> {
 ///
 /// Ids 20/21 (WetDie1/WetDie2), 25 (Tumble), 34–36 (AirDeath*) and 38/39
 /// (Shovel/Carry) have no `SequenceKind` yet and so are absent below.
-fn action_id(kind: SequenceKind) -> u8 {
+pub(crate) fn action_id(kind: SequenceKind) -> u8 {
     match kind {
         SequenceKind::Stand => 0,
         SequenceKind::Prone => 2,

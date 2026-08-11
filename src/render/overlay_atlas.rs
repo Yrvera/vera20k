@@ -18,7 +18,8 @@ use crate::assets::pal_file::Palette;
 use crate::assets::shp_file::ShpFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::{
-    OverlayTypeFlags, OverlayTypeRegistry, resolve_overlay_name_for_render,
+    OverlayTypeFlags, OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
+    resolve_overlay_name_for_render,
 };
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
@@ -109,6 +110,44 @@ pub struct OverlaySpriteKey {
     pub name: String,
     /// Frame/variant index.
     pub frame: u8,
+}
+
+/// Atlas keys reachable when a map-pack low bridge mutates its live overlay
+/// identity. The data byte is preserved by every damage/repair writer, so only
+/// data values actually seeded by low-bridge cells (plus frame zero fallback)
+/// are reachable; every registered low-bridge identity can be selected later.
+fn runtime_low_bridge_sprite_keys(
+    overlays: &[OverlayEntry],
+    overlay_registry: &OverlayTypeRegistry,
+) -> HashSet<OverlaySpriteKey> {
+    let mut frames: HashSet<u8> = overlays
+        .iter()
+        .filter(|entry| {
+            is_bridge_overlay_index(entry.overlay_id) && !is_high_bridge_index(entry.overlay_id)
+        })
+        .map(|entry| entry.frame)
+        .collect();
+    if frames.is_empty() {
+        return HashSet::new();
+    }
+    frames.insert(0);
+
+    let mut keys = HashSet::new();
+    for overlay_id in 0u8..=u8::MAX {
+        if !is_bridge_overlay_index(overlay_id) || is_high_bridge_index(overlay_id) {
+            continue;
+        }
+        let Some(name) = resolve_overlay_name_for_render(overlay_registry, overlay_id) else {
+            continue;
+        };
+        for &frame in &frames {
+            keys.insert(OverlaySpriteKey {
+                name: name.clone(),
+                frame,
+            });
+        }
+    }
+    keys
 }
 
 /// UV and offset data for one overlay sprite within the atlas.
@@ -202,6 +241,15 @@ pub fn build_overlay_atlas(
                 frame: 0,
             });
         }
+    }
+
+    let low_bridge_keys = runtime_low_bridge_sprite_keys(overlays, overlay_registry);
+    if !low_bridge_keys.is_empty() {
+        log::info!(
+            "Pre-loading {} live low-bridge overlay variant(s)",
+            low_bridge_keys.len()
+        );
+        needed.extend(low_bridge_keys);
     }
 
     // Overlay types the sim can create or mutate after this atlas is built are
@@ -893,9 +941,12 @@ fn render_smudge_sprite(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_OVERLAY_FRAME_COUNT, OverlayTypeFlags, body_frame_count, decrement_numeric_suffix,
-        wall_body_frame_count,
+        MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
+        decrement_numeric_suffix, runtime_low_bridge_sprite_keys, wall_body_frame_count,
     };
+    use crate::map::overlay::OverlayEntry;
+    use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::rules::ini_parser::IniFile;
 
     #[test]
     fn test_decrement_numeric_suffix_is_local_fallback() {
@@ -953,6 +1004,53 @@ mod tests {
         // Ordinary overlays (ore, gems, tracks) keep every frame addressable.
         let generic = OverlayTypeFlags::default();
         assert_eq!(body_frame_count(&generic, 96), 96);
+    }
+
+    #[test]
+    fn gsi_04_13_overlay_atlas_preloads_live_low_bridge_identities_and_data() {
+        let mut text = String::from("[OverlayTypes]\n");
+        for overlay_id in 0u16..=238 {
+            let name = match overlay_id {
+                24 => "BRIDGE1".to_string(),
+                25 => "BRIDGE2".to_string(),
+                74..=101 => format!("LOBRDG{:02}", overlay_id - 73),
+                122..=125 => format!("LOBRDGE{}", overlay_id - 121),
+                205..=232 => format!("LOBRDB{:02}", overlay_id - 204),
+                233..=236 => format!("LOBRDGB{}", overlay_id - 232),
+                237 => "BRIDGEB1".to_string(),
+                238 => "BRIDGEB2".to_string(),
+                _ => format!("DUMMY{overlay_id}"),
+            };
+            text.push_str(&format!("{overlay_id}={name}\n"));
+        }
+        let registry = OverlayTypeRegistry::from_ini(&IniFile::from_str(&text), None);
+        let overlays = [OverlayEntry {
+            rx: 10,
+            ry: 11,
+            overlay_id: 0x4A,
+            frame: 7,
+        }];
+
+        let keys = runtime_low_bridge_sprite_keys(&overlays, &registry);
+
+        for (name, frame) in [
+            ("LOBRDG07", 7),
+            ("LOBRDG27", 7),
+            ("LOBRDG27", 0),
+            ("LOBRDB27", 7),
+        ] {
+            assert!(
+                keys.contains(&OverlaySpriteKey {
+                    name: name.to_string(),
+                    frame,
+                }),
+                "missing runtime atlas key {name}:{frame}"
+            );
+        }
+        assert!(
+            !keys.iter().any(|key| key.name == "BRIDGE1"),
+            "high bridges remain in the dedicated bridge atlas"
+        );
     }
 }
 

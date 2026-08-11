@@ -1,19 +1,24 @@
 //! Emit per-tick parity digests from a headless simulation run.
 //!
-//! The in-game path cannot currently produce a digest: the client dies building the unit
-//! atlas (height exceeds the GPU limit) before the first sim tick. The simulation itself
-//! has no such dependency, so this drives it directly and writes the same JSONL stream
-//! the client would.
+//! Two modes:
 //!
-//! **This validates the pipeline, not parity.** The scenario here is a small synthetic
-//! setup, not a stock skirmish, so comparing its output against a captured gamemd session
-//! will report differences that mean nothing about engine fidelity. What it does prove
-//! end to end is that real `Simulation` state serialises, lands on disk, and survives the
-//! consumer's strict parsing.
+//! * `--map <file> --ra2-dir <path>` loads a real retail scenario with a pinned seed.
+//!   This is the mode a cross-engine comparison uses: the same map and the same seed on
+//!   both engines is the precondition for a divergence meaning anything.
+//! * no `--map` runs a small synthetic two-house setup. It validates that real
+//!   `Simulation` state serialises and survives the consumer's strict parsing — it says
+//!   nothing about parity, because the scenario has no counterpart in gamemd.
+//!
+//! **What a real-map run does and does not contain.** Terrain, ore, rules and the RNG
+//! streams are real and seeded. Map-placed units, structures and houses are NOT spawned
+//! (see `headless_scenario`), so entity and credit dimensions stay empty until that lands.
+//! A comparison today can exercise frame alignment and the RNG cursors; it cannot yet
+//! localise a gameplay divergence.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use vera20k::headless_scenario::{self, SIM_TICK_MS};
 use vera20k::map::entities::EntityCategory;
 use vera20k::sim::components::Health;
 use vera20k::sim::game_entity::GameEntity;
@@ -21,39 +26,57 @@ use vera20k::sim::house_state::HouseState;
 use vera20k::sim::parity_digest::ParityDigestSink;
 use vera20k::sim::world::Simulation;
 
-/// Matches the client's simulation cadence so tick numbering is comparable.
-const SIM_TICK_MS: u32 = 1000 / 15;
 const DEFAULT_TICKS: u64 = 600;
+/// Arbitrary but fixed, so two synthetic runs are comparable to each other.
+const DEFAULT_SEED: u32 = 0x5EED_0001;
 
 struct Args {
     out: PathBuf,
     ticks: u64,
+    seed: u32,
+    map: Option<String>,
+    ra2_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut out: Option<PathBuf> = None;
     let mut ticks = DEFAULT_TICKS;
+    let mut seed = DEFAULT_SEED;
+    let mut map: Option<String> = None;
+    let mut ra2_dir: Option<PathBuf> = None;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
+        let mut next = |what: &str| argv.next().ok_or(format!("{flag} needs {what}"));
         match flag.as_str() {
-            "--out" => {
-                out = Some(PathBuf::from(
-                    argv.next().ok_or("--out needs a path".to_string())?,
-                ));
-            }
+            "--out" => out = Some(PathBuf::from(next("a path")?)),
             "--ticks" => {
-                ticks = argv
-                    .next()
-                    .ok_or("--ticks needs a count".to_string())?
+                ticks = next("a count")?
                     .parse()
                     .map_err(|_| "--ticks must be a positive integer".to_string())?;
             }
+            "--seed" => {
+                let raw = next("a 32-bit value")?;
+                let parsed = raw
+                    .strip_prefix("0x")
+                    .map(|hex| u32::from_str_radix(hex, 16))
+                    .unwrap_or_else(|| raw.parse());
+                seed =
+                    parsed.map_err(|_| "--seed must be a u32 (decimal or 0x-hex)".to_string())?;
+            }
+            "--map" => map = Some(next("a map file name")?),
+            "--ra2-dir" => ra2_dir = Some(PathBuf::from(next("a path")?)),
             other => return Err(format!("unrecognised argument {other}")),
         }
+    }
+    if map.is_some() && ra2_dir.is_none() {
+        return Err("--map also needs --ra2-dir naming the retail install".to_string());
     }
     Ok(Args {
         out: out.ok_or("--out <path> is required".to_string())?,
         ticks,
+        seed,
+        map,
+        ra2_dir,
     })
 }
 
@@ -61,15 +84,18 @@ fn parse_args() -> Result<Args, String> {
 ///
 /// Enough for every digest field to carry a non-trivial value; no rules are loaded, so
 /// `advance_tick` runs without rules-driven behaviour.
-fn build_simulation() -> Simulation {
-    let mut sim = Simulation::new();
+fn build_synthetic_simulation(seed: u32) -> Simulation {
+    let mut sim = Simulation::with_seed(u64::from(seed));
 
     for (index, (owner, side)) in [("Americans", 0u8), ("Russians", 1u8)].iter().enumerate() {
         let owner_id = sim.interner.intern(owner);
-        sim.houses.insert(
-            owner_id,
-            HouseState::new(owner_id, *side, None, index == 0, 10_000, 10),
-        );
+        let mut house = HouseState::new(owner_id, *side, None, index == 0, 10_000, 10);
+        // The structures below are raw-inserted without lifecycle registration, so
+        // the defeat scan would read both houses as owning nothing and resolve the
+        // match on tick 1, freezing the committed-tick counter. Passive houses are
+        // exempt from defeat evaluation, keeping every tick committable.
+        house.multiplay_passive = true;
+        sim.houses.insert(owner_id, house);
 
         let type_ref = sim.interner.intern("GACNST");
         let base_x = 10 + (index as u16) * 20;
@@ -103,21 +129,44 @@ fn main() -> Result<(), String> {
         Ok(args) => args,
         Err(error) => {
             eprintln!("{error}");
-            eprintln!("usage: parity-digest --out <path.jsonl> [--ticks N]");
+            eprintln!(
+                "usage: parity-digest --out <path.jsonl> [--ticks N] [--seed S] \
+                 [--map <file> --ra2-dir <retail path>]"
+            );
             std::process::exit(2);
         }
     };
 
-    let mut sim = build_simulation();
     let mut sink = ParityDigestSink::create(&args.out)
         .map_err(|error| format!("could not open {}: {error}", args.out.display()))?;
 
-    let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    for _ in 0..args.ticks {
-        sim.advance_tick(&[], None, &heights, None, None, SIM_TICK_MS);
-        let digest = sim.parity_digest();
-        sink.write(&digest)
-            .map_err(|error| format!("digest write failed: {error}"))?;
+    match (&args.map, &args.ra2_dir) {
+        (Some(map), Some(ra2_dir)) => {
+            let mut scenario = headless_scenario::load(ra2_dir, map, args.seed)?;
+            println!(
+                "loaded {map} ({}x{}, theater {}) seed 0x{:08X}",
+                scenario.sim.session.map_width,
+                scenario.sim.session.map_height,
+                scenario.map.header.theater,
+                args.seed
+            );
+            for _ in 0..args.ticks {
+                scenario.tick();
+                let digest = scenario.sim.parity_digest();
+                sink.write(&digest)
+                    .map_err(|error| format!("digest write failed: {error}"))?;
+            }
+        }
+        _ => {
+            let mut sim = build_synthetic_simulation(args.seed);
+            let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+            for _ in 0..args.ticks {
+                sim.advance_tick(&[], None, &heights, None, None, SIM_TICK_MS);
+                let digest = sim.parity_digest();
+                sink.write(&digest)
+                    .map_err(|error| format!("digest write failed: {error}"))?;
+            }
+        }
     }
 
     println!("wrote {} digests to {}", sink.written(), args.out.display());

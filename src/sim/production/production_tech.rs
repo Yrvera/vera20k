@@ -709,71 +709,16 @@ pub fn building_base_foundation_cells(
     cells.into_iter().collect()
 }
 
-/// Returns the hidden-occupancy cells for a building, applying AddOccupy and
-/// RemoveOccupy to the rectangular foundation.
-///
-/// gamemd does not use this set as the building's real foundation footprint.
-/// It is the counter set behind art.ini hidden-object behavior (`CanHideThings`,
-/// `OccupyHeight`, and the BEHIND marker path). Placement, selection, C4, and
-/// ordinary building object-list occupancy use `building_base_foundation_cells`.
-/// Cells outside [0, u16::MAX] after offset application are dropped.
-///
-/// Order of operations:
-/// 1. Generate rectangle cells (rx..rx+w) × (ry..ry+h)
-/// 2. Add cells from add_occupy (deltas relative to origin)
-/// 3. Remove cells listed in remove_occupy (deltas relative to origin)
-///
-/// Returns sorted, deduplicated cells.
-pub fn building_hidden_occupancy_cells(
-    origin_rx: u16,
-    origin_ry: u16,
-    foundation: &str,
-    add_occupy: &[(i16, i16)],
-    remove_occupy: &[(i16, i16)],
-) -> Vec<(u16, u16)> {
-    use std::collections::BTreeSet;
-    let (w, h) = foundation_dimensions(foundation);
-    let mut cells: BTreeSet<(u16, u16)> = BTreeSet::new();
-
-    for dx in 0..w {
-        for dy in 0..h {
-            let rx = origin_rx as i32 + dx as i32;
-            let ry = origin_ry as i32 + dy as i32;
-            if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
-                cells.insert((rx as u16, ry as u16));
-            }
-        }
-    }
-
-    for &(dx, dy) in add_occupy {
-        let rx = origin_rx as i32 + dx as i32;
-        let ry = origin_ry as i32 + dy as i32;
-        if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
-            cells.insert((rx as u16, ry as u16));
-        }
-    }
-
-    for &(dx, dy) in remove_occupy {
-        let rx = origin_rx as i32 + dx as i32;
-        let ry = origin_ry as i32 + dy as i32;
-        if rx >= 0 && rx <= u16::MAX as i32 && ry >= 0 && ry <= u16::MAX as i32 {
-            cells.remove(&(rx as u16, ry as u16));
-        }
-    }
-
-    cells.into_iter().collect()
-}
-
-/// Compatibility alias for older call sites. This returns hidden occupancy,
-/// not the real building foundation.
+/// Compatibility alias for older callers. Add/Remove modifiers are deliberately
+/// ignored: the hidden mechanism is a counted lifecycle state, not a footprint.
 pub fn building_footprint_cells(
     origin_rx: u16,
     origin_ry: u16,
     foundation: &str,
-    add_occupy: &[(i16, i16)],
-    remove_occupy: &[(i16, i16)],
+    _add_occupy: &[(i16, i16)],
+    _remove_occupy: &[(i16, i16)],
 ) -> Vec<(u16, u16)> {
-    building_hidden_occupancy_cells(origin_rx, origin_ry, foundation, add_occupy, remove_occupy)
+    building_base_foundation_cells(origin_rx, origin_ry, foundation)
 }
 
 /// Cells that block static grid movement, given the base foundation and whether
@@ -1049,10 +994,17 @@ mod footprint_tests {
     }
 
     #[test]
-    fn add_then_remove_overlap() {
-        let cells = building_footprint_cells(10, 20, "1x1", &[(2, 0)], &[(2, 0)]);
-        assert_eq!(cells.len(), 1);
-        assert!(cells.contains(&(10, 20)));
+    fn gsi_04_05_hidden_modifiers_never_change_footprint_alias() {
+        let cells = building_footprint_cells(10, 20, "2x2", &[(-1, 0)], &[(1, 1)]);
+        assert_eq!(cells.len(), 4);
+        assert!(
+            cells.contains(&(11, 21)),
+            "RemoveOccupy is not a footprint cutout"
+        );
+        assert!(
+            !cells.contains(&(9, 20)),
+            "AddOccupy is not a footprint expansion"
+        );
     }
 
     #[test]

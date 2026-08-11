@@ -9,12 +9,9 @@ pub mod class;
 pub mod defaults;
 
 pub use capability::piggyback_capable;
-pub use class::{
-    CLSID_CLASS_TABLE, LocomotorClass, class_from_clsid, clsid_for_class,
-};
+pub use class::{CLSID_CLASS_TABLE, LocomotorClass, class_from_clsid, clsid_for_class};
 pub use defaults::{
-    BASE_DEFAULT_SLOTS, BaseDefaultSlot, can_enter_cell, do_turn,
-    force_immediate_destination, force_new_slope, force_track, head_to_coord,
-    inherits_base_default, is_moving_now, mark_all_occupation_bits,
-    overrides_base_default, unlimbo,
+    BASE_DEFAULT_SLOTS, BaseDefaultSlot, can_enter_cell, do_turn, force_immediate_destination,
+    force_new_slope, force_track, head_to_coord, inherits_base_default, is_moving_now,
+    mark_all_occupation_bits, overrides_base_default, unlimbo,
 };

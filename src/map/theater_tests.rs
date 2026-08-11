@@ -285,7 +285,8 @@ fn cliff_ranges_resolve_ordinals_to_cumulative_tile_starts() {
 
 #[test]
 fn gsi_04_03a_rmg_tile_keys_parse_ramp_smooth_and_resolve_ordinals() {
-    let ini_bytes = b"[General]\nClearTile = 0\nRampBase = 1\nRampSmooth = 2\nGreenTile = 2\nWaterSet = 1\n\n\
+    let ini_bytes =
+        b"[General]\nClearTile = 0\nRampBase = 1\nRampSmooth = 2\nGreenTile = 2\nWaterSet = 1\n\n\
                 [TileSet0000]\nTilesInSet=2\nFileName=clear\nSetName=Clear\n\n\
                 [TileSet0001]\nTilesInSet=3\nFileName=water\nSetName=Water\n\n\
                 [TileSet0002]\nTilesInSet=4\nFileName=green\nSetName=Green\n";

@@ -79,7 +79,7 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     let type_id = sim.interner.intern(type_str);
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let mut e = GameEntity::new_at_frame_zero_for_test(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -96,10 +96,8 @@ fn spawn_infantry(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
         5,
         false,
     );
-    // Revealed object: order admission reads the limbo byte, which a
-    // directly-inserted GameEntity keeps at its constructed `true`.
-    e.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
@@ -108,7 +106,7 @@ fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
     let type_id = sim.interner.intern(type_str);
     let id = sim.substrate.next_stable_object_id;
     sim.substrate.next_stable_object_id += 1;
-    let mut e = GameEntity::new_at_frame_zero_for_test(
+    let e = GameEntity::new_at_frame_zero_for_test(
         id,
         rx,
         ry,
@@ -125,10 +123,8 @@ fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
         5,
         false,
     );
-    // Revealed object: order admission reads the limbo byte, which a
-    // directly-inserted GameEntity keeps at its constructed `true`.
-    e.lifecycle.in_limbo = false;
     sim.substrate.entities.insert(e);
+    assert!(matches!(sim.reveal(id), RevealOutcome::Revealed { .. }));
     id
 }
 
@@ -176,7 +172,7 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
         .unwrap()
         .pending_c4_detonation
         .expect("plant must be claimed on adjacency");
-    let plant_start = pending.plant_start_tick;
+    let plant_start = pending.start_frame as u64;
 
     // Advance until detonation tick fires. Phase 2 fires when
     // `sim.session.tick - plant_start >= delay`. The current sim.session.tick is already
@@ -206,7 +202,7 @@ fn c4_plant_happy_path_kills_building_and_seal_survives() {
 }
 
 #[test]
-fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
+fn c4_expiry_ignore_defenses_bypasses_verses_and_kills_building() {
     let (mut sim, rules, heights) = build_sim_with_c4_damage_state_rules();
     let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 10, 11);
     let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
@@ -215,30 +211,26 @@ fn c4_damage_crossing_condition_yellow_sets_building_damage_state() {
         .get_mut(bld)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     let delay = rules.c4_delay_ticks as u64;
     for _ in 0..(delay + 2) {
         step(&mut sim, &rules, &heights);
-        if sim
-            .substrate
-            .entities
-            .get(bld)
-            .is_some_and(|building| building.building_damage_state_active)
-        {
+        if sim.substrate.entities.get(bld).is_none() {
             break;
         }
     }
 
-    let building = sim
-        .substrate
-        .entities
-        .get(bld)
-        .expect("building should survive");
-    assert_eq!(building.health.current, 300);
-    assert!(building.building_damage_state_active);
+    assert!(
+        sim.substrate
+            .entities
+            .get(bld)
+            .is_none_or(|building| building.dying || building.health.current == 0),
+        "the expiry receiver's ignore_defenses flag must bypass the C4Warhead's 50% Verses"
+    );
 }
 
 #[test]
@@ -294,7 +286,7 @@ fn c4_claims_from_remove_occupy_foundation_cell() {
         .unwrap()
         .pending_c4_detonation
         .expect("C4 must claim from base foundation cell removed from hidden occupancy");
-    assert_eq!(pending.attacker_id, seal);
+    assert_eq!(pending.source_entity_id, Some(seal));
     assert!(
         sim.substrate
             .entities
@@ -320,8 +312,9 @@ fn c4_attacker_death_does_not_abort_detonation() {
         .get_mut(bld)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
 
     // Mid-plant: kill the SEAL outright.
@@ -349,55 +342,55 @@ fn c4_attacker_death_does_not_abort_detonation() {
     );
 }
 
-// ---------- Test 3: Iron Curtain blocks then expires ----------
+// ---------- Test 3: Iron Curtain cancels pending C4 ----------
 
 #[test]
-fn c4_iron_curtain_blocks_until_expiry_then_kills() {
-    use crate::sim::superweapon::invulnerability::{InvulnKind, InvulnerabilityState};
+fn c4_iron_curtain_application_cancels_pending_detonation() {
+    use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
     let (mut sim, rules, heights) = build_sim_with_c4_rules();
     let seal = spawn_infantry(&mut sim, "GHOST", "Americans", 10, 11);
     let bld = spawn_building(&mut sim, "GAPILE", "Soviets", 10, 10);
 
-    // Claim the plant, then IC the building. IC duration must outlast
-    // C4Delay (27) so the first detonation attempt is nullified.
+    // Claim the plant, then enter the real Building IronCurtain path. The
+    // wrapper clears the shared C4/PostMortem latch before applying protection.
     sim.substrate
         .entities
         .get_mut(bld)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: sim.session.tick,
-        attacker_id: seal,
+        start_frame: sim.session.binary_frame as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
-    sim.substrate.entities.get_mut(bld).unwrap().invulnerability = Some(InvulnerabilityState {
-        start_frame: sim.session.tick as u32,
-        duration_frames: 40,
-        kind: InvulnKind::IronCurtain,
-    });
+    apply_invulnerability(
+        sim.substrate.entities.get_mut(bld).unwrap(),
+        sim.session.binary_frame,
+        40,
+        InvulnKind::IronCurtain,
+    );
+    assert!(
+        sim.substrate
+            .entities
+            .get(bld)
+            .unwrap()
+            .pending_c4_detonation
+            .is_none(),
+        "Building IronCurtain entry must cancel the shared C4/PostMortem latch"
+    );
 
-    // Advance through C4Delay + 5. Building must STILL be alive (IC nullifies).
+    // Advance beyond both C4Delay and the protection duration. Cancellation is
+    // permanent; there is no expired-latch retry after Iron Curtain wears off.
     let delay = rules.c4_delay_ticks as u64;
-    for _ in 0..(delay + 5) {
+    for _ in 0..(delay + 42) {
         step(&mut sim, &rules, &heights);
     }
-    assert!(
-        sim.substrate
-            .entities
-            .get(bld)
-            .is_some_and(|b| !b.dying && b.health.current > 0),
-        "IC must block C4 damage while active"
-    );
-
-    // Advance past IC duration. The next damage tick kills the building.
-    for _ in 0..40 {
-        step(&mut sim, &rules, &heights);
-    }
-    assert!(
-        sim.substrate
-            .entities
-            .get(bld)
-            .map_or(true, |b| b.dying || b.health.current == 0),
-        "PARITY: building must die after IC expires (damage retries every tick)"
-    );
+    let building = sim
+        .substrate
+        .entities
+        .get(bld)
+        .expect("cancelled C4 must leave the building alive");
+    assert!(!building.dying);
+    assert_eq!(building.health.current, 600);
 }
 
 // ---------- Test 4: second SEAL on already-claimed target ----------
@@ -428,7 +421,8 @@ fn second_c4_attacker_does_not_overwrite_plant() {
         .pending_c4_detonation
         .expect("first attacker claims");
     assert_eq!(
-        pending.attacker_id, seal_a,
+        pending.source_entity_id,
+        Some(seal_a),
         "first attacker (lower stable_id) wins the claim — deterministic by sorted iteration"
     );
 
@@ -442,11 +436,12 @@ fn second_c4_attacker_does_not_overwrite_plant() {
         .pending_c4_detonation
         .unwrap();
     assert_eq!(
-        pending_after.plant_start_tick, pending.plant_start_tick,
+        pending_after.start_frame, pending.start_frame,
         "pending plant_start_tick must not be overwritten by second attacker"
     );
     assert_eq!(
-        pending_after.attacker_id, seal_a,
+        pending_after.source_entity_id,
+        Some(seal_a),
         "pending attacker must not be overwritten by second attacker"
     );
 }
@@ -516,8 +511,9 @@ fn stop_cancels_walkup_but_not_already_claimed_plant() {
         .get_mut(bld)
         .unwrap()
         .pending_c4_detonation = Some(PendingC4Detonation {
-        plant_start_tick: plant_start,
-        attacker_id: seal,
+        start_frame: plant_start as i32,
+        duration_frames: rules.c4_delay_ticks as i32,
+        source_entity_id: Some(seal),
     });
     sim.queue_command(CommandEnvelope::new(
         owner,

@@ -152,8 +152,11 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // scripted fixture carries BOTH: the field's discriminant moves it once, and
 // the admission gate moves it again because its Move/AttackMove script does
 // reach the selection lane. Rust regression ratchet, not gamemd evidence.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x7281_41E6_E7EE_9CBA;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x5EA7_E134_1935_3AB0;
+// Re-measured 2026-08-11 after the integrated GSI-04 authority changes. All
+// three probes moved together, so this is state-content/behavior drift rather
+// than a live-schema-only fold; values are from the same current-tree run.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x2356_0CA4_7ECF_5CBC;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x38D9_6DD7_70D9_2014;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -232,7 +235,8 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x5EA7_E134_1935_3AB0;
 /// Re-baselined 2026-08-05 for the Drive cell-admission slice; the measured
 /// schema/behaviour split for all three of this fixture's constants is written
 /// out at `SLICE6_PRE_LIFECYCLE_V28_HASH`.
-const SLICE6_BASELINE_HASH: u64 = 0x22D8_5578_2E72_D55E;
+// Current-schema value from the same 2026-08-11 measurement above.
+const SLICE6_BASELINE_HASH: u64 = 0x8DBA_B968_0A0A_550D;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

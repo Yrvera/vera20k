@@ -978,7 +978,6 @@ impl TacticalCaptureSession {
             && state.building_placement_preview.is_none()
             && state.keys_held.is_empty()
             && !state.minimap_dragging
-            && !state.middle_mouse_panning
             && !state.sidebar_gadget_state.repair_mode_on
             && !state.sidebar_gadget_state.sell_mode_on;
         let counts_ready = output.instance_counts.minimap > 0

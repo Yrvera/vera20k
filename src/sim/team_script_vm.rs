@@ -192,7 +192,15 @@ impl TeamScriptVm {
         members: Vec<u64>,
         target: Option<u64>,
     ) -> u64 {
-        self.insert_team(owner, None, None, script_id, members, BTreeMap::new(), target)
+        self.insert_team(
+            owner,
+            None,
+            None,
+            script_id,
+            members,
+            BTreeMap::new(),
+            target,
+        )
     }
 
     /// Resolve the TeamType attachments and admit matching candidates in
@@ -238,9 +246,11 @@ impl TeamScriptVm {
         let mut counts = BTreeMap::new();
         for entry in &task_force.entries {
             for _ in 0..entry.count {
-                let Some((index, candidate)) = candidates.iter().enumerate().find(|(index, candidate)| {
-                    !used[*index] && candidate.member_type == entry.member_type
-                }) else {
+                let Some((index, candidate)) =
+                    candidates.iter().enumerate().find(|(index, candidate)| {
+                        !used[*index] && candidate.member_type == entry.member_type
+                    })
+                else {
                     break;
                 };
                 used[index] = true;
@@ -475,7 +485,10 @@ impl TeamScriptVm {
     }
 }
 
-fn script_action_at(script: Option<&TeamScriptDefinition>, cursor: i32) -> Option<TeamScriptAction> {
+fn script_action_at(
+    script: Option<&TeamScriptDefinition>,
+    cursor: i32,
+) -> Option<TeamScriptAction> {
     let index = usize::try_from(cursor).ok()?;
     script?.actions.get(index).copied()
 }

@@ -9,14 +9,18 @@ use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::terrain;
+use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::ini_parser::IniFile;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::MovementTarget;
+use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, MovementTarget};
 use crate::sim::game_entity::GameEntity;
-use crate::sim::movement::locomotor::MovementLayer;
+use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
@@ -38,6 +42,922 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+fn gsi_04_07_wall_sell_rules(
+    first_unsellable: bool,
+    with_sound: bool,
+) -> (RuleSet, crate::map::overlay_types::OverlayTypeRegistry) {
+    let ini = IniFile::from_str(&format!(
+        "[General]\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=FIRSTWALL\n1=SECONDWALL\n\
+         [OverlayTypes]\n0=DUMMY0\n1=DUMMY1\n2=GAWALL\n\
+         [FIRSTWALL]\nWall=yes\nCost=100\nUnsellable={}\nClickRepairable=no\n\
+         [SECONDWALL]\nWall=yes\nCost=200\nUnsellable=no\n\
+         [GAWALL]\nWall=yes\nStrength=300\n\
+         [AudioVisual]\nSellSound={}\n",
+        if first_unsellable { "yes" } else { "no" },
+        if with_sound { "SellBuilding" } else { "" },
+    ));
+    let art_ini = IniFile::from_str(
+        "[FIRSTWALL]\nToOverlay=GAWALL\n\
+         [SECONDWALL]\nToOverlay=GAWALL\n\
+         [GAWALL]\nDamageLevels=3\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("wall-sale rules");
+    rules.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(&art_ini));
+    let overlays = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art_ini));
+    (rules, overlays)
+}
+
+fn gsi_04_07_wall_sell_seed_houses(
+    sim: &mut Simulation,
+) -> (
+    crate::sim::intern::InternedId,
+    crate::sim::intern::InternedId,
+) {
+    let wall_owner = sim.interner.intern("WallOwner");
+    let receiver = sim.interner.intern("Receiver");
+    let mut owner_house =
+        crate::sim::house_state::HouseState::new(wall_owner, 0, None, false, 0, 10);
+    owner_house.player_control = true;
+    sim.houses.insert(wall_owner, owner_house);
+    sim.houses.insert(
+        receiver,
+        crate::sim::house_state::HouseState::new(receiver, 1, None, false, 0, 10),
+    );
+    sim.session.house_order = vec![wall_owner, receiver];
+    (wall_owner, receiver)
+}
+
+#[test]
+fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, true);
+    assert!(!rules.object("FIRSTWALL").unwrap().click_repairable);
+    let mut sim = Simulation::with_seed(77);
+    let (wall_owner, receiver) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    let credits_before = sim.houses.get(&wall_owner).unwrap().credits;
+    let rng_before = sim.scenario_rng.state();
+
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
+    grid.place_owned_wall(4, 4, 2, 0x03, wall_owner);
+    // Damaged GAWALLs connected south/west to the sold cell. Sale cleanup
+    // removes north first, then east, preserving each stale owner.
+    grid.place_owned_wall(4, 3, 2, 0x24, wall_owner);
+    grid.place_owned_wall(5, 4, 2, 0x28, wall_owner);
+    sim.overlay_grid = Some(grid);
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(8, 8));
+    {
+        let grid = sim.overlay_grid.as_mut().unwrap();
+        let terrain = sim.resolved_terrain.as_mut().unwrap();
+        for cell in [(4, 4), (4, 3), (5, 4)] {
+            let _ = crate::sim::overlay_grid::recalc_overlay_passability(
+                grid, terrain, &overlays, cell.0, cell.1,
+            );
+        }
+        let _ = grid.take_dirty_cells();
+    }
+    let path = PathGrid::from_resolved_terrain(sim.resolved_terrain.as_ref().unwrap());
+    assert!(!path.is_walkable(4, 4));
+    assert!(!path.is_walkable(4, 3));
+    assert!(!path.is_walkable(5, 4));
+    sim.terrain_costs = crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(
+        sim.resolved_terrain.as_ref().unwrap(),
+    );
+    assert_eq!(
+        sim.terrain_costs[&crate::rules::locomotor_type::SpeedType::Track].cost_at(4, 4),
+        0
+    );
+    sim.rebuild_zone_grid_full(&path);
+    let ground_zone_before = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+        .expect("normal zone map");
+    assert_eq!(
+        ground_zone_before.zone_at(4, 3, MovementLayer::Ground),
+        crate::sim::pathfinding::zone_map::ZONE_INVALID,
+        "the north cleanup candidate starts blocked and unassigned"
+    );
+    assert_eq!(
+        ground_zone_before.zone_at(5, 4, MovementLayer::Ground),
+        crate::sim::pathfinding::zone_map::ZONE_INVALID,
+        "the east cleanup candidate starts blocked and unassigned"
+    );
+    let expected_ground_zone = ground_zone_before.zone_at(4, 2, MovementLayer::Ground);
+    assert_ne!(
+        expected_ground_zone,
+        crate::sim::pathfinding::zone_map::ZONE_INVALID
+    );
+    sim.prev_path_grid = Some(path.clone());
+
+    for (id, target) in [(10, (4, 4)), (20, (4, 3))] {
+        let mut listener = GameEntity::test_default(id, "E1", "Receiver", 2, 2);
+        listener.owner = receiver;
+        listener.type_ref = sim.interner.intern("E1");
+        listener.attack_target = Some(AttackTarget::for_cell(target.0, target.1));
+        sim.substrate.entities.insert(listener);
+    }
+    let hash_before_sale = sim.state_hash();
+    super::world_commands::clear_wall_sell_zone_repair_test_trace();
+
+    assert!(sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 4, y: 4 },
+        Some(&rules),
+        Some(&path),
+        &empty_heights(),
+        Some(&overlays),
+    ));
+
+    let sold = sim.overlay_grid.as_ref().unwrap().cell(4, 4);
+    assert_eq!(
+        (sold.overlay_id, sold.overlay_data, sold.wall_owner),
+        (None, 0, None)
+    );
+    let cleanup = sim.overlay_grid.as_ref().unwrap().cell(4, 3);
+    assert_eq!(cleanup.overlay_id, None);
+    assert_eq!(cleanup.wall_owner, Some(wall_owner));
+    let east_cleanup = sim.overlay_grid.as_ref().unwrap().cell(5, 4);
+    assert_eq!(east_cleanup.overlay_id, None);
+    assert_eq!(east_cleanup.wall_owner, Some(wall_owner));
+    assert_eq!(
+        sim.tactical_dirty_cells,
+        vec![(4, 3), (5, 4), (4, 5), (3, 4), (4, 4)]
+    );
+    assert_eq!(sim.radar_terrain_dirty_cells, sim.tactical_dirty_cells);
+    assert!(
+        sim.substrate
+            .entities
+            .get(10)
+            .unwrap()
+            .attack_target
+            .is_none()
+    );
+    assert!(matches!(
+        sim.substrate
+            .entities
+            .get(20)
+            .unwrap()
+            .attack_target
+            .as_ref()
+            .map(|t| t.target),
+        Some(crate::sim::combat::TargetKind::Cell(4, 3))
+    ));
+    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 4));
+    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 3));
+    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(5, 4));
+    let ground_zone_after = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+        .expect("normal zone map");
+    assert_eq!(
+        ground_zone_after.zone_at(4, 3, MovementLayer::Ground),
+        expected_ground_zone,
+        "cleanup-created removal receives its own orphan/graph repair"
+    );
+    assert_eq!(
+        ground_zone_after.zone_at(4, 4, MovementLayer::Ground),
+        expected_ground_zone,
+        "the House sale tail separately repairs the sold cell"
+    );
+    assert_eq!(
+        ground_zone_after.zone_at(5, 4, MovementLayer::Ground),
+        expected_ground_zone,
+        "the east cleanup removal is repaired after north"
+    );
+    let repair_trace = super::world_commands::take_wall_sell_zone_repair_test_trace();
+    assert_eq!(
+        repair_trace
+            .iter()
+            .map(|step| step.repair_cell)
+            .collect::<Vec<_>>(),
+        vec![(4, 3), (5, 4), (4, 4)],
+        "cleanup repairs N then E; the sold cell remains the House tail"
+    );
+    assert_eq!(
+        repair_trace[0].walkable_cross,
+        [true, false, true, true, true],
+        "north repair sees sold+north open while east remains blocked"
+    );
+    assert_eq!(
+        repair_trace[0].movement_class_cross,
+        [
+            crate::map::resolved_terrain::zone_class::GROUND,
+            crate::map::resolved_terrain::zone_class::WALL,
+            crate::map::resolved_terrain::zone_class::GROUND,
+            crate::map::resolved_terrain::zone_class::GROUND,
+            crate::map::resolved_terrain::zone_class::GROUND,
+        ]
+    );
+    for step in &repair_trace[1..] {
+        assert_eq!(step.walkable_cross, [true; 5]);
+        assert_eq!(
+            step.movement_class_cross,
+            [crate::map::resolved_terrain::zone_class::GROUND; 5]
+        );
+    }
+    assert_eq!(
+        sim.terrain_costs[&crate::rules::locomotor_type::SpeedType::Track].cost_at(4, 4),
+        100
+    );
+    assert_eq!(
+        sim.terrain_costs[&crate::rules::locomotor_type::SpeedType::Track].cost_at(5, 4),
+        100
+    );
+    assert_eq!(sim.houses.get(&wall_owner).unwrap().credits, credits_before);
+    assert_eq!(sim.scenario_rng.state(), rng_before);
+    assert_ne!(sim.state_hash(), hash_before_sale);
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [SimSoundEvent::WallSold { receiver: event_receiver }] if *event_receiver == receiver
+    ));
+}
+
+#[test]
+fn gsi_04_07_wall_sell_eligibility_gate_matrix_rejects_without_mutation() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    let (wall_owner, _) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(3, 3));
+
+    let sell = |sim: &mut Simulation, rules: &RuleSet| {
+        sim.apply_command_with_overlays(
+            "Receiver",
+            &Command::SellWallAtCell { x: 1, y: 1 },
+            Some(rules),
+            None,
+            &empty_heights(),
+            Some(&overlays),
+        )
+    };
+
+    assert!(!sell(&mut sim, &rules), "absent overlay rejects");
+    sim.overlay_grid.as_mut().unwrap().place_overlay(1, 1, 2, 0);
+    assert!(!sell(&mut sim, &rules), "absent owner rejects");
+
+    let missing_house = sim.interner.intern("MissingHouse");
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(1, 1, 2, 0, missing_house);
+    assert!(!sell(&mut sim, &rules), "unregistered owner rejects");
+
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(1, 1, 0, 0, wall_owner);
+    assert!(!sell(&mut sim, &rules), "non-wall overlay rejects");
+
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(1, 1, 2, 0, wall_owner);
+    let no_art_match = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=FIRSTWALL\n\
+         [FIRSTWALL]\nWall=yes\nCost=100\n",
+    ))
+    .unwrap();
+    assert!(
+        !sell(&mut sim, &no_art_match),
+        "missing ToOverlay match rejects"
+    );
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(1, 1).overlay_id,
+        Some(2)
+    );
+}
+
+#[test]
+fn gsi_04_07_wall_sell_first_match_and_split_human_gate_are_exact() {
+    let (unsellable_rules, overlays) = gsi_04_07_wall_sell_rules(true, true);
+    let mut sim = Simulation::new();
+    let (wall_owner, _) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::new(3, 3);
+    grid.place_owned_wall(0, 2, 2, 0, wall_owner);
+    sim.overlay_grid = Some(grid);
+    assert!(!sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 2 },
+        Some(&unsellable_rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(0, 2).overlay_id,
+        Some(2)
+    );
+
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    assert!(sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 2 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    assert!(sim.sound_events.is_empty());
+
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_owned_wall(0, 2, 2, 0, wall_owner);
+    sim.session.game_mode_nonzero = true;
+    assert!(!sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 2 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    sim.houses.get_mut(&wall_owner).unwrap().is_human = true;
+    assert!(sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 2 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+    assert!(!sim.apply_command_with_overlays(
+        "Receiver",
+        &Command::SellWallAtCell { x: 0, y: 0 },
+        Some(&rules),
+        None,
+        &empty_heights(),
+        Some(&overlays),
+    ));
+}
+
+#[test]
+fn gsi_04_07_wall_sell_raw_lockstep_replay_converges_with_semantic_execution() {
+    fn seeded_world() -> (
+        Simulation,
+        RuleSet,
+        crate::map::overlay_types::OverlayTypeRegistry,
+        crate::sim::intern::InternedId,
+    ) {
+        let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+        let mut sim = Simulation::new();
+        let (wall_owner, receiver) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+        sim.houses.get_mut(&receiver).unwrap().player_control = true;
+        let mut grid = crate::sim::overlay_grid::OverlayGrid::new(3, 3);
+        grid.place_owned_wall(1, 1, 2, 0, wall_owner);
+        sim.overlay_grid = Some(grid);
+        (sim, rules, overlays, receiver)
+    }
+
+    let (mut semantic, semantic_rules, semantic_overlays, semantic_receiver) = seeded_world();
+    semantic.advance_tick(
+        &[CommandEnvelope::new(
+            semantic_receiver,
+            0,
+            Command::SellWallAtCell { x: 1, y: 1 },
+        )],
+        Some(&semantic_rules),
+        &empty_heights(),
+        None,
+        Some(&semantic_overlays),
+        67,
+    );
+    assert_eq!(
+        semantic
+            .overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(1, 1)
+            .overlay_id,
+        None
+    );
+
+    let (mut raw, raw_rules, raw_overlays, raw_receiver) = seeded_world();
+    let issued = raw
+        .encode_sell_wall_at_cell_record(raw_receiver, 1, 1)
+        .expect("registered receiver encodes");
+    let replay = crate::sim::replay::NativeReplay {
+        header: crate::sim::replay::NativeReplayHeader::new(1, "wall.map"),
+        frames: vec![crate::sim::replay::NativeReplayFrame::record(
+            crate::sim::replay::NativeReplayPresentation::new([0; 8], Vec::new(), [0; 2]),
+            0,
+            true,
+            [&issued],
+        )],
+    };
+    let replay_bytes = replay.encode().expect("native replay bytes");
+    let decoded =
+        crate::sim::replay::NativeReplay::decode_with_command_schedule(&replay_bytes, |_, _| true)
+            .expect("native replay decode");
+    let replay_record = decoded.frames[0].commands.as_ref().unwrap()[0].clone();
+
+    let mut queue = crate::net::lockstep::SynchronizedCommandQueue::new();
+    assert!(
+        queue.admit(crate::net::lockstep::SynchronizedCommand::opaque(
+            replay_record
+        ))
+    );
+    let dispatch_houses = raw
+        .session
+        .house_order
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, owner)| {
+            crate::net::lockstep::CommandDispatchHouse::new(
+                owner,
+                index as i8,
+                raw.houses[&owner].event_dispatch_eligible(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut due = Vec::new();
+    let early = queue.dispatch_due_offline(
+        -1,
+        &dispatch_houses,
+        |_, _| {},
+        |_, command, _| {
+            if let Some(envelope) = command.decode_for_simulation(&raw, raw.session.tick) {
+                due.push(envelope);
+            }
+        },
+    );
+    assert_eq!(early.executed, 0, "frame -1 cannot execute frame-0 bytes");
+    assert!(due.is_empty());
+    let due_summary = queue.dispatch_due_offline(
+        0,
+        &dispatch_houses,
+        |_, _| {},
+        |_, command, _| {
+            if let Some(envelope) = command.decode_for_simulation(&raw, raw.session.tick) {
+                due.push(envelope);
+            }
+        },
+    );
+    assert_eq!(due_summary.executed, 1);
+    assert_eq!(due.len(), 1);
+    raw.advance_tick(
+        &due,
+        Some(&raw_rules),
+        &empty_heights(),
+        None,
+        Some(&raw_overlays),
+        67,
+    );
+    assert_eq!(
+        raw.overlay_grid.as_ref().unwrap().cell(1, 1).overlay_id,
+        None
+    );
+    assert_eq!(raw.state_hash(), semantic.state_hash());
+
+    let invalid_house = crate::sim::command::SellWallAtCellRecord {
+        house_id: 9,
+        frame: 0,
+        x: 1,
+        y: 1,
+    }
+    .encode()
+    .unwrap();
+    assert!(
+        crate::net::lockstep::SynchronizedCommand::opaque(invalid_house)
+            .decode_for_simulation(&raw, raw.session.tick)
+            .is_none()
+    );
+    let invalid_opcode =
+        crate::sim::command::CommandRecord::encode(0x16, 1, 0, &[1, 0, 1, 0]).unwrap();
+    assert!(
+        crate::net::lockstep::SynchronizedCommand::opaque(invalid_opcode)
+            .decode_for_simulation(&raw, raw.session.tick)
+            .is_none()
+    );
+}
+
+#[test]
+fn gsi_04_07_wall_sell_raw_signed_linear_coordinates_use_canonical_cell() {
+    fn apply_raw(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+        x: i16,
+        y: i16,
+    ) -> bool {
+        let record = crate::sim::command::SellWallAtCellRecord {
+            house_id: 1,
+            frame: sim.session.binary_frame,
+            x,
+            y,
+        }
+        .encode()
+        .expect("wall-sale record");
+        let envelope = crate::net::lockstep::SynchronizedCommand::opaque(record)
+            .decode_for_simulation(sim, sim.session.tick)
+            .expect("registered receiver decodes");
+        let receiver = sim.interner.resolve(envelope.owner).to_string();
+        sim.apply_command_with_overlays(
+            &receiver,
+            &envelope.payload,
+            Some(rules),
+            None,
+            &empty_heights(),
+            Some(overlays),
+        )
+    }
+
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    let (wall_owner, _) = gsi_04_07_wall_sell_seed_houses(&mut sim);
+    let mut grid = crate::sim::overlay_grid::OverlayGrid::new(512, 2);
+    for cell in [(1, 1), (511, 0), (0, 0), (2, 1)] {
+        grid.place_owned_wall(cell.0, cell.1, 2, 0, wall_owner);
+    }
+    sim.overlay_grid = Some(grid);
+
+    assert!(apply_raw(&mut sim, &rules, &overlays, 513, 0));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(1, 1).overlay_id,
+        None,
+        "linear index 513 canonicalizes to cell (1,1)"
+    );
+
+    assert!(apply_raw(&mut sim, &rules, &overlays, -1, 1));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(511, 0).overlay_id,
+        None,
+        "a negative component remains valid when its signed linear index is 511"
+    );
+
+    assert!(apply_raw(&mut sim, &rules, &overlays, 512, -1));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(0, 0).overlay_id,
+        None,
+        "only original packed (0,0), not an alias to it, is the null sentinel"
+    );
+
+    assert!(!apply_raw(&mut sim, &rules, &overlays, -1, 0));
+    assert!(!apply_raw(&mut sim, &rules, &overlays, 0, 512));
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(2, 1).overlay_id,
+        Some(2),
+        "negative and above-0x3ffff linear indices leave the allocated grid untouched"
+    );
+}
+
+#[test]
+fn gsi_04_07_damage_fatal_transport_lifecycle_brackets_nested_death_weapon() {
+    fn run(carrier_hp: u16) -> (Simulation, crate::sim::combat::CombatTickResult, u64) {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n0=PASSENGER\n\
+             [VehicleTypes]\n0=BOOMER\n1=SHOOTER\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n0=LISTENER\n\
+             [Warheads]\n0=KillWH\n1=NoDamageWH\n2=WallWH\n\
+             [OverlayTypes]\n0=TESTWALL\n\
+             [BOOMER]\nStrength=11\nArmor=heavy\nExplodes=yes\nDeathWeapon=DeathBoom\n\
+             [SHOOTER]\nStrength=100\nArmor=heavy\nPrimary=Gun\n\
+             [PASSENGER]\nStrength=50\nArmor=none\n\
+             [LISTENER]\nStrength=300\nArmor=wood\n\
+             [DeathBoom]\nDamage=214\nWarhead=WallWH\n\
+             [Gun]\nDamage=1\nROF=50\nRange=8\nWarhead=NoDamageWH\n\
+             [KillWH]\nCellSpread=0\nVerses=100%,100%,100%,100%,100%,100%,0%,100%,100%,100%,100%\n\
+             [NoDamageWH]\nCellSpread=0\nVerses=100%,100%,100%,0%,100%,100%,100%,100%,100%,100%,100%\n\
+             [WallWH]\nCellSpread=.5\nWall=yes\nVerses=100%,100%,100%,100%,100%,100%,50%,100%,100%,100%,100%\n\
+             [TESTWALL]\nWall=yes\nArmor=concrete\nStrength=400\n",
+        );
+        let art = IniFile::from_str("[TESTWALL]\nDamageLevels=2\n");
+        let rules = RuleSet::from_ini(&ini).expect("fatal lifecycle rules");
+        let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, Some(&art));
+        let mut sim = Simulation::with_seed(1);
+        let owner = sim.interner.intern("Americans");
+        let enemy = sim.interner.intern("Soviet");
+
+        let mut cargo = crate::sim::passenger::PassengerCargo::new(2, 1);
+        assert!(cargo.board(11, 1));
+        let mut carrier = GameEntity::test_default(10, "BOOMER", "Soviet", 8, 5);
+        carrier.owner = enemy;
+        carrier.type_ref = sim.interner.intern("BOOMER");
+        carrier.health.current = carrier_hp;
+        carrier.health.max = carrier_hp;
+        carrier.passenger_role = crate::sim::passenger::PassengerRole::Transport { cargo };
+        sim.substrate.entities.insert(carrier);
+        let _ = sim.reveal(10);
+
+        let mut passenger = GameEntity::test_default(11, "PASSENGER", "Soviet", 8, 5);
+        passenger.owner = enemy;
+        passenger.type_ref = sim.interner.intern("PASSENGER");
+        passenger.category = EntityCategory::Infantry;
+        passenger.is_voxel = false;
+        passenger.passenger_role =
+            crate::sim::passenger::PassengerRole::Inside { transport_id: 10 };
+        sim.substrate.entities.insert(passenger);
+
+        let mut listener = GameEntity::test_default(30, "LISTENER", "Americans", 8, 5);
+        listener.owner = owner;
+        listener.type_ref = sim.interner.intern("LISTENER");
+        listener.category = EntityCategory::Structure;
+        listener.is_voxel = false;
+        listener.health.current = 300;
+        listener.health.max = 300;
+        sim.substrate.entities.insert(listener);
+        let _ = sim.reveal(30);
+
+        let mut nested_fatal = GameEntity::test_default(31, "LISTENER", "Americans", 8, 5);
+        nested_fatal.owner = owner;
+        nested_fatal.type_ref = sim.interner.intern("LISTENER");
+        nested_fatal.category = EntityCategory::Structure;
+        nested_fatal.is_voxel = false;
+        nested_fatal.health.current = 107;
+        nested_fatal.health.max = 107;
+        sim.substrate.entities.insert(nested_fatal);
+        let _ = sim.reveal(31);
+
+        let mut attacker = GameEntity::test_default(20, "SHOOTER", "Americans", 6, 5);
+        attacker.owner = owner;
+        attacker.type_ref = sim.interner.intern("SHOOTER");
+        sim.substrate.entities.insert(attacker);
+        let _ = sim.reveal(20);
+        let attacker = sim.substrate.entities.get_mut(20).unwrap();
+        attacker.attack_target = Some(AttackTarget::new(10));
+        attacker.radio_contacts.insert(10);
+        attacker
+            .mission
+            .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
+                current: crate::sim::mission::MissionId::from_known(
+                    crate::sim::mission::MissionType::Attack,
+                ),
+                suspended: crate::sim::mission::MissionId::NONE,
+                queued: crate::sim::mission::MissionId::NONE,
+                movement_bypass_latch: 0,
+                handler_state: 0,
+                mission_start_frame: 0,
+                ai_counter: 0,
+                dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
+            });
+
+        let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(16, 16);
+        overlays.place_overlay(8, 5, 0, 0);
+        sim.overlay_grid = Some(overlays);
+        let detonation = crate::sim::projectile::ProjectileDetonation {
+            projectile_id: 1,
+            source_id: 99,
+            target: crate::sim::projectile::ProjectileTarget::Entity(10),
+            impact: crate::sim::projectile::ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0),
+            payload: crate::sim::projectile::ProjectilePayload {
+                base_damage: 10,
+                warhead: sim.interner.intern("KillWH"),
+                weapon: sim.interner.intern("Gun"),
+                owner,
+            },
+            reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+        };
+        let result = sim.tick_combat_with_fatal_lifecycle(
+            &rules,
+            Some(&registry),
+            100,
+            &[10, 20],
+            &BTreeSet::new(),
+            &[detonation],
+        );
+        let rng = sim.scenario_rng.state();
+        (sim, result, rng)
+    }
+
+    let (fatal, result, fatal_rng) = run(10);
+    assert_eq!(fatal.substrate.pending_delete, vec![11, 31, 10]);
+    for id in [11, 31, 10] {
+        let entity = fatal.substrate.entities.get(id).unwrap();
+        assert_eq!(entity.health.current, 0);
+        assert!(!entity.lifecycle.object_alive);
+        assert!(!entity.in_logic_vector);
+    }
+    let listener = fatal.substrate.entities.get(30).unwrap();
+    assert_eq!(
+        listener.health.current, 193,
+        "wood Verses scales 214 to 107"
+    );
+    assert_eq!(
+        listener.last_attacker_id, None,
+        "authoritative receiver retaliation no longer arms the deferred Phase-6 latch"
+    );
+    let nested_fatal = fatal.substrate.entities.get(31).unwrap();
+    assert_eq!(nested_fatal.last_attacker_id, None);
+    assert_eq!(
+        fatal.interner.resolve(nested_fatal.killed_by.unwrap()),
+        "Soviet"
+    );
+    assert_eq!(result.under_attack_events.len(), 2);
+    assert!(!fatal.substrate.occupancy.contains_entity(8, 5, 10));
+    let attacker = fatal.substrate.entities.get(20).unwrap();
+    assert!(!attacker.radio_contacts.contains(10));
+    assert!(attacker.attack_target.is_none());
+    assert!(result.immediate_uninit_ids.is_empty());
+    assert_eq!(
+        fatal.overlay_grid.as_ref().unwrap().cell(8, 5).overlay_id,
+        None
+    );
+    let mut one_draw = SimRng::new(1);
+    let _ = one_draw.next_range_u32_inclusive(0, 400);
+    let _ = one_draw.next_range_u32_inclusive(4, 8);
+    assert_eq!(fatal_rng, one_draw.state());
+
+    let (boundary, boundary_result, boundary_rng) = run(11);
+    assert!(boundary.substrate.pending_delete.is_empty());
+    assert!(boundary.substrate.occupancy.contains_entity(8, 5, 10));
+    for id in [30, 31] {
+        let listener = boundary.substrate.entities.get(id).unwrap();
+        assert_eq!(listener.health.current, listener.health.max);
+        assert_eq!(listener.last_attacker_id, None);
+    }
+    assert!(boundary_result.under_attack_events.is_empty());
+    assert_eq!(
+        boundary
+            .substrate
+            .entities
+            .get(10)
+            .unwrap()
+            .passenger_role
+            .cargo()
+            .unwrap()
+            .passengers,
+        vec![11]
+    );
+    assert!(boundary.substrate.entities.get(11).unwrap().is_alive());
+    assert!(
+        boundary
+            .substrate
+            .entities
+            .get(20)
+            .unwrap()
+            .radio_contacts
+            .contains(10)
+    );
+    assert_eq!(
+        boundary
+            .overlay_grid
+            .as_ref()
+            .unwrap()
+            .cell(8, 5)
+            .overlay_id,
+        Some(0)
+    );
+    assert_eq!(boundary_rng, SimRng::new(1).state());
+}
+
+#[test]
+fn gsi_04_11_bullet_ore_reduction_precedes_outer_crater_anim_start() {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [Warheads]\n0=OREWH\n\
+         [OverlayTypes]\n0=ORE\n\
+         [SmudgeTypes]\n0=CR1\n\
+         [Tiberiums]\n0=Riparius\n\
+         [OREWH]\nCellSpread=0\nAnimList=EXPLOSION\nTiberium=yes\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [ORE]\nTiberium=yes\nChainReaction=yes\n\
+         [Riparius]\nImage=1\nValue=25\n\
+         [CR1]\nCrater=yes\nWidth=1\nHeight=1\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("bullet ore-order rules");
+    rules.art_registry = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[EXPLOSION]\nCrater=yes\nScorch=no\nFrameWidth=100\nFrameHeight=100\n",
+    ));
+    let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let ore_id = registry.id_for_name("ORE").expect("ORE overlay id");
+
+    let mut sim = Simulation::with_seed(1);
+    let mut terrain = gsi_04_10_clear_terrain(10, 10);
+    for cell in &mut terrain.cells {
+        cell.filled_clear = true;
+        cell.accepts_smudge = true;
+        cell.allows_tiberium = true;
+    }
+    sim.resolved_terrain = Some(terrain);
+    sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(10, 10));
+    sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(10, 10);
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+    overlay.place_overlay(5, 5, ore_id, 9);
+    sim.overlay_grid = Some(overlay);
+    let owner = sim.interner.intern("Americans");
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 1,
+        source_id: crate::sim::combat::RAD_NO_ATTACKER,
+        target: crate::sim::projectile::ProjectileTarget::Cell(
+            crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
+        ),
+        impact: crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
+        payload: crate::sim::projectile::ProjectilePayload {
+            base_damage: 100,
+            warhead: sim.interner.intern("OREWH"),
+            weapon: sim.interner.intern("TestWeapon"),
+            owner,
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+
+    let result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        Some(&registry),
+        100,
+        &[],
+        &BTreeSet::new(),
+        &[detonation],
+    );
+
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id,
+        None,
+        "Apply_area_damage must clear ten-density ore before Bullet impact AnimClass::Start"
+    );
+    assert!(
+        sim.smudge_grid
+            .as_ref()
+            .unwrap()
+            .cell(5, 5)
+            .type_id
+            .is_some(),
+        "the outer crater must observe the already-cleared overlay cell"
+    );
+    assert!(result.tiberium_reduction_requests.is_empty());
+    assert!(result.smudge_spawn_requests.is_empty());
+    let mut expected_rng = crate::sim::rng::SimRng::new(1);
+    let _ = expected_rng.next_range_u32(1);
+    assert_eq!(sim.scenario_rng.state(), expected_rng.state());
+}
+
+#[test]
+fn gsi_04_11_missile_outer_anim_precedes_per_cell_ore_reduction() {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [Warheads]\n0=MISSILEWH\n[OverlayTypes]\n0=ORE\n\
+         [SmudgeTypes]\n0=CR1\n[Tiberiums]\n0=Riparius\n\
+         [MISSILEWH]\nCellSpread=0\nAnimList=EXPLOSION\nTiberium=yes\n\
+         Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\
+         [ORE]\nTiberium=yes\nChainReaction=yes\n\
+         [Riparius]\nImage=1\nValue=25\n\
+         [CR1]\nCrater=yes\nWidth=1\nHeight=1\n",
+    );
+    let mut rules = RuleSet::from_ini(&ini).expect("missile ore-order rules");
+    rules.art_registry = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+        "[EXPLOSION]\nCrater=yes\nScorch=no\nFrameWidth=100\nFrameHeight=100\n",
+    ));
+    let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let ore_id = registry.id_for_name("ORE").unwrap();
+    let mut sim = Simulation::with_seed(7);
+    let mut terrain = gsi_04_10_clear_terrain(10, 10);
+    for cell in &mut terrain.cells {
+        cell.filled_clear = true;
+        cell.accepts_smudge = true;
+        cell.allows_tiberium = true;
+    }
+    sim.resolved_terrain = Some(terrain);
+    sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::new(10, 10));
+    sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(10, 10);
+    let mut overlay = crate::sim::overlay_grid::OverlayGrid::new(10, 10);
+    overlay.place_overlay(5, 5, ore_id, 9);
+    sim.overlay_grid = Some(overlay);
+    let owner = sim.interner.intern("Americans");
+    let missile_warhead = sim.interner.intern("MISSILEWH");
+    sim.pending_missile_detonations
+        .push(crate::sim::spawn_manager::MissileDetonation {
+            rx: 5,
+            ry: 5,
+            warhead: missile_warhead,
+            damage: 100,
+            firer_id: crate::sim::combat::RAD_NO_ATTACKER,
+            owner,
+        });
+    let before_rng = sim.scenario_rng.state();
+
+    let result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        Some(&registry),
+        100,
+        &[],
+        &BTreeSet::new(),
+        &[],
+    );
+
+    assert_eq!(
+        sim.overlay_grid.as_ref().unwrap().cell(5, 5).overlay_id,
+        None
+    );
+    assert!(
+        sim.smudge_grid
+            .as_ref()
+            .unwrap()
+            .cell(5, 5)
+            .type_id
+            .is_none(),
+        "RocketLocomotion starts its crater Anim before the later ore sweep"
+    );
+    assert_eq!(sim.scenario_rng.state(), before_rng);
+    assert!(result.tiberium_reduction_requests.is_empty());
+    assert!(result.smudge_spawn_requests.is_empty());
 }
 
 #[test]
@@ -208,6 +1128,195 @@ fn gsi_04_10_clear_terrain(width: u16, height: u16) -> ResolvedTerrainGrid {
     terrain
 }
 
+#[test]
+fn gsi_04_15_active_tube_leaf_preempts_unit_and_infantry_mission_host() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\n\
+         [InfantryTypes]\n0=TESTINF\n\
+         [VehicleTypes]\n0=TESTUNIT\n\
+         [AircraftTypes]\n[BuildingTypes]\n0=TESTBUILD\n\
+         [TESTINF]\nSpeed=4\nPrimary=TESTGUN\n\
+         [TESTUNIT]\nSpeed=4\nPrimary=TESTGUN\n\
+         [TESTBUILD]\nStrength=100\nArmor=none\n\
+         [TESTGUN]\nDamage=1\nROF=100\nRange=6\nWarhead=TESTWH\n\
+         [TESTWH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("TubeMovement host rules");
+
+    for (category, type_name) in [
+        (EntityCategory::Unit, "TESTUNIT"),
+        (EntityCategory::Infantry, "TESTINF"),
+    ] {
+        let mut clear = gsi_04_10_clear_terrain(3, 1);
+        clear.cells[0].tube_index = Some(TubeId(0));
+        let terrain = ResolvedTerrainGrid::from_cells_with_tubes(
+            3,
+            1,
+            clear.cells,
+            vec![TubeFact::explicit((0, 0), (1, 0), 2, vec![2])],
+        );
+        let path = PathGrid::from_resolved_terrain(&terrain);
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern(type_name);
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            1,
+            0,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            category,
+            0,
+            5,
+            true,
+        );
+        entity.lifecycle.in_limbo = false;
+        entity.lifecycle.cell_marked = false;
+        if category == EntityCategory::Unit {
+            entity.order_intent = Some(crate::sim::components::OrderIntent::AttackMove {
+                goal_rx: 2,
+                goal_ry: 0,
+            });
+        } else {
+            entity.attack_target = Some(AttackTarget::for_cell(0, 0));
+            entity.passively_acquired_target = true;
+            entity.c4_plant = Some(crate::sim::components::C4PlantState {
+                target_building_id: 2,
+            });
+        }
+        entity.locomotor = Some(LocomotorState::for_test_kind(match category {
+            EntityCategory::Unit => LocomotorKind::Drive,
+            EntityCategory::Infantry => LocomotorKind::Walk,
+            _ => unreachable!("fixture is Foot only"),
+        }));
+        if category == EntityCategory::Unit {
+            entity.drive_locomotion = Some(DriveLocomotionRuntime::default());
+        } else {
+            entity.capture_target = Some(2);
+        }
+        for _ in 0..41 {
+            entity.mission.increment_ai_counter();
+        }
+        entity.low_bridge_tube_state = Some(LowBridgeTubeMovementState {
+            tube_id: TubeId(0),
+            cursor: 1,
+            target: DriveCoord {
+                x: 384,
+                y: 128,
+                z: 17,
+            },
+        });
+        sim.substrate.entities.insert(entity);
+        let original_building_owner = sim.interner.intern("Russians");
+        let building = GameEntity::new_at_frame_zero_for_test(
+            2,
+            1,
+            0,
+            0,
+            0,
+            original_building_owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            sim.interner.intern("TESTBUILD"),
+            EntityCategory::Structure,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(building);
+        sim.fog = crate::sim::vision::FogState {
+            width: 3,
+            height: 1,
+            ..Default::default()
+        };
+        crate::sim::vision::reveal_radius(&mut sim.fog, owner, 0, 0, 3);
+        sim.set_logic_order_for_test(vec![1]);
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .expect("queue remains pending through TubeMovement");
+        sim.terrain_costs =
+            crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(&terrain);
+        sim.resolved_terrain = Some(terrain);
+
+        sim.advance_tick(&[], Some(&rules), &empty_heights(), Some(&path), None, 67);
+
+        {
+            let entity = sim.substrate.entities.get(1).expect("Tube mover survives");
+            assert_eq!(entity.mission.ai_counter(), 41, "{category:?}");
+            assert_eq!(
+                entity.mission.queued(),
+                MissionId::from_known(MissionType::Move),
+                "{category:?} skips both mission-promotion checkpoints"
+            );
+            assert!(entity.low_bridge_tube_state.is_none(), "{category:?}");
+            assert!(entity.lifecycle.cell_marked, "{category:?}");
+            assert!(
+                sim.substrate
+                    .occupancy
+                    .contains_entity(1, 0, entity.stable_id),
+                "{category:?} final Tube leaf runs exactly once and restores occupancy"
+            );
+            if category == EntityCategory::Unit {
+                assert!(entity.attack_target.is_none());
+                assert!(!entity.passively_acquired_target);
+                assert!(entity.movement_target.is_none());
+                assert!(matches!(
+                    entity.order_intent,
+                    Some(crate::sim::components::OrderIntent::AttackMove {
+                        goal_rx: 2,
+                        goal_ry: 0
+                    })
+                ));
+            } else {
+                assert!(entity.passively_acquired_target);
+                assert!(matches!(
+                    entity.attack_target.as_ref().map(|target| target.target),
+                    Some(crate::sim::combat::TargetKind::Cell(0, 0))
+                ));
+                assert_eq!(entity.capture_target, Some(2));
+                assert!(entity.c4_plant.is_some());
+                assert_eq!(
+                    sim.substrate.entities.get(2).map(|building| building.owner),
+                    Some(original_building_owner),
+                    "Tube final returns before Mission_Capture; ownership changes next visit"
+                );
+                assert!(
+                    sim.substrate
+                        .entities
+                        .get(2)
+                        .is_some_and(|building| building.pending_c4_detonation.is_none()),
+                    "Tube final returns before Mission_Enter; C4 claims on the next visit"
+                );
+            }
+        }
+        if category == EntityCategory::Unit {
+            sim.tick_order_intents_pre_combat(&rules, &std::collections::BTreeSet::new());
+            assert!(matches!(
+                sim.substrate
+                    .entities
+                    .get(1)
+                    .and_then(|entity| entity.attack_target.as_ref())
+                    .map(|target| target.target),
+                Some(crate::sim::combat::TargetKind::Entity(2))
+            ));
+        }
+    }
+}
+
 fn gsi_04_10_terrain_object(
     sim: &mut Simulation,
     stable_id: u64,
@@ -255,7 +1364,7 @@ fn gsi_04_10_in_tick_refresh_updates_tail_path_and_cost_before_consumers() {
         unmark_terrain_occupation(production, &tree, terrain.as_mut());
     }
     let tail_path_grid =
-        sim.refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)]);
+        sim.refresh_navigation_after_terrain_changes(Some(&input_path_grid), &[(0, 0)]);
     let phase_six_consumer_grid = tail_path_grid.as_ref().or(Some(&input_path_grid));
     let phase_six_consumer_grid = phase_six_consumer_grid.expect("tail grid");
 
@@ -321,7 +1430,7 @@ fn gsi_04_10_zero_occupation_removal_forces_ground_zone_with_same_walkability() 
         unmark_terrain_occupation(production, &tree, terrain.as_mut());
     }
     let tail_path_grid = sim
-        .refresh_navigation_after_terrain_deaths(Some(&input_path_grid), &[(0, 0)])
+        .refresh_navigation_after_terrain_changes(Some(&input_path_grid), &[(0, 0)])
         .expect("tail grid");
 
     assert_eq!(tail_path_grid, input_path_grid);
@@ -375,7 +1484,7 @@ fn water_terrain_with_land_type(
                 speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
                 is_water: true,
                 is_cliff_like,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -439,7 +1548,7 @@ fn single_bridge_cell(rx: u16, ry: u16, deck_level: u8) -> ResolvedTerrainGrid {
                 speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -548,7 +1657,7 @@ fn ew_high_bridge_strip_for_dispatch(
                 speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
                 is_water: on_bridge && ground_walk_blocked,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -1077,10 +2186,13 @@ fn test_spawn_sets_position_and_facing() {
         assert_eq!(e.position.ry, 40);
         assert_eq!(e.facing, 64);
         assert_eq!(sim.interner.resolve(e.type_ref), "HTNK");
-        // lepton_to_screen = CoordsToClient(cell_center) = (30*(30-40), 15*(30+40)+15) = (-300, 1065)
+        // A spawned unit is drawn on its cell's diamond centre:
+        //   x = 30*(30-40) = -300,  y = 15*(30+40) + 15 + 15 = 1080
+        // (the trailing +15s are VERA's constant world-row bias and the
+        // half-tile drop from the tile row down to the diamond centre).
         let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
         assert!((sx - (-300.0)).abs() < 0.1);
-        assert!((sy - 1065.0).abs() < 0.1);
+        assert!((sy - 1080.0).abs() < 0.1);
     }
 }
 
@@ -1149,7 +2261,7 @@ fn test_spawn_from_map_high_without_bridge_falls_back_to_ground() {
                         speed_costs: crate::rules::terrain_rules::SpeedCostProfile::default(),
                         is_water: false,
                         is_cliff_like: false,
-                        is_cliff_redraw: false,
+                        height_in_pixels: 0,
                         variant: 0,
                         is_rough: false,
                         is_road: false,
@@ -2688,7 +3800,7 @@ fn test_select_command_replaces_previous_selection() {
 }
 
 #[test]
-fn test_select_command_deduplicates_and_sorts_ids() {
+fn test_select_command_deduplicates_without_reordering_payload() {
     let mut sim: Simulation = Simulation::new();
     sim.spawn_from_map(
         &[
@@ -2775,7 +3887,7 @@ fn declare_selection_gate_houses(sim: &mut Simulation) {
 }
 
 #[test]
-fn test_select_command_rejects_ai_owned_entity() {
+fn item83_final_select_allows_caller_admitted_nonlocal_entity() {
     let mut sim: Simulation = Simulation::new();
     let rules = selection_gate_test_rules();
     let heights = empty_heights();
@@ -2801,11 +3913,10 @@ fn test_select_command_rejects_ai_owned_entity() {
 
     assert!(sim.substrate.entities.get(mine).is_some_and(|e| e.selected));
     assert!(
-        !sim.substrate
+        sim.substrate
             .entities
             .get(theirs)
-            .is_some_and(|e| e.selected),
-        "an AI-owned object is refused before the ObjectClass gates run"
+            .is_some_and(|e| e.selected)
     );
 }
 
@@ -2838,6 +3949,61 @@ fn test_select_command_rejects_limbo_object() {
             .is_some_and(|e| e.selected),
         "an in-limbo object has no map presence to select"
     );
+}
+
+#[test]
+fn item83_fresh_selection_rejects_warp_out_but_keeps_preexisting_selection() {
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+
+    let mut sim = Simulation::new();
+    let rules = selection_gate_test_rules();
+    let heights = empty_heights();
+    let tank = sim
+        .spawn_object("MTNK", "Americans", 20, 22, 0, &rules, &heights)
+        .expect("spawn MTNK");
+    let wingman = sim
+        .spawn_object("MTNK", "Americans", 21, 22, 0, &rules, &heights)
+        .expect("spawn second MTNK");
+    assert!(sim.try_select_object(tank, Some(&rules)));
+    sim.substrate.entities.get_mut(tank).unwrap().teleport_state = Some(TeleportState {
+        phase: TeleportPhase::Relocate,
+        target_rx: 30,
+        target_ry: 30,
+        being_warped_ticks: 0,
+    });
+
+    assert!(
+        sim.substrate.entities.get(tank).unwrap().selected,
+        "entering warp-out does not retroactively remove an existing selection"
+    );
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Select {
+            entity_ids: vec![tank, wingman],
+            additive: true,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    ));
+    assert!(sim.substrate.entities.get(tank).unwrap().selected);
+    assert!(sim.substrate.entities.get(wingman).unwrap().selected);
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Select {
+            entity_ids: vec![wingman],
+            additive: false,
+        },
+        Some(&rules),
+        None,
+        &heights,
+    ));
+    assert!(
+        !sim.substrate.entities.get(tank).unwrap().selected,
+        "an ordinary replacement still deselects an omitted warp-out member"
+    );
+    assert!(!sim.try_select_object(tank, Some(&rules)));
 }
 
 #[test]
@@ -3893,7 +5059,10 @@ fn test_undeploy_conyard_spawns_mcv() {
         "ConYard should be removed after undeploy animation"
     );
 
-    // MCV should be spawned at center of old foundation (4x3 → center offset 2,1).
+    // The MCV returns to the cell it deployed from — one step south-east of the
+    // footprint's north-west cell, mirroring the one step north-west that deploy
+    // took. Not the footprint's centre: gamemd never halves the foundation, and
+    // an even-sided footprint has no centre cell to land on anyway.
     let amcv_id = sim.interner.get("AMCV").expect("AMCV should be interned");
     let mcvs: Vec<(u16, u16, bool)> = sim
         .substrate
@@ -3904,9 +5073,10 @@ fn test_undeploy_conyard_spawns_mcv() {
         .collect();
     assert_eq!(mcvs.len(), 1, "Exactly one MCV should exist after undeploy");
     let (rx, ry, selected) = mcvs[0];
-    // Origin was (19, 21) from deploy, foundation 4x3, center = (19+2, 21+1) = (21, 22).
-    assert_eq!(rx, 21, "MCV should spawn at foundation center X");
-    assert_eq!(ry, 22, "MCV should spawn at foundation center Y");
+    // Deploy put the origin at (19, 21) from an MCV standing on (20, 22), so
+    // undeploy has to hand (20, 22) back.
+    assert_eq!(rx, 20, "MCV should return to the cell it deployed from, X");
+    assert_eq!(ry, 22, "MCV should return to the cell it deployed from, Y");
     assert!(selected, "MCV should inherit selection from ConYard");
 }
 
@@ -3943,7 +5113,7 @@ fn level_has_single_source_of_truth_for_vision_height_derivation() {
                 speed_costs: SpeedCostProfile::default(),
                 is_water: false,
                 is_cliff_like: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 is_rough: false,
                 is_road: false,
@@ -4076,7 +5246,7 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
         speed_costs: SpeedCostProfile::default(),
         is_water: false,
         is_cliff_like: false,
-        is_cliff_redraw: false,
+        height_in_pixels: 0,
         variant: 0,
         is_rough: false,
         is_road: false,

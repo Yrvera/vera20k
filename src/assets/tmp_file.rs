@@ -44,6 +44,10 @@ pub struct TmpTile {
     pub depth: Vec<u8>,
     pub pixel_width: u32,
     pub pixel_height: u32,
+    /// Extra-plane Y origin relative to the stored diamond origin. This is
+    /// `raw_extra_y - stored_y` when the extra-data flag is set, otherwise 0.
+    /// It is distinct from `offset_y`, which is the decoded render bound.
+    pub relative_extra_y: i32,
     /// Offset from tile diamond origin (non-zero when extra data extends beyond).
     pub offset_x: i32,
     pub offset_y: i32,
@@ -340,7 +344,10 @@ mod tests {
         let tmp = TmpFile::from_bytes(&make_test_tmp()).expect("parse");
         let pal = crate::assets::pal_file::Palette::from_bytes_gamemd_ui(&vec![21u8; 768])
             .expect("palette");
-        assert_eq!(pal.colors[0].a, 255, "fixture guard: palette carries no alpha policy");
+        assert_eq!(
+            pal.colors[0].a, 255,
+            "fixture guard: palette carries no alpha policy"
+        );
 
         let rgba = tmp.tile_to_rgba(0, &pal).expect("convert");
         // 8x4 tile, row 0 diamond width 4 -> columns 0,1 are outside the diamond.

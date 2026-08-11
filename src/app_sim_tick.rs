@@ -37,6 +37,19 @@ use crate::ui::game_screen::GameScreen;
 /// Directory for Rust-only deterministic diagnostic logs.
 const REPLAYS_DIR: &str = "replays";
 
+fn wall_sell_sound_for_local(
+    receiver_name: &str,
+    local_owner: Option<&str>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Option<GameSoundEvent> {
+    if !local_owner.is_some_and(|local| local.eq_ignore_ascii_case(receiver_name)) {
+        return None;
+    }
+    Some(GameSoundEvent::UiSound {
+        sound_id: rules?.general.sell_sound.clone()?,
+    })
+}
+
 /// Persist the in-memory deterministic diagnostic log.
 ///
 /// The log lives on the sim (`sim.replay_log`) and is appended every tick but
@@ -810,9 +823,8 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         crate::app_chute_anim::tick_parachute_anims(state);
     }
 
-    // Refresh the radiation green glow after the sim steps (stepwise; a no-op
-    // when no radiation site crossed a step boundary this frame).
-    refresh_radiation_glow(state);
+    // Refresh the complete derived light view after committed simulation work.
+    refresh_dynamic_lighting(state);
 
     crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
     crate::app_building_anim::update_power_bar_anim(state);
@@ -876,6 +888,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
+        let mut drained_combat_lights = Vec::new();
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
@@ -904,6 +917,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             );
             trigger_effects = sim.drain_trigger_effects();
             frame_committed = tick_result.frame_committed;
+            if tick_result.frame_committed {
+                drained_combat_lights =
+                    crate::app_combat_lights::drain_simulation_impacts(sim, state.rules.as_ref());
+            }
             // Parity capture, if requested. Placed directly after the committed tick so
             // it observes the same state the tick hash covers, and before any app-layer
             // animation work that the original engine accounts for elsewhere.
@@ -1082,6 +1099,17 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .unwrap_or("ceva062")
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
+                    }
+                    SimSoundEvent::WallSold { receiver } => {
+                        let receiver_name = sim.interner.resolve(receiver);
+                        let Some(event) = wall_sell_sound_for_local(
+                            receiver_name,
+                            local_owner_name.as_deref(),
+                            state.rules.as_ref(),
+                        ) else {
+                            continue;
+                        };
+                        event
                     }
                     SimSoundEvent::CannotDeployHere { owner } => {
                         let owner_str = sim.interner.resolve(owner);
@@ -1386,6 +1414,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
         }
+        if frame_committed {
+            state.combat_lights.commit_frame(drained_combat_lights);
+        }
+        crate::app_input::reconcile_selection_order_after_sim(state);
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
         // app-owned transactions in native emission order for state that has a
         // direct attachment or retained audio handle.
@@ -1499,40 +1531,32 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     frame_committed
 }
 
-/// Per-frame radiation-glow refresh. Rebuilds the lighting grid only when the
-/// radiation light epoch changes (a site crossed a `RadLightDelay` step boundary,
-/// or a site appeared/disappeared) — i.e. stepwise, matching the original. Idle
-/// matches (no sites) pay one epoch hash per frame and never rebuild. Render-only:
-/// never touches sim state or the deterministic hash.
-fn refresh_radiation_glow(state: &mut AppState) {
-    let epoch = match (state.simulation.as_ref(), state.rules.as_ref()) {
-        (Some(sim), Some(rules)) => {
-            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation)
-        }
-        _ => return,
-    };
-    if epoch == state.last_radiation_light_epoch {
-        return;
-    }
-    // Recompute in an inner scope so the shared borrows of `state` drop before
-    // the mutable assignment to `state.lighting_grid`. Terrain is sourced from
-    // `state.resolved_terrain` to match the existing building-placement caller
-    // (the same grid the building lamps light off).
-    let new_grid = {
-        let (Some(sim), Some(rules)) = (state.simulation.as_ref(), state.rules.as_ref()) else {
+/// Per-frame complete light-view refresh. Rebuilds only when the selected
+/// scenario profile, ambient scalar, detail-gated lamps, or radiation changes.
+/// Render-only: never touches sim state or the deterministic hash.
+fn refresh_dynamic_lighting(state: &mut AppState) {
+    let (fingerprint, new_grid) = {
+        let (Some(sim), Some(rules), Some(terrain)) = (
+            state.simulation.as_ref(),
+            state.rules.as_ref(),
+            state.resolved_terrain.as_ref(),
+        ) else {
             return;
         };
-        let Some(terrain) = state.resolved_terrain.as_ref() else {
-            return;
-        };
-        crate::app_init::rebuild_lighting_grid_from_sim(
-            terrain,
+        let view = crate::app_init::derive_lighting_view(
             &state.map_lighting_config,
             Some(sim),
             Some(rules),
-        )
+            state.in_game_options.detail_level,
+        );
+        if state.last_lighting_view_fingerprint == Some(view.fingerprint) {
+            return;
+        }
+        let fingerprint = view.fingerprint;
+        let grid = crate::app_init::build_lighting_grid_from_view(terrain, &view);
+        (fingerprint, grid)
     };
-    state.last_radiation_light_epoch = epoch;
+    state.last_lighting_view_fingerprint = Some(fingerprint);
     state.lighting_grid = new_grid;
 }
 
@@ -1632,19 +1656,6 @@ pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
         grid.block_building_movement_cells(*rx, *ry, foundation, has_bib);
     }
 
-    // Block wall overlay cells (auto-filled walls have no entity but still block movement).
-    if let Some(registry) = &state.overlay_registry {
-        for entry in &state.overlays {
-            let is_wall = registry
-                .flags(entry.overlay_id)
-                .map(|f| f.wall)
-                .unwrap_or(false);
-            if is_wall {
-                grid.block_building_movement_cells(entry.rx, entry.ry, "1x1", false);
-            }
-        }
-    }
-
     state.path_grid = Some(grid);
 
     // Rebuild zone connectivity map for instant unreachability detection.
@@ -1691,8 +1702,10 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         );
     }
     // Place the foundation with cursor cell as the top-left corner.
-    // The building sprite is anchored to iso_to_screen(rx, ry) — same as the first
-    // diamond cell — so the preview and the placed building always align.
+    // The building sprite is anchored on the north-west footprint cell's tile row
+    // — the entity anchor with the render-coordinate lift taken off — and
+    // `build_ghost_sprite` derives the preview from the same helper, so the
+    // preview and the placed building always align.
     let (rx, ry) = screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
@@ -2000,7 +2013,7 @@ mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
         finish_fire_effect_batch, rebuild_dynamic_terrain_navigation, upsert_overlay_entries,
-        validate_exact_step_receipt, world_point_to_cell,
+        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2026,6 +2039,38 @@ mod tests {
             overlay_id,
             frame,
         }
+    }
+
+    #[test]
+    fn gsi_04_07_wall_sell_sound_is_global_only_for_local_receiver() {
+        let rules =
+            crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+                "[General]\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+                 [AudioVisual]\nSellSound=SellBuilding\n",
+            ))
+            .unwrap();
+        let mut sim = crate::sim::world::Simulation::new();
+        let receiver = sim.interner.intern("Receiver");
+        let receiver_name = sim.interner.resolve(receiver);
+
+        assert!(matches!(
+            wall_sell_sound_for_local(receiver_name, Some("receiver"), Some(&rules)),
+            Some(crate::audio::events::GameSoundEvent::UiSound { sound_id })
+                if sound_id == "SellBuilding"
+        ));
+        assert!(
+            wall_sell_sound_for_local(receiver_name, Some("WallOwner"), Some(&rules)).is_none()
+        );
+        assert!(wall_sell_sound_for_local(receiver_name, None, Some(&rules)).is_none());
+
+        let no_sound =
+            crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+                "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+            ))
+            .unwrap();
+        assert!(
+            wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
+        );
     }
 
     #[test]
@@ -2067,7 +2112,7 @@ mod tests {
                 is_road: false,
                 accepts_smudge: false,
                 allows_tiberium: false,
-                is_cliff_redraw: false,
+                height_in_pixels: 0,
                 variant: 0,
                 has_ramp: false,
                 canonical_ramp: None,

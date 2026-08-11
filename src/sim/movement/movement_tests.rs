@@ -1090,11 +1090,12 @@ fn test_tick_movement_updates_screen_position() {
     }
 
     let entity = entities.get(1).expect("entity exists");
-    // lepton_to_screen = CoordsToClient(cell_center) = iso_to_screen + (30, 15).
+    // After moving, the unit is drawn on cell (6, 5)'s diamond centre — half a
+    // tile east and half a tile south of that cell's tile corner.
     let (corner_sx, corner_sy): (f32, f32) = terrain::iso_to_screen(6, 5, 0);
     let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
-    assert!((sx - (corner_sx + 30.0)).abs() < 1.0);
-    assert!((sy - corner_sy).abs() < 1.0);
+    assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 1.0);
+    assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 1.0);
 }
 
 #[test]
@@ -2635,11 +2636,15 @@ fn test_friendly_passable_moving_unit_not_blocked() {
     let _grid = PathGrid::new(10, 10);
 
     // Unit A: stationary friendly at (3, 0).
-    let a = GameEntity::test_default(1, "HTNK", "Americans", 3, 0);
+    let mut a = GameEntity::test_default(1, "HTNK", "Americans", 3, 0);
+    a.lifecycle.in_limbo = false;
+    a.lifecycle.cell_marked = true;
     entities.insert(a);
 
     // Unit B: moving friendly at (4, 0) — has a movement target.
     let mut b = GameEntity::test_default(2, "HTNK", "Americans", 4, 0);
+    b.lifecycle.in_limbo = false;
+    b.lifecycle.cell_marked = true;
     b.movement_target = Some(MovementTarget {
         path: vec![(4, 0), (5, 0), (6, 0)],
         path_layers: vec![MovementLayer::Ground; 3],
@@ -2719,6 +2724,8 @@ fn test_enemy_unit_always_blocks_even_when_moving() {
 
     // Enemy unit moving at (3, 0).
     let mut enemy = GameEntity::test_default(1, "HTNK", "Russians", 3, 0);
+    enemy.lifecycle.in_limbo = false;
+    enemy.lifecycle.cell_marked = true;
     enemy.movement_target = Some(MovementTarget {
         path: vec![(3, 0), (4, 0)],
         path_layers: vec![MovementLayer::Ground; 2],
@@ -3128,7 +3135,7 @@ fn drive_speed_test_cell(
         is_road: false,
         accepts_smudge: false,
         allows_tiberium: false,
-        is_cliff_redraw: false,
+        height_in_pixels: 0,
         variant: 0,
         has_ramp: false,
         canonical_ramp: None,
@@ -3321,50 +3328,58 @@ fn infantry_traverses_a_partially_occupied_tree_cell_at_runtime() {
 /// everyone. A tracked vehicle handed the same corridor as an explicit path —
 /// its own search refuses to plan one — must still be stopped by the tree.
 #[test]
-fn vehicle_still_blocked_by_the_same_partially_occupied_tree_cell() {
+fn gsi_04_10_crusher_and_omnicrusher_never_enter_or_crush_a_terrain_object_cell() {
     let (_terrain, grid) = tree_corridor();
 
-    let mut entities = EntityStore::new();
-    let mut tank = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
-    tank.category = EntityCategory::Unit;
-    tank.locomotor = Some(make_drive_loco_for_test());
-    tank.drive_locomotion = Some(Default::default());
-    tank.movement_target = Some(MovementTarget {
-        path: vec![(0, 0), (1, 0), (2, 0)],
-        path_layers: vec![MovementLayer::Ground; 3],
-        next_index: 1,
-        speed: SimFixed::from_num(1024),
-        current_speed: SimFixed::from_num(1024),
-        move_dir_x: SimFixed::from_num(256),
-        move_dir_y: SIM_ZERO,
-        move_dir_len: SimFixed::from_num(256),
-        final_goal: Some((2, 0)),
-        ..Default::default()
-    });
-    entities.insert(tank);
+    for movement_zone in [MovementZone::Crusher, MovementZone::CrusherAll] {
+        let mut entities = EntityStore::new();
+        let mut tank = GameEntity::test_default(1, "HTNK", "Americans", 0, 0);
+        tank.category = EntityCategory::Unit;
+        tank.lifecycle.in_limbo = false;
+        tank.lifecycle.cell_marked = true;
+        let mut locomotor = make_drive_loco_for_test();
+        locomotor.movement_zone = movement_zone;
+        tank.locomotor = Some(locomotor);
+        tank.drive_locomotion = Some(Default::default());
+        tank.movement_target = Some(MovementTarget {
+            path: vec![(0, 0), (1, 0), (2, 0)],
+            path_layers: vec![MovementLayer::Ground; 3],
+            next_index: 1,
+            speed: SimFixed::from_num(1024),
+            current_speed: SimFixed::from_num(1024),
+            move_dir_x: SimFixed::from_num(256),
+            move_dir_y: SIM_ZERO,
+            move_dir_len: SimFixed::from_num(256),
+            final_goal: Some((2, 0)),
+            ..Default::default()
+        });
+        entities.insert(tank);
 
-    let mut lifecycle_requests = Vec::new();
-    let mut occupancy = OccupancyGrid::new();
-    let mut rng = SimRng::new(0);
-    let mut interner = test_interner();
-    for tick in 0..120u64 {
-        tick_movement_with_grid(
-            &mut entities,
-            Some(&grid),
-            &Default::default(),
-            &Default::default(),
-            &mut occupancy,
-            &mut rng,
-            tick,
-            &mut interner,
-            &mut lifecycle_requests,
-        );
-        let p = &entities.get(1).expect("tank exists").position;
-        assert_ne!(
-            (p.rx, p.ry),
-            (1, 0),
-            "a tracked vehicle must never enter a terrain-object cell",
-        );
+        let mut lifecycle_requests = Vec::new();
+        let mut occupancy = OccupancyGrid::new();
+        let mut rng = SimRng::new(0);
+        let mut interner = test_interner();
+        for tick in 0..120u64 {
+            let stats = tick_movement_with_grid(
+                &mut entities,
+                Some(&grid),
+                &Default::default(),
+                &Default::default(),
+                &mut occupancy,
+                &mut rng,
+                tick,
+                &mut interner,
+                &mut lifecycle_requests,
+            );
+            assert_eq!(stats.crush_kills, 0);
+            assert!(lifecycle_requests.is_empty());
+            let p = &entities.get(1).expect("tank exists").position;
+            assert_ne!(
+                (p.rx, p.ry),
+                (1, 0),
+                "{movement_zone:?} must never enter a Terrain-object cell",
+            );
+        }
     }
 }
 

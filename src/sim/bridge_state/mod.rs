@@ -39,12 +39,9 @@ const OVERLAY_BYTE_NONE: u8 = 0xFF;
 
 /// High-bridge theater slots used by the map-load bridge-record walk.
 /// A negative entry is a deliberately unused slot.
-const HIGH_BRIDGE_START_SUBTILE: [i32; 16] =
-    [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
-const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] =
-    [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
-const HIGH_BRIDGE_END_SUBTILE: [i32; 16] =
-    [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
+const HIGH_BRIDGE_START_SUBTILE: [i32; 16] = [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
+const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] = [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
+const HIGH_BRIDGE_END_SUBTILE: [i32; 16] = [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
 
 /// Bridge body axis. Body cells are stacked along this axis; ramps face
 /// perpendicular.
@@ -466,6 +463,18 @@ pub struct RepairOutcome {
     pub repaired_cells: u32,
 }
 
+/// One ordered CellClass bridge-overlay projection operation.
+///
+/// Native low-bridge walkers write a complete three-cell identity strip before
+/// calling `RecalcAttributes` on any member. A flat write-only queue cannot
+/// represent that boundary, so the transient stream carries both operations.
+/// Repeated writes and recalculations are retained verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BridgeOverlayProjectionOp {
+    Write { rx: u16, ry: u16, overlay_byte: u8 },
+    Recalc { rx: u16, ry: u16 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BridgeRuntimeCell {
     pub deck_present: bool,
@@ -568,6 +577,11 @@ pub struct BridgeRuntimeState {
     /// Active `SpecialFlags::DestroyableBridges` bit. Read by the weapon AoE
     /// bridge-damage outer gate.
     bridge_destroyable_flag: bool,
+    /// Ordered bridge-overlay identity writes waiting for the world-owned
+    /// CellClass/terrain projection. Runtime cache only: snapshots serialize
+    /// the resulting bridge and OverlayGrid identities, never this queue.
+    #[serde(skip, default)]
+    overlay_projection_ops: Vec<BridgeOverlayProjectionOp>,
 }
 
 impl BridgeRuntimeState {
@@ -786,6 +800,7 @@ impl BridgeRuntimeState {
             endpoint_records,
             anchor_spans,
             bridge_destroyable_flag: destroyable,
+            overlay_projection_ops: Vec::new(),
         }
     }
 
@@ -817,6 +832,51 @@ impl BridgeRuntimeState {
         index_of(self.width, self.height, rx, ry)
             .and_then(move |idx| self.cells.get_mut(idx))
             .and_then(|cell| cell.as_mut())
+    }
+
+    /// Write one live bridge-overlay byte as a complete one-cell native
+    /// transaction. Multi-cell walkers use the deferred form below so they can
+    /// place every identity before queueing their ordered recalculations.
+    pub(crate) fn write_overlay_byte(&mut self, rx: u16, ry: u16, overlay_byte: u8) -> bool {
+        let changed = self.write_overlay_byte_deferred_recalc(rx, ry, overlay_byte);
+        if self.cell(rx, ry).is_some() {
+            self.queue_overlay_recalc(rx, ry);
+        }
+        changed
+    }
+
+    pub(crate) fn write_overlay_byte_deferred_recalc(
+        &mut self,
+        rx: u16,
+        ry: u16,
+        overlay_byte: u8,
+    ) -> bool {
+        let changed = match self.cell_mut(rx, ry) {
+            Some(cell) => {
+                let changed = cell.overlay_byte != overlay_byte;
+                cell.overlay_byte = overlay_byte;
+                changed
+            }
+            None => return false,
+        };
+        self.overlay_projection_ops
+            .push(BridgeOverlayProjectionOp::Write {
+                rx,
+                ry,
+                overlay_byte,
+            });
+        changed
+    }
+
+    pub(crate) fn queue_overlay_recalc(&mut self, rx: u16, ry: u16) {
+        if self.cell(rx, ry).is_some() {
+            self.overlay_projection_ops
+                .push(BridgeOverlayProjectionOp::Recalc { rx, ry });
+        }
+    }
+
+    pub(crate) fn take_overlay_projection_ops(&mut self) -> Vec<BridgeOverlayProjectionOp> {
+        std::mem::take(&mut self.overlay_projection_ops)
     }
 
     /// Map width in cells. Needed by walker code in the `walker` submodule
@@ -1025,9 +1085,12 @@ impl BridgeRuntimeState {
     fn clear_collapsed_span_overlay_bytes(&mut self, span: &AnchorSpan) -> Vec<(u16, u16)> {
         let mut cleared = Vec::new();
         for (_, pos) in span.iter_cells() {
-            if let Some(cell) = self.cell_mut(pos.0, pos.1) {
+            if self.cell(pos.0, pos.1).is_some() {
+                let _ = self.write_overlay_byte(pos.0, pos.1, OVERLAY_BYTE_NONE);
+                let cell = self
+                    .cell_mut(pos.0, pos.1)
+                    .expect("bridge cell existed before overlay write");
                 cell.damage_state = DamageState::Destroyed;
-                cell.overlay_byte = OVERLAY_BYTE_NONE;
                 if !cleared.contains(&pos) {
                     cleared.push(pos);
                 }
@@ -1552,9 +1615,12 @@ impl BridgeRuntimeState {
                     destroyed.push(pos);
                 }
                 actions.push((pos, slot, CellAction::BlowUpBridge));
-                if let Some(c) = self.cell_mut(pos.0, pos.1) {
+                if self.cell(pos.0, pos.1).is_some() {
+                    let _ = self.write_overlay_byte(pos.0, pos.1, OVERLAY_BYTE_NONE);
+                    let c = self
+                        .cell_mut(pos.0, pos.1)
+                        .expect("bridge cell existed before overlay write");
                     c.damage_state = DamageState::Destroyed;
-                    c.overlay_byte = OVERLAY_BYTE_NONE;
                     if matches!(c.role, BridgeCellRole::Anchor | BridgeCellRole::Bridgehead) {
                         c.bridgehead_anchor_class = BridgeheadAnchorClass::AboutToFall;
                     }
@@ -1776,13 +1842,8 @@ fn compute_high_bridge_endpoints(
         let mut cursor = endpoint_a;
         let mut far_match_seen = false;
         let mut intact = true;
-        let mut group_id = bridge_runtime_group_at(
-            runtime_cells,
-            width,
-            height,
-            endpoint_a.0,
-            endpoint_a.1,
-        );
+        let mut group_id =
+            bridge_runtime_group_at(runtime_cells, width, height, endpoint_a.0, endpoint_a.1);
 
         loop {
             let previous = cursor;
@@ -1812,18 +1873,12 @@ fn compute_high_bridge_endpoints(
             }
 
             group_id = group_id.or_else(|| {
-                bridge_runtime_group_at(
-                    runtime_cells,
-                    width,
-                    height,
-                    cursor.0,
-                    cursor.1,
-                )
+                bridge_runtime_group_at(runtime_cells, width, height, cursor.0, cursor.1)
             });
 
             if let Some(next_offset) = terrain.high_bridge_tile_offset(next_cell) {
-                far_match_seen = HIGH_BRIDGE_END_SUBTILE[next_offset]
-                    == i32::from(next_cell.final_sub_tile);
+                far_match_seen =
+                    HIGH_BRIDGE_END_SUBTILE[next_offset] == i32::from(next_cell.final_sub_tile);
             } else if !next_cell.bridge_facts.has_structural_bridge() {
                 intact = false;
             }

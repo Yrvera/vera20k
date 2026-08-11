@@ -80,7 +80,7 @@ impl TerrainObjectType {
             animation_rate: section.get_i32("AnimationRate").unwrap_or(0).clamp(0, 255) as u8,
             animation_probability_micros,
             armor: section.get("Armor").unwrap_or("wood").to_ascii_lowercase(),
-            strength: section.get_i32("Strength").unwrap_or(tree_strength).max(1),
+            strength: section.get_i32("Strength").unwrap_or(tree_strength),
             immune: section.get_bool("Immune").unwrap_or(false),
             legal_target: section.get_bool("LegalTarget").unwrap_or(false) || is_veinhole,
             insignificant: section.get_bool("Insignificant").unwrap_or(true),
@@ -169,6 +169,25 @@ mod tests {
         assert!(t.legal_target);
         assert_eq!(t.temperate_occupation_bits, 4);
         assert_eq!(t.snow_occupation_bits, 7);
+    }
+
+    #[test]
+    fn gsi_04_10_strength_preserves_signed_explicit_and_fallback_values() {
+        for (body, tree_strength, expected) in [
+            ("", -375, -375),
+            ("Strength=0\n", 200, 0),
+            ("Strength=-27\n", 200, -27),
+            ("Strength=450\n", -375, 450),
+        ] {
+            let ini = IniFile::from_str(&format!("[TREE01]\n{body}"));
+            let section = ini.section("TREE01").expect("section");
+            let terrain = TerrainObjectType::from_ini_section_with_tree_strength(
+                "TREE01",
+                section,
+                tree_strength,
+            );
+            assert_eq!(terrain.strength, expected, "body={body:?}");
+        }
     }
 
     #[test]

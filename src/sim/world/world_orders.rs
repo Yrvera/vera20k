@@ -5,6 +5,8 @@
 //!
 //! Dependency rules: same as sim/ (depends on rules/, map/; never render/ui/audio/net).
 
+use std::collections::BTreeSet;
+
 use super::Simulation;
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
@@ -48,11 +50,18 @@ impl Simulation {
     /// moves to the `mission` substrate) but kept unchanged in code: `OrderIntent`
     /// carries the AttackMove/Guard *coords* that `MissionType` cannot encode.
     /// Full retirement (a goal field on the mission/nav substrate) is a later slice.
-    pub(crate) fn tick_order_intents_pre_combat(&mut self, rules: &RuleSet) {
+    pub(crate) fn tick_order_intents_pre_combat(
+        &mut self,
+        rules: &RuleSet,
+        turn_suppressed: &BTreeSet<u64>,
+    ) {
         // Collect attacker candidates from EntityStore.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         let mut attacker_ids: Vec<u64> = Vec::new();
         for &id in &keys {
+            if turn_suppressed.contains(&id) {
+                continue;
+            }
             if let Some(entity) = self.substrate.entities.get(id) {
                 if entity.order_intent.is_some() && entity.attack_target.is_none() {
                     attacker_ids.push(id);
@@ -90,11 +99,29 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         rules: Option<&RuleSet>,
     ) {
+        self.tick_order_intents_post_combat_with_overlay_registry(
+            path_grid,
+            rules,
+            None,
+            &BTreeSet::new(),
+        );
+    }
+
+    pub(crate) fn tick_order_intents_post_combat_with_overlay_registry(
+        &mut self,
+        path_grid: Option<&PathGrid>,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        turn_suppressed: &BTreeSet<u64>,
+    ) {
         let Some(grid) = path_grid else { return };
         // Collect (stable_id, goal) for entities that need to resume movement.
         let keys: Vec<u64> = self.substrate.entities.keys_sorted();
         let mut resumes: Vec<(u64, u16, u16)> = Vec::new();
         for &id in &keys {
+            if turn_suppressed.contains(&id) {
+                continue;
+            }
             if let Some(entity) = self.substrate.entities.get(id) {
                 let intent = match entity.order_intent {
                     Some(ref i) => *i,
@@ -156,14 +183,17 @@ impl Simulation {
                     speed,
                 );
             } else {
-                let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                    &self.substrate.entities,
-                    grid.width(),
-                    grid.height(),
-                    self.resolved_terrain.as_ref(),
-                    &self.interner,
-                    rules,
-                );
+                let blocker_neighbor_counts =
+                    bump_crush::build_blocker_neighbor_counts_with_overlays(
+                        &self.substrate.entities,
+                        grid.width(),
+                        grid.height(),
+                        self.resolved_terrain.as_ref(),
+                        self.overlay_grid.as_ref(),
+                        overlay_registry,
+                        &self.interner,
+                        rules,
+                    );
                 let _ = movement::issue_move_command_with_layered(
                     &mut self.substrate.entities,
                     grid,
@@ -193,14 +223,20 @@ impl Simulation {
     /// This skip is defense in depth in case ordering ever changes; the
     /// original game never captures CABHUTs.
     /// Returns true if any capture occurred (triggers atlas rebuild for new owner color).
-    pub(crate) fn tick_capture_orders(&mut self, rules: &RuleSet) -> bool {
+    pub(crate) fn tick_capture_orders(
+        &mut self,
+        rules: &RuleSet,
+        turn_suppressed: &BTreeSet<u64>,
+    ) -> bool {
         let mut any_captured = false;
         // Snapshot engineers with active capture targets.
         let captures: Vec<(u64, u64, InternedId)> = self
             .substrate
             .entities
             .values()
-            .filter(|e| e.capture_target.is_some() && !e.dying)
+            .filter(|e| {
+                e.capture_target.is_some() && !e.dying && !turn_suppressed.contains(&e.stable_id)
+            })
             .map(|e| (e.stable_id, e.capture_target.unwrap(), e.owner))
             .collect();
 
@@ -285,6 +321,15 @@ impl Simulation {
     /// Returns `true` if any repair mutated bridge state (caller ORs into
     /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
     pub(crate) fn tick_bridge_repair_orders(&mut self, rules: &RuleSet) -> bool {
+        self.tick_bridge_repair_orders_with_overlay_registry(rules, None, &BTreeSet::new())
+    }
+
+    pub(crate) fn tick_bridge_repair_orders_with_overlay_registry(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        turn_suppressed: &BTreeSet<u64>,
+    ) -> bool {
         use crate::sim::bridge_state::cells_in_5x5_scan;
 
         let mut any_repair = false;
@@ -293,6 +338,10 @@ impl Simulation {
 
         while key_idx < keys.len() {
             let engineer_id = keys[key_idx];
+            if turn_suppressed.contains(&engineer_id) {
+                key_idx += 1;
+                continue;
+            }
             let Some((building_id, engineer_owner)) =
                 self.substrate.entities.get(engineer_id).and_then(|e| {
                     if e.dying {
@@ -411,6 +460,11 @@ impl Simulation {
                 any_repair = true;
             }
 
+            crate::sim::world::bridge_orchestrator::project_pending_low_bridge_overlay_writes(
+                self,
+                overlay_registry,
+            );
+
             // Step B2: zone-graph refresh. The repair restores cells
             // (Destroyed -> Healthy) but the endpoint records are
             // deactivate-only at construction; without this the bidirectional
@@ -461,6 +515,15 @@ impl Simulation {
     /// building died, and `bridge_state_changed` is true if any C4 detonation
     /// on a `BridgeRepairHut` collapsed a bridge.
     pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> C4TickOutcome {
+        self.tick_c4_plants_with_overlay_registry(rules, None, &BTreeSet::new())
+    }
+
+    pub(crate) fn tick_c4_plants_with_overlay_registry(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        turn_suppressed: &BTreeSet<u64>,
+    ) -> C4TickOutcome {
         use crate::sim::components::PendingC4Detonation;
         let mut destroyed_structure = false;
         let mut bridge_state_changed = false;
@@ -470,6 +533,9 @@ impl Simulation {
         // keys_sorted then look up c4_plant.
         let mut walkup: Vec<(u64, u64)> = Vec::new();
         for sid in self.substrate.entities.keys_sorted() {
+            if turn_suppressed.contains(&sid) {
+                continue;
+            }
             if let Some(e) = self.substrate.entities.get(sid) {
                 if let Some(plant) = e.c4_plant {
                     if !e.dying {
@@ -535,8 +601,9 @@ impl Simulation {
             // Claim the plant.
             if let Some(b) = self.substrate.entities.get_mut(target_id) {
                 b.pending_c4_detonation = Some(PendingC4Detonation {
-                    plant_start_tick: u64::from(self.session.binary_frame),
-                    attacker_id,
+                    start_frame: self.session.binary_frame as i32,
+                    duration_frames: rules.c4_delay_ticks as i32,
+                    source_entity_id: Some(attacker_id),
                 });
             }
 
@@ -563,7 +630,10 @@ impl Simulation {
         let mut det_keys: Vec<u64> = Vec::new();
         for sid in self.substrate.entities.keys_sorted() {
             if let Some(e) = self.substrate.entities.get(sid) {
-                if e.pending_c4_detonation.is_some() && !e.dying {
+                let bridge_hut = rules
+                    .object(self.interner.resolve(e.type_ref))
+                    .is_some_and(|object| object.bridge_repair_hut);
+                if e.pending_c4_detonation.is_some() && !e.dying && bridge_hut {
                     det_keys.push(sid);
                 }
             }
@@ -579,8 +649,6 @@ impl Simulation {
         }
 
         let c4_warhead_id = rules.c4_warhead_id();
-        let delay = rules.c4_delay_ticks;
-
         for building_id in det_keys {
             let pending = self
                 .substrate
@@ -589,12 +657,7 @@ impl Simulation {
                 .and_then(|e| e.pending_c4_detonation);
             let Some(pending) = pending else { continue };
 
-            if self
-                .session
-                .binary_frame
-                .wrapping_sub(pending.plant_start_tick as u32)
-                < delay
-            {
+            if !pending.is_expired_at(self.session.binary_frame as i32) {
                 continue;
             }
 
@@ -614,18 +677,17 @@ impl Simulation {
             }
 
             // Resolve kill-credit. Attacker may have despawned — fall back to None.
-            let attacker_for_credit: Option<u64> = self
-                .substrate
-                .entities
-                .get(pending.attacker_id)
-                .map(|_| pending.attacker_id);
+            let attacker_for_credit = pending
+                .source_entity_id
+                .filter(|&source_id| self.substrate.entities.get(source_id).is_some());
 
             let outcome = self.apply_c4_damage_to_building(
                 building_id,
-                dmg as u16,
+                dmg,
                 c4_warhead_id,
                 attacker_for_credit,
                 rules,
+                overlay_registry,
             );
             bridge_state_changed |= outcome.bridge_state_changed;
             if outcome.killed_building {
@@ -639,7 +701,9 @@ impl Simulation {
                 if let Some(building) = self.substrate.entities.get_mut(building_id) {
                     building.pending_c4_detonation = None;
                 }
-                if let Some(attacker) = self.substrate.entities.get_mut(pending.attacker_id) {
+                if let Some(attacker_id) = pending.source_entity_id
+                    && let Some(attacker) = self.substrate.entities.get_mut(attacker_id)
+                {
                     if attacker
                         .c4_plant
                         .is_some_and(|plant| plant.target_building_id == building_id)
@@ -654,6 +718,59 @@ impl Simulation {
             destroyed_structure,
             bridge_state_changed,
         }
+    }
+
+    /// BuildingClass::Update's shared C4/PostMortem expiry tail. Called from
+    /// the current Structure LogicVector visit, so the forced receiver and any
+    /// nested DeathWeapon complete before the next live object is visited.
+    pub(crate) fn tick_pending_building_detonation(
+        &mut self,
+        building_id: u64,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    ) {
+        let Some((pending, health, bridge_hut)) = self
+            .substrate
+            .entities
+            .get(building_id)
+            .and_then(|building| {
+                let pending = building.pending_c4_detonation?;
+                let object = rules.object(self.interner.resolve(building.type_ref))?;
+                Some((
+                    pending,
+                    i32::from(building.health.current),
+                    object.bridge_repair_hut,
+                ))
+            })
+        else {
+            return;
+        };
+        if !pending.is_expired_at(self.session.binary_frame as i32) || health <= 0 {
+            return;
+        }
+
+        if bridge_hut {
+            // Preserve the existing bridge-specific Phase-5 consumer outside
+            // this damage slice. It owns collapse, attacker cleanup, and the
+            // result flag that invalidates bridge navigation for the caller.
+            return;
+        }
+
+        let event = crate::sim::combat::EntityDamageEvent::direct_receiver(
+            building_id,
+            health,
+            0,
+            pending
+                .source_entity_id
+                .unwrap_or(crate::sim::combat::RAD_NO_ATTACKER),
+            None,
+            rules.c4_warhead_id(),
+            crate::sim::combat::ReceiverCallFlags {
+                ignore_defenses: true,
+                arg6: false,
+            },
+        );
+        self.commit_noncombat_aoe_hits(rules, overlay_registry, &[event]);
     }
 
     fn building_entry_target_footprint(
@@ -807,10 +924,11 @@ impl Simulation {
     fn apply_c4_damage_to_building(
         &mut self,
         building_id: u64,
-        damage: u16,
+        damage: i32,
         warhead_id: crate::sim::intern::InternedId,
         attacker_id: Option<u64>,
         rules: &RuleSet,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
     ) -> C4DamageOutcome {
         // BridgeRepairHut target: reroute the explosion into the bridge
         // collapse cascade and leave the hut at full HP. The hut never
@@ -835,8 +953,11 @@ impl Simulation {
                 .map(|b| (b.position.rx, b.position.ry));
             let bridge_state_changed = match bld_center {
                 Some(center) => {
-                    crate::sim::world::bridge_orchestrator::dispatch_bridge_collapse_from_hut(
-                        self, rules, center,
+                    crate::sim::world::bridge_orchestrator::dispatch_bridge_collapse_from_hut_with_overlay_registry(
+                        self,
+                        rules,
+                        center,
+                        overlay_registry,
                     )
                 }
                 None => false,
@@ -849,49 +970,25 @@ impl Simulation {
             };
         }
 
-        // Check IC for normal C4 targets. If invulnerable, damage is
-        // nullified but pending state stays, so we try again next tick.
-        let invuln = self
+        let event = crate::sim::combat::EntityDamageEvent::direct_receiver(
+            building_id,
+            damage,
+            0,
+            attacker_id.unwrap_or(crate::sim::combat::RAD_NO_ATTACKER),
+            None,
+            warhead_id,
+            crate::sim::combat::ReceiverCallFlags {
+                ignore_defenses: true,
+                arg6: false,
+            },
+        );
+        self.commit_noncombat_aoe_hits(rules, overlay_registry, &[event]);
+        if self
             .substrate
             .entities
             .get(building_id)
-            .and_then(|e| e.invulnerability.clone());
-        if crate::sim::superweapon::invulnerability::is_invulnerable(
-            invuln.as_ref(),
-            self.session.binary_frame,
-        ) {
-            return C4DamageOutcome::default();
-        }
-
-        // Resolve warhead, apply Verses, subtract HP.
-        let warhead_name = self.interner.resolve(warhead_id).to_string();
-        let Some(warhead) = rules.warhead(&warhead_name) else {
-            return C4DamageOutcome::default();
-        };
-        let armor_idx: usize = match self.substrate.entities.get(building_id) {
-            Some(b) => {
-                let obj_armor = self
-                    .object_type(b.type_ref, rules)
-                    .map(|o| o.armor.as_str())
-                    .unwrap_or("none");
-                crate::sim::combat::armor_index(obj_armor)
-            }
-            None => return C4DamageOutcome::default(),
-        };
-        let verses_pct = warhead.verses.get(armor_idx).copied().unwrap_or(100);
-        let scaled = (damage as i32 * verses_pct as i32 / 100).max(0) as u16;
-
-        let Some(b) = self.substrate.entities.get_mut(building_id) else {
-            return C4DamageOutcome::default();
-        };
-        let new_hp = b.health.current.saturating_sub(scaled);
-        b.health.current = new_hp;
-        b.refresh_building_damage_state_gate(rules.general.condition_yellow_x1000);
-        if new_hp == 0 {
-            b.dying = true;
-            if let Some(att) = attacker_id {
-                b.last_attacker_id = Some(att);
-            }
+            .is_none_or(|b| b.dying)
+        {
             C4DamageOutcome {
                 killed_building: true,
                 bridge_state_changed: false,
@@ -927,6 +1024,16 @@ impl Simulation {
     /// map, unleashed, the first time an enemy scouted past: nothing carries
     /// these units home because they have no `OrderIntent` to resume.
     pub(crate) fn tick_attack_pursuit(&mut self, rules: &RuleSet, path_grid: Option<&PathGrid>) {
+        self.tick_attack_pursuit_with_overlay_registry(rules, path_grid, None, &BTreeSet::new());
+    }
+
+    pub(crate) fn tick_attack_pursuit_with_overlay_registry(
+        &mut self,
+        rules: &RuleSet,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        turn_suppressed: &BTreeSet<u64>,
+    ) {
         let Some(grid) = path_grid else {
             return;
         };
@@ -952,6 +1059,9 @@ impl Simulation {
         let mut actions: Vec<PursuitAction> = Vec::new();
 
         for &id in &keys {
+            if turn_suppressed.contains(&id) {
+                continue;
+            }
             let Some(entity) = self.substrate.entities.get(id) else {
                 continue;
             };
@@ -1066,14 +1176,17 @@ impl Simulation {
                         Some(rules),
                     );
                     let cost_grid = self.terrain_costs.get(&info.speed_type);
-                    let blocker_neighbor_counts = bump_crush::build_blocker_neighbor_counts(
-                        &self.substrate.entities,
-                        grid.width(),
-                        grid.height(),
-                        self.resolved_terrain.as_ref(),
-                        &self.interner,
-                        Some(rules),
-                    );
+                    let blocker_neighbor_counts =
+                        bump_crush::build_blocker_neighbor_counts_with_overlays(
+                            &self.substrate.entities,
+                            grid.width(),
+                            grid.height(),
+                            self.resolved_terrain.as_ref(),
+                            self.overlay_grid.as_ref(),
+                            overlay_registry,
+                            &self.interner,
+                            Some(rules),
+                        );
                     let _issued = movement::issue_move_command_with_layered(
                         &mut self.substrate.entities,
                         grid,
