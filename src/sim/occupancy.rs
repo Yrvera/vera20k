@@ -11,7 +11,7 @@
 //! - Part of sim/ — depends on sim/movement/locomotor (MovementLayer).
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::entities::EntityCategory;
 use crate::sim::components::{DriveLocomotionRuntime, DriveOccupationFootprint};
@@ -25,6 +25,120 @@ pub(crate) const VEHICLE_OCCUPATION_BIT: u8 = 0x20;
 /// Generic ObjectClass occupation bit used by landed AircraftClass objects.
 pub(crate) const OBJECT_OCCUPATION_BIT: u8 = 0x40;
 pub(crate) const BUILDING_OCCUPATION_BIT: u8 = 0x80;
+
+/// Side length of gamemd's global airborne-object spatial bucket grid.
+/// `FUN_00412870` constructs exactly 400 vectors as a 20 x 20 grid.
+pub(crate) const AIR_SPATIAL_BUCKET_SIDE: u16 = 20;
+
+/// Map a cell coordinate into gamemd's clamped 20 x 20 airborne spatial grid.
+///
+/// The native helpers divide each non-negative cell component by the matching
+/// map span divided by 20, then clamp the bucket component to 19. Retail maps
+/// are wider than 20 cells; the `max(1)` only keeps small focused fixtures from
+/// dividing by zero while preserving the same partition for production maps.
+pub(crate) fn air_spatial_bucket_index(rx: u16, ry: u16, map_width: u16, map_height: u16) -> u16 {
+    let bucket_width = (map_width / AIR_SPATIAL_BUCKET_SIDE).max(1);
+    let bucket_height = (map_height / AIR_SPATIAL_BUCKET_SIDE).max(1);
+    let bx = (rx / bucket_width).min(AIR_SPATIAL_BUCKET_SIDE - 1);
+    let by = (ry / bucket_height).min(AIR_SPATIAL_BUCKET_SIDE - 1);
+    bx + by * AIR_SPATIAL_BUCKET_SIDE
+}
+
+/// Whether the object belongs to the independent airborne spatial index.
+/// Native producers are the Fly/Jumpjet/rocket air-entry and movement paths;
+/// underground objects are deliberately not inferred to be airborne merely
+/// because they are absent from both CellClass object lists.
+pub(crate) fn air_spatial_tracks_entity(entity: &GameEntity) -> bool {
+    use crate::rules::locomotor_type::LocomotorKind;
+
+    let Some(locomotor) = entity.locomotor.as_ref() else {
+        return false;
+    };
+    locomotor.layer == MovementLayer::Air
+        || (entity.category == EntityCategory::Aircraft
+            && locomotor.kind == LocomotorKind::Fly
+            && locomotor.altitude > SIM_ZERO)
+}
+
+/// Exact bucket-copy order used by `FUN_00412B40` for the airborne phase of
+/// `Apply_area_damage`.
+///
+/// Bucket vectors themselves retain insertion order. This helper returns only
+/// the vector order: center, east/north/south/west cardinal runs, then the
+/// northwest/southwest/northeast/southeast corner runs. The native radius is
+/// already ftol-truncated by the caller and values below two become one.
+pub(crate) fn air_spatial_query_bucket_order(
+    center_rx: u16,
+    center_ry: u16,
+    radius_cells: i32,
+    map_width: u16,
+    map_height: u16,
+) -> Vec<u16> {
+    fn step_bucket(bucket: u16, dx: i16, dy: i16) -> u16 {
+        let side = i32::from(AIR_SPATIAL_BUCKET_SIDE);
+        let bx = (i32::from(bucket % AIR_SPATIAL_BUCKET_SIDE) + i32::from(dx)).clamp(0, side - 1);
+        let by = (i32::from(bucket / AIR_SPATIAL_BUCKET_SIDE) + i32::from(dy)).clamp(0, side - 1);
+        (bx + by * side) as u16
+    }
+
+    fn push_cardinal(
+        order: &mut Vec<u16>,
+        mut bucket: u16,
+        center: u16,
+        step_dx: i16,
+        step_dy: i16,
+    ) -> usize {
+        let mut count = 0;
+        while bucket != center {
+            order.push(bucket);
+            count += 1;
+            bucket = step_bucket(bucket, step_dx, step_dy);
+        }
+        count
+    }
+
+    fn push_corner(
+        order: &mut Vec<u16>,
+        center: u16,
+        x_count: usize,
+        y_count: usize,
+        dx: i16,
+        dy: i16,
+    ) {
+        if x_count == 0 || y_count == 0 {
+            return;
+        }
+        let mut bucket = center;
+        for _ in 0..x_count.min(y_count) {
+            bucket = step_bucket(bucket, dx, dy);
+            order.push(bucket);
+        }
+        if x_count > 1 && y_count > 1 {
+            order.push(step_bucket(center, dx * 2, dy));
+            order.push(step_bucket(center, dx, dy * 2));
+        }
+    }
+
+    let radius = if radius_cells < 2 { 1 } else { radius_cells };
+    let center = air_spatial_bucket_index(center_rx, center_ry, map_width, map_height);
+    let mut order = vec![center];
+    let endpoint = |dx: i32, dy: i32| {
+        let rx = (i32::from(center_rx) + dx).clamp(0, i32::from(u16::MAX)) as u16;
+        let ry = (i32::from(center_ry) + dy).clamp(0, i32::from(u16::MAX)) as u16;
+        air_spatial_bucket_index(rx, ry, map_width, map_height)
+    };
+
+    let east = push_cardinal(&mut order, endpoint(radius, 0), center, -1, 0);
+    let north = push_cardinal(&mut order, endpoint(0, -radius), center, 0, 1);
+    let south = push_cardinal(&mut order, endpoint(0, radius), center, 0, -1);
+    let west = push_cardinal(&mut order, endpoint(-radius, 0), center, 1, 0);
+
+    push_corner(&mut order, center, west, north, -1, -1);
+    push_corner(&mut order, center, west, south, -1, 1);
+    push_corner(&mut order, center, east, north, 1, -1);
+    push_corner(&mut order, center, east, south, 1, 1);
+    order
+}
 
 /// Object-list layer after the native display-layer eligibility gate.
 /// Aircraft use Fly height rather than their Air path layer; every other
@@ -156,6 +270,151 @@ impl RawCellOccupationGrid {
             .iter()
             .map(|(&(rx, ry), cell)| (rx, ry, cell.ground, cell.deck))
     }
+}
+
+/// Sparse authoritative storage for `CellClass`'s building hidden-object count.
+///
+/// This counter is independent of object lists and both raw occupation planes.
+/// An absent entry is exactly zero; wrapping increments that reach zero and
+/// guarded decrements that reach zero remove the sparse entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HiddenOccupationGrid {
+    cells: BTreeMap<(u16, u16), u32>,
+}
+
+impl HiddenOccupationGrid {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn count(&self, rx: u16, ry: u16) -> u32 {
+        self.cells.get(&(rx, ry)).copied().unwrap_or(0)
+    }
+
+    /// Apply the post-object-list enter contribution for one building.
+    pub(crate) fn enter_building(
+        &mut self,
+        origin: (u16, u16),
+        foundation: &str,
+        profile: crate::rules::object_type::BuildingHiddenOccupancyProfile,
+        map_size: Option<(u16, u16)>,
+    ) -> bool {
+        if !profile.can_hide_things {
+            return false;
+        }
+
+        for cell in hidden_diagonal_cells(origin, foundation, profile.occupy_height, map_size) {
+            self.increment(cell);
+        }
+        for slot in 0..crate::rules::object_type::HIDDEN_OCCUPY_SLOT_COUNT {
+            if let Some(offset) = profile.add_occupy[slot]
+                && let Some(cell) = hidden_offset_cell(origin, offset, map_size)
+            {
+                self.increment(cell);
+            }
+            if let Some(offset) = profile.remove_occupy[slot]
+                && let Some(cell) = hidden_offset_cell(origin, offset, map_size)
+            {
+                self.decrement_guarded(cell);
+            }
+        }
+        true
+    }
+
+    /// Reverse the post-object-list contribution for one building. RemoveOccupy
+    /// slots deliberately have no exit-side inverse.
+    pub(crate) fn exit_building(
+        &mut self,
+        origin: (u16, u16),
+        foundation: &str,
+        profile: crate::rules::object_type::BuildingHiddenOccupancyProfile,
+        map_size: Option<(u16, u16)>,
+    ) -> bool {
+        if !profile.can_hide_things {
+            return false;
+        }
+
+        for cell in hidden_diagonal_cells(origin, foundation, profile.occupy_height, map_size) {
+            self.decrement_guarded(cell);
+        }
+        for offset in profile.add_occupy.into_iter().flatten() {
+            if let Some(cell) = hidden_offset_cell(origin, offset, map_size) {
+                self.decrement_guarded(cell);
+            }
+        }
+        true
+    }
+
+    fn increment(&mut self, cell: (u16, u16)) {
+        let next = self.count(cell.0, cell.1).wrapping_add(1);
+        if next == 0 {
+            self.cells.remove(&cell);
+        } else {
+            self.cells.insert(cell, next);
+        }
+    }
+
+    fn decrement_guarded(&mut self, cell: (u16, u16)) {
+        let Some(current) = self.cells.get_mut(&cell) else {
+            return;
+        };
+        if *current == 1 {
+            self.cells.remove(&cell);
+        } else {
+            *current -= 1;
+        }
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (u16, u16, u32)> + '_ {
+        self.cells.iter().map(|(&(rx, ry), &count)| (rx, ry, count))
+    }
+}
+
+fn hidden_diagonal_cells(
+    origin: (u16, u16),
+    foundation: &str,
+    occupy_height: i32,
+    map_size: Option<(u16, u16)>,
+) -> BTreeSet<(u16, u16)> {
+    let depth = occupy_height.saturating_sub(1).max(1);
+    let mut cells = BTreeSet::new();
+    for (dx, dy) in crate::rules::foundation::foundation_cell_offsets(foundation) {
+        for k in 0..depth {
+            let rx = i32::from(origin.0) + i32::from(dx) - k;
+            let ry = i32::from(origin.1) + i32::from(dy) - k;
+            if let Some(cell) = hidden_map_cell(rx, ry, map_size) {
+                cells.insert(cell);
+            }
+        }
+    }
+    cells
+}
+
+fn hidden_offset_cell(
+    origin: (u16, u16),
+    offset: (i16, i16),
+    map_size: Option<(u16, u16)>,
+) -> Option<(u16, u16)> {
+    hidden_map_cell(
+        i32::from(origin.0) + i32::from(offset.0),
+        i32::from(origin.1) + i32::from(offset.1),
+        map_size,
+    )
+}
+
+fn hidden_map_cell(rx: i32, ry: i32, map_size: Option<(u16, u16)>) -> Option<(u16, u16)> {
+    let rx = u16::try_from(rx).ok()?;
+    let ry = u16::try_from(ry).ok()?;
+    if let Some((width, height)) = map_size.filter(|&(width, height)| width != 0 && height != 0)
+        && (rx >= width || ry >= height)
+    {
+        return None;
+    }
+    Some((rx, ry))
 }
 
 /// Entity-aware ownership behind one native occupation plane.
@@ -2099,5 +2358,144 @@ mod tests {
 
         assert_eq!(bits.vehicle_bits(2, 2, MovementLayer::Ground), 0x20);
         assert_eq!(bits.vehicle_bits(3, 2, MovementLayer::Ground), 0x20);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_garefn_exact_counter_contribution() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.occupy_height = 2;
+        profile.add_occupy[0] = Some((-1, 0));
+        profile.add_occupy[1] = Some((-1, -1));
+        profile.remove_occupy[0] = Some((3, 1));
+
+        assert!(grid.enter_building((10, 10), "4x3", profile, Some((32, 32))));
+        assert_eq!(grid.entry_count(), 13);
+        assert_eq!(grid.count(10, 10), 1);
+        assert_eq!(grid.count(13, 11), 0);
+        assert_eq!(grid.count(9, 10), 1);
+        assert_eq!(grid.count(9, 9), 1);
+
+        assert!(grid.exit_building((10, 10), "4x3", profile, Some((32, 32))));
+        assert_eq!(grid.entry_count(), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_narefn_exact_counter_contribution() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.occupy_height = 4;
+        profile.remove_occupy = [
+            Some((0, -2)),
+            Some((1, -1)),
+            Some((1, -2)),
+            Some((2, -1)),
+            Some((-2, 0)),
+            Some((-2, -1)),
+            Some((-2, -2)),
+            Some((3, 1)),
+        ];
+
+        assert!(grid.enter_building((10, 10), "4x3", profile, Some((32, 32))));
+        assert_eq!(grid.entry_count(), 16);
+        for offset in profile.remove_occupy.into_iter().flatten() {
+            assert_eq!(
+                grid.count(
+                    (i32::from(10u16) + i32::from(offset.0)) as u16,
+                    (i32::from(10u16) + i32::from(offset.1)) as u16,
+                ),
+                0,
+                "RemoveOccupy slot {offset:?}"
+            );
+        }
+        assert_eq!(grid.count(10, 10), 1);
+        assert_eq!(grid.count(9, 9), 1);
+
+        assert!(grid.exit_building((10, 10), "4x3", profile, Some((32, 32))));
+        assert_eq!(grid.entry_count(), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_overlap_counts_slots_and_exit_is_guarded() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.add_occupy[0] = Some((0, 0));
+        profile.add_occupy[1] = Some((0, 0));
+        profile.remove_occupy[0] = Some((0, 0));
+
+        grid.enter_building((8, 8), "1x1", profile, Some((20, 20)));
+        assert_eq!(grid.count(8, 8), 2, "diagonal + two Add - one Remove");
+        grid.exit_building((8, 8), "1x1", profile, Some((20, 20)));
+        assert_eq!(grid.count(8, 8), 0, "final extra Add decrement is guarded");
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_remove_is_not_readded_on_exit() {
+        let mut grid = HiddenOccupationGrid::new();
+        let base = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        grid.enter_building((20, 20), "1x1", base, Some((40, 40)));
+        assert_eq!(grid.count(20, 20), 1);
+
+        let mut suppressor = base;
+        suppressor.remove_occupy[0] = Some((10, 10));
+        grid.enter_building((10, 10), "1x1", suppressor, Some((40, 40)));
+        assert_eq!(grid.count(20, 20), 0);
+        grid.exit_building((10, 10), "1x1", suppressor, Some((40, 40)));
+        assert_eq!(grid.count(20, 20), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_refinery_hole_is_not_a_diagonal_source() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.occupy_height = 4;
+
+        grid.enter_building((10, 10), "3x3Refinery", profile, Some((32, 32)));
+        assert_eq!(grid.count(12, 11), 0, "native offset (2,1) is a hole");
+        assert_eq!(grid.count(12, 10), 1);
+        assert_eq!(grid.count(12, 12), 1);
+
+        grid.exit_building((10, 10), "3x3Refinery", profile, Some((32, 32)));
+        assert_eq!(grid.entry_count(), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_entry_interleaves_add_then_remove_per_slot() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.remove_occupy[0] = Some((1, 0));
+        profile.add_occupy[1] = Some((1, 0));
+
+        grid.enter_building((10, 10), "0x0", profile, Some((32, 32)));
+        assert_eq!(grid.count(10, 10), 0, "0x0 has no foundation offsets");
+        assert_eq!(
+            grid.count(11, 10),
+            1,
+            "slot 0 Remove is guarded before slot 1 Add increments"
+        );
+
+        grid.exit_building((10, 10), "0x0", profile, Some((32, 32)));
+        assert_eq!(grid.entry_count(), 0);
+    }
+
+    #[test]
+    fn gsi_04_05_hidden_off_map_cells_are_ignored_and_increment_wraps() {
+        let mut grid = HiddenOccupationGrid::new();
+        let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
+        profile.occupy_height = 3;
+        profile.add_occupy[0] = Some((-1, 0));
+        profile.add_occupy[1] = Some((4, 0));
+        grid.enter_building((0, 0), "1x1", profile, Some((4, 4)));
+        assert_eq!(grid.entry_count(), 1);
+        assert_eq!(grid.count(0, 0), 1);
+
+        grid.cells.insert((2, 2), u32::MAX);
+        grid.increment((2, 2));
+        assert_eq!(grid.count(2, 2), 0);
+
+        let before = grid.clone();
+        profile.can_hide_things = false;
+        assert!(!grid.enter_building((1, 1), "1x1", profile, Some((4, 4))));
+        assert_eq!(grid, before);
     }
 }
