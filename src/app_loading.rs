@@ -14,6 +14,7 @@ use crate::app_loading_composition::{
 use crate::app_loading_progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
+use crate::app_skirmish::PreloadedBattleStartPlan;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Color;
 use crate::assets::pcx_file::PcxFile;
@@ -208,10 +209,17 @@ impl LoadingProgressSink for NoopProgressSink {
     fn milestone(&mut self, _percent: u32) {}
 }
 
+enum PreloadedBattleStartPlanState {
+    Pending,
+    Unavailable,
+    Ready(PreloadedBattleStartPlan),
+}
+
 pub(crate) struct LoadingRequest {
     /// `None` is an internal terminal-transfer marker only. Every live request
     /// owns exactly one explicit startup variant.
     startup: Option<LoadingStartup>,
+    preloaded_battle_start_plan: PreloadedBattleStartPlanState,
     presentation: LoadingPresentation,
     fallback_skirmish_settings: SkirmishSettings,
 }
@@ -223,6 +231,7 @@ impl LoadingRequest {
     ) -> Self {
         Self {
             startup: Some(LoadingStartup::Accepted(startup)),
+            preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -238,6 +247,7 @@ impl LoadingRequest {
                 session: skirmish_launch_session,
                 seed,
             }),
+            preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
             presentation: LoadingPresentation::NativeSelectedSkirmish,
             fallback_skirmish_settings,
         }
@@ -251,6 +261,7 @@ impl LoadingRequest {
             startup: Some(LoadingStartup::Generic {
                 selected_map_file: selected_map_file.into(),
             }),
+            preloaded_battle_start_plan: PreloadedBattleStartPlanState::Pending,
             presentation: LoadingPresentation::GenericMapLoad,
             fallback_skirmish_settings,
         }
@@ -268,6 +279,46 @@ impl LoadingRequest {
         self.startup
             .as_ref()
             .expect("live loading request must retain startup authority")
+    }
+
+    fn prepare_battle_start_plan(&mut self, map: &crate::map::map_file::MapFile) {
+        if !matches!(
+            &self.preloaded_battle_start_plan,
+            PreloadedBattleStartPlanState::Pending
+        ) {
+            return;
+        }
+        let plan = self.skirmish_launch_session().and_then(|session| {
+            let seed = self
+                .startup()
+                .seed_or_else(|| unreachable!("a launch session always owns a launch seed"));
+            crate::app_skirmish::preload_standard_battle_start_plan(session, map, seed)
+        });
+        self.preloaded_battle_start_plan = plan.map_or(
+            PreloadedBattleStartPlanState::Unavailable,
+            PreloadedBattleStartPlanState::Ready,
+        );
+    }
+
+    fn preloaded_battle_start_plan(&self) -> Option<&PreloadedBattleStartPlan> {
+        match &self.preloaded_battle_start_plan {
+            PreloadedBattleStartPlanState::Ready(plan) => Some(plan),
+            PreloadedBattleStartPlanState::Pending | PreloadedBattleStartPlanState::Unavailable => {
+                None
+            }
+        }
+    }
+
+    fn take_preloaded_battle_start_plan(&mut self) -> Option<PreloadedBattleStartPlan> {
+        match std::mem::replace(
+            &mut self.preloaded_battle_start_plan,
+            PreloadedBattleStartPlanState::Unavailable,
+        ) {
+            PreloadedBattleStartPlanState::Ready(plan) => Some(plan),
+            PreloadedBattleStartPlanState::Pending | PreloadedBattleStartPlanState::Unavailable => {
+                None
+            }
+        }
     }
 
     fn take_startup(&mut self) -> LoadingStartup {
@@ -587,6 +638,9 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             };
             match initial {
                 Ok(initial) => {
+                    session
+                        .request
+                        .prepare_battle_start_plan(initial.map_data());
                     session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
                     LoadingPump::Pending
                 }
@@ -638,6 +692,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             // `session.native` and `session.request` are disjoint fields, so the
             // launch-session/settings borrows below coexist with the native split.
             let startup = session.request.take_startup();
+            let preloaded_battle_start_plan = session.request.take_preloaded_battle_start_plan();
             let Some(asset_manager) = session.job.asset_manager.as_mut() else {
                 restore_job_asset_manager(state, &mut session);
                 return LoadingPump::Failed(anyhow::anyhow!(
@@ -674,6 +729,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         asset_manager,
                         initial,
                         startup,
+                        preloaded_battle_start_plan,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
@@ -695,6 +751,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         asset_manager,
                         initial,
                         startup,
+                        preloaded_battle_start_plan,
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
@@ -709,6 +766,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     asset_manager,
                     initial,
                     startup,
+                    preloaded_battle_start_plan,
                     &session.request.fallback_skirmish_settings,
                     false,
                     0,
@@ -843,6 +901,9 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
     });
     match result {
         Ok(initial) => {
+            session
+                .request
+                .prepare_battle_start_plan(initial.map_data());
             session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
             state.loading_session = Some(session);
             Ok(())
@@ -889,14 +950,19 @@ fn decode_random_map_loading_preview(ra2_dir: &Path) -> Option<DecodedPreview> {
 }
 
 /// Resolve the assigned start waypoints the marker layer draws for a selected map.
-fn selected_map_start_assignments(
+pub(crate) fn selected_map_start_assignments(
     launch_session: &SkirmishLaunchSession,
-    map: &crate::map::map_file::MapFile,
+    plan: Option<&PreloadedBattleStartPlan>,
 ) -> Vec<LoadingStartAssignment> {
-    let starts = crate::map::waypoints::multiplayer_start_waypoints(&map.waypoints);
-    crate::app_skirmish::original_launch_start_assignments(launch_session, &starts)
-        .into_iter()
-        .filter_map(|(participant_index, waypoint)| {
+    let Some(plan) = plan else {
+        return Vec::new();
+    };
+    plan.start_table()
+        .iter()
+        .enumerate()
+        .filter_map(|(start_index, participant_index)| {
+            let participant_index = (*participant_index)?;
+            let waypoint = plan.gathered_starts().get(start_index)?;
             let (participant, color_priority) = if participant_index == 0 {
                 (
                     LoadingParticipantId::Local,
@@ -945,8 +1011,10 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                 let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
                     return;
                 };
-                let assignments =
-                    selected_map_start_assignments(launch_session, initial.map_data());
+                let assignments = selected_map_start_assignments(
+                    launch_session,
+                    session.request.preloaded_battle_start_plan(),
+                );
                 build_loading_composition(
                     initial.map_data(),
                     launch_session,

@@ -49,6 +49,8 @@ pub mod app;
 // Extracted from app.rs to keep the orchestrator under 600 lines.
 pub mod app_init;
 pub mod app_init_helpers;
+/// Headless retail-scenario loading for parity runs (no GPU, no window).
+pub mod headless_scenario;
 pub mod app_launch;
 pub mod app_list_maps;
 pub mod app_loading;

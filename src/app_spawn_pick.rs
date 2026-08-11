@@ -210,14 +210,31 @@ fn setup_ai_players_from_roster(
 pub(crate) fn render_spawn_pick(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
+    destination: &wgpu::Texture,
+    destination_view: &wgpu::TextureView,
 ) -> anyhow::Result<()> {
     // Temporarily enable sandbox visibility so the whole map is visible.
     let prev_visibility = state.sandbox_full_visibility;
     state.sandbox_full_visibility = true;
-    let result = app_render::render_game(state, encoder, view);
+    let result = if state.upscale_pass.is_some() {
+        let game_depth = state.upscale_pass.as_ref().unwrap().depth_view().clone();
+        let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
+        let result = app_render::render_game(state, encoder);
+        state.depth_view = saved_depth;
+        result
+    } else {
+        app_render::render_game(state, encoder)
+    };
     state.sandbox_full_visibility = prev_visibility;
     result?;
+    if let Some(upscale) = state.upscale_pass.as_ref() {
+        state
+            .combat_light_renderer
+            .copy_to(encoder, upscale.color_texture());
+        upscale.draw(encoder, destination_view);
+    } else {
+        state.combat_light_renderer.copy_to(encoder, destination);
+    }
     Ok(())
 }
 
