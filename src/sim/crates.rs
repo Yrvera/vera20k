@@ -27,6 +27,7 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::ruleset::{CrateRules, RuleSet};
 use crate::sim::find_nearby_cell::{NearbyQuery, PassabilityArgs, find_nearby_passable_cell};
+use crate::sim::overlay_grid::NativeOverlayMarkContext;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::Simulation;
 
@@ -156,19 +157,56 @@ pub fn place_scenario_start_crates(
         chosen.push(placement);
     }
 
-    let placed = chosen.len() as u32;
-    if let Some(grid) = sim.overlay_grid.as_mut() {
-        for (cell, surface) in chosen {
-            let overlay_id = match surface {
-                // A water draw with no WaterCrateImg overlay type falls back to
-                // the land image rather than dropping the crate.
-                CrateSurface::Water => water_overlay_id.or(land_overlay_id),
-                CrateSurface::Land => land_overlay_id,
-            };
-            if let Some(overlay_id) = overlay_id {
-                // Overlay data byte for a fresh crate is UNCHECKED; 0 is the
-                // first frame of the crate SHP.
-                grid.place_overlay(cell.0, cell.1, overlay_id, 0);
+    let mut placed = 0u32;
+    for (cell, surface) in chosen {
+        let bridge_layer_selected = sim
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(cell.0, cell.1))
+            .is_some_and(|terrain_cell| {
+                terrain_cell.bridge_facts.has_structural_bridge()
+                    && sim
+                        .bridge_state
+                        .as_ref()
+                        .is_some_and(|state| state.is_bridge_walkable(cell.0, cell.1))
+            });
+        let selected_occupation_bits = if bridge_layer_selected {
+            sim.substrate.raw_cell_occupation.deck_bits(cell.0, cell.1)
+        } else {
+            sim.substrate
+                .raw_cell_occupation
+                .ground_bits(cell.0, cell.1)
+        };
+        let mark_context = NativeOverlayMarkContext {
+            terrain_object_present: sim
+                .production
+                .terrain_object_cells
+                .contains_key(&(cell.0, cell.1)),
+            selected_occupation_bits,
+            bridge_layer_selected,
+        };
+        let (Some(grid), Some(terrain)) =
+            (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
+        else {
+            continue;
+        };
+        let overlay_id = match surface {
+            // A water draw with no WaterCrateImg overlay type falls back to
+            // the land image rather than dropping the crate.
+            CrateSurface::Water => water_overlay_id.or(land_overlay_id),
+            CrateSurface::Land => land_overlay_id,
+        };
+        if let Some(overlay_id) = overlay_id {
+            if grid.place_overlay_native_runtime(
+                terrain,
+                overlay_registry,
+                mark_context,
+                cell.0,
+                cell.1,
+                overlay_id,
+            ) == crate::sim::overlay_grid::NativeOverlayPlacementResult::Placed
+            {
+                placed += 1;
             }
         }
     }
@@ -318,7 +356,7 @@ mod tests {
     fn crate_registry() -> OverlayTypeRegistry {
         let ini = IniFile::from_str(
             "[OverlayTypes]\n0=TIB01\n1=CRATE\n2=WCRATE\n\
-             [TIB01]\nTiberium=yes\n[CRATE]\n[WCRATE]\n",
+             [TIB01]\nTiberium=yes\n[CRATE]\nCrate=yes\n[WCRATE]\nCrate=yes\n",
         );
         OverlayTypeRegistry::from_ini(&ini, None)
     }
@@ -340,6 +378,7 @@ mod tests {
         sim.session.map_height = MAP;
         sim.session.game_options.crates = true;
         sim.overlay_grid = Some(OverlayGrid::new(MAP, MAP));
+        sim.resolved_terrain = Some(uniform_terrain(false));
         sim
     }
 
@@ -502,6 +541,43 @@ mod tests {
             crate_cells(&first, &registry),
             crate_cells(&other_cursor, &registry),
             "a different scenario cursor must scatter crates differently"
+        );
+    }
+
+    #[test]
+    fn gsi_04_07_placement_runtime_crate_threads_live_mark_occupation_byte() {
+        let rules = crate_ruleset("CrateMinimum=1\nCrateMaximum=1\n");
+        let registry = crate_registry();
+        let grid = PathGrid::test_all_passable(MAP, MAP);
+        let mut blocked = sim_with_grid(0x47C5_50);
+        let mut replay = blocked.scenario_rng.clone();
+        let rx = replay.next_range_u32_inclusive(0, u32::from(MAP - 1)) as u16;
+        let ry = replay.next_range_u32_inclusive(0, u32::from(MAP - 1)) as u16;
+        blocked.substrate.raw_cell_occupation.mark_ground(
+            rx,
+            ry,
+            crate::sim::occupancy::OBJECT_OCCUPATION_BIT,
+        );
+
+        let result = place_scenario_start_crates(&mut blocked, &rules, &registry, Some(&grid), 1);
+
+        assert_eq!(result.requested, 1);
+        assert_eq!(result.placed, 0);
+        assert!(crate_cells(&blocked, &registry).is_empty());
+
+        let mut control = sim_with_grid(0x47C5_50);
+        let result = place_scenario_start_crates(&mut control, &rules, &registry, Some(&grid), 1);
+        assert_eq!(result.placed, 1);
+        assert_eq!(crate_cells(&control, &registry), vec![(rx, ry)]);
+        assert_eq!(
+            control
+                .overlay_grid
+                .as_ref()
+                .expect("overlay grid")
+                .cell(rx, ry)
+                .overlay_data,
+            u8::MAX,
+            "successful scenario-start crate Mark writes Cell+0x11E = 0xFF",
         );
     }
 
