@@ -186,9 +186,23 @@ fn height_leptons(entity: &GameEntity) -> f32 {
     }
 }
 
+fn adjust_for_z_lift_px(leptons: f32) -> f32 {
+    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
+        1.0
+    } else {
+        0.0
+    };
+    // Native `ftol` truncates toward zero after the signed value receives its
+    // rounding bias. In particular, negative world Z must not be clamped.
+    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
+}
+
 /// Total upward screen lift for an entity, in pixels.
 ///
 /// Positive lifts the entity toward the top of the screen (screen Y decreases).
+///
+/// An exact object coordinate is total world Z and therefore replaces every
+/// decomposed height source below, including the coarse terrain level.
 ///
 /// The height term reproduces gamemd's `AdjustForZ` exactly, quantisation
 /// included: the scale, the extra pixel above [`EXTRA_PIXEL_HEIGHT_LEPTONS`],
@@ -198,17 +212,13 @@ fn height_leptons(entity: &GameEntity) -> f32 {
 /// flourish with no gamemd equivalent, and rounding a ±1px sine to whole pixels
 /// would turn it into a square wave.
 pub fn height_lift_px(entity: &GameEntity) -> f32 {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return adjust_for_z_lift_px(exact_z_leptons as f32);
+    }
     if height_source(entity) == HeightSource::Ground {
         return infantry_bob_px(entity);
     }
-    let leptons = height_leptons(entity);
-    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
-        1.0
-    } else {
-        0.0
-    };
-    // `ftol` truncates toward zero, so `+ 0.5` is gamemd's rounding.
-    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
+    adjust_for_z_lift_px(height_leptons(entity))
 }
 
 /// Where this entity is drawn, in world-space screen pixels.
@@ -220,7 +230,11 @@ pub fn height_lift_px(entity: &GameEntity) -> f32 {
 /// A building's *art* is the single exception, and it is a strict addition on
 /// top of this answer rather than a second one: see [`building_art_anchor`].
 pub fn screen_position(entity: &GameEntity) -> (f32, f32) {
-    let (sx, sy) = ground_screen_position(&entity.position);
+    let (sx, sy) = if entity.position.exact_z_leptons.is_some() {
+        z_free_screen_position(&entity.position)
+    } else {
+        ground_screen_position(&entity.position)
+    };
     (sx, sy - height_lift_px(entity))
 }
 
@@ -269,6 +283,22 @@ pub fn ground_screen_position(position: &crate::sim::components::Position) -> (f
         position.sub_x,
         position.sub_y,
         position.z,
+    )
+}
+
+/// Planar X/Y projection before any Z term is applied.
+///
+/// An exact world Z is already the complete native coordinate, so combining it
+/// with the coarse terrain level would apply ground height twice. Keeping this
+/// row separate also lets the draw-key path recover native's Z-free sort row by
+/// adding [`height_lift_px`] back to the drawn row.
+fn z_free_screen_position(position: &crate::sim::components::Position) -> (f32, f32) {
+    crate::util::lepton::lepton_to_screen(
+        position.rx,
+        position.ry,
+        position.sub_x,
+        position.sub_y,
+        0,
     )
 }
 
@@ -391,6 +421,29 @@ mod tests {
         let at = height_lift_px(&air_unit(LocomotorKind::Fly, 728));
         assert_eq!(below, 104.0, "trunc(727 * k + 0.5)");
         assert_eq!(at, 105.0, "trunc(728 * k + 1 + 0.5) — the threshold fires");
+    }
+
+    #[test]
+    fn gsi_04_15_exact_signed_z_ignores_coarse_level_and_locomotor_altitude() {
+        let mut entity = air_unit(LocomotorKind::Fly, 1500);
+        entity.position.z = 9;
+        entity.position.exact_z_leptons = Some(-400);
+
+        let z_free = z_free_screen_position(&entity.position);
+        let drawn = screen_position(&entity);
+        assert_eq!(height_lift_px(&entity), -56.0);
+        assert_eq!(drawn, (z_free.0, z_free.1 + 56.0));
+        assert_eq!(drawn.1 + height_lift_px(&entity), z_free.1);
+    }
+
+    #[test]
+    fn gsi_04_15_exact_z_threshold_bonus_starts_at_728() {
+        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        entity.position.exact_z_leptons = Some(727);
+        assert_eq!(height_lift_px(&entity), 104.0);
+
+        entity.position.exact_z_leptons = Some(728);
+        assert_eq!(height_lift_px(&entity), 105.0);
     }
 
     #[test]
