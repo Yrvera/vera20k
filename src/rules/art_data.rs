@@ -1983,7 +1983,8 @@ mod anim_runtime_metadata_tests {
              Translucency=50\n\
              [SEVENTY_FIVE]\n\
              Translucency=75\n\
-             [OMITTED]\n",
+             [OMITTED]\n\
+             FixtureOnly=1\n",
         );
         let reg = ArtRegistry::from_ini(&ini);
 
@@ -2259,6 +2260,7 @@ mod anim_runtime_metadata_tests {
     fn anim_bounds_preserve_omission_explicit_zero_and_negative_one() {
         let ini = IniFile::from_str(
             "[OMITTED]\n\
+             FixtureOnly=1\n\
              [ZERO]\nEnd=0\nLoopEnd=0\n\
              [LAST]\nEnd=-1\nLoopEnd=-1\n",
         );

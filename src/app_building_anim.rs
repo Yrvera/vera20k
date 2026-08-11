@@ -1239,7 +1239,8 @@ mod tests {
     fn garrison_occupant_anim_rate_uses_animtype_default_logic_tick_when_rate_missing() {
         let mut sim = Simulation::new();
         let ucflash = sim.interner.intern("UCFLASH");
-        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\n"));
+        let art =
+            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
 
         assert_eq!(
             garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
@@ -1295,7 +1296,8 @@ mod tests {
         let mut sim = Simulation::new();
         let ucflash = sim.interner.intern("UCFLASH");
         sim.effect_frame_counts.insert(ucflash, 3);
-        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\n"));
+        let art =
+            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
             building_id: 1,

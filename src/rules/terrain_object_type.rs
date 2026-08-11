@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn gsi_04_10_strength_preserves_signed_explicit_and_fallback_values() {
         for (body, tree_strength, expected) in [
-            ("", -375, -375),
+            ("AnimationRate=0\n", -375, -375),
             ("Strength=0\n", 200, 0),
             ("Strength=-27\n", 200, -27),
             ("Strength=450\n", -375, 450),
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn art_foundation_is_normalized() {
-        let ini = IniFile::from_str("[TREE01]\n");
+        let ini = IniFile::from_str("[TREE01]\nFixtureOnly=1\n");
         let section = ini.section("TREE01").expect("section");
         let mut t = TerrainObjectType::from_ini_section("TREE01", section);
         t.merge_art_foundation("2x2");

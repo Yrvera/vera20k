@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn test_parse_lighting_uses_yr_defaults() {
-        let ini = IniFile::from_str("[Lighting]\n");
+        let ini = IniFile::from_str("[Lighting]\nFixtureOnly=1\n");
         let config = parse_lighting(&ini);
         assert!((config.ambient - 1.0).abs() < 0.001);
         assert!((config.red - 1.0).abs() < 0.001);

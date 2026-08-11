@@ -435,16 +435,20 @@ pub(crate) fn render_shell_first_paint_slide(
                 state.shell_first_paint_slide = None;
                 return Ok(ShellFirstPaintRenderResult::NotRendered);
             }
+            let color = state.shell_surface_presenter.source_render_view();
             let depth = state.depth_view.clone();
             crate::app_skirmish_shell_render::render_skirmish_shell_to_target(
                 state,
                 encoder,
                 crate::render::shell_transition_pass::ShellRenderTarget {
-                    color: target,
+                    color: &color,
                     depth: &depth,
                 },
                 crate::app_skirmish_shell_render::ShellRenderMode::TransitionPreview,
             )?;
+            state
+                .shell_surface_presenter
+                .encode_present(encoder, destination);
             true
         }
         ShellSlideKind::SinglePlayer => matches!(

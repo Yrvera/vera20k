@@ -152,8 +152,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_section_yields_all_none() {
-        let ini = IniFile::from_str("[CombatDamage]\n");
+    fn section_without_recognized_keys_yields_all_none() {
+        let ini = IniFile::from_str("[CombatDamage]\nFixtureOnly=1\n");
         let section = ini.section("CombatDamage").unwrap();
         let cd = CombatDamageDefaults::from_ini_section(section);
         assert!(cd.default_large_grey_smoke_system.is_none());
@@ -164,7 +164,8 @@ mod tests {
 
     #[test]
     fn whitespace_only_value_treated_as_none() {
-        let ini = IniFile::from_str("[CombatDamage]\nDefaultSparkSystem=   \n");
+        let ini =
+            IniFile::from_str("[CombatDamage]\nFixtureOnly=1\nDefaultSparkSystem=   \n");
         let section = ini.section("CombatDamage").unwrap();
         let cd = CombatDamageDefaults::from_ini_section(section);
         assert!(cd.default_spark_system.is_none());

@@ -168,6 +168,7 @@ fn default_input_delay_ticks() -> u32 {
 impl GameConfig {
     /// Load the optional host override, otherwise use the retail module directory.
     ///
+    /// Retail provenance: Executable-root path discovery — `WinMain` @ `0x006BB9A0`.
     /// Active `gamemd.exe` `WinMain @ 0x006BB9A0` calls
     /// `GetModuleFileNameA`, splits/rebuilds its drive and directory, and calls
     /// `SetCurrentDirectoryA` before opening `RA2MD.INI` or any MIX archive.

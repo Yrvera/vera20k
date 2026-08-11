@@ -737,7 +737,7 @@ LocalSize=2,4,96,92
 
     #[test]
     fn gsi_04_01_loaded_empty_rect_values_are_omitted_and_become_missing_zeros() {
-        let ini = IniFile::from_str("[Map]\nSize=\nLocalSize= \t \n");
+        let ini = IniFile::from_str("[Map]\nTheater=TEMPERATE\nSize=\nLocalSize= \t \n");
         let map_section = ini.section("Map").expect("Map section");
 
         assert!(map_section.get("Size").is_none());

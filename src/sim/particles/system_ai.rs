@@ -270,7 +270,7 @@ mod tests {
 
     fn spark_rules(gravity: i32) -> RuleSet {
         let ini = IniFile::from_str(&format!(
-            "[General]\n[AudioVisual]\nGravity={gravity}\n\
+            "[General]\nFixtureOnly=1\n[AudioVisual]\nGravity={gravity}\n\
              [Particles]\n1=SparkP\n\
              [SparkP]\nBehavesLike=Spark\nColorList=255,255,255,128,128,64\nColorSpeed=.13\n"
         ));

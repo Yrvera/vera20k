@@ -13,6 +13,7 @@ use crate::assets::pcx_file::PcxFile;
 use crate::assets::shp_file::ShpFile;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
+use crate::render::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION;
 
 const ATLAS_PADDING: u32 = 2;
 const OWNER_DRAW_FLAG_TRANSPARENT_RGB: [u8; 3] = [255, 0, 255];
@@ -697,11 +698,14 @@ fn render_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedSh
 fn render_flag_pcx_entry(assets: &AssetManager, file_name: &str) -> Option<RenderedShellEntry> {
     let bytes = assets.get_ref(file_name)?;
     let pcx = PcxFile::from_bytes(bytes).ok()?;
+    let mut rgba = pcx.to_rgba(None);
+    ACTIVE_RETAIL_RGB565_PRESENTATION
+        .apply_packed_color_key_rgba8(&mut rgba, OWNER_DRAW_FLAG_TRANSPARENT_RGB);
     Some(RenderedShellEntry {
         label: file_name.to_ascii_lowercase(),
         width: pcx.width as u32,
         height: pcx.height as u32,
-        rgba: pcx.to_rgba_with_color_key(OWNER_DRAW_FLAG_TRANSPARENT_RGB),
+        rgba,
     })
 }
 

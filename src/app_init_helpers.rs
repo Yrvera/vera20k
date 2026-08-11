@@ -1023,9 +1023,11 @@ mod tests {
     /// verified offset map to flip to).
     #[test]
     fn ported_defaults_match_ctor_csv() {
-        // Sections present but empty: every key below is absent, so each field
-        // takes its fallback default (the realistic "key missing" path).
-        let rules = RuleSet::from_ini(&IniFile::from_str("[General]\n[CombatDamage]\n"))
+        // Sections contain only an inert fixture key: every recognized key
+        // below is absent, so each field takes its fallback default.
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nFixtureOnly=1\n[CombatDamage]\nFixtureOnly=1\n",
+        ))
             .expect("empty-section rules parse");
 
         // [General] scalar fallbacks == ctor defaults.

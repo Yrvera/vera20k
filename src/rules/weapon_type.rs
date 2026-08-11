@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_weapon_defaults() {
-        let ini: IniFile = IniFile::from_str("[Empty]\n");
+        let ini: IniFile = IniFile::from_str("[Empty]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("Empty").unwrap();
         let weapon: WeaponType = WeaponType::from_ini_section("Empty", section);
 

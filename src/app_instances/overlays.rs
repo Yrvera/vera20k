@@ -1168,13 +1168,14 @@ mod tests {
     fn gsi_04_10_render_visibility_distinguishes_unregistered_live_and_destroyed() {
         let ini = IniFile::from_str(
             "[General]\n\
+             FixtureOnly=1\n\
              [InfantryTypes]\n\
              [VehicleTypes]\n0=DUMMY\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
              [TerrainTypes]\n0=TREE01\n\
              [DUMMY]\nStrength=100\n\
-             [TREE01]\n",
+             [TREE01]\nFixtureOnly=1\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("rules");
         let registered = TerrainObject {
@@ -1423,7 +1424,7 @@ mod tests {
              [WAKELIKE]\n\
              Translucent=yes\n\
              End=10\n\
-             [PLAIN]\n",
+             [PLAIN]\nFixtureOnly=1\n",
         );
         let reg = ArtRegistry::from_ini(&ini);
 

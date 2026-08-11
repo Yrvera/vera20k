@@ -205,56 +205,65 @@ fn append_loose_yro_records(
         if file_name.eq_ignore_ascii_case(MISSIONS_YRO_FILE_NAME) {
             continue;
         }
-        let owned_archive;
-        let archive: &MixArchive;
-        let fallback_assets: Option<&AssetManager>;
+        let Some(pkt_name) = Path::new(&file_name)
+            .with_extension("PKT")
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
         if let Some(manager) = assets.as_deref_mut() {
             if manager.register_loose_yro_archive(&path).is_err() {
                 continue;
             }
-            let Some(registered) = manager.archive(&file_name) else {
+
+            // Retail provenance: global YRO-derived PKT/map resolution —
+            // `SessionClass::ScanMultiplayerMapFiles` @ `0x00699980`.
+            let Some(pkt) = manager
+                .get_ref(&pkt_name)
+                .and_then(|bytes| IniFile::from_bytes(bytes).ok())
+            else {
                 continue;
             };
-            archive = registered;
-            fallback_assets = Some(manager);
+            append_pkt_records(
+                records,
+                &pkt,
+                SkirmishScenarioSource::LooseYro(file_name),
+                csf,
+                PktTitleStyle::YroPlayerCountSuffix,
+                |map_file| {
+                    manager
+                        .get_ref(map_file)
+                        .and_then(|bytes| IniFile::from_bytes(bytes).ok())
+                },
+            );
         } else {
-            owned_archive = match MixArchive::load(&path) {
+            let archive = match MixArchive::load(&path) {
                 Ok(archive) => archive,
                 Err(_) => continue,
             };
-            archive = &owned_archive;
-            fallback_assets = None;
-        };
-        let pkt_name = Path::new(&file_name)
-            .with_extension("PKT")
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::to_string);
-        let Some(pkt) = pkt_name
-            .as_deref()
-            .and_then(|name| archive.get_by_name(name))
-            .and_then(|bytes| IniFile::from_bytes(bytes).ok())
-        else {
-            continue;
-        };
-        append_pkt_records(
-            records,
-            &pkt,
-            SkirmishScenarioSource::LooseYro(file_name),
-            csf,
-            PktTitleStyle::YroPlayerCountSuffix,
-            |map_file| {
-                archive
-                    .get_by_name(map_file)
-                    .and_then(|bytes| IniFile::from_bytes(bytes).ok())
-                    .or_else(|| {
-                        fallback_assets
-                            .and_then(|assets| assets.get_ref(map_file))
-                            .and_then(|bytes| IniFile::from_bytes(bytes).ok())
-                    })
-                    .or_else(|| read_map_ini_for_metadata(&ra2_dir.join(map_file)))
-            },
-        );
+            let Some(pkt) = archive
+                .get_by_name(&pkt_name)
+                .and_then(|bytes| IniFile::from_bytes(bytes).ok())
+            else {
+                continue;
+            };
+            append_pkt_records(
+                records,
+                &pkt,
+                SkirmishScenarioSource::LooseYro(file_name),
+                csf,
+                PktTitleStyle::YroPlayerCountSuffix,
+                |map_file| {
+                    archive
+                        .get_by_name(map_file)
+                        .and_then(|bytes| IniFile::from_bytes(bytes).ok())
+                        .or_else(|| read_map_ini_for_metadata(&ra2_dir.join(map_file)))
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -664,6 +673,71 @@ pub(crate) fn try_load_mmx(ra2_dir: &Path, names: &[&str]) -> Result<LoadedMap> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::mix_hash::mix_hash;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-app-list-maps-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write(&self, name: &str, bytes: &[u8]) {
+            std::fs::write(self.0.join(name), bytes).expect("write test file");
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_new_format_mix_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let body_size: usize = entries.iter().map(|(_, body)| body.len()).sum();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(
+            &u16::try_from(entries.len())
+                .expect("test MIX entry count")
+                .to_le_bytes(),
+        );
+        data.extend_from_slice(
+            &u32::try_from(body_size)
+                .expect("test MIX body size")
+                .to_le_bytes(),
+        );
+
+        let mut offset = 0u32;
+        for (name, body) in entries {
+            data.extend_from_slice(&mix_hash(name).to_le_bytes());
+            data.extend_from_slice(&offset.to_le_bytes());
+            data.extend_from_slice(
+                &u32::try_from(body.len())
+                    .expect("test MIX entry size")
+                    .to_le_bytes(),
+            );
+            offset += u32::try_from(body.len()).expect("test MIX entry offset");
+        }
+        for (_, body) in entries {
+            data.extend_from_slice(body);
+        }
+        data
+    }
 
     #[test]
     fn menu_entry_exposes_sorted_multiplayer_start_waypoints() {
@@ -913,6 +987,43 @@ mod tests {
         );
 
         assert_eq!(records[0].display_name.chars().count(), 43);
+    }
+
+    #[test]
+    fn yro_discovery_uses_global_loose_winners_and_retains_registered_archive() {
+        let directory = TestDirectory::new("yro-global-collisions");
+        let embedded_pkt = b"[MultiMaps]\n1=Arena\n[Arena]\nDescriptionText=Embedded PKT\nMinPlayers=2\nMaxPlayers=2\n";
+        let embedded_map = b"[Basic]\nName=Embedded Map\nAuthor=Embedded Author\n";
+        let yro = make_new_format_mix_bytes(&[
+            ("COLLIDE.PKT", &embedded_pkt[..]),
+            ("Arena.MAP", &embedded_map[..]),
+            ("YROONLY.BIN", &b"retained"[..]),
+        ]);
+        directory.write("COLLIDE.YRO", &yro);
+        directory.write(
+            "COLLIDE.PKT",
+            b"[MultiMaps]\n1=Arena\n[Arena]\nDescriptionText=Loose PKT\nMinPlayers=2\nMaxPlayers=4\n",
+        );
+        directory.write(
+            "Arena.MAP",
+            b"[Basic]\nName=Loose Map\nAuthor=Loose Author\n",
+        );
+
+        let mut manager = AssetManager::from_loose_root_for_test(directory.path());
+        let mut records = Vec::new();
+        append_loose_yro_records(&mut records, directory.path(), Some(&mut manager), None)
+            .expect("scan loose YRO");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].file_name, "Arena.MAP");
+        assert_eq!(records[0].display_name, "Loose PKT (2-4)");
+        assert_eq!(records[0].author.as_deref(), Some("Loose Author"));
+        assert_eq!(
+            records[0].source,
+            SkirmishScenarioSource::LooseYro("COLLIDE.YRO".to_string())
+        );
+        assert_eq!(manager.registered_archive_names(), ["COLLIDE.YRO"]);
+        assert_eq!(manager.get_ref("YROONLY.BIN"), Some(&b"retained"[..]));
     }
 
     #[test]

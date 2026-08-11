@@ -236,14 +236,15 @@ pub(crate) struct AppState {
     /// Registry of overlay types from rules.ini — needed at runtime to look up
     /// overlay_id by name when a wall is placed via production.
     pub(crate) overlay_registry: Option<OverlayTypeRegistry>,
-    /// Loaded GameConfig — None when config.toml is missing or invalid.
+    /// Loaded GameConfig — missing config.toml falls back to the executable root;
+    /// None only when config loading or executable-root discovery fails.
     /// Read at render time for cosmetic toggles (extra_animations) and other
     /// per-session user preferences. Set in AppState::new() from the existing
     /// GameConfig::load() call; not mutated afterwards.
     pub(crate) game_config: Option<GameConfig>,
     /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
     pub(crate) depth_view: wgpu::TextureView,
-    /// Shell-only encoded-byte RGB565 presentation boundary for dialog 0xE2.
+    /// Encoded-byte RGB565 presentation boundary for stock shell/loading surfaces.
     pub(crate) shell_surface_presenter: crate::render::shell_surface_present::ShellSurfacePresenter,
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
     pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
@@ -2003,7 +2004,10 @@ impl App {
         let rgb: Vec<u8> = preview
             .rgba
             .chunks_exact(4)
-            .flat_map(|px| [px[0], px[1], px[2]])
+            .flat_map(|px| {
+                crate::render::native_surface_format::ACTIVE_RETAIL_RGB565_PRESENTATION
+                    .storage_roundtrip_rgb8([px[0], px[1], px[2]])
+            })
             .collect();
         match crate::assets::pcx_file::encode_direct_rgb(width, height, &rgb) {
             Ok(encoded) => {
@@ -4836,7 +4840,7 @@ impl App {
                     crate::app_skirmish_shell_render::render_skirmish_shell(
                         state,
                         &mut encoder,
-                        &view,
+                        &output.texture,
                     )?;
                 } else if Self::single_player_shell_active(state) {
                     match crate::app_single_player_shell_render::render_single_player_shell(
@@ -4932,7 +4936,11 @@ impl App {
                 }
             }
             GameScreen::Loading => {
-                match crate::app_loading::render_loading_screen(state, &mut encoder, &view) {
+                match crate::app_loading::render_loading_screen(
+                    state,
+                    &mut encoder,
+                    &output.texture,
+                ) {
                     crate::app_loading::LoadingRenderResult::NativeRendered => {}
                     crate::app_loading::LoadingRenderResult::GenericFallback => {
                         let map_name_display = crate::app_loading::loading_map_name(state)

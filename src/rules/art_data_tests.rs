@@ -106,7 +106,7 @@ fn test_from_ini_parses_entries() {
 #[test]
 fn gsi_04_05_hidden_absent_occupy_height_inherits_resolved_height() {
     let ini: IniFile = IniFile::from_str(
-        "[GAREFN]\nCanHideThings=no\nOccupyHeight=4\n\n[GAPOWR]\nHeight=3\n\n[NAPOWR]\n",
+        "[GAREFN]\nCanHideThings=no\nOccupyHeight=4\n\n[GAPOWR]\nHeight=3\n\n[NAPOWR]\nFixtureOnly=1\n",
     );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
 
@@ -139,7 +139,9 @@ fn parses_anim_start_sound_and_report() {
 
 #[test]
 fn parses_generic_animtype_rate_with_constructor_default() {
-    let ini: IniFile = IniFile::from_str("[UCFAST]\nRate=300\n\n[UCDEFAULT]\n\n[UCSTOP]\nRate=0\n");
+    let ini: IniFile = IniFile::from_str(
+        "[UCFAST]\nRate=300\n\n[UCDEFAULT]\nFixtureOnly=1\n\n[UCSTOP]\nRate=0\n",
+    );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
 
     assert_eq!(reg.rate_ms("UCFAST"), Some(200));
@@ -157,7 +159,9 @@ fn parses_generic_animtype_rate_with_constructor_default() {
 
 #[test]
 fn test_resolve_effective_image_id_chain() {
-    let ini: IniFile = IniFile::from_str("[NACNST]\nImage=CIVNC\n\n[E1]\n\n[MTNK]\nImage=MTNK\n");
+    let ini: IniFile = IniFile::from_str(
+        "[NACNST]\nImage=CIVNC\n\n[E1]\nFixtureOnly=1\n\n[MTNK]\nImage=MTNK\n",
+    );
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
 
     assert_eq!(reg.resolve_effective_image_id("NACNST", "NACNST"), "CIVNC");
@@ -545,7 +549,8 @@ fn parses_anim_smudge_flags() {
           Crater=yes\n\
           ForceBigCraters=yes\n\
           \n\
-          [ANIMC]\n",
+          [ANIMC]\n\
+          FixtureOnly=1\n",
     )
     .unwrap();
     let reg = ArtRegistry::from_ini(&ini);

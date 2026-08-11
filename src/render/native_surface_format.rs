@@ -60,6 +60,36 @@ impl NativeSurfacePresentationProfile {
         ]
     }
 
+    /// Apply a transparent RGB key after both colors have been packed into the
+    /// active DirectDraw word. Non-key pixels retain their incoming alpha.
+    ///
+    /// Retail provenance: packed flag-image transparency — `OwnerDraw_Static_006153E0` @ `0x006153E0`.
+    pub(crate) fn apply_packed_color_key_rgba8(
+        self,
+        rgba: &mut [u8],
+        transparent_rgb: [u8; 3],
+    ) {
+        assert_eq!(rgba.len() % 4, 0, "RGBA8 input must contain whole pixels");
+        let transparent_word = self.pack_rgb8(transparent_rgb);
+        for pixel in rgba.chunks_exact_mut(4) {
+            if self.pack_rgb8([pixel[0], pixel[1], pixel[2]]) == transparent_word {
+                pixel[3] = 0;
+            }
+        }
+    }
+
+    /// Recover the component bytes that native emits after a packed-surface
+    /// round trip: discarded low bits are zero-filled, not replicated.
+    ///
+    /// Retail provenance: RandMap.img packed-surface RGB extraction — `WriteSurfaceAsPCX` @ `0x007B05C0`.
+    pub(crate) fn storage_roundtrip_rgb8(self, rgb: [u8; 3]) -> [u8; 3] {
+        [
+            (rgb[0] >> self.format.red_loss) << self.format.red_loss,
+            (rgb[1] >> self.format.green_loss) << self.format.green_loss,
+            (rgb[2] >> self.format.blue_loss) << self.format.blue_loss,
+        ]
+    }
+
     /// Flatten the exact codebooks for the read-only shader buffer.
     pub(crate) fn shader_words(self) -> [u32; 96] {
         let mut words = [0; 96];
@@ -78,6 +108,12 @@ impl NativeSurfacePresentationProfile {
             2 => self.six_bit[usize::from(channel >> 2)],
             _ => panic!("presentation profile supports only five- and six-bit channels"),
         }
+    }
+
+    fn pack_rgb8(self, rgb: [u8; 3]) -> u16 {
+        ((u16::from(rgb[0]) >> self.format.red_loss) << self.format.red_shift)
+            | ((u16::from(rgb[1]) >> self.format.green_loss) << self.format.green_shift)
+            | ((u16::from(rgb[2]) >> self.format.blue_loss) << self.format.blue_shift)
     }
 }
 
@@ -163,6 +199,30 @@ mod tests {
                 alpha
             );
         }
+    }
+
+    #[test]
+    fn rgb565_packed_color_key_accepts_low_bit_aliases_and_preserves_other_alpha() {
+        let mut rgba = [
+            255, 0, 255, 255, // exact magenta
+            248, 3, 249, 127, // same R5G6B5 word
+            247, 3, 249, 37, // adjacent red word
+        ];
+
+        ACTIVE_RETAIL_RGB565_PRESENTATION
+            .apply_packed_color_key_rgba8(&mut rgba, [255, 0, 255]);
+
+        assert_eq!(&rgba[0..4], &[255, 0, 255, 0]);
+        assert_eq!(&rgba[4..8], &[248, 3, 249, 0]);
+        assert_eq!(&rgba[8..12], &[247, 3, 249, 37]);
+    }
+
+    #[test]
+    fn rgb565_storage_roundtrip_zero_fills_discarded_channel_bits() {
+        assert_eq!(
+            ACTIVE_RETAIL_RGB565_PRESENTATION.storage_roundtrip_rgb8([17, 101, 249]),
+            [16, 100, 248]
+        );
     }
 
     #[test]

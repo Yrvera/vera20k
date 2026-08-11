@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn from_ini_uses_documented_defaults() {
-        let ini = IniFile::from_str("[Foo]\n");
+        let ini = IniFile::from_str("[Foo]\nFixtureOnly=1\n");
         let section = ini.section("Foo").unwrap();
         let pt = ParticleType::from_ini_section("Foo", section);
         assert_eq!(pt.state_ai_advance, 4);

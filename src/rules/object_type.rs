@@ -1699,7 +1699,7 @@ mod tests {
         assert_eq!(absent.ui_name, None);
 
         // Empty UIName= also yields None.
-        let empty_ini = IniFile::from_str("[E1]\nUIName=\n");
+        let empty_ini = IniFile::from_str("[E1]\nUIName=\nCost=0\n");
         let empty = ObjectType::from_ini_section(
             "E1",
             empty_ini.section("E1").unwrap(),
@@ -1726,7 +1726,7 @@ mod tests {
         );
         assert!(!disabled.allowed_to_start_in_multiplayer);
 
-        let default_ini = IniFile::from_str("[E1]\n");
+        let default_ini = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let defaulted = ObjectType::from_ini_section(
             "E1",
             default_ini.section("E1").unwrap(),
@@ -1757,7 +1757,7 @@ mod tests {
 
     #[test]
     fn test_light_visibility_defaults_to_5000_without_intensity() {
-        let ini: IniFile = IniFile::from_str("[GALITE]\n");
+        let ini: IniFile = IniFile::from_str("[GALITE]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("GALITE").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("GALITE", section, ObjectCategory::Building);
@@ -1789,7 +1789,8 @@ mod tests {
 
     #[test]
     fn parse_bridge_repair_hut_flag() {
-        let ini: IniFile = IniFile::from_str("[CABHUT]\nBridgeRepairHut=yes\n[NACABH]\n");
+        let ini: IniFile =
+            IniFile::from_str("[CABHUT]\nBridgeRepairHut=yes\n[NACABH]\nFixtureOnly=1\n");
         let obj_on: ObjectType = ObjectType::from_ini_section(
             "CABHUT",
             ini.section("CABHUT").unwrap(),
@@ -1806,7 +1807,8 @@ mod tests {
 
     #[test]
     fn parse_laser_fence_flag() {
-        let ini: IniFile = IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\n");
+        let ini: IniFile =
+            IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\nFixtureOnly=1\n");
         let fence = ObjectType::from_ini_section(
             "FENCE",
             ini.section("FENCE").unwrap(),
@@ -1823,7 +1825,8 @@ mod tests {
 
     #[test]
     fn parse_no_force_shield_flag() {
-        let ini: IniFile = IniFile::from_str("[TST1]\nNoForceShield=yes\n[TST2]\n");
+        let ini: IniFile =
+            IniFile::from_str("[TST1]\nNoForceShield=yes\n[TST2]\nFixtureOnly=1\n");
         let obj_on: ObjectType = ObjectType::from_ini_section(
             "TST1",
             ini.section("TST1").unwrap(),
@@ -1840,7 +1843,7 @@ mod tests {
 
     #[test]
     fn test_defaults_for_missing_keys() {
-        let ini: IniFile = IniFile::from_str("[BARE]\n");
+        let ini: IniFile = IniFile::from_str("[BARE]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("BARE").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("BARE", section, ObjectCategory::Infantry);
@@ -1903,7 +1906,7 @@ mod tests {
 
     #[test]
     fn test_bridge_render_flags_default() {
-        let ini: IniFile = IniFile::from_str("[BOAT]\n");
+        let ini: IniFile = IniFile::from_str("[BOAT]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("BOAT").unwrap();
         let obj: ObjectType =
             ObjectType::from_ini_section("BOAT", section, ObjectCategory::Vehicle);
@@ -1939,7 +1942,7 @@ mod tests {
         assert!(obj.construction_yard);
         assert_eq!(obj.deploy_facing, 0x40);
 
-        let default_ini = IniFile::from_str("[GAPOWR]\n");
+        let default_ini = IniFile::from_str("[GAPOWR]\nFixtureOnly=1\n");
         let default_obj = ObjectType::from_ini_section(
             "GAPOWR",
             default_ini.section("GAPOWR").unwrap(),
@@ -2068,6 +2071,7 @@ mod tests {
     fn weapons_factory_parses_independently_from_factory_type() {
         let ini = IniFile::from_str(
             "[MISSING]\n\
+             FixtureOnly=1\n\
              [EXPLICIT_NO]\nWeaponsFactory=no\n\
              [EXPLICIT_YES]\nWeaponsFactory=yes\n\
              [FACTORY_ONLY]\nFactory=UnitType\n\
@@ -2258,13 +2262,13 @@ mod tests {
     #[test]
     fn test_size_defaults_by_category() {
         // Infantry defaults to Size=1
-        let ini: IniFile = IniFile::from_str("[INF]\n");
+        let ini: IniFile = IniFile::from_str("[INF]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("INF").unwrap();
         let obj = ObjectType::from_ini_section("INF", section, ObjectCategory::Infantry);
         assert_eq!(obj.size, 1);
 
         // Vehicle defaults to Size=3
-        let ini2: IniFile = IniFile::from_str("[VEH]\n");
+        let ini2: IniFile = IniFile::from_str("[VEH]\nFixtureOnly=1\n");
         let section2: &IniSection = ini2.section("VEH").unwrap();
         let obj2 = ObjectType::from_ini_section("VEH", section2, ObjectCategory::Vehicle);
         assert_eq!(obj2.size, 3);
@@ -2280,7 +2284,7 @@ mod tests {
 
     #[test]
     fn c4_defaults_to_false() {
-        let ini = IniFile::from_str("[E1]\n");
+        let ini = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let section = ini.section("E1").unwrap();
         let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
         assert!(!obj.c4);
@@ -2288,7 +2292,7 @@ mod tests {
 
     #[test]
     fn can_c4_defaults_to_true_for_buildings() {
-        let ini = IniFile::from_str("[GAPILE]\n");
+        let ini = IniFile::from_str("[GAPILE]\nFixtureOnly=1\n");
         let section = ini.section("GAPILE").unwrap();
         let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
         assert!(obj.can_c4);
@@ -2296,7 +2300,7 @@ mod tests {
 
     #[test]
     fn can_c4_defaults_to_false_for_non_buildings() {
-        let ini = IniFile::from_str("[E1]\n");
+        let ini = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let section = ini.section("E1").unwrap();
         let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
         assert!(!obj.can_c4);
@@ -2333,7 +2337,7 @@ mod tests {
 
     #[test]
     fn bunkerable_defaults_true_for_vehicles_only() {
-        let ini = IniFile::from_str("[TEST]\n");
+        let ini = IniFile::from_str("[TEST]\nFixtureOnly=1\n");
         let section = ini.section("TEST").unwrap();
 
         let vehicle = ObjectType::from_ini_section("TEST", section, ObjectCategory::Vehicle);
@@ -2357,7 +2361,7 @@ mod tests {
 
     #[test]
     fn invisible_in_game_defaults_to_false() {
-        let ini = IniFile::from_str("[GAPILE]\n");
+        let ini = IniFile::from_str("[GAPILE]\nFixtureOnly=1\n");
         let section = ini.section("GAPILE").unwrap();
         let obj = ObjectType::from_ini_section("GAPILE", section, ObjectCategory::Building);
         assert!(!obj.invisible);
@@ -2390,7 +2394,7 @@ mod tests {
 
     #[test]
     fn techno_type_particle_fields_default_to_empty() {
-        let ini: IniFile = IniFile::from_str("[E1]\n");
+        let ini: IniFile = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let section = ini.section("E1").unwrap();
         let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
 
@@ -2452,7 +2456,7 @@ mod tests {
             !ObjectType::from_ini_section("X", s, ObjectCategory::Aircraft).emits_damage_spark()
         );
         // Default (no Cyborg key) → false even for infantry (dormant in stock YR).
-        let plain = IniFile::from_str("[E1]\n");
+        let plain = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let ps = plain.section("E1").unwrap();
         let plain_inf = ObjectType::from_ini_section("E1", ps, ObjectCategory::Infantry);
         assert!(!plain_inf.cyborg);
@@ -2464,7 +2468,7 @@ mod tests {
         // Absent keys: OpportunityFire defaults off, CanRetaliate defaults on
         // (the gamemd TechnoType defaults — passive acquire opt-in, retaliate
         // opt-out).
-        let ini: IniFile = IniFile::from_str("[E1]\n");
+        let ini: IniFile = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let section = ini.section("E1").unwrap();
         let obj = ObjectType::from_ini_section("E1", section, ObjectCategory::Infantry);
         assert!(!obj.opportunity_fire, "OpportunityFire defaults to no");
@@ -2489,7 +2493,7 @@ mod tests {
         // Absent key → yes (the gamemd TechnoType constructor default). The INI
         // spelling is "CanPassiveAquire"; the correctly-spelled variant is NOT a
         // key the original reads, so it must not turn the flag off.
-        let plain = IniFile::from_str("[E1]\n");
+        let plain = IniFile::from_str("[E1]\nFixtureOnly=1\n");
         let obj = ObjectType::from_ini_section(
             "E1",
             plain.section("E1").unwrap(),
@@ -2519,7 +2523,7 @@ mod tests {
 
     #[test]
     fn techno_type_distributed_fire_defaults_no_and_parses() {
-        let plain = IniFile::from_str("[MTNK]\n");
+        let plain = IniFile::from_str("[MTNK]\nFixtureOnly=1\n");
         let obj = ObjectType::from_ini_section(
             "MTNK",
             plain.section("MTNK").unwrap(),
@@ -2569,7 +2573,7 @@ mod tests {
 
     #[test]
     fn techno_type_refinery_smoke_frames_defaults_to_zero() {
-        let ini: IniFile = IniFile::from_str("[FOO]\n");
+        let ini: IniFile = IniFile::from_str("[FOO]\nFixtureOnly=1\n");
         let section = ini.section("FOO").expect("section");
         let obj = ObjectType::from_ini_section("FOO", section, ObjectCategory::Building);
         assert_eq!(obj.refinery_smoke_frames, 0);

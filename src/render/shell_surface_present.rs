@@ -1,9 +1,11 @@
-//! Encoded-byte RGB565 presentation for the stock main-menu shell.
+//! Encoded-byte RGB565 presentation for stock shell and loading surfaces.
 //!
 //! The native shell composes into a 16-bit DirectDraw surface. Rust keeps its
-//! existing sRGB shell painters, then this shell-only boundary samples the
+//! existing sRGB shell/loading painters, then this boundary samples the
 //! stored encoded bytes through a compatible unorm view, applies the guarded
 //! presentation codebooks, and copies the resulting bytes into the swapchain.
+//!
+//! Retail provenance: DirectDraw surface-format derivation — `DSurface__Constructor` @ `0x004BA770`.
 
 use std::num::NonZeroU64;
 

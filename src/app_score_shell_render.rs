@@ -236,6 +236,17 @@ fn build_labels<'a>(
     out
 }
 
+/// Bind the score screen's otherwise shared paint labels to native ScoreFont
+/// glyph selection without changing the shared shell/BitFont text path.
+///
+/// Retail provenance: post-match score-font binding — `ScoreFontClass__Constructor @ 0x00690580`.
+fn bind_score_font_text(labels: &mut [PaintLabel<'_>]) {
+    for label in labels {
+        let converted = crate::util::native_string::score_font_text(label.text.as_ref());
+        label.text = std::borrow::Cow::Owned(converted);
+    }
+}
+
 /// One row's five cells rendered to strings, kept alive for the paint pass.
 pub(crate) struct RowCellText {
     rgb: [u8; 3],
@@ -382,7 +393,8 @@ fn render_score_shell_to_target(
     let cells = row_cell_text(&model);
     let game_text = format_game_number(&model, resolve_csf(state, "TXT_GAME").as_ref());
     let time_text = format_elapsed(&model, resolve_csf(state, "TXT_TIME_FORMAT_HOURS").as_ref());
-    let labels = build_labels(state, &layout, &model, &cells, &game_text, &time_text);
+    let mut labels = build_labels(state, &layout, &model, &cells, &game_text, &time_text);
+    bind_score_font_text(&mut labels);
     let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
     drop(labels);
 
