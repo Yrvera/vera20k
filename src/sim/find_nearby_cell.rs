@@ -380,6 +380,7 @@ fn candidate_passes(
             reservations: None,
             occupancy: q.occupancy,
             entities: q.entities,
+            terrain_object_cells: None,
             resolved_terrain: q.resolved_terrain,
             overlay_grid: q.overlay_grid,
             map_size: q.map_size,
