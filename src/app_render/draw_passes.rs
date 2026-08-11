@@ -8,7 +8,8 @@
 
 use crate::app::AppState;
 use crate::app_sidebar_render::{
-    begin_main_pass, current_sidebar_chrome_texture, current_sidebar_gclock_texture,
+    begin_main_load_pass, begin_main_pass, current_sidebar_chrome_texture,
+    current_sidebar_gclock_texture,
 };
 use crate::app_ui_overlays::current_software_cursor_texture;
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
@@ -156,12 +157,10 @@ pub(super) fn dispatch_draw_passes(
     );
 
     // (Smudges are drawn back at step 1.5, inside the terrain layer, matching
-    // the native per-cell tile-then-smudge dispatch. Their screen position
-    // still ignores cell elevation, so a hilltop crater sits one height step
-    // too low per level; the native tile pass folds the cell's height into the
-    // smudge's Y. Not fixed here because `smudge::build_visible_instances` has
-    // no height source and adding one changes its signature and its caller in
-    // `build_instances.rs`. The instances' depth value is irrelevant either
+    // the native per-cell tile-then-smudge dispatch. Instance construction now
+    // projects the footprint origin with its resolved cell level, so hilltop
+    // composites share the terrain tile's elevation. Their depth value is
+    // irrelevant either
     // way — this pass neither reads nor writes the depth buffer.)
 
     // Building selection bracket back/left edges. Drawn before object bodies so
@@ -328,6 +327,18 @@ pub(super) fn dispatch_draw_passes(
             }
         }
     }
+
+    // --- Step 7.8: Persistent combat-light vector ---
+    // gamemd edits the completed tactical object surface here, tail-to-head,
+    // before the later debug/shroud/UI families. End the sRGB/depth pass while
+    // the dedicated renderer performs its encoded RGB565 destination edits,
+    // then resume both attachments with Load.
+    drop(pass);
+    state
+        .combat_light_renderer
+        .draw(encoder, [tac_x, tac_y, tac_w, tac_h]);
+    let mut pass = begin_main_load_pass(encoder, view, &state.depth_view);
+    pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 
     // --- Step 8: Debug overlays ---
     // Drawn above entities, below fog and UI.

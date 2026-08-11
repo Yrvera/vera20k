@@ -193,6 +193,8 @@ pub(crate) struct AppState {
     pub(crate) window_hidden: bool,
     pub(crate) gpu: GpuContext,
     pub(crate) batch_renderer: BatchRenderer,
+    pub(crate) combat_light_renderer: crate::render::combat_light::CombatLightRenderer,
+    pub(crate) combat_lights: crate::app_combat_lights::CombatLightRuntime,
     /// Reusable GPU instance buffers — avoids per-frame GPU buffer allocation.
     pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
     pub(crate) tile_atlas: Option<TileAtlas>,
@@ -469,10 +471,9 @@ pub(crate) struct AppState {
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
     pub(crate) lighting_grid: CellLightGrid,
-    /// Last radiation-glow light epoch applied to `lighting_grid`. The glow is
-    /// rebuilt only when this changes (a site stepped on `RadLightDelay`, or the
-    /// site set changed). App view-state only — never serialized or hashed.
-    pub(crate) last_radiation_light_epoch: u64,
+    /// Complete derived light-view fingerprint applied to `lighting_grid`.
+    /// App view-state only — never serialized or hashed.
+    pub(crate) last_lighting_view_fingerprint: Option<u64>,
     /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
     pub(crate) map_lighting_config: LightingConfig,
     /// Active map theater name (e.g., DESERT).
@@ -2388,11 +2389,7 @@ impl App {
         let mut open_browser: Option<SavedSeedMode> = None;
         match released.expect("checked equal to pressed control") {
             Control::Randomize0x621 => {
-                modal.randomize_options(
-                    &settings,
-                    &mut state.frontend_main_rng,
-                    &description,
-                );
+                modal.randomize_options(&settings, &mut state.frontend_main_rng, &description);
             }
             Control::Generate0x620 => {
                 modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
@@ -4084,6 +4081,7 @@ impl App {
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let egui: EguiIntegration = EguiIntegration::new(&gpu, &window);
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
+        let combat_light_renderer = crate::render::combat_light::CombatLightRenderer::new(&gpu);
         let mut bit_font = BitFont::fallback_5x7(&gpu, &batch_renderer);
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
         let shell_surface_presenter =
@@ -4378,6 +4376,14 @@ impl App {
             .unwrap_or_else(|| {
                 crate::ui::shell::in_game_options_state::InGameOptionsState::default().scroll_rate
             });
+        let saved_detail_level = game_config
+            .as_ref()
+            .and_then(|config| {
+                crate::app_options_persist::read_detail_level_from_ra2md(&config.paths.ra2_dir)
+            })
+            .unwrap_or_else(|| {
+                crate::ui::shell::in_game_options_state::InGameOptionsState::default().detail_level
+            });
 
         let mut state = AppState {
             random_map_generation: None,
@@ -4386,6 +4392,8 @@ impl App {
             window_hidden: false,
             gpu,
             batch_renderer,
+            combat_light_renderer,
+            combat_lights: Default::default(),
             instance_pool: crate::render::batch::InstanceBufferPool::new(),
             tile_atlas: None,
             map_basic: BasicSection::default(),
@@ -4530,7 +4538,7 @@ impl App {
             bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
-            last_radiation_light_epoch: 0,
+            last_lighting_view_fingerprint: None,
             map_lighting_config: LightingConfig::default(),
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
@@ -4584,6 +4592,7 @@ impl App {
             in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
                 game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
                 scroll_rate: saved_scroll_rate,
+                detail_level: saved_detail_level,
                 ..Default::default()
             },
             in_game_options_anchor: None,
@@ -4942,12 +4951,15 @@ impl App {
                 let game_output = if state.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
                     let up = state.upscale_pass.as_ref().unwrap();
-                    let game_view = up.color_view().clone();
                     let game_depth = up.depth_view().clone();
                     let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
-                    let result = app_render::render_game(state, &mut encoder, &game_view);
+                    let result = app_render::render_game(state, &mut encoder);
                     state.depth_view = saved_depth;
                     let render_output = result?;
+                    state.combat_light_renderer.copy_to(
+                        &mut encoder,
+                        state.upscale_pass.as_ref().unwrap().color_texture(),
+                    );
                     state
                         .upscale_pass
                         .as_ref()
@@ -4955,7 +4967,11 @@ impl App {
                         .draw(&mut encoder, &view);
                     render_output
                 } else {
-                    app_render::render_game(state, &mut encoder, &view)?
+                    let render_output = app_render::render_game(state, &mut encoder)?;
+                    state
+                        .combat_light_renderer
+                        .copy_to(&mut encoder, &output.texture);
+                    render_output
                 };
                 let sidebar_view = game_output.sidebar_view.as_ref();
                 // Options (the in-scenario state the menu's Game Controls button
@@ -5064,7 +5080,12 @@ impl App {
                 }
             }
             GameScreen::SpawnPick => {
-                crate::app_spawn_pick::render_spawn_pick(state, &mut encoder, &view)?;
+                crate::app_spawn_pick::render_spawn_pick(
+                    state,
+                    &mut encoder,
+                    &output.texture,
+                    &view,
+                )?;
                 state.egui.begin_frame(&state.window);
                 crate::app_spawn_pick::draw_spawn_pick_overlay(&state.egui.ctx.clone(), state);
                 state.egui.end_frame_and_render(

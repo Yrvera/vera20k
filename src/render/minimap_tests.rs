@@ -147,6 +147,7 @@ fn test_minimap_entity_visible_for_allied_owner() {
         rx: 10,
         ry: 12,
         z: 0,
+        exact_z_leptons: None,
         sub_x: crate::util::lepton::CELL_CENTER_LEPTON,
         sub_y: crate::util::lepton::CELL_CENTER_LEPTON,
     };

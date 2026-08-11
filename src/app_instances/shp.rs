@@ -343,11 +343,7 @@ pub(crate) fn build_shp_instances(
                     // tile row — and using it here would put the stamp north of
                     // every bracket corner, so nothing would ever clip.
                     bucket.push(SpriteInstance {
-                        depth: compute_sprite_depth(
-                            state,
-                            final_y + entry.pixel_size[1],
-                            interp_z,
-                        ),
+                        depth: compute_sprite_depth(state, final_y + entry.pixel_size[1], interp_z),
                         ..body
                     });
                 }

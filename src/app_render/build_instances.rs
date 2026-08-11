@@ -317,9 +317,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
-    // Layer 3 particle systems — separate paged list, drawn AFTER cliff
-    // redraw at Step 7.5, above all ground geometry per the original's
-    // ParticleClass::GetLayer = 3.
+    // Layer 3 particle systems — separate paged list above all Ground-layer
+    // geometry per the original's ParticleClass::GetLayer = 3.
     app_instances::build_particle_instances(state, &mut particle_paged);
     for page in &mut particle_paged {
         sort_by_depth_desc(page);
@@ -435,16 +434,19 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// hands them to `render::smudge::build_visible_instances` along with a
 /// closure that resolves SmudgeType id + frame index to atlas UVs.
 ///
-/// Until the SmudgeType atlas registration lands as a follow-up, the closure
-/// always returns `None`, so this function returns an empty Vec. The pipeline
-/// (build → upload → draw) is wired end-to-end so adding the atlas in a later
-/// task is the only change required to make smudges visible.
+/// The atlas stores each smudge SHP as one composite frame. The render helper
+/// uses the resolved terrain level at the footprint origin and emits that
+/// frame once even though native recenters an identical draw from every
+/// occupied footprint cell.
 fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
     let (sim, rules) = match (&state.simulation, &state.rules) {
         (Some(s), Some(r)) => (s, r),
         _ => return Vec::new(),
     };
     let Some(grid) = sim.smudge_grid.as_ref() else {
+        return Vec::new();
+    };
+    let Some(resolved_terrain) = sim.resolved_terrain.as_ref() else {
         return Vec::new();
     };
     let Some(atlas) = state.overlay_atlas.as_ref() else {
@@ -471,6 +473,7 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
     crate::render::smudge::build_visible_instances(
         grid,
         &rules.smudge_types,
+        resolved_terrain,
         &lookup,
         state.camera_x,
         state.camera_y,
@@ -738,10 +741,8 @@ fn compute_wall_autofill_cells(
 pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances {
     let view = current_sidebar_view(state);
     let minimap_rect = active_minimap_screen_rect(state);
-    let (tactical_w, tactical_h) = crate::app_camera::tactical_viewport_size_px(
-        state.render_width(),
-        state.render_height(),
-    );
+    let (tactical_w, tactical_h) =
+        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state

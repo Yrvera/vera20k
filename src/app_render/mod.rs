@@ -71,7 +71,6 @@ pub(crate) struct GameRenderOutput {
 pub(crate) fn render_game(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
 ) -> Result<GameRenderOutput> {
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
@@ -125,11 +124,21 @@ pub(crate) fn render_game(
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
     state.cached_overlay_instances = world.overlay;
 
+    let combat_lights = state.combat_lights.draw_records();
+    state.combat_light_renderer.prepare(
+        &state.gpu,
+        &combat_lights,
+        [sw, sh],
+        [state.camera_x, state.camera_y],
+        state.zoom_level,
+    );
+    let composition_view = state.combat_light_renderer.composition_view();
+
     // Phase 7: Dispatch draw calls in render order.
     draw_passes::dispatch_draw_passes(
         state,
         encoder,
-        view,
+        &composition_view,
         &draw_passes::DrawPassData {
             bridge_unit_instances: &world.bridge_unit,
             bridge_unit_pages: &world.bridge_unit_pages,
@@ -144,7 +153,6 @@ pub(crate) fn render_game(
             ghost_page: ui.ghost_page,
         },
     );
-
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
     state.cached_unit_instances = world.unit;
