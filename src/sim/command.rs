@@ -21,6 +21,9 @@ const COMMAND_RECORD_FRAME_OFFSET: usize = 3;
 const COMMAND_RECORD_PAYLOAD_OFFSET: usize = 7;
 const COMMAND_RECORD_PROCESSED_FLAG: u8 = 0x01;
 
+/// Native `EventClass` opcode for selling one wall-overlay cell.
+pub const SELL_WALL_AT_CELL_OPCODE: u8 = 0x17;
+
 /// A malformed fixed-width synchronized command record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CommandRecordError {
@@ -226,6 +229,41 @@ impl CommandRecord {
     }
 }
 
+/// Typed view of native opcode `0x17`'s fixed record fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SellWallAtCellRecord {
+    pub house_id: i8,
+    pub frame: u32,
+    pub x: i16,
+    pub y: i16,
+}
+
+impl SellWallAtCellRecord {
+    pub fn encode(self) -> Result<CommandRecord, CommandRecordError> {
+        let mut payload = [0u8; 4];
+        payload[..2].copy_from_slice(&self.x.to_le_bytes());
+        payload[2..].copy_from_slice(&self.y.to_le_bytes());
+        CommandRecord::encode(
+            SELL_WALL_AT_CELL_OPCODE,
+            i32::from(self.house_id),
+            self.frame as i32,
+            &payload,
+        )
+    }
+
+    pub fn decode(record: &CommandRecord) -> Option<Self> {
+        if record.opcode() != SELL_WALL_AT_CELL_OPCODE {
+            return None;
+        }
+        Some(Self {
+            house_id: record.house_id(),
+            frame: record.frame_stamp() as u32,
+            x: i16::from_le_bytes(record.payload()[..2].try_into().ok()?),
+            y: i16::from_le_bytes(record.payload()[2..4].try_into().ok()?),
+        })
+    }
+}
+
 impl AsRef<[u8]> for CommandRecord {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
@@ -416,6 +454,9 @@ pub enum Command {
         target_rx: u16,
         target_ry: u16,
     },
+    /// Sell the wall overlay at one native signed `CellStruct` coordinate.
+    /// The command envelope names the receiver, not necessarily the wall owner.
+    SellWallAtCell { x: i16, y: i16 },
 }
 
 /// Command with deterministic execution metadata.
@@ -440,7 +481,31 @@ impl CommandEnvelope {
 mod tests {
     use super::{
         COMMAND_RECORD_LEN, COMMAND_RECORD_PAYLOAD_LEN, CommandRecord, CommandRecordError,
+        SELL_WALL_AT_CELL_OPCODE, SellWallAtCellRecord,
     };
+
+    #[test]
+    fn gsi_04_07_wall_sell_raw_record_golden_and_signed_roundtrip() {
+        let typed = SellWallAtCellRecord {
+            house_id: 3,
+            frame: 0x89ab_cdef,
+            x: -2,
+            y: 0x1234,
+        };
+        let record = typed.encode().expect("wall-sale record");
+        let bytes = record.as_bytes();
+        assert_eq!(bytes[0], SELL_WALL_AT_CELL_OPCODE);
+        assert_eq!(bytes[1], 0);
+        assert_eq!(bytes[2], 3);
+        assert_eq!(&bytes[3..7], &0x89ab_cdef_u32.to_le_bytes());
+        assert_eq!(&bytes[7..9], &(-2_i16).to_le_bytes());
+        assert_eq!(&bytes[9..11], &0x1234_i16.to_le_bytes());
+        assert!(bytes[11..].iter().all(|&byte| byte == 0));
+        assert_eq!(SellWallAtCellRecord::decode(&record), Some(typed));
+
+        let other = CommandRecord::encode(0x16, 3, 1, &[]).unwrap();
+        assert_eq!(SellWallAtCellRecord::decode(&other), None);
+    }
 
     #[test]
     fn command_record_encoding_uses_the_fixed_native_layout() {

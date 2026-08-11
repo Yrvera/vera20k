@@ -294,6 +294,16 @@ impl SynchronizedCommand {
         self.record
     }
 
+    /// Decode the bounded native command set at the synchronized execution
+    /// seam. No semantic sidecar is retained beside the authoritative bytes.
+    pub(crate) fn decode_for_simulation(
+        &self,
+        sim: &crate::sim::world::Simulation,
+        execute_tick: u64,
+    ) -> Option<crate::sim::command::CommandEnvelope> {
+        sim.decode_native_command_record(&self.record, execute_tick)
+    }
+
     fn stages_as_megamission(&self) -> bool {
         self.record.opcode() == MEGAMISSION_EVENT_OPCODE
     }
