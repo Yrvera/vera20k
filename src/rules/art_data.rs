@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::rules::flh::{Flh, parse_flh};
 use crate::rules::ini_parser::{IniFile, IniSection};
+use crate::rules::object_type::{BuildingHiddenOccupancyProfile, HIDDEN_OCCUPY_SLOT_COUNT};
 
 /// Per-object art configuration parsed from an art.ini section.
 #[derive(Debug, Clone)]
@@ -55,6 +56,8 @@ pub struct ArtEntry {
     pub building_anims: Vec<BuildingAnimConfig>,
     /// Building foundation footprint (e.g., "4x4", "2x2").
     pub foundation: Option<String>,
+    /// Overlay type produced by this BuildingType's art (`ToOverlay=`).
+    pub to_overlay: Option<String>,
     /// BibShape: separate SHP for the ground-level pad/bib under a building.
     pub bib_shape: Option<String>,
     /// Custom palette override from art.ini `Palette=`.
@@ -137,9 +140,9 @@ pub struct ArtEntry {
     pub muzzle_flash_positions: Vec<(i32, i32)>,
     /// Valid cells from art.ini AddOccupy1..8, scanned by slot number.
     /// Signed offsets from the building's origin (rx, ry) — negative = west/north.
-    pub add_occupy: Vec<(i16, i16)>,
+    pub add_occupy: [Option<(i16, i16)>; HIDDEN_OCCUPY_SLOT_COUNT],
     /// Valid cells from art.ini RemoveOccupy1..8, scanned by slot number.
-    pub remove_occupy: Vec<(i16, i16)>,
+    pub remove_occupy: [Option<(i16, i16)>; HIDDEN_OCCUPY_SLOT_COUNT],
     /// Middle integer of `Deploy=<start>,<frames>,<rate>` in the infantry
     /// sequence section referenced by `sequence`. `None` when the sequence
     /// is undefined or doesn't have a `Deploy` entry. Drives the per-type
@@ -775,6 +778,11 @@ impl ArtRegistry {
                 .get("Foundation")
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let to_overlay: Option<String> = section
+                .get("ToOverlay")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let bib_shape: Option<String> = section
                 .get("BibShape")
                 .filter(|s| !s.is_empty())
@@ -944,12 +952,8 @@ impl ArtRegistry {
             // absent case.
             let height: i32 = section.get_i32("Height").unwrap_or(2);
             let can_hide: bool = section.get_bool("CanHideThings").unwrap_or(true);
-            // DRIFT, recorded not fixed: the ctor gives the adjacent field one
-            // word further on its own literal 2 rather than copying height, so
-            // an authored `Height=` with no `OccupyHeight=` likely yields 2 in
-            // the original where this yields the authored height. That field's
-            // identity is UNCHECKED and `occupy_height` has no production
-            // consumer today, so it is left alone.
+            // BuildingTypeClass reads Height first, then passes that resolved
+            // field value as the default for OccupyHeight.
             let occupy_height: i32 = section.get_i32("OccupyHeight").unwrap_or(height);
             let muzzle_flash_positions: Vec<(i32, i32)> = {
                 let mut positions = Vec::new();
@@ -969,9 +973,8 @@ impl ArtRegistry {
                 }
                 positions
             };
-            let add_occupy: Vec<(i16, i16)> = parse_numbered_cell_offsets(section, "AddOccupy");
-            let remove_occupy: Vec<(i16, i16)> =
-                parse_numbered_cell_offsets(section, "RemoveOccupy");
+            let add_occupy = parse_numbered_cell_offsets(section, "AddOccupy");
+            let remove_occupy = parse_numbered_cell_offsets(section, "RemoveOccupy");
 
             let section_key = section_name.to_uppercase();
             can_hide_things.insert(section_key.clone(), can_hide);
@@ -998,6 +1001,7 @@ impl ArtRegistry {
                     x_draw_offset,
                     building_anims,
                     foundation,
+                    to_overlay,
                     bib_shape,
                     palette,
                     sequence,
@@ -1180,11 +1184,11 @@ impl ArtRegistry {
         Ok(())
     }
 
-    /// Hidden-occupancy gate from art.ini `CanHideThings=`.
-    /// The original building type constructor defaults this to true.
-    pub fn can_hide_things(&self, image_id: &str) -> bool {
+    /// Hidden-occupancy gate from the art.ini object-type-ID section.
+    /// The building type constructor defaults this to true.
+    pub fn can_hide_things(&self, type_id: &str) -> bool {
         self.can_hide_things
-            .get(&image_id.to_uppercase())
+            .get(&type_id.to_uppercase())
             .copied()
             .unwrap_or(true)
     }
@@ -1197,6 +1201,27 @@ impl ArtRegistry {
             .get(&image_id.to_uppercase())
             .copied()
             .unwrap_or(2)
+    }
+
+    /// Resolve the hidden-counter profile from its two distinct ART sections:
+    /// `CanHideThings` belongs to the object type ID, while height and numbered
+    /// offsets belong to the effective rules `Image=` section.
+    pub fn building_hidden_occupancy_profile(
+        &self,
+        type_id: &str,
+        image_id: &str,
+    ) -> BuildingHiddenOccupancyProfile {
+        let image_entry = self.get(image_id);
+        BuildingHiddenOccupancyProfile {
+            can_hide_things: self.can_hide_things(type_id),
+            occupy_height: self.occupy_height(image_id),
+            add_occupy: image_entry
+                .map(|entry| entry.add_occupy)
+                .unwrap_or([None; HIDDEN_OCCUPY_SLOT_COUNT]),
+            remove_occupy: image_entry
+                .map(|entry| entry.remove_occupy)
+                .unwrap_or([None; HIDDEN_OCCUPY_SLOT_COUNT]),
+        }
     }
 
     /// Number of entries in the registry.
@@ -1574,6 +1599,42 @@ pub fn overlay_shp_candidates(
     candidates
 }
 
+/// Build the one primary filename and one generic-letter retry used by
+/// `OverlayTypeClass::GetSHP` for map-pack placement eligibility.
+///
+/// Keep this separate from [`overlay_shp_candidates`]: render loading probes a
+/// deliberately broader compatibility list, while the native object-type
+/// loader constructs exactly one name and only retries after forcing its
+/// second character to `G`.
+pub(crate) fn native_overlay_shp_names(
+    art: &ArtRegistry,
+    image_id: &str,
+    theater_ext: &str,
+    theater_name: &str,
+) -> [String; 2] {
+    let upper_image = image_id.to_ascii_uppercase();
+    // ObjectTypeClass has already resolved `Image=` at this point; its two
+    // filename flags come from that resolved art section, not from the broad
+    // name/image convention union used by render probing.
+    let image_entry = art.get(&upper_image);
+    let uses_theater = image_entry.is_some_and(|entry| entry.theater);
+    let uses_new_theater = image_entry.is_some_and(|entry| entry.new_theater);
+
+    let (primary_stem, extension) = if uses_theater {
+        (upper_image, theater_ext.to_ascii_uppercase())
+    } else {
+        let stem = if uses_new_theater {
+            apply_theater_letter(&upper_image, theater_name)
+        } else {
+            upper_image
+        };
+        (stem, "SHP".to_string())
+    };
+    let primary = format!("{primary_stem}.{extension}");
+    let generic_retry = apply_generic_letter(&primary);
+    [primary, generic_retry]
+}
+
 /// Generate VXL/HVA filenames for a voxel model.
 pub fn voxel_asset_names(image_id: &str) -> (String, String) {
     let upper: String = image_id.to_uppercase();
@@ -1674,8 +1735,11 @@ fn parse_building_anim_variant(anim_type: String, ini: &IniFile) -> BuildingAnim
     }
 }
 
-fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, i16)> {
-    let mut offsets = Vec::new();
+fn parse_numbered_cell_offsets(
+    section: &IniSection,
+    prefix: &str,
+) -> [Option<(i16, i16)>; HIDDEN_OCCUPY_SLOT_COUNT] {
+    let mut offsets = [None; HIDDEN_OCCUPY_SLOT_COUNT];
     for i in 1..=8 {
         let key = format!("{}{}", prefix, i);
         let Some(val) = section.get(&key) else {
@@ -1686,7 +1750,7 @@ fn parse_numbered_cell_offsets(section: &IniSection, prefix: &str) -> Vec<(i16, 
             parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
             parts.next().and_then(|s| s.trim().parse::<i16>().ok()),
         ) {
-            offsets.push((x, y));
+            offsets[i - 1] = Some((x, y));
         }
     }
     offsets
