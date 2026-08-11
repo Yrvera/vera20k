@@ -27,21 +27,28 @@
 //! - Part of sim/ — depends on rules/ (RuleSet) and sim/components.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+use std::collections::BTreeMap;
+
 use super::combat_weapon::{VersesGate, select_weapon_with_override, verses_gate};
 use super::threat_range::{ScanMission, ScanRange, scan_mission_for, scan_range};
-use super::{combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
+use super::{armor_index, combat_target_category, is_within_range_leptons, lepton_distance_sq_raw};
 use crate::map::entities::EntityCategory;
+use crate::map::houses::{HouseAllianceMap, is_allied_with};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
+use crate::sim::house_state::HouseState;
 use crate::sim::intern::{InternedId, StringInterner};
 use crate::sim::vision::FogState;
 use crate::util::fixed_math::SimFixed;
+use crate::util::lepton::LEPTONS_PER_LEVEL;
+use crate::util::native_x87::{NativeF64Bits, X87Chop53, X87Ordering, X87Value, sqrt_approx_f32};
 
 /// Snapshot of garrison state for a garrisoned building attacker.
 /// Extracted during Phase 1 to avoid borrow conflicts in Phase 2.
+#[derive(Clone)]
 pub(crate) struct GarrisonSnapshot {
     /// Type ID of the occupant that will fire this tick.
     pub occupant_type_id: InternedId,
@@ -57,6 +64,7 @@ pub(crate) struct GarrisonSnapshot {
 
 /// Snapshot of an attacker's state for target scanning.
 /// Extracted to avoid borrow conflicts during entity iteration.
+#[derive(Clone)]
 pub(crate) struct AttackerSnapshot {
     pub stable_id: u64,
     pub owner: InternedId,
@@ -68,6 +76,7 @@ pub(crate) struct AttackerSnapshot {
     pub pos_rx: u16,
     pub pos_ry: u16,
     pub pos_z: u8,
+    pub pos_exact_z_leptons: Option<i32>,
     pub sub_x: SimFixed,
     pub sub_y: SimFixed,
     pub type_id: InternedId,
@@ -127,6 +136,7 @@ pub fn acquire_best_target_for_entity(
         pos_rx: entity.position.rx,
         pos_ry: entity.position.ry,
         pos_z: entity.position.z,
+        pos_exact_z_leptons: entity.position.exact_z_leptons,
         sub_x: entity.position.sub_x,
         sub_y: entity.position.sub_y,
         type_id: entity.type_ref,
@@ -343,6 +353,275 @@ fn can_retaliate(
     // 0% is already filtered by select_weapon_with_override (returns None).
     // 1% (Suppressed) also blocks retaliation.
     verses_gate(selected.verses_pct) != VersesGate::Suppressed
+}
+
+fn load_threat_double(value: f64) -> Option<X87Value> {
+    X87Chop53::load_f64(NativeF64Bits::from_bits(value.to_bits())).ok()
+}
+
+fn threat_coord(entity: &GameEntity, terrain: Option<&ResolvedTerrainGrid>) -> (i32, i32, i32) {
+    let x = i32::from(entity.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let y = i32::from(entity.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    let z = terrain
+        .and_then(|terrain| super::in_range::effective_z_leptons(entity, terrain))
+        .and_then(|z| i32::try_from(z).ok())
+        .unwrap_or_else(|| {
+            i32::from(entity.position.z)
+                .wrapping_mul(LEPTONS_PER_LEVEL as i32)
+                .wrapping_add(
+                    entity
+                        .locomotor
+                        .as_ref()
+                        .map(|locomotor| locomotor.altitude.to_num::<i32>())
+                        .unwrap_or(0),
+                )
+        });
+    (x, y, z)
+}
+
+/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`, narrowed to the
+/// non-human (Rules `Dumb*`) coefficient branch consumed synchronously by
+/// `ShouldRetaliate`. The caller uses the native NullCoord sentinel path, so
+/// Sqrt_Approx/ftol distance is converted from leptons to whole cells here.
+pub(crate) fn calculate_ai_threat_score(
+    entities: &EntityStore,
+    scorer_id: u64,
+    candidate_id: u64,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> Option<X87Value> {
+    let scorer = entities.get(scorer_id)?;
+    let candidate = entities.get(candidate_id)?;
+    let scorer_type = rules.object(interner.resolve(scorer.type_ref))?;
+    let candidate_type = rules.object(interner.resolve(candidate.type_ref))?;
+    let general = &rules.general;
+    let coeff_a = load_threat_double(general.dumb_my_effectiveness_coefficient)?;
+    let coeff_b = load_threat_double(general.dumb_target_effectiveness_coefficient)?;
+    let coeff_c = load_threat_double(general.dumb_target_special_threat_coefficient)?;
+    let coeff_d = load_threat_double(general.dumb_target_strength_coefficient)?;
+    let coeff_e = load_threat_double(general.dumb_target_distance_coefficient)?;
+    let mut score = X87Chop53::load_i32(0);
+
+    // B: the candidate's selected weapon against the scorer. A candidate
+    // already targeting the scorer contributes the negated term.
+    let scorer_category = combat_target_category(scorer, rules, interner);
+    if let Some(selected) = select_weapon_with_override(
+        rules,
+        candidate_type,
+        scorer_category,
+        &scorer_type.armor,
+        candidate.veterancy,
+        candidate.weapon_override,
+    ) {
+        let verses =
+            load_threat_double(selected.warhead.verses_f64[armor_index(&scorer_type.armor)])?;
+        let mut term = X87Chop53::mul(coeff_b, verses);
+        if candidate
+            .attack_target
+            .as_ref()
+            .is_some_and(|target| target.target == super::TargetKind::Entity(scorer.stable_id))
+        {
+            term = X87Chop53::neg(term);
+        }
+        score = X87Chop53::add(score, term);
+    }
+
+    // C: candidate type SpecialThreatValue.
+    score = X87Chop53::add(
+        score,
+        X87Chop53::mul(
+            coeff_c,
+            load_threat_double(candidate_type.special_threat_value)?,
+        ),
+    );
+
+    // A: the scorer's selected weapon against the candidate. Retain the
+    // selected weapon for the native range term below.
+    let candidate_category = combat_target_category(candidate, rules, interner);
+    let selected_scorer_weapon = select_weapon_with_override(
+        rules,
+        scorer_type,
+        candidate_category,
+        &candidate_type.armor,
+        scorer.veterancy,
+        scorer.weapon_override,
+    );
+    if let Some(selected) = selected_scorer_weapon.as_ref() {
+        let verses =
+            load_threat_double(selected.warhead.verses_f64[armor_index(&candidate_type.armor)])?;
+        score = X87Chop53::add(score, X87Chop53::mul(coeff_a, verses));
+    }
+
+    // D: live candidate health ratio.
+    let health_ratio = if candidate.health.max == 0 {
+        X87Chop53::load_i32(0)
+    } else {
+        X87Chop53::div(
+            X87Chop53::load_i32(i32::from(candidate.health.current)),
+            X87Chop53::load_i32(i32::from(candidate.health.max)),
+        )
+        .ok()?
+    };
+    score = X87Chop53::add(score, X87Chop53::mul(coeff_d, health_ratio));
+
+    // E: whole cells beyond the scorer's selected weapon range. Weapon Range
+    // is represented in cells in Rust, so its toward-zero conversion is the
+    // native `(range + sign_adjust) >> 8` result.
+    let scorer_coord = threat_coord(scorer, terrain);
+    let candidate_coord = threat_coord(candidate, terrain);
+    let dx = X87Chop53::load_i32(candidate_coord.0.wrapping_sub(scorer_coord.0));
+    let dy = X87Chop53::load_i32(candidate_coord.1.wrapping_sub(scorer_coord.1));
+    let dz = X87Chop53::load_i32(candidate_coord.2.wrapping_sub(scorer_coord.2));
+    let distance_sq = X87Chop53::add(
+        X87Chop53::add(X87Chop53::mul(dx, dx), X87Chop53::mul(dy, dy)),
+        X87Chop53::mul(dz, dz),
+    );
+    let distance_root = X87Chop53::load_f32(sqrt_approx_f32(distance_sq).ok()?).ok()?;
+    let distance_leptons = i32::try_from(X87Chop53::ftol_i64(distance_root).ok()?).ok()?;
+    let distance_cells = distance_leptons.wrapping_add((distance_leptons >> 31) & 0xff) >> 8;
+    let range_cells = selected_scorer_weapon
+        .as_ref()
+        .map_or(scorer_type.sight, |selected| {
+            selected.weapon.range.to_num::<i32>()
+        });
+    let beyond_range = distance_cells.wrapping_sub(range_cells).max(0);
+    score = X87Chop53::add(
+        X87Chop53::mul(X87Chop53::load_i32(beyond_range), coeff_e),
+        score,
+    );
+    Some(X87Chop53::add(score, load_threat_double(100_000.0)?))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+enum RetaliationPeekFireError {
+    Clear = 0,
+    Illegal = 5,
+}
+
+/// Represented structural part of the read-only `GetFireError` peek issued by
+/// `ShouldRetaliate`. The target is the still-represented damage source; a
+/// source in ObjectClass limbo returns native `FIRE_ILLEGAL` without consuming
+/// ammo, RNG, or weapon state.
+fn retaliation_peek_fire_error(target: &GameEntity) -> RetaliationPeekFireError {
+    if target.lifecycle.in_limbo {
+        RetaliationPeekFireError::Illegal
+    } else {
+        RetaliationPeekFireError::Clear
+    }
+}
+
+/// Evaluate the live, receiver-synchronous part of
+/// `TechnoClass::ShouldRetaliate @ 0x007087C0` using represented authority.
+///
+/// The native call consumes the still-represented source object, including a
+/// dying DeathWeapon producer, so source health is deliberately not an
+/// admission gate here. Represented gates are read afresh for every ordered
+/// receiver.
+pub(crate) fn should_retaliate_from_damage(
+    entities: &EntityStore,
+    victim_id: u64,
+    attacker_id: u64,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &BTreeMap<InternedId, HouseState>,
+    alliances: &HouseAllianceMap,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> bool {
+    let (Some(victim), Some(attacker)) = (entities.get(victim_id), entities.get(attacker_id))
+    else {
+        return false;
+    };
+    if !victim.is_alive()
+        || victim.dying
+        || !victim.lifecycle.object_alive
+        || victim.lifecycle.in_limbo
+    {
+        return false;
+    }
+
+    let Some(victim_type) = rules.object(interner.resolve(victim.type_ref)) else {
+        return false;
+    };
+    if !victim_type.can_retaliate
+        || victim.bunker_link.installed_in().is_some()
+        || victim.mind_controlled
+        || victim
+            .capture_manager
+            .as_ref()
+            .is_some_and(|manager| manager.blocks_retaliation())
+        || victim.spawn_manager.is_some()
+        || victim_type
+            .enslaves
+            .as_deref()
+            .is_some_and(|slave_type| rules.object_case_insensitive(slave_type).is_some())
+    {
+        return false;
+    }
+    if victim
+        .mission
+        .current()
+        .known()
+        .and_then(|mission| rules.mission_control.entry(mission))
+        .is_some_and(|entry| !entry.retaliate)
+    {
+        return false;
+    }
+
+    let victim_owner = interner.resolve(victim.owner);
+    let attacker_owner = interner.resolve(attacker.owner);
+    if is_allied_with(alliances, victim_owner, attacker_owner)
+        || is_allied_with(alliances, attacker_owner, victim_owner)
+    {
+        return false;
+    }
+    // The active human-control branch refuses to replace an existing TarCom.
+    // A computer-owned receiver compares raw float10 threat scores at its own
+    // coordinate and keeps its current target only when that score is strictly
+    // greater. Equal or lower permits the normal retaliation path.
+    let is_human = houses
+        .get(&victim.owner)
+        .is_some_and(|house| house.is_human);
+    if is_human && victim.attack_target.is_some() {
+        return false;
+    }
+    let target_category = combat_target_category(attacker, rules, interner);
+    let target_armor = rules
+        .object(interner.resolve(attacker.type_ref))
+        .map(|object| object.armor.as_str())
+        .unwrap_or("none");
+    let Some(selected) = select_weapon_with_override(
+        rules,
+        victim_type,
+        target_category,
+        target_armor,
+        victim.veterancy,
+        victim.weapon_override,
+    ) else {
+        return false;
+    };
+    if retaliation_peek_fire_error(attacker) == RetaliationPeekFireError::Illegal {
+        return false;
+    }
+
+    if !is_human
+        && let Some(super::TargetKind::Entity(current_id)) =
+            victim.attack_target.as_ref().map(|target| target.target)
+        && let (Some(current_score), Some(attacker_score)) = (
+            calculate_ai_threat_score(entities, victim_id, current_id, rules, interner, terrain),
+            calculate_ai_threat_score(entities, victim_id, attacker_id, rules, interner, terrain),
+        )
+        && X87Chop53::compare(current_score, attacker_score) == X87Ordering::Greater
+    {
+        return false;
+    }
+
+    selected.weapon.range > SimFixed::ZERO && verses_gate(selected.verses_pct) == VersesGate::Normal
 }
 
 /// Retaliation system: idle units that were recently hit auto-attack their attacker.

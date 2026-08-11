@@ -44,10 +44,7 @@ fn terrain_ground_z_at(
         .map(i64::from)
 }
 
-fn entity_ground_z_leptons(
-    entity: &GameEntity,
-    terrain: &ResolvedTerrainGrid,
-) -> Option<i64> {
+fn entity_ground_z_leptons(entity: &GameEntity, terrain: &ResolvedTerrainGrid) -> Option<i64> {
     let world_x = i32::from(entity.position.rx)
         .wrapping_mul(256)
         .wrapping_add(entity.position.sub_x.to_num::<i32>());
@@ -71,7 +68,8 @@ fn entity_ground_z_leptons(
     )
 }
 
-/// Combined absolute coordinate Z of an entity: exact sloped terrain ground,
+/// Absolute world-coordinate Z of an entity. An object-owned exact coordinate
+/// is authoritative; otherwise this reconstructs exact sloped terrain ground,
 /// the entity-owned OnBridge deck offset, and locomotor altitude.
 ///
 /// Droppod and parachute altitudes are intentionally NOT added — those
@@ -81,6 +79,10 @@ pub(crate) fn effective_z_leptons(
     entity: &GameEntity,
     terrain: &ResolvedTerrainGrid,
 ) -> Option<i64> {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return Some(i64::from(exact_z_leptons));
+    }
+
     let base = entity_ground_z_leptons(entity, terrain)?;
     Some(
         base + entity
@@ -226,8 +228,7 @@ pub(crate) fn compute_in_range(
     let max_range_lep =
         compute_effective_max_range_leptons(attacker, target, weapon, rules, interner, entities);
 
-    let Some((tx, ty, tz)) =
-        resolve_target_coords_3d(target, entities, rules, interner, terrain)
+    let Some((tx, ty, tz)) = resolve_target_coords_3d(target, entities, rules, interner, terrain)
     else {
         return false;
     };
@@ -316,13 +317,8 @@ fn resolve_target_coords_3d(
                 let world_y = i32::from(t.position.ry)
                     .wrapping_mul(256)
                     .wrapping_add(t.position.sub_y.to_num::<i32>());
-                let mut ground = terrain_ground_z_at(
-                    terrain,
-                    t.position.rx,
-                    t.position.ry,
-                    world_x,
-                    world_y,
-                )?;
+                let mut ground =
+                    terrain_ground_z_at(terrain, t.position.rx, t.position.ry, world_x, world_y)?;
                 if terrain
                     .cell(t.position.rx, t.position.ry)
                     .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
@@ -402,11 +398,7 @@ fn resolve_entity_target_coords(
 
 /// Ground Z in leptons for a cell, plus bridge deck offset if a bridge deck
 /// is present on the cell.
-fn ground_z_with_bridge_offset(
-    rx: u16,
-    ry: u16,
-    terrain: &ResolvedTerrainGrid,
-) -> Option<i64> {
+fn ground_z_with_bridge_offset(rx: u16, ry: u16, terrain: &ResolvedTerrainGrid) -> Option<i64> {
     let cell = terrain.cell(rx, ry)?;
     let world_x = i32::from(rx).wrapping_mul(256).wrapping_add(128);
     let world_y = i32::from(ry).wrapping_mul(256).wrapping_add(128);
@@ -552,6 +544,19 @@ mod tests {
     }
 
     #[test]
+    fn gsi_04_15_effective_z_prefers_exact_signed_world_coordinate() {
+        let mut entity = aircraft_at_altitude(1500);
+        entity.position.rx = 600;
+        entity.position.ry = 600;
+        entity.position.z = 9;
+        entity.position.exact_z_leptons = Some(-137);
+        entity.on_bridge = true;
+
+        let terrain = flat_terrain(1, 1);
+        assert_eq!(effective_z_leptons(&entity, &terrain), Some(-137));
+    }
+
+    #[test]
     fn is_low_flying_only_for_airborne_aircraft() {
         let ground = ground_entity_at_level(5);
         assert!(!is_low_flying(&ground));
@@ -559,7 +564,7 @@ mod tests {
         let grounded_air = aircraft_at_altitude(0);
         assert!(!is_low_flying(&grounded_air));
 
-        let low = aircraft_at_altitude(500);
+        let low = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
         assert!(is_low_flying(&low));
 
         let high = aircraft_at_altitude(1500);
@@ -568,7 +573,7 @@ mod tests {
 
     #[test]
     fn is_high_flying_inverse_threshold() {
-        let just_below = aircraft_at_altitude(999);
+        let just_below = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS - 1);
         assert!(!is_high_flying(&just_below));
 
         let at_threshold = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS);
@@ -881,8 +886,8 @@ mod tests {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let weapon = rules.weapon("GUN").expect("weapon");
         let attacker = ground_attacker(0, 0, 0, "ATKR");
-        // Aircraft at altitude 500 lep (low-flying), 4 cells away horizontally.
-        let target = aircraft_target(4, 0, 0, 500, "TGT");
+        // Aircraft one lepton below the verified high-flight split, 4 cells away.
+        let target = aircraft_target(4, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         let mut entities = EntityStore::new();
         entities.insert(target);
         let interner = test_interner();
@@ -908,7 +913,7 @@ mod tests {
     fn gsi_04_03b_low_flight_snap_uses_exact_target_subcell() {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let interner = test_interner();
-        let mut target = aircraft_target(4, 0, 0, 500, "TGT");
+        let mut target = aircraft_target(4, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         target.position.sub_x = SimFixed::from_num(3);
         target.position.sub_y = SIM_ZERO;
         let mut entities = EntityStore::new();
@@ -931,7 +936,7 @@ mod tests {
     fn gsi_04_03b_low_flight_bridge_snap_requires_structural_flag() {
         let rules = rules_with_weapon("Damage=1\nROF=20\nRange=4\nWarhead=WH", "", "");
         let interner = test_interner();
-        let target = aircraft_target(0, 0, 0, 500, "TGT");
+        let target = aircraft_target(0, 0, 0, HIGH_FLIGHT_THRESHOLD_LEPTONS - 1, "TGT");
         let mut entities = EntityStore::new();
         entities.insert(target);
         let mut terrain = flat_terrain(1, 1);
@@ -951,8 +956,7 @@ mod tests {
             "generic or low deck state does not satisfy Cell+0x140 bit 0x100"
         );
 
-        terrain.cells[0].bridge_facts.raw_flags =
-            crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        terrain.cells[0].bridge_facts.raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
         let structural_z = resolve_target_coords_3d(
             &TargetKind::Entity(200),
             &entities,
