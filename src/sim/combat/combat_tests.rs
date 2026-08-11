@@ -5372,7 +5372,7 @@ fn two_inviso_attackers_consume_consecutive_draws_in_live_order() {
 
 fn emit_helper_test_warhead(animlist: &[&str]) -> crate::rules::warhead_type::WarheadType {
     let animlist_csv = animlist.join(",");
-    let ini_text = format!("[WH]\nAnimList={}\n", animlist_csv);
+    let ini_text = format!("[WH]\nFixtureOnly=1\nAnimList={}\n", animlist_csv);
     let ini = IniFile::from_str(&ini_text);
     let section = ini.section("WH").expect("section parses");
     crate::rules::warhead_type::WarheadType::from_ini_section("WH", section)
@@ -5858,6 +5858,7 @@ fn gsi_04_07_damage_periodic_radiation_enters_direct_receiver_once() {
 fn gsi_04_07_damage_hostile_building_hit_latches_was_attacked_for_ai_repair() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[General]\n\
+         FixtureOnly=1\n\
          [AI]\nCreditReserve=100\n\
          [IQ]\nMaxIQLevels=5\nRepairSell=2\nSellBack=2\n\
          [AudioVisual]\nConditionYellow=50%\nConditionRed=25%\n\

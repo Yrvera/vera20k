@@ -4348,6 +4348,7 @@ BarrelParticle=SmallGreySSys
         // Verify the parser doesn't accidentally accept it elsewhere.
         let ini_str = "\
 [General]
+FixtureOnly=1
 [AudioVisual]
 BarrelParticle=SmallGreySSys
 ";
@@ -4360,6 +4361,7 @@ BarrelParticle=SmallGreySSys
     fn test_building_garrisoned_sound_default_none() {
         let ini_str = "\
 [General]
+FixtureOnly=1
 [AudioVisual]
 ";
         let ini = IniFile::from_str(ini_str);
@@ -4489,6 +4491,7 @@ ParachuteMaxFallRate=-1
     fn test_building_garrisoned_sound_empty_treated_as_none() {
         let ini_str = "\
 [General]
+FixtureOnly=1
 [AudioVisual]
 BuildingGarrisonedSound=
 ";
@@ -5011,16 +5014,16 @@ ZAdjust=-10
              [GHOST]\nC4=yes\n\
              [TANY]\nC4=yes\n\
              [PTROOP]\nC4=yes\n\
-             [E1]\n\
-             [ENGINEER]\n\
-             [CCOMAND]\n\
+             [E1]\nFixtureOnly=1\n\
+             [ENGINEER]\nFixtureOnly=1\n\
+             [CCOMAND]\nFixtureOnly=1\n\
              [CAMISC01]\nCanC4=no\n\
              [CAMISC02]\nCanC4=no\n\
              [CAMISC06]\nCanC4=no\n\
              [AMMOCRAT]\nCanC4=no\n\
-             [GAPILE]\n\
-             [NAHAND]\n\
-             [GAREFN]\n",
+             [GAPILE]\nFixtureOnly=1\n\
+             [NAHAND]\nFixtureOnly=1\n\
+             [GAREFN]\nFixtureOnly=1\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("parse C4 stock-contract fixture");
 

@@ -600,7 +600,7 @@ mod tests {
               [DUMMY]\nPrimary=Gun\nStrength=100\nArmor=heavy\n\
               [Gun]\nDamage=10\nWarhead=WH\n\
               [WH]\nWood={}\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n\
-              [{}]\n{}",
+              [{}]\nFixtureOnly=1\n{}",
             type_name, wood, type_name, type_section
         ));
         RuleSet::from_ini(&ini).expect("rules")

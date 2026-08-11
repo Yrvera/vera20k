@@ -49,7 +49,7 @@ fn gsi_04_07_wall_sell_rules(
     with_sound: bool,
 ) -> (RuleSet, crate::map::overlay_types::OverlayTypeRegistry) {
     let ini = IniFile::from_str(&format!(
-        "[General]\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+        "[General]\nFixtureOnly=1\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
          [BuildingTypes]\n0=FIRSTWALL\n1=SECONDWALL\n\
          [OverlayTypes]\n0=DUMMY0\n1=DUMMY1\n2=GAWALL\n\
          [FIRSTWALL]\nWall=yes\nCost=100\nUnsellable={}\nClickRepairable=no\n\

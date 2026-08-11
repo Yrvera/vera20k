@@ -2045,7 +2045,7 @@ mod tests {
     fn gsi_04_07_wall_sell_sound_is_global_only_for_local_receiver() {
         let rules =
             crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
-                "[General]\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+                "[General]\nFixtureOnly=1\n[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
                  [AudioVisual]\nSellSound=SellBuilding\n",
             ))
             .unwrap();

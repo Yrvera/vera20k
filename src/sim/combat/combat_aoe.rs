@@ -3158,7 +3158,7 @@ mod tests {
     #[test]
     fn gsi_04_07_damage_prone_raw_scaling_precedes_area_receiver_pipeline() {
         let ini = IniFile::from_str(
-            "[General]\n\
+            "[General]\nFixtureOnly=1\n\
              [Normal]\nArmor=1.0\n\
              [Easy]\nArmor=1.2\n\
              [InfantryTypes]\n0=E1\n\

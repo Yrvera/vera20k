@@ -501,7 +501,7 @@ mod tests {
         let rules = RuleSet::from_ini(&IniFile::from_str(
             "[VehicleTypes]\n1=Vehicle\n\
              [BuildingTypes]\n1=Deployable\n2=Solid\n3=Fence\n\
-             [Vehicle]\n\
+             [Vehicle]\nFixtureOnly=1\n\
              [Deployable]\nUndeploysInto=Vehicle\nFoundation=1x1\n\
              [Solid]\nFoundation=2x2\n\
              [Fence]\nLaserFence=yes\nFoundation=1x1\n",

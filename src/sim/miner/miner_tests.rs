@@ -2098,6 +2098,7 @@ fn stock_dock_exit_does_not_emit_refinery_exit_sfx() {
          [BuildingTypes]\n\
          0=GAREFN\n\
          [General]\n\
+         FixtureOnly=1\n\
          [AudioVisual]\n\
          BunkerWallsDownSound=TankBunkerDown\n\
          [HARV]\n\
@@ -2161,6 +2162,7 @@ fn stock_dock_exit_does_not_emit_refinery_exit_sfx() {
 fn miner_rules_fallback_only() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\n\
+         FixtureOnly=1\n\
          [AudioVisual]\n\
          ChronoInSound=FALLBACKIN\n\
          ChronoOutSound=FALLBACKOUT\n\
@@ -2221,6 +2223,7 @@ fn mission_base_frames_reads_rate_table_stock_identical() {
 
     let ini = IniFile::from_str(
         "[General]\n\
+         FixtureOnly=1\n\
          [AudioVisual]\n\
          ChronoInSound=FALLBACKIN\n\
          ChronoOutSound=FALLBACKOUT\n\

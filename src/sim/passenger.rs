@@ -1267,6 +1267,7 @@ MultiplayPassive=true
 MultiplayPassive=true
 
 [General]
+FixtureOnly=1
 [AudioVisual]
 BuildingGarrisonedSound=BuildingGarrisoned
 ConditionRed=25%
@@ -1302,6 +1303,7 @@ SizeLimit=2
 OpenTopped=yes
 
 [General]
+FixtureOnly=1
 [AudioVisual]
 ConditionRed=25%
 ConditionYellow=50%
@@ -2324,6 +2326,7 @@ Speed=8
 Passengers=5
 
 [General]
+FixtureOnly=1
 [AudioVisual]
 ConditionRed=25%
 ConditionYellow=50%
