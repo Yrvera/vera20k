@@ -301,7 +301,7 @@ pub(crate) fn build_bridge_shadow_instances(
 }
 
 /// Build sprite instances for the bridge railing pass (RE doc §3.4.1, Step 7).
-/// Drawn AFTER unit/ground merge AND AFTER cliff redraw, BEFORE debug — see
+/// Drawn after the unit/ground merge and before debug — see
 /// `draw_passes.rs` ordering. Skips cells where the railing-table entry is
 /// `None` (`shp_frame_1based == 0` means no railing for this table slot).
 pub(crate) fn build_bridge_railing_instances(
