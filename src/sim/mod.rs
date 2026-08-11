@@ -22,6 +22,7 @@
 
 // --- Core types: entity storage, components, commands, RNG, interning ---
 pub mod anim_class;
+pub mod capture_manager;
 pub mod command;
 pub mod components;
 pub mod crates; // scenario-start crate placement (Post_Map_Init step 3)
