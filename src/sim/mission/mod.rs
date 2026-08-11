@@ -384,7 +384,10 @@ mod tests {
         assert_eq!(MissionType::from_map_name("   "), None);
         // "None" is this project's spelling of the sentinel, not a table name.
         assert_eq!(MissionType::from_map_name("None"), None);
-        assert_eq!(MissionType::from_map_name("Sleep"), Some(MissionType::Sleep));
+        assert_eq!(
+            MissionType::from_map_name("Sleep"),
+            Some(MissionType::Sleep)
+        );
     }
 
     #[test]
