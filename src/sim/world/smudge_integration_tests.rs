@@ -186,3 +186,28 @@ fn smudge_grid_survives_snapshot_roundtrip() {
         "original and restored sim must reach identical state after 25 more ticks",
     );
 }
+
+#[test]
+fn gsi_04_11_smudge_dirty_flush_publishes_tactical_then_radar_per_cell() {
+    let mut sim = Simulation::with_seed(3);
+    let mut grid = SmudgeGrid::new(8, 8);
+    for (rx, ry) in [(3, 4), (4, 4), (3, 5), (4, 5)] {
+        grid.test_force_set(
+            rx,
+            ry,
+            SmudgeCell {
+                type_id: Some(1),
+                footprint_origin: Some((3, 4)),
+                frame_offset: ((rx - 3) + (ry - 4) * 2) as u8,
+            },
+        );
+    }
+    sim.smudge_grid = Some(grid);
+    sim.flush_smudge_dirty();
+
+    let expected = vec![(3, 4), (4, 4), (3, 5), (4, 5)];
+    assert_eq!(sim.tactical_dirty_cells, expected);
+    assert_eq!(sim.radar_terrain_dirty_cells, expected);
+    assert_eq!(sim.radar_terrain_dirty_generation, 4);
+    assert!(sim.smudge_grid.as_mut().unwrap().drain_dirty().is_empty());
+}

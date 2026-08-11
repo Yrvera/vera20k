@@ -88,6 +88,35 @@ impl SmudgeGrid {
         std::mem::take(&mut self.dirty_cells)
     }
 
+    /// Clear every complete smudge footprint touched by the supplied cells.
+    /// Intersections are visited in caller order; each owning footprint is
+    /// erased immediately in row-major cell order, so a later intersection
+    /// with that same footprint observes an empty cell and emits no duplicate.
+    pub(crate) fn clear_intersecting_footprints(&mut self, intersections: &[(u16, u16)]) -> usize {
+        let mut cleared = 0;
+        for &(rx, ry) in intersections {
+            let Some(origin) = self
+                .index_of(rx, ry)
+                .and_then(|index| self.cells[index].footprint_origin)
+            else {
+                continue;
+            };
+            for index in 0..self.cells.len() {
+                if self.cells[index].type_id.is_none()
+                    || self.cells[index].footprint_origin != Some(origin)
+                {
+                    continue;
+                }
+                self.cells[index] = SmudgeCell::default();
+                let cell_rx = (index % usize::from(self.width)) as u16;
+                let cell_ry = (index / usize::from(self.width)) as u16;
+                self.dirty_cells.push((cell_rx, cell_ry));
+                cleared += 1;
+            }
+        }
+        cleared
+    }
+
     pub fn iter_occupied(&self) -> impl Iterator<Item = (u16, u16, &SmudgeCell)> {
         self.cells.iter().enumerate().filter_map(move |(idx, c)| {
             if c.type_id.is_some() {
@@ -147,8 +176,8 @@ impl SmudgeGrid {
             }
             grid.write_footprint(entry.rx, entry.ry, type_id, def.width, def.height);
         }
-        // Map-load doesn't dirty render; clear the queue.
-        grid.dirty_cells.clear();
+        // Keep native construction invalidation visible; app initialization
+        // publishes this queue synchronously after installing the grid.
         grid
     }
 }
@@ -281,6 +310,9 @@ impl SmudgeGrid {
     ) -> bool {
         let rx: u16 = (coord.x >> 8).clamp(0, self.width as i32 - 1) as u16;
         let ry: u16 = (coord.y >> 8).clamp(0, self.height as i32 - 1) as u16;
+        if rx == 0 && ry == 0 {
+            return false;
+        }
 
         // Pass 1 — flag filter and per-candidate placement check.
         let mut placeable: Vec<u16> = Vec::new();
@@ -804,5 +836,93 @@ mod tests {
             SimRng::new(1).state(),
             "no candidate fits, so the scenario cursor must not advance"
         );
+    }
+
+    #[test]
+    fn gsi_04_11_runtime_zero_zero_sentinel_is_not_an_axis_wide_gate() {
+        let registry = registry_1x1_and_2x2_craters();
+        let terrain = make_terrain(8, 8, true);
+        let overlay = OverlayGrid::new(8, 8);
+        let occupancy = OccupancyGrid::new();
+
+        let mut origin_grid = SmudgeGrid::new(8, 8);
+        let mut origin_rng = SimRng::new(9);
+        let origin_state = origin_rng.logical_state();
+        assert!(!origin_grid.try_place(
+            SmudgeKind::Crater,
+            SimCoord {
+                x: 128,
+                y: 128,
+                z: 0,
+            },
+            100,
+            100,
+            false,
+            &registry,
+            &terrain,
+            &overlay,
+            &occupancy,
+            &mut origin_rng,
+        ));
+        assert_eq!(origin_rng.logical_state(), origin_state);
+
+        for (rx, ry) in [(0_u16, 1_u16), (1, 0)] {
+            let mut grid = SmudgeGrid::new(8, 8);
+            let mut rng = SimRng::new(9);
+            assert!(grid.try_place(
+                SmudgeKind::Crater,
+                SimCoord {
+                    x: i32::from(rx) * 256 + 128,
+                    y: i32::from(ry) * 256 + 128,
+                    z: 0,
+                },
+                100,
+                100,
+                false,
+                &registry,
+                &terrain,
+                &overlay,
+                &occupancy,
+                &mut rng,
+            ));
+            assert_ne!(rng.logical_state(), SimRng::new(9).logical_state());
+        }
+
+        let mut loaded = SmudgeGrid::from_map_entries(
+            &[MapSmudgeEntry {
+                type_name: "CR1".to_string(),
+                rx: 0,
+                ry: 0,
+            }],
+            &registry,
+            &terrain,
+            &overlay,
+            8,
+            8,
+        );
+        assert!(loaded.cell(0, 0).type_id.is_some());
+        let _ = loaded.drain_dirty();
+    }
+
+    #[test]
+    fn gsi_04_11_map_load_retains_row_major_footprint_dirties() {
+        let registry = registry_1x1_and_2x2_craters();
+        let terrain = make_terrain(8, 8, true);
+        let overlay = OverlayGrid::new(8, 8);
+        let mut loaded = SmudgeGrid::from_map_entries(
+            &[MapSmudgeEntry {
+                type_name: "CR2".to_string(),
+                rx: 2,
+                ry: 3,
+            }],
+            &registry,
+            &terrain,
+            &overlay,
+            8,
+            8,
+        );
+
+        assert_eq!(loaded.drain_dirty(), vec![(2, 3), (3, 3), (2, 4), (3, 4)]);
+        assert!(loaded.drain_dirty().is_empty());
     }
 }
