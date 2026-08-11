@@ -11,7 +11,7 @@
 //! ## Dependency rules
 //! - util/ has NO dependencies on other game modules.
 
-use crate::util::fixed_math::{SimFixed, SIM_ZERO};
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -124,10 +124,9 @@ pub const WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS: i64 = -512;
 /// snapped to ground for range checks); at or above, they're high-flying
 /// (AirRangeBonus may apply).
 ///
-/// Placeholder pending runtime confirmation: chosen so cruise altitude
-/// (~1500 lep) classifies as high-flying and dive altitude (~500 lep)
-/// classifies as low-flying.
-pub const HIGH_FLIGHT_THRESHOLD_LEPTONS: i64 = 1000;
+/// The native ObjectClass predicate compares height against twice the
+/// independently initialized 104-lepton flight-level scalar.
+pub const HIGH_FLIGHT_THRESHOLD_LEPTONS: i64 = 2 * LEPTONS_PER_LEVEL;
 
 /// Range/LOS cell-to-deck delta. Kept separate from entity OnBridge coordinate
 /// selection even though both active retail values are 416 leptons.
@@ -168,8 +167,8 @@ const GROUND_SLOPE_RECORDS: [(i32, i32, i32, i32, i32); 21] = [
 /// Native CellClass ground-Z calculation using the signed level byte and the
 /// exact 21-entry slope coefficient table.
 ///
-/// Residuals kept outside this pure evaluator: TMP `+0x28` lifecycle state and
-/// CellClass `+0x11D` HeightInPixels remain unmodelled sim fields.
+/// Residual kept outside this pure evaluator: the conditional placed-TMP
+/// lifecycle that applies per-subtile `+0x28` to CellClass Level.
 pub fn ground_height_leptons(
     level_byte: u8,
     slope: u8,
@@ -302,8 +301,8 @@ mod tests {
     #[test]
     fn gsi_04_03b_ground_height_matches_all_verified_slope_records() {
         let expected = [
-            208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312,
-            260, 260, 260, 260, 260,
+            208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312, 260,
+            260, 260, 260, 260,
         ];
         for (slope, expected) in expected.into_iter().enumerate() {
             assert_eq!(
