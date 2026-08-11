@@ -3565,7 +3565,7 @@ CellSpread=0
         );
 
         let src = format!(
-            "{}\n[Countries]\n0=Americans\n1=Russia\n[Americans]\nIncomeMult=1.2\n[Russia]\n",
+            "{}\n[Countries]\n0=Americans\n1=Russia\n[Americans]\nIncomeMult=1.2\n[Russia]\nFixtureOnly=1\n",
             make_test_rules()
         );
         let ini = IniFile::from_str(&src);
@@ -3754,7 +3754,9 @@ MutateWarhead=MyMutate\n\
     fn parse_rules_rocking_coefficients_defaults() {
         // [General] must be present, otherwise GeneralRules::from_ini bails to
         // Self::default(). Missing AudioVisual keys then fall back to defaults.
-        let ini = IniFile::from_str("[General]\n[AudioVisual]\n");
+        let ini = IniFile::from_str(
+            "[General]\nFixtureOnly=1\n[AudioVisual]\nFixtureOnly=1\n",
+        );
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
         assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
@@ -3764,11 +3766,13 @@ MutateWarhead=MyMutate\n\
     fn parse_spark_gravity_preserves_signed_integer_storage() {
         assert_eq!(GeneralRules::default().gravity, 3);
         // Gravity lives in [AudioVisual] (stock rulesmd.ini), NOT [General].
-        let stock =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=6\n"));
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nGravity=6\n",
+        ));
         assert_eq!(stock.gravity, 6);
-        let signed =
-            GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\nGravity=-7\n"));
+        let signed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nGravity=-7\n",
+        ));
         assert_eq!(signed.gravity, -7);
         // A [General] Gravity is ignored (the engine reads it in ReadAudioVisual).
         let misplaced = GeneralRules::from_ini(&IniFile::from_str("[General]\nGravity=9\n"));
@@ -3779,17 +3783,19 @@ MutateWarhead=MyMutate\n\
     fn item82_scroll_multiplier_parses_from_audio_visual_with_stock_default() {
         assert_eq!(GeneralRules::default().scroll_multiplier, 0.07);
         let parsed = GeneralRules::from_ini(&IniFile::from_str(
-            "[General]\n[AudioVisual]\nScrollMultiplier=.125\n",
+            "[General]\nFlightLevel=500\n[AudioVisual]\nScrollMultiplier=.125\n",
         ));
         assert_eq!(parsed.scroll_multiplier, 0.125);
-        let absent = GeneralRules::from_ini(&IniFile::from_str("[General]\n[AudioVisual]\n"));
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
         assert_eq!(absent.scroll_multiplier, 0.07);
     }
 
     #[test]
     fn parse_rules_rocking_coefficients_explicit() {
         let ini = IniFile::from_str(
-            "[General]\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
+            "[General]\nFlightLevel=500\n[AudioVisual]\nDirectRockingCoefficient=2.0\nFallBackCoefficient=0.05\n",
         );
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("2"));
@@ -3988,7 +3994,8 @@ MutateWarhead=MyMutate\n\
              [VehicleTypes]\n\
              [AircraftTypes]\n\
              [BuildingTypes]\n\
-             [General]\n",
+             [General]\n\
+             FixtureOnly=1\n",
         );
         let rules = RuleSet::from_ini(&ini).expect("Should parse");
         assert_eq!(rules.general.tiberium_short_scan, 6);
@@ -4150,6 +4157,7 @@ MutateWarhead=MyMutate\n\
     fn test_building_garrisoned_sound_parsed() {
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 BuildingGarrisonedSound=BuildingGarrisoned
 ";
@@ -4165,6 +4173,7 @@ BuildingGarrisonedSound=BuildingGarrisoned
     fn test_chute_sound_parsed() {
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 ChuteSound=CustomDrop
 ";
@@ -4177,6 +4186,7 @@ ChuteSound=CustomDrop
     fn test_stock_chute_sound_parsed() {
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 ChuteSound=ParachuteDrop
 ";
@@ -4190,6 +4200,7 @@ ChuteSound=ParachuteDrop
         // Stock ships both keys under [AudioVisual] with value ChronoMinerTeleport.
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 ChronoInSound=ChronoMinerTeleport
 ChronoOutSound=ChronoMinerTeleport
@@ -4213,6 +4224,7 @@ ChronoOutSound=ChronoMinerTeleport
         // hardcoded default. [General] present so from_ini does not early-return.
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 ";
         let ini = IniFile::from_str(ini_str);
@@ -4255,6 +4267,7 @@ ChronoOutSound=ChronoMinerTeleport
     fn test_gui_main_button_sound_parsed() {
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 GUIMainButtonSound=MenuClick
 ";
@@ -4267,6 +4280,7 @@ GUIMainButtonSound=MenuClick
     fn shell_ui_sound_keys_parse_independently() {
         let ini_str = "\
 [General]
+FlightLevel=500
 [AudioVisual]
 GUIMainButtonSound=MainButtonClick
 GenericClick=GenericPress
@@ -4289,7 +4303,7 @@ GUIComboCloseSound=ComboClose
     #[test]
     fn shell_ui_sound_keys_trim_and_ignore_empty_values() {
         let ini_str = concat!(
-            "[General]\n",
+            "[General]\nFixtureOnly=1\n",
             "[AudioVisual]\n",
             "ChuteSound=  ParachuteDrop  \n",
             "GenericClick=  MenuClick  \n",
@@ -4322,7 +4336,7 @@ BarrelParticle=SmallGreySSys
 
     #[test]
     fn barrel_particle_default_none() {
-        let ini_str = "[General]\n";
+        let ini_str = "[General]\nFixtureOnly=1\n";
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.barrel_particle.is_none());
@@ -4357,6 +4371,7 @@ BarrelParticle=SmallGreySSys
     fn test_chute_sound_empty_treated_as_none() {
         let ini_str = "\
 [General]
+FixtureOnly=1
 [AudioVisual]
 ChuteSound=
 ";
@@ -4370,20 +4385,22 @@ ChuteSound=
         // PlayerScatter is a [CombatDamage] key and Scatter an [IQ] key; neither
         // lives in [General], so a [General]-only file must fall back to the
         // RulesClass constructor values (no / 3).
-        let ini = IniFile::from_str("[General]\n");
+        let ini = IniFile::from_str("[General]\nFixtureOnly=1\n");
         let general = GeneralRules::from_ini(&ini);
         assert!(!general.player_scatter);
         assert_eq!(general.iq_scatter, 3);
 
         // Stock values.
-        let ini =
-            IniFile::from_str("[General]\n[CombatDamage]\nPlayerScatter=no\n[IQ]\nScatter=2\n");
+        let ini = IniFile::from_str(
+            "[General]\nFlightLevel=500\n[CombatDamage]\nPlayerScatter=no\n[IQ]\nScatter=2\n",
+        );
         let general = GeneralRules::from_ini(&ini);
         assert!(!general.player_scatter);
         assert_eq!(general.iq_scatter, 2);
 
-        let ini =
-            IniFile::from_str("[General]\n[CombatDamage]\nPlayerScatter=yes\n[IQ]\nScatter=4\n");
+        let ini = IniFile::from_str(
+            "[General]\nFlightLevel=500\n[CombatDamage]\nPlayerScatter=yes\n[IQ]\nScatter=4\n",
+        );
         let general = GeneralRules::from_ini(&ini);
         assert!(general.player_scatter);
         assert_eq!(general.iq_scatter, 4);
@@ -4398,7 +4415,7 @@ ChuteSound=
 
     #[test]
     fn base_unit_types_default_to_stock_yr() {
-        let ini = IniFile::from_str("[General]\n");
+        let ini = IniFile::from_str("[General]\nFixtureOnly=1\n");
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.base_unit_types, vec!["AMCV", "SMCV", "PCV"]);
     }
@@ -4416,7 +4433,7 @@ ParachuteMaxFallRate=-3
 
     #[test]
     fn test_parachute_max_fall_rate_default_when_missing() {
-        let ini_str = "[General]\n";
+        let ini_str = "[General]\nFixtureOnly=1\n";
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(
@@ -4439,7 +4456,7 @@ ParachuteMaxFallRate=-1
 
     #[test]
     fn test_missile_rot_var_missing_key_falls_back_to_one() {
-        let ini = IniFile::from_str("[General]\n");
+        let ini = IniFile::from_str("[General]\nFixtureOnly=1\n");
         let general = GeneralRules::from_ini(&ini);
         assert_eq!(general.missile_rot_var, sim_from_f32(1.0));
     }

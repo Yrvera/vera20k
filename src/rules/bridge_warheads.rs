@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn missing_keys_fall_back_to_defaults() {
-        let ini = IniFile::from_str("[CombatDamage]\n");
+        let ini = IniFile::from_str("[CombatDamage]\nFixtureOnly=1\n");
         let section = ini.section("CombatDamage").unwrap();
         let bw = BridgeWarheads::from_ini_section(section);
         assert_eq!(bw.ion_cannon_name, "IonCannonWH");

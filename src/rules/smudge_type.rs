@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn defaults_apply() {
-        let ini = parse_ini("[SmudgeTypes]\n1=X\n[X]\n");
+        let ini = parse_ini("[SmudgeTypes]\n1=X\n[X]\nFixtureOnly=1\n");
         let reg = SmudgeTypeRegistry::from_rules_ini(&ini);
         let x = reg.get(0).unwrap();
         assert!(!x.crater);

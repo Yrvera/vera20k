@@ -720,7 +720,7 @@ mod tests {
 
         let non_harvester = ObjectType::from_ini_section(
             "E1",
-            &crate::rules::ini_parser::IniFile::from_str("[E1]\n")
+            &crate::rules::ini_parser::IniFile::from_str("[E1]\nFixtureOnly=1\n")
                 .section("E1")
                 .expect("section"),
             crate::rules::object_type::ObjectCategory::Infantry,

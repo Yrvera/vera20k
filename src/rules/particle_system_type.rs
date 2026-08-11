@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn defaults_match_binary_constructor() {
-        let ini = IniFile::from_str("[Foo]\n");
+        let ini = IniFile::from_str("[Foo]\nFixtureOnly=1\n");
         let section = ini.section("Foo").unwrap();
         let pst = ParticleSystemType::from_ini_section("Foo", section);
 

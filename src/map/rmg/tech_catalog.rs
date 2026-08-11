@@ -101,7 +101,7 @@ mod tests {
     fn absent_section_or_key_yields_an_empty_catalog() {
         let art = IniFile::from_str("[CAOILD]\nFoundation=2x2\n");
         assert!(resolve(&IniFile::from_str(""), &art).is_empty());
-        assert!(resolve(&IniFile::from_str("[AI]\n"), &art).is_empty());
+        assert!(resolve(&IniFile::from_str("[AI]\nFixtureOnly=1\n"), &art).is_empty());
     }
 
     #[test]

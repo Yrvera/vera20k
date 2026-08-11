@@ -1355,7 +1355,7 @@ mod tests {
              [WAKELIKE]\n\
              Translucent=yes\n\
              End=10\n\
-             [PLAIN]\n",
+             [PLAIN]\nFixtureOnly=1\n",
         );
         let reg = ArtRegistry::from_ini(&ini);
 

@@ -42,6 +42,32 @@ fn empty_section_name_is_retained() {
 }
 
 #[test]
+fn entryless_physical_sections_are_discarded() {
+    let ini = IniFile::from_str(
+        "[HeaderOnly]\n[CommentOnly]\n; no accepted entries\n\
+         [EmptyValueOnly]\nKey=\n[Kept]\nKey=Value\n",
+    );
+
+    assert!(ini.section("HeaderOnly").is_none());
+    assert!(ini.section("CommentOnly").is_none());
+    assert!(ini.section("EmptyValueOnly").is_none());
+    assert_eq!(ini.section_names(), vec!["Kept"]);
+}
+
+#[test]
+fn retail_parabomb_empty_body_does_not_hide_later_definition() {
+    // ARTMD has an entryless PARABOMB occurrence before this populated body.
+    let ini = IniFile::from_str(
+        "[PARABOMB]\n\n[PARABOMB]\nRate=200\nLoopStart=7\nLoopCount=15\n",
+    );
+
+    let parabomb = ini.section("PARABOMB").expect("populated PARABOMB body");
+    assert_eq!(parabomb.get("Rate"), Some("200"));
+    assert_eq!(parabomb.get("LoopStart"), Some("7"));
+    assert_eq!(parabomb.get("LoopCount"), Some("15"));
+}
+
+#[test]
 fn malformed_header_falls_through_to_key_value_parsing() {
     let ini = IniFile::from_str("[S]\n[foo=bar\n");
 
@@ -146,7 +172,7 @@ fn test_get_list() {
 }
 
 #[test]
-fn test_duplicate_sections_are_retained_and_first_body_wins_lookup() {
+fn duplicate_nonempty_section_bodies_are_retained_in_source_order() {
     let text: &str = "\
 [General]
 Key1=First
@@ -160,15 +186,13 @@ Key3=New
 
     assert_eq!(ini.section_count(), 2);
 
-    let section: &IniSection = ini.section("General").unwrap();
-    assert_eq!(section.get("Key1"), Some("First"));
-    assert_eq!(section.get("Key2"), Some("Original"));
-    assert_eq!(section.get("Key3"), None);
     assert_eq!(ini.section_names(), vec!["General", "General"]);
+    assert_eq!(ini.sections[0].get("Key1"), Some("First"));
+    assert_eq!(ini.sections[1].get("Key3"), Some("New"));
 }
 
 #[test]
-fn duplicate_key_in_fresh_section_keeps_first_definition() {
+fn duplicate_key_compatibility_lookup_keeps_first_definition() {
     let ini = IniFile::from_str("[General]\nBuildSpeed=.7\nBuildSpeed=.58\n");
     assert_eq!(
         ini.section("General").unwrap().get("BuildSpeed"),
@@ -188,7 +212,8 @@ fn semicolon_truncates_before_equals_and_empty_entries_are_omitted() {
 
 #[test]
 fn test_section_names_order() {
-    let ini: IniFile = IniFile::from_str("[Zebra]\n[Alpha]\n[Middle]\n");
+    let ini: IniFile =
+        IniFile::from_str("[Zebra]\nKey=Z\n[Alpha]\nKey=A\n[Middle]\nKey=M\n");
 
     let names: Vec<&str> = ini.section_names();
     assert_eq!(names, vec!["Zebra", "Alpha", "Middle"]);
@@ -344,6 +369,20 @@ fn process_rules_passes(root: &str, later: &str) -> ProcessedRulesLayers {
     let mut layers = RulesLayerStack::new(IniFile::from_str(root));
     layers.push(RulesLayerKind::Scenario, IniFile::from_str(later));
     layers.process()
+}
+
+#[test]
+fn later_malformed_weapon_bool_preserves_current_field_default() {
+    use crate::rules::weapon_type::WeaponType;
+
+    let processed = process_rules_passes(
+        "[VehicleTypes]\n0=TANK\n[TANK]\nPrimary=Gun\n[Gun]\nRevealOnFire=yes\n",
+        "[Gun]\nRevealOnFire=maybe\n",
+    );
+    let section = processed.ini().section("Gun").expect("allocated Gun body");
+
+    assert_eq!(section.get("RevealOnFire"), Some("maybe"));
+    assert!(WeaponType::from_ini_section("Gun", section).reveal_on_fire);
 }
 
 #[test]

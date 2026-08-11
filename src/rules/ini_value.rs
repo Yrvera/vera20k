@@ -20,43 +20,32 @@ use crate::rules::ini_parser::IniSection;
 const STRTRIM_MAX: u8 = 0x20;
 
 impl IniSection {
+    fn fold_rules_values<T: Copy>(
+        &self,
+        key: &str,
+        default: T,
+        mut apply: impl FnMut(T, &str) -> T,
+    ) -> T {
+        if let Some(values) = self.projected_values(key) {
+            values
+                .iter()
+                .fold(default, |current, raw| apply(current, raw))
+        } else {
+            self.get(key).map_or(default, |raw| apply(default, raw))
+        }
+    }
+
     /// ReadInt (P1–P4, P18): `$xx`/`xxh` (case-insensitive `h`) hex, else C-atoi
     /// leniency. Default ONLY on absent key. Present-but-nonnumeric -> atoi (0).
     pub fn read_int(&self, key: &str, default: i32) -> i32 {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                // strtrim ≤0x20 both ends (P5), matching the value gamemd parses.
-                let v = strtrim_ascii(raw);
-                if let Some(rest) = v.strip_prefix('$') {
-                    // "$%x": parse hex; junk after digits stops the C scan -> take
-                    // the leading hex run (sscanf "$%x" stops at first non-hex).
-                    parse_leading_hex(rest).unwrap_or(default)
-                } else if ends_with_h(v) {
-                    // "%xh": leading hex run, ignore the trailing 'h'/'H'.
-                    parse_leading_hex(&v[..v.len() - 1]).unwrap_or(default)
-                } else {
-                    atoi_lenient(v)
-                }
-            }
-        }
+        self.fold_rules_values(key, default, parse_read_int)
     }
 
     /// ReadBool (P6, P18): `toupper(first char)` in {'1','T','Y'}=true,
     /// {'0','F','N'}=false, else default. `on`/`off` (first char 'o') -> default.
     /// Present-empty (no first char) -> default.
     pub fn read_bool(&self, key: &str, default: bool) -> bool {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let v = strtrim_ascii(raw);
-                match v.bytes().next().map(|b| b.to_ascii_uppercase()) {
-                    Some(b'1') | Some(b'T') | Some(b'Y') => true,
-                    Some(b'0') | Some(b'F') | Some(b'N') => false,
-                    _ => default, // present-empty or any other first char
-                }
-            }
-        }
+        self.fold_rules_values(key, default, parse_read_bool)
     }
 
     /// ReadDouble (P7): sscanf "%f" (leading float, single-precision) widened to
@@ -67,19 +56,7 @@ impl IniSection {
     /// 32-bit ABI argument bits on failed `%f`, while Rust deterministically
     /// returns zero rather than importing that non-portable accident.
     pub fn read_double(&self, key: &str, default: f64) -> f64 {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let v = strtrim_ascii(raw);
-                let leading: f32 = parse_leading_f32(v); // f32 first (mantissa narrow)
-                let widened: f64 = leading as f64;
-                if v.as_bytes().contains(&b'%') {
-                    widened * 0.01_f64
-                } else {
-                    widened
-                }
-            }
-        }
+        self.fold_rules_values(key, default, |_current, raw| parse_read_double(raw))
     }
 
     /// ReadString (P5, P18): copy at most `capacity - 1` bytes, force the final
@@ -97,30 +74,22 @@ impl IniSection {
     /// Read3Int (P8): comma "%d,%d,%d". All-defaults on ABSENT key. Each field
     /// atoi-lenient; missing trailing fields keep the corresponding default.
     pub fn read_3int(&self, key: &str, default: [i32; 3]) -> [i32; 3] {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let mut out = default;
-                for (i, tok) in strtrim_ascii(raw).split(',').enumerate().take(3) {
-                    out[i] = atoi_lenient(strtrim_ascii(tok));
-                }
-                out
+        self.fold_rules_values(key, default, |mut current, raw| {
+            for (index, token) in strtrim_ascii(raw).split(',').enumerate().take(3) {
+                current[index] = atoi_lenient(strtrim_ascii(token));
             }
-        }
+            current
+        })
     }
 
     /// ReadMinMax (P8): comma "%d,%d". All-defaults on ABSENT key.
     pub fn read_minmax(&self, key: &str, default: [i32; 2]) -> [i32; 2] {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let mut out = default;
-                for (i, tok) in strtrim_ascii(raw).split(',').enumerate().take(2) {
-                    out[i] = atoi_lenient(strtrim_ascii(tok));
-                }
-                out
+        self.fold_rules_values(key, default, |mut current, raw| {
+            for (index, token) in strtrim_ascii(raw).split(',').enumerate().take(2) {
+                current[index] = atoi_lenient(strtrim_ascii(token));
             }
-        }
+            current
+        })
     }
 
     /// ReadPoint/ReadSize (P9, COMMA): "%d,%d". All-defaults on ABSENT key.
@@ -132,16 +101,14 @@ impl IniSection {
     /// ReadRect (P9, COMMA): "%d,%d,%d,%d". gamemd seeds "0,0,0,0" so missing
     /// fields keep the default component; all-defaults on ABSENT key.
     pub fn read_rect(&self, key: &str, default: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let mut out = [default.0, default.1, default.2, default.3];
-                for (i, tok) in strtrim_ascii(raw).split(',').enumerate().take(4) {
-                    out[i] = atoi_lenient(strtrim_ascii(tok));
-                }
-                (out[0], out[1], out[2], out[3])
+        let current = [default.0, default.1, default.2, default.3];
+        let out = self.fold_rules_values(key, current, |mut current, raw| {
+            for (index, token) in strtrim_ascii(raw).split(',').enumerate().take(4) {
+                current[index] = atoi_lenient(strtrim_ascii(token));
             }
-        }
+            current
+        });
+        (out[0], out[1], out[2], out[3])
     }
 
     /// ReadColorRGB (P21): COMMA "%d,%d,%d" -> [u8;3]. Per-component plain %d
@@ -154,33 +121,34 @@ impl IniSection {
     /// triplet components (plan-review C-R3). The `$`/`h` hex lives in `read_int`,
     /// NOT in `atoi_lenient`, so reusing it here stays faithful to `%d`.
     pub fn read_color_rgb(&self, key: &str, default: [u8; 3]) -> [u8; 3] {
-        match self.get(key) {
-            None => default,
-            Some(raw) => {
-                let mut out = default;
-                for (i, tok) in strtrim_ascii(raw).split(',').enumerate().take(3) {
-                    out[i] = atoi_lenient(strtrim_ascii(tok)) as u8;
-                }
-                out
+        self.fold_rules_values(key, default, |mut current, raw| {
+            for (index, token) in strtrim_ascii(raw).split(',').enumerate().take(3) {
+                current[index] = atoi_lenient(strtrim_ascii(token)) as u8;
             }
-        }
+            current
+        })
     }
 
-    /// ReadSpeed (P19): `read_int(-1)` sentinel; -1 -> default; else clamp100,
+    /// ReadSpeed (P19): `read_int(-1)` sentinel; -1 -> default; else clamp 0..100,
     /// `(v<<8)/100` truncate-toward-zero (Rust i32 `/` truncates toward 0),
     /// clamp255. `100→255`, `50→128`, `7→17`, `0→0`. (ledger #18)
     ///
     /// NB present-empty `Speed=` -> `read_int("")` = atoi("") = 0 (NOT the -1
     /// sentinel) -> `(0<<8)/100` = 0, NOT the call-site default. Correct per
     /// P4/P18; corpus harness scans stock for present-empty Speed/Range.
+    ///
+    /// Retail provenance: INI speed conversion — `CCINIClass__ReadSpeed` @ `0x00474810`.
     pub fn read_speed(&self, key: &str, default: i32) -> i32 {
-        let raw = self.read_int(key, -1);
-        if raw == -1 {
-            return default;
-        }
-        let capped = raw.min(100);
-        let scaled = (capped << 8) / 100; // i32 / truncates toward zero (ledger #18)
-        scaled.min(255)
+        self.fold_rules_values(key, default, |current, raw| {
+            let parsed = parse_read_int(-1, raw);
+            if parsed == -1 {
+                current
+            } else {
+                let capped = parsed.clamp(0, 100);
+                let scaled = (capped << 8) / 100;
+                scaled.min(255)
+            }
+        })
     }
 
     /// ReadRange (P20): `read_double(-1.0)` sentinel; ==-1.0 -> default; else ftol
@@ -188,11 +156,51 @@ impl IniSection {
     /// on negatives, ledger #18). `f64 as i32` truncates toward zero (saturating,
     /// NaN->0), matching gamemd ftol RC=11. `5.9→5`.
     pub fn read_range(&self, key: &str, default: i32) -> i32 {
-        let raw = self.read_double(key, -1.0);
-        if raw == -1.0 {
-            return default;
-        }
-        raw as i32 // truncate toward zero (gamemd ftol RC=11)
+        self.fold_rules_values(key, default, |current, raw| {
+            let parsed = parse_read_double(raw);
+            if parsed == -1.0 {
+                current
+            } else {
+                parsed as i32
+            }
+        })
+    }
+}
+
+fn parse_read_int(default: i32, raw: &str) -> i32 {
+    parse_read_int_value(raw).unwrap_or(default)
+}
+
+pub(crate) fn parse_read_int_value(raw: &str) -> Option<i32> {
+    let value = strtrim_ascii(raw);
+    if let Some(rest) = value.strip_prefix('$') {
+        parse_leading_hex(rest)
+    } else if ends_with_h(value) {
+        parse_leading_hex(&value[..value.len() - 1])
+    } else {
+        Some(atoi_lenient(value))
+    }
+}
+
+fn parse_read_bool(default: bool, raw: &str) -> bool {
+    match strtrim_ascii(raw)
+        .bytes()
+        .next()
+        .map(|byte| byte.to_ascii_uppercase())
+    {
+        Some(b'1') | Some(b'T') | Some(b'Y') => true,
+        Some(b'0') | Some(b'F') | Some(b'N') => false,
+        _ => default,
+    }
+}
+
+fn parse_read_double(raw: &str) -> f64 {
+    let value = strtrim_ascii(raw);
+    let widened = f64::from(parse_leading_f32(value));
+    if value.as_bytes().contains(&b'%') {
+        widened * 0.01_f64
+    } else {
+        widened
     }
 }
 
@@ -462,12 +470,13 @@ mod tests {
 
     #[test] // P19
     fn test_read_speed_clamp() {
-        let ini = sec("[S]\nA=100\nB=50\nC=7\nD=0\n");
+        let ini = sec("[S]\nA=100\nB=50\nC=7\nD=0\nE=-2\n");
         let s = ini.section("S").unwrap();
         assert_eq!(s.read_speed("A", -1), 255); // (100<<8)/100=256 -> clamp 255
         assert_eq!(s.read_speed("B", -1), 128); // (50<<8)/100=128
         assert_eq!(s.read_speed("C", -1), 17); // (7<<8)/100=17 (trunc)
         assert_eq!(s.read_speed("D", -1), 0);
+        assert_eq!(s.read_speed("E", 42), 0); // negative non-sentinel clamps to zero
         assert_eq!(s.read_speed("MISSING", 42), 42); // absent -> default (sentinel -1)
     }
 

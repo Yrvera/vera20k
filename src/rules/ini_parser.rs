@@ -1,8 +1,9 @@
 //! Parser and layer composer for Westwood INI data.
 //!
 //! Active `gamemd.exe` treats raw section and key names as case-sensitive.
-//! A fresh load retains duplicate section bodies, while public name lookup
-//! resolves the first matching body. Empty keys and values are not inserted.
+//! A fresh load retains duplicate nonempty section bodies. Empty keys, values,
+//! and physical section bodies are not inserted. Arbitrary duplicate-name
+//! lookup remains a native CRC/qsort exactification residual.
 //! Rules layers are processed separately: ordinary values update live fields,
 //! while numbered type registries find-or-allocate by their value.
 
@@ -22,6 +23,11 @@ pub struct IniSection {
     entries: HashMap<String, String>,
     /// Exact keys in their first insertion order.
     key_order: Vec<String>,
+    /// Values presented by successive `RulesClass::Process` passes.
+    ///
+    /// Raw INIs leave this empty. The compatibility projection retains it so
+    /// typed readers can use the current live field as the next pass default.
+    projected_values: HashMap<String, Vec<String>>,
 }
 
 impl IniSection {
@@ -30,19 +36,32 @@ impl IniSection {
             name,
             entries: HashMap::new(),
             key_order: Vec::new(),
+            projected_values: HashMap::new(),
         }
     }
 
-    fn overlay_from(&mut self, patch: &IniSection) {
+    fn overlay_rules_pass(&mut self, patch: &IniSection) {
         for key in patch.keys() {
             if let Some(value) = patch.get(key) {
-                self.set(key, value);
+                self.set_projected(key, value);
             }
         }
     }
 
-    /// Insert during a fresh file load. Native lookup resolves the original
-    /// first exact duplicate key.
+    fn set_projected(&mut self, key: &str, value: &str) {
+        if !self.entries.contains_key(key) {
+            self.key_order.push(key.to_string());
+        }
+        self.entries.insert(key.to_string(), value.to_string());
+        self.projected_values
+            .entry(key.to_string())
+            .or_default()
+            .push(value.to_string());
+    }
+
+    /// Insert during a fresh file load. The Rust compatibility lookup keeps
+    /// the first exact duplicate; native multi-duplicate CRC/qsort selection
+    /// is intentionally outside the ordinary-retail contract.
     fn insert_initial(&mut self, key: &str, value: &str) {
         if self.entries.contains_key(key) {
             return;
@@ -58,6 +77,7 @@ impl IniSection {
             self.key_order.push(key.to_string());
         }
         self.entries.insert(key.to_string(), value.to_string());
+        self.projected_values.remove(key);
     }
 
     /// Get an exact-case key.
@@ -67,18 +87,17 @@ impl IniSection {
 
     /// Integer reader with native `$FF`, `FFh`, and C `atoi` prefix behavior.
     pub fn get_i32(&self, key: &str) -> Option<i32> {
-        let value = trim_ascii_controls(self.get(key)?);
-        if let Some(hex) = value.strip_prefix('$') {
-            return crate::rules::ini_value::parse_leading_hex(hex);
+        if let Some(values) = self.projected_values.get(key) {
+            let mut resolved = None;
+            for value in values {
+                if let Some(parsed) = crate::rules::ini_value::parse_read_int_value(value) {
+                    resolved = Some(parsed);
+                }
+            }
+            resolved
+        } else {
+            crate::rules::ini_value::parse_read_int_value(self.get(key)?)
         }
-        if value
-            .as_bytes()
-            .last()
-            .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'h'))
-        {
-            return crate::rules::ini_value::parse_leading_hex(&value[..value.len() - 1]);
-        }
-        Some(self.read_int(key, 0))
     }
 
     /// Native float read: parse as `f32`, then return that value.
@@ -108,16 +127,25 @@ impl IniSection {
     }
 
     /// Native boolean reads inspect only the first trimmed character.
+    ///
+    /// Retail provenance: current-field default — `WeaponTypeClass__ReadINI` @
+    /// `0x00772080`, calling `CCINIClass__ReadBool` @ `0x005295F0`.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        let first = trim_ascii_controls(self.get(key)?)
-            .bytes()
-            .next()?
-            .to_ascii_uppercase();
-        match first {
-            b'1' | b'T' | b'Y' => Some(true),
-            b'0' | b'F' | b'N' => Some(false),
-            _ => None,
+        let mut resolved = None;
+        if let Some(values) = self.projected_values.get(key) {
+            for value in values {
+                if let Some(parsed) = parse_bool_value(value) {
+                    resolved = Some(parsed);
+                }
+            }
+            resolved
+        } else {
+            parse_bool_value(self.get(key)?)
         }
+    }
+
+    pub(crate) fn projected_values(&self, key: &str) -> Option<&[String]> {
+        self.projected_values.get(key).map(Vec::as_slice)
     }
 
     pub fn get_list(&self, key: &str) -> Option<Vec<&str>> {
@@ -174,7 +202,8 @@ impl IniSection {
     }
 }
 
-/// Parsed INI section occurrences plus the native first-winner name index.
+/// Parsed section occurrences plus Rust's deterministic exact-name lookup index
+/// for the supported ordinary INI contract.
 #[derive(Debug, Clone)]
 pub struct IniFile {
     sections: Vec<IniSection>,
@@ -224,7 +253,21 @@ impl IniFile {
             Self::parse_line(&mut ini, &mut current_section, visible);
         }
 
+        // Retail provenance: INI lexical loading — `INIClass__LoadFromStraw` @ `0x00525A60`.
+        // Active read mode destroys a candidate section unless at least one
+        // accepted nonempty entry was linked into it.
+        ini.discard_entryless_sections();
         ini
+    }
+
+    fn discard_entryless_sections(&mut self) {
+        self.sections.retain(|section| section.entry_count() != 0);
+        self.first_section.clear();
+        for (index, section) in self.sections.iter().enumerate() {
+            self.first_section
+                .entry(section.name.clone())
+                .or_insert(index);
+        }
     }
 
     fn parse_line(ini: &mut Self, current_section: &mut Option<usize>, raw_line: &str) {
@@ -286,6 +329,26 @@ impl IniFile {
                 continue;
             }
             self.overlay_section(patch_section);
+        }
+    }
+
+    /// Build the typed-reader compatibility view for one ordered rules pass.
+    ///
+    /// Retail provenance: sequential typed defaults — `RulesClass__Process` @ `0x00668BF0`.
+    fn merge_rules_projection(&mut self, patch: &IniFile) {
+        for (patch_index, patch_section) in patch.sections.iter().enumerate() {
+            if patch.first_section.get(&patch_section.name) != Some(&patch_index) {
+                continue;
+            }
+            if let Some(index) = self.first_section.get(&patch_section.name).copied() {
+                self.sections[index].overlay_rules_pass(patch_section);
+            } else {
+                let mut section = IniSection::new(patch_section.name.clone());
+                section.overlay_rules_pass(patch_section);
+                let index = self.sections.len();
+                self.first_section.insert(section.name.clone(), index);
+                self.sections.push(section);
+            }
         }
     }
 
@@ -580,10 +643,10 @@ struct RulesPassProcessor {
 impl RulesPassProcessor {
     fn apply_pass(&mut self, pass: &IniFile) {
         if let Some(ordinary) = self.ordinary.as_mut() {
-            ordinary.merge(pass);
+            ordinary.merge_rules_projection(pass);
         } else {
             let mut ordinary = IniFile::empty();
-            ordinary.merge(pass);
+            ordinary.merge_rules_projection(pass);
             self.ordinary = Some(ordinary);
         }
         // RulesClass::Process allocates every explicit registry before the
@@ -878,7 +941,7 @@ impl RulesPassProcessor {
             };
             let canonical_name = self.tiberiums[index].canonical_name.clone();
             if let Some(section) = pass.section(&canonical_name) {
-                self.tiberiums[index].body.overlay_from(section);
+                self.tiberiums[index].body.overlay_rules_pass(section);
             }
         }
     }
@@ -889,7 +952,7 @@ impl RulesPassProcessor {
         };
         for member in members {
             if let Some(section) = pass.section(&member.canonical_name) {
-                member.body.overlay_from(section);
+                member.body.overlay_rules_pass(section);
             }
         }
     }
@@ -1125,6 +1188,18 @@ impl RulesPassProcessor {
 
 fn trim_ascii_controls(value: &str) -> &str {
     value.trim_matches(|character| u32::from(character) <= 0x20)
+}
+
+fn parse_bool_value(value: &str) -> Option<bool> {
+    match trim_ascii_controls(value)
+        .bytes()
+        .next()?
+        .to_ascii_uppercase()
+    {
+        b'1' | b'T' | b'Y' => Some(true),
+        b'0' | b'F' | b'N' => Some(false),
+        _ => None,
+    }
 }
 
 const RULE_TYPE_REGISTRIES: &[&str] = &[

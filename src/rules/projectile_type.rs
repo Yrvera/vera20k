@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_defaults() {
-        let ini: IniFile = IniFile::from_str("[Empty]\n");
+        let ini: IniFile = IniFile::from_str("[Empty]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("Empty").unwrap();
         let proj: ProjectileType = ProjectileType::from_ini_section("Empty", section, None);
 
@@ -345,7 +345,7 @@ mod tests {
         // Rotates is an art Image key. The binary stores its inverse, and this
         // field intentionally exposes that stored form.
         let ini: IniFile = IniFile::from_str(
-            "[Rules]\nRotates=yes\n[RotYesImage]\nRotates=yes\n[RotNoImage]\nRotates=no\n[NoKey]\n",
+            "[Rules]\nRotates=yes\n[RotYesImage]\nRotates=yes\n[RotNoImage]\nRotates=no\n[NoKey]\nFixtureOnly=1\n",
         );
         let rules_section = ini.section("Rules").unwrap();
 
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn parse_rocker_scale_default_one() {
-        let ini: IniFile = IniFile::from_str("[TestBullet]\n");
+        let ini: IniFile = IniFile::from_str("[TestBullet]\nFixtureOnly=1\n");
         let section = ini.section("TestBullet").unwrap();
         let p = ProjectileType::from_ini_section("TestBullet", section, None);
         assert_eq!(p.rocker_scale, I8F8::ONE);

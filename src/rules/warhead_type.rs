@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn verses_f64_defaults_to_all_full_when_absent() {
-        let ini: IniFile = IniFile::from_str("[Empty]\n");
+        let ini: IniFile = IniFile::from_str("[Empty]\nFixtureOnly=1\n");
         let wh = WarheadType::from_ini_section("Empty", ini.section("Empty").unwrap());
         // gamemd default is all-100% (1.0), NOT empty.
         assert_eq!(wh.verses_f64, [1.0; 11]);
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_warhead_defaults() {
-        let ini: IniFile = IniFile::from_str("[Empty]\n");
+        let ini: IniFile = IniFile::from_str("[Empty]\nFixtureOnly=1\n");
         let section: &IniSection = ini.section("Empty").unwrap();
         let wh: WarheadType = WarheadType::from_ini_section("Empty", section);
 
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn parse_rocker_default_false() {
-        let ini: IniFile = IniFile::from_str("[TestWH]\n");
+        let ini: IniFile = IniFile::from_str("[TestWH]\nFixtureOnly=1\n");
         let wh = WarheadType::from_ini_section("TestWH", ini.section("TestWH").unwrap());
         assert!(!wh.rocker);
         assert!(!wh.direct_rocker);
