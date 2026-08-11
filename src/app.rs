@@ -236,7 +236,8 @@ pub(crate) struct AppState {
     /// Registry of overlay types from rules.ini — needed at runtime to look up
     /// overlay_id by name when a wall is placed via production.
     pub(crate) overlay_registry: Option<OverlayTypeRegistry>,
-    /// Loaded GameConfig — None when config.toml is missing or invalid.
+    /// Loaded GameConfig — missing config.toml falls back to the executable root;
+    /// None only when config loading or executable-root discovery fails.
     /// Read at render time for cosmetic toggles (extra_animations) and other
     /// per-session user preferences. Set in AppState::new() from the existing
     /// GameConfig::load() call; not mutated afterwards.
