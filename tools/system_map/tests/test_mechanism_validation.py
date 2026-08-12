@@ -228,7 +228,7 @@ class MechanismValidationTests(unittest.TestCase):
             schema = json.loads(
                 (
                     Path(__file__).resolve().parents[3]
-                    / "system_map/schemas/mechanisms.v1.schema.json"
+                    / "docs/system-map/schemas/mechanisms.v1.schema.json"
                 ).read_text(encoding="utf-8")
             )
             schema_validator = Draft202012Validator(schema)

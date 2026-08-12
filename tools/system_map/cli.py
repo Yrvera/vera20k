@@ -13,7 +13,13 @@ from .jsonio import (
     sha256_bytes,
     validate_relative_path,
 )
-from .model import Diagnostic, REGISTRY_PATH, SOURCE_LOCK_PATH, SystemMapError
+from .model import (
+    DATA_DIR,
+    Diagnostic,
+    REGISTRY_PATH,
+    SOURCE_LOCK_PATH,
+    SystemMapError,
+)
 from .mechanism_validation import load_mechanisms
 from .registry import (
     build_registry,
@@ -57,7 +63,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     importer.add_argument(
         "--output-dir",
-        default="system_map",
+        default=DATA_DIR.as_posix(),
         help="repository-relative canonical data directory",
     )
 

@@ -158,7 +158,7 @@
                 {
                   "properties": {
                     "path": {
-                      "const": "system_map/registry.v2.json"
+                      "const": "docs/system-map/registry.v2.json"
                     }
                   }
                 }
@@ -172,7 +172,7 @@
                 {
                   "properties": {
                     "path": {
-                      "const": "system_map/source-lock.v2.json"
+                      "const": "docs/system-map/source-lock.v2.json"
                     }
                   }
                 }
@@ -186,7 +186,7 @@
                 {
                   "properties": {
                     "path": {
-                      "const": "system_map/topology.v2.json"
+                      "const": "docs/system-map/topology.v2.json"
                     }
                   }
                 }
@@ -200,7 +200,7 @@
                 {
                   "properties": {
                     "path": {
-                      "const": "system_map/mechanisms.v1.json"
+                      "const": "docs/system-map/mechanisms.v1.json"
                     }
                   }
                 }

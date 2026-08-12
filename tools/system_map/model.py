@@ -16,7 +16,7 @@ STATUS_MATRIX_PATH = Path(
     "docs/research/GAMEMD_SYSTEM_STATUS_MATRIX_SYSTEM_MODEL_SYNTHESIS.md"
 )
 CORE_SERVICES_PATH = Path("docs/research/CORE_ENGINE_SERVICES_MAP.md")
-DATA_DIR = Path("system_map")
+DATA_DIR = Path("docs/system-map")
 REGISTRY_PATH = DATA_DIR / "registry.v2.json"
 TOPOLOGY_PATH = DATA_DIR / "topology.v2.json"
 SOURCE_LOCK_PATH = DATA_DIR / "source-lock.v2.json"

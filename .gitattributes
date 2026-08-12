@@ -1,2 +1,0 @@
-# Parity records and schemas are byte-canonical and must stay LF on Windows.
-parity/**/*.json text eol=lf

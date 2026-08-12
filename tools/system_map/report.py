@@ -465,9 +465,9 @@ def render_markdown(report: dict) -> str:
     lines = [
         "# VERA20k System Map v2",
         "",
-        "> GENERATED from `system_map/registry.v2.json`, "
-        "`system_map/topology.v2.json`, and "
-        "`system_map/mechanisms.v1.json`. Do not hand-edit this output.",
+        "> GENERATED from `docs/system-map/registry.v2.json`, "
+        "`docs/system-map/topology.v2.json`, and "
+        "`docs/system-map/mechanisms.v1.json`. Do not hand-edit this output.",
         "> Baseline matrix fields are historical source statements, not current "
         "parity or completion claims.",
         "",
