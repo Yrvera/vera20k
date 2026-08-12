@@ -27,6 +27,8 @@ Thumbs.db
 /docs/research/
 !/docs/_config.yml
 !/docs/index.md
+!/docs/system-map/
+!/docs/system-map/**
 
 CLAUDE.md
 AGENTS.md

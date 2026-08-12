@@ -4,6 +4,9 @@ System Map v2 is the dependency-aware navigation graph for parity work. It
 connects the canonical GSI registry to native engine services, current Rust
 surfaces, typed relationships, and ordered player-visible production loops.
 
+Its canonical data and schemas live in `docs/system-map/`; executable tooling
+remains in `tools/system_map/`, and generated views remain under `target/`.
+
 It is **not** a completion ledger and does not certify parity.
 
 ## Sources
@@ -60,7 +63,6 @@ instead of bulk-decomposing the whole registry.
 ## Commands
 
 ```powershell
-python tools/research_index/navigate.py "power outage recovery"
 python -m tools.system_map import
 python -m tools.system_map check --require-sources
 python -m tools.system_map render --output target/system-map-v2
@@ -72,13 +74,11 @@ python -m tools.system_map owners --limit 20
 python -m tools.system_map stale
 ```
 
-The research navigator is the preferred broad entry point when both evidence
-and topology are needed. It calls the public read-only API in
-`tools/system_map/api.py`, preserves System Map as an independent truth domain,
-and labels natural-language matches as candidates. Use the standalone commands
-for detailed inspection and topology maintenance. Git probes used by validation
-and freshness are non-interactive and time-bounded so MCP stdio sessions cannot
-inherit a prompt or hang indefinitely.
+Use the standalone commands for inspection and topology maintenance. The public
+read-only API in `tools/system_map/api.py` remains available to future repository
+tools without coupling the canonical map to a particular navigator. Git probes
+used by validation and freshness are non-interactive and time-bounded so callers
+cannot inherit a prompt or hang indefinitely.
 
 `owners` is a navigation view over mapped load-bearing systems. It is not a
 gap scan and never treats absence from the bootstrap graph as low priority.

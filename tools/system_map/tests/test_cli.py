@@ -10,6 +10,8 @@ import sys
 import tempfile
 import unittest
 
+from tools.system_map.cli import _parser
+
 
 class CliSmokeTests(unittest.TestCase):
     @classmethod
@@ -17,13 +19,18 @@ class CliSmokeTests(unittest.TestCase):
         cls.repo = Path(__file__).resolve().parents[3]
         (cls.repo / "target").mkdir(exist_ok=True)
         required = (
-            cls.repo / "system_map/registry.v2.json",
-            cls.repo / "system_map/source-lock.v2.json",
-            cls.repo / "system_map/topology.v2.json",
-            cls.repo / "system_map/mechanisms.v1.json",
+            cls.repo / "docs/system-map/registry.v2.json",
+            cls.repo / "docs/system-map/source-lock.v2.json",
+            cls.repo / "docs/system-map/topology.v2.json",
+            cls.repo / "docs/system-map/mechanisms.v1.json",
         )
         if not all(path.exists() for path in required):
             raise unittest.SkipTest("canonical System Map v2 data is unavailable")
+
+    def test_import_defaults_to_relocated_canonical_directory(self) -> None:
+        arguments = _parser().parse_args(["import"])
+
+        self.assertEqual(arguments.output_dir, "docs/system-map")
 
     def test_check_emits_actionable_warning_documents(self) -> None:
         completed = self._run("check", "--ci")
@@ -114,10 +121,10 @@ class CliSmokeTests(unittest.TestCase):
                 {"id": "vera20k-system-map", "version": "1.1.0"},
             )
             canonical_inputs = {
-                "registry": "system_map/registry.v2.json",
-                "source_lock": "system_map/source-lock.v2.json",
-                "topology": "system_map/topology.v2.json",
-                "mechanisms": "system_map/mechanisms.v1.json",
+                "registry": "docs/system-map/registry.v2.json",
+                "source_lock": "docs/system-map/source-lock.v2.json",
+                "topology": "docs/system-map/topology.v2.json",
+                "mechanisms": "docs/system-map/mechanisms.v1.json",
             }
             for name, relative_path in canonical_inputs.items():
                 source = self.repo / relative_path
