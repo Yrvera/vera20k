@@ -702,6 +702,7 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
     state.scenario_outcome = None;
     state.scenario_exit = None;
     if let Some(player) = state.music_player.as_mut() {
+        player.cancel_scenario_theme_request();
         player.set_output_scale(1.0);
     }
     if let Some(player) = state.sfx_player.as_mut() {
@@ -3274,9 +3275,10 @@ impl App {
         if state.screen != GameScreen::MainMenu || state.quit_cascade.is_some() {
             return;
         }
+        let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
         if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
             player.play_menu_theme(assets);
-            player.update(assets);
+            player.update(assets, now_ms);
         }
     }
 

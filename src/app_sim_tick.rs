@@ -966,8 +966,9 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
     crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app_gadget_input::idle_tick(state);
+    let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
-        player.update(assets);
+        player.update(assets, music_now_ms);
     }
     crate::app_camera::update_camera(state);
     update_building_placement_preview(state);

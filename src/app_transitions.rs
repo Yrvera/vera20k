@@ -351,16 +351,13 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         state.eva_registry = load_eva_registry(assets);
     }
 
-    // Start music playback: prefer map's Theme= field, otherwise play first playlist track.
+    // Start_Scenario resolves `[Basic] Theme` as a theme-section key, then
+    // leaves the current shell stream in place while Theme owns its fade and
+    // deferred QueueSong/automatic request.
+    let music_now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
-        let started: bool = if let Some(ref theme) = state.map_basic.theme {
-            player.play_track(theme, assets)
-        } else {
-            false
-        };
-        if !started {
-            let _ = player.play_next(assets);
-        }
+        let request = player.resolve_scenario_theme(state.map_basic.theme.as_deref(), assets);
+        player.request_scenario_theme(request, music_now_ms);
     }
 
     if state.spawn_pick_pending {
