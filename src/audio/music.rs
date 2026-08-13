@@ -60,6 +60,9 @@ pub struct MusicPlayer {
     playlist_index: usize,
     /// Music volume (0.0 to 1.0).
     volume: f64,
+    /// App-owned output multiplier used by lifecycle fades. Kept separate from
+    /// the user setting so a scenario teardown never overwrites ScoreVolume.
+    output_scale: f64,
     /// When set, the resolved sound stem to re-play on finish instead of
     /// advancing the playlist (honors a theme's `Repeat=yes`, e.g. the menu
     /// [INTRO] theme which loops the entire time the shell is shown).
@@ -85,6 +88,7 @@ impl MusicPlayer {
             aliases: HashMap::new(),
             playlist_index: 0,
             volume: DEFAULT_SCORE_VOLUME,
+            output_scale: 1.0,
             looping_track: None,
             menu_theme: None,
             menu_theme_repeats: false,
@@ -167,7 +171,7 @@ impl MusicPlayer {
 
         let source = SamplesBuffer::new(channels, rate, samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(self.volume as f32);
+        player.set_volume((self.volume * self.output_scale) as f32);
         player.append(source);
         log::info!(
             "Playing music track: requested='{}', resolved='{}'",
@@ -239,7 +243,16 @@ impl MusicPlayer {
     pub fn set_volume(&mut self, volume: f64) {
         self.volume = volume.clamp(0.0, 1.0);
         if let Some(ref player) = self.current_player {
-            player.set_volume(self.volume as f32);
+            player.set_volume((self.volume * self.output_scale) as f32);
+        }
+    }
+
+    /// Apply a temporary app-lifecycle multiplier without changing the saved
+    /// user volume. Existing and newly started tracks observe the same scale.
+    pub fn set_output_scale(&mut self, scale: f64) {
+        self.output_scale = scale.clamp(0.0, 1.0);
+        if let Some(ref player) = self.current_player {
+            player.set_volume((self.volume * self.output_scale) as f32);
         }
     }
 

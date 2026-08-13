@@ -367,6 +367,13 @@ pub(crate) struct AppState {
     /// → exit). Some only between Exit-confirm OK and window close; freezes shell
     /// input while it runs.
     pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
+    /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
+    /// result and SavourDelay target live in serialized `HouseState`.
+    pub(crate) scenario_outcome: Option<crate::app_scenario_exit::ScenarioOutcomeVoiceWait>,
+    /// Active running-scenario audio teardown. While present the tactical
+    /// frame remains visible but simulation is frozen; its destination is
+    /// committed only after the retail fade/voice-wait sequence completes.
+    pub(crate) scenario_exit: Option<crate::app_scenario_exit::ScenarioExitCascade>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -686,6 +693,20 @@ pub(crate) struct AppState {
     pub(crate) cached_unit_instances: Vec<crate::render::batch::SpriteInstance>,
     /// UnitAtlas texture-page tags aligned with `cached_unit_instances`.
     pub(crate) cached_unit_pages: Vec<usize>,
+}
+
+/// Drop app-owned scenario-exit runtime after a successful world replacement.
+/// Serialized HouseState remains the sole authority for any loaded SavourDelay;
+/// wall waits are reconstructed from its expiry latch without replaying EVA.
+pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
+    state.scenario_outcome = None;
+    state.scenario_exit = None;
+    if let Some(player) = state.music_player.as_mut() {
+        player.set_output_scale(1.0);
+    }
+    if let Some(player) = state.sfx_player.as_mut() {
+        player.set_output_scale(1.0);
+    }
 }
 
 impl AppState {
@@ -3017,6 +3038,113 @@ impl App {
         ));
     }
 
+    fn drive_scenario_exit(state: &mut AppState, wall_ms: u64) {
+        if state.scenario_exit.is_none() {
+            return;
+        }
+        let poll_voices = state
+            .scenario_exit
+            .as_ref()
+            .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
+        let voices_active = poll_voices
+            && state
+                .sfx_player
+                .as_mut()
+                .is_some_and(|sfx| sfx.pump_and_check_voices());
+        let tick = state
+            .scenario_exit
+            .as_mut()
+            .expect("scenario exit remains present")
+            .tick(wall_ms, voices_active);
+
+        if let Some(scale) = tick.music_output_scale {
+            if let Some(player) = state.music_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if let Some(scale) = tick.sfx_output_scale {
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if tick.stop_audio {
+            if let Some(player) = state.music_player.as_mut() {
+                player.stop();
+                player.set_output_scale(1.0);
+            }
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.stop_all();
+                player.set_output_scale(1.0);
+            }
+        }
+        // ScoreDialog__WndProc @ 0x005C9B10 resolves the literal SCORE theme
+        // and starts it immediately on WM_INITDIALOG. Keep this after the
+        // hard stop and output-scale restoration so ScoreX begins audible.
+        if let Some(crate::app_scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
+            tick.after_stop
+            && let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager)
+        {
+            let _ = player.play_track(theme, assets);
+        }
+        if !tick.finished {
+            return;
+        }
+
+        let destination = state
+            .scenario_exit
+            .as_mut()
+            .and_then(crate::app_scenario_exit::ScenarioExitCascade::take_destination);
+        state.scenario_exit = None;
+        match destination {
+            Some(crate::app_scenario_exit::ScenarioExitDestination::Score {
+                title,
+                detail,
+                model,
+            }) => {
+                state.score_screen = Some(model);
+                state.score_shell_state = Default::default();
+                state.screen = GameScreen::MissionResult { title, detail };
+            }
+            Some(crate::app_scenario_exit::ScenarioExitDestination::MainMenu) => {
+                Self::return_to_main_menu(state);
+            }
+            None => log::error!("Scenario exit finished without a destination"),
+        }
+    }
+
+    fn apply_scenario_exit_voice_action(
+        state: &mut AppState,
+        action: crate::app_scenario_exit::ScenarioExitVoiceAction,
+    ) {
+        match action {
+            crate::app_scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
+                let Some(owner) = state.local_player_owner.as_deref() else {
+                    log::warn!("Battle-control termination EVA has no pinned local owner");
+                    return;
+                };
+                let faction = crate::app_building_anim::eva_faction_key(owner, &state.house_roster);
+                let fallback = match faction {
+                    "Russian" => "csof015",
+                    "Yuri" => "cyur015",
+                    _ => "ceva015",
+                };
+                let sound_id = state
+                    .eva_registry
+                    .get("EVA_BattleControlTerminated", faction)
+                    .unwrap_or(fallback)
+                    .to_string();
+                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) {
+                    let _ = sfx.interrupt_eva_sound(
+                        &sound_id,
+                        &state.sound_registry,
+                        assets,
+                        &state.audio_indices,
+                    );
+                }
+            }
+        }
+    }
+
     fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
@@ -4507,6 +4635,8 @@ impl App {
             shell_slide_active_shell: None,
             shell_slide_generation: 0,
             quit_cascade: None,
+            scenario_outcome: None,
+            scenario_exit: None,
             minimap: None,
             minimap_dragging: false,
             radar_anim: None,
@@ -4736,6 +4866,18 @@ impl App {
         }
         state.startup_splash = None;
 
+        // HouseClass keeps simulating for SavourDelay, then blocks on the
+        // current outcome Vox before it raises the victory/defeat exit global.
+        // Drive that gate before deciding whether another sim frame is legal.
+        let scenario_now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+        Self::consume_executed_abort_exit(state, scenario_now_ms);
+        crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, scenario_now_ms);
+
+        // The native victory/defeat handlers synchronously finish their audio
+        // teardown before entering the score dialog. Drive the equivalent
+        // sequence before either another sim frame or the destination screen.
+        Self::drive_scenario_exit(state, scenario_now_ms);
+
         // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
         // voice poll before borrowing the cascade mutably to avoid aliasing.
         if state.quit_cascade.is_some() {
@@ -4774,10 +4916,20 @@ impl App {
         if tactical_capture.is_none()
             && matches!(state.screen, GameScreen::InGame)
             && state.window_active
+            && state.scenario_exit.is_none()
+            && state.scenario_outcome.is_none()
         {
             let now = Instant::now();
             let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
             app_sim_tick::advance_in_game_runtime(state, now_ms);
+            // EventClass EXIT is dispatched at the simulation tail. Consume
+            // its terminal edge before any outcome route can claim teardown.
+            Self::consume_executed_abort_exit(state, now_ms);
+            // The SavourDelay expiry is decided in the late house rung of this
+            // exact frame. Anchor its 0x78-bucket wall wait to the same observed
+            // wall time instead of delaying it to the next render pass.
+            crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, now_ms);
+            Self::drive_scenario_exit(state, now_ms);
         }
 
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
@@ -5516,20 +5668,96 @@ impl App {
         }
     }
 
-    /// Leave the running match by the graceful-exit route.
+    /// Queue the running match's native graceful-exit event.
     ///
     /// gamemd's confirmed Abort queues an EXIT event for the local player; when
     /// that event executes it raises the graceful-exit session flag, and the
     /// session-end router tears the session down **without** the victory or
     /// defeat teardown — no outcome announcement, no result screen, straight
-    /// back to the shell. This port commits the same teardown directly instead
-    /// of round-tripping a command event; the residual DRIFT is that gamemd
-    /// spends at least one more scenario tick between the confirmation and the
-    /// teardown, which is invisible because the world is frozen behind the
-    /// modal for that whole span.
+    /// back to the shell. Confirmation itself only constructs and queues the
+    /// event; teardown begins after the event-tail dispatcher executes it.
     fn exit_match_to_shell(state: &mut AppState) {
-        log::info!("Abort Mission confirmed — leaving the match");
-        Self::return_to_main_menu(state);
+        log::info!("Abort Mission confirmed — queueing EXIT event");
+        if state.scenario_exit.is_some() {
+            return;
+        }
+        let Some(owner) = crate::app_commands::preferred_local_owner(state) else {
+            log::warn!("Abort Mission confirmation has no local command owner");
+            return;
+        };
+        if crate::app_commands::try_schedule_command(
+            state,
+            &owner,
+            crate::sim::command::Command::ExitMatch,
+        )
+        .is_none()
+        {
+            log::warn!("Abort Mission EXIT event could not be queued for '{owner}'");
+            return;
+        }
+        Self::enter_in_game_menu_state(state, crate::ui::pause_menu::InGameMenuState::Closed);
+    }
+
+    /// Consume EventClass opcode `0x13`'s executed edge and enter the existing
+    /// battle-abort teardown. A repeated drain without another dispatch is a
+    /// no-op because the simulation edge is taken.
+    fn consume_executed_abort_exit(state: &mut AppState, wall_ms: u64) {
+        let local_owner = crate::app_commands::preferred_local_owner(state);
+        let local_owner_id = local_owner.as_deref().and_then(|owner| {
+            state
+                .simulation
+                .as_ref()
+                .and_then(|sim| sim.interner.get(owner))
+        });
+        let local_outcome_exit_ready = local_owner_id.is_some_and(|owner| {
+            state
+                .simulation
+                .as_ref()
+                .and_then(|sim| sim.houses.get(&owner))
+                .and_then(|house| house.outcome_state)
+                .is_some_and(|outcome| outcome.exit_ready)
+        });
+        let executed_owner = state
+            .simulation
+            .as_mut()
+            .and_then(|sim| sim.take_executed_exit_owner());
+        let Some(executed_owner) = executed_owner else {
+            return;
+        };
+        if Some(executed_owner) != local_owner_id {
+            log::warn!("Ignoring executed EXIT event not owned by the local player");
+            return;
+        }
+        if matches!(
+            crate::app_scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app_scenario_exit::ExecutedExitDisposition::Outcome
+        ) {
+            // Main_Game observes the ready victory/loss route first. The EXIT
+            // edge is still consumed, but cannot clear or replace that route.
+            return;
+        }
+        if state.scenario_exit.is_some() {
+            return;
+        }
+
+        // Abort is the independent EXIT-event route: it never inherits the
+        // victory/defeat HouseClass SavourDelay or its outcome-voice wait.
+        state.scenario_outcome = None;
+        let _ = state.scenario_elapsed_clock.stop(wall_ms);
+        // gamemd provenance: battle abort teardown; verified
+        // GameExit__BattleControlTerminated @ 0x00686570 starts Theme's fade,
+        // then fades the independent audio master, bounds its voice pump to
+        // 300 timer buckets, and finally hard-stops audio.
+        let mut scenario_exit = crate::app_scenario_exit::ScenarioExitCascade::start(
+            wall_ms,
+            crate::app_scenario_exit::ScenarioExitDestination::MainMenu,
+        );
+        // `0x00686570` requests EVA_BattleControlTerminated as an INTERRUPT
+        // immediately before waiting for the two simultaneous audio fades.
+        if let Some(action) = scenario_exit.take_start_voice_action() {
+            Self::apply_scenario_exit_voice_action(state, action);
+        }
+        state.scenario_exit = Some(scenario_exit);
     }
 
     /// Draw the save/load panel and handle its actions.

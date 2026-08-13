@@ -16,7 +16,7 @@ use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
 use crate::sim::combat::combat_aoe::{CellTargetDetach, detach_cell_target_references};
 use crate::sim::command::{
-    COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, MegaMissionMoveRecord,
+    COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, ExitRecord, MegaMissionMoveRecord,
     SellWallAtCellRecord,
 };
 use crate::sim::components::OrderIntent;
@@ -197,6 +197,29 @@ impl Simulation {
         .ok()
     }
 
+    /// Encode the header-only native EXIT event issued by Abort confirmation.
+    /// House bytes are HouseClass registration indices, never interner ids.
+    pub(crate) fn encode_exit_record(
+        &self,
+        command_owner: crate::sim::intern::InternedId,
+    ) -> Option<CommandRecord> {
+        if !self.houses.contains_key(&command_owner) {
+            return None;
+        }
+        let house_id = self
+            .session
+            .house_order
+            .iter()
+            .position(|&owner| owner == command_owner)
+            .and_then(|index| i8::try_from(index).ok())?;
+        ExitRecord {
+            house_id,
+            frame: self.session.binary_frame,
+        }
+        .encode()
+        .ok()
+    }
+
     /// Decode one synchronized record after its queue has admitted the stamped
     /// frame. The semantic envelope is only a typed execution view of the raw
     /// bytes; timing/processed-bit ownership remains with the raw queue.
@@ -226,6 +249,15 @@ impl Simulation {
                     group_id: None,
                 },
             ));
+        }
+
+        if let Some(typed) = ExitRecord::decode(record) {
+            let house_index = usize::try_from(typed.house_id).ok()?;
+            let owner = *self.session.house_order.get(house_index)?;
+            return self
+                .houses
+                .contains_key(&owner)
+                .then(|| CommandEnvelope::new(owner, execute_tick, Command::ExitMatch));
         }
 
         let typed = SellWallAtCellRecord::decode(record)?;
@@ -1196,6 +1228,22 @@ impl Simulation {
                     return false;
                 };
                 self.sell_wall_at_cell(command_owner, *x, *y, rules, path_grid, overlays)
+            }
+            Command::ExitMatch => {
+                let Some(owner) = self.interner.get(command_owner) else {
+                    return false;
+                };
+                if !self.houses.contains_key(&owner) {
+                    return false;
+                }
+                // EventClass__Execute @ 0x004C6CB0, opcode 0x13: the due
+                // EXIT event writes the termination byte at 0x004C7917. The
+                // app consumes the owner-tagged edge after this tail dispatch.
+                if !self.quit_requested {
+                    self.executed_exit_owner = Some(owner);
+                }
+                self.quit_requested = true;
+                true
             }
             Command::ToggleRepair { entity_id } => {
                 if !self.entity_owned_by_id(command_owner, *entity_id) {

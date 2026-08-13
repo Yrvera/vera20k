@@ -23,6 +23,8 @@ const COMMAND_RECORD_PROCESSED_FLAG: u8 = 0x01;
 
 /// Native `EventClass` opcode for selling one wall-overlay cell.
 pub const SELL_WALL_AT_CELL_OPCODE: u8 = 0x17;
+/// Native `EventClass` opcode for leaving the active scenario.
+pub const EXIT_OPCODE: u8 = 0x13;
 /// Native `EventClass` opcode for a MegaMission order envelope.
 pub const MEGAMISSION_OPCODE: u8 = 0x04;
 
@@ -288,6 +290,31 @@ impl SellWallAtCellRecord {
             frame: record.frame_stamp() as u32,
             x: i16::from_le_bytes(record.payload()[..2].try_into().ok()?),
             y: i16::from_le_bytes(record.payload()[2..4].try_into().ok()?),
+        })
+    }
+}
+
+/// Typed view of native opcode `0x13`'s header-only EXIT event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitRecord {
+    pub house_id: i8,
+    pub frame: u32,
+}
+
+impl ExitRecord {
+    pub fn encode(self) -> Result<CommandRecord, CommandRecordError> {
+        CommandRecord::encode(
+            EXIT_OPCODE,
+            i32::from(self.house_id),
+            self.frame as i32,
+            &[],
+        )
+    }
+
+    pub fn decode(record: &CommandRecord) -> Option<Self> {
+        (record.opcode() == EXIT_OPCODE).then(|| Self {
+            house_id: record.house_id(),
+            frame: record.frame_stamp() as u32,
         })
     }
 }
@@ -603,6 +630,8 @@ pub enum Command {
     /// Sell the wall overlay at one native signed `CellStruct` coordinate.
     /// The command envelope names the receiver, not necessarily the wall owner.
     SellWallAtCell { x: i16, y: i16 },
+    /// Execute the local player's native EXIT event and end the active scenario.
+    ExitMatch,
 }
 
 /// Command with deterministic execution metadata.
@@ -627,8 +656,8 @@ impl CommandEnvelope {
 mod tests {
     use super::{
         COMMAND_RECORD_LEN, COMMAND_RECORD_PAYLOAD_LEN, CommandRecord, CommandRecordError,
-        MEGAMISSION_OPCODE, MegaMissionCellTokenError, MegaMissionMoveRecord,
-        SELL_WALL_AT_CELL_OPCODE, SellWallAtCellRecord,
+        EXIT_OPCODE, ExitRecord, MEGAMISSION_OPCODE, MegaMissionCellTokenError,
+        MegaMissionMoveRecord, SELL_WALL_AT_CELL_OPCODE, SellWallAtCellRecord,
     };
 
     #[test]
@@ -764,6 +793,26 @@ mod tests {
 
         let other = CommandRecord::encode(0x16, 3, 1, &[]).unwrap();
         assert_eq!(SellWallAtCellRecord::decode(&other), None);
+    }
+
+    #[test]
+    fn gsi_01_04_exit_raw_record_is_header_only_opcode_13() {
+        let typed = ExitRecord {
+            house_id: 2,
+            frame: 0x89ab_cdef,
+        };
+        let record = typed.encode().expect("EXIT record");
+        let bytes = record.as_bytes();
+
+        assert_eq!(bytes[0], EXIT_OPCODE);
+        assert_eq!(bytes[1], 0);
+        assert_eq!(bytes[2], 2);
+        assert_eq!(&bytes[3..7], &0x89ab_cdef_u32.to_le_bytes());
+        assert!(bytes[7..].iter().all(|&byte| byte == 0));
+        assert_eq!(ExitRecord::decode(&record), Some(typed));
+
+        let other = CommandRecord::encode(0x12, 2, 1, &[]).unwrap();
+        assert_eq!(ExitRecord::decode(&other), None);
     }
 
     #[test]

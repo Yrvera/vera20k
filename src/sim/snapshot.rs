@@ -230,7 +230,12 @@ use crate::sim::world::Simulation;
 // discriminant and stores CellClass identity rather than a frozen target Vec3.
 // Bumped 71 -> 72: the snapshot prefix now carries explicit VERA product and
 // public-envelope identity plus the player-authored save description.
-const SNAPSHOT_VERSION: u32 = 72;
+// Bumped 72 -> 73: HouseState now persists the accepted match-result kind,
+// absolute SavourDelay frame target, and expiry latch. These fields control
+// the terminal frame and cannot be reconstructed from app state after load.
+// Bumped 73 -> 74: pending CommandEnvelope payloads can now carry the native
+// EXIT event. App-consumed execution edges remain transient and are not saved.
+const SNAPSHOT_VERSION: u32 = 74;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -320,6 +325,11 @@ pub enum SnapshotError {
 /// Structural failures found before a deserialized simulation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotRestoreError {
+    #[error("house {owner} has invalid serialized outcome state: {reason}")]
+    InvalidHouseOutcomeState {
+        owner: crate::sim::intern::InternedId,
+        reason: &'static str,
+    },
     #[error("{registry} contains reserved object id 0")]
     ReservedObjectId { registry: &'static str },
     #[error(
@@ -1235,6 +1245,44 @@ impl Simulation {
     /// weak/derived identities, and reconstructs skipped indexes in dependency
     /// order.
     pub(crate) fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
+        for (&owner, house) in &self.houses {
+            let Some(outcome) = house.outcome_state else {
+                if house.is_defeated || house.has_won || house.has_lost {
+                    return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                        owner,
+                        reason: "terminal flags require serialized outcome authority",
+                    });
+                }
+                continue;
+            };
+            let flags_match = match outcome.kind {
+                crate::sim::house_state::HouseOutcomeKind::Victory => {
+                    house.has_won && !house.has_lost && !house.is_defeated
+                }
+                crate::sim::house_state::HouseOutcomeKind::Defeat => {
+                    house.has_lost && !house.has_won
+                }
+            };
+            if !flags_match {
+                return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                    owner,
+                    reason: "kind disagrees with terminal house flags",
+                });
+            }
+            let next_tick = self.session.tick.saturating_add(1);
+            let timer_position_is_valid = if outcome.exit_ready {
+                outcome.savour_until_tick <= next_tick
+            } else {
+                outcome.savour_until_tick > self.session.tick
+            };
+            if !timer_position_is_valid {
+                return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                    owner,
+                    reason: "SavourDelay target disagrees with expiry latch",
+                });
+            }
+        }
+
         let (index, identities) = RestoredObjectIndex::build(self)?;
         if self.substrate.next_stable_object_id <= index.highest_id {
             return Err(SnapshotRestoreError::ObjectIdCounterBehind {
@@ -1750,7 +1798,7 @@ mod tests {
             GameSnapshot::load(&preamble_only),
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                found: 71,
+                found: 73,
             })
         ));
     }
@@ -1804,10 +1852,144 @@ mod tests {
     /// source; 70 -> 71 added ProjectileTarget's native null discriminant and
     /// replaced frozen cell-target coordinates with stable CellClass identity;
     /// 71 -> 72 added explicit product/public-envelope identity and the save
-    /// description to the common prefix.
+    /// description to the common prefix; 72 -> 73 added persistent per-house
+    /// accepted outcome kind, SavourDelay target, and expiry latch; 73 -> 74
+    /// added the serialized pending-command EXIT payload.
     #[test]
-    fn snapshot_version_is_72() {
-        assert_eq!(super::SNAPSHOT_VERSION, 72);
+    fn snapshot_version_is_74() {
+        assert_eq!(super::SNAPSHOT_VERSION, 74);
+    }
+
+    #[test]
+    fn gsi_01_04_pending_exit_command_roundtrips_without_terminal_edge() {
+        use crate::sim::command::{Command, CommandEnvelope};
+        use crate::sim::house_state::HouseState;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+        sim.session.house_order.push(owner);
+        let hash_without_pending_input = sim.state_hash();
+        sim.pending_commands
+            .push(CommandEnvelope::new(owner, 17, Command::ExitMatch));
+        assert_eq!(
+            sim.state_hash(),
+            hash_without_pending_input,
+            "pending EXIT follows the existing external-command hash convention"
+        );
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "abort.map", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("v74 EXIT snapshot").sim;
+
+        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert!(!restored.quit_requested);
+        assert_eq!(restored.take_executed_exit_owner(), None);
+        assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn gsi_01_04_mid_savour_snapshot_preserves_remaining_frames_without_replaying_eva() {
+        use crate::sim::house_state::{HouseOutcomeKind, HouseState};
+        use crate::sim::world::SimSoundEvent;
+
+        let mut original = Simulation::with_seed(0x104);
+        original.session.tick = 145;
+        let owner = original.interner.intern("Americans");
+        original
+            .houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 10_000, 10));
+        let before_outcome = original.state_hash();
+        assert!(
+            original
+                .houses
+                .get_mut(&owner)
+                .expect("house")
+                .flag_to_win(100, 90)
+        );
+        assert_ne!(
+            original.state_hash(),
+            before_outcome,
+            "accepted outcome and Savour target are hash-relevant"
+        );
+        let accepted_hash = original.state_hash();
+        original
+            .houses
+            .get_mut(&owner)
+            .and_then(|house| house.outcome_state.as_mut())
+            .expect("outcome")
+            .savour_until_tick += 1;
+        assert_ne!(
+            original.state_hash(),
+            accepted_hash,
+            "the absolute Savour target itself is hash-relevant"
+        );
+        original
+            .houses
+            .get_mut(&owner)
+            .and_then(|house| house.outcome_state.as_mut())
+            .expect("outcome")
+            .savour_until_tick -= 1;
+        original.sound_events.push(SimSoundEvent::MatchOutcome {
+            owner,
+            kind: HouseOutcomeKind::Victory,
+        });
+        // Full snapshot load resets Scenario RNG to Seed0; compare hashes on
+        // that canonical post-load cursor.
+        original.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let saved_hash = original.state_hash();
+        let bytes = GameSnapshot::save(&original, 11, 22, "", 33);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+
+        assert!(
+            restored.sound_events.is_empty(),
+            "the already-issued outcome EVA edge must not survive save/load"
+        );
+        restored
+            .restore_after_snapshot_load()
+            .expect("mid-Savour outcome state is structurally valid");
+        assert_eq!(restored.state_hash(), saved_hash);
+
+        let restored_house = restored.houses.get(&owner).expect("restored house");
+        let outcome = restored_house.outcome_state.expect("accepted outcome");
+        assert_eq!(outcome.kind, HouseOutcomeKind::Victory);
+        assert!(!outcome.exit_ready);
+        assert_eq!(outcome.savour_until_tick - restored.session.tick, 45);
+
+        let mut boundary = restored_house.clone();
+        assert!(!boundary.advance_outcome_savour(189));
+        assert!(boundary.advance_outcome_savour(190));
+    }
+
+    #[test]
+    fn gsi_01_04_malformed_current_snapshot_naked_terminal_flags_are_rejected() {
+        use crate::sim::house_state::HouseState;
+
+        for terminal_flag in ["is_defeated", "has_won", "has_lost"] {
+            let mut malformed = Simulation::new();
+            let owner = malformed.interner.intern("Americans");
+            let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
+            match terminal_flag {
+                "is_defeated" => house.is_defeated = true,
+                "has_won" => house.has_won = true,
+                "has_lost" => house.has_lost = true,
+                _ => unreachable!(),
+            }
+            malformed.houses.insert(owner, house);
+
+            let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
+            let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+            assert_eq!(
+                restored.restore_after_snapshot_load(),
+                Err(SnapshotRestoreError::InvalidHouseOutcomeState {
+                    owner,
+                    reason: "terminal flags require serialized outcome authority",
+                }),
+                "naked {terminal_flag} must not enter a world whose app bridge can only consume outcome_state"
+            );
+        }
     }
 
     #[test]

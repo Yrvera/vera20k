@@ -2106,6 +2106,48 @@ fn defeated_house_is_flagged_has_lost_and_stragglers_survive() {
 }
 
 #[test]
+fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
+    use crate::sim::house_state::HouseOutcomeKind;
+    use crate::sim::world::SimSoundEvent;
+
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = false;
+    sim.session.tick = 10;
+    let winner = insert_house_with_counts(&mut sim, "Americans", 1, 0);
+    let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+
+    sim.check_defeat(Some(&rules));
+
+    let winner_outcome = sim.houses[&winner].outcome_state.expect("victory accepted");
+    assert_eq!(winner_outcome.kind, HouseOutcomeKind::Victory);
+    assert_eq!(winner_outcome.savour_until_tick, 38);
+    assert!(!winner_outcome.exit_ready);
+    assert_eq!(
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(event, SimSoundEvent::MatchOutcome { .. }))
+            .count(),
+        2,
+        "one accepted loss and one accepted victory each emit one EVA edge"
+    );
+
+    sim.sound_events.clear();
+    sim.session.tick = 36;
+    sim.check_defeat(Some(&rules));
+    assert!(!sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    assert!(!sim.termination_frame_requested());
+    assert!(sim.sound_events.is_empty(), "accepted edges never replay");
+
+    sim.session.tick = 37;
+    sim.check_defeat(Some(&rules));
+    assert!(sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    assert!(sim.houses[&loser].outcome_state.unwrap().exit_ready);
+    assert!(sim.termination_frame_requested());
+    assert!(sim.sound_events.is_empty(), "expiry does not replay EVA");
+}
+
+#[test]
 fn short_game_base_unit_survivor_prevents_enemy_victory() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
@@ -2231,13 +2273,15 @@ fn passive_houses_do_not_make_a_solo_board_look_contested() {
 #[test]
 fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
     // The sim-side consumer of the same guard. On a one-player dev map the
-    // human is flagged `has_won` immediately, and counting Neutral/Special as
-    // opponents would end the match on tick 1.
+    // human can accept a win immediately, and counting Neutral/Special as
+    // opponents would end the match as soon as its result timer expires.
     let mut sim = Simulation::new();
     let player = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
     insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
-    sim.houses.get_mut(&player).expect("player house").has_won = true;
+    let player_house = sim.houses.get_mut(&player).expect("player house");
+    assert!(player_house.flag_to_win(0, 0));
+    assert!(player_house.advance_outcome_savour(0));
 
     assert!(
         !sim.termination_frame_requested(),

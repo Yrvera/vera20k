@@ -245,12 +245,23 @@ pub struct DamageFireHealthRatio {
     pub denominator: i32,
 }
 
+/// Convert RulesClass `[AudioVisual] SavourDelay` minutes to the signed timer's
+/// ordinary non-negative frame domain. Native multiplies by 900.0 and calls
+/// `Math__ftol`, whose active x87 control word truncates toward zero.
+pub(crate) fn savour_delay_frames(minutes: f64) -> u64 {
+    (minutes * 900.0).clamp(0.0, u64::MAX as f64).trunc() as u64
+}
+
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
     /// Edge-scroll speed scale from `[AudioVisual] ScrollMultiplier=`.
     /// Stock YR uses `.07`; this is app-facing presentation state.
     pub scroll_multiplier: f64,
+    /// Outcome-announcement grace period in minutes from `[AudioVisual]
+    /// SavourDelay=`. HouseClass converts this to frames with `ftol(value*900)`
+    /// before routing victory/defeat into scenario teardown.
+    pub savour_delay_minutes: f64,
     /// Per-tick Spark gravity AND hover-bob amplitude, from `[AudioVisual]
     /// Gravity=` (NOT `[General]` — stock rulesmd.ini defines it under
     /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
@@ -864,6 +875,9 @@ impl Default for GeneralRules {
     fn default() -> Self {
         Self {
             scroll_multiplier: 0.07,
+            // RulesClass__Constructor @ 0x00665650 writes the double
+            // 0x3F9EB851EB851EB8 to +0x14C8.
+            savour_delay_minutes: 0.03,
             gravity: 3,
             veteran_sight: 0,
             veteran_armor: 1.0,
@@ -1439,6 +1453,9 @@ impl GeneralRules {
             scroll_multiplier: audio_visual
                 .and_then(|s| s.get_f64("ScrollMultiplier"))
                 .unwrap_or(defaults.scroll_multiplier),
+            savour_delay_minutes: audio_visual
+                .map(|s| s.read_double("SavourDelay", defaults.savour_delay_minutes))
+                .unwrap_or(defaults.savour_delay_minutes),
             condition_red_sparking_probability: condition_red_spark_prob,
             condition_yellow_sparking_probability: condition_yellow_spark_prob,
             condition_red_spark_threshold: damage_spark_spawn_threshold(condition_red_spark_prob),
@@ -3886,6 +3903,35 @@ MutateWarhead=MyMutate\n\
             "[General]\nFlightLevel=500\n[AudioVisual]\n",
         ));
         assert_eq!(absent.scroll_multiplier, 0.07);
+    }
+
+    #[test]
+    fn gsi_01_04_savour_delay_parses_from_audio_visual_with_native_default() {
+        let ctor_default = GeneralRules::default().savour_delay_minutes;
+        assert_eq!(ctor_default, 0.03);
+        assert_eq!(savour_delay_frames(ctor_default), 27);
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nSavourDelay=.1\n",
+        ));
+        assert_eq!(stock.savour_delay_minutes, 0.1_f32 as f64);
+        assert_eq!(savour_delay_frames(stock.savour_delay_minutes), 90);
+        let explicit_point_zero_three = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nSavourDelay=.03\n",
+        ));
+        assert_eq!(
+            explicit_point_zero_three.savour_delay_minutes,
+            0.03_f32 as f64
+        );
+        assert_eq!(
+            savour_delay_frames(explicit_point_zero_three.savour_delay_minutes),
+            26,
+            "explicit ReadDouble is parsed through f32 before ftol"
+        );
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
+        assert_eq!(absent.savour_delay_minutes, 0.03);
+        assert_eq!(savour_delay_frames(absent.savour_delay_minutes), 27);
     }
 
     #[test]

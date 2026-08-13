@@ -135,6 +135,8 @@ pub struct SfxPlayer {
     current_voice_id: Option<String>,
     /// SFX master volume (0.0 to 1.0).
     volume: f64,
+    /// Temporary app-lifecycle multiplier over every live SFX/voice output.
+    output_scale: f32,
     /// Simple counter used as seed for pseudo-random sound selection.
     /// Not cryptographic — just needs variety.
     random_counter: u32,
@@ -155,6 +157,7 @@ impl SfxPlayer {
             queued_voice: VecDeque::new(),
             current_voice_id: None,
             volume: 0.7,
+            output_scale: 1.0,
             random_counter: 0,
         })
     }
@@ -272,7 +275,7 @@ impl SfxPlayer {
         };
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume);
+        player.set_volume(final_volume * self.output_scale);
         player.append(source);
         self.animation_active.insert(anim_id, player);
         true
@@ -391,6 +394,36 @@ impl SfxPlayer {
         )
     }
 
+    /// Replace only the dedicated EVA/voice channel with an INTERRUPT cue.
+    ///
+    /// gamemd `VoxClass__QueueVoice @ 0x00752480`, type 2, discards queued
+    /// voice nodes and stops the current voice before starting the new cue.
+    /// Ordinary and animation SFX are deliberately untouched.
+    pub fn interrupt_eva_sound(
+        &mut self,
+        sound_id: &str,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        self.queued_voice.clear();
+        if let Some(player) = self.voice_player.take() {
+            player.stop();
+        }
+        self.current_voice_id = None;
+
+        let (decoded, entry_volume) =
+            match self.resolve_voice_audio(sound_id, registry, assets, audio_indices) {
+                Some(resolved) => resolved,
+                None => return false,
+            };
+        self.play_voice(
+            decoded,
+            (entry_volume * self.volume) as f32,
+            Some(sound_id.to_string()),
+        )
+    }
+
     fn resolve_voice_audio(
         &mut self,
         sound_id: &str,
@@ -461,7 +494,7 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume);
+        player.set_volume(final_volume * self.output_scale);
         player.append(source);
         self.voice_player = Some(player);
         self.current_voice_id = sound_id;
@@ -498,7 +531,7 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume);
+        player.set_volume(final_volume * self.output_scale);
         player.append(source);
         self.active.push_back(player);
         true
@@ -514,6 +547,50 @@ impl SfxPlayer {
     /// Set the SFX master volume (0.0 = silent, 1.0 = full).
     pub fn set_volume(&mut self, volume: f64) {
         self.volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Apply a temporary multiplier to all live outputs without changing the
+    /// saved SFX setting. Scenario teardown only restores from zero after
+    /// [`Self::stop_all`], so no base-volume reconstruction is required.
+    pub fn set_output_scale(&mut self, scale: f64) {
+        let next = scale.clamp(0.0, 1.0) as f32;
+        let ratio = if self.output_scale > 0.0 {
+            next / self.output_scale
+        } else {
+            0.0
+        };
+        for player in &self.active {
+            player.set_volume(player.volume() * ratio);
+        }
+        for player in self.animation_active.values() {
+            player.set_volume(player.volume() * ratio);
+        }
+        if let Some(player) = self.voice_player.as_ref() {
+            player.set_volume(player.volume() * ratio);
+        }
+        self.output_scale = next;
+    }
+
+    /// Pump the dedicated voice queue once and report whether any voice work
+    /// remains, mirroring the poll performed inside native exit wait loops.
+    pub fn pump_and_check_voices(&mut self) -> bool {
+        self.advance_voice_queue();
+        self.voices_active()
+    }
+
+    /// Hard-stop every SFX/voice source and discard queued announcements.
+    pub fn stop_all(&mut self) {
+        for player in self.active.drain(..) {
+            player.stop();
+        }
+        for (_, player) in std::mem::take(&mut self.animation_active) {
+            player.stop();
+        }
+        if let Some(player) = self.voice_player.take() {
+            player.stop();
+        }
+        self.queued_voice.clear();
+        self.current_voice_id = None;
     }
 
     /// Get the current SFX master volume.

@@ -299,61 +299,91 @@ fn announce_local_state_evas(state: &mut AppState) {
     }
 }
 
-/// After a sim step, surface a win/loss result screen for the LOCAL player.
-///
-/// `World::check_defeat` sets each house's `has_won` / `is_defeated` / `has_lost`
-/// every tick, but nothing consumed them: a skirmish would keep running
-/// invisibly after the player's base was destroyed, and a win was never
-/// announced. This reads the local player's house and, on the first tick the
-/// outcome is decided, transitions to the existing `GameScreen::MissionResult`
-/// screen. Switching away from `InGame` stops the in-game runtime next frame,
-/// so this fires exactly once. Loss is keyed off `is_defeated` (the flag set
-/// first and unconditionally in `check_defeat`) so it stays correct regardless
-/// of the `has_lost` companion.
-fn check_local_player_match_end(state: &mut AppState, now_ms: u64) {
-    if !matches!(state.screen, GameScreen::InGame) {
+/// Drive the app-owned Vox wait after serialized HouseState reaches its exact
+/// SavourDelay expiry frame. A loaded expiry latch reconstructs this wait but
+/// never reconstructs the already-consumed transition EVA edge.
+pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_ms: u64) {
+    if !matches!(state.screen, GameScreen::InGame) || state.scenario_exit.is_some() {
         return;
     }
-    let Some(owner) = crate::app_commands::preferred_local_owner_name(state) else {
-        return;
-    };
-    let outcome: Option<(&'static str, &'static str)> = {
-        let Some(sim) = state.simulation.as_ref() else {
+    if state.scenario_outcome.is_none() {
+        let Some(owner) = state.local_player_owner.as_deref() else {
             return;
         };
-        let Some(house) =
-            crate::sim::house_state::house_state_for_owner(&sim.houses, &owner, &sim.interner)
-        else {
+        let outcome = state.simulation.as_ref().and_then(|sim| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .and_then(|house| house.outcome_state)
+                .filter(|outcome| outcome.exit_ready)
+        });
+        let Some(outcome) = outcome else {
             return;
         };
-        // `check_defeat` flags the last house standing as the winner, which in a
-        // single-house sandbox is true from tick 0 — require a real opponent
-        // (>=2 contending houses) before announcing victory. Passive
-        // Civilian/JP houses do not count: they exist on nearly every roster and
-        // would make a one-player dev map look contested. Loss needs no guard.
-        if house.has_won && sim.contending_house_count() > 1 {
-            Some((
-                "You are Victorious!",
-                "All enemy forces have been defeated.",
-            ))
-        } else if house.is_defeated || house.has_lost {
-            Some(("You have Lost", "Your forces have been eliminated."))
-        } else {
-            None
-        }
-    };
-    let Some((title, detail)) = outcome else {
+        log::info!(
+            "Match end ready for local player '{owner}': {}",
+            crate::app_scenario_exit::outcome_title(outcome.kind)
+        );
+        state.scenario_outcome = Some(crate::app_scenario_exit::ScenarioOutcomeVoiceWait::start(
+            wall_ms,
+            outcome.kind,
+        ));
+    }
+
+    let voices_active = state
+        .sfx_player
+        .as_mut()
+        .is_some_and(|sfx| sfx.pump_and_check_voices());
+    let finished = state
+        .scenario_outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.tick(wall_ms, voices_active));
+    if !finished {
         return;
-    };
-    log::info!("Match end for local player '{owner}': {title}");
+    }
+
+    let outcome = state
+        .scenario_outcome
+        .as_ref()
+        .expect("finished outcome voice wait remains present")
+        .kind();
+    state.scenario_outcome = None;
     state.finished_game_count = state.finished_game_count.saturating_add(1);
-    let elapsed_seconds = state.scenario_elapsed_clock.stop(now_ms);
-    state.score_screen = Some(build_score_screen_model(state, elapsed_seconds));
-    state.score_shell_state = Default::default();
-    state.screen = GameScreen::MissionResult {
-        title: title.to_string(),
-        detail: detail.to_string(),
-    };
+    let elapsed_seconds = state.scenario_elapsed_clock.stop(wall_ms);
+    let model = build_score_screen_model(state, elapsed_seconds);
+    // The outcome handlers at 0x00685670 / 0x00685DC0 begin only after the
+    // HouseClass timer and 0x78-bucket Vox wait. From here the existing cascade
+    // performs their master fade, 300-bucket tail, hard stop, and SCORE handoff.
+    state.scenario_exit = Some(crate::app_scenario_exit::ScenarioExitCascade::start(
+        wall_ms,
+        crate::app_scenario_exit::ScenarioExitDestination::Score {
+            title: crate::app_scenario_exit::outcome_title(outcome).to_string(),
+            detail: crate::app_scenario_exit::outcome_detail(outcome).to_string(),
+            model,
+        },
+    ));
+}
+
+fn outcome_eva_entry(
+    kind: crate::sim::house_state::HouseOutcomeKind,
+    faction: &str,
+) -> (&'static str, &'static str) {
+    match (kind, faction) {
+        (crate::sim::house_state::HouseOutcomeKind::Victory, "Russian") => {
+            ("EVA_YouAreVictorious", "csof022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Victory, "Yuri") => {
+            ("EVA_YouAreVictorious", "cyur022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Victory, _) => {
+            ("EVA_YouAreVictorious", "ceva022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Russian") => {
+            ("EVA_YouHaveLost", "csof023")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Yuri") => {
+            ("EVA_YouHaveLost", "cyur023")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, _) => ("EVA_YouHaveLost", "ceva023"),
+    }
 }
 
 /// The name one score row shows.
@@ -891,14 +921,6 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             };
             state.frame_pacer.record_admitted_frame(now_ms);
         }
-        // After the sim advances, surface a win/loss result screen for the
-        // local player — the sim computes the per-house outcome flags but
-        // nothing else consumes them, so a match would otherwise end invisibly.
-        let score_clock_now_ms = match mode {
-            RuntimeAdvanceMode::WallClock { now_ms } => now_ms,
-            RuntimeAdvanceMode::ExactOneStep => monotonic_frame_pacer_ms(state, Instant::now()),
-        };
-        check_local_player_match_end(state, score_clock_now_ms);
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);
@@ -1213,6 +1235,26 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
                     }
+                    SimSoundEvent::MatchOutcome { owner, kind } => {
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .is_some_and(|local| local.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let (eva_key, fallback) = outcome_eva_entry(kind, faction);
+                        let eva_sound_id = state
+                            .eva_registry
+                            .get(eva_key, faction)
+                            .unwrap_or(fallback)
+                            .to_string();
+                        GameSoundEvent::OutcomeEva { eva_sound_id }
+                    }
                     SimSoundEvent::WallSold { receiver } => {
                         let receiver_name = sim.interner.resolve(receiver);
                         let Some(event) = wall_sell_sound_for_local(
@@ -1521,7 +1563,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                 }
             }
-            if tick_result.frame_committed {
+            // A terminal EventClass command still belongs to the deterministic
+            // command stream even though Main_Tick skips its frame commit.
+            // Recording a non-empty terminal batch lets diagnostic playback
+            // reproduce the same EXIT dispatch and one-shot terminal edge.
+            if tick_result.frame_committed || !due_commands.is_empty() {
                 if let Some(log) = &mut sim.replay_log {
                     log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
                 }
@@ -2192,8 +2238,9 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, rebuild_dynamic_terrain_navigation, upsert_overlay_entries,
-        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
+        finish_fire_effect_batch, outcome_eva_entry, rebuild_dynamic_terrain_navigation,
+        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
+        world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2219,6 +2266,24 @@ mod tests {
             overlay_id,
             frame,
         }
+    }
+
+    #[test]
+    fn gsi_01_04_outcome_transition_resolves_exact_standard_eva_entries() {
+        use crate::sim::house_state::HouseOutcomeKind;
+
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Victory, "Allied"),
+            ("EVA_YouAreVictorious", "ceva022")
+        );
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Victory, "Russian"),
+            ("EVA_YouAreVictorious", "csof022")
+        );
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Defeat, "Yuri"),
+            ("EVA_YouHaveLost", "cyur023")
+        );
     }
 
     #[test]

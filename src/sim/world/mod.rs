@@ -363,6 +363,13 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
+    /// One accepted HouseClass win/loss transition. The app resolves the
+    /// local owner's faction-specific STANDARD EVA; this edge is transient so
+    /// loading a mid-Savour snapshot cannot replay the announcement.
+    MatchOutcome {
+        owner: InternedId,
+        kind: crate::sim::house_state::HouseOutcomeKind,
+    },
     /// Global `[AudioVisual] SellSound=` for a successful wall-sale event.
     /// The EventClass receiver can differ from the wall owner.
     WallSold { receiver: InternedId },
@@ -770,6 +777,10 @@ pub struct Simulation {
     /// front-end connection/session facts, so they are transient and un-hashed.
     #[serde(skip)]
     pub quit_requested: bool,
+    /// One-shot owner-tagged edge raised only when a due native EXIT command
+    /// executes at the EventClass tail. App teardown consumes and clears it.
+    #[serde(skip)]
+    executed_exit_owner: Option<InternedId>,
     #[serde(skip)]
     pub connection_lost: bool,
     /// Pending gameplay commands waiting for their scheduled execution tick.
@@ -1922,6 +1933,7 @@ impl Simulation {
             replay_log: None,
             input_delay_ticks: 2,
             quit_requested: false,
+            executed_exit_owner: None,
             connection_lost: false,
             pending_commands: Vec::new(),
             trigger_runtime: TriggerRuntime::default(),
@@ -2170,6 +2182,11 @@ impl Simulation {
         self.pending_commands.push(cmd);
     }
 
+    /// Consume the terminal edge raised by one executed EXIT command.
+    pub(crate) fn take_executed_exit_owner(&mut self) -> Option<InternedId> {
+        self.executed_exit_owner.take()
+    }
+
     /// Drain commands that are due for the next tick from `pending_commands`.
     /// Returns owned commands; remaining commands stay queued.
     pub fn take_due_commands(&mut self) -> Vec<CommandEnvelope> {
@@ -2318,15 +2335,18 @@ impl Simulation {
     }
 
     fn termination_frame_requested(&self) -> bool {
+        let contending_houses = self.contending_house_count();
         self.quit_requested
             || self.connection_lost
             || self.houses.values().any(|house| {
                 house.is_human
-                    && (house.is_defeated
-                        || house.has_lost
-                        // VERA-internal opponent precondition; gamemd equivalent
-                        // UNCHECKED. See `contending_house_count`.
-                        || (self.contending_house_count() > 1 && house.has_won))
+                    && house.outcome_state.is_some_and(|outcome| {
+                        outcome.exit_ready
+                        && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
+                            // VERA-internal opponent precondition; gamemd equivalent
+                            // UNCHECKED. See `contending_house_count`.
+                            || contending_houses > 1)
+                    })
             })
     }
 
@@ -2994,6 +3014,14 @@ impl Simulation {
     /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
     fn check_defeat(&mut self, rules: Option<&RuleSet>) {
+        let outcome_tick = self.session.tick.saturating_add(1);
+        let savour_frames = crate::rules::ruleset::savour_delay_frames(
+            rules
+                .map(|rules| rules.general.savour_delay_minutes)
+                // RulesClass__Constructor @ 0x00665650 stores the exact f64
+                // default 0.03 before any optional INI ReadDouble override.
+                .unwrap_or(0.03),
+        );
         // Short Game defeats houses with no buildings unless a BaseUnit remains.
         // Long games wait for all owned objects.
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
@@ -3011,17 +3039,25 @@ impl Simulation {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
             };
             if should_defeat {
-                if let Some(h) = self.houses.get_mut(&owner) {
+                let accepted = if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                     // A house that owns nothing (or, in Short Game, has no base
-                    // left) has lost from its own perspective. gamemd sets HasLost
-                    // via Flag_To_Lose after a borrowed-time delay; we commit the
-                    // end-state directly. NOTE: gamemd does NOT destroy the
+                    // left) has lost from its own perspective. Flag_To_Lose owns
+                    // the result transition and grace timer. NOTE: gamemd does
+                    // NOT destroy the
                     // defeated house's remaining objects — it scatters surviving
                     // units (ScatterAllUnits) and they persist; hard object
                     // removal only happens under the non-standard SpecialFlags
                     // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
-                    h.has_lost = true;
+                    h.flag_to_lose(outcome_tick, savour_frames)
+                } else {
+                    false
+                };
+                if accepted {
+                    self.sound_events.push(SimSoundEvent::MatchOutcome {
+                        owner,
+                        kind: crate::sim::house_state::HouseOutcomeKind::Defeat,
+                    });
                 }
             }
         }
@@ -3038,39 +3074,51 @@ impl Simulation {
             .map(|(k, _)| *k)
             .collect();
 
-        if alive.is_empty() {
-            return;
-        }
-
         if alive.len() == 1 {
             // Last player standing.
             if let Some(h) = self.houses.get_mut(&alive[0]) {
-                h.has_won = true;
-            }
-            return;
-        }
-
-        // O(n^2) mutual-alliance check. Native alliance is directional — each
-        // house owns its own ally bits — and the game-over scan requires BOTH
-        // houses of a pair to name the other, so a one-way alliance must not end
-        // the match.
-        let all_allied = alive.iter().all(|a| {
-            alive.iter().all(|b| {
-                a == b
-                    || crate::map::houses::are_houses_mutually_allied(
-                        &self.house_alliances,
-                        self.interner.resolve(*a),
-                        self.interner.resolve(*b),
-                    )
-            })
-        });
-
-        if all_allied {
-            for &owner in &alive {
-                if let Some(h) = self.houses.get_mut(&owner) {
-                    h.has_won = true;
+                if h.flag_to_win(outcome_tick, savour_frames) {
+                    self.sound_events.push(SimSoundEvent::MatchOutcome {
+                        owner: alive[0],
+                        kind: crate::sim::house_state::HouseOutcomeKind::Victory,
+                    });
                 }
             }
+        } else if !alive.is_empty() {
+            // O(n^2) mutual-alliance check. Native alliance is directional — each
+            // house owns its own ally bits — and the game-over scan requires BOTH
+            // houses of a pair to name the other, so a one-way alliance must not end
+            // the match.
+            let all_allied = alive.iter().all(|a| {
+                alive.iter().all(|b| {
+                    a == b
+                        || crate::map::houses::are_houses_mutually_allied(
+                            &self.house_alliances,
+                            self.interner.resolve(*a),
+                            self.interner.resolve(*b),
+                        )
+                })
+            });
+
+            if all_allied {
+                for &owner in &alive {
+                    if let Some(h) = self.houses.get_mut(&owner) {
+                        if h.flag_to_win(outcome_tick, savour_frames) {
+                            self.sound_events.push(SimSoundEvent::MatchOutcome {
+                                owner,
+                                kind: crate::sim::house_state::HouseOutcomeKind::Victory,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // HouseClass::Update @ 0x004F8440 advances the accepted result timer
+        // in the house rung. The expiry frame is terminal and therefore skips
+        // the wrapping frame commit below, matching Main_Tick's early return.
+        for house in self.houses.values_mut() {
+            house.advance_outcome_savour(outcome_tick);
         }
     }
 

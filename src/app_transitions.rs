@@ -88,6 +88,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
 }
 
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
+    crate::app::reset_scenario_exit_runtime(state);
     let startup = result.startup;
     let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();
     // A loaded world is not timed until the launch handoff actually reaches
