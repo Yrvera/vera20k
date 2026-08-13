@@ -265,6 +265,7 @@ impl Simulation {
                 sequences,
                 &self.session.game_options,
                 type_name,
+                self.session.binary_frame,
             );
             if finished {
                 self.release_move_sound(id);

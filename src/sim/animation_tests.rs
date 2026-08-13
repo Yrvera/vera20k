@@ -12,6 +12,7 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::game_options::GameOptions;
 use crate::sim::intern::StringInterner;
+use crate::sim::movement::FacingClass;
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
@@ -30,6 +31,7 @@ fn test_def(
         facing_multiplier: frame_count,
         frame_delay,
         normalized: false,
+        completion_facing: None,
         loop_mode,
         facing_slots: FacingSlots::InfantryTable,
     }
@@ -82,6 +84,7 @@ fn test_resolve_facing_multiplier_differs_from_frame_count() {
         facing_multiplier: 8,
         frame_delay: 1,
         normalized: false,
+        completion_facing: None,
         loop_mode: LoopMode::Loop,
         facing_slots: FacingSlots::InfantryTable,
     };
@@ -162,6 +165,7 @@ fn dron_walk_def() -> SequenceDef {
         facing_multiplier: 6,
         frame_delay: 3,
         normalized: false,
+        completion_facing: None,
         loop_mode: LoopMode::Loop,
         facing_slots: FacingSlots::VehicleOctant,
     }
@@ -423,7 +427,13 @@ fn test_tick_switches_to_walk_with_movement() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Walk);
@@ -445,7 +455,13 @@ fn test_tick_switches_to_stand_without_movement() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Stand);
@@ -465,7 +481,13 @@ fn test_tick_advances_walk_frame() {
 
     // Default walk delay is three reached native frames.
     for _ in 0..3 {
-        tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+        tick_animations(
+            &mut store,
+            &sequences,
+            &GameOptions::default(),
+            &interner,
+            0,
+        );
     }
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
@@ -496,6 +518,7 @@ fn test_tick_attack_triggers_fire_animation() {
             facing_multiplier: 6,
             frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -503,10 +526,94 @@ fn test_tick_attack_triggers_fire_animation() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), set);
 
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
 
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
     assert_eq!(anim.sequence, SequenceKind::Attack);
+}
+
+#[test]
+fn gsi_05_07_idle_completion_snaps_current_hint_before_stand_dispatch() {
+    let mut interner = make_test_interner();
+    let mut store = EntityStore::new();
+    let mut entity = make_infantry_entity(1, 0, &mut interner);
+    entity.animation = Some(Animation::new(SequenceKind::Idle1));
+    entity.body_facing = Some(FacingClass::new(0, 4));
+    store.insert(entity);
+
+    let mut idle = test_def(56, 1, 1, 1, LoopMode::TransitionTo(SequenceKind::Stand));
+    idle.completion_facing = Some(128);
+    let mut stand = test_def(0, 1, 8, 1, LoopMode::Loop);
+    // Proves completion reads the definition that just finished, not `next`.
+    stand.completion_facing = Some(64);
+    let mut set = SequenceSet::new();
+    set.insert(SequenceKind::Idle1, idle);
+    set.insert(SequenceKind::Stand, stand);
+    let mut sequences = BTreeMap::new();
+    sequences.insert("E1".to_string(), set);
+
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        77,
+    );
+
+    let entity = store.get(1).expect("entity");
+    assert_eq!(
+        entity.animation.as_ref().expect("animation").sequence,
+        SequenceKind::Stand
+    );
+    assert_eq!(entity.facing, 128);
+    let body = entity.body_facing.as_ref().expect("body facing");
+    assert_eq!(body.destination(), 0x8000);
+    assert_eq!(body.current(77), 0x8000);
+    assert!(!body.is_rotating(77));
+    assert_eq!(body.timer_start_frame(), Some(77));
+}
+
+#[test]
+fn gsi_05_07_unhinted_completion_preserves_entity_and_body_facing() {
+    let mut interner = make_test_interner();
+    let mut store = EntityStore::new();
+    let mut entity = make_infantry_entity(1, 32, &mut interner);
+    entity.animation = Some(Animation::new(SequenceKind::Idle1));
+    entity.body_facing = Some(FacingClass::new(0x2000, 4));
+    store.insert(entity);
+
+    let mut set = SequenceSet::new();
+    set.insert(
+        SequenceKind::Idle1,
+        test_def(56, 1, 1, 1, LoopMode::TransitionTo(SequenceKind::Stand)),
+    );
+    set.insert(SequenceKind::Stand, test_def(0, 1, 8, 1, LoopMode::Loop));
+    let mut sequences = BTreeMap::new();
+    sequences.insert("E1".to_string(), set);
+
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        91,
+    );
+
+    let entity = store.get(1).expect("entity");
+    assert_eq!(
+        entity.animation.as_ref().expect("animation").sequence,
+        SequenceKind::Stand
+    );
+    assert_eq!(entity.facing, 32);
+    let body = entity.body_facing.as_ref().expect("body facing");
+    assert_eq!(body.destination(), 0x2000);
+    assert_eq!(body.current(91), 0x2000);
 }
 
 fn add_prone_sequences(set: &mut SequenceSet) {
@@ -535,6 +642,7 @@ fn add_prone_sequences(set: &mut SequenceSet) {
                 facing_multiplier,
                 frame_delay: 1,
                 normalized: false,
+                completion_facing: None,
                 loop_mode: next.map_or(LoopMode::Loop, LoopMode::TransitionTo),
                 facing_slots: FacingSlots::InfantryTable,
             },
@@ -554,7 +662,13 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
     let mut idle = make_infantry_entity(1, 0, &mut interner);
     idle.infantry.as_mut().unwrap().is_prone = true;
     store.insert(idle);
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Prone
@@ -564,7 +678,13 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
     moving.infantry.as_mut().unwrap().is_prone = true;
     moving.movement_target = Some(make_movement_target());
     store.insert(moving);
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(
         store.get(2).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Crawl
@@ -578,7 +698,13 @@ fn test_runtime_prone_drives_prone_crawl_and_fireprone() {
         fire_frame: 2,
     });
     store.insert(firing);
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(
         store.get(3).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::FireProne
@@ -605,6 +731,7 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             facing_multiplier: 3,
             frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Prone),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -618,6 +745,7 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
             facing_multiplier: 1,
             frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -625,13 +753,25 @@ fn test_down_and_up_transitions_are_preserved_until_complete() {
     let mut sequences = BTreeMap::new();
     sequences.insert("E1".to_string(), set);
 
-    tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
         SequenceKind::Down
     );
     for _ in 0..3 {
-        tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+        tick_animations(
+            &mut store,
+            &sequences,
+            &GameOptions::default(),
+            &interner,
+            0,
+        );
     }
     assert_eq!(
         store.get(1).unwrap().animation.as_ref().unwrap().sequence,
@@ -652,7 +792,13 @@ fn test_tick_dying_entity_skips_transitions() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    let dead = tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
 
     // Dying entity should NOT switch to Walk despite having movement_target.
     let anim = store.get(1).unwrap().animation.as_ref().unwrap();
@@ -678,7 +824,13 @@ fn test_tick_dying_entity_returns_finished_id() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    let dead = tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(dead, vec![1]);
 }
 
@@ -699,7 +851,13 @@ fn test_tick_dying_entity_returns_id_on_finishing_visit() {
     let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
     sequences.insert("E1".to_string(), default_infantry_sequences());
 
-    let dead = tick_animations(&mut store, &sequences, &GameOptions::default(), &interner);
+    let dead = tick_animations(
+        &mut store,
+        &sequences,
+        &GameOptions::default(),
+        &interner,
+        0,
+    );
     assert_eq!(dead, vec![1]);
     assert!(store.get(1).unwrap().animation.as_ref().unwrap().finished);
 }

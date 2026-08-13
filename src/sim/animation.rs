@@ -230,6 +230,10 @@ pub struct SequenceDef {
     pub frame_delay: u16,
     /// Whether native game-speed normalization applies to this action delay.
     pub normalized: bool,
+    /// Facing byte snapped when this definition completes and dispatches its
+    /// transition. `None` is native record value -1 (no completion update).
+    #[serde(default)]
+    pub completion_facing: Option<u8>,
     /// Behavior when the sequence reaches its final frame.
     pub loop_mode: LoopMode,
     /// Which native facing-to-slot rule converts the facing byte into a frame
@@ -457,6 +461,7 @@ fn tick_animations_impl(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
     tick_dying: bool,
 ) -> Vec<u64> {
     let mut dying_finished: Vec<u64> = Vec::new();
@@ -581,6 +586,15 @@ fn tick_animations_impl(
         };
 
         if let Some(next) = advance_animation(anim, def, game_options) {
+            // gamemd-derived: `InfantryClass::DoType_Sequencer` @ 0x00520AE0
+            // (0x00520CEB..0x00520D16) updates the completed action's facing
+            // before dispatching its next/default action.
+            if let Some(facing) = def.completion_facing {
+                entity.facing = facing;
+                if let Some(body_facing) = entity.body_facing.as_mut() {
+                    body_facing.snap(u16::from(facing) << 8, binary_frame);
+                }
+            }
             anim.switch_to(next);
         }
     }
@@ -593,8 +607,16 @@ pub fn tick_animations(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
 ) -> Vec<u64> {
-    tick_animations_impl(entities, sequences, game_options, interner, true)
+    tick_animations_impl(
+        entities,
+        sequences,
+        game_options,
+        interner,
+        binary_frame,
+        true,
+    )
 }
 
 /// Advance only living entity animations. Dying animation completion is owned
@@ -605,8 +627,16 @@ pub(crate) fn tick_non_dying_animations(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
 ) {
-    let _ = tick_animations_impl(entities, sequences, game_options, interner, false);
+    let _ = tick_animations_impl(
+        entities,
+        sequences,
+        game_options,
+        interner,
+        binary_frame,
+        false,
+    );
 }
 
 /// Advance one dying object's death sequence during its own scheduler turn.
@@ -617,6 +647,7 @@ pub(crate) fn tick_dying_animation(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     type_name: &str,
+    _binary_frame: u32,
 ) -> bool {
     debug_assert!(entity.dying);
     let Some(anim) = entity.animation.as_mut() else {
@@ -704,6 +735,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 1,
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -717,6 +749,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 6,
             frame_delay: DEFAULT_WALK_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -730,6 +763,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -743,6 +777,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -756,6 +791,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::HoldLast,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -769,6 +805,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::HoldLast,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -793,6 +830,7 @@ pub fn default_building_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },

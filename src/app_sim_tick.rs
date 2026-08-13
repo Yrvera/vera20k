@@ -1072,12 +1072,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
             census_tick = tick_result.frame_committed.then_some(tick_result.tick);
             let game_options = sim.session.game_options.clone();
+            let binary_frame = sim.session.binary_frame;
             let (ents, interner) = sim.entities_mut_and_interner();
             animation::tick_non_dying_animations(
                 ents,
                 &state.animation_sequences,
                 &game_options,
                 interner,
+                binary_frame,
             );
             drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
             animation::tick_voxel_animations(sim.entities_mut());

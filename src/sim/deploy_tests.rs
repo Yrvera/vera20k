@@ -1313,6 +1313,7 @@ fn combat_fires_during_deployed_attack() {
             facing_multiplier: 1,
             frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -1326,6 +1327,7 @@ fn combat_fires_during_deployed_attack() {
             facing_multiplier: 6,
             frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Deployed),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -1337,6 +1339,7 @@ fn combat_fires_during_deployed_attack() {
         &sequences,
         &crate::sim::game_options::GameOptions::default(),
         &sim.interner,
+        0,
     );
     assert_eq!(
         sim.substrate

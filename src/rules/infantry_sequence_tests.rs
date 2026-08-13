@@ -31,6 +31,30 @@ fn test_parse_sequence_value_facing_hint_ne() {
 }
 
 #[test]
+fn gsi_05_07_all_completion_facing_tokens_map_to_dir_bytes() {
+    let expected = [
+        ("N", 0),
+        ("NE", 32),
+        ("E", 64),
+        ("SE", 96),
+        ("S", 128),
+        ("SW", 160),
+        ("W", 192),
+        ("NW", 224),
+    ];
+    for (token, facing) in expected {
+        let entry =
+            parse_sequence_value(&format!("0,1,0,{token}")).expect("valid completion-facing token");
+        assert_eq!(
+            completion_facing(entry.facing_hint),
+            Some(facing),
+            "{token}"
+        );
+    }
+    assert_eq!(completion_facing(None), None);
+}
+
+#[test]
 fn test_parse_sequence_value_single_frame() {
     let entry: InfantrySequenceEntry =
         parse_sequence_value("0,1,1").expect("Should parse Ready=0,1,1");
@@ -301,6 +325,32 @@ Idle1=56,15,0,S
     assert_eq!(
         idle.facings, 1,
         "facings=0 in INI should become 1 in engine"
+    );
+}
+
+#[test]
+fn gsi_05_07_sequence_build_preserves_completion_facing_and_native_none() {
+    let ini = IniFile::from_str("[TestSequence]\nIdle1=56,15,0,S\nIdle2=71,15,0,E\nReady=0,1,1\n");
+    let registry = parse_infantry_sequence_registry(&ini);
+    let set = build_sequence_set(registry.get("TESTSEQUENCE").expect("sequence"));
+
+    assert_eq!(
+        set.get(&SequenceKind::Idle1)
+            .expect("Idle1")
+            .completion_facing,
+        Some(128)
+    );
+    assert_eq!(
+        set.get(&SequenceKind::Idle2)
+            .expect("Idle2")
+            .completion_facing,
+        Some(64)
+    );
+    assert_eq!(
+        set.get(&SequenceKind::Stand)
+            .expect("Stand")
+            .completion_facing,
+        None
     );
 }
 

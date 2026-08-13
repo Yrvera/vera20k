@@ -83,6 +83,7 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                 facing_multiplier: walk_frames,
                 frame_delay: art.walk_rate.max(1),
                 normalized: false,
+                completion_facing: None,
                 loop_mode: LoopMode::Loop,
                 facing_slots: FacingSlots::VehicleOctant,
             },
@@ -106,6 +107,7 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
             facing_multiplier: stand_stride,
             frame_delay: art.idle_rate.max(1),
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::VehicleOctant,
         },
@@ -126,6 +128,7 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                 // in until then.
                 frame_delay: art.walk_rate.max(1),
                 normalized: false,
+                completion_facing: None,
                 loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
                 facing_slots: FacingSlots::VehicleOctant,
             },
