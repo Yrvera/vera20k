@@ -166,13 +166,25 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
     if state.screen != GameScreen::InGame {
         return Vec::new();
     }
-    let font = &state.bit_font;
-    let x = state.message_list.x() as f32;
-    state
-        .message_list
-        .messages()
+    message_text_instances(
+        &state.bit_font,
+        &state.message_list,
+        [state.camera_x, state.camera_y],
+    )
+}
+
+fn message_text_instances(
+    font: &crate::render::bit_font::BitFont,
+    list: &crate::ui::messages::MessageList,
+    camera_offset: [f32; 2],
+) -> Vec<SpriteInstance> {
+    let x = list.x() as f32;
+    list.messages()
         .iter()
         .flat_map(|m| {
+            // Message rows are screen-space, but `draw_pooled_ui` binds the
+            // live world camera and the shader subtracts it. Add that camera
+            // back here so scrolling cannot displace the HUD text.
             crate::render::sidebar_text::build_text(
                 font,
                 &m.text,
@@ -181,7 +193,7 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
                 1.0,
                 0.00022,
                 m.rgb,
-                [0.0, 0.0],
+                camera_offset,
             )
         })
         .collect()
@@ -279,5 +291,38 @@ mod tests {
             normalized(HouseColorIndex(1)),
             "runtime scheme 3 addresses undoubled Colors entry 1"
         );
+    }
+
+    #[test]
+    fn gsi_02_14_message_glyphs_compensate_for_ui_camera() {
+        use crate::render::bit_font::tests::make_test_font;
+
+        let font = make_test_font(&[(b'x' as u16, 6)], 4);
+        let mut list = crate::ui::messages::MessageList::new(3, 0, 6, 1_000);
+        list.add_message(
+            &crate::ui::messages::MessagePost {
+                prefix: None,
+                text: "xxx",
+                rgb: [1.0, 1.0, 1.0],
+                timeout_ms: None,
+                silent: true,
+            },
+            0,
+            &|text| font.text_width(text) as i32,
+        );
+
+        let at_origin = message_text_instances(&font, &list, [0.0, 0.0]);
+        let ui_camera = [640.0_f32, 480.0_f32];
+        let panned = message_text_instances(&font, &list, ui_camera);
+
+        assert_eq!(at_origin.len(), 3);
+        assert_eq!(panned.len(), at_origin.len());
+        for (origin, shifted) in at_origin.iter().zip(&panned) {
+            let after_shader_subtraction = [
+                shifted.position[0] - ui_camera[0].round(),
+                shifted.position[1] - ui_camera[1].round(),
+            ];
+            assert_eq!(after_shader_subtraction, origin.position);
+        }
     }
 }
