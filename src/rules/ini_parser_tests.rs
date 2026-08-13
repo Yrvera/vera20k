@@ -476,6 +476,23 @@ fn ordered_pass_registry_union_is_case_insensitive_by_value() {
 }
 
 #[test]
+fn gsi_05_01_type_allocation_rejects_native_none_sentinels() {
+    let processed = RulesLayerStack::new(IniFile::from_str(
+        "[VehicleTypes]\n0=none\n1=<NONE>\n2= NONE \n3=\t<none>\t\n4=NONE_TANK\n",
+    ))
+    .process();
+
+    assert_eq!(
+        processed
+            .ini()
+            .section("VehicleTypes")
+            .expect("rebuilt vehicle registry")
+            .get_values(),
+        vec!["NONE_TANK"]
+    );
+}
+
+#[test]
 fn later_pass_missing_scalar_key_preserves_live_value() {
     let processed = process_rules_passes(
         "[General]\nBuildSpeed=.7\nFlightLevel=1500\n",

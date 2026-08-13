@@ -9,6 +9,7 @@
 use crate::map::entities::EntityCategory;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::world::Simulation;
+use crate::util::native_x87::{NativeF32Bits, X87Chop53};
 
 pub const DISPLAY_LAYER_COUNT: usize = 5;
 
@@ -16,10 +17,15 @@ const RTTI_UNIT: i32 = 1;
 const RTTI_AIRCRAFT: i32 = 2;
 const RTTI_ANIM: i32 = 4;
 const RTTI_BUILDING: i32 = 6;
+const RTTI_BULLET: i32 = 8;
 const RTTI_INFANTRY: i32 = 0x0f;
 const RTTI_PARTICLE_SYSTEM: i32 = 0x18;
+const RTTI_TERRAIN: i32 = 0x24;
+const RTTI_WAVE: i32 = 0x240;
 const SYNC_EXEMPT_ANIM_ID: i32 = -2;
 const LEPTONS_PER_CELL: i32 = 256;
+const CELL_CENTER_LEPTON: i32 = 128;
+const WAVE_EXTENDED_ENDPOINT_SCALE: NativeF32Bits = NativeF32Bits::from_bits(0x3f86_6666);
 
 /// One ObjectClass entry as seen by a display-layer checksum pass.
 ///
@@ -69,6 +75,8 @@ pub enum MultiplayerChecksumError {
     HouseOrderCoverage { registered: usize, stored: usize },
     #[error("LogicClass checksum entry {0} is absent from every object registry")]
     MissingLogicObject(u64),
+    #[error("LogicClass Wave {id} has invalid native wave type {wave_type}")]
+    InvalidWaveType { id: u64, wave_type: u8 },
 }
 
 /// Exact 32-bit fold used by the active multiplayer checksum.
@@ -166,6 +174,40 @@ fn entity_world_xy(entity: &GameEntity) -> (i32, i32) {
 }
 
 #[inline]
+fn terrain_world_xy(rx: u16, ry: u16) -> (i32, i32) {
+    // gamemd-derived: `TerrainClass__Constructor @ 0x0071BB90` converts the
+    // map cell passed to Unlimbo to `(cell * 0x100) + 0x80` on both axes.
+    (
+        i32::from(rx) * LEPTONS_PER_CELL + CELL_CENTER_LEPTON,
+        i32::from(ry) * LEPTONS_PER_CELL + CELL_CENTER_LEPTON,
+    )
+}
+
+#[inline]
+fn wave_object_axis(source: i32, target: i32, wave_type: u8) -> Option<i32> {
+    let scale = match wave_type {
+        0 | 3 => return Some(source),
+        1 | 2 => X87Chop53::load_f32(WAVE_EXTENDED_ENDPOINT_SCALE).ok()?,
+        _ => return None,
+    };
+    let complement = X87Chop53::sub(X87Chop53::load_f32(NativeF32Bits::ONE).ok()?, scale);
+    let source_term = X87Chop53::mul(X87Chop53::load_i32(source), scale);
+    let target_term = X87Chop53::mul(X87Chop53::load_i32(target), complement);
+    i32::try_from(X87Chop53::ftol_i64(X87Chop53::add(source_term, target_term)).ok()?).ok()
+}
+
+#[inline]
+fn wave_world_xy(wave: &crate::sim::wave::Wave) -> Option<(i32, i32)> {
+    // gamemd-derived: `WaveClass__Constructor @ 0x0075E950` Reveals at the
+    // coordinate produced by `0x00761640/0x00762070`: source for types 0/3,
+    // and ftol(source*1.05f + target*(1-1.05f)) for types 1/2.
+    Some((
+        wave_object_axis(wave.source.x, wave.target.x, wave.wave_type)?,
+        wave_object_axis(wave.source.y, wave.target.y, wave.wave_type)?,
+    ))
+}
+
+#[inline]
 fn primary_facing(entity: &GameEntity, frame: u32) -> u16 {
     entity
         .body_facing
@@ -260,6 +302,9 @@ impl Simulation {
         }
 
         for &stable_id in self.substrate.logic.as_slice() {
+            // gamemd-derived: active `Compute_Game_Sync_Checksum @ 0x0064DAB0`
+            // reads ObjectClass +0x9c/+0xa0 directly and folds the full virtual
+            // WhatAmI value in stored LogicClass order.
             let object = if let Some(entity) = self.substrate.entities.get(stable_id) {
                 let (world_x, world_y) = entity_world_xy(entity);
                 ChecksumObject::new(world_x, world_y, entity_rtti(entity.category), 0)
@@ -272,6 +317,18 @@ impl Simulation {
                 )
             } else if let Some(system) = self.substrate.particle_systems.get(stable_id) {
                 ChecksumObject::new(system.coords.x, system.coords.y, RTTI_PARTICLE_SYSTEM, 0)
+            } else if let Some(terrain) = self.production.terrain_objects.get(&stable_id) {
+                let (world_x, world_y) = terrain_world_xy(terrain.rx, terrain.ry);
+                ChecksumObject::new(world_x, world_y, RTTI_TERRAIN, 0)
+            } else if let Some(projectile) = self.projectiles.get(stable_id) {
+                ChecksumObject::new(projectile.position.x, projectile.position.y, RTTI_BULLET, 0)
+            } else if let Some(wave) = self.waves.get(stable_id) {
+                let (world_x, world_y) =
+                    wave_world_xy(wave).ok_or(MultiplayerChecksumError::InvalidWaveType {
+                        id: stable_id,
+                        wave_type: wave.wave_type,
+                    })?;
+                ChecksumObject::new(world_x, world_y, RTTI_WAVE, 0)
             } else {
                 return Err(MultiplayerChecksumError::MissingLogicObject(stable_id));
             };
@@ -292,9 +349,186 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChecksumObject, RetailChecksumAccumulator, SYNC_EXEMPT_ANIM_ID, facing_checksum_byte,
+        ChecksumObject, MultiplayerChecksumError, RetailChecksumAccumulator, SYNC_EXEMPT_ANIM_ID,
+        facing_checksum_byte,
     };
+    use crate::map::entities::EntityCategory;
+    use crate::rules::particle_system_type::ParticleSystemTypeId;
+    use crate::sim::anim_class::{AnimDrawRuntime, AnimObject, AnimRuntime, AnimWorldCoord};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::InternedId;
+    use crate::sim::particles::ParticleSystem;
+    use crate::sim::projectile::{
+        ProjectileCollisionPolicy, ProjectileCoord, ProjectilePayload, ProjectileSpawn,
+        ProjectileTarget, ProjectileTrajectory, ProjectileVelocity, ProjectileVisualState,
+        TargetExpiryPolicy,
+    };
+    use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
+    use crate::sim::timer::CdTimer;
+    use crate::sim::wave::Wave;
     use crate::sim::world::Simulation;
+    use crate::util::fixed_math::SimFixed;
+    use glam::IVec3;
+
+    const FAMILY_COUNT: usize = 6;
+
+    fn test_anim(stable_id: u64, native_unique_id: i32, x: i32, y: i32) -> AnimObject {
+        AnimObject {
+            stable_id,
+            native_unique_id,
+            type_id: InternedId::from_index(0),
+            world_coord: AnimWorldCoord { x, y, z: 0 },
+            draw_flags: 0,
+            z_adjust: 0,
+            effective_end: 1,
+            effective_loop_end: 1,
+            runtime: AnimRuntime {
+                current_frame: 0,
+                frame_step: 1,
+                delay_remaining: 0,
+                rate_reload: 1,
+                frame_timer: CdTimer::default(),
+                loop_remaining: 1,
+                first_ai_guard: false,
+                constructor_reverse: false,
+                inactive: false,
+            },
+            draw_runtime: AnimDrawRuntime::default(),
+            in_logic_vector: false,
+            owner_entity: None,
+            start_sound_active: false,
+            stop_sound_id: None,
+        }
+    }
+
+    fn test_projectile(origin: ProjectileCoord) -> ProjectileSpawn {
+        ProjectileSpawn {
+            source_id: 0,
+            origin,
+            target: ProjectileTarget::Cell { rx: 0, ry: 0 },
+            initial_target_position: ProjectileCoord::new(128, 128, 0),
+            payload: ProjectilePayload {
+                base_damage: 0,
+                warhead: InternedId::from_index(0),
+                weapon: InternedId::from_index(0),
+                owner: InternedId::from_index(0),
+            },
+            speed_leptons_per_frame: 1,
+            velocity: ProjectileVelocity::new(0, 0, 0),
+            trajectory: ProjectileTrajectory::Straight,
+            guidance: None,
+            visual: ProjectileVisualState::new(0, 0, 0),
+            arm_frames: 0,
+            fuse_frames: None,
+            ranged_fuse: false,
+            tracks_target: false,
+            target_expiry: TargetExpiryPolicy::Expire,
+            collision: ProjectileCollisionPolicy::NONE,
+        }
+    }
+
+    fn six_family_sim(
+        order: [usize; FAMILY_COUNT],
+    ) -> (Simulation, [ChecksumObject; FAMILY_COUNT]) {
+        let mut sim = Simulation::with_seed(0x16_11_2026);
+
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::test_default(entity_id, "ORCA", "Americans", 3, 4);
+        entity.category = EntityCategory::Aircraft;
+        sim.substrate.entities.insert(entity);
+
+        let anim_id = sim.allocate_stable_id();
+        sim.substrate.anims.insert(test_anim(anim_id, 77, 731, -29));
+
+        let particle_id = sim.allocate_stable_id();
+        sim.substrate.particle_systems.insert(ParticleSystem {
+            stable_id: particle_id,
+            in_logic_vector: false,
+            type_id: ParticleSystemTypeId(0),
+            coords: IVec3::new(-311, 912, 0),
+            offset: IVec3::ZERO,
+            particles: Vec::new(),
+            spawn_timer: SimFixed::from_num(0),
+            lifetime: -1,
+            spark_spawn_frames: 0,
+            facing: 0,
+            marked_for_deletion: false,
+            directionless: true,
+            attached_entity: None,
+            owner_entity: None,
+            target_coords: IVec3::ZERO,
+            owner_house: None,
+            done_spawning: false,
+        });
+
+        let terrain_id = sim.allocate_stable_id();
+        sim.production.terrain_objects.insert(
+            terrain_id,
+            TerrainObjectState {
+                stable_id: terrain_id,
+                in_logic_vector: false,
+                type_ref: InternedId::from_index(0),
+                rx: 7,
+                ry: 9,
+                health: 10,
+                max_health: 10,
+                occupation_bits: 0,
+                lifecycle: TerrainObjectLifecycle::Live,
+            },
+        );
+
+        let bullet_id = sim.allocate_stable_id();
+        sim.projectiles.spawn(
+            bullet_id,
+            test_projectile(ProjectileCoord::new(1234, -567, 0)),
+        );
+
+        let wave_id = sim.allocate_stable_id();
+        sim.waves.spawn(
+            wave_id,
+            Wave::new(
+                1,
+                ProjectileCoord::new(1000, 2000, 0),
+                ProjectileCoord::new(0, 0, 0),
+            ),
+        );
+
+        let ids = [
+            entity_id,
+            anim_id,
+            particle_id,
+            terrain_id,
+            bullet_id,
+            wave_id,
+        ];
+        for index in order {
+            sim.register_live_object(ids[index]);
+        }
+
+        let expected_objects = [
+            ChecksumObject::new(3 * 256 + 128, 4 * 256 + 128, 2, 0),
+            ChecksumObject::new(731, -29, 4, 77),
+            ChecksumObject::new(-311, 912, 0x18, 0),
+            ChecksumObject::new(7 * 256 + 128, 9 * 256 + 128, 0x24, 0),
+            ChecksumObject::new(1234, -567, 8, 0),
+            // Native 1.05f endpoint extension truncates each positive axis.
+            ChecksumObject::new(1049, 2099, 0x240, 0),
+        ];
+        (sim, expected_objects)
+    }
+
+    fn expected_logic_checksum(
+        objects: [ChecksumObject; FAMILY_COUNT],
+        order: [usize; FAMILY_COUNT],
+        rng_sample: u32,
+    ) -> u32 {
+        let mut expected = RetailChecksumAccumulator::new();
+        for index in order {
+            expected.fold_object(objects[index]);
+        }
+        expected.fold_value(rng_sample);
+        expected.value()
+    }
 
     #[test]
     fn representative_fold_matches_the_native_32_bit_trace() {
@@ -353,5 +587,68 @@ mod tests {
         assert_eq!(frame.value, checksum_sample);
         assert_eq!(frame.diagnostic_rng_sample, diagnostic_sample);
         assert_eq!(sim.scenario_rng.next_u32(), reference.next_u32());
+    }
+
+    #[test]
+    fn gsi_16_11_six_family_logic_fold_uses_stored_order_direct_coords_and_full_rtti() {
+        let first_order = [5, 1, 4, 0, 3, 2];
+        let second_order = [2, 3, 0, 4, 1, 5];
+        let (mut first, first_objects) = six_family_sim(first_order);
+        let (mut second, second_objects) = six_family_sim(second_order);
+        let mut reference = first.scenario_rng.clone();
+        let checksum_sample = reference.next_u32();
+        let diagnostic_sample = reference.next_u32();
+
+        let first_frame = first
+            .compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
+            .unwrap();
+        let second_frame = second
+            .compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
+            .unwrap();
+
+        assert_eq!(
+            first_frame.value,
+            expected_logic_checksum(first_objects, first_order, checksum_sample)
+        );
+        assert_eq!(
+            second_frame.value,
+            expected_logic_checksum(second_objects, second_order, checksum_sample)
+        );
+        assert_ne!(first_frame.value, second_frame.value);
+        assert_eq!(first_frame.diagnostic_rng_sample, diagnostic_sample);
+        assert_eq!(second_frame.diagnostic_rng_sample, diagnostic_sample);
+        assert_eq!(first.scenario_rng.next_u32(), reference.next_u32());
+    }
+
+    #[test]
+    fn gsi_16_11_only_anim_minus_two_is_exempt_in_the_live_logic_resolver() {
+        let mut sim = Simulation::with_seed(0x16_11);
+        let anim_id = sim.allocate_stable_id();
+        sim.substrate
+            .anims
+            .insert(test_anim(anim_id, SYNC_EXEMPT_ANIM_ID, 500, 700));
+        sim.register_live_object(anim_id);
+        let mut reference = sim.scenario_rng.clone();
+        let checksum_sample = reference.next_u32();
+        let diagnostic_sample = reference.next_u32();
+
+        let frame = sim
+            .compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]])
+            .unwrap();
+
+        assert_eq!(frame.value, checksum_sample);
+        assert_eq!(frame.diagnostic_rng_sample, diagnostic_sample);
+        assert_eq!(sim.scenario_rng.next_u32(), reference.next_u32());
+    }
+
+    #[test]
+    fn gsi_16_11_dangling_logic_id_remains_a_hard_error() {
+        let mut sim = Simulation::new();
+        sim.substrate.logic.set_order_for_test(vec![91]);
+
+        assert_eq!(
+            sim.compute_retail_multiplayer_checksum([&[], &[], &[], &[], &[]]),
+            Err(MultiplayerChecksumError::MissingLogicObject(91))
+        );
     }
 }

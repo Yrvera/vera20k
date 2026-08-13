@@ -38,6 +38,7 @@ use crate::sim::pathfinding::PathGrid;
 pub(crate) struct ObjectAiCtx<'a> {
     pub(crate) path_grid: Option<&'a PathGrid>,
     pub(crate) overlay_registry: Option<&'a OverlayTypeRegistry>,
+    pub(crate) terrain_spawner_cells: Option<&'a std::collections::BTreeSet<(u16, u16)>>,
     pub(crate) miner_config: Option<&'a MinerConfig>,
     pub(crate) animation_sequences:
         Option<&'a std::collections::BTreeMap<String, crate::sim::animation::SequenceSet>>,
@@ -52,8 +53,9 @@ impl Simulation {
     ///
     /// Walks the live LogicVector order via `for_each_live_object` — the same
     /// re-read contract the native scheduler uses. Every present slot receives
-    /// its owner-local visit: anims and dying objects run lifecycle work, while
-    /// ordinary Techno objects enter `techno_ai_shell` for the `+0xC4`
+    /// its owner-local visit: Terrain, Bullet, Wave, Anim, and ParticleSystem
+    /// leaves dispatch in that slot, while ordinary Techno objects enter
+    /// `techno_ai_shell` for the `+0xC4`
     /// AI-counter increment and queued-mission promotion at the verified
     /// per-category AI position (see `Simulation::mission_host_promote`).
     pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
@@ -147,6 +149,101 @@ impl Simulation {
         if self.substrate.particle_systems.contains_key(id) {
             if let Some(rules) = rules {
                 crate::sim::particles::system_ai::tick_particle_system(self, rules, id);
+            }
+            return true;
+        }
+        if self.production.terrain_objects.contains_key(&id) {
+            crate::sim::terrain_spawn::tick_terrain_object_ai(
+                self,
+                id,
+                rules,
+                ctx.path_grid,
+                ctx.overlay_registry,
+                ctx.terrain_spawner_cells,
+            );
+            return true;
+        }
+        if self.projectiles.get(id).is_some() {
+            let terrain = self.resolved_terrain.as_ref();
+            let bridge_state = self.bridge_state.as_ref();
+            let overlay_grid = self.overlay_grid.as_ref();
+            let occupancy = &self.substrate.occupancy;
+            let entities = &self.substrate.entities;
+            let interner = &self.interner;
+            let house_alliances = &self.house_alliances;
+            let result = self
+                .projectiles
+                .advance_one(
+                    id,
+                    |target_id| {
+                        let target = entities
+                            .get(target_id)
+                            .filter(|entity| entity.is_alive() && !entity.dying)?;
+                        Some(crate::sim::projectile::ProjectileCoord::new(
+                            i32::from(target.position.rx) * 256
+                                + target.position.sub_x.to_num::<i32>(),
+                            i32::from(target.position.ry) * 256
+                                + target.position.sub_y.to_num::<i32>(),
+                            crate::sim::combat::object_world_z_leptons(target, terrain),
+                        ))
+                    },
+                    terrain,
+                    bridge_state,
+                    |projectile, candidate| {
+                        super::projectile_collides_at(
+                            terrain,
+                            occupancy,
+                            entities,
+                            interner,
+                            house_alliances,
+                            overlay_grid,
+                            ctx.overlay_registry,
+                            projectile,
+                            candidate,
+                        )
+                    },
+                )
+                .expect("projectile remained present for its Logic slot");
+            let terminal = !result.expired.is_empty() || !result.detonations.is_empty();
+            if let Some(rules) = rules {
+                self.commit_logic_projectile_detonations(
+                    rules,
+                    ctx.overlay_registry,
+                    &result.detonations,
+                );
+            } else {
+                // Rules-less fixture dispatch has no authoritative receiver
+                // contract. Production always commits at the Bullet slot.
+                self.pending_projectile_detonations
+                    .extend(result.detonations);
+            }
+            if terminal {
+                let retired = self.retire_non_entity_object(id);
+                debug_assert!(retired);
+            }
+            return true;
+        }
+        if self.waves.get(id).is_some() {
+            let (request, alive) = self
+                .waves
+                .advance_one(id)
+                .expect("wave remained present for its Logic slot");
+            if let Some(request) = request {
+                if let Some(rules) = rules {
+                    self.commit_logic_wave_damage_request(
+                        rules,
+                        ctx.overlay_registry,
+                        &request,
+                    );
+                } else {
+                    // Rules-less fixture dispatch retains the former buffer;
+                    // production Wave AI commits before lifetime retirement.
+                    self.pending_wave_damage_requests.push(request);
+                }
+            }
+            if !alive {
+                let retired = self.retire_non_entity_object(id);
+                debug_assert!(retired);
             }
             return true;
         }
@@ -2598,6 +2695,9 @@ mod tests {
             expected_rng.logical_state()
         );
 
+        // Native in-scenario load resets Scenario RNG; isolate mission-timer
+        // persistence by comparing against that same post-load baseline.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let hash = sim.state_hash();
         let bytes = GameSnapshot::save(&sim, 0, 0, "move_cadence", 0);
         let restored = GameSnapshot::load(&bytes).expect("snapshot").sim;
@@ -5210,6 +5310,9 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
             },
         );
         sim.set_logic_order_for_test(vec![1]);
+        // Native in-scenario load resets Scenario RNG; isolate MissionCom
+        // persistence by comparing against that same post-load baseline.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let hash_before = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);

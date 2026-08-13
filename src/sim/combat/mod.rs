@@ -56,7 +56,7 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
-use crate::sim::bridge_state::BridgeDamageEvent;
+use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::house_state::HouseState;
 use crate::sim::infantry;
@@ -448,6 +448,25 @@ impl EntityDamageEvent {
             receiver_flags: Some(receiver_flags),
             near_center_ic_isolation_eligible: false,
         }
+    }
+
+    /// `WaveClass::DamageArea` calls the concrete occupant receiver directly,
+    /// at distance zero, while both the wave and firer are still represented.
+    pub(crate) fn from_wave(event: WaveDamageEvent, entities: &EntityStore) -> Self {
+        Self::direct_receiver(
+            event.target_id,
+            event.payload.base_damage,
+            0,
+            event.payload.firer_id,
+            entities
+                .get(event.payload.firer_id)
+                .map(|firer| firer.owner),
+            event.payload.warhead,
+            ReceiverCallFlags {
+                ignore_defenses: false,
+                arg6: false,
+            },
+        )
     }
 }
 
@@ -1547,6 +1566,7 @@ pub(crate) trait CombatInlineHooks {
         occupancy: &mut OccupancyGrid,
         interner: &mut StringInterner,
         scenario_rng: &mut SimRng,
+        terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         terrain_area_state: Option<&mut TerrainAreaState>,
         sound_sink: Option<&mut Vec<SimSoundEvent>>,
     );
@@ -3182,6 +3202,7 @@ fn commit_damage_events_with_isolation(
                 occupancy,
                 interner,
                 scenario_rng,
+                terrain.as_deref(),
                 terrain_area_state.as_deref_mut(),
                 sound_sink.as_deref_mut(),
             );
@@ -3252,6 +3273,7 @@ fn commit_damage_events_with_isolation(
                 occupancy,
                 interner,
                 scenario_rng,
+                terrain.as_deref(),
                 terrain_area_state.as_deref_mut(),
                 sound_sink.as_deref_mut(),
             );
@@ -3394,6 +3416,7 @@ fn commit_damage_events_with_isolation(
                     occupancy,
                     interner,
                     scenario_rng,
+                    terrain.as_deref(),
                     terrain_area_state.as_deref_mut(),
                     sound_sink.as_deref_mut(),
                 );
@@ -3437,6 +3460,7 @@ fn commit_damage_events_with_isolation(
                         occupancy,
                         interner,
                         scenario_rng,
+                        terrain.as_deref(),
                         terrain_area_state.as_deref_mut(),
                         sound_sink.as_deref_mut(),
                     );
@@ -3564,6 +3588,7 @@ fn emit_projectile_shrapnel(
     rules: &RuleSet,
     interner: &mut StringInterner,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
     house_alliances: &HouseAllianceMap,
     scenario_rng: &mut SimRng,
     out: &mut CombatEmit,
@@ -3607,7 +3632,13 @@ fn emit_projectile_shrapnel(
                 i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
             )
         }),
-        ProjectileTarget::Cell(coord) => Some(coord),
+        ProjectileTarget::Cell { rx, ry } => Some(crate::sim::projectile::cell_target_coord(
+            terrain,
+            bridge_state,
+            rx,
+            ry,
+        )),
+        ProjectileTarget::None => Some(ProjectileCoord::new(0, 0, 0)),
     };
     let distance_cells = target_position.map_or(0, |target| {
         let dx = i64::from(target.x - detonation.impact.x);
@@ -3677,11 +3708,10 @@ fn emit_projectile_shrapnel(
     }
     while targets.len() < count as usize {
         let (rx, ry) = projectile_random_shrapnel_cell(center_rx, center_ry, scenario_rng);
-        targets.push(ProjectileTarget::Cell(ProjectileCoord::new(
-            rx * 256 + 128,
-            ry * 256 + 128,
-            0,
-        )));
+        targets.push(ProjectileTarget::Cell {
+            rx: rx as u16,
+            ry: ry as u16,
+        });
     }
 
     let gravity = if child_projectile.floater {
@@ -3701,21 +3731,10 @@ fn emit_projectile_shrapnel(
                     i32::from(entity.position.z) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
                 )
             }
-            ProjectileTarget::Cell(mut coord) => {
-                if let (Ok(rx), Ok(ry)) =
-                    (u16::try_from(coord.x / 256), u16::try_from(coord.y / 256))
-                    && let Some(cell) = terrain.and_then(|grid| grid.cell(rx, ry))
-                {
-                    coord.z = crate::sim::cell_kernel::cell_floor_height(
-                        cell.level,
-                        cell.slope_type,
-                        coord.x,
-                        coord.y,
-                    )
-                    .unwrap_or(0);
-                }
-                coord
+            ProjectileTarget::Cell { rx, ry } => {
+                crate::sim::projectile::cell_target_coord(terrain, bridge_state, rx, ry)
             }
+            ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
         };
         out.projectile_spawns.push(ProjectileSpawn {
             source_id: detonation.source_id,
@@ -3767,6 +3786,7 @@ fn emit_one_projectile_detonation(
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
@@ -3838,6 +3858,7 @@ fn emit_one_projectile_detonation(
         rules,
         interner,
         terrain.as_deref(),
+        bridge_state,
         house_alliances,
         scenario_rng,
         out,
@@ -3940,6 +3961,7 @@ fn emit_projectile_detonations(
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
@@ -3964,6 +3986,7 @@ fn emit_projectile_detonations(
                 overlay_grid.as_deref_mut(),
                 overlay_registry,
                 terrain.as_deref_mut(),
+                bridge_state,
                 terrain_objects,
                 terrain_area_state,
                 scenario_no_damage,
@@ -3988,6 +4011,7 @@ fn emit_projectile_detonations(
                 overlay_grid.as_deref_mut(),
                 overlay_registry,
                 terrain.as_deref_mut(),
+                bridge_state,
                 terrain_objects,
                 terrain_area_state,
                 scenario_no_damage,
@@ -4013,6 +4037,7 @@ fn emit_projectile_detonations(
                 overlay_grid.as_deref_mut(),
                 overlay_registry,
                 terrain.as_deref_mut(),
+                bridge_state,
                 terrain_objects,
                 terrain_area_state,
                 scenario_no_damage,
@@ -4247,6 +4272,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
         overlay_grid,
         overlay_registry,
         terrain,
+        None,
         false,
         current_tick,
         tick_ms,
@@ -4262,6 +4288,217 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
         inline_hooks,
         None,
     )
+}
+
+/// Outputs produced by one Bullet Logic slot after its detonation receivers
+/// have committed, but before the world retires the Bullet object itself.
+pub(crate) struct LogicProjectileCommit {
+    pub(crate) projectile_spawns: Vec<ProjectileSpawn>,
+    pub(crate) effects: DeathEffects,
+    pub(crate) under_attack_events: Vec<UnderAttackEvent>,
+}
+
+/// Commit completed Bullet detonations through their ordered receiver calls.
+///
+/// The caller owns the enclosing Logic cursor and Bullet lifetime. This helper
+/// owns only the native `Detonate -> Apply_area_damage` transaction, including
+/// recursive fatal lifecycle hooks, so it cannot accidentally run the broad
+/// Techno fire sweep for every Bullet slot.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_logic_projectile_detonations(
+    detonations: &[ProjectileDetonation],
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
+    terrain_area_state: Option<&mut TerrainAreaState>,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    sound_sink: Option<&mut Vec<SimSoundEvent>>,
+    inline_hooks: Option<&mut dyn CombatInlineHooks>,
+) -> LogicProjectileCommit {
+    let mut emit = CombatEmit::default();
+    let mut effects = DeathEffects::default();
+    let mut handled_deaths = Vec::new();
+    let mut under_attack_events = Vec::new();
+    let mut inline_hooks = inline_hooks;
+    let mut sound_sink = sound_sink;
+    commit_projectile_detonations_inline(
+        detonations,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        houses,
+        house_order,
+        alliances,
+        main_rng,
+        scenario_rng,
+        &mut handled_deaths,
+        resource_nodes,
+        overlay_grid,
+        overlay_registry,
+        terrain,
+        bridge_state,
+        terrain_area_state,
+        scenario_no_damage,
+        current_tick,
+        &mut inline_hooks,
+        &mut sound_sink,
+        &mut emit,
+        &mut effects,
+        &mut under_attack_events,
+    );
+
+    // Physical warhead/death outputs share the world's existing synchronous
+    // non-combat handoff. The remaining CombatEmit fields belong exclusively
+    // to Techno fire and therefore cannot be produced by this bounded path.
+    effects
+        .bridge_damage_events
+        .append(&mut emit.bridge_damage_events);
+    effects.wall_mutations.append(&mut emit.wall_mutations);
+    effects
+        .cell_target_detaches
+        .append(&mut emit.cell_target_detaches);
+    effects
+        .tiberium_reduction_requests
+        .append(&mut emit.tiberium_reduction_requests);
+    effects
+        .explosion_effects
+        .append(&mut emit.explosion_effects);
+    effects
+        .smudge_spawn_requests
+        .append(&mut emit.smudge_spawn_requests);
+    effects.rad_detonations.append(&mut emit.rad_detonations);
+    debug_assert!(emit.remove_attack.is_empty());
+    debug_assert!(emit.retarget_events.is_empty());
+    debug_assert!(emit.fire_events.is_empty());
+    debug_assert!(emit.reveal_events.is_empty());
+    debug_assert!(emit.burst_updates.is_empty());
+    debug_assert!(emit.ammo_deduct.is_empty());
+    debug_assert!(emit.garrison_advance.is_empty());
+    debug_assert!(emit.pending_infantry_updates.is_empty());
+    debug_assert!(emit.animation_switches.is_empty());
+    debug_assert!(emit.current_weapon_updates.is_empty());
+    debug_assert!(emit.unit_facing.is_empty());
+    debug_assert!(emit.spawn_target_updates.is_empty());
+
+    LogicProjectileCommit {
+        projectile_spawns: emit.projectile_spawns,
+        effects,
+        under_attack_events,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_projectile_detonations_inline(
+    projectile_detonations: &[ProjectileDetonation],
+    entities: &mut EntityStore,
+    occupancy: &mut OccupancyGrid,
+    rules: &RuleSet,
+    interner: &mut StringInterner,
+    houses: &mut BTreeMap<InternedId, HouseState>,
+    house_order: &[InternedId],
+    alliances: &HouseAllianceMap,
+    main_rng: &mut SimRng,
+    scenario_rng: &mut SimRng,
+    handled_deaths: &mut Vec<u64>,
+    resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
+    mut overlay_grid: Option<&mut OverlayGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
+    mut terrain_area_state: Option<&mut TerrainAreaState>,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
+    sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
+    emit: &mut CombatEmit,
+    death: &mut DeathEffects,
+    under_attack_events: &mut Vec<UnderAttackEvent>,
+) {
+    for detonation in projectile_detonations {
+        let damage_start = emit.damage_events.len();
+        let explosion_start = emit.explosion_effects.len();
+        let smudge_start = emit.smudge_spawn_requests.len();
+        let terrain_objects =
+            terrain_area_state
+                .as_deref()
+                .map(|state| combat_aoe::TerrainCollectionView {
+                    objects: state.terrain_objects(),
+                    cells: state.terrain_object_cells(),
+                });
+        emit_projectile_detonations(
+            std::slice::from_ref(detonation),
+            entities,
+            occupancy,
+            rules,
+            interner,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            bridge_state,
+            terrain_objects,
+            terrain_area_state.as_deref(),
+            scenario_no_damage,
+            alliances,
+            scenario_rng,
+            inline_hooks,
+            emit,
+        );
+        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
+        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
+        let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
+            &emit.damage_events[damage_start..],
+            entities,
+            occupancy,
+            rules,
+            interner,
+            houses,
+            house_order,
+            alliances,
+            main_rng,
+            scenario_rng,
+            handled_deaths,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref_mut(),
+            scenario_no_damage,
+            current_tick,
+            inline_hooks,
+            sound_sink,
+        );
+        absorb_inline_death_effects(emit, death, inline_death);
+        emit.explosion_effects.extend(outer_explosion_effects);
+        commit_smudge_batch_or_defer(
+            outer_anim_requests,
+            &mut emit.smudge_spawn_requests,
+            inline_hooks,
+            rules,
+            occupancy,
+            interner,
+            scenario_rng,
+            resource_nodes,
+            overlay_grid.as_deref_mut(),
+            overlay_registry,
+            terrain.as_deref_mut(),
+            terrain_area_state.as_deref(),
+        );
+        under_attack_events.append(&mut pings);
+    }
 }
 
 /// World-owned combat entry that also lends the transient Terrain authority
@@ -4282,6 +4519,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
     scenario_no_damage: bool,
     current_tick: u64,
     tick_ms: u32,
@@ -4328,77 +4566,32 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     let mut death = DeathEffects::default();
     let mut handled_deaths = Vec::new();
     let mut under_attack_events = Vec::new();
-    for detonation in projectile_detonations {
-        let damage_start = emit.damage_events.len();
-        let explosion_start = emit.explosion_effects.len();
-        let smudge_start = emit.smudge_spawn_requests.len();
-        let terrain_objects =
-            terrain_area_state
-                .as_deref()
-                .map(|state| combat_aoe::TerrainCollectionView {
-                    objects: state.terrain_objects(),
-                    cells: state.terrain_object_cells(),
-                });
-        emit_projectile_detonations(
-            std::slice::from_ref(detonation),
-            entities,
-            occupancy,
-            rules,
-            interner,
-            resource_nodes,
-            overlay_grid.as_deref_mut(),
-            overlay_registry,
-            terrain.as_deref_mut(),
-            terrain_objects,
-            terrain_area_state.as_deref(),
-            scenario_no_damage,
-            alliances,
-            scenario_rng,
-            &mut inline_hooks,
-            &mut emit,
-        );
-        let outer_explosion_effects = emit.explosion_effects.split_off(explosion_start);
-        let outer_anim_requests = emit.smudge_spawn_requests.split_off(smudge_start);
-        let (inline_death, mut pings) = commit_area_damage_receivers_with_scenario(
-            &emit.damage_events[damage_start..],
-            entities,
-            occupancy,
-            rules,
-            interner,
-            houses,
-            house_order,
-            alliances,
-            main_rng,
-            scenario_rng,
-            &mut handled_deaths,
-            resource_nodes,
-            overlay_grid.as_deref_mut(),
-            overlay_registry,
-            terrain.as_deref_mut(),
-            terrain_area_state.as_deref_mut(),
-            scenario_no_damage,
-            current_tick,
-            &mut inline_hooks,
-            &mut sound_sink,
-        );
-        absorb_inline_death_effects(&mut emit, &mut death, inline_death);
-        emit.explosion_effects.extend(outer_explosion_effects);
-        commit_smudge_batch_or_defer(
-            outer_anim_requests,
-            &mut emit.smudge_spawn_requests,
-            &mut inline_hooks,
-            rules,
-            occupancy,
-            interner,
-            scenario_rng,
-            resource_nodes,
-            overlay_grid.as_deref_mut(),
-            overlay_registry,
-            terrain.as_deref_mut(),
-            terrain_area_state.as_deref(),
-        );
-        under_attack_events.append(&mut pings);
-    }
+    commit_projectile_detonations_inline(
+        projectile_detonations,
+        entities,
+        occupancy,
+        rules,
+        interner,
+        houses,
+        house_order,
+        alliances,
+        main_rng,
+        scenario_rng,
+        &mut handled_deaths,
+        resource_nodes,
+        overlay_grid.as_deref_mut(),
+        overlay_registry,
+        terrain.as_deref_mut(),
+        bridge_state,
+        terrain_area_state.as_deref_mut(),
+        scenario_no_damage,
+        current_tick,
+        &mut inline_hooks,
+        &mut sound_sink,
+        &mut emit,
+        &mut death,
+        &mut under_attack_events,
+    );
     for detonation in missile_detonations {
         let damage_start = emit.damage_events.len();
         let terrain_objects =
@@ -5003,23 +5196,9 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     // periodic radiation in live-victim order.
     let committed_damage_event_count = emit.damage_events.len();
     for event in wave_damage_events {
-        let firer_owner = entities
-            .get(event.payload.firer_id)
-            .map(|firer| firer.owner);
         emit.damage_events
             .push(combat_aoe::AreaDamageReceiver::Entity(
-                EntityDamageEvent::direct_receiver(
-                    event.target_id,
-                    event.payload.base_damage,
-                    0,
-                    event.payload.firer_id,
-                    firer_owner,
-                    event.payload.warhead,
-                    ReceiverCallFlags {
-                        ignore_defenses: false,
-                        arg6: false,
-                    },
-                ),
+                EntityDamageEvent::from_wave(*event, entities),
             ));
     }
     // Destructure back into the named locals for post-fire state updates.
@@ -5886,7 +6065,7 @@ pub(crate) fn resolve_attacker_fire(
         );
         let target = match snap.target {
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
-            TargetKind::Cell(_, _) => ProjectileTarget::Cell(impact),
+            TargetKind::Cell(rx, ry) => ProjectileTarget::Cell { rx, ry },
         };
         let origin = ProjectileCoord::new(
             i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),

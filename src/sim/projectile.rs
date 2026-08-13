@@ -8,7 +8,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::sim::bridge_state::BridgeRuntimeState;
 use crate::sim::intern::InternedId;
+use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 use crate::sim::movement::homing_movement::{
     atan2_bam, cos_bam, sidewinder_cos, sin_bam, step_toward_bam_inclusive,
 };
@@ -214,11 +217,52 @@ impl ProjectileCoord {
     }
 }
 
+/// Resolve the current virtual `CellClass::GetTargetCoords` value for a stable
+/// CellClass target. The cell identity is retained by the projectile; terrain
+/// floor plus structural topology and runtime deck walkability are read again
+/// on every visit.
+pub(crate) fn cell_target_coord(
+    terrain: Option<&ResolvedTerrainGrid>,
+    bridge_state: Option<&BridgeRuntimeState>,
+    rx: u16,
+    ry: u16,
+) -> ProjectileCoord {
+    let x = i32::from(rx)
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
+    let y = i32::from(ry)
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(crate::sim::cell_kernel::CELL_CENTER_LEPTONS);
+    let z = terrain
+        .and_then(|grid| grid.cell(rx, ry))
+        .map(|cell| {
+            crate::sim::cell_kernel::cell_floor_height(cell.level, cell.slope_type, x, y)
+                .expect("resolved CellClass target must have a supported slope")
+                .wrapping_add(if cell.bridge_facts.has_structural_bridge()
+                    && bridge_state.is_some_and(|state| state.is_bridge_walkable(rx, ry))
+                {
+                    BRIDGE_DECK_HEIGHT_LEPTONS
+                } else {
+                    0
+                })
+        })
+        // Headless store tests have no map substrate; production CellClass
+        // targets are admitted only from an allocated resolved-terrain slot.
+        .unwrap_or(0);
+    ProjectileCoord::new(x, y, z)
+}
+
 /// The original target retained by a projectile after weapon fire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProjectileTarget {
     Entity(u64),
-    Cell(ProjectileCoord),
+    /// Stable MapClass CellClass identity. Its target coordinate is resolved
+    /// from live terrain state instead of freezing the cleanup-time Vec3.
+    Cell { rx: u16, ry: u16 },
+    /// Native null AbstractClass target. This is distinct from an expired
+    /// entity lookup: BulletClass pointer cleanup has already handled the
+    /// reference synchronously, so `TargetExpiryPolicy` must not run.
+    None,
 }
 
 /// What to do when an entity target no longer exists.
@@ -532,6 +576,9 @@ pub struct ProjectileSpawn {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Projectile {
     pub id: u64,
+    /// LogicClass membership is reconstructed from the serialized mixed order.
+    #[serde(skip)]
+    pub in_logic_vector: bool,
     pub source_id: u64,
     pub position: ProjectileCoord,
     pub target: ProjectileTarget,
@@ -585,24 +632,16 @@ pub struct ProjectileAdvanceResult {
 /// object-pass boundary instead of recursively advancing a newly fired shot.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectileStore {
-    next_id: u64,
     projectiles: BTreeMap<u64, Projectile>,
 }
 
 impl ProjectileStore {
     pub fn new() -> Self {
-        Self {
-            next_id: 1,
-            projectiles: BTreeMap::new(),
-        }
+        Self::default()
     }
 
     pub fn len(&self) -> usize {
         self.projectiles.len()
-    }
-
-    pub(crate) fn next_id(&self) -> u64 {
-        self.next_id
     }
 
     pub fn is_empty(&self) -> bool {
@@ -613,19 +652,56 @@ impl ProjectileStore {
         self.projectiles.get(&id)
     }
 
+    pub(crate) fn get_mut(&mut self, id: u64) -> Option<&mut Projectile> {
+        self.projectiles.get_mut(&id)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&u64, &Projectile)> {
         self.projectiles.iter()
     }
 
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&u64, &mut Projectile)> {
+        self.projectiles.iter_mut()
+    }
+
+    pub(crate) fn remove(&mut self, id: u64) -> Option<Projectile> {
+        self.projectiles.remove(&id)
+    }
+
+    /// Apply `BulletClass::PointerExpired @ 0x004684E0` to one stored Bullet.
+    ///
+    /// Source and target are independent arms: when both match the expired
+    /// object, both change in the same synchronous callback. The projectile
+    /// itself remains stored and registered; repeated callbacks are no-ops.
+    pub(crate) fn pointer_expired(
+        &mut self,
+        projectile_id: u64,
+        expired_id: u64,
+        replacement_target: ProjectileTarget,
+    ) -> bool {
+        let Some(projectile) = self.projectiles.get_mut(&projectile_id) else {
+            return false;
+        };
+        if projectile.source_id == expired_id {
+            projectile.source_id = crate::sim::combat::RAD_NO_ATTACKER;
+        }
+        if projectile.target == ProjectileTarget::Entity(expired_id) {
+            projectile.target = replacement_target;
+        }
+        true
+    }
+
     /// Admit one ordinary projectile. Vertical, airburst, cluster, and other
     /// special trajectories remain outside this bounded foundation.
-    pub fn spawn(&mut self, spawn: ProjectileSpawn) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
+    // AbstractClass::AssignUniqueID @ 0x00410230 obtains this identity from
+    // ScenarioClass::NextUniqueID @ 0x0068BCB0; the store never owns a second
+    // allocator.
+    pub fn spawn(&mut self, id: u64, spawn: ProjectileSpawn) -> u64 {
         self.projectiles.insert(
             id,
             Projectile {
                 id,
+                in_logic_vector: false,
                 source_id: spawn.source_id,
                 position: spawn.origin,
                 target: spawn.target,
@@ -651,25 +727,76 @@ impl ProjectileStore {
     /// Advance every currently admitted projectile in ascending stable id.
     ///
     /// `target_positions` must contain live entity targets in lepton space.
+    /// `terrain` supplies the current CellClass floor and `bridge_state` gates
+    /// the structural deck term for stable cell targets; headless callers may
+    /// omit them and receive the flat fallback.
     /// `collides_at` is a world-owned terrain/wall admission predicate for the
     /// candidate next coordinate; object collision remains a later port.
     pub fn advance(
         &mut self,
         target_positions: &BTreeMap<u64, ProjectileCoord>,
+        terrain: Option<&ResolvedTerrainGrid>,
+        bridge_state: Option<&BridgeRuntimeState>,
+        collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+    ) -> ProjectileAdvanceResult {
+        let ids: Vec<u64> = self.projectiles.keys().copied().collect();
+        self.advance_selected(
+            &ids,
+            |id| target_positions.get(&id).copied(),
+            terrain,
+            bridge_state,
+            collides_at,
+            true,
+        )
+    }
+
+    pub(crate) fn advance_one(
+        &mut self,
+        id: u64,
+        target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
+        terrain: Option<&ResolvedTerrainGrid>,
+        bridge_state: Option<&BridgeRuntimeState>,
+        collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+    ) -> Option<ProjectileAdvanceResult> {
+        if !self.projectiles.contains_key(&id) {
+            return None;
+        }
+        Some(self.advance_selected(
+            &[id],
+            target_position,
+            terrain,
+            bridge_state,
+            collides_at,
+            false,
+        ))
+    }
+
+    fn advance_selected(
+        &mut self,
+        ids: &[u64],
+        mut target_position: impl FnMut(u64) -> Option<ProjectileCoord>,
+        terrain: Option<&ResolvedTerrainGrid>,
+        bridge_state: Option<&BridgeRuntimeState>,
         mut collides_at: impl FnMut(&Projectile, ProjectileCoord) -> Option<ProjectileCollisionResponse>,
+        remove_terminal: bool,
     ) -> ProjectileAdvanceResult {
         let mut result = ProjectileAdvanceResult::default();
-        let ids: Vec<u64> = self.projectiles.keys().copied().collect();
 
-        for id in ids {
+        for &id in ids {
             let Some(projectile) = self.projectiles.get_mut(&id) else {
                 continue;
             };
 
             let target_position = match projectile.target {
-                ProjectileTarget::Cell(position) => position,
-                ProjectileTarget::Entity(target_id) => match target_positions.get(&target_id) {
-                    Some(&position) => {
+                ProjectileTarget::Cell { rx, ry } => {
+                    cell_target_coord(terrain, bridge_state, rx, ry)
+                }
+                // BulletClass::AI resolves a null AbstractClass target through
+                // the process-global zero CoordStruct before steering, fuse,
+                // collision, and reached-target decisions.
+                ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
+                ProjectileTarget::Entity(target_id) => match target_position(target_id) {
+                    Some(position) => {
                         if projectile.tracks_target {
                             projectile.last_target_position = position;
                         }
@@ -846,13 +973,15 @@ impl ProjectileStore {
             }
         }
 
-        for id in result.expired.iter().chain(
-            result
-                .detonations
-                .iter()
-                .map(|detonation| &detonation.projectile_id),
-        ) {
-            self.projectiles.remove(id);
+        if remove_terminal {
+            for id in result.expired.iter().chain(
+                result
+                    .detonations
+                    .iter()
+                    .map(|detonation| &detonation.projectile_id),
+            ) {
+                self.projectiles.remove(id);
+            }
         }
         result
     }
@@ -998,7 +1127,8 @@ mod tests {
             target,
             initial_target_position: match target {
                 ProjectileTarget::Entity(_) => ProjectileCoord::new(128, 0, 0),
-                ProjectileTarget::Cell(position) => position,
+                ProjectileTarget::Cell { rx, ry } => cell_target_coord(None, None, rx, ry),
+                ProjectileTarget::None => ProjectileCoord::new(0, 0, 0),
             },
             payload: ProjectilePayload {
                 base_damage: 40,
@@ -1079,7 +1209,7 @@ mod tests {
     #[test]
     fn guided_projectile_turns_with_persisted_rot_state() {
         let mut store = ProjectileStore::new();
-        let mut guided = spawn(ProjectileTarget::Cell(ProjectileCoord::new(0, 1024, 0)));
+        let mut guided = spawn(ProjectileTarget::Cell { rx: 0, ry: 4 });
         guided.guidance = Some(ProjectileGuidance {
             rot: 4,
             missile_rot_var: SimFixed::from_num(0),
@@ -1091,9 +1221,9 @@ mod tests {
             pitch_bam: 0x4000,
             frames_elapsed: 0,
         });
-        let id = store.spawn(guided);
+        let id = store.spawn(1, guided);
 
-        store.advance(&BTreeMap::new(), |_, _| None);
+        store.advance(&BTreeMap::new(), None, None, |_, _| None);
 
         let guided = store
             .get(id)
@@ -1105,14 +1235,12 @@ mod tests {
     #[test]
     fn advance_preserves_stable_creation_order_and_delays_new_projectiles() {
         let mut store = ProjectileStore::new();
-        let first = store.spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-            64, 0, 0,
-        ))));
-        let second = store.spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-            128, 0, 0,
-        ))));
+        let mut first_spawn = spawn(ProjectileTarget::Cell { rx: 0, ry: 0 });
+        first_spawn.speed_leptons_per_frame = 256;
+        let first = store.spawn(1, first_spawn);
+        let second = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(&BTreeMap::new(), |_, _| None);
+        let result = store.advance(&BTreeMap::new(), None, None, |_, _| None);
 
         assert_eq!(
             result
@@ -1123,16 +1251,19 @@ mod tests {
             vec![first]
         );
         assert!(store.get(first).is_none());
-        assert_eq!(store.get(second).unwrap().position.x, 64);
+        assert_ne!(
+            store.get(second).unwrap().position,
+            ProjectileCoord::new(0, 0, 0)
+        );
     }
 
     #[test]
     fn homing_projectile_uses_current_target_position() {
         let mut store = ProjectileStore::new();
-        let id = store.spawn(spawn(ProjectileTarget::Entity(42)));
+        let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 128, 0))]);
 
-        store.advance(&targets, |_, _| None);
+        store.advance(&targets, None, None, |_, _| None);
 
         assert_eq!(
             store.get(id).unwrap().position,
@@ -1143,11 +1274,11 @@ mod tests {
     #[test]
     fn target_expiry_detonates_at_last_known_position() {
         let mut store = ProjectileStore::new();
-        let id = store.spawn(spawn(ProjectileTarget::Entity(42)));
+        let id = store.spawn(1, spawn(ProjectileTarget::Entity(42)));
         let targets = BTreeMap::from([(42, ProjectileCoord::new(128, 0, 0))]);
-        store.advance(&targets, |_, _| None);
+        store.advance(&targets, None, None, |_, _| None);
 
-        let result = store.advance(&BTreeMap::new(), |_, _| None);
+        let result = store.advance(&BTreeMap::new(), None, None, |_, _| None);
 
         assert_eq!(result.detonations.len(), 1);
         assert_eq!(result.detonations[0].projectile_id, id);
@@ -1164,15 +1295,14 @@ mod tests {
     #[test]
     fn fuse_and_collision_are_deferred_detonations() {
         let mut store = ProjectileStore::new();
-        let mut fused = spawn(ProjectileTarget::Cell(ProjectileCoord::new(256, 0, 0)));
+        let mut fused = spawn(ProjectileTarget::Cell { rx: 1, ry: 0 });
         fused.fuse_frames = Some(0);
-        let fuse_id = store.spawn(fused);
-        let collision_id = store.spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-            256, 0, 0,
-        ))));
+        let fuse_id = store.spawn(1, fused);
+        let collision_id = store.spawn(2, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
-        let result = store.advance(&BTreeMap::new(), |_, coord| {
-            (coord.x == 64).then_some(ProjectileCollisionResponse::TargetZClamp(coord))
+        let result = store.advance(&BTreeMap::new(), None, None, |projectile, coord| {
+            (projectile.id == collision_id)
+                .then_some(ProjectileCollisionResponse::TargetZClamp(coord))
         });
 
         assert_eq!(result.detonations.len(), 2);
@@ -1191,9 +1321,7 @@ mod tests {
     #[test]
     fn store_round_trips_through_snapshot_serialization() {
         let mut store = ProjectileStore::new();
-        store.spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-            256, 64, 0,
-        ))));
+        store.spawn(1, spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }));
 
         let bytes = bincode::serialize(&store).unwrap();
         let restored: ProjectileStore = bincode::deserialize(&bytes).unwrap();
@@ -1203,12 +1331,17 @@ mod tests {
 
     #[test]
     fn simulation_hash_and_save_preserve_pending_projectile() {
-        let empty = crate::sim::world::Simulation::new();
+        let mut empty = crate::sim::world::Simulation::new();
         let mut sim = crate::sim::world::Simulation::new();
-        sim.projectiles
-            .spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-                256, 64, 0,
-            ))));
+        let stable_id = sim.allocate_stable_id();
+        sim.admit_projectile(
+            stable_id,
+            spawn(ProjectileTarget::Cell { rx: 1, ry: 0 }),
+        );
+        // Native in-scenario load restarts Scenario RNG from Seed0. Normalize
+        // both controls so this fixture isolates projectile persistence/hash.
+        empty.scenario_rng = crate::sim::rng::SimRng::new(0);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         assert_ne!(empty.state_hash(), expected_hash);
@@ -1237,9 +1370,7 @@ mod tests {
     #[test]
     fn shp_facing_and_animation_match_yr_vectors() {
         let mut store = ProjectileStore::new();
-        let id = store.spawn(spawn(ProjectileTarget::Cell(ProjectileCoord::new(
-            100, 0, 0,
-        ))));
+        let id = store.spawn(1, spawn(ProjectileTarget::Cell { rx: 0, ry: 0 }));
         assert_eq!(projectile_shp_frame(store.get(id).unwrap()), 20);
 
         let projectile = store.projectiles.get_mut(&id).unwrap();

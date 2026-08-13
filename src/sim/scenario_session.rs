@@ -467,7 +467,10 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let sim = Simulation::from_descriptor(&desc);
+        let mut sim = Simulation::from_descriptor(&desc);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // descriptor persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 1, 2, "tournamentb.map", 0);
         let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
             .expect("snapshot load")
@@ -492,7 +495,7 @@ mod tests {
             mp_start_waypoints: [(0u32, (5u16, 5u16)), (1, (50, 50))].into_iter().collect(),
             ..Default::default()
         };
-        let a = Simulation::from_descriptor(&desc);
+        let mut a = Simulation::from_descriptor(&desc);
         desc.mp_start_waypoints.insert(1, (50, 51)); // one waypoint, one cell off
         let b = Simulation::from_descriptor(&desc);
         assert_ne!(
@@ -501,6 +504,9 @@ mod tests {
             "a one-cell waypoint difference must be visible to the desync detector"
         );
 
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // waypoint persistence after the independent hash-sensitivity check.
+        a.scenario_rng = crate::sim::rng::SimRng::new(0);
         let bytes = crate::sim::snapshot::GameSnapshot::save(&a, 1, 2, "wp", 0);
         let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
             .expect("snapshot load")
@@ -525,7 +531,7 @@ mod tests {
         let descriptor = ScenarioDescriptor::from_native_replay_header(&header);
         assert!(descriptor.no_damage);
 
-        let inert = Simulation::from_descriptor(&descriptor);
+        let mut inert = Simulation::from_descriptor(&descriptor);
         assert!(inert.session.no_damage);
         let mut ordinary = Simulation::from_descriptor(&ScenarioDescriptor {
             no_damage: false,
@@ -535,6 +541,9 @@ mod tests {
 
         ordinary.session.no_damage = true;
         assert_eq!(inert.state_hash(), ordinary.state_hash());
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // no-damage persistence after the independent hash-sensitivity check.
+        inert.scenario_rng = crate::sim::rng::SimRng::new(0);
         let bytes = crate::sim::snapshot::GameSnapshot::save(&inert, 1, 2, "inert.map", 0);
         let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
             .expect("v61 inert snapshot")

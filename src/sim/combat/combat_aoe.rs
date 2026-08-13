@@ -3672,6 +3672,7 @@ mod tests {
                 stable_id,
                 TerrainObjectState {
                     stable_id,
+                    in_logic_vector: false,
                     type_ref: tree_ref,
                     rx,
                     ry: 5,
@@ -3816,6 +3817,7 @@ mod tests {
         let terrain_ref = sim.interner.intern("TIBTREE");
         let terrain_state = TerrainObjectState {
             stable_id: terrain_id,
+            in_logic_vector: false,
             type_ref: terrain_ref,
             rx: 5,
             ry: 5,
@@ -3965,6 +3967,7 @@ mod tests {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                in_logic_vector: false,
                 type_ref: terrain_ref,
                 rx: 5,
                 ry: 5,

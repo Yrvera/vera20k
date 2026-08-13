@@ -2221,6 +2221,7 @@ mod tests {
         let mut interner = StringInterner::default();
         let tree = TerrainObjectState {
             stable_id: 1,
+            in_logic_vector: false,
             type_ref: interner.intern("TREE01"),
             rx: 0,
             ry: 0,

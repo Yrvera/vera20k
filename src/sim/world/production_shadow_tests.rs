@@ -455,6 +455,9 @@ fn snapshot_roundtrip_factory_registry() {
         .unwrap()
         .economy
         .harvested_credits = 12_345;
+    // Native in-scenario load resets Scenario RNG; isolate factory persistence
+    // by comparing against that same post-load baseline.
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0);
     let before = sim.state_hash();
 
     let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "test_map", 0);

@@ -265,7 +265,7 @@ fn gsi_04_10_projectile_inert_suppresses_bridge_ore_and_collector_rng() {
     let detonation = ProjectileDetonation {
         projectile_id: 1,
         source_id: 99,
-        target: ProjectileTarget::Cell(ProjectileCoord::new(8 * 256, 5 * 256, 0)),
+        target: ProjectileTarget::Cell { rx: 8, ry: 5 },
         impact: ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0),
         payload: ProjectilePayload {
             base_damage: 100,
@@ -290,6 +290,7 @@ fn gsi_04_10_projectile_inert_suppresses_bridge_ore_and_collector_rng() {
         &rules,
         &mut interner,
         &mut resource_nodes,
+        None,
         None,
         None,
         None,
@@ -2449,6 +2450,7 @@ fn gsi_04_07_damage_repair_bullet_cellspread_zero_keeps_signed_area_record() {
         &rules,
         &mut interner,
         &mut resources,
+        None,
         None,
         None,
         None,
@@ -5115,12 +5117,13 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     assert_eq!(fire.projectile_spawns.len(), 1);
 
     let mut sim = crate::sim::world::Simulation::new();
-    sim.projectiles.spawn(fire.projectile_spawns[0]);
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(projectile_id, fire.projectile_spawns[0]);
     let target_positions =
         BTreeMap::from([(2, ProjectileCoord::new(8 * 256 + 128, 5 * 256 + 128, 0))]);
     assert!(
         sim.projectiles
-            .advance(&target_positions, |_, _| None)
+            .advance(&target_positions, None, None, |_, _| None)
             .detonations
             .is_empty()
     );
@@ -5133,7 +5136,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     for _ in 0..8 {
         detonations = restored
             .projectiles
-            .advance(&target_positions, |_, _| None)
+            .advance(&target_positions, None, None, |_, _| None)
             .detonations;
         if !detonations.is_empty() {
             break;
@@ -6308,9 +6311,7 @@ fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
     let detonation = crate::sim::projectile::ProjectileDetonation {
         projectile_id: 7,
         source_id: 1,
-        target: crate::sim::projectile::ProjectileTarget::Cell(
-            crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
-        ),
+        target: crate::sim::projectile::ProjectileTarget::Cell { rx: 5, ry: 5 },
         impact: crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
         payload: crate::sim::projectile::ProjectilePayload {
             base_damage: 20,
@@ -6362,7 +6363,7 @@ fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
     );
     assert!(matches!(
         result.projectile_spawns[1].target,
-        crate::sim::projectile::ProjectileTarget::Cell(_)
+        crate::sim::projectile::ProjectileTarget::Cell { .. }
     ));
     assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
 }
@@ -6408,6 +6409,7 @@ fn gsi_04_10_near_center_iron_curtain_isolates_earlier_terrain_receiver() {
             terrain_id,
             TerrainObjectState {
                 stable_id: terrain_id,
+                in_logic_vector: false,
                 type_ref: terrain_ref,
                 rx: 5,
                 ry: 5,
@@ -6495,6 +6497,7 @@ fn gsi_04_10_entity_fatal_hook_and_later_terrain_share_raw_occupation() {
         terrain_id,
         TerrainObjectState {
             stable_id: terrain_id,
+            in_logic_vector: false,
             type_ref: terrain_ref,
             rx: 5,
             ry: 5,

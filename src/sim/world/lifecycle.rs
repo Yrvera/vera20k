@@ -18,9 +18,30 @@ use crate::sim::occupancy::{
     entity_occupancy_cells, infantry_raw_occupation_mask,
 };
 use crate::sim::passenger::PassengerRole;
+use crate::sim::projectile::ProjectileTarget;
 use crate::util::fixed_math::SimFixed;
 
 use super::Simulation;
+
+/// Borrowed map authority carried through one synchronous ObjectClass UnInit
+/// tree. Ordinary entry points use the Simulation-owned terrain; combat uses
+/// this context while that same terrain is staged outside `Simulation`.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct UninitContext<'a> {
+    terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
+}
+
+impl<'a> UninitContext<'a> {
+    pub(crate) const fn with_terrain(
+        terrain: Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    ) -> Self {
+        Self { terrain }
+    }
+
+    pub(crate) const fn terrain(self) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
+        self.terrain
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlacementEvidence {
@@ -37,6 +58,28 @@ fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i
         i32::from(width).wrapping_add(spacing.wrapping_mul(2)),
         i32::from(height).wrapping_add(spacing.wrapping_mul(2)),
     )
+}
+
+/// Cell selected after the represented ObjectClass virtual `GetCoords` result
+/// is truncated from world leptons. BuildingClass shifts its stored NW anchor
+/// to the geometric foundation center before that truncation.
+fn object_get_coords_cell(entity: &crate::sim::game_entity::GameEntity) -> Option<(u16, u16)> {
+    let mut world_x = i32::from(entity.position.rx)
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let mut world_y = i32::from(entity.position.ry)
+        .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    if entity.category == EntityCategory::Structure {
+        let (width, height) =
+            crate::rules::foundation::foundation_dimensions(&entity.foundation);
+        world_x = world_x.wrapping_add(i32::from(width.saturating_sub(1)).wrapping_mul(128));
+        world_y = world_y.wrapping_add(i32::from(height.saturating_sub(1)).wrapping_mul(128));
+    }
+    Some((
+        u16::try_from(crate::sim::cell_kernel::world_to_cell_trunc(world_x)).ok()?,
+        u16::try_from(crate::sim::cell_kernel::world_to_cell_trunc(world_y)).ok()?,
+    ))
 }
 
 pub(super) fn building_base_reservation_repair_rect(
@@ -127,6 +170,17 @@ pub(crate) enum LifecycleTestEvent {
     LogicAppended,
     LogicMembershipSet,
     ConcealDeselected,
+    ConcealDestroyNotifyBoundary {
+        stable_id: u64,
+        object_alive: bool,
+        cell_marked: bool,
+        resolvable: bool,
+    },
+    ConcealAlreadyLimboReturn {
+        stable_id: u64,
+        object_alive: bool,
+        resolvable: bool,
+    },
     BaseReservationCleared,
     RawOccupationListUnlinked,
     HiddenOccupationExited,
@@ -160,12 +214,25 @@ pub(crate) enum LifecycleTestEvent {
         stable_id: u64,
         object_alive: bool,
         cell_marked: bool,
+        resolvable: bool,
     },
     UninitRemovalListenerVisited {
         expired_id: u64,
         listener_id: u64,
         target_alive: bool,
         target_in_limbo: bool,
+    },
+    ProjectilePointerExpiredVisited {
+        expired_id: u64,
+        projectile_id: u64,
+        expired_resolvable: bool,
+        projectile_resolvable: bool,
+        source_id: u64,
+        target: ProjectileTarget,
+    },
+    WaveDamageReceiverSelected {
+        wave_id: u64,
+        target_id: u64,
     },
     UninitAliveCleared {
         stable_id: u64,
@@ -989,9 +1056,15 @@ impl Simulation {
         stats
     }
 
+    /// gamemd-derived: active YR `LogicClass__RegisterObject @ 0x0055BAA0`
+    /// gates on the object's membership flag, appends at the live tail, then
+    /// sets the flag only after insertion succeeds.
     fn register_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
         let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
+        let is_terrain = self.production.terrain_objects.contains_key(&stable_id);
+        let is_projectile = self.projectiles.get(stable_id).is_some();
+        let is_wave = self.waves.get(stable_id).is_some();
         let already_member = if is_anim {
             self.substrate
                 .anims
@@ -1002,6 +1075,19 @@ impl Simulation {
                 .particle_systems
                 .get(stable_id)
                 .is_some_and(|system| system.in_logic_vector)
+        } else if is_terrain {
+            self.production
+                .terrain_objects
+                .get(&stable_id)
+                .is_some_and(|terrain| terrain.in_logic_vector)
+        } else if is_projectile {
+            self.projectiles
+                .get(stable_id)
+                .is_some_and(|projectile| projectile.in_logic_vector)
+        } else if is_wave {
+            self.waves
+                .get(stable_id)
+                .is_some_and(|wave| wave.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -1011,7 +1097,12 @@ impl Simulation {
         if already_member {
             return true;
         }
-        if (!is_anim && !is_particle_system && !self.substrate.entities.contains(stable_id))
+        if (!is_anim
+            && !is_particle_system
+            && !is_terrain
+            && !is_projectile
+            && !is_wave
+            && !self.substrate.entities.contains(stable_id))
             || self.substrate.logic.try_push(stable_id).is_err()
         {
             return false;
@@ -1026,6 +1117,18 @@ impl Simulation {
             if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
                 system.in_logic_vector = true;
             }
+        } else if is_terrain {
+            if let Some(terrain) = self.production.terrain_objects.get_mut(&stable_id) {
+                terrain.in_logic_vector = true;
+            }
+        } else if is_projectile {
+            if let Some(projectile) = self.projectiles.get_mut(stable_id) {
+                projectile.in_logic_vector = true;
+            }
+        } else if is_wave {
+            if let Some(wave) = self.waves.get_mut(stable_id) {
+                wave.in_logic_vector = true;
+            }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = true;
         }
@@ -1034,9 +1137,15 @@ impl Simulation {
         true
     }
 
+    /// gamemd-derived: active YR `LogicClass__UnregisterObject @ 0x0055BAE0`
+    /// gates removal on the object's membership flag, performs the first-match
+    /// stable erase, then repairs that flag.
     fn unregister_logic_object(&mut self, stable_id: u64) -> bool {
         let is_anim = self.substrate.anims.contains_key(stable_id);
         let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
+        let is_terrain = self.production.terrain_objects.contains_key(&stable_id);
+        let is_projectile = self.projectiles.get(stable_id).is_some();
+        let is_wave = self.waves.get(stable_id).is_some();
         let flagged = if is_anim {
             self.substrate
                 .anims
@@ -1047,6 +1156,19 @@ impl Simulation {
                 .particle_systems
                 .get(stable_id)
                 .is_some_and(|system| system.in_logic_vector)
+        } else if is_terrain {
+            self.production
+                .terrain_objects
+                .get(&stable_id)
+                .is_some_and(|terrain| terrain.in_logic_vector)
+        } else if is_projectile {
+            self.projectiles
+                .get(stable_id)
+                .is_some_and(|projectile| projectile.in_logic_vector)
+        } else if is_wave {
+            self.waves
+                .get(stable_id)
+                .is_some_and(|wave| wave.in_logic_vector)
         } else {
             self.substrate
                 .entities
@@ -1064,6 +1186,18 @@ impl Simulation {
         } else if is_particle_system {
             if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
                 system.in_logic_vector = false;
+            }
+        } else if is_terrain {
+            if let Some(terrain) = self.production.terrain_objects.get_mut(&stable_id) {
+                terrain.in_logic_vector = false;
+            }
+        } else if is_projectile {
+            if let Some(projectile) = self.projectiles.get_mut(stable_id) {
+                projectile.in_logic_vector = false;
+            }
+        } else if is_wave {
+            if let Some(wave) = self.waves.get_mut(stable_id) {
+                wave.in_logic_vector = false;
             }
         } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.in_logic_vector = false;
@@ -1110,6 +1244,45 @@ impl Simulation {
         self.unregister_logic_object(stable_id)
     }
 
+    pub(crate) fn register_terrain_object(&mut self, stable_id: u64) -> bool {
+        self.production
+            .terrain_objects
+            .get(&stable_id)
+            .is_some_and(|terrain| terrain.is_live())
+            && self.register_logic_object(stable_id)
+    }
+
+    pub(crate) fn register_projectile(&mut self, stable_id: u64) -> bool {
+        self.projectiles.get(stable_id).is_some() && self.register_logic_object(stable_id)
+    }
+
+    pub(crate) fn register_wave(&mut self, stable_id: u64) -> bool {
+        self.waves.get(stable_id).is_some() && self.register_logic_object(stable_id)
+    }
+
+    pub(crate) fn unregister_non_entity_object(&mut self, stable_id: u64) -> bool {
+        self.unregister_logic_object(stable_id)
+    }
+
+    /// Terminal Terrain/Bullet/Wave objects leave Logic immediately but retain
+    /// their physical store identity until the common late delete drain.
+    ///
+    /// gamemd-derived: active YR `DrainDeferredFinalizationQueue @ 0x00725C70`
+    /// performs scalar destruction/freeing only after the frame commit.
+    pub(crate) fn retire_non_entity_object(&mut self, stable_id: u64) -> bool {
+        let represented = self.production.terrain_objects.contains_key(&stable_id)
+            || self.projectiles.get(stable_id).is_some()
+            || self.waves.get(stable_id).is_some();
+        if !represented {
+            return false;
+        }
+        let _ = self.unregister_logic_object(stable_id);
+        self.substrate.pending_delete.push(stable_id);
+        #[cfg(test)]
+        self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteQueued { stable_id });
+        true
+    }
+
     /// Open-topped cargo entry hides the passenger but then directly restores
     /// its active membership. This is deliberately not Reveal: the passenger
     /// remains limbo/unmarked while its AI stays in the live object order.
@@ -1140,15 +1313,33 @@ impl Simulation {
         self.object_conceal(stable_id)
     }
 
-    /// ObjectClass::Conceal represented order.  Native alive remains true.
+    /// ObjectClass::Conceal represented order. Conceal does not mutate Alive.
     pub(crate) fn object_conceal(&mut self, stable_id: u64) -> ConcealOutcome {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
+        self.object_conceal_with_context(stable_id, UninitContext::default())
+    }
+
+    fn object_conceal_with_context(
+        &mut self,
+        stable_id: u64,
+        context: UninitContext<'_>,
+    ) -> ConcealOutcome {
+        let Some((in_limbo, object_alive)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| (entity.lifecycle.in_limbo, entity.lifecycle.object_alive))
+        else {
             return ConcealOutcome::MissingOrDead;
         };
-        if !entity.lifecycle.object_alive {
-            return ConcealOutcome::MissingOrDead;
-        }
-        if entity.lifecycle.in_limbo {
+        // gamemd-derived: `ObjectClass::Conceal @ 0x005F4D30` tests InLimbo
+        // at `0x005F4D45` and returns before Destroy on the already-limbo path.
+        if in_limbo {
+            #[cfg(test)]
+            self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealAlreadyLimboReturn {
+                stable_id,
+                object_alive,
+                resolvable: self.substrate.entities.contains(stable_id),
+            });
             return ConcealOutcome::AlreadyConcealed;
         }
 
@@ -1157,6 +1348,27 @@ impl Simulation {
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealDeselected);
+
+        // gamemd-derived: active YR `ObjectClass::Conceal @ 0x005F4D30`
+        // enters `ObjectClass::Destroy(1) @ 0x005F5280` after deselection and
+        // before `Mark(REMOVE)`, so the expiry broadcast observes the target
+        // alive, resolvable, and still cell-marked.
+        #[cfg(test)]
+        {
+            let (object_alive, cell_marked) = self
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.lifecycle.object_alive, entity.lifecycle.cell_marked))
+                .unwrap_or((false, false));
+            self.trace_lifecycle_for_test(LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                stable_id,
+                object_alive,
+                cell_marked,
+                resolvable: self.substrate.entities.contains(stable_id),
+            });
+        }
+        self.notify_pointer_expired(stable_id, context);
 
         if self.unmark_entity_remove(stable_id) {
             #[cfg(test)]
@@ -1215,18 +1427,23 @@ impl Simulation {
     /// TechnoClass Limbo sends synchronous BREAK to every contact before the
     /// common Object Conceal transaction.
     pub(crate) fn techno_limbo(&mut self, stable_id: u64) -> ConcealOutcome {
-        let Some(entity) = self.substrate.entities.get(stable_id) else {
-            return ConcealOutcome::MissingOrDead;
-        };
-        if !entity.lifecycle.object_alive {
+        self.techno_limbo_with_context(stable_id, UninitContext::default())
+    }
+
+    fn techno_limbo_with_context(
+        &mut self,
+        stable_id: u64,
+        context: UninitContext<'_>,
+    ) -> ConcealOutcome {
+        if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
-        if entity.lifecycle.in_limbo {
-            return ConcealOutcome::AlreadyConcealed;
-        }
+        // Dead and InLimbo are independent native state. TechnoClass::Limbo
+        // still reaches ObjectClass::Conceal for a stored dead object; the
+        // latter's InLimbo branch alone decides whether Conceal is a no-op.
         self.clear_building_base_reservation_and_repair(stable_id);
         crate::sim::radio::broadcast_break(self, stable_id);
-        self.object_conceal(stable_id)
+        self.object_conceal_with_context(stable_id, context)
     }
 
     /// Existing Rust owner-count mutation with an explicit exactly-once guard.
@@ -1325,6 +1542,7 @@ impl Simulation {
         stable_id: u64,
         killer_owner: Option<InternedId>,
         rules: &crate::rules::ruleset::RuleSet,
+        context: UninitContext<'_>,
     ) {
         let Some((owner, category, dont_score, type_ref, veterancy)) =
             self.substrate.entities.get(stable_id).map(|target| {
@@ -1379,7 +1597,7 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::PostMortemDestroyNotifyBoundary {
             stable_id,
         });
-        self.notify_pointer_expired(stable_id);
+        self.notify_pointer_expired(stable_id, context);
     }
 
     pub(crate) fn apply_lifecycle_request(&mut self, request: LifecycleRequest) {
@@ -1399,7 +1617,11 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::UninitClassPre { stable_id });
     }
 
-    fn uninit_carried_passengers(&mut self, carrier_id: u64) {
+    fn uninit_carried_passengers(
+        &mut self,
+        carrier_id: u64,
+        context: UninitContext<'_>,
+    ) {
         let passenger_ids = self
             .substrate
             .entities
@@ -1424,7 +1646,7 @@ impl Simulation {
                 }
                 passenger.health.current = 0;
             }
-            self.uninit(passenger_id);
+            self.uninit_with_context(passenger_id, context);
         }
     }
 
@@ -1432,8 +1654,12 @@ impl Simulation {
     /// enters only after carried objects have completed their own authoritative
     /// UnInit transactions; the carrier itself remains represented for its
     /// DeathWeapon and category-specific UnInit that follows.
-    pub(crate) fn purge_carried_passengers_for_fatal(&mut self, carrier_id: u64) {
-        self.uninit_carried_passengers(carrier_id);
+    pub(crate) fn purge_carried_passengers_for_fatal(
+        &mut self,
+        carrier_id: u64,
+        context: UninitContext<'_>,
+    ) {
+        self.uninit_carried_passengers(carrier_id, context);
     }
 
     fn nav_ref_targets_expired(target: &NavTargetRef, expired_id: u64) -> bool {
@@ -1450,6 +1676,10 @@ impl Simulation {
     /// IDs are monotonic and never reused, so merging the separate Rust stores
     /// by ID reproduces the native registration order without walking holes
     /// left by already-finalized objects.
+    ///
+    /// gamemd-derived: active YR `ObjectClass` construction/destruction at
+    /// `0x005F3900` / `0x005F3B80` maintains the listener roster in object
+    /// construction order.
     fn removal_listener_order(&self) -> Vec<u64> {
         let mut listeners = self.substrate.entities.keys_sorted();
         listeners.extend(self.substrate.anims.iter().map(|(&stable_id, _)| stable_id));
@@ -1459,6 +1689,7 @@ impl Simulation {
                 .iter()
                 .map(|(&stable_id, _)| stable_id),
         );
+        listeners.extend(self.projectiles.iter().map(|(&stable_id, _)| stable_id));
         listeners.sort_unstable();
         debug_assert!(
             listeners.windows(2).all(|pair| pair[0] != pair[1]),
@@ -1743,9 +1974,18 @@ impl Simulation {
     /// cell-marked, and resolvable. The represented callbacks below do not add
     /// or erase listener objects, so the native live-vector cursor and this
     /// monotonic construction-order walk have the same observable result.
-    fn notify_pointer_expired(&mut self, expired_id: u64) {
+    ///
+    /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
+    /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
+    /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
+    fn notify_pointer_expired(
+        &mut self,
+        expired_id: u64,
+        context: UninitContext<'_>,
+    ) {
         let Some((
             expired_cell,
+            expired_target_cell,
             expired_is_high_flying,
             expired_object_alive,
             expired_health,
@@ -1758,6 +1998,7 @@ impl Simulation {
             });
             (
                 (expired.position.rx, expired.position.ry),
+                object_get_coords_cell(expired),
                 high_flying,
                 expired.lifecycle.object_alive,
                 expired.health.current,
@@ -1769,11 +2010,30 @@ impl Simulation {
             return;
         };
 
+        // gamemd-derived: `BulletClass::PointerExpired @ 0x004684E0` replaces
+        // a matching ordinary target with MapClass's Cell target from the
+        // pre-Conceal location; high-flying and off-map targets become null.
+        let projectile_replacement_target = (!expired_is_high_flying)
+            .then_some(())
+            .and(expired_target_cell)
+            .and_then(|(rx, ry)| {
+                context
+                    .terrain()
+                    .or(self.resolved_terrain.as_ref())
+                    // A rectangular coordinate is not sufficient: production
+                    // terrain retains the native Size-diamond allocation mask,
+                    // and a missing slot has no CellClass target to retain.
+                    .and_then(|terrain| terrain.cell(rx, ry))
+                    .map(|_| ProjectileTarget::Cell { rx, ry })
+            })
+            .unwrap_or(ProjectileTarget::None);
+
         for listener_id in self.removal_listener_order() {
             let is_entity = self.substrate.entities.contains(listener_id);
             let is_anim = self.substrate.anims.contains_key(listener_id);
             let is_particle = self.substrate.particle_systems.contains_key(listener_id);
-            if !is_entity && !is_anim && !is_particle {
+            let is_projectile = self.projectiles.get(listener_id).is_some();
+            if !is_entity && !is_anim && !is_particle && !is_projectile {
                 continue;
             }
 
@@ -1831,18 +2091,50 @@ impl Simulation {
                     system.attached_entity = None;
                     system.marked_for_deletion = true;
                 }
+            } else if is_projectile {
+                let present = self.projectiles.pointer_expired(
+                    listener_id,
+                    expired_id,
+                    projectile_replacement_target,
+                );
+                debug_assert!(present);
+                #[cfg(test)]
+                if let Some((source_id, target)) = self
+                    .projectiles
+                    .get(listener_id)
+                    .map(|projectile| (projectile.source_id, projectile.target))
+                {
+                    self.trace_lifecycle_for_test(
+                        LifecycleTestEvent::ProjectilePointerExpiredVisited {
+                            expired_id,
+                            projectile_id: listener_id,
+                            expired_resolvable: self.substrate.entities.contains(expired_id),
+                            projectile_resolvable: true,
+                            source_id,
+                            target,
+                        },
+                    );
+                }
             }
         }
     }
 
     /// ObjectClass::UnInit represented ordering.  Physical removal is deferred.
     pub(crate) fn uninit(&mut self, stable_id: u64) {
+        self.uninit_with_context(stable_id, UninitContext::default());
+    }
+
+    pub(crate) fn uninit_with_context(
+        &mut self,
+        stable_id: u64,
+        context: UninitContext<'_>,
+    ) {
         if !self.substrate.entities.contains(stable_id) {
             return;
         }
 
         self.run_represented_uninit_pre_hook(stable_id);
-        self.uninit_carried_passengers(stable_id);
+        self.uninit_carried_passengers(stable_id, context);
         // `SpawnManagerClass::PointerExpired`, owner arm: `Kill_All_Spawns()`
         // then `ClearAllTargets()`. Docked/reloading children and any missile
         // still in its post-launch window die with the parent; aircraft already
@@ -1854,7 +2146,7 @@ impl Simulation {
             .get(stable_id)
             .is_some_and(|entity| entity.spawn_manager.is_some())
         {
-            crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
+            crate::sim::spawn_manager::kill_all_spawns_with_context(self, stable_id, context);
             crate::sim::spawn_manager::clear_all_spawn_targets(self, stable_id);
         }
 
@@ -1870,11 +2162,12 @@ impl Simulation {
                 stable_id,
                 object_alive,
                 cell_marked,
+                resolvable: self.substrate.entities.contains(stable_id),
             });
         }
-        self.notify_pointer_expired(stable_id);
+        self.notify_pointer_expired(stable_id, context);
 
-        let _ = self.techno_limbo(stable_id);
+        let _ = self.techno_limbo_with_context(stable_id, context);
         if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
             entity.lifecycle.object_alive = false;
             entity.dying = true;
@@ -1921,6 +2214,15 @@ impl Simulation {
         if let Some(system) = self.substrate.particle_systems.get(stable_id) {
             return system.marked_for_deletion && system.particles.is_empty();
         }
+        if let Some(terrain) = self.production.terrain_objects.get(&stable_id) {
+            return !terrain.is_live() && !terrain.in_logic_vector;
+        }
+        if let Some(projectile) = self.projectiles.get(stable_id) {
+            return !projectile.in_logic_vector;
+        }
+        if let Some(wave) = self.waves.get(stable_id) {
+            return !wave.in_logic_vector;
+        }
         true
     }
 
@@ -1932,6 +2234,20 @@ impl Simulation {
         let entity = self.substrate.entities.remove(stable_id);
         let anim = self.substrate.anims.remove(stable_id);
         let particle_system = self.substrate.particle_systems.finalize_remove(stable_id);
+        let terrain = self.production.terrain_objects.remove(&stable_id);
+        if let Some(terrain) = terrain.as_ref() {
+            let cell = terrain.cell();
+            if self.production.terrain_object_cells.get(&cell) == Some(&stable_id) {
+                self.production.terrain_object_cells.remove(&cell);
+                self.production.terrain_spawners.remove(&cell);
+                self.production.terrain_occupation_bits.remove(&cell);
+                self.production
+                    .tiberium_spawning_terrain_cells
+                    .remove(&cell);
+            }
+        }
+        let projectile = self.projectiles.remove(stable_id);
+        let wave = self.waves.remove(stable_id);
         if let Some(system) = particle_system.as_ref()
             && let Some(owner_id) = system.owner_entity
             && let Some(owner) = self.substrate.entities.get_mut(owner_id)
@@ -1946,6 +2262,9 @@ impl Simulation {
             usize::from(entity.is_some())
                 + usize::from(anim.is_some())
                 + usize::from(particle_system.is_some())
+                + usize::from(terrain.is_some())
+                + usize::from(projectile.is_some())
+                + usize::from(wave.is_some())
                 <= 1,
             "object id {stable_id} was removed from multiple stores"
         );
@@ -1962,6 +2281,11 @@ impl Simulation {
 
     /// Native-shaped pending-delete drain: preserve alive entries, collapse all
     /// duplicate ready IDs, and finalize each selected object exactly once.
+    ///
+    /// gamemd-derived: active YR `DrainDeferredFinalizationQueue @ 0x00725C70`
+    /// is reached from `Main_Tick` at `0x0055DE9F` after the frame commit; it
+    /// preserves non-ready entries, collapses selected duplicates, and finalizes
+    /// each selected ready object once.
     pub(crate) fn process_pending_delete(&mut self) {
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteDrainStarted);

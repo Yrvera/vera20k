@@ -312,8 +312,13 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // exact Scenario/Main/MapGen stream tuple below remains byte-identical and the
 // record/replay comparison remains exact, proving this shift is composition,
 // not RNG routing or committed simulation behavior.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xF836_1EE2_4497_4C3A;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F16_2026_F611_DDF3;
+// Re-baselined 2026-08-13 after GSI-05.01 consolidated ProjectileStore,
+// WaveStore, and ProductionState allocation into the already-hashed global
+// `ObjectSubstrate::next_stable_object_id`. Removing the three obsolete local
+// counter folds moves every hash composition; the exact stream tuple and every
+// record/replay tick comparison remain unchanged.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x8C03_0059_B011_95F9;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x498C_585F_D4BF_5EB3;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -427,7 +432,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x2F16_2026_F611_DDF3;
 /// Re-baselined 2026-08-11 with `FINAL_STREAM_STATES` after the harness gained
 /// its production OverlayGrid/Tiberium authority. The changed miner/resource
 /// state is replay-identical and the stream movement is Scenario-only.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCB59_4C79_FDEE_2CEE;
+/// Re-baselined 2026-08-13 for the same GSI-05.01 global-ID composition change
+/// documented at the legacy probes above; RNG cursors held and record/replay
+/// hash equality remained exact.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF24A_55FE_79D7_B549;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

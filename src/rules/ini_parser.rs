@@ -780,7 +780,12 @@ impl RulesPassProcessor {
 
     fn find_or_allocate(&mut self, family: RulesTypeFamily, identity: &str) {
         let identity = trim_ascii_controls(identity);
-        if identity.is_empty() {
+        // UnitTypeClass::FindOrAllocate @ 0x007480D0 rejects both native
+        // no-type sentinels before the per-family case-insensitive lookup.
+        if identity.is_empty()
+            || identity.eq_ignore_ascii_case("none")
+            || identity.eq_ignore_ascii_case("<none>")
+        {
             return;
         }
         let members = self.family_mut(family);

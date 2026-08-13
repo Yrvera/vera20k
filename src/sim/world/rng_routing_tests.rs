@@ -2,8 +2,8 @@
 //!
 //! Guards Scenario/Main/MapGen independence, per-accessor routing (the
 //! dominant silent-misroute failure), authoritative hash/snapshot coverage,
-//! process-global load retention, end-to-end determinism, and ground-truth
-//! gamemd value-parity pins.
+//! in-scenario process-global load retention, end-to-end determinism, and
+//! ground-truth gamemd value-parity pins.
 
 use super::{DEFAULT_SIM_SEED, Simulation};
 use crate::sim::rng::SimRng;
@@ -326,9 +326,9 @@ fn advancing_mapgen_only_does_not_change_state_hash_or_gameplay_streams() {
     );
 }
 
-// --- Test 7: snapshot persists Scenario and omits process globals (§7.7) ---
+// --- Test 7: snapshot reads Scenario bytes, then resets it like retail load ---
 #[test]
-fn snapshot_round_trip_persists_only_scenario_stream() {
+fn snapshot_load_resets_scenario_and_omits_process_globals() {
     let mut sim = Simulation::with_seed(0xABCD_1234);
     for _ in 0..11 {
         sim.scatter_rng().next_u32();
@@ -345,6 +345,7 @@ fn snapshot_round_trip_persists_only_scenario_stream() {
     let main_before = sim.main_rng.state();
     let mapgen_before = sim.mapgen_rng.state();
     let process_placeholder = SimRng::new(0).state();
+    assert_ne!(scenario_before, process_placeholder);
     assert_ne!(main_before, process_placeholder);
     assert_ne!(mapgen_before, process_placeholder);
 
@@ -354,8 +355,8 @@ fn snapshot_round_trip_persists_only_scenario_stream() {
 
     assert_eq!(
         restored.scenario_rng.state(),
-        scenario_before,
-        "scenario stream must round-trip"
+        process_placeholder,
+        "native load reseeds Scenario->Random with zero after reading its saved bytes"
     );
     assert_eq!(
         restored.main_rng.state(),
@@ -396,11 +397,22 @@ fn determinism_both_streams_match_across_ticks() {
     }
 }
 
-// --- Test 9: production load keeps the live process-global cursors (§5) ---
+// --- Test 9: in-scenario load keeps the live process-global state ---
 #[test]
-fn production_load_retains_live_main_and_mapgen_cursors() {
-    let mut live = Simulation::with_seed(0xABCD_1234);
+fn production_in_scenario_load_retains_live_seed_main_and_mapgen() {
+    let mut saved = Simulation::with_seed(0xABCD_1234);
     for _ in 0..11 {
+        saved.scatter_rng().next_u32();
+    }
+
+    let saved_seed = saved.session.seed;
+    let saved_scenario = saved.scenario_rng.state();
+    let reset_scenario = SimRng::new(0).state();
+    assert_ne!(saved_scenario, reset_scenario);
+    let bytes = GameSnapshot::save(&saved, 0, 0, "rng_test", 0);
+
+    let mut live = Simulation::with_seed(0x7654_3210);
+    for _ in 0..3 {
         live.scatter_rng().next_u32();
     }
     for _ in 0..7 {
@@ -411,31 +423,25 @@ fn production_load_retains_live_main_and_mapgen_cursors() {
         live.mapgen_rng.next_u32();
     }
 
-    let saved_scenario = live.scenario_rng.state();
-    let bytes = GameSnapshot::save(&live, 0, 0, "rng_test", 0);
-
-    // Process-global activity after the save is the cursor state that must
-    // survive loading it. Advancing Scenario proves that seam does not copy
-    // the live Scenario cursor over the saved one.
-    live.scatter_rng().next_u32();
-    for _ in 0..5 {
-        live.weapon_spread_rng().next_u32();
-    }
-    for _ in 0..2 {
-        live.mapgen_rng.next_u32();
-    }
+    let live_seed = live.session.seed;
+    assert_ne!(live_seed, saved_seed);
     let live_scenario = live.scenario_rng.state();
     let live_main = live.main_rng.state();
     let live_mapgen = live.mapgen_rng.state();
 
     let mut restored = GameSnapshot::load(&bytes).expect("snapshot load").sim;
-    restored.retain_process_rngs_from(&live);
+    restored.retain_in_scenario_process_state_from(&live);
     assert_eq!(
         restored.scenario_rng.state(),
-        saved_scenario,
-        "Scenario must come from the save"
+        reset_scenario,
+        "Scenario must be reseeded with zero after its saved bytes are read"
     );
+    assert_ne!(restored.scenario_rng.state(), saved_scenario);
     assert_ne!(restored.scenario_rng.state(), live_scenario);
+    assert_eq!(
+        restored.session.seed, live_seed,
+        "in-scenario load must retain the live process-global seed"
+    );
     assert_eq!(
         restored.main_rng.state(),
         live_main,

@@ -1209,6 +1209,7 @@ mod tests {
             stable_id,
             TerrainObjectState {
                 stable_id,
+                in_logic_vector: false,
                 type_ref: interner.intern("TREE01"),
                 rx: 4,
                 ry: 7,

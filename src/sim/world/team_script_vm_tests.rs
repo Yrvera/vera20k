@@ -44,6 +44,9 @@ fn team_script_vm_advances_in_the_master_frame_and_survives_save_load() {
     assert_eq!(team.members(), &[19, 7, 11]);
     assert_eq!(team.target(), Some(99));
 
+    // Native in-scenario load resets Scenario RNG; isolate team-script
+    // persistence by comparing against that same post-load baseline.
+    original.scenario_rng = crate::sim::rng::SimRng::new(0);
     let snapshot = GameSnapshot::save(&original, 0, 0, "team_vm_test", 0);
     let mut restored = GameSnapshot::load(&snapshot).expect("snapshot").sim;
     assert_eq!(original.state_hash(), restored.state_hash());

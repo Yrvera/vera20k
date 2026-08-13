@@ -5,6 +5,7 @@
 //! live state, not the lifecycle owner.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::Hash;
 
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, recalc_zone_type};
 use crate::rules::ruleset::RuleSet;
@@ -25,9 +26,12 @@ pub enum TerrainObjectLifecycle {
     Destroyed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerrainObjectState {
     pub stable_id: u64,
+    /// LogicClass membership is reconstructed from the serialized mixed order.
+    #[serde(skip)]
+    pub in_logic_vector: bool,
     pub type_ref: InternedId,
     pub rx: u16,
     pub ry: u16,
@@ -35,6 +39,19 @@ pub struct TerrainObjectState {
     pub max_health: i32,
     pub occupation_bits: u8,
     pub lifecycle: TerrainObjectLifecycle,
+}
+
+impl std::hash::Hash for TerrainObjectState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.stable_id.hash(state);
+        self.type_ref.hash(state);
+        self.rx.hash(state);
+        self.ry.hash(state);
+        self.health.hash(state);
+        self.max_health.hash(state);
+        self.occupation_bits.hash(state);
+        self.lifecycle.hash(state);
+    }
 }
 
 impl TerrainObjectState {
@@ -48,6 +65,7 @@ impl TerrainObjectState {
     ) -> Self {
         Self {
             stable_id,
+            in_logic_vector: false,
             type_ref,
             rx,
             ry,
@@ -174,6 +192,16 @@ impl TerrainAreaState {
 
     pub(crate) fn terrain_object_cells(&self) -> &BTreeMap<(u16, u16), u64> {
         &self.terrain_object_cells
+    }
+
+    /// Objects whose authoritative terrain finalization made them inactive
+    /// while their LogicClass membership record is still available to repair.
+    pub(crate) fn inactive_logic_ids(&self) -> Vec<u64> {
+        self.terrain_objects
+            .values()
+            .filter(|terrain| !terrain.is_live() && terrain.in_logic_vector)
+            .map(|terrain| terrain.stable_id)
+            .collect()
     }
 
     pub(crate) fn navigation_changed_cells(&self) -> &[(u16, u16)] {
@@ -559,12 +587,6 @@ fn set_resolved_terrain_object_occupation(
         terrain_cell.speed_costs.wheel,
         terrain_cell.terrain_object_occupation,
     );
-}
-
-pub fn next_terrain_object_id(production: &mut ProductionState) -> u64 {
-    let id = production.next_terrain_object_id;
-    production.next_terrain_object_id = production.next_terrain_object_id.saturating_add(1);
-    id
 }
 
 #[cfg(test)]
