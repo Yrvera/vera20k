@@ -15,7 +15,10 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::canonical_cell_coord;
 use crate::sim::combat;
 use crate::sim::combat::combat_aoe::{CellTargetDetach, detach_cell_target_references};
-use crate::sim::command::{Command, CommandEnvelope, CommandRecord, SellWallAtCellRecord};
+use crate::sim::command::{
+    COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, MegaMissionMoveRecord,
+    SellWallAtCellRecord,
+};
 use crate::sim::components::OrderIntent;
 use crate::sim::docking::building_dock::{self, DockPhase, DockState};
 use crate::sim::mission::{DockTeardown, MissionType};
@@ -131,6 +134,42 @@ fn trace_wall_sell_zone_repair_step(
 }
 
 impl Simulation {
+    /// Build the exact native MegaMission record for one ordinary local Move.
+    ///
+    /// `EventClass__BuildMegaMissionEnvelope` at `gamemd.exe` `0x004C6860`
+    /// stores HouseClass registration and Abstract stable identity separately;
+    /// the source therefore need not belong to the issuing house. Rust-only
+    /// queued waypoints and move-group metadata are not representable here.
+    pub(crate) fn encode_megamission_move_record(
+        &self,
+        command_owner: crate::sim::intern::InternedId,
+        source_id: u64,
+        target_rx: u16,
+        target_ry: u16,
+    ) -> Option<CommandRecord> {
+        if !self.houses.contains_key(&command_owner)
+            || self.substrate.entities.get(source_id).is_none()
+        {
+            return None;
+        }
+        let house_id = self
+            .session
+            .house_order
+            .iter()
+            .position(|&owner| owner == command_owner)
+            .and_then(|index| i8::try_from(index).ok())?;
+        let typed = MegaMissionMoveRecord {
+            house_id,
+            frame: self.session.binary_frame as i32,
+            source_id: i32::try_from(source_id).ok()?,
+            target_x: i16::try_from(target_rx).ok()?,
+            target_y: i16::try_from(target_ry).ok()?,
+        };
+        let mut record = CommandRecord::decode_exact(&[0; COMMAND_RECORD_LEN]).ok()?;
+        typed.write_into(&mut record).ok()?;
+        Some(record)
+    }
+
     /// Encode the native synchronized record for one locally issued wall sale.
     /// House bytes are HouseClass registration indices, never interner ids.
     pub(crate) fn encode_sell_wall_at_cell_record(
@@ -166,6 +205,29 @@ impl Simulation {
         record: &CommandRecord,
         execute_tick: u64,
     ) -> Option<CommandEnvelope> {
+        if let Some(typed) = MegaMissionMoveRecord::decode(record) {
+            let house_index = usize::try_from(typed.house_id).ok()?;
+            let owner = *self.session.house_order.get(house_index)?;
+            if !self.houses.contains_key(&owner) {
+                return None;
+            }
+            let entity_id = u64::try_from(typed.source_id).ok()?;
+            if self.substrate.entities.get(entity_id).is_none() {
+                return None;
+            }
+            return Some(CommandEnvelope::new(
+                owner,
+                execute_tick,
+                Command::Move {
+                    entity_id,
+                    target_rx: u16::try_from(typed.target_x).ok()?,
+                    target_ry: u16::try_from(typed.target_y).ok()?,
+                    queue: false,
+                    group_id: None,
+                },
+            ));
+        }
+
         let typed = SellWallAtCellRecord::decode(record)?;
         let house_index = usize::try_from(typed.house_id).ok()?;
         let owner = *self.session.house_order.get(house_index)?;
@@ -2461,6 +2523,97 @@ mod tests {
         // reads that byte, so the fixture must model a revealed object.
         entity.lifecycle.in_limbo = false;
         sim.substrate.entities.insert(entity);
+    }
+
+    fn gsi_16_01_insert_identity_entity(
+        sim: &mut Simulation,
+        stable_id: u64,
+        owner: crate::sim::intern::InternedId,
+    ) {
+        let type_ref = sim.interner.intern("TESTUNIT");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            stable_id,
+            10,
+            20,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            false,
+        );
+        entity.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(entity);
+    }
+
+    #[test]
+    fn gsi_16_01_registered_house_move_roundtrips_without_a_semantic_sidecar() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        let source_owner = sim.interner.intern("SourceOwner");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, false, 0, 10));
+        sim.houses.insert(
+            source_owner,
+            HouseState::new(source_owner, 1, None, false, 0, 10),
+        );
+        sim.session.house_order = vec![local, source_owner];
+        sim.session.binary_frame = 77;
+        gsi_16_01_insert_identity_entity(&mut sim, 42, source_owner);
+
+        let record = sim
+            .encode_megamission_move_record(local, 42, 34, 12)
+            .expect("registered issuer and source encode");
+        assert_eq!(
+            record.house_id(),
+            0,
+            "issuer is independent of source owner"
+        );
+        assert_eq!(record.frame_stamp(), 77);
+        assert_eq!(
+            sim.decode_native_command_record(&record, 900),
+            Some(CommandEnvelope::new(
+                local,
+                900,
+                Command::Move {
+                    entity_id: 42,
+                    target_rx: 34,
+                    target_ry: 12,
+                    queue: false,
+                    group_id: None,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn gsi_16_01_move_admission_rejects_unregistered_issuer_and_identity_overflow() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        let absent = sim.interner.intern("Absent");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, false, 0, 10));
+        sim.session.house_order = vec![local];
+        gsi_16_01_insert_identity_entity(&mut sim, 42, local);
+        assert_eq!(sim.encode_megamission_move_record(absent, 42, 10, 20), None);
+
+        let overflow_id = i32::MAX as u64 + 1;
+        gsi_16_01_insert_identity_entity(&mut sim, overflow_id, local);
+        assert_eq!(
+            sim.encode_megamission_move_record(local, overflow_id, 10, 20),
+            None
+        );
+        assert_eq!(
+            sim.encode_megamission_move_record(local, 42, u16::MAX, 20),
+            None,
+            "native signed CellStruct coordinates must not be truncated"
+        );
     }
 
     #[test]

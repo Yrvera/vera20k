@@ -766,8 +766,40 @@ fn schedule_command_in_sim(
         }
         payload => CommandEnvelope::new(owner_id, execute_tick, payload),
     };
+    let envelope = roundtrip_ordinary_local_move(sim, envelope)?;
     sim.queue_command(envelope);
     Some(execute_tick)
+}
+
+/// Make the verified ordinary local Move bytes authoritative at issue time.
+///
+/// Active YR routes a cell click through `ClickedAction` (`0x004D7D50`) to
+/// `EventClass__BuildMegaMissionEnvelope` (`0x004C6860`). Only queue-false Move
+/// is in that verified codec contract: queued/planning and every other semantic
+/// command pass through unchanged until their own native record is established.
+pub(crate) fn roundtrip_ordinary_local_move(
+    sim: &crate::sim::world::Simulation,
+    envelope: CommandEnvelope,
+) -> Option<CommandEnvelope> {
+    let CommandEnvelope {
+        owner,
+        execute_tick,
+        payload,
+    } = envelope;
+    match payload {
+        Command::Move {
+            entity_id,
+            target_rx,
+            target_ry,
+            queue: false,
+            ..
+        } => {
+            let record =
+                sim.encode_megamission_move_record(owner, entity_id, target_rx, target_ry)?;
+            SynchronizedCommand::opaque(record).decode_for_simulation(sim, execute_tick)
+        }
+        payload => Some(CommandEnvelope::new(owner, execute_tick, payload)),
+    }
 }
 
 /// Queue one ordinary deterministic command and return its actual execute tick.
@@ -802,10 +834,95 @@ pub(crate) fn is_playable_house_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{schedule_command_in_sim, sell_wall_command_for_cell};
+    use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn gsi_16_01_local_scheduler_uses_move_bytes_and_fences_queued_move_metadata() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        let type_ref = sim.interner.intern("TESTUNIT");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, false, 0, 10));
+        sim.session.house_order = vec![local];
+        sim.session.tick = 123;
+        sim.session.binary_frame = 77;
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            42,
+            1,
+            1,
+            0,
+            0,
+            local,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            false,
+        );
+        entity.lifecycle.in_limbo = false;
+        sim.substrate.entities.insert(entity);
+
+        assert_eq!(
+            schedule_command_in_sim(
+                &mut sim,
+                "Local",
+                Command::Move {
+                    entity_id: 42,
+                    target_rx: 34,
+                    target_ry: 12,
+                    queue: false,
+                    group_id: Some(99),
+                },
+            ),
+            Some(123)
+        );
+        assert_eq!(
+            sim.pending_commands[0],
+            CommandEnvelope::new(
+                local,
+                123,
+                Command::Move {
+                    entity_id: 42,
+                    target_rx: 34,
+                    target_ry: 12,
+                    queue: false,
+                    group_id: None,
+                }
+            ),
+            "ordinary Move has no semantic sidecar for Rust-only group metadata"
+        );
+
+        schedule_command_in_sim(
+            &mut sim,
+            "Local",
+            Command::Move {
+                entity_id: 42,
+                target_rx: 35,
+                target_ry: 12,
+                queue: true,
+                group_id: Some(99),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            sim.pending_commands[1].payload,
+            Command::Move {
+                queue: true,
+                group_id: Some(99),
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn recorded_scheduler_stamps_the_current_raw_issue_ordinal() {

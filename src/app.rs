@@ -4075,6 +4075,13 @@ impl ApplicationHandler for App {
             }
         }
     }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut() {
+            crate::app_sim_tick::flush_replay_log(state);
+        }
+        log::logger().flush();
+    }
 }
 
 impl App {

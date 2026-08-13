@@ -89,5 +89,6 @@ fn main() -> Result<()> {
     app.finish_capture()?;
 
     log::info!("RA2 Engine shut down cleanly");
+    log::logger().flush();
     Ok(())
 }

@@ -215,6 +215,16 @@ fn finish_order(
     queued: Vec<CommandEnvelope>,
     speaker_id: Option<u64>,
 ) -> bool {
+    let queued = if let Some(sim) = state.simulation.as_ref() {
+        queued
+            .into_iter()
+            .filter_map(|envelope| {
+                crate::app_commands::roundtrip_ordinary_local_move(sim, envelope)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        queued
+    };
     if queued.is_empty() {
         return false;
     }
