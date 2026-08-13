@@ -62,7 +62,7 @@ impl Simulation {
         self.object_ai_stage_with(rules, ObjectAiCtx::default());
     }
 
-    /// The **second** Ready→Commence checkpoint, run after the movement phases.
+    /// The post-movement Ready→Commence checkpoint.
     ///
     /// `InfantryClass::AI` and `UnitClass::AI` each gate twice per tick, once on
     /// either side of the object's own locomotion, and both checkpoints are the
@@ -77,15 +77,14 @@ impl Simulation {
     /// chained handoffs — harvest dock/unload/exit, guard→attack — at one extra
     /// tick per stage.
     ///
-    /// Scope, deliberately: **Unit and Infantry only.** Those are the two
-    /// categories verified to gate twice. Aircraft gate exactly once and do it
-    /// *after* their locomotion, so their single checkpoint sits at the wrong
-    /// end in our tick today — recorded, not fixed here, to keep this change's
-    /// hash delta attributable to one mechanism. Buildings gate twice inside
-    /// their own update, which is not a movement bracket; unchanged.
+    /// Unit and Infantry reach this as their second checkpoint. Aircraft reach
+    /// it as their sole checkpoint: `AircraftClass::AI @ 0x00414BB0` calls
+    /// `FootClass::AI` (which processes the locomotor) at `0x00414DA3`, then
+    /// calls ReadyToCommence/Commence at `0x0041504A`/`0x00415058`. Buildings
+    /// gate inside their own update, which is not this movement bracket.
     ///
     /// The AI counter is NOT ticked here. Native increments it once per AI pass,
-    /// and the first checkpoint already did.
+    /// and the pre-movement mission step already did so for every category.
     pub(crate) fn object_ai_post_movement_promote(&mut self, rules: Option<&RuleSet>) {
         let Some(rules) = rules else {
             return;
@@ -103,7 +102,7 @@ impl Simulation {
             }
             if !matches!(
                 entity.category,
-                EntityCategory::Unit | EntityCategory::Infantry
+                EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
             ) {
                 return;
             }
@@ -111,8 +110,9 @@ impl Simulation {
         });
     }
 
-    /// The second Unit/Infantry Ready-to-Commence checkpoint for one object,
-    /// called immediately after that object's own locomotion.
+    /// The post-movement Ready-to-Commence checkpoint for one object, called
+    /// immediately after that object's own locomotion. This is the second
+    /// checkpoint for Unit/Infantry and the sole checkpoint for Aircraft.
     pub(crate) fn object_ai_post_movement_promote_one(&mut self, id: u64, rules: Option<&RuleSet>) {
         let Some(rules) = rules else {
             return;
@@ -123,7 +123,7 @@ impl Simulation {
         if entity.dying
             || !matches!(
                 entity.category,
-                EntityCategory::Unit | EntityCategory::Infantry
+                EntityCategory::Unit | EntityCategory::Infantry | EntityCategory::Aircraft
             )
         {
             return;
@@ -407,7 +407,10 @@ fn techno_ai_shell(
                 sim.tick_pending_building_detonation(id, rules, ctx.overlay_registry);
             }
         }
-        // AircraftClass::AI promotes via Ready→Commence (`0x00415058`).
+        // AircraftClass::AI reaches the shared Foot/mission work before its
+        // locomotor, but promotes via Ready→Commence only after Foot returns
+        // (`0x0041504A`/`0x00415058`). Keep the counter here; the sole promotion
+        // is `object_ai_post_movement_promote_one`.
         //
         // RESIDUAL — no passive block on this arm. Aircraft reach the common
         // Techno AI body in the original through the same foot-leaf call the
@@ -420,20 +423,24 @@ fn techno_ai_shell(
         // properly means choosing which aircraft states may acquire and routing
         // the pick through that machine, which is its own slice.
         EntityCategory::Aircraft => {
-            mission_common_step(sim, id, rules);
+            mission_counter_step(sim, id);
         }
     }
 }
 
-/// The common per-object Mission step every category's AI update performs:
-/// the `+0xC4` per-mission AI counter tick and the owner-local queued-mission
-/// promotion (Ready→Commence). Promotion needs parsed rules for the Unit
-/// world lookups; a rules-less call (barebones fixtures) ticks the counter and
-/// leaves the queue for a later rules-bearing pass.
-fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+/// Tick the common `+0xC4` per-mission AI counter once per object visit.
+fn mission_counter_step(sim: &mut Simulation, id: u64) {
     if let Some(entity) = sim.substrate.entities.get_mut(id) {
         entity.mission.increment_ai_counter();
     }
+}
+
+/// The pre-movement Mission step for categories whose leaf AI has a
+/// Ready→Commence checkpoint at this position. Promotion needs parsed rules
+/// for Unit world lookups; a rules-less call ticks the counter and leaves the
+/// queue for a later rules-bearing pass.
+fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
+    mission_counter_step(sim, id);
     if let Some(rules) = rules {
         let now = sim.session.binary_frame;
         sim.mission_host_promote(id, now, rules);
@@ -4873,6 +4880,29 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         sim.substrate.entities.insert(e);
     }
 
+    fn insert_interned_aircraft(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TEST");
+        let e = GameEntity::new_at_frame_zero_for_test(
+            id,
+            rx,
+            ry,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Aircraft,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(e);
+    }
+
     /// An interned Infantry carrying a Walk locomotor, so the readiness producer
     /// has a real family to map and the moving gate is live.
     fn insert_interned_walker(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
@@ -5012,61 +5042,125 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
         assert_eq!(e.mission.queued(), MissionId::NONE);
     }
 
-    /// The second checkpoint must not touch categories gamemd gates only once.
-    /// Aircraft gate a single time, after their locomotion; buildings gate twice
-    /// inside their own update, which is not a movement bracket.
+    /// A ready Aircraft stays queued through the shared Foot/mission visit and
+    /// promotes only at AircraftClass::AI's post-Foot checkpoint.
     #[test]
-    fn post_movement_checkpoint_skips_aircraft_and_structures() {
+    fn gsi_05_06_aircraft_ready_queue_promotes_only_post_movement() {
         let rules = promotion_rules();
         let mut sim = Simulation::new();
-        for (id, category) in [
-            (1u64, EntityCategory::Aircraft),
-            (2, EntityCategory::Structure),
-        ] {
-            let owner = sim.interner.intern("Americans");
-            let type_ref = sim.interner.intern("TEST");
-            let e = GameEntity::new_at_frame_zero_for_test(
-                id,
-                5,
-                5,
-                0,
-                0,
-                owner,
-                crate::sim::components::Health {
-                    current: 100,
-                    max: 100,
-                },
-                type_ref,
-                category,
-                0,
-                5,
-                true,
-            );
-            sim.substrate.entities.insert(e);
-            register_in_logic(&mut sim, id);
-            sim.mission_queue_exact(
-                id,
-                MissionId::from_known(MissionType::Move),
-                0,
-                0,
-                &crate::sim::mission::authority::EntityReadyInputProvider,
-            )
-            .ok();
-        }
-        let before: Vec<_> = [1u64, 2]
-            .iter()
-            .map(|id| sim.substrate.entities.get(*id).unwrap().mission)
-            .collect();
+        insert_interned_aircraft(&mut sim, 1, 5, 5);
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
 
-        sim.object_ai_post_movement_promote(Some(&rules));
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
 
-        for (index, id) in [1u64, 2].iter().enumerate() {
-            assert_eq!(
-                sim.substrate.entities.get(*id).unwrap().mission,
-                before[index],
-                "entity {id} is not a twice-gated category and must be untouched"
-            );
-        }
+        let aircraft = sim.substrate.entities.get(1).expect("aircraft present");
+        assert_eq!(aircraft.mission.current(), MissionId::NONE);
+        assert_eq!(aircraft.mission.queued().known(), Some(MissionType::Move));
+        let counter_before_post = aircraft.mission.ai_counter();
+        assert_eq!(counter_before_post, 1, "Foot mission work still ran");
+
+        sim.object_ai_post_movement_promote_one(1, Some(&rules));
+
+        let aircraft = sim.substrate.entities.get(1).expect("aircraft present");
+        assert_eq!(aircraft.mission.current().known(), Some(MissionType::Move));
+        assert_eq!(aircraft.mission.queued(), MissionId::NONE);
+        assert_eq!(
+            aircraft.mission.ai_counter(),
+            0,
+            "Commence resets the counter and the post gate must not increment it again"
+        );
+    }
+
+    /// Readiness can become true during the aircraft's locomotor work. The
+    /// same live-object turn must observe that new latch at the post-Foot gate.
+    #[test]
+    fn gsi_05_06_aircraft_latch_change_promotes_at_post_movement_gate() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        insert_interned_aircraft(&mut sim, 1, 5, 5);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .mission_leaf
+            .set_aircraft_transition_ready(0);
+        sim.mission_queue_exact(
+            1,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+        let aircraft = sim.substrate.entities.get(1).expect("aircraft present");
+        assert_eq!(aircraft.mission.current(), MissionId::NONE);
+        assert_eq!(aircraft.mission.queued().known(), Some(MissionType::Move));
+
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .mission_leaf
+            .set_aircraft_transition_ready(1);
+        sim.object_ai_post_movement_promote_one(1, Some(&rules));
+
+        let aircraft = sim.substrate.entities.get(1).expect("aircraft present");
+        assert_eq!(aircraft.mission.current().known(), Some(MissionType::Move));
+        assert_eq!(aircraft.mission.queued(), MissionId::NONE);
+        assert_eq!(
+            aircraft.mission.ai_counter(),
+            0,
+            "post-movement Commence reset must remain final; no second counter tick"
+        );
+    }
+
+    /// Structures gate inside BuildingClass::Update, not this movement bracket.
+    #[test]
+    fn post_movement_checkpoint_skips_structures() {
+        let rules = promotion_rules();
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("FACT");
+        let structure = GameEntity::new_at_frame_zero_for_test(
+            2,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            true,
+        );
+        sim.substrate.entities.insert(structure);
+        sim.mission_queue_exact(
+            2,
+            MissionId::from_known(MissionType::Move),
+            0,
+            0,
+            &crate::sim::mission::authority::EntityReadyInputProvider,
+        )
+        .unwrap();
+        let before = sim.substrate.entities.get(2).unwrap().mission;
+
+        sim.object_ai_post_movement_promote_one(2, Some(&rules));
+
+        assert_eq!(sim.substrate.entities.get(2).unwrap().mission, before);
     }
 
     #[test]
