@@ -1025,6 +1025,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            entity.pending_building_fire.hash(hasher);
             entity.current_weapon_index.hash(hasher);
             entity.current_weapon_ref.map(|id| id.index()).hash(hasher);
 

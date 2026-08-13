@@ -172,6 +172,8 @@ mod tests {
             primary_fire_pixel_offset: None,
             secondary_fire_pixel_offset: None,
             primary_fire_dual_offset: false,
+            is_anim_delayed_fire: false,
+            delayed_fire_delay: 0,
             walk_frames: walk,
             firing_frames: firing,
             standing_frames: None,

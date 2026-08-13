@@ -45,11 +45,17 @@ mod combat_pursuit_tests;
 #[path = "combat_turret_facing_tests.rs"]
 mod combat_turret_facing_tests;
 
+#[cfg(test)]
+#[path = "delayed_building_fire_tests.rs"]
+mod delayed_building_fire_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sim::miner::ResourceNode;
 
-use self::combat_weapon::{WeaponSlot, select_deploy_fire_weapon, select_weapon_with_override};
+use self::combat_weapon::{
+    WeaponSlot, select_deploy_fire_weapon, select_weapon_slot, select_weapon_with_override,
+};
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -88,7 +94,7 @@ use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53};
 
 use super::animation::SequenceKind;
 use super::deploy::DeployPhase;
-use super::game_entity::GameEntity;
+use super::game_entity::{GameEntity, PendingBuildingFire};
 use super::occupancy::OccupancyGrid;
 use super::production::foundation_dimensions;
 
@@ -4951,6 +4957,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             burst_remaining,
             burst_delay_ticks,
             pending_infantry_fire,
+            pending_building_fire,
             garrison_cargo,
         ) = {
             let entity = match entities.get_mut(id) {
@@ -4961,19 +4968,57 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             if entity.passenger_role.is_inside_transport() {
                 continue;
             }
-            let attack = match entity.attack_target.as_mut() {
-                Some(a) => a,
-                None => continue,
+            if entity.dying || !entity.is_alive() {
+                // BuildingClass::Update no longer reaches ProcessDelayedFire
+                // once the object is dead.
+                continue;
+            }
+            let attack_state = entity.attack_target.as_mut().map(|attack| {
+                attack.cooldown_ticks = attack.cooldown_ticks.saturating_sub(1);
+                attack.burst_delay_ticks = attack.burst_delay_ticks.saturating_sub(1);
+                (
+                    attack.target,
+                    attack.cooldown_ticks,
+                    attack.burst_remaining,
+                    attack.burst_delay_ticks,
+                    attack.pending_infantry_fire,
+                )
+            });
+
+            // gamemd-derived: BuildingClass::Update @ 0x0043FB20 invokes
+            // ProcessDelayedFire @ 0x004503F0 after mission dispatch. The
+            // signed counter is pre-decremented and values <= 0 clamp to zero
+            // and expire on this visit.
+            let pending_building_fire = entity.pending_building_fire.as_mut().map(|pending| {
+                pending.remaining_ticks = pending.remaining_ticks.saturating_sub(1).max(0);
+                *pending
+            });
+            if pending_building_fire.is_some_and(|pending| pending.remaining_ticks != 0) {
+                // GetFireError @ 0x00447F10 blocks ordinary fire while armed.
+                continue;
+            }
+            let Some((
+                attack_target,
+                cooldown_ticks,
+                burst_remaining,
+                burst_delay_ticks,
+                pending_infantry_fire,
+            )) = attack_state
+            else {
+                // Expiry reads only the live target. A missing target clears
+                // the latch and does not acquire or drop another target.
+                if pending_building_fire.is_some() {
+                    entity.pending_building_fire = None;
+                }
+                continue;
             };
-            attack.cooldown_ticks = attack.cooldown_ticks.saturating_sub(1);
-            attack.burst_delay_ticks = attack.burst_delay_ticks.saturating_sub(1);
-            let attack_target = attack.target;
-            let cooldown_ticks = attack.cooldown_ticks;
-            let burst_remaining = attack.burst_remaining;
-            let burst_delay_ticks = attack.burst_delay_ticks;
-            let pending_infantry_fire = attack.pending_infantry_fire;
             // Skip snapshot for entities blocked by locomotor state (cooldowns still tick).
             if fire_blocked.contains(&id) {
+                // Delayed expiry rechecks fire admissibility and clears on any
+                // failure rather than postponing until the building is usable.
+                if pending_building_fire.is_some() {
+                    entity.pending_building_fire = None;
+                }
                 continue;
             }
 
@@ -4999,6 +5044,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
                 burst_remaining,
                 burst_delay_ticks,
                 pending_infantry_fire,
+                pending_building_fire,
                 garrison_cargo,
             )
         }; // mutable borrow released
@@ -5034,6 +5080,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             burst_remaining,
             burst_delay_ticks,
             pending_infantry_fire,
+            pending_building_fire,
             garrison,
         ));
     }
@@ -5087,15 +5134,17 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         let Some(live_attack) = entities
             .get(snap.stable_id)
             .filter(|entity| entity.is_alive() && !entity.dying)
-            .and_then(|entity| entity.attack_target.as_ref())
-            .map(|attack| {
-                (
-                    attack.target,
-                    attack.cooldown_ticks,
-                    attack.burst_remaining,
-                    attack.burst_delay_ticks,
-                    attack.pending_infantry_fire,
-                )
+            .and_then(|entity| {
+                entity.attack_target.as_ref().map(|attack| {
+                    (
+                        attack.target,
+                        attack.cooldown_ticks,
+                        attack.burst_remaining,
+                        attack.burst_delay_ticks,
+                        attack.pending_infantry_fire,
+                        entity.pending_building_fire,
+                    )
+                })
             })
         else {
             continue;
@@ -5106,6 +5155,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
         live_snap.burst_remaining = live_attack.2;
         live_snap.burst_delay_ticks = live_attack.3;
         live_snap.pending_infantry_fire = live_attack.4;
+        live_snap.pending_building_fire = live_attack.5;
 
         let n_retarget = emit.retarget_events.len();
         let n_remove = emit.remove_attack.len();
@@ -5539,6 +5589,7 @@ pub(crate) fn build_attacker_snapshot(
     burst_remaining: u8,
     burst_delay_ticks: u8,
     pending_infantry_fire: Option<PendingInfantryFire>,
+    pending_building_fire: Option<PendingBuildingFire>,
     garrison: Option<GarrisonSnapshot>,
 ) -> AttackerSnapshot {
     AttackerSnapshot {
@@ -5565,6 +5616,7 @@ pub(crate) fn build_attacker_snapshot(
         is_fully_deployed: entity.is_fully_deployed(),
         has_movement: entity.movement_target.is_some(),
         pending_infantry_fire,
+        pending_building_fire,
         barrel_facing: entity.barrel_facing,
         burst_remaining,
         burst_delay_ticks,
@@ -5689,6 +5741,16 @@ pub(crate) fn resolve_attacker_fire(
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
 ) {
+    let delayed_building_slot = snap
+        .pending_building_fire
+        .map(|pending| pending.weapon_slot);
+    if delayed_building_slot.is_some() {
+        // ProcessDelayedFire clears mode/timer regardless of whether its live
+        // target and saved weapon still pass GetFireError.
+        if let Some(entity) = entities.get_mut(snap.stable_id) {
+            entity.pending_building_fire = None;
+        }
+    }
     // Pre-compute garrison scan range for retargeting (includes +1 buffer).
     let garrison_retarget_range: Option<SimFixed> = snap.garrison.as_ref().map(|gs| {
         let cells = gs.half_foundation as i32 + 1 + rules.garrison_rules.occupy_weapon_range;
@@ -5697,7 +5759,9 @@ pub(crate) fn resolve_attacker_fire(
     let obj = match rules.object(interner.resolve(snap.type_id)) {
         Some(o) => o,
         None => {
-            out.remove_attack.push(snap.stable_id);
+            if delayed_building_slot.is_none() {
+                out.remove_attack.push(snap.stable_id);
+            }
             return;
         }
     };
@@ -5773,6 +5837,9 @@ pub(crate) fn resolve_attacker_fire(
             (rx, ry, sx, sy, hp, cat, tr, own, prone)
         }
         _ => {
+            if delayed_building_slot.is_some() {
+                return;
+            }
             if let Some(new_target) = acquire_best_target(
                 entities,
                 rules,
@@ -5797,7 +5864,19 @@ pub(crate) fn resolve_attacker_fire(
         .unwrap_or_else(|| "none".to_string());
 
     // Weapon selection: garrison uses occupant's OccupyWeapon, standard uses IFV/Primary/Secondary.
-    let (selected, is_garrison) = if let Some(ref gs) = snap.garrison {
+    let (selected, is_garrison) = if let Some(saved_slot) = delayed_building_slot {
+        match select_weapon_slot(
+            rules,
+            obj,
+            target_cat,
+            &target_armor,
+            snap.veterancy,
+            saved_slot,
+        ) {
+            Some(selected) => (selected, false),
+            None => return,
+        }
+    } else if let Some(ref gs) = snap.garrison {
         match combat_weapon::select_garrison_weapon(
             rules,
             interner.resolve(gs.occupant_type_id),
@@ -5843,14 +5922,16 @@ pub(crate) fn resolve_attacker_fire(
         }
     };
     let weapon = selected.weapon;
-    out.current_weapon_updates.push((
-        snap.stable_id,
-        match selected.slot {
-            WeaponSlot::Primary => 0,
-            WeaponSlot::Secondary => 1,
-        },
-        interner.intern(selected.weapon_id),
-    ));
+    if delayed_building_slot.is_none() {
+        out.current_weapon_updates.push((
+            snap.stable_id,
+            match selected.slot {
+                WeaponSlot::Primary => 0,
+                WeaponSlot::Secondary => 1,
+            },
+            interner.intern(selected.weapon_id),
+        ));
+    }
 
     // Friendly-fire and visibility-driven retarget logic only applies to
     // Entity targets. Cell targets are an explicit player force-fire — the
@@ -5861,6 +5942,9 @@ pub(crate) fn resolve_attacker_fire(
         let snap_owner_str = interner.resolve(snap.owner);
         let target_owner_str = interner.resolve(target_owner);
         if !is_cell_target && fog_state.is_friendly(snap_owner_str, target_owner_str) {
+            if delayed_building_slot.is_some() {
+                return;
+            }
             if let Some(new_target) = acquire_best_target(
                 entities,
                 rules,
@@ -5878,6 +5962,9 @@ pub(crate) fn resolve_attacker_fire(
             return;
         }
         if !is_cell_target && !fog_state.is_cell_visible(snap.owner, target_rx, target_ry) {
+            if delayed_building_slot.is_some() {
+                return;
+            }
             if let Some(new_target) = acquire_best_target(
                 entities,
                 rules,
@@ -6029,6 +6116,40 @@ pub(crate) fn resolve_attacker_fire(
             // FireDecision::Facing — drives gattling spin-up via
             // drives_gattling_spinup() == true.
             return;
+        }
+    }
+
+    if delayed_building_slot.is_none()
+        && snap.category == EntityCategory::Structure
+        && !rules
+            .general
+            .prism_type
+            .as_deref()
+            .is_some_and(|prism_type| obj.id.eq_ignore_ascii_case(prism_type))
+    {
+        let delayed_fire_delay = rules
+            .art_registry
+            .resolve_metadata_entry(&obj.id, &obj.image)
+            .filter(|art| art.is_anim_delayed_fire)
+            .map(|art| art.delayed_fire_delay);
+        if let Some(delay) = delayed_fire_delay {
+            // gamemd-derived: the non-Prism generic arm in
+            // BuildingClass::Mission_Attack @ 0x0044B630 saves the selected
+            // weapon slot and signed delay without firing/rearming. This same
+            // BuildingClass::Update visit then enters ProcessDelayedFire @
+            // 0x004503F0, so account for its pre-decrement immediately.
+            let pending = PendingBuildingFire {
+                remaining_ticks: delay.saturating_sub(1).max(0),
+                weapon_slot: selected.slot,
+            };
+            if pending.remaining_ticks != 0 {
+                if let Some(entity) = entities.get_mut(snap.stable_id) {
+                    entity.pending_building_fire = Some(pending);
+                }
+                // SpecialAnim presentation and its Report cue are app-layer
+                // residuals; they do not authorize early weapon emission.
+                return;
+            }
         }
     }
 

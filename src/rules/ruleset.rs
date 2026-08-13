@@ -360,6 +360,9 @@ pub struct GeneralRules {
     /// `SeparateAircraft=`. False means the first pad building's value includes
     /// the average cost of the first two `PadAircraft` entries.
     pub separate_aircraft: bool,
+    /// BuildingType identity handled by the Prism support/cascade mission path.
+    /// The generic art-delayed fire path must not consume this type.
+    pub prism_type: Option<String>,
     /// Whether ore cells grow denser over time (TiberiumGrows= in [General]).
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_grows: bool,
@@ -906,6 +909,7 @@ impl Default for GeneralRules {
             base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
             pad_aircraft_types: Vec::new(),
             separate_aircraft: false,
+            prism_type: None,
             tiberium_grows: true,
             tiberium_spreads: true,
             growth_rate_minutes: 2.0,
@@ -1601,6 +1605,13 @@ impl GeneralRules {
             separate_aircraft: general
                 .get_bool("SeparateAircraft")
                 .unwrap_or(defaults.separate_aircraft),
+            // RulesClass reads this BuildingType identity from [General].
+            // BuildingClass::Mission_Attack @ 0x0044ACF0 dispatches it to the
+            // Prism-specific path before considering generic delayed fire.
+            prism_type: general
+                .get("PrismType")
+                .map(|value| value.trim().to_ascii_uppercase())
+                .filter(|value| !value.is_empty()),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
@@ -3871,9 +3882,7 @@ MutateWarhead=MyMutate\n\
     fn parse_rules_rocking_coefficients_defaults() {
         // [General] must be present, otherwise GeneralRules::from_ini bails to
         // Self::default(). Missing AudioVisual keys then fall back to defaults.
-        let ini = IniFile::from_str(
-            "[General]\nFixtureOnly=1\n[AudioVisual]\nFixtureOnly=1\n",
-        );
+        let ini = IniFile::from_str("[General]\nFixtureOnly=1\n[AudioVisual]\nFixtureOnly=1\n");
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
         assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
@@ -4486,6 +4495,16 @@ BarrelParticle=SmallGreySSys
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.barrel_particle.is_none());
+    }
+
+    #[test]
+    fn gsi_05_10_prism_type_is_parsed_as_a_building_identity() {
+        let ini = IniFile::from_str("[General]\nPrismType= atesla \n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.prism_type.as_deref(), Some("ATESLA"));
+
+        let absent = GeneralRules::from_ini(&IniFile::from_str("[General]\nFixtureOnly=1\n"));
+        assert!(absent.prism_type.is_none());
     }
 
     #[test]

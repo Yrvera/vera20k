@@ -19,6 +19,7 @@ use crate::map::entities::EntityCategory;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
 use crate::sim::cloak_disguise::{CloakRuntime, DisguiseRuntime};
+use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
@@ -235,6 +236,19 @@ pub struct BerserkState {
     pub timer: i32,
 }
 
+/// Building shot held behind its art-authored firing animation delay.
+///
+/// The target is deliberately not captured: expiry reads the building's live
+/// `attack_target`, while the selected weapon slot remains the one saved when
+/// `BuildingClass::Mission_Attack` armed the shot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PendingBuildingFire {
+    /// Signed native timer value, clamped to zero by ProcessDelayedFire after
+    /// its pre-decrement.
+    pub remaining_ticks: i32,
+    pub weapon_slot: WeaponSlot,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -388,6 +402,9 @@ pub struct GameEntity {
     pub navigation: NavigationState,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
+    /// Generic non-Prism Building delayed-fire latch.
+    #[serde(default)]
+    pub pending_building_fire: Option<PendingBuildingFire>,
     /// TechnoClass `CurrentWeaponNumber`: the last live weapon slot selected
     /// for this object. Slot zero is the constructor state. Fatal receiver
     /// logic reuses this exact slot for the Suicide gate and death fallback.
@@ -955,6 +972,7 @@ impl GameEntity {
             movement_target: None,
             navigation: NavigationState::default(),
             attack_target: None,
+            pending_building_fire: None,
             current_weapon_index: 0,
             current_weapon_ref: None,
             radio_contacts: Contacts::default(),
@@ -1395,6 +1413,19 @@ mod tests {
     fn new_entity_has_no_rally_target() {
         let e = GameEntity::test_default(1, "GAWEAP", "Americans", 30, 40);
         assert_eq!(e.rally_target, None);
+    }
+
+    #[test]
+    fn gsi_05_10_pending_building_fire_serde_default_is_none() {
+        let entity = GameEntity::test_default(1, "NATSLA", "Soviet", 30, 40);
+        let mut value = serde_json::to_value(entity).expect("serialize entity");
+        value
+            .as_object_mut()
+            .expect("entity object")
+            .remove("pending_building_fire");
+
+        let restored: GameEntity = serde_json::from_value(value).expect("deserialize entity");
+        assert!(restored.pending_building_fire.is_none());
     }
 
     #[test]

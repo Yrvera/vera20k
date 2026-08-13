@@ -28,10 +28,30 @@ use crate::rules::weapon_type::WeaponType;
 ///
 /// Used to resolve the correct FLH (firing offset) from art.ini:
 /// Primary → `PrimaryFireFLH`, Secondary → `SecondaryFireFLH`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WeaponSlot {
     Primary,
     Secondary,
+}
+
+/// Resolve exactly one saved static weapon slot against the current target.
+///
+/// Unlike normal selection, this never falls through to the other slot. The
+/// delayed Building fire path stores `CurrentWeaponNumber` while arming and
+/// asks that same slot for its live tier/legality when the delay expires.
+pub(crate) fn select_weapon_slot<'a>(
+    rules: &'a RuleSet,
+    attacker_obj: &'a ObjectType,
+    target_category: EntityCategory,
+    target_armor: &str,
+    veterancy: u16,
+    slot: WeaponSlot,
+) -> Option<SelectedWeapon<'a>> {
+    let weapon_id = match slot {
+        WeaponSlot::Primary => primary_for_tier(attacker_obj, veterancy),
+        WeaponSlot::Secondary => secondary_for_tier(attacker_obj, veterancy),
+    }?;
+    try_weapon(rules, weapon_id, target_category, target_armor, slot)
 }
 
 /// Weapon-selection override used by transport passengers.

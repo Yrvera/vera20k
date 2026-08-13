@@ -235,7 +235,9 @@ use crate::sim::world::Simulation;
 // the terminal frame and cannot be reconstructed from app state after load.
 // Bumped 73 -> 74: pending CommandEnvelope payloads can now carry the native
 // EXIT event. App-consumed execution edges remain transient and are not saved.
-const SNAPSHOT_VERSION: u32 = 74;
+// Bumped 74 -> 75: generic Building delayed-fire state now persists its signed
+// remaining counter and saved weapon slot across save/load.
+const SNAPSHOT_VERSION: u32 = 75;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1798,7 +1800,7 @@ mod tests {
             GameSnapshot::load(&preamble_only),
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                found: 73,
+                found: 74,
             })
         ));
     }
@@ -1854,10 +1856,73 @@ mod tests {
     /// 71 -> 72 added explicit product/public-envelope identity and the save
     /// description to the common prefix; 72 -> 73 added persistent per-house
     /// accepted outcome kind, SavourDelay target, and expiry latch; 73 -> 74
-    /// added the serialized pending-command EXIT payload.
+    /// added the serialized pending-command EXIT payload; 74 -> 75 added the
+    /// generic Building delayed-fire signed counter and saved weapon slot.
     #[test]
-    fn snapshot_version_is_74() {
-        assert_eq!(super::SNAPSHOT_VERSION, 74);
+    fn gsi_05_10_snapshot_version_is_75() {
+        assert_eq!(super::SNAPSHOT_VERSION, 75);
+    }
+
+    #[test]
+    fn gsi_05_10_pending_building_fire_roundtrips_and_changes_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::combat::combat_weapon::WeaponSlot;
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::{GameEntity, PendingBuildingFire};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Soviet");
+        let type_ref = sim.interner.intern("NATSLA");
+        let entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 600,
+                max: 600,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            8,
+            false,
+        );
+        sim.substrate.entities.insert(entity);
+        // Full snapshot load resets Scenario RNG to Seed0. Compare the
+        // authoritative delayed-fire state on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let without_latch = sim.state_hash();
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("Tesla Coil")
+            .pending_building_fire = Some(PendingBuildingFire {
+            remaining_ticks: 17,
+            weapon_slot: WeaponSlot::Secondary,
+        });
+        let with_latch = sim.state_hash();
+        assert_ne!(with_latch, without_latch);
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "delay.map", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v75 delayed-fire snapshot")
+            .sim;
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .expect("restored Tesla Coil")
+                .pending_building_fire,
+            Some(PendingBuildingFire {
+                remaining_ticks: 17,
+                weapon_slot: WeaponSlot::Secondary,
+            })
+        );
+        assert_eq!(restored.state_hash(), with_latch);
     }
 
     #[test]
@@ -1882,7 +1947,7 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "abort.map", 0);
-        let mut restored = GameSnapshot::load(&bytes).expect("v74 EXIT snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("v75 EXIT snapshot").sim;
 
         assert_eq!(restored.pending_commands, sim.pending_commands);
         assert!(!restored.quit_requested);
