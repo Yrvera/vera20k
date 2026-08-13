@@ -786,54 +786,29 @@ fn step_manager_mode(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame
     };
     match mode {
         SpawnManagerMode::Idle => {
-            // DRIFT — missing target-still-legal predicate.
-            //
-            // Native mode 0, once a target is present, calls
-            // `owner->vtable+0x3AC(CurrentTarget)` and on false runs
-            // `ClearAllTargets(); return` instead of entering Launching.
-            //
-            // The slot is now identified. `vtable__UnitClass` is 0x7F5C70
-            // (`UnitClass::Constructor` writes it at `0x0073543A`); reading
-            // +0x3AC gives `TechnoClass::CanFireAtTarget` (`0x006F7780`), a
-            // two-call thunk: `vtable+0x2E4` (SelectWeaponAgainst) to pick the
-            // weapon for that target, then `vtable+0x3A8`
-            // (`TechnoClass::CanFireAt`, `0x006F77B0`). `CanFireAt` returns
-            // true for a null target, otherwise resolves the weapon via
-            // `GetWeapon(target)` and bottoms out in `TechnoClass::InRange`.
-            // So it is a target-still-in-range test, not an owner-state one.
-            //
-            // NOT implemented, deliberately. The top-level composition is
-            // clean, but `CanFireAt` reaches `InRange` through two branches
-            // that decide which coordinates the range test uses: a source snap
-            // to the owner's cell centre when the weapon sets `weapon+0x134`
-            // (`CellRangefinding`), and a target-coord fetch gated on
-            // `vtable+0x54`, whose identity is UNCHECKED. A null weapon does
-            // not short-circuit either — it still reaches `InRange`. Range
-            // gates here are lepton-exact, so reproducing this with a guessed
-            // coordinate frame would be a VERA-invented gate, which is worse
-            // than the gap.
-            //
-            // Trigger: every Idle→Launching transition, i.e. the start of every
-            // salvo. Player effect: the wing relaunches at a target that is no
-            // longer legal for the launcher's weapon. Frequency: missile pools
-            // are largely insulated, because the Launching block drops the
-            // target after every salvo and re-acquisition then goes back
-            // through the range-gated fire path; aircraft pools keep their
-            // target across salvos, so a Carrier whose target survives and then
-            // stops being legal — drives out of range, boards a transport,
-            // garrisons a building — relaunches its whole wing at it
-            // indefinitely. Once per Carrier engagement where the target
-            // survives and becomes illegal. Carriers are uncommon, but when it
-            // fires the wing is stuck. Downstream risk: this is the same
-            // symptom class as the dead-target case handled by
-            // `notify_pointer_expired`; closing it is a single early return
-            // here once the range coordinate frame is settled.
-            with_manager(sim, owner_id, |m| {
-                m.promote_queued_target();
-                if m.current_target.is_some() {
-                    m.mode = SpawnManagerMode::Launching;
-                }
+            with_manager(sim, owner_id, SpawnManagerState::promote_queued_target);
+            let Some(target) = manager_field(sim, owner_id, |m| m.current_target).flatten() else {
+                return;
+            };
+            // gamemd-derived: `SpawnManagerClass::AI` @ 0x006B7230 mode 0
+            // promotes +0x6C to +0x68, then Unit's vslot +0x3AC reaches
+            // `TechnoClass::CanFireAtTarget` @ 0x006F7780. A false result calls
+            // `ClearAllTargets` @ 0x006B7BB0 and returns before Launching.
+            let target_is_legal = sim.resolved_terrain.as_ref().is_some_and(|terrain| {
+                crate::sim::combat::can_fire_at_target(
+                    &sim.substrate.entities,
+                    rules,
+                    &sim.interner,
+                    owner_id,
+                    &target,
+                    terrain,
+                )
             });
+            if !target_is_legal {
+                with_manager(sim, owner_id, SpawnManagerState::clear_all_targets);
+                return;
+            }
+            with_manager(sim, owner_id, |m| m.mode = SpawnManagerMode::Launching);
         }
         SpawnManagerMode::Launching => {
             let Some(states) = manager_field(sim, owner_id, |m| {

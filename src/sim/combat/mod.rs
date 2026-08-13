@@ -53,6 +53,7 @@ use self::combat_weapon::{WeaponSlot, select_deploy_fire_weapon, select_weapon_w
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::warhead_type::WarheadType;
@@ -652,6 +653,73 @@ pub(crate) fn resolve_target_coords(
         TargetKind::Entity(id) => entities.get(id).map(|t| target_coords(t, rules, interner)),
         TargetKind::Cell(rx, ry) => Some(cell_center_coords(rx, ry)),
     }
+}
+
+/// Whether the attacker's normally selected weapon can currently reach this
+/// target through the authoritative 3D `InRange` path.
+///
+/// gamemd-derived: SpawnManager mode 0 in `SpawnManagerClass::AI` @
+/// `0x006B7230` calls the Unit owner's `TechnoClass::CanFireAtTarget` vslot,
+/// which dispatches through weapon selection @ `0x006F7780`, `CanFireAt` @
+/// `0x006F77B0`, and ordinary `TechnoClass::InRange` @ `0x006F7220`.
+pub(crate) fn can_fire_at_target(
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    attacker_id: u64,
+    target: &TargetKind,
+    terrain: &ResolvedTerrainGrid,
+) -> bool {
+    let Some(attacker) = entities.get(attacker_id) else {
+        return false;
+    };
+    let Some(attacker_obj) = rules.object(interner.resolve(attacker.type_ref)) else {
+        return false;
+    };
+    let (target_category, target_armor) = match *target {
+        TargetKind::Entity(target_id) => {
+            let Some(target_entity) = entities.get(target_id) else {
+                return false;
+            };
+            let armor = rules
+                .object(interner.resolve(target_entity.type_ref))
+                .map(|object| object.armor.as_str())
+                .unwrap_or("none");
+            (
+                combat_target_category(target_entity, rules, interner),
+                armor,
+            )
+        }
+        TargetKind::Cell(_, _) => (EntityCategory::Structure, attacker_obj.armor.as_str()),
+    };
+    let Some(selected) = select_weapon_with_override(
+        rules,
+        attacker_obj,
+        target_category,
+        target_armor,
+        attacker.veterancy,
+        attacker.weapon_override,
+    ) else {
+        return false;
+    };
+    let Some(source_z) = in_range::effective_z_leptons(attacker, terrain) else {
+        return false;
+    };
+    let source = (
+        i64::from(attacker.position.rx) * 256 + attacker.position.sub_x.to_num::<i64>(),
+        i64::from(attacker.position.ry) * 256 + attacker.position.sub_y.to_num::<i64>(),
+        source_z,
+    );
+    in_range::compute_in_range(
+        attacker,
+        source,
+        target,
+        selected.weapon,
+        rules,
+        interner,
+        entities,
+        terrain,
+    )
 }
 
 /// Resolve the effective weapon range for an attacker against a `TargetKind`.

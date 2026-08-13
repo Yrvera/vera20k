@@ -13,17 +13,20 @@
 
 use std::collections::BTreeMap;
 
+use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::rules::ini_parser::IniFile;
 use crate::rules::missile_spawn::MissileFamily;
 use crate::rules::ruleset::RuleSet;
+use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 use crate::sim::combat::TargetKind;
 use crate::sim::spawn_manager::{
     SpawnManagerMode, SpawnSlotState, SpawnTimer, tick_spawn_managers,
 };
 use crate::sim::world::Simulation;
+use crate::util::fixed_math::SimFixed;
 
 /// A V3 Launcher (missile pool of 1), a Dreadnought (missile pool of 2), an
-/// Aircraft Carrier (aircraft pool of 3) and a target building.
+/// Aircraft Carrier (aircraft pool of 3), and stationary/mobile targets.
 ///
 /// Values mirror the stock `rulesmd.ini` sections named in the survey:
 /// `[V3]` L7740, `[DRED]` L8125, `[CARRIER]` L7255.
@@ -60,6 +63,7 @@ CMislEliteWarhead=CMISLEWH
 0=V3
 1=DRED
 2=CARRIER
+3=MOBILE
 
 [AircraftTypes]
 0=V3ROCKET
@@ -119,6 +123,12 @@ SpawnsNumber=3
 SpawnRegenRate=600
 SpawnReloadRate=150
 
+[MOBILE]
+Name=Mobile Target
+Strength=500
+Armor=heavy
+Speed=5
+
 [V3ROCKET]
 Name=V3 Rocket
 Strength=50
@@ -168,6 +178,7 @@ Foundation=1x1
 Damage=1
 ROF=150
 Range=18
+MinimumRange=5
 Spawner=yes
 Projectile=InvisibleHigh
 Speed=10
@@ -229,6 +240,89 @@ Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%
 
 fn empty_height_map() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+fn flat_terrain_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
+    ResolvedTerrainCell {
+        rx,
+        ry,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        height_in_pixels: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: TerrainClass::Clear,
+        speed_costs: SpeedCostProfile::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: true,
+        allows_tiberium: true,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        terrain_object_occupation: None,
+        overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
+        zone_type: 0,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: TerrainClass::Clear,
+        base_speed_costs: SpeedCostProfile::default(),
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0, 0, 0],
+        radar_right: [0, 0, 0],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    }
+}
+
+fn flat_sim() -> Simulation {
+    const WIDTH: u16 = 40;
+    const HEIGHT: u16 = 32;
+    let cells = (0..HEIGHT)
+        .flat_map(|ry| (0..WIDTH).map(move |rx| flat_terrain_cell(rx, ry)))
+        .collect();
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(WIDTH, HEIGHT, cells));
+    sim
+}
+
+fn move_target_to_x_distance(sim: &mut Simulation, target_id: u64, distance_leptons: i32) {
+    const OWNER_WORLD_X: i32 = 10 * 256 + 128;
+    let world_x = OWNER_WORLD_X + distance_leptons;
+    let target = sim
+        .substrate
+        .entities
+        .get_mut(target_id)
+        .expect("target remains live before manager update");
+    target.position.rx = world_x.div_euclid(256) as u16;
+    target.position.ry = 10;
+    target.position.sub_x = SimFixed::from_num(world_x.rem_euclid(256));
+    target.position.sub_y = SimFixed::from_num(128);
 }
 
 #[test]
@@ -308,7 +402,7 @@ fn units_without_spawns_get_no_manager() {
 #[test]
 fn set_target_queues_and_the_ai_pass_promotes_it() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let v3 = sim
         .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
@@ -340,6 +434,144 @@ fn set_target_queues_and_the_ai_pass_promotes_it() {
         .expect("manager");
     assert_eq!(manager.current_target, Some(TargetKind::Entity(target)));
     assert_eq!(manager.queued_target, None);
+}
+
+#[test]
+fn gsi_05_08_hornet_launcher_maximum_accepts_6400_and_clears_6401() {
+    let rules = make_spawner_rules();
+    let hm = empty_height_map();
+
+    for (distance, expected_mode) in [
+        (6400, SpawnManagerMode::Launching),
+        (6401, SpawnManagerMode::Idle),
+    ] {
+        let mut sim = flat_sim();
+        let carrier = sim
+            .spawn_object("CARRIER", "Americans", 10, 10, 0, &rules, &hm)
+            .expect("spawn carrier");
+        let target = sim
+            .spawn_object("MOBILE", "Yuri", 20, 10, 0, &rules, &hm)
+            .expect("spawn initially legal mobile target");
+        let manager = sim
+            .substrate
+            .entities
+            .get_mut(carrier)
+            .and_then(|entity| entity.spawn_manager.as_mut())
+            .expect("carrier manager");
+        manager.set_target(Some(TargetKind::Entity(target)));
+        manager.update_timer = SpawnTimer::ready();
+
+        move_target_to_x_distance(&mut sim, target, distance);
+        tick_spawn_managers(&mut sim, &rules, &[carrier]);
+
+        let manager = sim
+            .substrate
+            .entities
+            .get(carrier)
+            .and_then(|entity| entity.spawn_manager.as_ref())
+            .expect("carrier manager after update");
+        assert_eq!(manager.mode, expected_mode, "distance {distance}");
+        let expected_target = (distance == 6400).then_some(TargetKind::Entity(target));
+        assert_eq!(
+            manager.current_target, expected_target,
+            "distance {distance}"
+        );
+        assert_eq!(manager.queued_target, None, "distance {distance}");
+    }
+}
+
+#[test]
+fn gsi_05_08_idle_legality_uses_effective_3d_distance() {
+    const HORIZONTAL_LEPTONS: i32 = 6000;
+    const TARGET_Z_LEPTONS: i32 = 3000;
+    const MAX_RANGE_LEPTONS: i64 = 6400;
+
+    assert!(i64::from(HORIZONTAL_LEPTONS) < MAX_RANGE_LEPTONS);
+    assert!(
+        i64::from(HORIZONTAL_LEPTONS).pow(2) + i64::from(TARGET_Z_LEPTONS).pow(2)
+            > MAX_RANGE_LEPTONS.pow(2)
+    );
+
+    let rules = make_spawner_rules();
+    let hm = empty_height_map();
+    let mut sim = flat_sim();
+    let carrier = sim
+        .spawn_object("CARRIER", "Americans", 10, 10, 0, &rules, &hm)
+        .expect("spawn carrier");
+    let target = sim
+        .spawn_object("MOBILE", "Yuri", 20, 10, 0, &rules, &hm)
+        .expect("spawn initially legal mobile target");
+    let manager = sim
+        .substrate
+        .entities
+        .get_mut(carrier)
+        .and_then(|entity| entity.spawn_manager.as_mut())
+        .expect("carrier manager");
+    manager.set_target(Some(TargetKind::Entity(target)));
+    manager.update_timer = SpawnTimer::ready();
+
+    move_target_to_x_distance(&mut sim, target, HORIZONTAL_LEPTONS);
+    sim.substrate
+        .entities
+        .get_mut(target)
+        .expect("target remains live")
+        .position
+        .exact_z_leptons = Some(TARGET_Z_LEPTONS);
+    tick_spawn_managers(&mut sim, &rules, &[carrier]);
+
+    let manager = sim
+        .substrate
+        .entities
+        .get(carrier)
+        .and_then(|entity| entity.spawn_manager.as_ref())
+        .expect("carrier manager after update");
+    assert_eq!(manager.mode, SpawnManagerMode::Idle);
+    assert_eq!(manager.current_target, None);
+    assert_eq!(manager.queued_target, None);
+}
+
+#[test]
+fn gsi_05_08_v3_minimum_accepts_1280_and_clears_1279() {
+    let rules = make_spawner_rules();
+    let hm = empty_height_map();
+
+    for (distance, expected_mode) in [
+        (1280, SpawnManagerMode::Launching),
+        (1279, SpawnManagerMode::Idle),
+    ] {
+        let mut sim = flat_sim();
+        let v3 = sim
+            .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
+            .expect("spawn V3");
+        let target = sim
+            .spawn_object("MOBILE", "Yuri", 16, 10, 0, &rules, &hm)
+            .expect("spawn initially legal mobile target");
+        let manager = sim
+            .substrate
+            .entities
+            .get_mut(v3)
+            .and_then(|entity| entity.spawn_manager.as_mut())
+            .expect("V3 manager");
+        manager.set_target(Some(TargetKind::Entity(target)));
+        manager.update_timer = SpawnTimer::ready();
+
+        move_target_to_x_distance(&mut sim, target, distance);
+        tick_spawn_managers(&mut sim, &rules, &[v3]);
+
+        let manager = sim
+            .substrate
+            .entities
+            .get(v3)
+            .and_then(|entity| entity.spawn_manager.as_ref())
+            .expect("V3 manager after update");
+        assert_eq!(manager.mode, expected_mode, "distance {distance}");
+        let expected_target = (distance == 1280).then_some(TargetKind::Entity(target));
+        assert_eq!(
+            manager.current_target, expected_target,
+            "distance {distance}"
+        );
+        assert_eq!(manager.queued_target, None, "distance {distance}");
+    }
 }
 
 /// Negative half only: proves the gate holds work back before the 20th frame.
@@ -390,7 +622,7 @@ fn update_timer_gates_the_whole_ai_pass() {
 #[test]
 fn v3_launches_its_rocket_into_the_kamikaze_window() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let v3 = sim
         .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
@@ -592,7 +824,7 @@ fn missile_impact_kills_through_the_shared_death_pipeline() {
 #[test]
 fn v3_attack_order_damages_the_target_through_the_spawned_rocket() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let v3 = sim
         .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
@@ -724,7 +956,7 @@ fn spawn_manager_state_contributes_to_the_state_hash() {
 #[test]
 fn launcher_death_destroys_a_missile_already_in_flight() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let v3 = sim
         .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
@@ -840,7 +1072,7 @@ fn ownership_change_clears_the_pool_and_rearms_without_a_regen_wait() {
 #[test]
 fn missile_flight_speed_uses_the_ra2_conversion() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let v3 = sim
         .spawn_object("V3", "Russians", 10, 10, 0, &rules, &hm)
@@ -958,7 +1190,7 @@ fn no_spawn_alt_swaps_the_launcher_art_while_the_pool_is_empty() {
 #[test]
 fn hornets_hold_over_the_carrier_until_the_whole_wing_is_up() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let carrier = sim
         .spawn_object("CARRIER", "Americans", 10, 10, 0, &rules, &hm)
@@ -1027,7 +1259,7 @@ fn hornets_hold_over_the_carrier_until_the_whole_wing_is_up() {
 #[test]
 fn target_death_clears_the_wing_target() {
     let rules = make_spawner_rules();
-    let mut sim = Simulation::new();
+    let mut sim = flat_sim();
     let hm = empty_height_map();
     let carrier = sim
         .spawn_object("CARRIER", "Americans", 10, 10, 0, &rules, &hm)
