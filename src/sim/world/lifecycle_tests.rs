@@ -883,6 +883,149 @@ fn gsi_04_12_object_raw_occupation_production_fly_tick_unmarks_takeoff_and_marks
 }
 
 #[test]
+fn gsi_05_05_fly_takeoff_commits_absolute_z_after_remove_process() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 2, None);
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap();
+        locomotor.air_phase = AirMovePhase::Ascending;
+        locomotor.target_altitude = SimFixed::from_num(600);
+        locomotor.climb_rate = SimFixed::from_num(1500);
+    }
+    sim.tick_air_movement_with_cell_lists_one(1);
+
+    let aircraft = sim.substrate.entities.get(1).unwrap();
+    let altitude = aircraft
+        .locomotor
+        .as_ref()
+        .unwrap()
+        .altitude
+        .to_num::<i32>();
+    assert!(altitude > 0);
+    assert_eq!(aircraft.position.exact_z_leptons, Some(208 + altitude));
+    assert!(!sim.substrate.occupancy.contains_entity(3, 4, 1));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_05_05_fly_landing_on_bridge_uses_absolute_z_for_deck_put() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 0, Some((3, 4)));
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(1));
+    sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 128, 128));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+
+    {
+        let locomotor = sim
+            .substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .locomotor
+            .as_mut()
+            .unwrap();
+        locomotor.air_phase = AirMovePhase::Descending;
+        locomotor.target_altitude = SimFixed::from_num(0);
+        locomotor.climb_rate = SimFixed::from_num(1500);
+    }
+    sim.tick_air_movement_with_cell_lists_one(1);
+
+    let aircraft = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        aircraft.locomotor.as_ref().unwrap().altitude,
+        SimFixed::from_num(0)
+    );
+    assert_eq!(aircraft.position.exact_z_leptons, Some(416));
+    assert_eq!(
+        sim.substrate
+            .occupancy
+            .count_on_layer(3, 4, MovementLayer::Bridge),
+        1
+    );
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
+}
+
+#[test]
+fn gsi_05_05_object_raw_occupation_uses_exact_sloped_ground_z_for_put_and_remove() {
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 8, 8, 1, Some((3, 4)));
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut(3, 4)
+        .unwrap()
+        .slope_type = 1;
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(0));
+    sim.substrate.entities.get_mut(1).unwrap().on_bridge = true;
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 0, 64, 192));
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+    sim.remove_entity_occupancy(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+
+    // Level 1 plus slope 1 at local X=64 produces exact ground Z 130.
+    // Keep coarse Z deliberately above the deck so only exact Object Z can
+    // distinguish the two sides of the inclusive 416-lepton threshold.
+    {
+        let aircraft = sim.substrate.entities.get_mut(1).unwrap();
+        aircraft.position.z = 0x7f;
+        aircraft.position.exact_z_leptons = Some(130 + 415);
+    }
+    sim.add_entity_occupancy(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0x40);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+    sim.remove_entity_occupancy(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .position
+        .exact_z_leptons = Some(130 + 416);
+    sim.add_entity_occupancy(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.ground_bits(3, 4), 0);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0x40);
+    sim.remove_entity_occupancy(1);
+    assert_eq!(sim.substrate.raw_cell_occupation.deck_bits(3, 4), 0);
+}
+
+#[test]
+fn gsi_05_05_mapless_fly_uses_dummy_ground_then_bridge_height() {
+    let mut sim = Simulation::new();
+    install_fly_aircraft(&mut sim, 1, SimFixed::from_num(100));
+    {
+        let aircraft = sim.substrate.entities.get_mut(1).unwrap();
+        aircraft.on_bridge = true;
+        aircraft.locomotor.as_mut().unwrap().target_altitude = SimFixed::from_num(100);
+    }
+    let _ = sim.try_reveal_entity(1, common_raw_request(3, 4, 2, 128, 128));
+
+    sim.tick_air_movement_with_cell_lists_one(1);
+
+    let aircraft = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        aircraft.position.exact_z_leptons,
+        Some(416 + 100),
+        "missing terrain uses native dummy-cell ground zero before OnBridge"
+    );
+}
+
+#[test]
 fn gsi_04_07_damage_air_spatial_entry_crossing_and_exit_keep_vector_order() {
     let mut sim = Simulation::new();
     sim.session.map_width = 40;
