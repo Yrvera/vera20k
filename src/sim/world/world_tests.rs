@@ -1122,6 +1122,33 @@ fn insert_test_entity_for_owner(
     sim.substrate.entities.insert(entity);
 }
 
+#[test]
+fn gsi_05_16_change_owner_moves_live_category_counts_once_and_noops() {
+    let mut sim = Simulation::new();
+    let old_owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let new_owner = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+    insert_test_entity_for_owner(&mut sim, 1, old_owner, "GAPOWR", EntityCategory::Structure);
+    insert_test_entity_for_owner(&mut sim, 2, old_owner, "GI", EntityCategory::Unit);
+
+    sim.change_owner(1, new_owner);
+    sim.change_owner(2, new_owner);
+
+    assert_eq!(sim.houses[&old_owner].owned_building_count, 0);
+    assert_eq!(sim.houses[&old_owner].owned_unit_count, 0);
+    assert_eq!(sim.houses[&new_owner].owned_building_count, 1);
+    assert_eq!(sim.houses[&new_owner].owned_unit_count, 1);
+    assert_eq!(sim.substrate.entities.get(1).unwrap().owner, new_owner);
+    assert_eq!(sim.substrate.entities.get(2).unwrap().owner, new_owner);
+
+    sim.change_owner(1, new_owner);
+    sim.change_owner(999, old_owner);
+
+    assert_eq!(sim.houses[&old_owner].owned_building_count, 0);
+    assert_eq!(sim.houses[&old_owner].owned_unit_count, 0);
+    assert_eq!(sim.houses[&new_owner].owned_building_count, 1);
+    assert_eq!(sim.houses[&new_owner].owned_unit_count, 1);
+}
+
 /// Create a CommandEnvelope with a string owner, interning it via the sim's interner.
 fn cmd_envelope(
     sim: &Simulation,
@@ -2090,6 +2117,27 @@ fn short_game_base_unit_survivor_prevents_enemy_victory() {
     sim.check_defeat(Some(&rules));
 
     assert!(!sim.houses[&mcv_owner].is_defeated);
+    assert!(!sim.houses[&enemy].has_won);
+}
+
+#[test]
+fn gsi_05_16_captured_garrison_building_prevents_short_game_defeat() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = true;
+    let civilian = insert_passive_house_with_counts(&mut sim, "Neutral", 1, 0);
+    let player = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    let enemy = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    insert_test_entity_for_owner(&mut sim, 1, civilian, "CAGAS01", EntityCategory::Structure);
+
+    // The passenger reconciler uses this chokepoint when the first occupant
+    // captures a civilian CanBeOccupied building.
+    sim.change_owner(1, player);
+    sim.check_defeat(Some(&rules));
+
+    assert_eq!(sim.houses[&civilian].owned_building_count, 0);
+    assert_eq!(sim.houses[&player].owned_building_count, 1);
+    assert!(!sim.houses[&player].is_defeated);
     assert!(!sim.houses[&enemy].has_won);
 }
 

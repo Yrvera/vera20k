@@ -2935,25 +2935,44 @@ impl Simulation {
         }
     }
 
-    /// Change an entity's owner through the substrate chokepoint: updates the
-    /// `by_owner` index and the entity's owner field together. Index only — the
-    /// caller owns any HouseState owned-count adjustment (count semantics differ
-    /// by transfer kind: engineer capture adjusts counts; garrison transfers do not).
+    /// Change an entity's owner through the authoritative ownership chokepoint.
+    /// House counts, the `by_owner` index, and the entity owner move exactly once
+    /// for every live transfer, regardless of whether capture or garrison code
+    /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        let Some((old_owner, category, has_spawn_manager)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
+                (
+                    entity.owner,
+                    entity.category,
+                    entity.spawn_manager.is_some(),
+                )
+            })
+        else {
+            return;
+        };
+        if old_owner == new_owner {
+            return;
+        }
+
+        // Active YR chain: BuildingClass::ChangeOwner (0x00448260) delegates
+        // to TechnoClass::ChangeOwner (0x007014A0), which calls
+        // HouseClass::Removed_From_Game (0x005025F0) before the owner swap and
+        // HouseClass::Added_To_Game (0x00502A80) afterward. Their building
+        // cases move the old/new HouseClass ownership totals.
+        let old_owner_name = self.interner.resolve(old_owner).to_string();
+        let new_owner_name = self.interner.resolve(new_owner).to_string();
+
         // `TechnoClass::ChangeOwner` calls `SpawnManagerClass::Kill_All_Spawns`
         // before the house swap: a mind-controlled V3/Dreadnought/Boomer loses
         // the pool it built for its old owner. Run first so the children are
         // destroyed while still attributed to the previous house. The owner is
         // still alive here, so the slots re-arm with a zero regen wait and the
         // new owner's pool is rebuilt on the next manager pass.
-        if self
-            .substrate
-            .entities
-            .get(stable_id)
-            .is_some_and(|entity| entity.spawn_manager.is_some())
-        {
+        if has_spawn_manager {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        self.decrement_owned_count(&old_owner_name, category);
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
         // while the object still belongs to its old house. Engineer capture and
@@ -2962,6 +2981,7 @@ impl Simulation {
         // shooting at what is now its own structure.
         self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        self.increment_owned_count(&new_owner_name, category);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 

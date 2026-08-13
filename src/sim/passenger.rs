@@ -1668,6 +1668,56 @@ ConditionYellow=50%
     }
 
     #[test]
+    fn gsi_05_16_garrison_capture_and_reversion_move_building_counts() {
+        let mut sim = Simulation::new();
+        let rules = garrison_test_rules();
+        let bldg = spawn_garrison_building(&mut sim, &rules, "CAGAS01", "Neutral", 10, 10);
+        let pax = spawn_boarding_occupier(&mut sim, "E1", "Americans", bldg, 10, 11);
+        let neutral = sim.interner.intern("Neutral");
+        let americans = sim.interner.intern("Americans");
+
+        sim.substrate
+            .entities
+            .get_mut(bldg)
+            .expect("garrison exists")
+            .category = EntityCategory::Structure;
+        let mut neutral_house = HouseState::new(neutral, 0, None, false, 0, 10);
+        neutral_house.multiplay_passive = true;
+        neutral_house.owned_building_count = 1;
+        sim.houses.insert(neutral, neutral_house);
+        sim.houses
+            .insert(americans, HouseState::new(americans, 1, None, true, 0, 10));
+        assert!(
+            sim.substrate
+                .entities
+                .get_mut(bldg)
+                .and_then(|building| building.passenger_role.cargo_mut())
+                .expect("garrison cargo")
+                .board(pax, 1)
+        );
+
+        assert!(reconcile_civilian_garrison_owner_for_building(
+            &mut sim, &rules, bldg
+        ));
+        assert_eq!(sim.houses[&neutral].owned_building_count, 0);
+        assert_eq!(sim.houses[&americans].owned_building_count, 1);
+
+        assert!(
+            sim.substrate
+                .entities
+                .get_mut(bldg)
+                .and_then(|building| building.passenger_role.cargo_mut())
+                .expect("garrison cargo")
+                .disembark(pax)
+        );
+        assert!(reconcile_civilian_garrison_owner_for_building(
+            &mut sim, &rules, bldg
+        ));
+        assert_eq!(sim.houses[&neutral].owned_building_count, 1);
+        assert_eq!(sim.houses[&americans].owned_building_count, 0);
+    }
+
+    #[test]
     fn red_hp_captured_garrison_ejects_and_reverts_in_same_reconciliation() {
         let mut sim = Simulation::new();
         let rules = garrison_test_rules();
