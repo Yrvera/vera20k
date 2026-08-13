@@ -25,21 +25,9 @@ const SCREEN_X_PER_LEPTON: f32 = 30.0 / 256.0;
 /// 30px tile height / 2 / 256 leptons = 15/256.
 const SCREEN_Y_PER_LEPTON: f32 = 15.0 / 256.0;
 
-/// Height-to-screen multiplier used by gamemd's `Tactical__AdjustForZ`.
-///
-/// The binary computes approximately:
-/// `ftol(z * 0.14348 + (z >= 728 ? 1 : 0) + 0.5)`.
-const ADJUST_FOR_Z_MULTIPLIER: f32 = 0.14348;
-const ADJUST_FOR_Z_THRESHOLD_LEPTONS: i32 = 728;
-
 /// Convert world Z leptons into gamemd-style screen-Y lift.
 pub fn adjust_for_z_leptons(z: i32) -> i32 {
-    let threshold_extra = if z >= ADJUST_FOR_Z_THRESHOLD_LEPTONS {
-        1.0
-    } else {
-        0.0
-    };
-    (z as f32 * ADJUST_FOR_Z_MULTIPLIER + threshold_extra + 0.5).trunc() as i32
+    crate::util::native_x87::adjust_for_z_standard(z)
 }
 
 /// Convert an FLH lepton offset into an isometric screen-space pixel offset.
@@ -176,9 +164,12 @@ mod tests {
     }
 
     #[test]
-    fn adjust_for_z_matches_gi_fire_flh_heights() {
-        assert_eq!(adjust_for_z_leptons(90), 13);
-        assert_eq!(adjust_for_z_leptons(105), 15);
+    fn adjust_for_z_matches_retail_flh_fixtures() {
+        assert_eq!(adjust_for_z_leptons(104), 15);
+        assert_eq!(adjust_for_z_leptons(256), 37);
+        assert_eq!(adjust_for_z_leptons(728), 105);
+        assert_eq!(adjust_for_z_leptons(1_500), 216);
+        assert_eq!(adjust_for_z_leptons(-400), -56);
     }
 
     #[test]

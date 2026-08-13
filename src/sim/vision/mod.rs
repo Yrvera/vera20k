@@ -176,32 +176,6 @@ const LEPTONS_PER_HEIGHT_LEVEL: i32 = 104;
 /// under its ground shadow.
 const CELL_HEIGHT_PX: i32 = 30;
 
-/// Upward screen lift per lepton of height, as an exact rational so the sim
-/// stays integer-only. `render::locomotor_visual` carries the same number as an
-/// `f32` for sprite placement, and the two must not drift apart.
-///
-/// Original: `Tactical::CoordsToClient` multiplies the Z lepton by a factor
-/// resolved once at startup, itself `sin(60°) * 60 / cell_diagonal` where the
-/// sine comes from an 8192-entry table and the diagonal from the square-root
-/// LUT — i.e. the `sin(60°) * 60 / (256 * sqrt(2))` camera model.
-///
-/// DRIFT, recorded not fixed: recomputing that chain from the binary's own
-/// table entries gives 0.143503897; this rational is 0.1435032, low by 4.9e-6
-/// relative. Reaching a one-pixel disagreement needs ~1.4M leptons of height,
-/// where a tall retail cliff is ~2K and stock `FlightLevel` is 1500, so the
-/// difference is unobservable at every height the game can produce. Left alone
-/// deliberately: the value is golden-baselined, and the replacement would be a
-/// hand-computed constant, which this project has been burned by before.
-const HEIGHT_LIFT_PX_NUMERATOR: i64 = 1_435_032;
-const HEIGHT_LIFT_PX_DENOMINATOR: i64 = 10_000_000;
-
-/// Height at or above which the engine's height→screen conversion adds one
-/// extra pixel of lift before truncating.
-///
-/// Original: `Tactical::CoordsToClient` compares the height against this exact
-/// threshold and adds 1 before the rounding term. Verified 2026-08-04.
-const EXTRA_LIFT_PIXEL_HEIGHT_LEPTONS: i32 = 728;
-
 /// Percentage of base sight added per elevation step.
 ///
 /// Original: `TechnoClass::UpdateReveal` derives the step count by dividing the
@@ -215,18 +189,7 @@ const ELEVATION_SIGHT_PERCENT_PER_STEP: i32 = 10;
 /// map plane. Reproduces the engine's height→screen conversion including its
 /// extra-pixel threshold and the `+0.5` that precedes a truncating float→int.
 fn height_lift_px(height_leptons: i32) -> i32 {
-    if height_leptons <= 0 {
-        return 0;
-    }
-    let extra: i64 = if height_leptons >= EXTRA_LIFT_PIXEL_HEIGHT_LEPTONS {
-        HEIGHT_LIFT_PX_DENOMINATOR
-    } else {
-        0
-    };
-    let scaled: i64 = i64::from(height_leptons) * HEIGHT_LIFT_PX_NUMERATOR
-        + extra
-        + HEIGHT_LIFT_PX_DENOMINATOR / 2;
-    (scaled / HEIGHT_LIFT_PX_DENOMINATOR) as i32
+    crate::util::native_x87::adjust_for_z_standard(height_leptons)
 }
 
 /// Cells the reveal spiral's centre is shifted toward isometric north.
@@ -1582,3 +1545,20 @@ pub fn apply_gap_generators(
 
 #[cfg(test)]
 mod vision_tests;
+
+#[cfg(test)]
+mod adjust_for_z_tests {
+    use super::{height_lift_px, iso_height_shift_cells};
+
+    #[test]
+    fn adjust_for_z_reveal_shift_uses_retail_integer_lift() {
+        assert_eq!(height_lift_px(104), 15);
+        assert_eq!(height_lift_px(256), 37);
+        assert_eq!(height_lift_px(727), 104);
+        assert_eq!(height_lift_px(728), 105);
+        assert_eq!(height_lift_px(1_500), 216);
+        assert_eq!(height_lift_px(-400), -56);
+        assert_eq!(iso_height_shift_cells(1_500), 7);
+        assert_eq!(iso_height_shift_cells(-400), -1);
+    }
+}

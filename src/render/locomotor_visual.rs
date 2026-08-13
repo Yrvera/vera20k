@@ -15,35 +15,16 @@
 //!
 //! ## The height lift
 //!
-//! gamemd applies the height lift **once**, inlined in `CoordsToClient`, as
-//! part of the projection itself — every drawn thing goes through it:
+//! Active YR applies the height lift **once** through `Tactical__AdjustForZ`
+//! (`0x006D20E0`) as part of tactical projection:
 //!
 //! ```text
 //! screen_y -= ftol(Z_leptons * k + (Z_leptons >= 728 ? 1 : 0) + 0.5)
 //! ```
 //!
-//! The multiplier `k` is not a literal in the image. It is computed once at
-//! startup from the camera model, and the global holding it reads as all
-//! zeroes in the file (BSS) — which is why it took chasing three globals to
-//! their single writers to recover:
-//!
-//! ```text
-//! k = sin(60°) * 60.0 / (256 * sqrt(2))  ≈  0.14352
-//! ```
-//!
-//! — the tile width in pixels spread over the cell diagonal in leptons, scaled
-//! by the sine of the camera elevation angle.
-//!
-//! Verified via `decompile_function 0x006d1bdd` for the product,
-//! `disassemble_bytes 0x006d1830` and `0x006d18c0` for the two operands, and
-//! `read_memory` on `0x007e1708` / `0x007e1710` / `0x007e1728` / `0x007f4180` /
-//! `0x007f4188` for the literals (2.0, 256.0, 60.0, 60.0, π/180). Each of the
-//! three globals has exactly one writer, confirmed by `get_xrefs_to`. The sine
-//! helper at `0x004cacb0` takes **radians**: it scales its argument by
-//! `[0x008223b0]` = 2607.7 ≈ 16384/2π before indexing an 8192-entry table whose
-//! `[0]` is 0.0 — a cosine table would start at 1.0, so the identification is
-//! not ambiguous. That scaling step was missing from the helper's own plate
-//! comment, which made the argument look like table units; corrected there.
+//! Startup writer `0x006D1BDD` stores `k` with exact f64 bits
+//! `0x3FC25E5374344960`; the shared native-x87 substrate owns that value and
+//! the 53-bit, truncate-toward-zero operation order.
 //!
 //! ### What this replaced
 //!
@@ -52,7 +33,7 @@
 //! so airborne units were lifted **twice**, at an effective 0.12 px/lepton,
 //! while parachutes and scripted missiles got a single 0.06. Two different
 //! scales for one quantity, and neither was gamemd's. At YR's stock
-//! `FlightLevel=1500` an aircraft now sits ~215px up instead of ~180px, and a
+//! `FlightLevel=1500` an aircraft now sits 216px up instead of ~180px, and a
 //! paradrop or missile roughly 2.4× higher than before.
 //!
 //! Frequency: every airborne unit in every match, for as long as it is
@@ -78,26 +59,6 @@ use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::util::fixed_math::sim_to_f32;
-
-/// Upward screen lift per lepton of height. One value for every kind of
-/// height — an air locomotor's altitude, a parachute's, a missile's — because
-/// gamemd runs them all through the same projection.
-///
-/// `sin(60°) * 60.0 / (256 * sqrt(2))`. The algebraically exact product is
-/// 0.1435237; the value here is 0.1435032, which is what the binary actually
-/// computes once the sine comes off its 8192-entry table (index 1365 →
-/// sin(1.046947) = 0.865898 rather than sin(π/3) = 0.866025). The 0.014% gap
-/// is 0.03px at cruise altitude — the table value is used because it is the
-/// one gamemd uses, not because the difference could matter.
-pub const HEIGHT_LIFT_PX_PER_LEPTON: f32 = 0.143_503_2;
-
-/// Height at or above which gamemd's `AdjustForZ` adds one extra pixel of lift
-/// (`CMP ECX, 0x2D8` + `JL`, verified via `disassemble_function 0x006D20E0`).
-///
-/// Stock `FlightLevel=1500` clears this comfortably, so every cruising aircraft
-/// gets the extra pixel; a parachute only picks it up early in its descent.
-const EXTRA_PIXEL_HEIGHT_LEPTONS: f32 = 728.0;
 
 /// Infantry walking bob amplitude, in screen pixels.
 ///
@@ -165,36 +126,29 @@ fn infantry_bob_px(entity: &GameEntity) -> f32 {
 ///
 /// Whichever state is carrying it — see [`HeightSource`] for why the order is
 /// what it is.
-fn height_leptons(entity: &GameEntity) -> f32 {
+fn height_leptons(entity: &GameEntity) -> i32 {
     match height_source(entity) {
         HeightSource::Parachute => entity
             .parachute_state
             .as_ref()
-            .map(|state| sim_to_f32(state.altitude))
-            .unwrap_or(0.0),
+            .map(|state| state.altitude.to_num::<i32>())
+            .unwrap_or(0),
         HeightSource::Rocket => entity
             .rocket_state
             .as_ref()
-            .map(|state| sim_to_f32(state.altitude))
-            .unwrap_or(0.0),
+            .map(|state| state.altitude.to_num::<i32>())
+            .unwrap_or(0),
         HeightSource::AirLocomotor => entity
             .locomotor
             .as_ref()
-            .map(|loco| sim_to_f32(loco.altitude))
-            .unwrap_or(0.0),
-        HeightSource::Ground => 0.0,
+            .map(|loco| loco.altitude.to_num::<i32>())
+            .unwrap_or(0),
+        HeightSource::Ground => 0,
     }
 }
 
-fn adjust_for_z_lift_px(leptons: f32) -> f32 {
-    let extra = if leptons >= EXTRA_PIXEL_HEIGHT_LEPTONS {
-        1.0
-    } else {
-        0.0
-    };
-    // Native `ftol` truncates toward zero after the signed value receives its
-    // rounding bias. In particular, negative world Z must not be clamped.
-    (leptons * HEIGHT_LIFT_PX_PER_LEPTON + extra + 0.5).trunc()
+fn adjust_for_z_lift_px(leptons: i32) -> f32 {
+    crate::util::native_x87::adjust_for_z_standard(leptons) as f32
 }
 
 /// Total upward screen lift for an entity, in pixels.
@@ -205,15 +159,15 @@ fn adjust_for_z_lift_px(leptons: f32) -> f32 {
 /// decomposed height source below, including the coarse terrain level.
 ///
 /// The height term reproduces gamemd's `AdjustForZ` exactly, quantisation
-/// included: the scale, the extra pixel above [`EXTRA_PIXEL_HEIGHT_LEPTONS`],
-/// and the `+ 0.5` truncate that rounds it to a whole pixel. The engine's own
+/// included: the startup scale, the 728-lepton correction, and the `+ 0.5`
+/// truncate that rounds it to a whole pixel. The engine's own
 /// blitter is integer-pixel, so a climbing aircraft steps a pixel at a time
 /// there too. The infantry bob is *not* quantised — it is a VERA-internal
 /// flourish with no gamemd equivalent, and rounding a ±1px sine to whole pixels
 /// would turn it into a square wave.
 pub fn height_lift_px(entity: &GameEntity) -> f32 {
     if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
-        return adjust_for_z_lift_px(exact_z_leptons as f32);
+        return adjust_for_z_lift_px(exact_z_leptons);
     }
     if height_source(entity) == HeightSource::Ground {
         return infantry_bob_px(entity);
@@ -376,11 +330,10 @@ mod tests {
     }
 
     /// The whole point of the module: one owner, so the lift cannot be applied
-    /// twice. At YR's stock `FlightLevel=1500` a cruising aircraft sits
-    /// `trunc(1500 * 0.1435032 + 1 + 0.5)` = 216px up — the `+1` because 1500
-    /// clears the extra-pixel threshold.
+    /// twice. At YR's stock `FlightLevel=1500`, the native multiplier lifts a
+    /// cruising aircraft by 216px, including the threshold correction.
     #[test]
-    fn a_cruising_aircraft_sits_at_gamemds_height() {
+    fn adjust_for_z_cruising_aircraft_sits_at_gamemds_height() {
         let entity = air_unit(LocomotorKind::Fly, 1500);
         let (_, ground_sy) = ground_screen_position(&entity.position);
         let (_, sy) = screen_position(&entity);
@@ -416,7 +369,7 @@ mod tests {
     /// The extra pixel above the threshold is gamemd's, not ours: one lepton
     /// either side of 728 must differ by more than the scale alone accounts for.
     #[test]
-    fn the_extra_pixel_switches_on_at_the_threshold() {
+    fn adjust_for_z_extra_pixel_switches_on_at_the_threshold() {
         let below = height_lift_px(&air_unit(LocomotorKind::Fly, 727));
         let at = height_lift_px(&air_unit(LocomotorKind::Fly, 728));
         assert_eq!(below, 104.0, "trunc(727 * k + 0.5)");
@@ -424,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_15_exact_signed_z_ignores_coarse_level_and_locomotor_altitude() {
+    fn adjust_for_z_exact_signed_z_ignores_coarse_level_and_locomotor_altitude() {
         let mut entity = air_unit(LocomotorKind::Fly, 1500);
         entity.position.z = 9;
         entity.position.exact_z_leptons = Some(-400);
@@ -491,8 +444,8 @@ mod tests {
 
         let (_, ground_sy) = ground_screen_position(&entity.position);
         let (_, sy) = screen_position(&entity);
-        // trunc(400 * 0.1435032 + 0.5) — the parachute's 400, not the
-        // locomotor's 1500, and below the extra-pixel threshold.
+        // The parachute's 400 leptons, not the locomotor's 1500, and below the
+        // extra-pixel threshold.
         assert_eq!(
             ground_sy - sy,
             57.0,

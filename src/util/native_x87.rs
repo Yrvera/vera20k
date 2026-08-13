@@ -46,6 +46,14 @@ impl NativeF64Bits {
     }
 }
 
+const ADJUST_FOR_Z_THRESHOLD_LEPTONS: i32 = 728;
+
+/// Standard-session height-to-screen multiplier initialized by active YR.
+///
+/// Startup writer `0x006D1BDD` stores exactly `0x3FC25E5374344960`.
+pub const STANDARD_ADJUST_FOR_Z_MULTIPLIER: NativeF64Bits =
+    NativeF64Bits::from_bits(0x3fc2_5e53_7434_4960);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum X87Ordering {
     Less,
@@ -359,6 +367,31 @@ pub fn sqrt_approx_f32(value: X87Value) -> Result<NativeF32Bits, NativeX87Error>
     ))
 }
 
+/// Evaluate the native height-to-screen conversion with an injected multiplier.
+///
+/// gamemd-derived: active YR `Tactical__AdjustForZ` at `0x006D20E0` multiplies
+/// signed world Z by the startup-owned factor, adds one at Z >= 728, adds 0.5,
+/// then converts with x87 `ftol` under 53-bit/truncate-toward-zero control.
+pub fn adjust_for_z_with_multiplier(
+    world_z: i32,
+    multiplier: NativeF64Bits,
+) -> Result<i32, NativeX87Error> {
+    let product = X87Chop53::mul(
+        X87Chop53::load_i32(world_z),
+        X87Chop53::load_f64(multiplier)?,
+    );
+    let correction = X87Chop53::load_i32(i32::from(world_z >= ADJUST_FOR_Z_THRESHOLD_LEPTONS));
+    let corrected = X87Chop53::add(product, correction);
+    let biased = X87Chop53::add(corrected, X87Chop53::load_f64(NativeF64Bits::HALF)?);
+    Ok(X87Chop53::ftol_i64(biased)? as i32)
+}
+
+/// Evaluate active YR's standard-session height-to-screen conversion.
+pub fn adjust_for_z_standard(world_z: i32) -> i32 {
+    adjust_for_z_with_multiplier(world_z, STANDARD_ADJUST_FOR_Z_MULTIPLIER)
+        .expect("the verified finite standard multiplier maps every i32 Z into i32")
+}
+
 fn chop_extended(sign: bool, exponent: i32, extended: u64) -> X87Value {
     let significand = extended >> 3;
     debug_assert!(significand == 0 || significand & SIGNIFICAND_TOP != 0);
@@ -527,5 +560,22 @@ mod tests {
         let value = X87Chop53::load_i32(1_234_567);
         let approximate = sqrt_approx_f32(value).unwrap().bits();
         assert_ne!(approximate, (1_234_567.0f32.sqrt()).to_bits());
+    }
+
+    #[test]
+    fn adjust_for_z_standard_matches_retail_fixtures_and_signed_edges() {
+        assert_eq!(
+            STANDARD_ADJUST_FOR_Z_MULTIPLIER.bits(),
+            0x3fc2_5e53_7434_4960
+        );
+        assert_eq!(adjust_for_z_standard(0), 0);
+        assert_eq!(adjust_for_z_standard(104), 15);
+        assert_eq!(adjust_for_z_standard(208), 30);
+        assert_eq!(adjust_for_z_standard(256), 37);
+        assert_eq!(adjust_for_z_standard(727), 104);
+        assert_eq!(adjust_for_z_standard(728), 105);
+        assert_eq!(adjust_for_z_standard(1_500), 216);
+        assert_eq!(adjust_for_z_standard(-104), -14);
+        assert_eq!(adjust_for_z_standard(-400), -56);
     }
 }

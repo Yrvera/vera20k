@@ -278,7 +278,7 @@ pub fn lepton_to_screen(coords: glam::IVec3) -> (f32, f32) {
     let sub_sx = (sub_x - sub_y) * (TILE_WIDTH / 2.0) / LEPTONS_PER_CELL as f32;
     let sub_sy = (sub_x + sub_y) * (TILE_HEIGHT / 2.0) / LEPTONS_PER_CELL as f32;
 
-    let z_lift = coords.z as f32 / LEPTONS_PER_CELL as f32 * HEIGHT_STEP;
+    let z_lift = crate::util::native_x87::adjust_for_z_standard(coords.z) as f32;
 
     (cell_sx + sub_sx, cell_sy + sub_sy - z_lift)
 }
@@ -1587,10 +1587,19 @@ mod tests {
     }
 
     #[test]
-    fn lepton_to_screen_z_lift_uses_height_step() {
-        // Z = 256 leptons = 1 cell of altitude → screen Y lifted by HEIGHT_STEP.
-        let (_, sy_low) = lepton_to_screen(glam::IVec3::ZERO);
-        let (_, sy_high) = lepton_to_screen(glam::IVec3::new(0, 0, 256));
-        assert!((sy_low - sy_high - HEIGHT_STEP).abs() < 1e-3);
+    fn adjust_for_z_lepton_projection_matches_retail_fixtures_and_boundary() {
+        let (_, baseline) = lepton_to_screen(glam::IVec3::ZERO);
+        for (z, expected_lift) in [
+            (104, 15.0),
+            (208, 30.0),
+            (256, 37.0),
+            (727, 104.0),
+            (728, 105.0),
+            (1_500, 216.0),
+            (-400, -56.0),
+        ] {
+            let (_, projected) = lepton_to_screen(glam::IVec3::new(0, 0, z));
+            assert_eq!(baseline - projected, expected_lift, "z={z}");
+        }
     }
 }
