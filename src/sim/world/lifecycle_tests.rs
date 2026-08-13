@@ -2827,27 +2827,6 @@ fn gsi_04_05_reservation_repair_scan_reaches_asymmetric_high_edge() {
 }
 
 #[test]
-fn gsi_04_05_reservation_final_house_order_rebuild_is_new_game_only_authority() {
-    let mut sim = Simulation::new();
-    let owner = insert_reservation_building(&mut sim, 105, "Americans", 5, 6, "1x1", 0);
-
-    // Map objects reveal before the HouseClass array exists and write nothing.
-    let _ = sim.try_reveal_entity(105, request(5, 6, PlacementEvidence::MarkSucceeded));
-    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 5, 6), 0);
-
-    let earlier_house = sim.interner.intern("Neutral");
-    sim.session.house_order.extend([earlier_house, owner]);
-    sim.substrate.base_reservations.reserve(None, 1, 1, 0);
-    sim.rebuild_base_reservations_for_new_game();
-    assert_eq!(sim.substrate.base_reservations.raw_mask(None, 1, 1), 0);
-    assert_eq!(
-        sim.substrate.base_reservations.raw_mask(None, 5, 6),
-        1 << 1,
-        "house_order position, not side or map order, selects the bit"
-    );
-}
-
-#[test]
 fn gsi_04_05_reservation_art_foundation_recomputes_writer_before_lifecycle_mark() {
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;

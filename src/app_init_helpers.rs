@@ -449,7 +449,7 @@ pub(crate) fn generate_unverified_legacy_match_seed() -> u32 {
 }
 
 /// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
-pub(crate) fn spawn_entities(
+pub(crate) fn spawn_entities<F>(
     map_data: &MapFile,
     resolved_terrain: &ResolvedTerrainGrid,
     asset_manager: &AssetManager,
@@ -468,12 +468,16 @@ pub(crate) fn spawn_entities(
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     terrain_load_advanced_scenario_rng: Option<crate::sim::rng::SimRng>,
     variant_advanced_main_rng: Option<crate::sim::rng::SimRng>,
+    initialize_houses_before_objects: F,
 ) -> (
     Option<Simulation>,
     Option<UnitAtlas>,
     Option<SpriteAtlas>,
     Option<crate::render::palette_textures::PaletteSet>,
-) {
+)
+where
+    F: FnOnce(&mut Simulation),
+{
     let mut sim: Simulation = Simulation::from_descriptor(descriptor);
     if let Some(scenario_rng) = terrain_load_advanced_scenario_rng {
         sim.install_terrain_load_advanced_scenario_rng(scenario_rng);
@@ -481,6 +485,12 @@ pub(crate) fn spawn_entities(
     if let Some(main_rng) = variant_advanced_main_rng {
         sim.install_variant_advanced_main_rng(main_rng);
     }
+    // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
+    // `ScenarioClass__Create_Houses @ 0x00687F10` before
+    // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
+    // Keep the app-specific roster construction outside sim while making that
+    // order an explicit prerequisite of the shared object-construction funnel.
+    initialize_houses_before_objects(&mut sim);
     // Frame tripwire: every MP start waypoint must sit inside the session
     // bounds (= the fog window, cell-array frame). A start outside means the
     // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the

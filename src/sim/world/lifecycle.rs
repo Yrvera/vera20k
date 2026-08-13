@@ -799,8 +799,9 @@ impl Simulation {
     }
 
     pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {
-        // Map entities are intentionally revealed before the launch HouseClass
-        // array exists; the one-time post-registration rebuild owns that case.
+        // Active YR Full_Init constructs the complete HouseClass array before
+        // Terrain/Techno map sections reveal objects. Scenario loading preserves
+        // that order, so Reveal writes the final house-index bit immediately.
         if self.session.house_order.is_empty() {
             return None;
         }
@@ -922,22 +923,6 @@ impl Simulation {
             self.mark_building_base_reservation(neighbor_id);
         }
         true
-    }
-
-    /// New-game-only rebuild after the launch house array reaches final order.
-    /// Snapshot restore intentionally never calls this: serialized masks and the
-    /// shared dummy mask are authoritative.
-    pub(crate) fn rebuild_base_reservations_for_new_game(&mut self) {
-        self.substrate.base_reservations.reset();
-        let entity_ids = self
-            .substrate
-            .entities
-            .values()
-            .map(|entity| entity.stable_id)
-            .collect::<Vec<_>>();
-        for stable_id in entity_ids {
-            self.mark_building_base_reservation(stable_id);
-        }
     }
 
     fn unmark_entity_remove(&mut self, stable_id: u64) -> bool {

@@ -170,6 +170,45 @@ pub(crate) fn house_color_map_for_launch_session(
     colors
 }
 
+/// Construct the active offline-skirmish House array before any map object.
+///
+/// Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
+/// `ScenarioClass__Create_Houses @ 0x00687F10` before terrain and Techno map
+/// sections. The standard offline order is the human participant, AI slots,
+/// then Neutral and Special. Object Reveal can therefore commit owned counts
+/// and house-indexed base reservations directly, without a repair pass.
+pub(crate) fn initialize_skirmish_launch_houses(
+    sim: &mut Simulation,
+    house_roster: &HouseRoster,
+    rules: &RuleSet,
+    session: &SkirmishLaunchSession,
+) {
+    assert!(
+        sim.houses.is_empty()
+            && sim.session.house_order.is_empty()
+            && sim.ai_players.is_empty()
+            && sim.entities().is_empty()
+            && sim.production.terrain_objects.is_empty(),
+        "skirmish houses must be initialized before map objects"
+    );
+    let slots = normalized_launch_slots(session);
+    sim.session.game_options = session
+        .options
+        .to_game_options(session.opponents.len() as i32);
+    populate_launch_houses(sim, &slots, rules);
+    populate_special_houses(sim, house_roster, rules);
+}
+
+/// Commit the explicit launch-session diplomacy graph at the post-crate boundary.
+pub(crate) fn apply_skirmish_launch_alliances(
+    sim: &mut Simulation,
+    house_roster: &HouseRoster,
+    session: &SkirmishLaunchSession,
+) {
+    let slots = normalized_launch_slots(session);
+    sim.house_alliances = launch_alliance_map(house_roster, &slots, &session.mode);
+}
+
 /// Apply an already validated explicit session without placeholder RNG draws.
 pub(crate) fn apply_explicit_skirmish_launch_session(
     sim: &mut Simulation,
@@ -226,19 +265,35 @@ fn apply_resolved_skirmish_launch_session(
     preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
 ) -> SkirmishLaunchApplyResult {
     let slots = normalized_launch_slots(session);
-    sim.session.game_options = session
-        .options
-        .to_game_options(session.opponents.len() as i32);
-
-    sim.houses.clear();
-    sim.session.house_order.clear();
-    sim.ai_players.clear();
-    populate_launch_houses(sim, &slots, rules);
-    populate_special_houses(sim, house_roster, rules);
-    // Existing map buildings predate this replacement HouseClass array.
-    sim.rebuild_base_reservations_for_new_game();
-    sim.house_alliances = launch_alliance_map(house_roster, &slots, &session.mode);
-    recount_house_owned_counts(sim);
+    if sim.houses.is_empty() {
+        // Direct unit-level callers may enter before the shared app load funnel.
+        // The initializer rejects any already-constructed map object, so this
+        // fallback cannot recreate the former object-before-house production path.
+        initialize_skirmish_launch_houses(sim, house_roster, rules, session);
+    }
+    assert_eq!(
+        sim.session.house_order.len(),
+        slots.len() + 2,
+        "launch House array must be complete before start assignment"
+    );
+    for (registered, slot) in sim.session.house_order.iter().zip(&slots) {
+        assert_eq!(
+            sim.interner.resolve(*registered),
+            slot.owner_name,
+            "participant House order changed after map construction"
+        );
+    }
+    for (registered, expected) in sim.session.house_order[slots.len()..]
+        .iter()
+        .zip(["Neutral", "Special"])
+    {
+        assert!(
+            sim.interner
+                .resolve(*registered)
+                .eq_ignore_ascii_case(expected),
+            "special House order changed after map construction"
+        );
+    }
 
     let bounds = NativeStartBounds::from_session(sim, resolved_terrain);
     let cooperative = session
@@ -610,27 +665,6 @@ fn launch_alliance_map(
         }
     }
     alliances
-}
-
-fn recount_house_owned_counts(sim: &mut Simulation) {
-    for house in sim.houses.values_mut() {
-        house.owned_building_count = 0;
-        house.owned_unit_count = 0;
-    }
-    let counts: Vec<_> = sim
-        .entities()
-        .values()
-        .map(|entity| (entity.owner, entity.category))
-        .collect();
-    for (owner, category) in counts {
-        let Some(house) = sim.houses.get_mut(&owner) else {
-            continue;
-        };
-        match category {
-            EntityCategory::Structure => house.owned_building_count += 1,
-            _ => house.owned_unit_count += 1,
-        }
-    }
 }
 
 /// Assign participants to original map waypoints without terrain fallback.
@@ -2193,13 +2227,12 @@ mod tests {
     }
 
     #[test]
-    fn launch_registration_orders_participants_before_guaranteed_special_houses() {
+    fn gsi_17_01_launch_registration_orders_participants_before_guaranteed_special_houses() {
         let session = test_session();
         let mut sim = Simulation::new();
         let rules = test_standard_launch_rules();
 
-        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
-        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &session);
 
         let order: Vec<_> = sim
             .session
@@ -2217,6 +2250,61 @@ mod tests {
         assert_eq!(current_iq("Computer1"), Some(rules.general.max_iq_levels));
         assert_eq!(current_iq("Neutral"), Some(0));
         assert_eq!(current_iq("Special"), Some(0));
+    }
+
+    #[test]
+    fn gsi_17_01_preplaced_structure_reveal_accounts_against_preexisting_house_once() {
+        use crate::rules::art_data::ArtRegistry;
+
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[AI]\nAIBaseSpacing=2\n\
+             [Countries]\n0=Americans\n1=Russians\n2=Neutral\n3=Special\n\
+             [BuildingTypes]\n0=GACNST\n\
+             [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n",
+        ))
+        .expect("structure fixture rules");
+        rules.merge_art_data(&ArtRegistry::from_ini(&IniFile::from_str(
+            "[GACNST]\nFoundation=4x4\n",
+        )));
+        assert_eq!(
+            rules.object("GACNST").unwrap().base_reservation_spacing,
+            Some(2)
+        );
+
+        let session = test_session();
+        let mut sim = Simulation::new();
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &session);
+        assert!(sim.entities().is_empty());
+
+        let spawned = sim.spawn_from_map(
+            &[crate::map::entities::MapEntity {
+                owner: "Player".to_owned(),
+                type_id: "GACNST".to_owned(),
+                health: 256,
+                cell_x: 30,
+                cell_y: 40,
+                facing: 0,
+                category: EntityCategory::Structure,
+                sub_cell: 0,
+                veterancy: 0,
+                high: false,
+                mission: None,
+            }],
+            Some(&rules),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(spawned, 1);
+        let player = sim
+            .interner
+            .get("Player")
+            .expect("pre-created player house");
+        assert_eq!(sim.houses[&player].owned_building_count, 1);
+        assert_eq!(
+            sim.substrate.base_reservations.raw_mask(None, 28, 38),
+            1,
+            "Reveal writes the participant's house-index bit without a repair pass"
+        );
     }
 
     #[test]
@@ -3029,6 +3117,12 @@ mod tests {
         let starts = test_launch_starts();
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &session,
+        );
         sim.spawn_object(
             "AMCV",
             "Neutral",
