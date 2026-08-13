@@ -276,7 +276,8 @@ pub(crate) struct AppState {
     pub(crate) type_select: crate::app_types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
-    /// Previous complete client surface, retained for input-time screenshot parity.
+    /// Previous presented pre-cursor composition, retained for input-time
+    /// screenshot parity.
     pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,
     /// egui integration — input handling + GPU rendering.
     egui: EguiIntegration,
@@ -5177,14 +5178,14 @@ impl App {
             std::mem::take(&mut state.retail_screenshot_requested);
         let pending_retail_screenshot = state
             .retail_screenshot_frame_cache
-            .capture_previous_and_remember_current(
+            .capture_previous_if_requested(
                 retail_screenshot_current_frame,
                 &state.gpu.device,
                 &mut encoder,
-                &output.texture,
                 state.gpu.config.format,
                 state.gpu.config.width,
                 state.gpu.config.height,
+                state.upscale_pass.as_ref(),
             )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
@@ -5203,6 +5204,9 @@ impl App {
         };
         let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        state
+            .retail_screenshot_frame_cache
+            .commit_presented();
         if let Some(token) = pending_main_menu_entry_token.take() {
             crate::app_shell_transition::record_main_menu_entry_presented(state, token)?;
         }

@@ -52,7 +52,7 @@ pub(super) struct DrawPassData<'a> {
 /// 7.7 Bodies above the Ground band (layers 3–4) → 8. Debug → 9. Shroud/fog →
 /// 10. UI/sidebar
 pub(super) fn dispatch_draw_passes(
-    state: &AppState,
+    state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
     data: &DrawPassData<'_>,
@@ -682,6 +682,27 @@ pub(super) fn dispatch_draw_passes(
         Some(state.bit_font.atlas()),
         "tooltip_text",
     );
+
+    // Active YR ScreenCaptureCommandClass::Execute (0x00537BC0) hides
+    // WWMouse while copying the already-presented client. Preserve the same
+    // composition boundary without changing the displayed frame: retain every
+    // completed UI/sidebar surface here, then resume and draw the cursor into
+    // the ordinary presentation target.
+    drop(pass);
+    state
+        .retail_screenshot_frame_cache
+        .stage_pre_cursor_composition(
+            &state.gpu.device,
+            encoder,
+            state.combat_light_renderer.composition_texture(),
+            state.gpu.config.format,
+            state.render_width(),
+            state.render_height(),
+            state.gpu.config.width,
+            state.gpu.config.height,
+        );
+    let mut pass = begin_main_load_pass(encoder, view, &state.depth_view);
+    pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     draw_pooled_ui(
         &mut pass,
         &state.batch_renderer,

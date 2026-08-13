@@ -263,6 +263,12 @@ impl CombatLightRenderer {
         self.targets.render_view.clone()
     }
 
+    /// Texture behind [`Self::composition_view`]. Screenshot retention copies
+    /// it at the UI/cursor boundary before the cursor pass modifies it.
+    pub(crate) fn composition_texture(&self) -> &wgpu::Texture {
+        &self.targets.texture
+    }
+
     /// Apply the vector after tactical objects and before later tactical
     /// families. A scene copy per record preserves destination-dependent
     /// overlap while the records are consumed in their already-reversed order.
