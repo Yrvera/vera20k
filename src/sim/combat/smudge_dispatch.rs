@@ -27,7 +27,8 @@ use std::collections::BTreeMap;
 /// is within 30 leptons of the ground.
 const SMUDGE_ALTITUDE_GATE_LEPTONS: i32 = 30;
 
-/// Hardcoded ore-reduction amount when a crater spawns (ledger #6).
+/// Hardcoded ore-reduction amount on `AnimClass::Start @ 0x00424F00`'s
+/// crater branch.
 const CRATER_ORE_REDUCTION: u16 = 6;
 
 /// Damage values passed to `SmudgeGrid::try_place` for building destruction
@@ -348,7 +349,9 @@ pub fn try_dispatch_building_survivor_smudges(
                 rng,
             );
         } else {
-            tiberium.reduce((snap_rx, snap_ry), CRATER_ORE_REDUCTION, terrain, rng);
+            // gamemd `BuildingClass::SpawnSurvivors @ 0x00442D90` calls
+            // Debris_Smoke directly; unlike AnimClass::Start, this branch does
+            // not reduce tiberium before attempting the crater.
             smudge_grid.try_place(
                 SmudgeKind::Crater,
                 coord,
@@ -1262,7 +1265,7 @@ mod dispatch_tests {
         }
 
         #[test]
-        fn gsi_04_11_only_anim_craters_reduce_ore_not_building_crater_paths() {
+        fn gsi_05_15_survivor_crater_leaves_ore_untouched() {
             let crater_seed = (1_u64..100)
                 .find(|seed| {
                     let mut probe = SimRng::new(*seed);
@@ -1272,70 +1275,34 @@ mod dispatch_tests {
             let smudge_reg = make_smudge_registry();
             let art = ArtRegistry::empty();
             let occupancy = OccupancyGrid::new();
-
-            let mut center_grid = SmudgeGrid::new(8, 8);
-            let mut center_terrain = flat_terrain(8, 8);
-            let mut center_overlay = OverlayGrid::new(8, 8);
-            let mut center_nodes = BTreeMap::from([(
-                (4, 4),
-                ResourceNode {
-                    resource_type: crate::sim::miner::ResourceType::Ore,
-                    remaining: 1_200,
-                },
-            )]);
-            let mut center_growth = OreGrowthState::new(8, 8);
-            let mut center_radar = Vec::new();
-            let mut center_generation = 0;
-            let mut center_tactical = Vec::new();
-            let mut center_rng = SimRng::new(crater_seed);
-            {
-                let mut tiberium = tiberium_ctx(
-                    &mut center_nodes,
-                    &mut center_overlay,
-                    &mut center_growth,
-                    &mut center_radar,
-                    &mut center_generation,
-                    &mut center_tactical,
-                );
-                try_dispatch_building_destruction_smudges(
-                    4,
-                    4,
-                    0,
-                    2,
-                    2,
-                    &art,
-                    &smudge_reg,
-                    &mut center_grid,
-                    &occupancy,
-                    &mut center_terrain,
-                    &mut tiberium,
-                    &mut center_rng,
-                );
-            }
-            assert_eq!(center_nodes[&(4, 4)].remaining, 1_200);
-
             let mut survivor_grid = SmudgeGrid::new(8, 8);
             let mut survivor_terrain = flat_terrain(8, 8);
             let mut survivor_overlay = OverlayGrid::new(8, 8);
-            let raw = RawCellOccupationGrid::new();
-            let mut survivor_nodes = BTreeMap::new();
+            let (overlay_registry, tiberium_types) = native_tiberium_registries();
+            let ore_id = overlay_registry.id_for_name("ORE").unwrap();
+            // Cover every possible snapped destination with authoritative ore,
+            // then clear fixture dirties so any mutation below is observable.
             for ry in 0..8 {
                 for rx in 0..8 {
-                    survivor_nodes.insert(
-                        (rx, ry),
-                        ResourceNode {
-                            resource_type: crate::sim::miner::ResourceType::Ore,
-                            remaining: 1_200,
-                        },
-                    );
+                    survivor_overlay.place_overlay(rx, ry, ore_id, 9);
                 }
             }
-            let expected_nodes = survivor_nodes.clone();
+            survivor_overlay.take_dirty_cells();
+            let raw = RawCellOccupationGrid::new();
+            let mut survivor_nodes = BTreeMap::new();
             let mut survivor_growth = OreGrowthState::new(8, 8);
             let mut survivor_radar = Vec::new();
             let mut survivor_generation = 0;
             let mut survivor_tactical = Vec::new();
             let mut survivor_rng = SimRng::new(crater_seed);
+            let mut expected_rng = SimRng::new(crater_seed);
+            assert!(expected_rng.next_range_u32(100) >= 50);
+            let _ = random_direction_coord(
+                &mut expected_rng,
+                4 * 256 + 128,
+                4 * 256 + 128,
+                SURVIVOR_OFFSET_MAGNITUDE,
+            );
             {
                 let mut tiberium = tiberium_ctx(
                     &mut survivor_nodes,
@@ -1345,6 +1312,8 @@ mod dispatch_tests {
                     &mut survivor_generation,
                     &mut survivor_tactical,
                 );
+                tiberium.overlay_registry = Some(&overlay_registry);
+                tiberium.tiberium_types = Some(&tiberium_types);
                 try_dispatch_building_survivor_smudges(
                     &[(4, 4)],
                     &art,
@@ -1357,7 +1326,21 @@ mod dispatch_tests {
                     &mut survivor_rng,
                 );
             }
-            assert_eq!(survivor_nodes, expected_nodes);
+            for ry in 0..8 {
+                for rx in 0..8 {
+                    let cell = survivor_overlay.cell(rx, ry);
+                    assert_eq!(cell.overlay_id, Some(ore_id), "cell ({rx},{ry})");
+                    assert_eq!(cell.overlay_data, 9, "cell ({rx},{ry})");
+                }
+            }
+            assert_eq!(survivor_grid.iter_occupied().count(), 0);
+            assert!(survivor_overlay.take_dirty_cells().is_empty());
+            assert!(survivor_growth.growth_queue_entries().is_empty());
+            assert!(survivor_growth.spread_queue_entries().is_empty());
+            assert!(survivor_radar.is_empty());
+            assert_eq!(survivor_generation, 0);
+            assert!(survivor_tactical.is_empty());
+            assert_eq!(survivor_rng.logical_state(), expected_rng.logical_state());
         }
     }
 }
