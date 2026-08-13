@@ -1,7 +1,8 @@
-//! App-local admission for gameplay frames.
+//! App-local wall-clock services for a running scenario.
 //!
-//! The deterministic simulation never reads wall time. This pacer only decides
-//! whether one outer event-loop iteration may admit one gameplay frame.
+//! The deterministic simulation never reads wall time. The frame pacer decides
+//! whether one outer event-loop iteration may admit a gameplay frame, while the
+//! scenario elapsed clock supplies the score screen's match duration.
 
 use std::time::Instant;
 
@@ -9,6 +10,8 @@ const FRAME_BUCKET_SHIFT: u32 = 4;
 const FRAME_BUCKET_MS: u64 = 1 << FRAME_BUCKET_SHIFT;
 const MIN_TIMED_GAME_SPEED: u8 = 1;
 const MAX_TIMED_GAME_SPEED: u8 = 6;
+const ELAPSED_CLOCK_STOPPED: u32 = u32::MAX;
+const SCORE_BUCKETS_PER_SECOND: i32 = 60;
 
 #[cfg(windows)]
 #[link(name = "winmm")]
@@ -37,6 +40,95 @@ pub(crate) fn wall_clock_ms(fallback_epoch: Instant, now: Instant) -> u64 {
 #[derive(Debug, Default)]
 pub(crate) struct LocalFramePacer {
     last_frame_start_bucket: Option<u32>,
+}
+
+/// App-owned elapsed-time clock used by the end-of-match score dialog.
+///
+/// This is deliberately separate from deterministic simulation time: changing
+/// game speed changes the number of gameplay frames, not the wall duration the
+/// retail score screen reports.
+#[derive(Debug)]
+pub(crate) struct ScenarioElapsedClock {
+    start_bucket: u32,
+    accumulated_buckets: u32,
+}
+
+impl Default for ScenarioElapsedClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScenarioElapsedClock {
+    pub(crate) const fn new() -> Self {
+        Self {
+            start_bucket: ELAPSED_CLOCK_STOPPED,
+            accumulated_buckets: 0,
+        }
+    }
+
+    /// Arm a fresh scenario at zero elapsed time.
+    ///
+    /// gamemd provenance: Scenario elapsed clock; verified
+    /// ScenarioClass__Start_Scenario @ 0x00683AB0 writes the current
+    /// WallClock__Get16msBucket @ 0x006C8C40 value to ScenarioClass+0x614.
+    pub(crate) fn start(&mut self, now_ms: u64) {
+        self.accumulated_buckets = 0;
+        self.start_bucket = frame_bucket(now_ms);
+    }
+
+    /// Accumulate the current armed span and install retail's `-1` sentinel.
+    ///
+    /// gamemd provenance: Scenario elapsed clock; verified
+    /// StateMachine__EnterPause @ 0x00683EB0 accumulates ScenarioClass+0x61C
+    /// and sentinelizes ScenarioClass+0x614 in offline modes 0 and 5.
+    pub(crate) fn pause(&mut self, now_ms: u64) {
+        if self.start_bucket == ELAPSED_CLOCK_STOPPED {
+            return;
+        }
+        self.accumulated_buckets = self
+            .accumulated_buckets
+            .wrapping_add(frame_bucket(now_ms).wrapping_sub(self.start_bucket));
+        self.start_bucket = ELAPSED_CLOCK_STOPPED;
+    }
+
+    /// Re-arm a stopped clock without charging the stopped span.
+    ///
+    /// gamemd provenance: Scenario elapsed clock; verified
+    /// StateMachine__ExitPause @ 0x00683FB0 writes a fresh 16-ms bucket to
+    /// ScenarioClass+0x614 when leaving an offline modal pause.
+    pub(crate) fn resume(&mut self, now_ms: u64) {
+        if self.start_bucket == ELAPSED_CLOCK_STOPPED {
+            self.start_bucket = frame_bucket(now_ms);
+        }
+    }
+
+    /// Stop the clock and return the signed, truncating score-dialog seconds.
+    pub(crate) fn stop(&mut self, now_ms: u64) -> i32 {
+        self.pause(now_ms);
+        self.elapsed_seconds(now_ms)
+    }
+
+    /// Forget any prior match and leave the clock disarmed.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Sample the retail raw accumulator without changing clock state.
+    fn elapsed_buckets(&self, now_ms: u64) -> u32 {
+        self.accumulated_buckets.wrapping_add(
+            (self.start_bucket != ELAPSED_CLOCK_STOPPED)
+                .then(|| frame_bucket(now_ms).wrapping_sub(self.start_bucket))
+                .unwrap_or(0),
+        )
+    }
+
+    /// gamemd provenance: Score elapsed-time formatting; verified
+    /// ScoreDialog__WndProc @ 0x005C9B10 reads ScenarioClass+0x614/+0x61C,
+    /// treats the wrapped accumulator as signed, and divides it by 60.
+    pub(crate) fn elapsed_seconds(&self, now_ms: u64) -> i32 {
+        (self.elapsed_buckets(now_ms) as i32) / SCORE_BUCKETS_PER_SECOND
+    }
 }
 
 impl LocalFramePacer {
@@ -169,5 +261,44 @@ mod tests {
         pacer.record_admitted_frame(u64::from(u32::MAX - 7));
 
         assert!(!pacer.should_admit(u64::from(u32::MAX) + 1, 1, false));
+    }
+
+    #[test]
+    fn scenario_elapsed_clock_uses_retail_sixty_bucket_seconds() {
+        for (buckets, seconds) in [(59_u64, 0), (60, 1), (119, 1), (120, 2)] {
+            let mut clock = ScenarioElapsedClock::new();
+            clock.start(0);
+            assert_eq!(clock.elapsed_seconds(buckets << 4), seconds);
+        }
+    }
+
+    #[test]
+    fn scenario_elapsed_clock_excludes_explicit_modal_time() {
+        let mut clock = ScenarioElapsedClock::new();
+        clock.start(10 << 4);
+        clock.pause(70 << 4);
+        assert_eq!(clock.elapsed_seconds(10_000 << 4), 1);
+
+        clock.resume(1_070 << 4);
+        assert_eq!(clock.stop(1_130 << 4), 2);
+    }
+
+    #[test]
+    fn scenario_elapsed_clock_uninterrupted_wall_span_ignores_frame_activity() {
+        let mut clock = ScenarioElapsedClock::new();
+        clock.start(200 << 4);
+
+        // No clock hook runs for focus loss or for any number of sim frames.
+        assert_eq!(clock.elapsed_seconds(320 << 4), 2);
+    }
+
+    #[test]
+    fn scenario_elapsed_clock_preserves_native_rollover_arithmetic() {
+        let mut clock = ScenarioElapsedClock::new();
+        clock.start(u64::from(u32::MAX - 15));
+
+        // timeGetTime wraps before the >>4. Native's uncorrected unsigned
+        // subtraction becomes negative only when the score path casts to i32.
+        assert_eq!(clock.elapsed_seconds(u64::from(u32::MAX) + 1), -4_473_924);
     }
 }

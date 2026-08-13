@@ -539,6 +539,28 @@ fn populate_launch_houses(sim: &mut Simulation, slots: &[NormalizedSkirmishSlot]
     }
 }
 
+/// Apply the generated skirmish AI opening-credit grant at the Post_Map_Init handoff.
+///
+/// Active YR `ScenarioClass__Post_Map_Init @ 0x00686890` visits each non-human,
+/// non-`MultiplayPassive` house, calls the secondary vslot body at `0x004F6990`,
+/// then passes its result to `HouseClass__Add_Credits @ 0x004F9950`. Generated
+/// stock Battle houses have no stored resources at this point, so the returned
+/// amount is their current balance and each participating AI finishes with twice
+/// the lobby-selected credits. The AI-owner list keeps this launch-only helper
+/// away from special and nonparticipant houses without recreating native pointers.
+pub(crate) fn apply_skirmish_ai_opening_credits(sim: &mut Simulation) {
+    for ai in &sim.ai_players {
+        let Some(house) = sim.houses.get_mut(&ai.owner) else {
+            continue;
+        };
+        if house.is_human || house.multiplay_passive {
+            continue;
+        }
+        let opening_grant = house.credits;
+        house.credits += opening_grant;
+    }
+}
+
 fn normalize_house_key(name: &str) -> String {
     name.trim().to_ascii_uppercase()
 }
@@ -2195,6 +2217,58 @@ mod tests {
         assert_eq!(current_iq("Computer1"), Some(rules.general.max_iq_levels));
         assert_eq!(current_iq("Neutral"), Some(0));
         assert_eq!(current_iq("Special"), Some(0));
+    }
+
+    #[test]
+    fn gsi_03_17_post_map_init_doubles_only_participating_nonpassive_ai_credits() {
+        let mut session = test_session();
+        let passive_ai = SkirmishAiSlot {
+            color_index: 3,
+            ..session.opponents[0].clone()
+        };
+        session.opponents.push(passive_ai);
+        let mut sim = Simulation::new();
+        sim.session.game_options = session
+            .options
+            .to_game_options(session.opponents.len() as i32);
+        let rules = test_standard_launch_rules();
+        populate_launch_houses(&mut sim, &normalized_launch_slots(&session), &rules);
+        populate_special_houses(&mut sim, &HouseRoster::default(), &rules);
+
+        let passive_ai = sim.interner.get("Computer2").expect("passive AI");
+        sim.houses
+            .get_mut(&passive_ai)
+            .expect("passive AI house")
+            .multiplay_passive = true;
+        for owner in ["Neutral", "Special"] {
+            let owner = sim.interner.get(owner).expect("special house");
+            sim.houses
+                .get_mut(&owner)
+                .expect("special HouseState")
+                .multiplay_passive = true;
+        }
+        let observer = sim.interner.intern("Observer");
+        sim.houses.insert(
+            observer,
+            HouseState::new(observer, 0, None, false, 10_000, 10),
+        );
+
+        apply_skirmish_ai_opening_credits(&mut sim);
+
+        let credits = |owner: &str| {
+            crate::sim::house_state::house_state_for_owner(
+                &sim.houses,
+                owner,
+                &sim.interner,
+            )
+            .map(|house| house.credits)
+        };
+        assert_eq!(credits("Player"), Some(10_000));
+        assert_eq!(credits("Computer1"), Some(20_000));
+        assert_eq!(credits("Computer2"), Some(10_000));
+        assert_eq!(credits("Neutral"), Some(10_000));
+        assert_eq!(credits("Special"), Some(10_000));
+        assert_eq!(credits("Observer"), Some(10_000));
     }
 
     #[test]

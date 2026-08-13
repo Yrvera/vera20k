@@ -203,7 +203,7 @@ fn announce_local_state_evas(state: &mut AppState) {
 /// so this fires exactly once. Loss is keyed off `is_defeated` (the flag set
 /// first and unconditionally in `check_defeat`) so it stays correct regardless
 /// of the `has_lost` companion.
-fn check_local_player_match_end(state: &mut AppState) {
+fn check_local_player_match_end(state: &mut AppState, now_ms: u64) {
     if !matches!(state.screen, GameScreen::InGame) {
         return;
     }
@@ -240,7 +240,8 @@ fn check_local_player_match_end(state: &mut AppState) {
     };
     log::info!("Match end for local player '{owner}': {title}");
     state.finished_game_count = state.finished_game_count.saturating_add(1);
-    state.score_screen = Some(build_score_screen_model(state));
+    let elapsed_seconds = state.scenario_elapsed_clock.stop(now_ms);
+    state.score_screen = Some(build_score_screen_model(state, elapsed_seconds));
     state.score_shell_state = Default::default();
     state.screen = GameScreen::MissionResult {
         title: title.to_string(),
@@ -283,7 +284,10 @@ fn score_row_display_name(
 /// (the same accumulator the ore deposit path feeds). A house that survived the
 /// match then has its displayed score raised by a randomised victory bonus, drawn
 /// from the scenario stream exactly as gamemd draws it at this moment.
-fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::ScoreScreenModel {
+fn build_score_screen_model(
+    state: &mut AppState,
+    elapsed_seconds: i32,
+) -> crate::ui::score_shell::ScoreScreenModel {
     use crate::ui::score_shell::{ScoreRow, ScoreScreenModel};
 
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
@@ -355,12 +359,6 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
             })
             .unwrap_or_default()
     };
-    let elapsed_seconds = state
-        .simulation
-        .as_ref()
-        .map(|sim| (sim.session.tick / u64::from(crate::app_types::SIM_TICK_HZ)) as u32)
-        .unwrap_or(0);
-
     let mut rows: Vec<ScoreRow> = Vec::new();
     let Some(sim) = state.simulation.as_mut() else {
         return ScoreScreenModel::default();
@@ -419,7 +417,10 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
         // heading belongs to the multiplayer session type.
         title_key: "GUI:SkirmishScore",
         game_number: state.finished_game_count,
-        elapsed_seconds,
+        // The clock performs native's signed division first. The existing UI
+        // model is unsigned and applies the native 99:59:59 ceiling, so keep
+        // the pathological rollover representation local to this boundary.
+        elapsed_seconds: elapsed_seconds as u32,
         rows,
     }
 }
@@ -641,7 +642,7 @@ pub fn modal_pump_should_advance_sim(
 /// only, and offline campaign and skirmish freeze the world identically behind a
 /// modal, so it reports `Skirmish`. When networking lands, this reads the live
 /// game-mode discriminator and maps it via `SessionMode::from_game_mode`.
-fn current_session_mode(_state: &AppState) -> SessionMode {
+pub(crate) fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
@@ -786,7 +787,11 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // After the sim advances, surface a win/loss result screen for the
         // local player — the sim computes the per-house outcome flags but
         // nothing else consumes them, so a match would otherwise end invisibly.
-        check_local_player_match_end(state);
+        let score_clock_now_ms = match mode {
+            RuntimeAdvanceMode::WallClock { now_ms } => now_ms,
+            RuntimeAdvanceMode::ExactOneStep => monotonic_frame_pacer_ms(state, Instant::now()),
+        };
+        check_local_player_match_end(state, score_clock_now_ms);
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);

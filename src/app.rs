@@ -495,6 +495,9 @@ pub(crate) struct AppState {
     pub(crate) frame_pacer_epoch: Instant,
     /// Local wall-clock admission state. Never serialized or read by the sim.
     pub(crate) frame_pacer: crate::app_frame_pacer::LocalFramePacer,
+    /// Match elapsed wall time for the retail score screen. App-local and never
+    /// serialized, hashed, or read by deterministic simulation.
+    pub(crate) scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock,
     /// Target/action lines — colored lines from selected units to command destinations.
     pub(crate) target_lines: crate::app_target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
@@ -859,6 +862,7 @@ impl App {
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
+        state.scenario_elapsed_clock.reset();
         state.score_screen = None;
         state.score_shell_state = Default::default();
         state.screen = GameScreen::MainMenu;
@@ -4562,6 +4566,7 @@ impl App {
             theater_ext: "tem".to_string(),
             frame_pacer_epoch: Instant::now(),
             frame_pacer: crate::app_frame_pacer::LocalFramePacer::new(),
+            scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock::new(),
             target_lines: crate::app_target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
@@ -5306,6 +5311,7 @@ impl App {
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
+        state.scenario_elapsed_clock.reset();
         if let Some(ref mut player) = state.music_player {
             player.stop();
         }
@@ -5409,6 +5415,18 @@ impl App {
         let previous = state.in_game_menu;
         if previous == next {
             return;
+        }
+        let was_open = previous.is_open();
+        let will_be_open = next.is_open();
+        if was_open != will_be_open
+            && !crate::app_sim_tick::current_session_mode(state).is_network()
+        {
+            let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+            if will_be_open {
+                state.scenario_elapsed_clock.pause(now_ms);
+            } else {
+                state.scenario_elapsed_clock.resume(now_ms);
+            }
         }
         state.in_game_menu = next;
 

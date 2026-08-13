@@ -130,18 +130,20 @@ impl SuperWeaponInstance {
 
     /// Compute charge progress as 0.0–1.0 for sidebar display.
     /// Only valid when is_active and not is_ready.
-    pub fn charge_progress(&self, current_frame: u32) -> f32 {
+    ///
+    /// gamemd.exe parity: standard `SuperClass::AnimStage` at `0x006CBEE0`
+    /// (active caller `StripClass::Draw` at `0x006A99AC`) derives progress from
+    /// the type's full recharge time and the live `CDTimer` remainder.
+    pub fn charge_progress(&self, current_frame: u32, full_recharge_frames: i32) -> f32 {
         if self.is_ready {
             return 1.0;
         }
-        if self.charge_start_tick == -1 || self.charge_duration <= 0 {
+        if full_recharge_frames <= 0 {
             return 0.0;
         }
-        let elapsed = self
-            .charge_duration
-            .wrapping_sub(self.charge_timer().remaining(current_frame as i32))
-            as f32;
-        (elapsed / self.charge_duration as f32).clamp(0.0, 1.0)
+        let remaining = self.charge_timer().remaining(current_frame as i32);
+        let elapsed = full_recharge_frames.wrapping_sub(remaining) as f32;
+        (elapsed / full_recharge_frames as f32).clamp(0.0, 1.0)
     }
 }
 
@@ -178,7 +180,10 @@ pub fn superweapon_views_for_owner(
         views.push(SuperWeaponView {
             type_id: inst.type_id,
             display_name: type_id_str.to_string(),
-            progress: inst.charge_progress(sim.session.binary_frame),
+            progress: inst.charge_progress(
+                sim.session.binary_frame,
+                sw_type.recharge_time_frames,
+            ),
             is_ready: inst.is_ready,
             is_online: !inst.is_suspended,
             sidebar_image: sw_type.sidebar_image.clone(),
@@ -348,17 +353,37 @@ mod frame_tests {
     use super::*;
 
     #[test]
-    fn charge_timer_uses_wrapping_native_frames() {
+    fn charge_progress_uses_full_recharge_time_across_suspend_resume() {
+        let id = InternedId::from_index(1);
+        let mut instance = SuperWeaponInstance::new(id, id);
+        instance.activate(10, 100);
+
+        assert_eq!(instance.charge_progress(104, 10), 0.4);
+
+        instance.suspend(104);
+        assert_eq!(instance.charge_start_tick, -1);
+        assert_eq!(instance.charge_duration, 6);
+        assert_eq!(instance.charge_progress(1000, 10), 0.4);
+
+        instance.resume(1000);
+        assert_eq!(instance.charge_progress(1003, 10), 0.7);
+        assert_eq!(instance.charge_progress(1006, 10), 1.0);
+    }
+
+    #[test]
+    fn charge_progress_uses_full_recharge_time_across_frame_wrap() {
         let id = InternedId::from_index(1);
         let mut instance = SuperWeaponInstance::new(id, id);
         instance.activate(4, u32::MAX - 1);
 
-        assert_eq!(instance.charge_progress(0), 0.5);
+        assert_eq!(instance.charge_progress(0, 4), 0.5);
         instance.suspend(0);
+        assert_eq!(instance.charge_start_tick, -1);
         assert_eq!(instance.charge_duration, 2);
+        assert_eq!(instance.charge_progress(1000, 4), 0.5);
 
         instance.resume(0);
-        assert_eq!(instance.charge_progress(1), 0.5);
-        assert_eq!(instance.charge_progress(2), 1.0);
+        assert_eq!(instance.charge_progress(1, 4), 0.75);
+        assert_eq!(instance.charge_progress(2, 4), 1.0);
     }
 }

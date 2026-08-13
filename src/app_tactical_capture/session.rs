@@ -1520,7 +1520,7 @@ fn validate_houses_and_slots(
             && ai.side_index == expected_ai_country.side_index()
             && ai_country == expected_ai_country.country_name()
             && ai.difficulty == HouseDifficulty::Easy
-            && ai.credits == profile.launch.options.starting_credits,
+            && ai.credits == profile.launch.options.starting_credits * 2,
         "Computer1 HouseState differs from sealed slot"
     );
     ensure!(
