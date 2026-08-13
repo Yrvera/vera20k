@@ -1339,7 +1339,13 @@ fn quicksave(state: &mut AppState) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, now);
+    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(
+        sim,
+        map_hash,
+        rules_h,
+        &sim.session.map_name,
+        now,
+    );
     if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
         log::error!("Quicksave: failed to create saves dir: {e}");
         return;
@@ -1387,7 +1393,8 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let bytes = crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, now);
+    let bytes =
+        crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, raw_name, now);
     if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
         log::error!("Save As: failed to create saves dir: {e}");
         return;
@@ -1416,14 +1423,13 @@ fn sanitize_save_name(raw: &str) -> String {
         return String::new();
     }
     let mut out = String::with_capacity(trimmed.len());
-    for ch in trimmed.chars() {
+    for ch in trimmed.chars().take(64) {
         match ch {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => out.push('_'),
             c if c.is_control() => out.push('_'),
             c => out.push(c),
         }
     }
-    out.truncate(64);
     out
 }
 
@@ -1468,6 +1474,8 @@ mod wheel_tests {
 #[cfg(test)]
 mod save_name_tests {
     use super::sanitize_save_name;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::Simulation;
 
     #[test]
     fn empty_returns_empty() {
@@ -1504,6 +1512,19 @@ mod save_name_tests {
     fn trims_whitespace() {
         assert_eq!(sanitize_save_name("  hello  "), "hello");
     }
+
+    #[test]
+    fn gsi_17_02_unicode_filename_cap_preserves_exact_envelope_description() {
+        let raw_description = "保存".repeat(40);
+        let filename_part = sanitize_save_name(&raw_description);
+        assert_eq!(filename_part.chars().count(), 64);
+
+        let mut sim = Simulation::new();
+        sim.session.map_name = "OFFICIAL.MAP".to_string();
+        let bytes = GameSnapshot::save_validated(&sim, 1, 2, &raw_description, 3);
+        let header = GameSnapshot::read_header(&bytes).expect("current VERA header");
+        assert_eq!(header.description, raw_description);
+    }
 }
 
 /// Find the most recent `.bin` save file in the saves directory.
@@ -1532,6 +1553,71 @@ fn quickload(state: &mut AppState) {
         }
     };
     load_save_file(state, &path);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+enum NativeTiberiumPostLoadError {
+    #[error("active overlay type registry is unavailable")]
+    MissingOverlayRegistry,
+    #[error("restored simulation has no overlay grid")]
+    MissingOverlayGrid,
+    #[error("restored simulation has no resolved terrain cache")]
+    MissingResolvedTerrain,
+}
+
+/// Replace serialized native Tiberium queues with the cell-derived load result.
+///
+/// gamemd-derived: `TiberiumClass::Load @ 0x00721E80` discards both dynamic
+/// queue stores and starts both timers due at the loaded frame; its tail calls
+/// `InitGrowthQueues_All @ 0x00722D00` then `InitSpreadQueues_All @ 0x00722240`.
+/// The spread initializer tests the ground `CellClass` object list, never the
+/// bridge/AltObject list. Rust keeps queue storage native-shaped but rebuilds it
+/// from the already restored cell authorities before the simulation is admitted.
+fn rebuild_native_tiberium_after_snapshot_load(
+    sim: &mut crate::sim::world::Simulation,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    rules: &crate::rules::ruleset::RuleSet,
+) -> Result<crate::sim::ore_growth::NativeTiberiumRebuildStats, NativeTiberiumPostLoadError> {
+    let overlay_registry =
+        overlay_registry.ok_or(NativeTiberiumPostLoadError::MissingOverlayRegistry)?;
+    let overlay_grid = sim
+        .overlay_grid
+        .as_ref()
+        .ok_or(NativeTiberiumPostLoadError::MissingOverlayGrid)?;
+    let resolved_terrain = sim
+        .resolved_terrain
+        .as_ref()
+        .ok_or(NativeTiberiumPostLoadError::MissingResolvedTerrain)?;
+
+    let mut source_object_cells: std::collections::BTreeSet<(u16, u16)> = sim
+        .production
+        .terrain_objects
+        .values()
+        .filter(|terrain| terrain.is_live())
+        .map(crate::sim::terrain_object::TerrainObjectState::cell)
+        .collect();
+    source_object_cells.extend(
+        sim.substrate
+            .occupancy
+            .occupied_cells_on_layer(crate::sim::movement::locomotor::MovementLayer::Ground),
+    );
+
+    let grows = sim.production.ore_growth_config.grows;
+    let spreads = sim.production.ore_growth_config.spreads;
+    let current_frame = sim.session.binary_frame;
+    Ok(sim
+        .production
+        .ore_growth_state
+        .rebuild_native_tiberium_queues_from_overlays(
+            overlay_grid,
+            overlay_registry,
+            &rules.tiberium_types,
+            Some(resolved_terrain),
+            &source_object_cells,
+            grows,
+            spreads,
+            current_frame,
+        ))
 }
 
 /// Load a save file by path. Used by both quickload and the save/load panel.
@@ -1590,9 +1676,10 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Resolve every saved stable-ID slot before rebuilding derived runtime
     // indexes. A malformed object graph never replaces the active simulation.
     let mut sim = snapshot.sim;
-    // Native Main/MapGen RNG objects are process globals, not ScenarioClass
-    // save fields. Loading replaces Scenario state but retains these cursors.
-    sim.retain_process_rngs_from(current_sim);
+    // This is the in-scenario Load Game route: native load reseeds
+    // Scenario->Random after reading ScenarioClass, while the process-global
+    // seed and Main/MapGen cursors retain their live values.
+    sim.retain_in_scenario_process_state_from(current_sim);
     if let Err(error) = sim.restore_after_snapshot_load() {
         log::error!("Load: restoration validation failed: {error}");
         return;
@@ -1606,12 +1693,33 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         effect_frame_counts,
         terrain_costs,
     );
-    if let Some(overlay_registry) = state.overlay_registry.as_ref() {
-        crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
-            &mut sim,
-            overlay_registry,
+    let Some(overlay_registry) = state.overlay_registry.as_ref() else {
+        log::error!(
+            "Load: restoration validation failed: {}",
+            NativeTiberiumPostLoadError::MissingOverlayRegistry
         );
-    }
+        return;
+    };
+    crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
+        &mut sim,
+        overlay_registry,
+    );
+    let native_tiberium_stats = match rebuild_native_tiberium_after_snapshot_load(
+        &mut sim,
+        Some(overlay_registry),
+        rules,
+    ) {
+        Ok(stats) => stats,
+        Err(error) => {
+            log::error!("Load: restoration validation failed: {error}");
+            return;
+        }
+    };
+    log::info!(
+        "Load: rebuilt native tiberium queues ({} growth, {} spread)",
+        native_tiberium_stats.growth_entries,
+        native_tiberium_stats.spread_entries,
+    );
     sim.resolve_type_handles(rules);
     if let Err(error) = sim.restore_move_sound_handles_after_load(rules) {
         log::error!("Load: restoration validation failed: {error}");
@@ -1652,6 +1760,369 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
 
     state.last_loaded_save_path = Some(path.to_path_buf());
     log::info!("Load: restored simulation from {}", path.display());
+}
+
+#[cfg(test)]
+mod gsi_17_04_tests {
+    use super::{NativeTiberiumPostLoadError, rebuild_native_tiberium_after_snapshot_load};
+    use crate::map::entities::EntityCategory;
+    use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::map::resolved_terrain::ResolvedTerrainGrid;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::ore_growth::{OreGrowthConfig, OreGrowthState};
+    use crate::sim::overlay_grid::OverlayGrid;
+    use crate::sim::rng::SimRng;
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
+    use crate::sim::world::Simulation;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn tiberium_fixture() -> (RuleSet, OverlayTypeRegistry, u8) {
+        let ini = IniFile::from_str(
+            "[General]\n\
+             TiberiumGrows=yes\n\
+             TiberiumSpreads=yes\n\
+             [InfantryTypes]\n\
+             [VehicleTypes]\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [Warheads]\n\
+             [OverlayTypes]\n\
+             0=ORE\n\
+             [ORE]\n\
+             Tiberium=yes\n\
+             [Tiberiums]\n\
+             0=Riparius\n\
+             [Riparius]\n\
+             Image=1\n\
+             Growth=17\n\
+             GrowthPercentage=1\n\
+             Spread=23\n\
+             SpreadPercentage=1\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("post-load tiberium fixture rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let ore_id = registry.id_for_name("ORE").expect("fixture ORE id");
+        (rules, registry, ore_id)
+    }
+
+    fn base_sim(ore_id: u8, cells: &[(u16, u16)]) -> Simulation {
+        let mut sim = Simulation::with_seed(0x17_04);
+        sim.session.binary_frame = 91;
+        sim.session.map_width = 4;
+        sim.session.map_height = 1;
+        sim.production.ore_growth_config = OreGrowthConfig {
+            grows: true,
+            spreads: true,
+            growth_rate_seconds: 1,
+        };
+        sim.production.ore_growth_state = OreGrowthState::new(4, 1);
+        let mut overlays = OverlayGrid::new(4, 1);
+        for &(rx, ry) in cells {
+            overlays.place_overlay(rx, ry, ore_id, 5);
+        }
+        sim.overlay_grid = Some(overlays);
+        // The production cache is supplied externally after deserialization.
+        // A synthetic empty grid makes every fixture cell use the native flat
+        // fallback without duplicating ResolvedTerrainCell construction here.
+        sim.resolved_terrain = Some(ResolvedTerrainGrid::from_cells(0, 0, Vec::new()));
+        sim
+    }
+
+    fn add_marked_unit(sim: &mut Simulation, cell: (u16, u16), on_bridge: bool) {
+        let stable_id = sim.allocate_stable_id();
+        let owner = sim.interner.intern("Americans");
+        let type_ref = sim.interner.intern("TESTUNIT");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            stable_id,
+            cell.0,
+            cell.1,
+            0,
+            0,
+            owner,
+            Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        entity.lifecycle.in_limbo = false;
+        entity.lifecycle.cell_marked = true;
+        entity.in_logic_vector = true;
+        entity.on_bridge = on_bridge;
+        entity.occupancy_enter_order = sim.substrate.next_occupancy_enter_order.next();
+        sim.substrate.entities.insert(entity);
+        sim.substrate
+            .logic
+            .try_push(stable_id)
+            .expect("fixture LogicClass registration");
+    }
+
+    fn add_live_terrain_object(sim: &mut Simulation, cell: (u16, u16)) {
+        let stable_id = sim.allocate_stable_id();
+        let type_ref = sim.interner.intern("TREE01");
+        sim.production.terrain_objects.insert(
+            stable_id,
+            TerrainObjectState {
+                stable_id,
+                in_logic_vector: true,
+                type_ref,
+                rx: cell.0,
+                ry: cell.1,
+                health: 100,
+                max_health: 100,
+                occupation_bits: 7,
+                lifecycle: TerrainObjectLifecycle::Live,
+            },
+        );
+        sim.production.terrain_object_cells.insert(cell, stable_id);
+        sim.substrate
+            .logic
+            .try_push(stable_id)
+            .expect("fixture TerrainClass Logic registration");
+    }
+
+    fn seed_serialized_queue_state(
+        sim: &mut Simulation,
+        rules: &RuleSet,
+        registry: &OverlayTypeRegistry,
+        ore_cell: (u16, u16),
+    ) {
+        sim.production
+            .ore_growth_state
+            .reset_native_tiberium_classes(rules.tiberium_types.len(), 7);
+        let overlay = sim.overlay_grid.as_ref().expect("fixture overlay grid");
+        let resolved = sim.resolved_terrain.as_ref();
+        let mut throwaway_rng = SimRng::new(13);
+        assert!(
+            sim.production
+                .ore_growth_state
+                .add_native_growth_queue_cell(
+                    overlay,
+                    registry,
+                    &rules.tiberium_types,
+                    ore_cell.0,
+                    ore_cell.1,
+                    41,
+                    &mut throwaway_rng,
+                )
+                .is_some()
+        );
+        assert!(
+            sim.production
+                .ore_growth_state
+                .add_native_spread_queue_cell(
+                    overlay,
+                    registry,
+                    &rules.tiberium_types,
+                    resolved,
+                    &BTreeSet::new(),
+                    ore_cell.0,
+                    ore_cell.1,
+                    41,
+                    true,
+                    &mut throwaway_rng,
+                )
+                .is_some()
+        );
+    }
+
+    fn restore_before_tiberium_rebuild(
+        sim: &Simulation,
+        registry: &OverlayTypeRegistry,
+    ) -> Simulation {
+        let resolved = sim
+            .resolved_terrain
+            .clone()
+            .expect("fixture resolved terrain cache");
+        let bytes = GameSnapshot::save(sim, 0, 0, "gsi_17_04", 0);
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("stable references and substrate re-register");
+        restored.rebuild_caches_after_load(
+            resolved,
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
+            &mut restored,
+            registry,
+        );
+        restored
+    }
+
+    #[test]
+    fn gsi_17_04_postload_rebuild_discards_saved_queues_and_uses_ground_object_list() {
+        let (rules, registry, ore_id) = tiberium_fixture();
+        let mut sim = base_sim(ore_id, &[(0, 0), (1, 0), (2, 0), (3, 0)]);
+        add_marked_unit(&mut sim, (1, 0), false);
+        add_marked_unit(&mut sim, (2, 0), true);
+        add_live_terrain_object(&mut sim, (3, 0));
+        seed_serialized_queue_state(&mut sim, &rules, &registry, (0, 0));
+
+        let mut restored = restore_before_tiberium_rebuild(&sim, &registry);
+        let saved_class = &restored
+            .production
+            .ore_growth_state
+            .native_tiberium_state()
+            .classes[0];
+        assert_eq!(saved_class.growth_timer.start_frame, 7);
+        assert_ne!(saved_class.growth_heap[0].priority_bits, 0.0f32.to_bits());
+        assert_eq!(
+            restored
+                .substrate
+                .occupancy
+                .count_on_layer(1, 0, MovementLayer::Ground),
+            1
+        );
+        assert_eq!(
+            restored
+                .substrate
+                .occupancy
+                .count_on_layer(2, 0, MovementLayer::Bridge),
+            1
+        );
+
+        let rng_before = restored.rng_state();
+        let stats =
+            rebuild_native_tiberium_after_snapshot_load(&mut restored, Some(&registry), &rules)
+                .expect("all production rebuild dependencies");
+        assert_eq!(
+            restored.rng_state(),
+            rng_before,
+            "load rebuild draws no RNG"
+        );
+        assert_eq!(stats.growth_entries, 4);
+        assert_eq!(stats.spread_entries, 2);
+
+        let class = &restored
+            .production
+            .ore_growth_state
+            .native_tiberium_state()
+            .classes[0];
+        assert_eq!(class.growth_timer.start_frame, 91);
+        assert_eq!(class.growth_timer.interval, 0);
+        assert_eq!(class.spread_timer.start_frame, 91);
+        assert_eq!(class.spread_timer.interval, 0);
+        assert!(
+            class
+                .growth_heap
+                .iter()
+                .all(|entry| entry.priority_bits == 0.0f32.to_bits())
+        );
+        assert!(
+            class
+                .spread_heap
+                .iter()
+                .all(|entry| entry.priority_bits == 0.0f32.to_bits())
+        );
+        let growth_cells: BTreeSet<_> = class
+            .growth_heap
+            .iter()
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        let spread_cells: BTreeSet<_> = class
+            .spread_heap
+            .iter()
+            .map(|entry| (entry.rx, entry.ry))
+            .collect();
+        assert_eq!(
+            growth_cells,
+            BTreeSet::from([(0, 0), (1, 0), (2, 0), (3, 0)])
+        );
+        assert_eq!(spread_cells, BTreeSet::from([(0, 0), (2, 0)]));
+        assert_eq!(class.growth_bitmap, growth_cells);
+        assert_eq!(class.spread_bitmap, spread_cells);
+    }
+
+    #[test]
+    fn gsi_17_04_first_resumed_pass_reloads_type_growth_and_spread_intervals() {
+        let (rules, registry, ore_id) = tiberium_fixture();
+        let mut sim = base_sim(ore_id, &[(0, 0)]);
+        seed_serialized_queue_state(&mut sim, &rules, &registry, (0, 0));
+        let mut restored = restore_before_tiberium_rebuild(&sim, &registry);
+        rebuild_native_tiberium_after_snapshot_load(&mut restored, Some(&registry), &rules)
+            .expect("all production rebuild dependencies");
+        restored.resolve_type_handles(&rules);
+
+        let timer_before = restored
+            .production
+            .ore_growth_state
+            .native_tiberium_state()
+            .classes[0]
+            .growth_timer;
+        assert_eq!((timer_before.start_frame, timer_before.interval), (91, 0));
+        restored.advance_tick(
+            &[],
+            Some(&rules),
+            &BTreeMap::new(),
+            None,
+            Some(&registry),
+            67,
+        );
+
+        let class = &restored
+            .production
+            .ore_growth_state
+            .native_tiberium_state()
+            .classes[0];
+        assert_eq!(
+            (class.growth_timer.start_frame, class.growth_timer.interval),
+            (91, 17)
+        );
+        assert_eq!(
+            (class.spread_timer.start_frame, class.spread_timer.interval),
+            (91, 23)
+        );
+        assert_eq!(restored.session.binary_frame, 92);
+    }
+
+    #[test]
+    fn gsi_17_04_missing_dependency_rejects_postload_queue_admission() {
+        let (rules, registry, ore_id) = tiberium_fixture();
+        let mut sim = base_sim(ore_id, &[(0, 0)]);
+        sim.production
+            .ore_growth_state
+            .reset_native_tiberium_classes(rules.tiberium_types.len(), 7);
+
+        assert_eq!(
+            rebuild_native_tiberium_after_snapshot_load(&mut sim, None, &rules),
+            Err(NativeTiberiumPostLoadError::MissingOverlayRegistry)
+        );
+        let overlays = sim.overlay_grid.take();
+        assert_eq!(
+            rebuild_native_tiberium_after_snapshot_load(&mut sim, Some(&registry), &rules),
+            Err(NativeTiberiumPostLoadError::MissingOverlayGrid)
+        );
+        sim.overlay_grid = overlays;
+        sim.resolved_terrain = None;
+        assert_eq!(
+            rebuild_native_tiberium_after_snapshot_load(&mut sim, Some(&registry), &rules),
+            Err(NativeTiberiumPostLoadError::MissingResolvedTerrain)
+        );
+        let class = &sim
+            .production
+            .ore_growth_state
+            .native_tiberium_state()
+            .classes[0];
+        assert_eq!(
+            (class.growth_timer.start_frame, class.growth_timer.interval),
+            (7, 0)
+        );
+    }
 }
 
 /// The modifier bits a hotkey press carries.

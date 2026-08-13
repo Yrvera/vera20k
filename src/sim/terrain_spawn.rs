@@ -30,9 +30,7 @@ use crate::sim::ore_growth::OreGrowthState;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::rng::SimRng;
-use crate::sim::terrain_object::{
-    TerrainObjectState, mark_terrain_raw_occupation, next_terrain_object_id,
-};
+use crate::sim::terrain_object::{TerrainObjectState, mark_terrain_raw_occupation};
 use crate::sim::tiberium::{
     NewTiberiumAdmission, TiberiumPlacementObjectContext, can_place_new_tiberium,
     live_cell_rejects_tiberium, resolved_cell_accepts_tiberium,
@@ -333,33 +331,122 @@ pub fn tick_terrain_spawners_stateful(
 
     let spawner_cells: BTreeSet<(u16, u16)> = spawners.keys().copied().collect();
     for &cell in &spawner_cells {
-        let Some(spawner) = spawners.get_mut(&cell) else {
-            continue;
-        };
-        if spawner.tick(ctx.rng) != TerrainSpawnerTick::SpawnDue {
-            continue;
-        }
-
-        try_spawn_ore(
-            cell,
-            ctx.resource_nodes,
-            ctx.overlay_grid.as_deref_mut(),
-            ctx.default_ore_overlay_id,
-            &spawner_cells,
-            ctx.resolved_terrain,
-            ctx.overlay_registry,
-            ctx.path_grid,
-            ctx.ore_growth_state.as_deref_mut(),
-            ctx.rules.map(|rules| &rules.tiberium_types),
-            ctx.binary_frame,
-            ctx.radar_dirty_cells.as_deref_mut(),
-            ctx.radar_dirty_generation.as_deref_mut(),
-            ctx.tactical_dirty_cells.as_deref_mut(),
-            ctx.spawning_terrain_cells,
-            live_object_context(ctx.entities, ctx.occupancy, ctx.rules, ctx.interner),
-            ctx.rng,
-        );
+        tick_terrain_spawner_one_inner(spawners, cell, &spawner_cells, &mut ctx);
     }
+}
+
+/// Dispatch one TerrainClass AI slot through the same spawner state machine as
+/// the compatibility whole-map adapter.
+pub(crate) fn tick_terrain_spawner_stateful_one(
+    spawners: &mut BTreeMap<(u16, u16), TerrainSpawnerState>,
+    cell: (u16, u16),
+    spawner_cells: &BTreeSet<(u16, u16)>,
+    mut ctx: TerrainSpawnContext<'_>,
+) {
+    tick_terrain_spawner_one_inner(spawners, cell, spawner_cells, &mut ctx);
+}
+
+fn tick_terrain_spawner_one_inner(
+    spawners: &mut BTreeMap<(u16, u16), TerrainSpawnerState>,
+    cell: (u16, u16),
+    spawner_cells: &BTreeSet<(u16, u16)>,
+    ctx: &mut TerrainSpawnContext<'_>,
+) {
+    let Some(spawner) = spawners.get_mut(&cell) else {
+        return;
+    };
+    if spawner.tick(ctx.rng) != TerrainSpawnerTick::SpawnDue {
+        return;
+    }
+
+    try_spawn_ore(
+        cell,
+        ctx.resource_nodes,
+        ctx.overlay_grid.as_deref_mut(),
+        ctx.default_ore_overlay_id,
+        spawner_cells,
+        ctx.resolved_terrain,
+        ctx.overlay_registry,
+        ctx.path_grid,
+        ctx.ore_growth_state.as_deref_mut(),
+        ctx.rules.map(|rules| &rules.tiberium_types),
+        ctx.binary_frame,
+        ctx.radar_dirty_cells.as_deref_mut(),
+        ctx.radar_dirty_generation.as_deref_mut(),
+        ctx.tactical_dirty_cells.as_deref_mut(),
+        ctx.spawning_terrain_cells,
+        live_object_context(ctx.entities, ctx.occupancy, ctx.rules, ctx.interner),
+        ctx.rng,
+    );
+}
+
+/// Dispatch the TerrainClass AI leaf for one current LogicClass slot.
+pub(crate) fn tick_terrain_object_ai(
+    sim: &mut crate::sim::world::Simulation,
+    stable_id: u64,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    path_grid: Option<&PathGrid>,
+    overlay_registry: Option<&OverlayTypeRegistry>,
+    spawner_cells: Option<&BTreeSet<(u16, u16)>>,
+) {
+    let Some(cell) = sim
+        .production
+        .terrain_objects
+        .get(&stable_id)
+        .filter(|terrain| terrain.is_live())
+        .map(TerrainObjectState::cell)
+    else {
+        return;
+    };
+    if !sim.production.terrain_spawners.contains_key(&cell) {
+        return;
+    }
+    let Some(rules) = rules else {
+        return;
+    };
+
+    let fallback_spawner_cells;
+    let spawner_cells = if let Some(spawner_cells) = spawner_cells {
+        spawner_cells
+    } else {
+        fallback_spawner_cells = sim
+            .production
+            .terrain_spawners
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        &fallback_spawner_cells
+    };
+    let production = &mut sim.production;
+    tick_terrain_spawner_stateful_one(
+        &mut production.terrain_spawners,
+        cell,
+        spawner_cells,
+        TerrainSpawnContext::new(
+            &mut production.resource_nodes,
+            sim.overlay_grid.as_mut(),
+            production.default_ore_overlay_id,
+            &mut sim.scenario_rng,
+        )
+        .with_growth_queue(&mut production.ore_growth_state, sim.session.binary_frame)
+        .with_dirty_tracking(
+            &mut sim.radar_terrain_dirty_cells,
+            &mut sim.radar_terrain_dirty_generation,
+            &mut sim.tactical_dirty_cells,
+        )
+        .with_spawning_terrain_cells(&production.tiberium_spawning_terrain_cells)
+        .with_live_object_context(
+            &sim.substrate.entities,
+            &sim.substrate.occupancy,
+            rules,
+            &sim.interner,
+        )
+        .with_validation_context(
+            sim.resolved_terrain.as_ref(),
+            overlay_registry,
+            path_grid,
+        ),
+    );
 }
 
 /// Compatibility shim for current world integration.
@@ -656,11 +743,19 @@ pub fn construct_terrain_objects(
     rules: &crate::rules::ruleset::RuleSet,
     snow_theater: bool,
 ) -> usize {
+    let old_terrain_ids = sim
+        .production
+        .terrain_objects
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    for stable_id in old_terrain_ids {
+        sim.unregister_non_entity_object(stable_id);
+    }
     sim.production.terrain_spawners.clear();
     sim.production.terrain_objects.clear();
     sim.production.terrain_object_cells.clear();
     sim.production.terrain_occupation_bits.clear();
-    sim.production.next_terrain_object_id = 1;
     sim.production.tiberium_spawning_terrain_cells.clear();
 
     let mut constructed = 0usize;
@@ -669,7 +764,10 @@ pub fn construct_terrain_objects(
             continue;
         };
         let type_ref = sim.interner.intern(&obj.name);
-        let stable_id = next_terrain_object_id(&mut sim.production);
+        // TerrainClass construction reaches AbstractClass::AssignUniqueID
+        // @ 0x00410230, which draws from ScenarioClass::NextUniqueID
+        // @ 0x0068BCB0 just like every other modeled runtime object.
+        let stable_id = sim.allocate_stable_id();
         let terrain_state =
             TerrainObjectState::new(stable_id, type_ref, obj.rx, obj.ry, t, snow_theater);
         let occupation_bits = terrain_state.occupation_bits;
@@ -684,6 +782,8 @@ pub fn construct_terrain_objects(
         sim.production
             .terrain_objects
             .insert(stable_id, terrain_state);
+        let registered = sim.register_terrain_object(stable_id);
+        debug_assert!(registered);
         mark_terrain_raw_occupation(
             &mut sim.substrate.raw_cell_occupation,
             (obj.rx, obj.ry),
@@ -1556,22 +1656,24 @@ SpreadPercentage=.06
         assert_eq!(terrain_objects.len(), 1);
         assert_eq!((terrain_objects[0].rx, terrain_objects[0].ry), (10, 5));
 
-        // Build the attacker before snapshotting the shared test interner, so
-        // its owner/type ids resolve inside `sim.interner`.
-        let mut attacker = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        let mut sim = Simulation::new();
+        let attacker_id = sim.allocate_stable_id();
+        let mut attacker = GameEntity::test_default(attacker_id, "MTNK", "Americans", 5, 5);
         attacker.health = Health {
             current: 300,
             max: 300,
         };
         let owner_id = attacker.owner;
-
-        let mut sim = Simulation::new();
+        // `test_default` interns both owner and type through the shared test
+        // interner. Snapshot it only after constructing the entity so those
+        // handles resolve through the Simulation that will execute the order.
         sim.interner = crate::sim::intern::test_interner();
+
         sim.input_delay_ticks = 0;
         sim.resolved_terrain = Some(resolved_grid(64, 64));
         sim.substrate.entities.insert(attacker);
         assert!(matches!(
-            sim.reveal(1),
+            sim.reveal(attacker_id),
             crate::sim::world::RevealOutcome::Revealed { .. }
         ));
 
@@ -1590,7 +1692,7 @@ SpreadPercentage=.06
             owner_id,
             sim.session.tick + 1,
             Command::ForceAttackCell {
-                attacker_id: 1,
+                attacker_id,
                 target_rx: 10,
                 target_ry: 5,
             },
@@ -1600,6 +1702,7 @@ SpreadPercentage=.06
         let mut destroyed = false;
         let mut shots = 0usize;
         let mut targeted = false;
+        let mut last_health = 200;
         for _ in 0..600 {
             let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
             sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
@@ -1607,13 +1710,24 @@ SpreadPercentage=.06
             targeted |= sim
                 .substrate
                 .entities
-                .get(1)
+                .get(attacker_id)
                 .is_some_and(|e| e.attack_target.is_some());
-            let terrain = &sim.production.terrain_objects[&stable_id];
-            damaged |= terrain.health < 200;
-            if terrain.lifecycle == TerrainObjectLifecycle::Destroyed {
-                destroyed = true;
-                break;
+            match sim.production.terrain_objects.get(&stable_id) {
+                Some(terrain) => {
+                    last_health = terrain.health;
+                    damaged |= terrain.health < 200;
+                    if terrain.lifecycle == TerrainObjectLifecycle::Destroyed {
+                        destroyed = true;
+                        break;
+                    }
+                }
+                None => {
+                    // Terminal Terrain follows ObjectClass UnInit: it remains
+                    // resolvable until the common post-frame delete drain, then
+                    // its physical record is finalized in this same advance.
+                    destroyed = true;
+                    break;
+                }
             }
         }
 
@@ -1621,7 +1735,7 @@ SpreadPercentage=.06
             damaged,
             "force-fire on the tree cell must damage the tree \
              (targeted={targeted}, shots={shots}, health={})",
-            sim.production.terrain_objects[&stable_id].health
+            last_health
         );
         assert!(destroyed, "sustained force-fire must destroy the tree");
         assert!(

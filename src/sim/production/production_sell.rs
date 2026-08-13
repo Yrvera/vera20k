@@ -14,7 +14,7 @@ use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::passenger::PassengerRole;
 use crate::sim::pathfinding::cell_entry::{TerrainCheckResult, check_terrain};
 use crate::sim::world::{
-    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation,
+    PlacementEvidence, RevealOutcome, RevealPosition, RevealRequest, Simulation, UninitContext,
 };
 use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
 use crate::util::lepton;
@@ -350,12 +350,16 @@ fn garrison_inside_foundation_fallback(rx: u16, ry: u16, width: u16, height: u16
     )
 }
 
-fn uninit_garrison_passenger_without_exit(sim: &mut Simulation, passenger_id: u64) {
+fn uninit_garrison_passenger_without_exit(
+    sim: &mut Simulation,
+    passenger_id: u64,
+    context: UninitContext<'_>,
+) {
     if let Some(pax) = sim.substrate.entities.get_mut(passenger_id) {
         pax.health.current = 0;
         pax.passenger_role = PassengerRole::None;
     }
-    sim.uninit(passenger_id);
+    sim.uninit_with_context(passenger_id, context);
 }
 
 fn sellbuilding_direct_scatter_handoff(
@@ -495,6 +499,7 @@ fn eject_garrison_passengers_at_edges(
     passenger_ids: &[u64],
     owner_override: Option<InternedId>,
     mode: GarrisonEjectMode,
+    uninit_context: UninitContext<'_>,
 ) -> usize {
     if passenger_ids.is_empty() || width == 0 || height == 0 {
         return 0;
@@ -512,7 +517,7 @@ fn eject_garrison_passengers_at_edges(
 
     let Some((exit_rx, exit_ry)) = exit_cell else {
         for &pax_id in passenger_ids.iter().rev() {
-            uninit_garrison_passenger_without_exit(sim, pax_id);
+            uninit_garrison_passenger_without_exit(sim, pax_id, uninit_context);
         }
         return 0;
     };
@@ -584,6 +589,7 @@ fn eject_garrison_occupants(sim: &mut Simulation, rules: &RuleSet, building_id: 
         &passenger_ids,
         None,
         GarrisonEjectMode::PlayerSell,
+        UninitContext::default(),
     );
 
     // Clear player-sell cargo only. Native SellBuilding is an ejection helper;
@@ -613,6 +619,15 @@ pub fn eject_destruction_garrison(
     rules: &RuleSet,
     event: &DestroyedGarrisonBuilding,
 ) -> usize {
+    eject_destruction_garrison_with_context(sim, rules, event, UninitContext::default())
+}
+
+pub(crate) fn eject_destruction_garrison_with_context(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    event: &DestroyedGarrisonBuilding,
+    uninit_context: UninitContext<'_>,
+) -> usize {
     let passenger_ids = sim
         .substrate
         .entities
@@ -636,6 +651,7 @@ pub fn eject_destruction_garrison(
         &passenger_ids,
         Some(event.owner),
         GarrisonEjectMode::DestructionNoExitRemove,
+        uninit_context,
     )
 }
 
@@ -688,6 +704,7 @@ pub(crate) fn eject_red_hp_garrison(
         &passenger_ids,
         Some(owner),
         GarrisonEjectMode::DestructionNoExitRemove,
+        UninitContext::default(),
     );
 
     if let Some(building) = sim.substrate.entities.get_mut(building_id) {

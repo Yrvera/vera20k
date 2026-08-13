@@ -305,6 +305,12 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         state.queued_order_mode = crate::app_render::OrderMode::Move;
     }
     if let Some(sim) = &mut state.simulation {
+        let queued = queued
+            .into_iter()
+            .filter_map(|envelope| {
+                crate::app_commands::roundtrip_ordinary_local_move(sim, envelope)
+            })
+            .collect::<Vec<_>>();
         sim.pending_commands.extend(queued);
     }
     true

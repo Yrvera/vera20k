@@ -7,6 +7,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::app::AppState;
@@ -50,44 +51,150 @@ fn wall_sell_sound_for_local(
     })
 }
 
-/// Persist the in-memory deterministic diagnostic log.
+struct ReplayLogFlush {
+    path: PathBuf,
+    tick_count: usize,
+}
+
+fn flush_replay_log_to(
+    log_slot: &mut Option<ReplayLog>,
+    session_tick: u64,
+    replays_dir: &Path,
+    unix_secs: u64,
+) -> anyhow::Result<Option<ReplayLogFlush>> {
+    let Some(log) = log_slot.take() else {
+        return Ok(None);
+    };
+    if log.ticks.is_empty() {
+        return Ok(None);
+    }
+
+    let result = (|| {
+        std::fs::create_dir_all(replays_dir)?;
+        let path = replays_dir.join(format!(
+            "replay_tick{session_tick}_{unix_secs}.json"
+        ));
+        log.save(&path)?;
+        Ok(Some(ReplayLogFlush {
+            path,
+            tick_count: log.ticks.len(),
+        }))
+    })();
+
+    if result.is_err() {
+        *log_slot = Some(log);
+    }
+    result
+}
+
+/// Persist and consume the in-memory deterministic diagnostic log.
 ///
 /// The log lives on the sim (`sim.replay_log`) and is appended every tick but
 /// is otherwise dropped when the sim is torn down. Call this on match teardown
 /// so every finished match leaves a rich command+hash trace for desync
 /// diagnosis. This JSON artifact is separate from the fixed native recording
 /// stream in `sim::replay`. No-op when there is no active sim or no recorded
-/// ticks. Writes
+/// ticks. A successful write consumes the log so repeated teardown hooks do
+/// not duplicate it; any failure restores it for a later retry. Writes
 /// `replays/replay_tick{tick}_{unix_secs}.json`.
-pub(crate) fn flush_replay_log(state: &AppState) {
-    let Some(sim) = state.simulation.as_ref() else {
+pub(crate) fn flush_replay_log(state: &mut AppState) {
+    let Some(sim) = state.simulation.as_mut() else {
         return;
     };
-    let Some(log) = sim.replay_log.as_ref() else {
-        return;
-    };
-    if log.ticks.is_empty() {
-        return;
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    if let Err(e) = std::fs::create_dir_all(REPLAYS_DIR) {
-        log::error!("Diagnostic-log flush: failed to create replays dir: {e}");
-        return;
-    }
-    let path = std::path::PathBuf::from(format!(
-        "{REPLAYS_DIR}/replay_tick{}_{}.json",
-        sim.session.tick, now
-    ));
-    match log.save(&path) {
-        Ok(()) => log::info!(
+    match flush_replay_log_to(
+        &mut sim.replay_log,
+        sim.session.tick,
+        Path::new(REPLAYS_DIR),
+        now,
+    ) {
+        Ok(Some(flush)) => log::info!(
             "Deterministic diagnostic log flushed: {} ticks -> {}",
-            log.ticks.len(),
-            path.display()
+            flush.tick_count,
+            flush.path.display()
         ),
+        Ok(None) => {}
         Err(e) => log::error!("Diagnostic-log flush failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod replay_log_flush_tests {
+    use super::flush_replay_log_to;
+    use crate::sim::replay::{ReplayHeader, ReplayLog};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn test_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vera20k-gsi-17-08-{}-{label}-{}",
+            std::process::id(),
+            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn sample_log() -> ReplayLog {
+        let mut log = ReplayLog::new(ReplayHeader {
+            version: 71,
+            tick_hz: 15,
+            seed: 0x1234,
+            map_name: "gsi_17_08.map".to_owned(),
+            rules_hash: 0x5678,
+        });
+        log.record_tick(41, Vec::new(), 0x9abc);
+        log
+    }
+
+    #[test]
+    fn gsi_17_08_success_writes_decodable_json_once_and_consumes_log() {
+        let root = test_path("success");
+        let mut slot = Some(sample_log());
+
+        let flush = flush_replay_log_to(&mut slot, 41, &root, 1_234)
+            .expect("flush succeeds")
+            .expect("nonempty log flushes");
+        assert!(slot.is_none());
+        assert_eq!(flush.tick_count, 1);
+        assert_eq!(flush.path, root.join("replay_tick41_1234.json"));
+
+        let decoded = ReplayLog::load(&flush.path).expect("written JSON decodes");
+        assert_eq!(decoded.header.seed, 0x1234);
+        assert_eq!(decoded.header.map_name, "gsi_17_08.map");
+        assert_eq!(decoded.ticks.len(), 1);
+        assert_eq!(decoded.ticks[0].tick, 41);
+        assert_eq!(decoded.ticks[0].state_hash, 0x9abc);
+
+        assert!(
+            flush_replay_log_to(&mut slot, 41, &root, 1_235)
+                .expect("repeat is a no-op")
+                .is_none()
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn gsi_17_08_create_and_write_failures_restore_log_for_retry() {
+        let create_blocker = test_path("create-failure");
+        std::fs::write(&create_blocker, b"not a directory").unwrap();
+        let mut slot = Some(sample_log());
+        assert!(flush_replay_log_to(&mut slot, 41, &create_blocker, 2_000).is_err());
+        assert_eq!(slot.as_ref().unwrap().ticks[0].state_hash, 0x9abc);
+        std::fs::remove_file(&create_blocker).unwrap();
+
+        let root = test_path("write-failure");
+        let output = root.join("replay_tick41_2001.json");
+        std::fs::create_dir_all(&output).unwrap();
+        let mut slot = Some(sample_log());
+        assert!(flush_replay_log_to(&mut slot, 41, &root, 2_001).is_err());
+        assert_eq!(slot.as_ref().unwrap().header.seed, 0x1234);
+        assert_eq!(slot.as_ref().unwrap().ticks.len(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 
@@ -203,7 +310,7 @@ fn announce_local_state_evas(state: &mut AppState) {
 /// so this fires exactly once. Loss is keyed off `is_defeated` (the flag set
 /// first and unconditionally in `check_defeat`) so it stays correct regardless
 /// of the `has_lost` companion.
-fn check_local_player_match_end(state: &mut AppState) {
+fn check_local_player_match_end(state: &mut AppState, now_ms: u64) {
     if !matches!(state.screen, GameScreen::InGame) {
         return;
     }
@@ -240,7 +347,8 @@ fn check_local_player_match_end(state: &mut AppState) {
     };
     log::info!("Match end for local player '{owner}': {title}");
     state.finished_game_count = state.finished_game_count.saturating_add(1);
-    state.score_screen = Some(build_score_screen_model(state));
+    let elapsed_seconds = state.scenario_elapsed_clock.stop(now_ms);
+    state.score_screen = Some(build_score_screen_model(state, elapsed_seconds));
     state.score_shell_state = Default::default();
     state.screen = GameScreen::MissionResult {
         title: title.to_string(),
@@ -283,7 +391,10 @@ fn score_row_display_name(
 /// (the same accumulator the ore deposit path feeds). A house that survived the
 /// match then has its displayed score raised by a randomised victory bonus, drawn
 /// from the scenario stream exactly as gamemd draws it at this moment.
-fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::ScoreScreenModel {
+fn build_score_screen_model(
+    state: &mut AppState,
+    elapsed_seconds: i32,
+) -> crate::ui::score_shell::ScoreScreenModel {
     use crate::ui::score_shell::{ScoreRow, ScoreScreenModel};
 
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
@@ -355,12 +466,6 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
             })
             .unwrap_or_default()
     };
-    let elapsed_seconds = state
-        .simulation
-        .as_ref()
-        .map(|sim| (sim.session.tick / u64::from(crate::app_types::SIM_TICK_HZ)) as u32)
-        .unwrap_or(0);
-
     let mut rows: Vec<ScoreRow> = Vec::new();
     let Some(sim) = state.simulation.as_mut() else {
         return ScoreScreenModel::default();
@@ -419,7 +524,10 @@ fn build_score_screen_model(state: &mut AppState) -> crate::ui::score_shell::Sco
         // heading belongs to the multiplayer session type.
         title_key: "GUI:SkirmishScore",
         game_number: state.finished_game_count,
-        elapsed_seconds,
+        // The clock performs native's signed division first. The existing UI
+        // model is unsigned and applies the native 99:59:59 ceiling, so keep
+        // the pathological rollover representation local to this boundary.
+        elapsed_seconds: elapsed_seconds as u32,
         rows,
     }
 }
@@ -641,7 +749,7 @@ pub fn modal_pump_should_advance_sim(
 /// only, and offline campaign and skirmish freeze the world identically behind a
 /// modal, so it reports `Skirmish`. When networking lands, this reads the live
 /// game-mode discriminator and maps it via `SessionMode::from_game_mode`.
-fn current_session_mode(_state: &AppState) -> SessionMode {
+pub(crate) fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
@@ -786,7 +894,11 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
         // After the sim advances, surface a win/loss result screen for the
         // local player — the sim computes the per-house outcome flags but
         // nothing else consumes them, so a match would otherwise end invisibly.
-        check_local_player_match_end(state);
+        let score_clock_now_ms = match mode {
+            RuntimeAdvanceMode::WallClock { now_ms } => now_ms,
+            RuntimeAdvanceMode::ExactOneStep => monotonic_frame_pacer_ms(state, Instant::now()),
+        };
+        check_local_player_match_end(state, score_clock_now_ms);
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);
@@ -2216,6 +2328,7 @@ mod tests {
         let mut interner = StringInterner::default();
         let tree = TerrainObjectState {
             stable_id: 1,
+            in_logic_vector: false,
             type_ref: interner.intern("TREE01"),
             rx: 0,
             ry: 0,

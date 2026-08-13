@@ -56,7 +56,8 @@ impl UpscalePass {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
-        let bind_group = create_bind_group(gpu, &bgl, &color_texture, &sampler, &params_buffer);
+        let bind_group =
+            create_bind_group(&gpu.device, &bgl, &color_texture, &sampler, &params_buffer);
         let pipeline = create_pipeline(gpu, &bgl);
 
         Self {
@@ -101,6 +102,35 @@ impl UpscalePass {
 
     /// Draw the upscale pass: sample the intermediate texture and write to `target_view`.
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target_view: &wgpu::TextureView) {
+        self.draw_with_bind_group(encoder, target_view, &self.bind_group);
+    }
+
+    /// Draw the same presentation filter from an explicitly retained source.
+    /// Used only for a requested screenshot of the previously presented
+    /// cursor-free composition; ordinary frames keep the persistent bind group.
+    pub(crate) fn draw_texture(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::Texture,
+        target_view: &wgpu::TextureView,
+    ) {
+        let bind_group = create_bind_group(
+            device,
+            &self.bgl,
+            source,
+            &self.sampler,
+            &self.params_buffer,
+        );
+        self.draw_with_bind_group(encoder, target_view, &bind_group);
+    }
+
+    fn draw_with_bind_group(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        bind_group: &wgpu::BindGroup,
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Upscale Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -117,7 +147,7 @@ impl UpscalePass {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..6, 0..1);
     }
 }
@@ -198,14 +228,14 @@ fn create_bgl(gpu: &GpuContext) -> wgpu::BindGroupLayout {
 }
 
 fn create_bind_group(
-    gpu: &GpuContext,
+    device: &wgpu::Device,
     bgl: &wgpu::BindGroupLayout,
     color_texture: &wgpu::Texture,
     sampler: &wgpu::Sampler,
     params_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     let view = color_texture.create_view(&Default::default());
-    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Upscale BG"),
         layout: bgl,
         entries: &[

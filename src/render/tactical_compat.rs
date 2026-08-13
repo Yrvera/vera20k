@@ -10,7 +10,6 @@ use crate::util::native_x87::{NativeF64Bits, NativeX87Error, X87Chop53, X87Value
 
 pub use super::native_surface_format::DirectDrawPixelFormat;
 
-const Z_CORRECTION_THRESHOLD: i32 = 728;
 const PARTICLE_Z_BIAS: i32 = 0x32;
 const A_PASSTHROUGH_THRESHOLD: u16 = 127;
 
@@ -220,18 +219,7 @@ fn projection_half_term(value: i32, factor: i32) -> i32 {
 }
 
 pub fn adjust_for_z(world_z: i32, multiplier: NativeF64Bits) -> Result<i32, NativeX87Error> {
-    let product = X87Chop53::mul(
-        X87Chop53::load_i32(world_z),
-        X87Chop53::load_f64(multiplier)?,
-    );
-    let correction = X87Chop53::load_i32(if world_z >= Z_CORRECTION_THRESHOLD {
-        1
-    } else {
-        0
-    });
-    let corrected = X87Chop53::add(product, correction);
-    let biased = X87Chop53::add(corrected, X87Chop53::load_f64(NativeF64Bits::HALF)?);
-    Ok(X87Chop53::ftol_i64(biased)? as i32)
+    crate::util::native_x87::adjust_for_z_with_multiplier(world_z, multiplier)
 }
 
 pub fn z_candidate(origin_term: i16, bottom_term: i16, screen_y: i32, adjust_for_z: i32) -> i32 {
@@ -405,6 +393,20 @@ mod tests {
         assert_eq!(
             project_spark_point(IVec3::new(-1, 0, 0), frame).unwrap(),
             IVec2::new(0, 0),
+        );
+    }
+
+    #[test]
+    fn adjust_for_z_retains_injected_multiplier_contract() {
+        assert_eq!(adjust_for_z(1_500, ZERO_MULTIPLIER).unwrap(), 1);
+        assert_eq!(adjust_for_z(-400, ZERO_MULTIPLIER).unwrap(), 0);
+        assert_eq!(
+            adjust_for_z(
+                256,
+                crate::util::native_x87::STANDARD_ADJUST_FOR_Z_MULTIPLIER,
+            )
+            .unwrap(),
+            37,
         );
     }
 

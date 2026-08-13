@@ -59,7 +59,7 @@ use crate::rules::missile_spawn::MissileFamily;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::TargetKind;
 use crate::sim::intern::InternedId;
-use crate::sim::world::Simulation;
+use crate::sim::world::{Simulation, UninitContext};
 
 /// Frames the manager waits before its very first AI pass
 /// (`UpdateTimer.Duration = 0x14` at construction).
@@ -1431,6 +1431,14 @@ pub fn clear_all_spawn_targets(sim: &mut Simulation, owner_id: u64) {
 }
 
 pub fn kill_all_spawns(sim: &mut Simulation, owner_id: u64) {
+    kill_all_spawns_with_context(sim, owner_id, UninitContext::default());
+}
+
+pub(crate) fn kill_all_spawns_with_context(
+    sim: &mut Simulation,
+    owner_id: u64,
+    context: UninitContext<'_>,
+) {
     let Some((slots, regen_rate)) = sim.substrate.entities.get(owner_id).and_then(|e| {
         e.spawn_manager
             .as_ref()
@@ -1462,7 +1470,7 @@ pub fn kill_all_spawns(sim: &mut Simulation, owner_id: u64) {
                 SpawnSlotState::ReadyDocked
                 | SpawnSlotState::Reloading
                 | SpawnSlotState::KamikazeWait => {
-                    sim.uninit(child_id);
+                    sim.uninit_with_context(child_id, context);
                 }
                 // Aircraft already out: released, not destroyed.
                 SpawnSlotState::InFlight

@@ -44,6 +44,88 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
+fn move_sound_test_rules(configured: bool) -> RuleSet {
+    let move_sound = if configured {
+        "MoveSound=TestMove\n"
+    } else {
+        ""
+    };
+    RuleSet::from_ini(&IniFile::from_str(&format!(
+        "[InfantryTypes]\n\
+         [VehicleTypes]\n0=TESTUNIT\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [TESTUNIT]\nStrength=100\nArmor=light\nSpeed=6\n{move_sound}"
+    )))
+    .expect("MoveSound rules")
+}
+
+fn move_sound_test_sim() -> Simulation {
+    let mut sim = Simulation::with_seed(0x1020_3040);
+    let mut entity = GameEntity::test_default(1, "TESTUNIT", "Americans", 4, 4);
+    entity.type_ref = sim.interner.intern("TESTUNIT");
+    entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    sim.substrate.entities.insert(entity);
+    sim
+}
+
+fn trigger_move_sound_tail(sim: &mut Simulation, rules: &RuleSet) {
+    let mut before = sim.movement_sound_probe(1).expect("test Foot exists");
+    before.facing = before.facing.wrapping_add(1);
+    sim.tick_move_sound_after_process(1, Some(before), Some(rules));
+}
+
+#[test]
+fn move_sound_start_consumes_exactly_one_main_draw() {
+    let configured_rules = move_sound_test_rules(true);
+    let mut sim = move_sound_test_sim();
+    let scenario_before = sim.scenario_rng.state();
+    let mapgen_before = sim.mapgen_rng.state();
+    let mut expected_main = sim.main_rng.clone();
+
+    // The current RuleSet resolves one MoveSound string. Retail still calls
+    // Random::Next before modulo-by-one, so a fresh start consumes one raw draw.
+    expected_main.next_u32();
+    trigger_move_sound_tail(&mut sim, &configured_rules);
+    assert_eq!(sim.main_rng.state(), expected_main.state());
+    assert_eq!(sim.scenario_rng.state(), scenario_before);
+    assert_eq!(sim.mapgen_rng.state(), mapgen_before);
+    assert!(sim.substrate.entities.get(1).unwrap().move_sound_active);
+    assert_eq!(
+        sim.substrate.entities.get(1).unwrap().move_sound_countdown,
+        3
+    );
+    assert!(matches!(
+        sim.sound_events.last(),
+        Some(SimSoundEvent::AnimationStarted { anim_id: 1, .. })
+    ));
+
+    // Qualifying again while the handle is active only reloads the grace
+    // counter; it does not choose another sample.
+    trigger_move_sound_tail(&mut sim, &configured_rules);
+    assert_eq!(sim.main_rng.state(), expected_main.state());
+
+    // A fresh start after stop chooses again and therefore draws once again.
+    sim.release_move_sound(1);
+    expected_main.next_u32();
+    trigger_move_sound_tail(&mut sim, &configured_rules);
+    assert_eq!(sim.main_rng.state(), expected_main.state());
+    assert_eq!(sim.scenario_rng.state(), scenario_before);
+    assert_eq!(sim.mapgen_rng.state(), mapgen_before);
+
+    // No configured MoveSound never enters the native vector-pick branch.
+    let no_sound_rules = move_sound_test_rules(false);
+    let mut silent = move_sound_test_sim();
+    let silent_scenario = silent.scenario_rng.state();
+    let silent_main = silent.main_rng.state();
+    let silent_mapgen = silent.mapgen_rng.state();
+    trigger_move_sound_tail(&mut silent, &no_sound_rules);
+    assert_eq!(silent.scenario_rng.state(), silent_scenario);
+    assert_eq!(silent.main_rng.state(), silent_main);
+    assert_eq!(silent.mapgen_rng.state(), silent_mapgen);
+    assert!(!silent.substrate.entities.get(1).unwrap().move_sound_active);
+}
+
 fn gsi_04_07_wall_sell_rules(
     first_unsellable: bool,
     with_sound: bool,
@@ -847,9 +929,7 @@ fn gsi_04_11_bullet_ore_reduction_precedes_outer_crater_anim_start() {
     let detonation = crate::sim::projectile::ProjectileDetonation {
         projectile_id: 1,
         source_id: crate::sim::combat::RAD_NO_ATTACKER,
-        target: crate::sim::projectile::ProjectileTarget::Cell(
-            crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
-        ),
+        target: crate::sim::projectile::ProjectileTarget::Cell { rx: 5, ry: 5 },
         impact: crate::sim::projectile::ProjectileCoord::new(5 * 256 + 128, 5 * 256 + 128, 0),
         payload: crate::sim::projectile::ProjectilePayload {
             base_damage: 100,
@@ -1328,6 +1408,7 @@ fn gsi_04_10_terrain_object(
 ) -> crate::sim::terrain_object::TerrainObjectState {
     crate::sim::terrain_object::TerrainObjectState {
         stable_id,
+        in_logic_vector: false,
         type_ref: sim.interner.intern("TREE01"),
         rx: cell.0,
         ry: cell.1,

@@ -752,11 +752,15 @@ mod tests {
     #[test]
     fn persistent_sonic_wave_produces_geometry() {
         let (mut sim, _rules, _art, _events) = fire_effect_fixture();
-        sim.waves.spawn(crate::sim::wave::Wave::new(
-            0,
-            crate::sim::projectile::ProjectileCoord::new(10 * 256, 10 * 256, 0),
-            crate::sim::projectile::ProjectileCoord::new(14 * 256, 11 * 256, 0),
-        ));
+        let wave_id = sim.allocate_stable_id();
+        sim.admit_wave(
+            wave_id,
+            crate::sim::wave::Wave::new(
+                0,
+                crate::sim::projectile::ProjectileCoord::new(10 * 256, 10 * 256, 0),
+                crate::sim::projectile::ProjectileCoord::new(14 * 256, 11 * 256, 0),
+            ),
+        );
 
         let waves = build_weapon_wave_visuals(&sim, None);
         assert_eq!(waves.len(), 1);

@@ -19,11 +19,13 @@ fn hash_projectile_target(
             0u8.hash(hasher);
             id.hash(hasher);
         }
-        crate::sim::projectile::ProjectileTarget::Cell(position) => {
+        crate::sim::projectile::ProjectileTarget::Cell { rx, ry } => {
             1u8.hash(hasher);
-            position.x.hash(hasher);
-            position.y.hash(hasher);
-            position.z.hash(hasher);
+            rx.hash(hasher);
+            ry.hash(hasher);
+        }
+        crate::sim::projectile::ProjectileTarget::None => {
+            2u8.hash(hasher);
         }
     }
 }
@@ -231,10 +233,10 @@ impl Simulation {
     }
 
     fn hash_projectiles(&self, hasher: &mut impl Hasher) {
-        self.projectiles.next_id().hash(hasher);
         self.projectiles.len().hash(hasher);
         for (&id, projectile) in self.projectiles.iter() {
             id.hash(hasher);
+            projectile.id.hash(hasher);
             projectile.source_id.hash(hasher);
             projectile.position.x.hash(hasher);
             projectile.position.y.hash(hasher);
@@ -265,10 +267,10 @@ impl Simulation {
     }
 
     fn hash_waves(&self, hasher: &mut impl Hasher) {
-        self.waves.next_id().hash(hasher);
         self.waves.len().hash(hasher);
         for (&id, wave) in self.waves.iter() {
             id.hash(hasher);
+            wave.id.hash(hasher);
             wave.wave_type.hash(hasher);
             wave.source.hash(hasher);
             wave.target.hash(hasher);
@@ -553,7 +555,6 @@ impl Simulation {
             ry.hash(hasher);
             stable_id.hash(hasher);
         }
-        self.production.next_terrain_object_id.hash(hasher);
         for (&(rx, ry), &bits) in &self.production.terrain_occupation_bits {
             rx.hash(hasher);
             ry.hash(hasher);

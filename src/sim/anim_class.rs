@@ -2017,6 +2017,9 @@ mod tests {
             .current = 50;
         sim.update_building_damage_fire(building_id, &rules);
         assert!(sim.substrate.pending_delete.is_empty());
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // AnimStore/scheduler persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
         let expected_order = sim.live_object_order_snapshot();
         let bytes = bincode::serialize(&sim).expect("serialize sim with AnimStore");

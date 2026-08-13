@@ -90,6 +90,9 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
     let startup = result.startup;
     let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();
+    // A loaded world is not timed until the launch handoff actually reaches
+    // InGame (SpawnPick remains outside the scenario elapsed span).
+    state.scenario_elapsed_clock.reset();
     state.tile_atlas = result.tile_atlas;
     crate::app_loading::clear_loading_state(state);
     state.map_basic = result.basic;
@@ -396,6 +399,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                         state.loaded_startup = Some(prepared);
                         state.rust_l0_receipt = Some(receipt);
                         state.active_loading_correlation = None;
+                        let now_ms = app_sim_tick::monotonic_frame_pacer_ms(
+                            state,
+                            std::time::Instant::now(),
+                        );
+                        state.scenario_elapsed_clock.start(now_ms);
                         state.screen = GameScreen::InGame;
                         state
                             .offline_skirmish_runtime
@@ -417,6 +425,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                 state.active_loading_correlation = None;
                 state.loaded_startup = None;
                 state.rust_l0_receipt = None;
+                let now_ms =
+                    app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+                state.scenario_elapsed_clock.start(now_ms);
                 state.screen = GameScreen::InGame;
                 if returns_scenario_rng_to_offline_shell {
                     state

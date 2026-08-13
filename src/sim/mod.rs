@@ -128,6 +128,8 @@ pub mod selection;
 
 // --- Snapshot serialization (mid-match save/load) ---
 pub mod snapshot;
+#[cfg(test)]
+mod stable_identity_tests;
 
 // --- Particle systems (visual + damage particle effects: smoke, gas, fire) ---
 pub mod particles;

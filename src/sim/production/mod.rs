@@ -42,7 +42,9 @@ pub use self::production_queue::{
     tick_production, tick_production_with_overlay_registry,
 };
 pub(crate) use self::production_refinery::spawn_completed_refinery_free_units;
-pub(crate) use self::production_sell::eject_red_hp_garrison;
+pub(crate) use self::production_sell::{
+    eject_destruction_garrison_with_context, eject_red_hp_garrison,
+};
 pub use self::production_sell::{
     eject_destruction_garrison, eject_destruction_survivors, sell_building, tick_repairs,
     toggle_repair,

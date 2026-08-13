@@ -5,6 +5,7 @@
 //! with LogicClass and the display array bucket returned by `InWhichLayer`.
 
 use std::collections::BTreeMap;
+use std::hash::Hash;
 
 use crate::sim::intern::InternedId;
 use crate::sim::projectile::ProjectileCoord;
@@ -51,9 +52,12 @@ pub enum WaveColorMode {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Wave {
     pub id: u64,
+    /// LogicClass membership is reconstructed from the serialized mixed order.
+    #[serde(skip)]
+    pub in_logic_vector: bool,
     pub wave_type: u8,
     pub source: ProjectileCoord,
     pub target: ProjectileCoord,
@@ -76,6 +80,7 @@ impl Wave {
     pub const fn new(wave_type: u8, source: ProjectileCoord, target: ProjectileCoord) -> Self {
         Self {
             id: 0,
+            in_logic_vector: false,
             wave_type,
             source,
             target,
@@ -165,20 +170,25 @@ pub struct WaveTickResult {
 /// without inventing a cross-display-bucket render order.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WaveStore {
-    next_id: u64,
     waves: BTreeMap<u64, Wave>,
+}
+
+impl std::hash::Hash for Wave {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.wave_type.hash(state);
+        self.source.hash(state);
+        self.target.hash(state);
+        self.lifetime.hash(state);
+        self.intensity.hash(state);
+        self.recorded_cells.hash(state);
+        self.damage_payload.hash(state);
+    }
 }
 
 impl WaveStore {
     pub fn new() -> Self {
-        Self {
-            next_id: 1,
-            waves: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn next_id(&self) -> u64 {
-        self.next_id
+        Self::default()
     }
 
     pub fn len(&self) -> usize {
@@ -189,10 +199,28 @@ impl WaveStore {
         self.waves.iter()
     }
 
-    pub fn spawn(&mut self, mut wave: Wave) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&u64, &mut Wave)> {
+        self.waves.iter_mut()
+    }
+
+    pub(crate) fn get(&self, id: u64) -> Option<&Wave> {
+        self.waves.get(&id)
+    }
+
+    pub(crate) fn get_mut(&mut self, id: u64) -> Option<&mut Wave> {
+        self.waves.get_mut(&id)
+    }
+
+    pub(crate) fn remove(&mut self, id: u64) -> Option<Wave> {
+        self.waves.remove(&id)
+    }
+
+    // AbstractClass::AssignUniqueID @ 0x00410230 obtains this identity from
+    // ScenarioClass::NextUniqueID @ 0x0068BCB0; the store never owns a second
+    // allocator.
+    pub fn spawn(&mut self, id: u64, mut wave: Wave) -> u64 {
         wave.id = id;
+        wave.in_logic_vector = false;
         self.waves.insert(id, wave);
         id
     }
@@ -201,23 +229,37 @@ impl WaveStore {
     /// exposed to the caller instead of approximating CellClass effects here.
     pub fn advance(&mut self) -> Vec<WaveDamageRequest> {
         let mut sonic_damage = Vec::new();
-        self.waves.retain(|&id, wave| {
-            let result = wave.advance();
-            // Native type 0 damages its vector before the lifetime decrement,
-            // including the tick that changes lifetime 0 to -1 and uninitializes.
-            if result.damage_recorded_cells
-                && let Some(payload) = wave.damage_payload
-            {
-                sonic_damage.push(WaveDamageRequest {
-                    wave_id: id,
-                    payload,
-                    recorded_cells: wave.recorded_cells.clone(),
-                    wave_z: wave.target.z,
-                });
+        let ids: Vec<u64> = self.waves.keys().copied().collect();
+        for id in ids {
+            let Some((request, alive)) = self.advance_one(id) else {
+                continue;
+            };
+            if let Some(request) = request {
+                sonic_damage.push(request);
             }
-            result.alive
-        });
+            if !alive {
+                self.waves.remove(&id);
+            }
+        }
         sonic_damage
+    }
+
+    pub(crate) fn advance_one(&mut self, id: u64) -> Option<(Option<WaveDamageRequest>, bool)> {
+        let wave = self.waves.get_mut(&id)?;
+        let result = wave.advance();
+        // Native type 0 damages its vector before the lifetime decrement,
+        // including the tick that changes lifetime 0 to -1 and uninitializes.
+        let request = if result.damage_recorded_cells {
+            wave.damage_payload.map(|payload| WaveDamageRequest {
+                wave_id: id,
+                payload,
+                recorded_cells: wave.recorded_cells.clone(),
+                wave_z: wave.target.z,
+            })
+        } else {
+            None
+        };
+        Some((request, result.alive))
     }
 }
 
@@ -280,7 +322,7 @@ mod tests {
     #[test]
     fn store_keeps_waves_until_their_post_decrement_expiry() {
         let mut store = WaveStore::new();
-        store.spawn(Wave {
+        store.spawn(1, Wave {
             lifetime: 1,
             ..Wave::new(3, point(), point())
         });
@@ -307,7 +349,7 @@ mod tests {
             WaveRecordedCell { rx: 6, ry: 7 },
         ]);
         let mut store = WaveStore::new();
-        let id = store.spawn(wave);
+        let id = store.spawn(1, wave);
 
         let requests = store.advance();
         assert_eq!(store.len(), 0);

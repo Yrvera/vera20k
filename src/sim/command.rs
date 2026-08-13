@@ -23,6 +23,26 @@ const COMMAND_RECORD_PROCESSED_FLAG: u8 = 0x01;
 
 /// Native `EventClass` opcode for selling one wall-overlay cell.
 pub const SELL_WALL_AT_CELL_OPCODE: u8 = 0x17;
+/// Native `EventClass` opcode for a MegaMission order envelope.
+pub const MEGAMISSION_OPCODE: u8 = 0x04;
+
+const MEGAMISSION_SOURCE_VALUE_OFFSET: usize = 0;
+const MEGAMISSION_SOURCE_KIND_OFFSET: usize = 4;
+const MEGAMISSION_ACTION_OFFSET: usize = 5;
+const MEGAMISSION_SECONDARY_VALUE_OFFSET: usize = 7;
+const MEGAMISSION_SECONDARY_KIND_OFFSET: usize = 11;
+const MEGAMISSION_DESTINATION_VALUE_OFFSET: usize = 12;
+const MEGAMISSION_DESTINATION_KIND_OFFSET: usize = 16;
+const MEGAMISSION_AUXILIARY_VALUE_OFFSET: usize = 17;
+const MEGAMISSION_AUXILIARY_KIND_OFFSET: usize = 21;
+const MEGAMISSION_PLANNING_OFFSET: usize = 22;
+const MEGAMISSION_OWNED_PAYLOAD_LEN: usize = 23;
+
+const ABSTRACT_OBJECT_TARGET_KIND: u8 = 0x34;
+const CELL_TARGET_KIND: u8 = 0x0b;
+const NULL_TARGET_KIND: u8 = 0;
+const MOVE_ACTION: i16 = 2;
+const CELL_TOKEN_ROW_STRIDE: i32 = 1000;
 
 /// A malformed fixed-width synchronized command record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -31,6 +51,14 @@ pub enum CommandRecordError {
     InvalidLength { expected: usize, actual: usize },
     #[error("command payload can contain at most {max} bytes, got {actual}")]
     PayloadTooLong { max: usize, actual: usize },
+}
+
+/// A cell which cannot make the native `x + y * 1000` round trip exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("cell ({x}, {y}) is not exactly decodable from its native target token")]
+pub struct MegaMissionCellTokenError {
+    pub x: i16,
+    pub y: i16,
 }
 
 /// Native-width synchronized command envelope.
@@ -264,6 +292,124 @@ impl SellWallAtCellRecord {
     }
 }
 
+/// Typed view of the ordinary Move form of native MegaMission opcode `0x04`.
+///
+/// `EventClass__BuildMegaMissionEnvelope` at `gamemd.exe` `0x004C6860`
+/// writes only the 23 payload bytes named here. In particular, it does not
+/// clear the processed flag or any payload tail bytes in the destination
+/// `EventClass`, so [`MegaMissionMoveRecord::write_into`] preserves them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MegaMissionMoveRecord {
+    pub house_id: i8,
+    pub frame: i32,
+    pub source_id: i32,
+    pub target_x: i16,
+    pub target_y: i16,
+}
+
+impl MegaMissionMoveRecord {
+    /// Write the exact active-YR ordinary Move fields into an existing record.
+    ///
+    /// The native null-issuer arm writes only opcode zero, house `-1`, and the
+    /// frame. It returns before validating or touching any MegaMission payload.
+    pub fn write_into(self, record: &mut CommandRecord) -> Result<(), MegaMissionCellTokenError> {
+        record.set_issue_header(MEGAMISSION_OPCODE, i32::from(self.house_id), self.frame);
+        if self.house_id < 0 {
+            return Ok(());
+        }
+
+        let destination = encode_megamission_cell_token(self.target_x, self.target_y)?;
+        let payload = &mut record.payload_mut()[..MEGAMISSION_OWNED_PAYLOAD_LEN];
+        payload[MEGAMISSION_SOURCE_VALUE_OFFSET..MEGAMISSION_SOURCE_KIND_OFFSET]
+            .copy_from_slice(&self.source_id.to_le_bytes());
+        payload[MEGAMISSION_SOURCE_KIND_OFFSET] = ABSTRACT_OBJECT_TARGET_KIND;
+        payload[MEGAMISSION_ACTION_OFFSET..MEGAMISSION_SECONDARY_VALUE_OFFSET]
+            .copy_from_slice(&MOVE_ACTION.to_le_bytes());
+        payload[MEGAMISSION_SECONDARY_VALUE_OFFSET..MEGAMISSION_SECONDARY_KIND_OFFSET]
+            .copy_from_slice(&0_i32.to_le_bytes());
+        payload[MEGAMISSION_SECONDARY_KIND_OFFSET] = NULL_TARGET_KIND;
+        payload[MEGAMISSION_DESTINATION_VALUE_OFFSET..MEGAMISSION_DESTINATION_KIND_OFFSET]
+            .copy_from_slice(&destination.to_le_bytes());
+        payload[MEGAMISSION_DESTINATION_KIND_OFFSET] = CELL_TARGET_KIND;
+        payload[MEGAMISSION_AUXILIARY_VALUE_OFFSET..MEGAMISSION_AUXILIARY_KIND_OFFSET]
+            .copy_from_slice(&self.source_id.to_le_bytes());
+        payload[MEGAMISSION_AUXILIARY_KIND_OFFSET] = NULL_TARGET_KIND;
+        payload[MEGAMISSION_PLANNING_OFFSET] = 0;
+        Ok(())
+    }
+
+    /// Decode only the verified ordinary Move form. Planning/attack-move and
+    /// every other token/action shape remain outside this contract.
+    pub fn decode(record: &CommandRecord) -> Option<Self> {
+        if record.opcode() != MEGAMISSION_OPCODE || record.house_id() < 0 {
+            return None;
+        }
+        let payload = record.payload();
+        let source_id = i32::from_le_bytes(
+            payload[MEGAMISSION_SOURCE_VALUE_OFFSET..MEGAMISSION_SOURCE_KIND_OFFSET]
+                .try_into()
+                .ok()?,
+        );
+        let action = i16::from_le_bytes(
+            payload[MEGAMISSION_ACTION_OFFSET..MEGAMISSION_SECONDARY_VALUE_OFFSET]
+                .try_into()
+                .ok()?,
+        );
+        let secondary = i32::from_le_bytes(
+            payload[MEGAMISSION_SECONDARY_VALUE_OFFSET..MEGAMISSION_SECONDARY_KIND_OFFSET]
+                .try_into()
+                .ok()?,
+        );
+        let destination = i32::from_le_bytes(
+            payload[MEGAMISSION_DESTINATION_VALUE_OFFSET..MEGAMISSION_DESTINATION_KIND_OFFSET]
+                .try_into()
+                .ok()?,
+        );
+        let auxiliary = i32::from_le_bytes(
+            payload[MEGAMISSION_AUXILIARY_VALUE_OFFSET..MEGAMISSION_AUXILIARY_KIND_OFFSET]
+                .try_into()
+                .ok()?,
+        );
+        if payload[MEGAMISSION_SOURCE_KIND_OFFSET] != ABSTRACT_OBJECT_TARGET_KIND
+            || action != MOVE_ACTION
+            || secondary != 0
+            || payload[MEGAMISSION_SECONDARY_KIND_OFFSET] != NULL_TARGET_KIND
+            || payload[MEGAMISSION_DESTINATION_KIND_OFFSET] != CELL_TARGET_KIND
+            || auxiliary != source_id
+            || payload[MEGAMISSION_AUXILIARY_KIND_OFFSET] != NULL_TARGET_KIND
+            || payload[MEGAMISSION_PLANNING_OFFSET] != 0
+        {
+            return None;
+        }
+        let (target_x, target_y) = decode_megamission_cell_token(destination)?;
+        Some(Self {
+            house_id: record.house_id(),
+            frame: record.frame_stamp(),
+            source_id,
+            target_x,
+            target_y,
+        })
+    }
+}
+
+fn encode_megamission_cell_token(x: i16, y: i16) -> Result<i32, MegaMissionCellTokenError> {
+    let token = i32::from(x) + i32::from(y) * CELL_TOKEN_ROW_STRIDE;
+    if decode_megamission_cell_token(token) == Some((x, y)) {
+        Ok(token)
+    } else {
+        Err(MegaMissionCellTokenError { x, y })
+    }
+}
+
+fn decode_megamission_cell_token(token: i32) -> Option<(i16, i16)> {
+    // Native signed division truncates toward zero, as Rust's integer `/` and
+    // `%` do. Re-encoding is checked by the writer because mixed-sign or
+    // |x|>=1000 coordinates do not have a unique target-token representation.
+    let y = i16::try_from(token / CELL_TOKEN_ROW_STRIDE).ok()?;
+    let x = i16::try_from(token % CELL_TOKEN_ROW_STRIDE).ok()?;
+    (i32::from(x) + i32::from(y) * CELL_TOKEN_ROW_STRIDE == token).then_some((x, y))
+}
+
 impl AsRef<[u8]> for CommandRecord {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
@@ -481,8 +627,121 @@ impl CommandEnvelope {
 mod tests {
     use super::{
         COMMAND_RECORD_LEN, COMMAND_RECORD_PAYLOAD_LEN, CommandRecord, CommandRecordError,
+        MEGAMISSION_OPCODE, MegaMissionCellTokenError, MegaMissionMoveRecord,
         SELL_WALL_AT_CELL_OPCODE, SellWallAtCellRecord,
     };
+
+    #[test]
+    fn gsi_16_01_megamission_move_writes_exact_fields_and_preserves_tail() {
+        let mut bytes = [0xcc; COMMAND_RECORD_LEN];
+        bytes[1] = 0xa4;
+        let mut record = CommandRecord::decode_exact(&bytes).unwrap();
+        let typed = MegaMissionMoveRecord {
+            house_id: 3,
+            frame: 0x1234_5678,
+            source_id: 0x0102_0304,
+            target_x: 34,
+            target_y: 12,
+        };
+
+        typed.write_into(&mut record).unwrap();
+
+        let bytes = record.as_bytes();
+        assert_eq!(bytes[0], MEGAMISSION_OPCODE);
+        assert_eq!(bytes[1], 0xa4, "the codec does not own queue flags");
+        assert_eq!(bytes[2], 3);
+        assert_eq!(&bytes[3..7], &0x1234_5678_i32.to_le_bytes());
+        assert_eq!(&bytes[7..11], &0x0102_0304_i32.to_le_bytes());
+        assert_eq!(bytes[11], 0x34);
+        assert_eq!(&bytes[12..14], &2_i16.to_le_bytes());
+        assert_eq!(&bytes[14..18], &0_i32.to_le_bytes());
+        assert_eq!(bytes[18], 0);
+        assert_eq!(&bytes[19..23], &12_034_i32.to_le_bytes());
+        assert_eq!(bytes[23], 0x0b);
+        assert_eq!(&bytes[24..28], &0x0102_0304_i32.to_le_bytes());
+        assert_eq!(bytes[28], 0);
+        assert_eq!(bytes[29], 0);
+        assert!(bytes[30..].iter().all(|&byte| byte == 0xcc));
+        assert_eq!(MegaMissionMoveRecord::decode(&record), Some(typed));
+    }
+
+    #[test]
+    fn gsi_16_01_negative_issuer_leaves_flags_and_payload_untouched() {
+        let mut bytes = [0xcc; COMMAND_RECORD_LEN];
+        bytes[1] = 0x5a;
+        let mut record = CommandRecord::decode_exact(&bytes).unwrap();
+
+        MegaMissionMoveRecord {
+            house_id: -1,
+            frame: -17,
+            source_id: i32::MAX,
+            target_x: i16::MAX,
+            target_y: i16::MIN,
+        }
+        .write_into(&mut record)
+        .unwrap();
+
+        assert_eq!(record.opcode(), 0);
+        assert_eq!(record.flags(), 0x5a);
+        assert_eq!(record.house_id(), -1);
+        assert_eq!(record.frame_stamp(), -17);
+        assert!(record.payload().iter().all(|&byte| byte == 0xcc));
+    }
+
+    #[test]
+    fn gsi_16_01_signed_cell_tokens_require_an_exact_native_roundtrip() {
+        for (x, y) in [(999, i16::MAX), (-999, i16::MIN), (-999, 0), (0, 0)] {
+            let mut record = CommandRecord::decode_exact(&[0; COMMAND_RECORD_LEN]).unwrap();
+            let typed = MegaMissionMoveRecord {
+                house_id: 0,
+                frame: 1,
+                source_id: 7,
+                target_x: x,
+                target_y: y,
+            };
+            typed.write_into(&mut record).unwrap();
+            assert_eq!(MegaMissionMoveRecord::decode(&record), Some(typed));
+        }
+
+        let mut record = CommandRecord::decode_exact(&[0; COMMAND_RECORD_LEN]).unwrap();
+        assert_eq!(
+            MegaMissionMoveRecord {
+                house_id: 0,
+                frame: 1,
+                source_id: 7,
+                target_x: 1000,
+                target_y: 0,
+            }
+            .write_into(&mut record),
+            Err(MegaMissionCellTokenError { x: 1000, y: 0 })
+        );
+    }
+
+    #[test]
+    fn gsi_16_01_megamission_move_rejects_wrong_tokens_action_and_planning() {
+        let mut valid = CommandRecord::decode_exact(&[0; COMMAND_RECORD_LEN]).unwrap();
+        MegaMissionMoveRecord {
+            house_id: 0,
+            frame: 1,
+            source_id: 7,
+            target_x: 10,
+            target_y: 20,
+        }
+        .write_into(&mut valid)
+        .unwrap();
+
+        for (offset, value) in [(4, 0x33), (11, 1), (16, 0x0a), (21, 1), (22, 1)] {
+            let mut invalid = valid.clone();
+            invalid.payload_mut()[offset] = value;
+            assert_eq!(MegaMissionMoveRecord::decode(&invalid), None);
+        }
+        let mut wrong_action = valid.clone();
+        wrong_action.payload_mut()[5..7].copy_from_slice(&3_i16.to_le_bytes());
+        assert_eq!(MegaMissionMoveRecord::decode(&wrong_action), None);
+        let mut wrong_repeat = valid.clone();
+        wrong_repeat.payload_mut()[17..21].copy_from_slice(&8_i32.to_le_bytes());
+        assert_eq!(MegaMissionMoveRecord::decode(&wrong_repeat), None);
+    }
 
     #[test]
     fn gsi_04_07_wall_sell_raw_record_golden_and_signed_roundtrip() {

@@ -159,8 +159,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // collision, Wave, Cell infantry-owner, fog/sensor, and cloak-owner substrates
 // into every hash schema. This fixture does not exercise those producers; the
 // shift is the intentional explicit-zero/empty composition change.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0x12A2_84A0_B3DF_1BF1;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x62B2_F6DC_98FC_AB46;
+// Re-baselined 2026-08-13 after GSI-05.01 replaced the ProjectileStore,
+// WaveStore, and ProductionState local next-ID sources with the shared global
+// `ObjectSubstrate::next_stable_object_id`. The shared source remains hashed;
+// removing the three obsolete local counter folds shifts all compositions.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xD19A_5923_2626_4D75;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9FC5_56E7_137A_3181;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -240,7 +244,8 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x62B2_F6DC_98FC_AB46;
 /// schema/behaviour split for all three of this fixture's constants is written
 /// out at `SLICE6_PRE_LIFECYCLE_V28_HASH`.
 // Current-schema value from the same 2026-08-11 measurement above.
-const SLICE6_BASELINE_HASH: u64 = 0x4CA9_2817_C656_735C;
+// Re-baselined 2026-08-13 for the same global-ID hash-composition change above.
+const SLICE6_BASELINE_HASH: u64 = 0x4EE7_714E_D842_A621;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

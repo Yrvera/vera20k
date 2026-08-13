@@ -75,7 +75,11 @@ pub(crate) enum SaveLoadAction {
 
 /// Scan the saves directory and collect entries with valid headers.
 fn scan_saves() -> Vec<SaveEntry> {
-    let Ok(dir) = std::fs::read_dir(SAVES_DIR) else {
+    scan_saves_in(std::path::Path::new(SAVES_DIR))
+}
+
+fn scan_saves_in(saves_dir: &std::path::Path) -> Vec<SaveEntry> {
+    let Ok(dir) = std::fs::read_dir(saves_dir) else {
         return Vec::new();
     };
     let mut entries: Vec<SaveEntry> = Vec::new();
@@ -96,6 +100,72 @@ fn scan_saves() -> Vec<SaveEntry> {
     // Most recent first.
     entries.sort_by(|a, b| b.header.save_timestamp.cmp(&a.header.save_timestamp));
     entries
+}
+
+#[cfg(test)]
+mod gsi_17_02_tests {
+    use super::{save_row_main_text, scan_saves_in};
+    use crate::sim::snapshot::GameSnapshot;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn gsi_17_02_description_survives_filename_change_and_drives_list_text() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "vera20k-gsi-17-02-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_dir).expect("create isolated save-list fixture");
+
+        let mut sim = Simulation::new();
+        sim.session.map_name = "OFFICIAL.MAP".to_string();
+        let bytes = GameSnapshot::save_validated(&sim, 1, 2, "Northern ridge", 3);
+        let original_path = test_dir.join("save_original.bin");
+        let renamed_path = test_dir.join("completely_different_name.bin");
+        std::fs::write(&original_path, bytes).expect("write save fixture");
+        std::fs::rename(&original_path, &renamed_path).expect("rename save fixture");
+
+        let entries = scan_saves_in(&test_dir);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, renamed_path);
+        assert_eq!(entries[0].header.description, "Northern ridge");
+        assert_eq!(save_row_main_text(&entries[0].header), "Northern ridge");
+
+        std::fs::remove_dir_all(&test_dir).expect("remove isolated save-list fixture");
+    }
+
+    #[test]
+    fn gsi_17_02_empty_description_falls_back_to_unicode_safe_map_name() {
+        let mut sim = Simulation::new();
+        sim.session.map_name = "地图地图地图地图地图地图地图地图地图地图".to_string();
+        let bytes = GameSnapshot::save_validated(&sim, 1, 2, "", 3);
+        let header = GameSnapshot::read_header(&bytes).expect("current header");
+
+        assert_eq!(
+            save_row_main_text(&header),
+            "地图地图地图地图地图地图地图地图地图..."
+        );
+    }
+}
+
+fn save_row_main_text(header: &GameSnapshotHeader) -> String {
+    const MAX_VISIBLE_CHARS: usize = 18;
+
+    let text = if header.description.is_empty() {
+        &header.map_name
+    } else {
+        &header.description
+    };
+    let mut chars = text.chars();
+    let prefix: String = chars.by_ref().take(MAX_VISIBLE_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
 }
 
 /// Format a Unix timestamp with the user's Windows short-date and time formats.
@@ -322,7 +392,7 @@ pub(crate) fn draw_save_load_panel(
                                 egui::vec2(SAVE_ROW_MAIN_WIDTH, SAVE_ROW_HEIGHT),
                             ),
                             egui::Label::new(
-                                egui::RichText::new("Map")
+                                egui::RichText::new("Description")
                                     .size(12.0)
                                     .strong()
                                     .color(palette.text_muted),
@@ -378,11 +448,7 @@ pub(crate) fn draw_save_load_panel(
                                             let origin = columns.left_top();
 
                                             // Native main-text column.
-                                            let map_label = if entry.header.map_name.len() > 18 {
-                                                format!("{}...", &entry.header.map_name[..18])
-                                            } else {
-                                                entry.header.map_name.clone()
-                                            };
+                                            let description = save_row_main_text(&entry.header);
                                             ui.put(
                                                 egui::Rect::from_min_size(
                                                     egui::pos2(
@@ -395,7 +461,7 @@ pub(crate) fn draw_save_load_panel(
                                                     ),
                                                 ),
                                                 egui::Label::new(
-                                                    egui::RichText::new(map_label)
+                                                    egui::RichText::new(description)
                                                         .size(13.0)
                                                         .color(palette.text),
                                                 ),

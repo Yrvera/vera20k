@@ -22,7 +22,8 @@ use crate::app_list_maps::{
 use crate::app_skirmish::{
     PreloadedBattleStartPlan, apply_explicit_skirmish_launch_session,
     apply_preloaded_battle_launch_session, build_overlay_atlas_from_map,
-    house_color_map_for_launch_session, seed_skirmish_opening_if_needed,
+    apply_skirmish_ai_opening_credits, house_color_map_for_launch_session,
+    seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
 
@@ -2156,6 +2157,16 @@ pub(crate) fn load_map_from_initial(
 
     if let (Some(sim), Some(grid)) = (&mut simulation, path_grid.as_ref()) {
         sim.rebuild_zone_grid(grid);
+    }
+
+    // Active YR applies the AI-only opening grant from
+    // `ScenarioClass__Post_Map_Init @ 0x00686890` after starting-force setup and
+    // before tick 0. Only an explicit launch session owns generated participants;
+    // campaign/scenario HouseState must not pass through this stock-Battle rule.
+    if skirmish_launch_session.is_some()
+        && let Some(sim) = &mut simulation
+    {
+        apply_skirmish_ai_opening_credits(sim);
     }
 
     // gamemd `Post_Map_Init` step 3: with the lobby Crates option on (the stock

@@ -1431,6 +1431,19 @@ impl OccupancyGrid {
             .map_or(0, |occ| occ.count_on(layer))
     }
 
+    /// Cells whose selected native object list has at least one member.
+    ///
+    /// This exposes cell identity, not occupant order; callers that need the
+    /// literal list must continue through [`Self::get`] and `iter_layer`.
+    pub(crate) fn occupied_cells_on_layer(
+        &self,
+        layer: MovementLayer,
+    ) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.cells
+            .iter()
+            .filter_map(move |(&cell, occupants)| (!occupants.is_empty_on(layer)).then_some(cell))
+    }
+
     /// Check if a specific entity is in a specific cell.
     pub fn contains_entity(&self, rx: u16, ry: u16, entity_id: u64) -> bool {
         self.cells

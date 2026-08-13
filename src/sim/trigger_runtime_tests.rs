@@ -313,37 +313,47 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
     );
     assert!(original.trigger_runtime.globals_set.contains(&13));
 
-    original.projectiles.spawn(ProjectileSpawn {
-        source_id: 99,
-        origin: ProjectileCoord::new(0, 0, 0),
-        target: ProjectileTarget::Cell(ProjectileCoord::new(1024, 0, 0)),
-        initial_target_position: ProjectileCoord::new(1024, 0, 0),
-        payload: ProjectilePayload {
-            base_damage: 40,
-            warhead: crate::sim::intern::InternedId::from_index(0),
-            weapon: crate::sim::intern::InternedId::from_index(0),
-            owner: crate::sim::intern::InternedId::from_index(0),
+    let projectile_id = original.allocate_stable_id();
+    original.admit_projectile(
+        projectile_id,
+        ProjectileSpawn {
+            source_id: crate::sim::combat::RAD_NO_ATTACKER,
+            origin: ProjectileCoord::new(0, 0, 0),
+            target: ProjectileTarget::Cell { rx: 4, ry: 0 },
+            initial_target_position: ProjectileCoord::new(1024, 0, 0),
+            payload: ProjectilePayload {
+                base_damage: 40,
+                warhead: crate::sim::intern::InternedId::from_index(0),
+                weapon: crate::sim::intern::InternedId::from_index(0),
+                owner: crate::sim::intern::InternedId::from_index(0),
+            },
+            speed_leptons_per_frame: 64,
+            velocity: crate::sim::projectile::ProjectileVelocity::new(64, 0, 0),
+            trajectory: crate::sim::projectile::ProjectileTrajectory::Straight,
+            guidance: None,
+            visual: crate::sim::projectile::ProjectileVisualState::new(0, 0, 0),
+            arm_frames: 0,
+            fuse_frames: None,
+            ranged_fuse: false,
+            tracks_target: false,
+            target_expiry: TargetExpiryPolicy::Expire,
+            collision: ProjectileCollisionPolicy::NONE,
         },
-        speed_leptons_per_frame: 64,
-        velocity: crate::sim::projectile::ProjectileVelocity::new(64, 0, 0),
-        trajectory: crate::sim::projectile::ProjectileTrajectory::Straight,
-        guidance: None,
-        visual: crate::sim::projectile::ProjectileVisualState::new(0, 0, 0),
-        arm_frames: 0,
-        fuse_frames: None,
-        ranged_fuse: false,
-        tracks_target: false,
-        target_expiry: TargetExpiryPolicy::Expire,
-        collision: ProjectileCollisionPolicy::NONE,
-    });
+    );
     let deleted_id = spawn_type(&mut original, "GAPOWR");
     original.uninit(deleted_id);
     assert_eq!(original.projectiles.len(), 1);
     assert!(original.substrate.pending_delete.contains(&deleted_id));
 
+    // Native in-scenario load restarts Scenario RNG from Seed0. Continue both
+    // branches from that cursor while testing unrelated trigger/lifecycle state.
+    original.scenario_rng = crate::sim::rng::SimRng::new(0);
     let hash_before_save = original.state_hash();
     let bytes = GameSnapshot::save(&original, 0, 0, "test_map", 0);
     let mut restored = GameSnapshot::load(&bytes).expect("snapshot loads").sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("snapshot references and Logic membership restore");
     assert_eq!(restored.state_hash(), hash_before_save);
     assert!(restored.trigger_runtime.globals_set.contains(&13));
     assert_eq!(restored.projectiles.len(), 1);
@@ -387,6 +397,9 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
     assert!(original.substrate.pending_delete.is_empty());
 
     let mut replayed = GameSnapshot::load(&bytes).expect("snapshot reloads").sim;
+    replayed
+        .restore_after_snapshot_load()
+        .expect("replay snapshot references and Logic membership restore");
     assert_eq!(
         ReplayRunner::run_master_frame(
             &mut replayed,

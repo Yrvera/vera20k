@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 use std::mem::size_of;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU8, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
@@ -374,6 +374,8 @@ impl CommandDispatchHouse {
 pub struct SynchronizedCommandQueue {
     local: VecDeque<SynchronizedCommand>,
     do_list: VecDeque<SynchronizedCommand>,
+    retime_window_start: i32,
+    retime_window_end: i32,
 }
 
 impl SynchronizedCommandQueue {
@@ -397,6 +399,48 @@ impl SynchronizedCommandQueue {
 
     pub fn synchronized_records(&self) -> impl Iterator<Item = &SynchronizedCommand> {
         self.do_list.iter()
+    }
+
+    /// Publish the persistent DoList retiming window produced by an executed
+    /// network timing-update event.
+    ///
+    /// The returned value is the MaxAhead value after the native scenario-bit
+    /// adjustment, which is the value the session owner must commit. A timing
+    /// update that widens neither unsigned negotiated value clears the window.
+    ///
+    /// VERIFIED: gamemd.exe `EventClass__Execute @ 0x004C7600` case `0x20`
+    /// publishes the adjusted window consumed by `FUN_0064C380 @ 0x0064C380`.
+    pub fn apply_timing_update(
+        &mut self,
+        event_frame: i32,
+        previous_max_ahead: u16,
+        previous_frame_send_rate: NonZeroU8,
+        proposed_max_ahead: u16,
+        proposed_frame_send_rate: NonZeroU8,
+        scenario_subtracts_ten: bool,
+    ) -> u16 {
+        let adjusted_max_ahead = if scenario_subtracts_ten {
+            proposed_max_ahead.wrapping_sub(10)
+        } else {
+            proposed_max_ahead
+        };
+
+        if adjusted_max_ahead > previous_max_ahead
+            || proposed_frame_send_rate > previous_frame_send_rate
+        {
+            let rate = i32::from(proposed_frame_send_rate.get());
+            self.retime_window_start = event_frame;
+            self.retime_window_end = event_frame
+                .wrapping_add(i32::from(adjusted_max_ahead))
+                .wrapping_add(rate.wrapping_sub(1))
+                .wrapping_div(rate)
+                .wrapping_mul(rate);
+        } else {
+            self.retime_window_start = 0;
+            self.retime_window_end = 0;
+        }
+
+        adjusted_max_ahead
     }
 
     /// Append one locally issued command in issue order. Retail silently drops
@@ -570,6 +614,23 @@ impl SynchronizedCommandQueue {
         let mut summary = DispatchSummary::default();
         let scan_len = self.do_list.len();
 
+        // VERIFIED: gamemd.exe `FUN_0064C380 @ 0x0064C380` scans the complete
+        // entry-count snapshot before house eligibility and keeps this window
+        // active until a later timing update replaces or clears it.
+        for record_index in 0..scan_len {
+            let command = self
+                .do_list
+                .get_mut(record_index)
+                .expect("retime scan is bounded by the DoList snapshot");
+            let frame = command.record.frame_stamp();
+            if command.record.opcode() != FRAMEINFO_EVENT_OPCODE
+                && self.retime_window_start < frame
+                && frame < self.retime_window_end
+            {
+                command.record.set_frame_stamp(self.retime_window_end);
+            }
+        }
+
         for house in houses.iter().copied() {
             if !house.dispatch_eligible {
                 continue;
@@ -680,7 +741,7 @@ impl LockstepScheduler {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU32;
+    use std::num::{NonZeroU8, NonZeroU32};
 
     use super::{
         CommandDispatchHouse, DO_LIST_CAPACITY, FrameInfo, FrameInfoCompareGate, LockstepScheduler,
@@ -696,6 +757,10 @@ mod tests {
 
     fn eligible(owner: InternedId, house_id: i8) -> CommandDispatchHouse {
         CommandDispatchHouse::new(owner, house_id, true)
+    }
+
+    fn nonzero_u8(value: u8) -> NonZeroU8 {
+        NonZeroU8::new(value).unwrap()
     }
 
     #[test]
@@ -737,6 +802,196 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![false, true]
         );
+    }
+
+    #[test]
+    fn gsi_16_02_retime_prepass_scans_the_complete_snapshot_and_persists() {
+        let owner = InternedId::from_index(3);
+        let mut queue = SynchronizedCommandQueue::new();
+        for (opcode, frame, payload) in [
+            (0x15, 100, 0),
+            (0x15, 101, 1),
+            (super::FRAMEINFO_EVENT_OPCODE, 110, 2),
+            (0x15, 119, 3),
+            (0x15, 120, 4),
+            (0x15, 130, 5),
+        ] {
+            assert!(queue.admit(opaque(opcode, 0, frame, &[payload])));
+        }
+        queue.do_list[3].record.mark_processed();
+        let unchanged_parts = queue
+            .synchronized_records()
+            .map(|command| {
+                (
+                    command.record().opcode(),
+                    command.record().flags(),
+                    command.record().house_id(),
+                    command.record().payload().to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            queue.apply_timing_update(100, 10, nonzero_u8(5), 20, nonzero_u8(10), false,),
+            20
+        );
+        let encoded = bincode::serialize(&queue).unwrap();
+        let mut restored: SynchronizedCommandQueue = bincode::deserialize(&encoded).unwrap();
+
+        let ineligible_house = CommandDispatchHouse::new(owner, 0, false);
+        let history = MultiplayerChecksumHistory::new();
+        restored
+            .dispatch_due_network(
+                99,
+                &[ineligible_house],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| panic!("no record is late"),
+                |_, _| panic!("no MegaMission is due"),
+                |_, _, _| panic!("house eligibility is checked after retiming"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            restored
+                .synchronized_records()
+                .map(|command| command.record().frame_stamp())
+                .collect::<Vec<_>>(),
+            vec![100, 120, 110, 120, 120, 130]
+        );
+        assert_eq!(
+            restored
+                .synchronized_records()
+                .map(|command| {
+                    (
+                        command.record().opcode(),
+                        command.record().flags(),
+                        command.record().house_id(),
+                        command.record().payload().to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            unchanged_parts
+        );
+        assert!(
+            restored
+                .synchronized_records()
+                .nth(3)
+                .unwrap()
+                .record()
+                .is_processed(),
+            "processed records are retimed without clearing their flag"
+        );
+
+        assert!(restored.admit(opaque(0x15, 0, 115, &[6])));
+        restored
+            .dispatch_due_network(
+                99,
+                &[ineligible_house],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| {},
+                |_, _| {},
+                |_, _, _| {},
+            )
+            .unwrap();
+        assert_eq!(
+            restored
+                .synchronized_records()
+                .last()
+                .unwrap()
+                .record()
+                .frame_stamp(),
+            120,
+            "the retime window is not consumed by a dispatch"
+        );
+    }
+
+    #[test]
+    fn gsi_16_02_timing_update_applies_scenario_adjustment_and_clears_on_nonincrease() {
+        let mut queue = SynchronizedCommandQueue::new();
+        queue.retime_window_start = 1;
+        queue.retime_window_end = 2;
+
+        assert_eq!(
+            queue.apply_timing_update(100, 15, nonzero_u8(5), 20, nonzero_u8(5), true,),
+            10
+        );
+        assert_eq!((queue.retime_window_start, queue.retime_window_end), (0, 0));
+    }
+
+    #[test]
+    fn gsi_16_02_executed_update_affects_the_next_dispatch_prepass() {
+        let owner = InternedId::from_index(3);
+        let history = MultiplayerChecksumHistory::new();
+        let mut queue = SynchronizedCommandQueue::new();
+        assert!(queue.admit(opaque(0x20, 0, 100, &[0])));
+        assert!(queue.admit(opaque(0x15, 0, 110, &[1])));
+
+        let mut saw_timing_update = false;
+        queue
+            .dispatch_due_network(
+                100,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| panic!("no record is late"),
+                |_, _| panic!("no MegaMission is due"),
+                |_, command, _| {
+                    assert_eq!(command.record().opcode(), 0x20);
+                    saw_timing_update = true;
+                },
+            )
+            .unwrap();
+        assert!(saw_timing_update);
+        assert_eq!(
+            queue
+                .synchronized_records()
+                .next()
+                .unwrap()
+                .record()
+                .frame_stamp(),
+            110,
+            "the update is published after its dispatch call's prepass"
+        );
+
+        queue.apply_timing_update(100, 10, nonzero_u8(5), 20, nonzero_u8(10), false);
+        let summary = queue
+            .dispatch_due_network(
+                110,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| panic!("the command must be retimed before lateness handling"),
+                |_, _| panic!("no MegaMission is due"),
+                |_, _, _| panic!("the command must not execute inside the widened window"),
+            )
+            .unwrap();
+        assert_eq!(summary.executed, 0);
+        assert_eq!(
+            queue
+                .synchronized_records()
+                .next()
+                .unwrap()
+                .record()
+                .frame_stamp(),
+            120
+        );
+
+        let mut executed = Vec::new();
+        let summary = queue
+            .dispatch_due_network(
+                120,
+                &[eligible(owner, 0)],
+                &history,
+                FrameInfoCompareGate::OPEN,
+                |_, _| panic!("the retimed command is not late"),
+                |_, _| {},
+                |_, command, _| executed.push(command.record().payload()[0]),
+            )
+            .unwrap();
+        assert_eq!(summary.executed, 1);
+        assert_eq!(executed, vec![1]);
     }
 
     #[test]

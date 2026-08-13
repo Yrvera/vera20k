@@ -678,6 +678,9 @@ fn save_load_round_trip_on_kill_tick() {
 
     sim.advance_tick(&[], Some(&rules), &empty_height_map(), None, None, 67); // kill tick
 
+    // Native in-scenario load restarts Scenario RNG from Seed0; isolate the
+    // kill-tick/turret persistence hash on that same post-load cursor.
+    sim.scenario_rng = crate::sim::rng::SimRng::new(0);
     let hash_before = sim.state_hash();
     let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
     let mut restored = GameSnapshot::load(&bytes).expect("load").sim;

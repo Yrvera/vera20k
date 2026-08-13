@@ -276,7 +276,8 @@ pub(crate) struct AppState {
     pub(crate) type_select: crate::app_types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
-    /// Previous complete client surface, retained for input-time screenshot parity.
+    /// Previous presented pre-cursor composition, retained for input-time
+    /// screenshot parity.
     pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,
     /// egui integration — input handling + GPU rendering.
     egui: EguiIntegration,
@@ -495,6 +496,9 @@ pub(crate) struct AppState {
     pub(crate) frame_pacer_epoch: Instant,
     /// Local wall-clock admission state. Never serialized or read by the sim.
     pub(crate) frame_pacer: crate::app_frame_pacer::LocalFramePacer,
+    /// Match elapsed wall time for the retail score screen. App-local and never
+    /// serialized, hashed, or read by deterministic simulation.
+    pub(crate) scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock,
     /// Target/action lines — colored lines from selected units to command destinations.
     pub(crate) target_lines: crate::app_target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
@@ -859,6 +863,7 @@ impl App {
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
+        state.scenario_elapsed_clock.reset();
         state.score_screen = None;
         state.score_shell_state = Default::default();
         state.screen = GameScreen::MainMenu;
@@ -4071,6 +4076,13 @@ impl ApplicationHandler for App {
             }
         }
     }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut() {
+            crate::app_sim_tick::flush_replay_log(state);
+        }
+        log::logger().flush();
+    }
 }
 
 impl App {
@@ -4562,6 +4574,7 @@ impl App {
             theater_ext: "tem".to_string(),
             frame_pacer_epoch: Instant::now(),
             frame_pacer: crate::app_frame_pacer::LocalFramePacer::new(),
+            scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock::new(),
             target_lines: crate::app_target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,
@@ -5165,14 +5178,14 @@ impl App {
             std::mem::take(&mut state.retail_screenshot_requested);
         let pending_retail_screenshot = state
             .retail_screenshot_frame_cache
-            .capture_previous_and_remember_current(
+            .capture_previous_if_requested(
                 retail_screenshot_current_frame,
                 &state.gpu.device,
                 &mut encoder,
-                &output.texture,
                 state.gpu.config.format,
                 state.gpu.config.width,
                 state.gpu.config.height,
+                state.upscale_pass.as_ref(),
             )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
@@ -5191,6 +5204,9 @@ impl App {
         };
         let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+        state
+            .retail_screenshot_frame_cache
+            .commit_presented();
         if let Some(token) = pending_main_menu_entry_token.take() {
             crate::app_shell_transition::record_main_menu_entry_presented(state, token)?;
         }
@@ -5306,6 +5322,7 @@ impl App {
         crate::app_sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
+        state.scenario_elapsed_clock.reset();
         if let Some(ref mut player) = state.music_player {
             player.stop();
         }
@@ -5409,6 +5426,18 @@ impl App {
         let previous = state.in_game_menu;
         if previous == next {
             return;
+        }
+        let was_open = previous.is_open();
+        let will_be_open = next.is_open();
+        if was_open != will_be_open
+            && !crate::app_sim_tick::current_session_mode(state).is_network()
+        {
+            let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+            if will_be_open {
+                state.scenario_elapsed_clock.pause(now_ms);
+            } else {
+                state.scenario_elapsed_clock.resume(now_ms);
+            }
         }
         state.in_game_menu = next;
 

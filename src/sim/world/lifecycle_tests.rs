@@ -25,9 +25,18 @@ use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState, MovementLaye
 use crate::sim::occupancy::CellListInsertion;
 use crate::sim::particles::ParticleSystem;
 use crate::sim::passenger::{PassengerCargo, PassengerRole};
+use crate::sim::projectile::{
+    ProjectileCollisionPolicy, ProjectileCoord, ProjectileGuidance, ProjectilePayload,
+    ProjectileSpawn, ProjectileTarget, ProjectileTrajectory, ProjectileVelocity,
+    ProjectileVisualState, TargetExpiryPolicy, cell_target_coord,
+};
+use crate::sim::snapshot::{GameSnapshot, SnapshotRestoreError};
+use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
+use crate::sim::wave::{Wave, WaveDamagePayload, WaveRecordedCell};
 use crate::util::fixed_math::SimFixed;
 use glam::IVec3;
 
+use super::techno_ai::ObjectAiCtx;
 use super::{
     LifecycleOutput, LifecycleTestEvent, PlacementEvidence, RevealFailure, RevealOutcome,
     RevealPosition, RevealRequest, Simulation,
@@ -1358,6 +1367,18 @@ fn lifecycle_authority_conceal_deselects_unmarks_unregisters_then_sets_limbo() {
         sim.lifecycle_test_events,
         vec![
             LifecycleTestEvent::ConcealDeselected,
+            LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                stable_id: 1,
+                object_alive: true,
+                cell_marked: true,
+                resolvable: true,
+            },
+            LifecycleTestEvent::UninitRemovalListenerVisited {
+                expired_id: 1,
+                listener_id: 1,
+                target_alive: true,
+                target_in_limbo: false,
+            },
             LifecycleTestEvent::RawOccupationListUnlinked,
             LifecycleTestEvent::RawOccupationCleared,
             LifecycleTestEvent::ConcealUnmarked,
@@ -1560,6 +1581,24 @@ fn lifecycle_authority_techno_limbo_breaks_contacts_before_common_conceal() {
             LifecycleTestEvent::BreakReceiverClassEffect { target: 2 },
             LifecycleTestEvent::BreakReceiverCleared { target: 2 },
             LifecycleTestEvent::ConcealDeselected,
+            LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                stable_id: 1,
+                object_alive: true,
+                cell_marked: true,
+                resolvable: true,
+            },
+            LifecycleTestEvent::UninitRemovalListenerVisited {
+                expired_id: 1,
+                listener_id: 1,
+                target_alive: true,
+                target_in_limbo: false,
+            },
+            LifecycleTestEvent::UninitRemovalListenerVisited {
+                expired_id: 1,
+                listener_id: 2,
+                target_alive: true,
+                target_in_limbo: false,
+            },
             LifecycleTestEvent::RawOccupationListUnlinked,
             LifecycleTestEvent::RawOccupationCleared,
             LifecycleTestEvent::ConcealUnmarked,
@@ -1650,6 +1689,7 @@ fn lifecycle_authority_uninit_removal_boundary_sees_alive_marked_target() {
                     stable_id: 1,
                     object_alive: true,
                     cell_marked: true,
+                    resolvable: true,
                 }
             )
         })
@@ -1660,6 +1700,151 @@ fn lifecycle_authority_uninit_removal_boundary_sees_alive_marked_target() {
         .position(|event| *event == LifecycleTestEvent::ConcealDeselected)
         .expect("common Conceal");
     assert!(removal < conceal);
+}
+
+#[test]
+fn gsi_05_03_conceal_destroy_and_uninit_broadcast_before_unmark() {
+    let mut conceal_only = Simulation::new();
+    insert_entity(&mut conceal_only, 1, EntityCategory::Unit);
+    let _ = conceal_only.reveal(1);
+    conceal_only.lifecycle_test_events.clear();
+
+    assert_eq!(
+        conceal_only.object_conceal(1),
+        super::ConcealOutcome::Concealed
+    );
+    let conceal_boundary = conceal_only
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                    stable_id: 1,
+                    object_alive: true,
+                    cell_marked: true,
+                    resolvable: true,
+                }
+        })
+        .expect("Conceal Destroy notification boundary");
+    let conceal_unmark = conceal_only
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("Conceal unmark");
+    assert!(conceal_boundary < conceal_unmark);
+    assert!(conceal_only.substrate.entities.contains(1));
+    assert!(
+        conceal_only
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .lifecycle
+            .object_alive
+    );
+
+    let mut uninit = Simulation::new();
+    insert_entity(&mut uninit, 1, EntityCategory::Unit);
+    insert_entity(&mut uninit, 2, EntityCategory::Unit);
+    let _ = uninit.reveal(2);
+    uninit.lifecycle_test_events.clear();
+    uninit.uninit(2);
+
+    let direct = uninit
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::UninitRemovalNotifyBoundary {
+                    stable_id: 2,
+                    object_alive: true,
+                    cell_marked: true,
+                    resolvable: true,
+                }
+        })
+        .expect("direct UnInit expiry boundary");
+    let destroy = uninit
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                    stable_id: 2,
+                    object_alive: true,
+                    cell_marked: true,
+                    resolvable: true,
+                }
+        })
+        .expect("virtual Conceal Destroy expiry boundary");
+    let unmark = uninit
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("UnInit Conceal unmark");
+    let alive_clear = uninit
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::UninitAliveCleared { stable_id: 2 })
+        .expect("UnInit alive clear");
+    assert!(direct < destroy && destroy < unmark && unmark < alive_clear);
+    assert_eq!(
+        uninit
+            .lifecycle_test_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 2, .. }
+            ))
+            .count(),
+        4,
+        "two listeners observe both expiry broadcasts"
+    );
+}
+
+#[test]
+fn gsi_05_03_dead_nonlimbo_stored_object_still_runs_conceal() {
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    let _ = sim.reveal(1);
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.lifecycle.object_alive = false;
+        assert!(!entity.lifecycle.in_limbo);
+        assert!(entity.lifecycle.cell_marked);
+    }
+    sim.lifecycle_test_events.clear();
+
+    assert_eq!(sim.techno_limbo(1), super::ConcealOutcome::Concealed);
+    let destroy = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::ConcealDestroyNotifyBoundary {
+                    stable_id: 1,
+                    object_alive: false,
+                    cell_marked: true,
+                    resolvable: true,
+                }
+        })
+        .expect("dead non-limbo object reached Conceal's Destroy boundary");
+    let unmark = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .expect("dead non-limbo object reached Conceal's Mark(REMOVE)");
+    let limbo_set = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::ConcealLimboSet)
+        .expect("dead non-limbo object completed Conceal");
+    assert!(destroy < unmark && unmark < limbo_set);
+
+    let entity = sim.substrate.entities.get(1).unwrap();
+    assert!(!entity.lifecycle.object_alive);
+    assert!(entity.lifecycle.in_limbo);
+    assert!(!entity.lifecycle.cell_marked);
+    assert!(!entity.in_logic_vector);
 }
 
 #[test]
@@ -1780,19 +1965,13 @@ fn uninit_pointer_expiry_walks_global_object_order_before_break_and_conceal() {
             (2, true, false),
             (3, true, false),
             (4, true, false),
+            (1, true, false),
+            (2, true, false),
+            (3, true, false),
+            (4, true, false),
         ]
     );
 
-    let last_listener = sim
-        .lifecycle_test_events
-        .iter()
-        .rposition(|event| {
-            matches!(
-                event,
-                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 4, .. }
-            )
-        })
-        .unwrap();
     let break_slot = sim
         .lifecycle_test_events
         .iter()
@@ -1811,7 +1990,43 @@ fn uninit_pointer_expiry_walks_global_object_order_before_break_and_conceal() {
         .iter()
         .position(|event| *event == LifecycleTestEvent::ConcealDeselected)
         .unwrap();
-    assert!(last_listener < break_slot && break_slot < conceal);
+    let direct_last_listener = sim.lifecycle_test_events[..break_slot]
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 4, .. }
+            )
+        })
+        .unwrap();
+    let conceal_notify = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::ConcealDestroyNotifyBoundary { stable_id: 4, .. }
+            )
+        })
+        .unwrap();
+    let second_last_listener = sim
+        .lifecycle_test_events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 4, .. }
+            )
+        })
+        .unwrap();
+    let unmark = sim
+        .lifecycle_test_events
+        .iter()
+        .position(|event| *event == LifecycleTestEvent::RawOccupationListUnlinked)
+        .unwrap();
+    assert!(direct_last_listener < break_slot && break_slot < conceal);
+    assert!(conceal < conceal_notify && conceal_notify < second_last_listener);
+    assert!(second_last_listener < unmark);
 }
 
 #[test]
@@ -2136,19 +2351,17 @@ fn expiring_mixed_size_passenger_updates_transport_total_exactly() {
 }
 
 #[test]
-fn lifecycle_authority_duplicate_uninit_does_not_double_release_owned_count() {
+fn gsi_05_03_duplicate_uninit_repeats_direct_expiry_and_queue_but_finalizes_once() {
     let mut sim = Simulation::new();
     let owner = sim.interner.intern("Americans");
     sim.houses
         .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
     insert_entity(&mut sim, 1, EntityCategory::Unit);
     sim.houses.get_mut(&owner).unwrap().owned_unit_count = 2;
+    let _ = sim.reveal(1);
 
+    sim.lifecycle_test_events.clear();
     sim.uninit(1);
-    sim.uninit(1);
-    assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
-    assert!(sim.substrate.entities.get(1).unwrap().owned_count_released);
-    assert_eq!(sim.substrate.pending_delete, vec![1, 1]);
     assert_eq!(
         sim.lifecycle_test_events
             .iter()
@@ -2157,7 +2370,89 @@ fn lifecycle_authority_duplicate_uninit_does_not_double_release_owned_count() {
                 LifecycleTestEvent::UninitRemovalNotifyBoundary { stable_id: 1, .. }
             ))
             .count(),
-        2
+        1
+    );
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::ConcealDestroyNotifyBoundary { stable_id: 1, .. }
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 1, .. }
+            ))
+            .count(),
+        2,
+        "the first active UnInit performs its direct dispatch and Conceal's Destroy dispatch"
+    );
+
+    let repeat_start = sim.lifecycle_test_events.len();
+    sim.uninit(1);
+    let repeated_events = &sim.lifecycle_test_events[repeat_start..];
+    assert_eq!(sim.houses.get(&owner).unwrap().owned_unit_count, 1);
+    assert!(sim.substrate.entities.get(1).unwrap().owned_count_released);
+    assert_eq!(sim.substrate.pending_delete, vec![1, 1]);
+    let direct = repeated_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::UninitRemovalNotifyBoundary {
+                    stable_id: 1,
+                    object_alive: false,
+                    cell_marked: false,
+                    resolvable: true,
+                }
+        })
+        .expect("repeat UnInit direct expiry boundary");
+    let direct_listener = repeated_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::UninitRemovalListenerVisited {
+                    expired_id: 1,
+                    listener_id: 1,
+                    target_alive: false,
+                    target_in_limbo: true,
+                }
+        })
+        .expect("repeat UnInit direct expiry dispatch");
+    let conceal_return = repeated_events
+        .iter()
+        .position(|event| {
+            *event
+                == LifecycleTestEvent::ConcealAlreadyLimboReturn {
+                    stable_id: 1,
+                    object_alive: false,
+                    resolvable: true,
+                }
+        })
+        .expect("repeat Limbo reached Conceal's InLimbo return");
+    assert!(direct < direct_listener && direct_listener < conceal_return);
+    assert_eq!(
+        repeated_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::UninitRemovalListenerVisited { expired_id: 1, .. }
+            ))
+            .count(),
+        1,
+        "the repeated UnInit adds exactly one direct expiry dispatch"
+    );
+    assert!(
+        !repeated_events.iter().any(|event| matches!(
+            event,
+            LifecycleTestEvent::ConcealDestroyNotifyBoundary { stable_id: 1, .. }
+        )),
+        "Conceal's InLimbo return occurs before Destroy"
     );
 
     sim.lifecycle_test_events.clear();
@@ -2775,6 +3070,1455 @@ fn lifecycle_authority_set_logic_order_for_test_synchronizes_all_membership_flag
     assert!(!sim.substrate.entities.get(1).unwrap().in_logic_vector);
     assert!(sim.substrate.entities.get(2).unwrap().in_logic_vector);
     sim.debug_assert_logic_membership_consistent();
+}
+
+fn gsi_05_02_projectile(source_id: u64, fuse_frames: Option<u16>) -> ProjectileSpawn {
+    ProjectileSpawn {
+        source_id,
+        origin: ProjectileCoord::new(0, 0, 0),
+        target: ProjectileTarget::Cell { rx: 16, ry: 0 },
+        initial_target_position: ProjectileCoord::new(4096, 0, 0),
+        payload: ProjectilePayload {
+            base_damage: 1,
+            warhead: crate::sim::intern::InternedId::from_index(0),
+            weapon: crate::sim::intern::InternedId::from_index(0),
+            owner: crate::sim::intern::InternedId::from_index(0),
+        },
+        speed_leptons_per_frame: 64,
+        velocity: ProjectileVelocity::new(64, 0, 0),
+        trajectory: ProjectileTrajectory::Straight,
+        guidance: None,
+        visual: ProjectileVisualState::new(0, 0, 0),
+        arm_frames: 0,
+        fuse_frames,
+        ranged_fuse: false,
+        tracks_target: false,
+        target_expiry: TargetExpiryPolicy::Expire,
+        collision: ProjectileCollisionPolicy::NONE,
+    }
+}
+
+fn gsi_05_04_guided_projectile(
+    source_id: u64,
+    target: ProjectileTarget,
+    initial_target_position: ProjectileCoord,
+) -> ProjectileSpawn {
+    let mut spawn = gsi_05_02_projectile(source_id, None);
+    spawn.target = target;
+    spawn.initial_target_position = initial_target_position;
+    spawn.guidance = Some(ProjectileGuidance {
+        rot: 60,
+        missile_rot_var: SimFixed::lit("0.25"),
+        course_lock_frames: 0,
+        sidewinder_phase: 0,
+        airburst: false,
+        very_high: false,
+        level: false,
+        pitch_bam: 0,
+        frames_elapsed: 0,
+    });
+    spawn.tracks_target = true;
+    spawn.target_expiry = TargetExpiryPolicy::DetonateAtLastKnown;
+    spawn
+}
+
+fn gsi_05_02_mixed_fixture() -> (Simulation, [u64; 6]) {
+    let mut sim = Simulation::new();
+
+    let entity_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, entity_id, EntityCategory::Unit);
+    sim.register_live_object(entity_id);
+
+    let anim_id = sim.allocate_stable_id();
+    insert_anim(&mut sim, anim_id, true);
+    sim.register_live_object(anim_id);
+
+    let particle_id = sim.allocate_stable_id();
+    insert_particle_system(&mut sim, particle_id);
+    sim.register_live_object(particle_id);
+
+    let terrain_id = sim.allocate_stable_id();
+    sim.production.terrain_objects.insert(
+        terrain_id,
+        TerrainObjectState {
+            stable_id: terrain_id,
+            in_logic_vector: false,
+            type_ref: sim.interner.intern("TREE01"),
+            rx: 8,
+            ry: 9,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 0,
+            lifecycle: TerrainObjectLifecycle::Live,
+        },
+    );
+    assert!(sim.register_terrain_object(terrain_id));
+
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(projectile_id, gsi_05_02_projectile(entity_id, None));
+
+    let wave_id = sim.allocate_stable_id();
+    sim.admit_wave(
+        wave_id,
+        Wave::new(
+            3,
+            ProjectileCoord::new(0, 0, 0),
+            ProjectileCoord::new(256, 0, 0),
+        ),
+    );
+
+    let mixed = [
+        terrain_id,
+        entity_id,
+        wave_id,
+        anim_id,
+        projectile_id,
+        particle_id,
+    ];
+    sim.set_logic_order_for_test(mixed.to_vec());
+    (sim, mixed)
+}
+
+#[test]
+fn gsi_05_02_mixed_six_family_order_roundtrips_and_dispatches_every_slot() {
+    let (sim, mixed) = gsi_05_02_mixed_fixture();
+    let bytes = GameSnapshot::save(&sim, 0, 0, "logic-membership", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("mixed Logic snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("mixed Logic identities restore");
+
+    assert_eq!(restored.live_object_order_snapshot(), mixed);
+    assert!(
+        restored
+            .production
+            .terrain_objects
+            .get(&mixed[0])
+            .unwrap()
+            .in_logic_vector
+    );
+    assert!(
+        restored
+            .substrate
+            .entities
+            .get(mixed[1])
+            .unwrap()
+            .in_logic_vector
+    );
+    assert!(restored.waves.get(mixed[2]).unwrap().in_logic_vector);
+    assert!(
+        restored
+            .substrate
+            .anims
+            .get(mixed[3])
+            .unwrap()
+            .in_logic_vector
+    );
+    assert!(restored.projectiles.get(mixed[4]).unwrap().in_logic_vector);
+    assert!(
+        restored
+            .substrate
+            .particle_systems
+            .get(mixed[5])
+            .unwrap()
+            .in_logic_vector
+    );
+
+    let mut visited = Vec::new();
+    restored.for_each_live_object(|sim, id| {
+        if sim.object_ai_visit_one(id, None, ObjectAiCtx::default()) {
+            visited.push(id);
+        }
+    });
+    assert_eq!(visited, mixed);
+    restored.debug_assert_logic_membership_consistent();
+}
+
+#[test]
+fn gsi_05_02_tail_appends_run_same_pass_and_terminal_current_skips_successor() {
+    let mut sim = Simulation::new();
+    let entity_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, entity_id, EntityCategory::Unit);
+    sim.register_live_object(entity_id);
+
+    let mut appended = None;
+    let mut visited = Vec::new();
+    sim.for_each_live_object(|sim, id| {
+        visited.push(id);
+        let _ = sim.object_ai_visit_one(id, None, ObjectAiCtx::default());
+        if id == entity_id {
+            let projectile_id = sim.allocate_stable_id();
+            sim.admit_projectile(projectile_id, gsi_05_02_projectile(entity_id, None));
+            let wave_id = sim.allocate_stable_id();
+            sim.admit_wave(
+                wave_id,
+                Wave::new(
+                    3,
+                    ProjectileCoord::new(0, 0, 0),
+                    ProjectileCoord::new(256, 0, 0),
+                ),
+            );
+            appended = Some((projectile_id, wave_id));
+        }
+    });
+    let (projectile_id, wave_id) = appended.expect("tail objects appended");
+    assert_eq!(visited, vec![entity_id, projectile_id, wave_id]);
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().position,
+        // CellClass target coordinates resolve from the live cell center on
+        // every visit, so Cell(16, 0) contributes a small positive Y step.
+        ProjectileCoord::new(64, 1, 0)
+    );
+    assert_eq!(sim.waves.get(wave_id).unwrap().lifetime, 99);
+
+    let mut removal = Simulation::new();
+    let terminal_id = removal.allocate_stable_id();
+    removal.admit_projectile(terminal_id, gsi_05_02_projectile(0, Some(0)));
+    let successor_id = removal.allocate_stable_id();
+    removal.admit_wave(
+        successor_id,
+        Wave::new(
+            3,
+            ProjectileCoord::new(0, 0, 0),
+            ProjectileCoord::new(256, 0, 0),
+        ),
+    );
+    let mut removal_visited = Vec::new();
+    removal.for_each_live_object(|sim, id| {
+        removal_visited.push(id);
+        let _ = sim.object_ai_visit_one(id, None, ObjectAiCtx::default());
+    });
+    assert_eq!(removal_visited, vec![terminal_id]);
+    assert_eq!(removal.live_object_order_snapshot(), vec![successor_id]);
+    assert!(removal.projectiles.get(terminal_id).is_some());
+    assert_eq!(removal.substrate.pending_delete, vec![terminal_id]);
+    assert_eq!(removal.waves.get(successor_id).unwrap().lifetime, 100);
+    removal.debug_assert_logic_membership_consistent();
+}
+
+#[test]
+fn gsi_05_02_terrain_map_construction_registers_before_later_techno() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TREE01\n[TREE01]\nStrength=10\n",
+        ))
+        .expect("terrain fixture rules");
+    let mut sim = Simulation::new();
+    assert_eq!(
+        crate::sim::terrain_spawn::construct_terrain_objects(
+            &mut sim,
+            &[crate::map::overlay::TerrainObject {
+                rx: 3,
+                ry: 4,
+                name: "TREE01".to_owned(),
+            }],
+            &rules,
+            false,
+        ),
+        1
+    );
+    let terrain_id = *sim.production.terrain_objects.keys().next().unwrap();
+
+    let entity_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, entity_id, EntityCategory::Unit);
+    sim.register_live_object(entity_id);
+    assert_eq!(
+        sim.live_object_order_snapshot(),
+        vec![terrain_id, entity_id]
+    );
+}
+
+#[test]
+fn gsi_05_02_lethal_terrain_unregisters_and_inactive_slot_cannot_roundtrip() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TREE01\n[Warheads]\n0=WOODWH\n\
+             [TREE01]\nStrength=10\nArmor=wood\nImmune=no\n\
+             [WOODWH]\nWood=yes\nCellSpread=1\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+        ))
+        .expect("lethal terrain rules");
+    let mut sim = Simulation::new();
+    let terrain_id = sim.allocate_stable_id();
+    let type_ref = sim.interner.intern("TREE01");
+    let warhead_ref = sim.interner.intern("WOODWH");
+    sim.production.terrain_objects.insert(
+        terrain_id,
+        TerrainObjectState {
+            stable_id: terrain_id,
+            in_logic_vector: false,
+            type_ref,
+            rx: 5,
+            ry: 6,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 0,
+            lifecycle: TerrainObjectLifecycle::Live,
+        },
+    );
+    sim.production
+        .terrain_object_cells
+        .insert((5, 6), terrain_id);
+    assert!(sim.register_terrain_object(terrain_id));
+
+    sim.commit_noncombat_aoe_receivers(
+        &rules,
+        None,
+        &[crate::sim::combat::combat_aoe::AreaDamageReceiver::Terrain(
+            crate::sim::combat::TerrainDamageEvent {
+                stable_id: terrain_id,
+                rx: 5,
+                ry: 6,
+                damage: 10,
+                distance_leptons: 0,
+                warhead_ref,
+                near_center_ic_isolation_eligible: false,
+            },
+        )],
+    );
+    let terrain = &sim.production.terrain_objects[&terrain_id];
+    assert_eq!(terrain.lifecycle, TerrainObjectLifecycle::Destroyed);
+    assert!(!terrain.in_logic_vector);
+    assert!(sim.live_object_order_snapshot().is_empty());
+    assert_eq!(sim.substrate.pending_delete, vec![terrain_id]);
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "inactive-terrain", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("inactive terrain snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("inactive terrain remains outside Logic");
+    assert!(restored.live_object_order_snapshot().is_empty());
+
+    restored.set_logic_order_for_test(vec![terrain_id]);
+    assert_eq!(
+        restored.restore_after_snapshot_load(),
+        Err(SnapshotRestoreError::InactiveLogicIdentity {
+            registry: "TerrainObjectStore",
+            object_id: terrain_id,
+        })
+    );
+}
+
+#[test]
+fn gsi_05_03_terminal_non_entities_remain_resolvable_until_common_drain() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TREE01\n[Warheads]\n0=WOODWH\n\
+             [TREE01]\nStrength=10\nArmor=wood\nImmune=no\n\
+             [WOODWH]\nWood=yes\nCellSpread=1\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,0%,0%\n",
+        ))
+        .expect("terminal non-entity rules");
+    let mut sim = Simulation::new();
+
+    let terrain_id = sim.allocate_stable_id();
+    let terrain_type = sim.interner.intern("TREE01");
+    let warhead_ref = sim.interner.intern("WOODWH");
+    sim.production.terrain_objects.insert(
+        terrain_id,
+        TerrainObjectState {
+            stable_id: terrain_id,
+            in_logic_vector: false,
+            type_ref: terrain_type,
+            rx: 5,
+            ry: 6,
+            health: 10,
+            max_health: 10,
+            occupation_bits: 0,
+            lifecycle: TerrainObjectLifecycle::Live,
+        },
+    );
+    sim.production
+        .terrain_object_cells
+        .insert((5, 6), terrain_id);
+    assert!(sim.register_terrain_object(terrain_id));
+    sim.commit_noncombat_aoe_receivers(
+        &rules,
+        None,
+        &[crate::sim::combat::combat_aoe::AreaDamageReceiver::Terrain(
+            crate::sim::combat::TerrainDamageEvent {
+                stable_id: terrain_id,
+                rx: 5,
+                ry: 6,
+                damage: 10,
+                distance_leptons: 0,
+                warhead_ref,
+                near_center_ic_isolation_eligible: false,
+            },
+        )],
+    );
+
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(projectile_id, gsi_05_02_projectile(0, Some(0)));
+    assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+
+    let wave_id = sim.allocate_stable_id();
+    let mut terminal_wave = Wave::new(
+        3,
+        ProjectileCoord::new(0, 0, 0),
+        ProjectileCoord::new(256, 0, 0),
+    );
+    terminal_wave.lifetime = 0;
+    sim.admit_wave(wave_id, terminal_wave);
+    assert!(sim.object_ai_visit_one(wave_id, None, ObjectAiCtx::default()));
+
+    assert_eq!(
+        sim.production.terrain_objects[&terrain_id].lifecycle,
+        TerrainObjectLifecycle::Destroyed
+    );
+    assert!(sim.production.terrain_objects.contains_key(&terrain_id));
+    assert!(sim.projectiles.get(projectile_id).is_some());
+    assert!(sim.waves.get(wave_id).is_some());
+    assert!(!sim.production.terrain_objects[&terrain_id].in_logic_vector);
+    assert!(!sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+    assert!(!sim.waves.get(wave_id).unwrap().in_logic_vector);
+    assert_eq!(
+        sim.substrate.pending_delete,
+        vec![terrain_id, projectile_id, wave_id]
+    );
+    assert!(sim.live_object_order_snapshot().is_empty());
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "terminal-non-entities", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("terminal non-entity snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("deferred non-entities restore outside Logic");
+    assert_eq!(
+        restored.substrate.pending_delete,
+        vec![terrain_id, projectile_id, wave_id]
+    );
+    assert!(
+        restored
+            .production
+            .terrain_objects
+            .contains_key(&terrain_id)
+    );
+    assert!(restored.projectiles.get(projectile_id).is_some());
+    assert!(restored.waves.get(wave_id).is_some());
+
+    restored.process_pending_delete();
+    assert!(
+        !restored
+            .production
+            .terrain_objects
+            .contains_key(&terrain_id)
+    );
+    assert!(restored.projectiles.get(projectile_id).is_none());
+    assert!(restored.waves.get(wave_id).is_none());
+    assert!(restored.substrate.pending_delete.is_empty());
+}
+
+#[test]
+fn gsi_05_04_ground_source_and_target_retarget_before_removal_without_expiry() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 2, None);
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, request(9, 11, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let target_position = ProjectileCoord::new(
+        9 * 256 + 128,
+        11 * 256 + 64,
+        2 * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+    );
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            target_id,
+            ProjectileTarget::Entity(target_id),
+            target_position,
+        ),
+    );
+    sim.lifecycle_test_events.clear();
+
+    sim.uninit(target_id);
+
+    let cell_target = ProjectileTarget::Cell { rx: 9, ry: 11 };
+    let projectile = sim
+        .projectiles
+        .get(projectile_id)
+        .expect("Bullet remains stored throughout pointer cleanup");
+    assert_eq!(projectile.source_id, crate::sim::combat::RAD_NO_ATTACKER);
+    assert_eq!(projectile.target, cell_target);
+    assert!(projectile.in_logic_vector);
+    assert!(sim.substrate.entities.contains(target_id));
+    assert!(sim.lifecycle_test_events.iter().any(|event| {
+        *event
+            == LifecycleTestEvent::ProjectilePointerExpiredVisited {
+                expired_id: target_id,
+                projectile_id,
+                expired_resolvable: true,
+                projectile_resolvable: true,
+                source_id: crate::sim::combat::RAD_NO_ATTACKER,
+                target: cell_target,
+            }
+    }));
+
+    assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+    assert!(sim.pending_projectile_detonations.is_empty());
+    assert!(sim.projectiles.get(projectile_id).is_some());
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().target,
+        cell_target
+    );
+}
+
+#[test]
+fn gsi_05_04_building_get_coords_uses_foundation_center_cell() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 20;
+    sim.session.map_height = 20;
+    install_common_raw_terrain(&mut sim, 20, 20, 0, None);
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Structure);
+    let gapowr = sim.interner.intern("GAPOWR");
+    {
+        let target = sim.substrate.entities.get_mut(target_id).unwrap();
+        target.type_ref = gapowr;
+        target.foundation = "2x2".to_string();
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, common_raw_request(9, 11, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(target_id),
+            ProjectileCoord::new(9 * 256 + 128, 11 * 256 + 128, 0),
+        ),
+    );
+
+    sim.uninit(target_id);
+
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().target,
+        ProjectileTarget::Cell { rx: 10, ry: 12 },
+        "BuildingClass GetCoords shifts GAPOWR's NW anchor by 128 leptons per 2x2 axis before truncation"
+    );
+}
+
+#[test]
+fn gsi_05_04_cell_target_tracks_production_bridge_collapse() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, Some((6, 7)));
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, common_raw_request(6, 7, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let projectile_id = sim.allocate_stable_id();
+    let bridge_z = crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
+    let center = ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, bridge_z);
+    let mut spawn = gsi_05_04_guided_projectile(
+        crate::sim::combat::RAD_NO_ATTACKER,
+        ProjectileTarget::Entity(target_id),
+        center,
+    );
+    spawn.origin = center;
+    spawn.guidance = None;
+    spawn.tracks_target = false;
+    sim.admit_projectile(projectile_id, spawn);
+
+    sim.uninit(target_id);
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().target,
+        ProjectileTarget::Cell { rx: 6, ry: 7 }
+    );
+    assert_eq!(
+        cell_target_coord(
+            sim.resolved_terrain.as_ref(),
+            sim.bridge_state.as_ref(),
+            6,
+            7
+        ),
+        center
+    );
+    {
+        let terrain = sim.resolved_terrain.as_ref().expect("resolved terrain");
+        let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(6, 7, true, terrain),
+            StateOutcome::Absorbed
+        ));
+        assert!(matches!(
+            bridge_state.body_cell_advance_state(6, 7, true, terrain),
+            StateOutcome::Collapsed { .. }
+        ));
+        assert!(!bridge_state.is_bridge_walkable(6, 7));
+    }
+    assert_eq!(
+        cell_target_coord(
+            sim.resolved_terrain.as_ref(),
+            sim.bridge_state.as_ref(),
+            6,
+            7
+        ),
+        ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, 0)
+    );
+
+    assert!(sim.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+
+    assert!(sim.pending_projectile_detonations.is_empty());
+    let projectile = sim.projectiles.get(projectile_id).expect("Bullet survives");
+    assert_eq!(projectile.velocity.z, -64);
+    assert_eq!(projectile.position.z, bridge_z - 64);
+}
+
+#[test]
+fn gsi_05_04_intact_bridge_cell_target_reaches_shrapnel_consumer() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n0=MTNK\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [Warheads]\n0=WH\n\
+             [MTNK]\nStrength=100\nArmor=heavy\nPrimary=PARENT\n\
+             [PARENT]\nDamage=0\nROF=10\nRange=6\nSpeed=30\nProjectile=PARENTPROJ\nWarhead=WH\n\
+             [PARENTPROJ]\nAirburst=yes\nShrapnelWeapon=CHILD\nShrapnelCount=-2\n\
+             [CHILD]\nDamage=5\nROF=10\nRange=3\nSpeed=40\nProjectile=CHILDPROJ\nWarhead=WH\n\
+             [CHILDPROJ]\nSubjectToWalls=yes\n\
+             [WH]\nCellSpread=0\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("bridge shrapnel rules");
+    let mut sim = Simulation::with_seed(0x46_a310);
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, Some((6, 7)));
+
+    let source_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, source_id, EntityCategory::Unit);
+    let source_type = sim.interner.intern("MTNK");
+    sim.substrate.entities.get_mut(source_id).unwrap().type_ref = source_type;
+    let projectile_id = sim.allocate_stable_id();
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id,
+        source_id,
+        target: ProjectileTarget::Cell { rx: 6, ry: 7 },
+        impact: ProjectileCoord::new(6 * 256 + 128, 7 * 256 + 128, 0),
+        payload: ProjectilePayload {
+            base_damage: 0,
+            warhead: sim.interner.intern("WH"),
+            weapon: sim.interner.intern("PARENT"),
+            owner: sim.interner.intern("Americans"),
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+
+    assert!(
+        sim.bridge_state
+            .as_ref()
+            .is_some_and(|state| state.is_bridge_walkable(6, 7))
+    );
+    let result = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &[],
+        &std::collections::BTreeSet::new(),
+        &[detonation],
+        &[],
+    );
+
+    assert_eq!(
+        result.projectile_spawns.len(),
+        1,
+        "ShrapnelCount=-2 subtracts the intact deck target's one-cell vertical distance; suppressing the live +416 deck term would emit two children"
+    );
+}
+
+#[test]
+fn gsi_05_04_combat_fatal_expiry_keeps_authoritative_cell_target() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n0=VICTIM\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [Warheads]\n0=KILLWH\n\
+             [VICTIM]\nStrength=10\nArmor=light\n\
+             [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("combat-fatal expiry rules");
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, None);
+
+    let victim_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, victim_id, EntityCategory::Unit);
+    let victim_type = sim.interner.intern("VICTIM");
+    {
+        let victim = sim.substrate.entities.get_mut(victim_id).unwrap();
+        victim.type_ref = victim_type;
+        victim.health.current = 10;
+        victim.health.max = 10;
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(victim_id, common_raw_request(5, 6, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let listener_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        listener_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(victim_id),
+            ProjectileCoord::new(5 * 256 + 128, 6 * 256 + 128, 0),
+        ),
+    );
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 9000,
+        source_id: crate::sim::combat::RAD_NO_ATTACKER,
+        target: ProjectileTarget::Entity(victim_id),
+        impact: ProjectileCoord::new(5 * 256 + 128, 6 * 256 + 128, 0),
+        payload: ProjectilePayload {
+            base_damage: 10,
+            warhead: sim.interner.intern("KILLWH"),
+            weapon: sim.interner.intern("MISSINGWEAPON"),
+            owner: sim.interner.intern("Americans"),
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+    let logic_order = sim.live_object_order_snapshot();
+
+    let _ = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &logic_order,
+        &std::collections::BTreeSet::new(),
+        &[detonation],
+        &[],
+    );
+
+    let victim = sim
+        .substrate
+        .entities
+        .get(victim_id)
+        .expect("fatal target remains resolvable before the common drain");
+    assert!(!victim.lifecycle.object_alive);
+    assert!(victim.lifecycle.in_limbo);
+    assert!(sim.substrate.pending_delete.contains(&victim_id));
+    assert_eq!(
+        sim.projectiles.get(listener_id).unwrap().target,
+        ProjectileTarget::Cell { rx: 5, ry: 6 },
+        "the synchronous fatal UnInit must read the same allocated CellClass terrain authority as combat before late deletion"
+    );
+}
+
+#[test]
+fn gsi_05_04_combat_fatal_garrison_recursion_keeps_cell_target() {
+    let rules =
+        crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+            "[InfantryTypes]\n0=OCCUPANT\n\
+             [VehicleTypes]\n0=BLOCKER\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n0=GARRISON\n\
+             [Warheads]\n0=KILLWH\n\
+             [OCCUPANT]\nStrength=10\nArmor=none\n\
+             [BLOCKER]\nStrength=100\nArmor=heavy\n\
+             [GARRISON]\nStrength=10\nArmor=concrete\nFoundation=2x2\nCanBeOccupied=yes\n\
+             [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        ))
+        .expect("fatal garrison recursion rules");
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, None);
+
+    let building_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, building_id, EntityCategory::Structure);
+    let passenger_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, passenger_id, EntityCategory::Infantry);
+    let building_type = sim.interner.intern("GARRISON");
+    let passenger_type = sim.interner.intern("OCCUPANT");
+    {
+        let passenger = sim.substrate.entities.get_mut(passenger_id).unwrap();
+        passenger.type_ref = passenger_type;
+        passenger.passenger_role = PassengerRole::Inside {
+            transport_id: building_id,
+        };
+    }
+    {
+        let building = sim.substrate.entities.get_mut(building_id).unwrap();
+        building.type_ref = building_type;
+        building.foundation = "2x2".to_string();
+        building.health.current = 10;
+        building.health.max = 10;
+        let mut cargo = PassengerCargo::new(5, 1);
+        assert!(cargo.board(passenger_id, 1));
+        building.passenger_role = PassengerRole::Transport { cargo };
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(building_id, common_raw_request(8, 8, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    // Destruction's native no-exit arm is selected only when every perimeter
+    // probe rejects. Occupied blockers establish that production condition.
+    let blocker_type = sim.interner.intern("BLOCKER");
+    for (rx, ry) in [
+        (10, 10),
+        (10, 9),
+        (10, 8),
+        (10, 7),
+        (9, 10),
+        (8, 10),
+        (7, 10),
+        (8, 7),
+        (9, 7),
+        (7, 8),
+        (7, 9),
+    ] {
+        let blocker_id = sim.allocate_stable_id();
+        insert_entity(&mut sim, blocker_id, EntityCategory::Unit);
+        sim.substrate.entities.get_mut(blocker_id).unwrap().type_ref = blocker_type;
+        assert!(matches!(
+            sim.try_reveal_entity(blocker_id, common_raw_request(rx, ry, 0, 128, 128)),
+            RevealOutcome::Revealed { .. }
+        ));
+    }
+
+    let listener_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        listener_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(passenger_id),
+            ProjectileCoord::new(2 * 256, 3 * 256, 0),
+        ),
+    );
+    let detonation = crate::sim::projectile::ProjectileDetonation {
+        projectile_id: 9001,
+        source_id: crate::sim::combat::RAD_NO_ATTACKER,
+        target: ProjectileTarget::Entity(building_id),
+        impact: ProjectileCoord::new(8 * 256 + 128, 8 * 256 + 128, 0),
+        payload: ProjectilePayload {
+            base_damage: 10,
+            warhead: sim.interner.intern("KILLWH"),
+            weapon: sim.interner.intern("MISSINGWEAPON"),
+            owner: sim.interner.intern("Americans"),
+        },
+        reason: crate::sim::projectile::ProjectileDetonationReason::ReachedTarget,
+    };
+    let logic_order = sim.live_object_order_snapshot();
+
+    let _ = sim.tick_combat_with_fatal_lifecycle(
+        &rules,
+        None,
+        100,
+        &logic_order,
+        &std::collections::BTreeSet::new(),
+        &[detonation],
+        &[],
+    );
+
+    let passenger = sim
+        .substrate
+        .entities
+        .get(passenger_id)
+        .expect("no-exit occupant remains resolvable before common drain");
+    assert!(!passenger.lifecycle.object_alive);
+    assert!(passenger.lifecycle.in_limbo);
+    assert!(sim.substrate.pending_delete.contains(&passenger_id));
+    assert_eq!(
+        sim.projectiles.get(listener_id).unwrap().target,
+        ProjectileTarget::Cell { rx: 2, ry: 3 },
+        "recursive no-exit passenger UnInit inherits combat's allocated CellClass authority"
+    );
+}
+
+#[test]
+fn gsi_05_04_in_rectangle_native_unallocated_cell_becomes_explicit_null() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, None);
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, request(8, 8, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let allocated = (0..16)
+        .flat_map(|ry| (0..16).map(move |rx| (rx, ry)))
+        .filter(|&cell| cell != (8, 8))
+        .collect::<Vec<_>>();
+    sim.resolved_terrain
+        .as_mut()
+        .expect("terrain")
+        .test_set_native_allocated_cells(&allocated);
+
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(target_id),
+            ProjectileCoord::new(8 * 256 + 128, 8 * 256 + 128, 0),
+        ),
+    );
+
+    sim.uninit(target_id);
+
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().target,
+        ProjectileTarget::None,
+        "the rectangular coordinate has no native-allocated CellClass target"
+    );
+    assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+}
+
+#[test]
+fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 32;
+    sim.session.map_height = 32;
+
+    let target_id = sim.allocate_stable_id();
+    install_fly_aircraft(&mut sim, target_id, SimFixed::from_num(208));
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, request(13, 15, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let projectile_id = sim.allocate_stable_id();
+    let mut spawn = gsi_05_04_guided_projectile(
+        target_id,
+        ProjectileTarget::Entity(target_id),
+        ProjectileCoord::new(13 * 256 + 128, 15 * 256 + 64, 208),
+    );
+    spawn.origin = ProjectileCoord::new(1024, 1024, 0);
+    sim.admit_projectile(projectile_id, spawn);
+    sim.lifecycle_test_events.clear();
+
+    sim.uninit(target_id);
+
+    let projectile = sim.projectiles.get(projectile_id).unwrap();
+    assert_eq!(projectile.source_id, crate::sim::combat::RAD_NO_ATTACKER);
+    assert_eq!(projectile.target, ProjectileTarget::None);
+    assert!(projectile.in_logic_vector);
+    assert!(sim.lifecycle_test_events.iter().any(|event| {
+        *event
+            == LifecycleTestEvent::ProjectilePointerExpiredVisited {
+                expired_id: target_id,
+                projectile_id,
+                expired_resolvable: true,
+                projectile_resolvable: true,
+                source_id: crate::sim::combat::RAD_NO_ATTACKER,
+                target: ProjectileTarget::None,
+            }
+    }));
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "null-bullet-target", 0);
+    let mut restored = GameSnapshot::load(&bytes)
+        .expect("null Bullet target snapshot")
+        .sim;
+    restored
+        .restore_after_snapshot_load()
+        .expect("null Bullet target remains valid on restore");
+    assert_eq!(
+        restored.projectiles.get(projectile_id).unwrap().target,
+        ProjectileTarget::None
+    );
+    assert!(restored.object_ai_visit_one(projectile_id, None, ObjectAiCtx::default()));
+    assert!(restored.pending_projectile_detonations.is_empty());
+    let advanced = restored.projectiles.get(projectile_id).unwrap();
+    assert_eq!(advanced.target, ProjectileTarget::None);
+    assert!(
+        advanced.velocity.y < 0,
+        "guided Bullet AI steers toward native null's zero CoordStruct, not its cached target"
+    );
+}
+
+#[test]
+fn gsi_05_04_off_map_null_cleanup_is_idempotent_across_duplicate_uninit() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 8;
+    sim.session.map_height = 8;
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, request(9, 9, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(target_id),
+            ProjectileCoord::new(9 * 256 + 128, 9 * 256 + 64, 0),
+        ),
+    );
+
+    sim.uninit(target_id);
+    let after_first = sim.projectiles.get(projectile_id).unwrap().clone();
+    assert_eq!(after_first.target, ProjectileTarget::None);
+    sim.lifecycle_test_events.clear();
+
+    sim.uninit(target_id);
+
+    assert_eq!(sim.projectiles.get(projectile_id).unwrap(), &after_first);
+    assert_eq!(sim.substrate.pending_delete, vec![target_id, target_id]);
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                LifecycleTestEvent::ProjectilePointerExpiredVisited {
+                    expired_id,
+                    projectile_id: visited_id,
+                    source_id: crate::sim::combat::RAD_NO_ATTACKER,
+                    target: ProjectileTarget::None,
+                    ..
+                } if *expired_id == target_id && *visited_id == projectile_id
+            ))
+            .count(),
+        1,
+        "the repeated UnInit performs one direct, idempotent Bullet callback"
+    );
+}
+
+#[test]
+fn gsi_05_04_projectile_listener_keeps_mixed_object_construction_order() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+
+    let entity_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, entity_id, EntityCategory::Unit);
+
+    let projectile_id = sim.allocate_stable_id();
+    let target_id = 5;
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            target_id,
+            ProjectileTarget::Entity(target_id),
+            ProjectileCoord::new(2 * 256, 3 * 256, 0),
+        ),
+    );
+
+    let anim_id = sim.allocate_stable_id();
+    insert_anim(&mut sim, anim_id, false);
+    let particle_id = sim.allocate_stable_id();
+    insert_particle_system(&mut sim, particle_id);
+    assert_eq!(sim.allocate_stable_id(), target_id);
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    let _ = sim.reveal(target_id);
+    sim.lifecycle_test_events.clear();
+
+    sim.uninit(target_id);
+
+    let visited = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::UninitRemovalListenerVisited {
+                expired_id,
+                listener_id,
+                ..
+            } if *expired_id == target_id => Some(*listener_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visited,
+        vec![
+            entity_id,
+            projectile_id,
+            anim_id,
+            particle_id,
+            target_id,
+            entity_id,
+            projectile_id,
+            anim_id,
+            particle_id,
+            target_id,
+        ]
+    );
+    assert!(sim.lifecycle_test_events.iter().any(|event| matches!(
+        event,
+        LifecycleTestEvent::ProjectilePointerExpiredVisited {
+            expired_id,
+            projectile_id: visited_id,
+            expired_resolvable: true,
+            projectile_resolvable: true,
+            ..
+        } if *expired_id == target_id && *visited_id == projectile_id
+    )));
+    assert!(sim.projectiles.get(projectile_id).is_some());
+    assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+}
+
+fn gsi_01_05_damage_rules() -> crate::rules::ruleset::RuleSet {
+    crate::rules::ruleset::RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[InfantryTypes]\n\
+             [VehicleTypes]\n0=VICTIM\n1=SUCCESSOR\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n0=DUPBLDG\n\
+             [Warheads]\n0=KILLWH\n\
+             [VICTIM]\nStrength=30\nArmor=light\n\
+             [SUCCESSOR]\nStrength=30\nArmor=light\n\
+             [DUPBLDG]\nStrength=10\nArmor=concrete\nFoundation=2x1\n\
+             [KILLWH]\nCellSpread=0\nPercentAtMax=1\n\
+             Verses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("Logic-slot damage fixture rules")
+}
+
+#[test]
+fn gsi_01_05_lethal_bullet_commits_receiver_before_retirement_and_double_compaction() {
+    let rules = gsi_01_05_damage_rules();
+    let mut sim = Simulation::new();
+    let victim_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, victim_id, EntityCategory::Unit);
+    let victim_type = sim.interner.intern("VICTIM");
+    {
+        let victim = sim.substrate.entities.get_mut(victim_id).unwrap();
+        victim.type_ref = victim_type;
+        victim.health.current = 10;
+        victim.health.max = 10;
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(victim_id, common_raw_request(5, 6, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let successor_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, successor_id, EntityCategory::Unit);
+    let successor_type = sim.interner.intern("SUCCESSOR");
+    sim.substrate
+        .entities
+        .get_mut(successor_id)
+        .unwrap()
+        .type_ref = successor_type;
+    assert!(matches!(
+        sim.try_reveal_entity(successor_id, common_raw_request(8, 9, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let projectile_id = sim.allocate_stable_id();
+    let impact = ProjectileCoord::new(5 * 256 + 128, 6 * 256 + 128, 0);
+    let mut spawn = gsi_05_02_projectile(crate::sim::combat::RAD_NO_ATTACKER, Some(0));
+    spawn.origin = impact;
+    spawn.target = ProjectileTarget::Entity(victim_id);
+    spawn.initial_target_position = impact;
+    spawn.payload = ProjectilePayload {
+        base_damage: 10,
+        warhead: sim.interner.intern("KILLWH"),
+        weapon: sim.interner.intern("MISSINGWEAPON"),
+        owner: sim.interner.intern("Americans"),
+    };
+    sim.admit_projectile(projectile_id, spawn);
+    sim.set_logic_order_for_test(vec![projectile_id, victim_id, successor_id]);
+    sim.lifecycle_test_events.clear();
+
+    let mut visited = Vec::new();
+    sim.for_each_live_object(|sim, id| {
+        visited.push(id);
+        assert!(sim.object_ai_visit_one(id, Some(&rules), ObjectAiCtx::default()));
+    });
+
+    assert_eq!(visited, vec![projectile_id]);
+    assert_eq!(sim.live_object_order_snapshot(), vec![successor_id]);
+    let victim = sim
+        .substrate
+        .entities
+        .get(victim_id)
+        .expect("fatal receiver remains resolvable until common drain");
+    assert!(!victim.lifecycle.object_alive);
+    assert!(victim.lifecycle.in_limbo);
+    assert_eq!(victim.mission.ai_counter(), 0);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(successor_id)
+            .unwrap()
+            .mission
+            .ai_counter(),
+        0,
+        "receiver removal followed by current Bullet removal skips the shifted successor"
+    );
+    assert_eq!(sim.substrate.pending_delete, vec![victim_id, projectile_id]);
+    assert!(sim.pending_projectile_detonations.is_empty());
+    assert!(sim.projectiles.get(projectile_id).is_some());
+    assert!(!sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+
+    let queued = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::PendingDeleteQueued { stable_id } => Some(*stable_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        queued,
+        vec![victim_id, projectile_id],
+        "fatal receiver UnInit completes before Bullet UnInit/retirement"
+    );
+}
+
+#[test]
+fn gsi_01_05_terminal_wave_damages_once_before_single_current_removal() {
+    let rules = gsi_01_05_damage_rules();
+    let mut sim = Simulation::new();
+    let victim_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, victim_id, EntityCategory::Unit);
+    let victim_type = sim.interner.intern("VICTIM");
+    sim.substrate.entities.get_mut(victim_id).unwrap().type_ref = victim_type;
+    sim.substrate.entities.get_mut(victim_id).unwrap().health = Health {
+        current: 30,
+        max: 30,
+    };
+    assert!(matches!(
+        sim.try_reveal_entity(victim_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let successor_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, successor_id, EntityCategory::Unit);
+    let successor_type = sim.interner.intern("SUCCESSOR");
+    sim.substrate
+        .entities
+        .get_mut(successor_id)
+        .unwrap()
+        .type_ref = successor_type;
+    assert!(matches!(
+        sim.try_reveal_entity(successor_id, common_raw_request(8, 9, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new(
+        0,
+        ProjectileCoord::new(4 * 256, 5 * 256, 0),
+        ProjectileCoord::new(5 * 256, 5 * 256, 0),
+    )
+    .with_damage_payload(WaveDamagePayload {
+        firer_id: crate::sim::combat::RAD_NO_ATTACKER,
+        base_damage: 10,
+        warhead: sim.interner.intern("KILLWH"),
+    });
+    wave.lifetime = 0;
+    wave.replace_recorded_cells(vec![WaveRecordedCell { rx: 4, ry: 5 }]);
+    sim.admit_wave(wave_id, wave);
+    sim.set_logic_order_for_test(vec![wave_id, victim_id, successor_id]);
+    sim.lifecycle_test_events.clear();
+
+    let mut visited = Vec::new();
+    sim.for_each_live_object(|sim, id| {
+        visited.push(id);
+        assert!(sim.object_ai_visit_one(id, Some(&rules), ObjectAiCtx::default()));
+    });
+
+    assert_eq!(visited, vec![wave_id, successor_id]);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(victim_id)
+            .unwrap()
+            .health
+            .current,
+        20,
+        "Wave receiver fires once at its Logic slot and is not replayed later"
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(victim_id)
+            .unwrap()
+            .mission
+            .ai_counter(),
+        0,
+        "retiring the current Wave shifts and skips the victim slot once"
+    );
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(successor_id)
+            .unwrap()
+            .mission
+            .ai_counter(),
+        1
+    );
+    assert!(sim.pending_wave_damage_requests.is_empty());
+    assert_eq!(sim.substrate.pending_delete, vec![wave_id]);
+    assert_eq!(
+        sim.live_object_order_snapshot(),
+        vec![victim_id, successor_id]
+    );
+    assert!(sim.waves.get(wave_id).is_some());
+    assert!(!sim.waves.get(wave_id).unwrap().in_logic_vector);
+    assert_eq!(
+        sim.lifecycle_test_events
+            .iter()
+            .filter(|event| {
+                **event == (LifecycleTestEvent::PendingDeleteQueued { stable_id: wave_id })
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn gsi_01_05_wave_reselects_live_cell_list_after_fatal_receiver_unmark() {
+    let rules = gsi_01_05_damage_rules();
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+
+    let building_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, building_id, EntityCategory::Structure);
+    let building_type = sim.interner.intern("DUPBLDG");
+    {
+        let building = sim.substrate.entities.get_mut(building_id).unwrap();
+        building.type_ref = building_type;
+        building.foundation = "2x1".to_string();
+        building.health.current = 10;
+        building.health.max = 10;
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(building_id, common_raw_request(4, 5, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert!(sim.substrate.occupancy.contains_entity(4, 5, building_id));
+    assert!(sim.substrate.occupancy.contains_entity(5, 5, building_id));
+
+    let wave_id = sim.allocate_stable_id();
+    let mut wave = Wave::new(
+        0,
+        ProjectileCoord::new(4 * 256, 5 * 256, 0),
+        ProjectileCoord::new(6 * 256, 5 * 256, 0),
+    )
+    .with_damage_payload(WaveDamagePayload {
+        firer_id: crate::sim::combat::RAD_NO_ATTACKER,
+        base_damage: 10,
+        warhead: sim.interner.intern("KILLWH"),
+    });
+    wave.lifetime = 0;
+    wave.replace_recorded_cells(vec![
+        WaveRecordedCell { rx: 4, ry: 5 },
+        WaveRecordedCell { rx: 5, ry: 5 },
+    ]);
+    sim.admit_wave(wave_id, wave);
+    sim.set_logic_order_for_test(vec![wave_id, building_id]);
+    sim.lifecycle_test_events.clear();
+
+    assert!(sim.object_ai_visit_one(wave_id, Some(&rules), ObjectAiCtx::default()));
+
+    let selected = sim
+        .lifecycle_test_events
+        .iter()
+        .filter_map(|event| match event {
+            LifecycleTestEvent::WaveDamageReceiverSelected {
+                wave_id: selected_wave,
+                target_id,
+            } if *selected_wave == wave_id => Some(*target_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected,
+        vec![building_id],
+        "fatal UnInit from the first cell removes the 2x1 foundation entry before the second recorded cell selects its current occupants"
+    );
+    let building = sim.substrate.entities.get(building_id).unwrap();
+    assert!(!building.lifecycle.object_alive);
+    assert!(building.lifecycle.in_limbo);
+    assert!(!sim.substrate.occupancy.contains_entity(4, 5, building_id));
+    assert!(!sim.substrate.occupancy.contains_entity(5, 5, building_id));
+    assert_eq!(sim.substrate.pending_delete, vec![building_id, wave_id]);
+    assert!(sim.pending_wave_damage_requests.is_empty());
+}
+
+#[test]
+fn gsi_05_02_restore_rejects_each_live_modeled_family_missing_from_logic() {
+    let mut terrain = Simulation::new();
+    let terrain_id = terrain.allocate_stable_id();
+    terrain.production.terrain_objects.insert(
+        terrain_id,
+        TerrainObjectState {
+            stable_id: terrain_id,
+            in_logic_vector: false,
+            type_ref: terrain.interner.intern("TREE01"),
+            rx: 1,
+            ry: 1,
+            health: 1,
+            max_health: 1,
+            occupation_bits: 0,
+            lifecycle: TerrainObjectLifecycle::Live,
+        },
+    );
+    assert_eq!(
+        terrain.restore_after_snapshot_load(),
+        Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+            registry: "TerrainObjectStore",
+            object_id: terrain_id,
+        })
+    );
+
+    let mut projectile = Simulation::new();
+    let projectile_id = projectile.allocate_stable_id();
+    projectile
+        .projectiles
+        .spawn(projectile_id, gsi_05_02_projectile(0, None));
+    assert_eq!(
+        projectile.restore_after_snapshot_load(),
+        Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+            registry: "ProjectileStore",
+            object_id: projectile_id,
+        })
+    );
+
+    let mut wave = Simulation::new();
+    let wave_id = wave.allocate_stable_id();
+    wave.waves.spawn(
+        wave_id,
+        Wave::new(
+            3,
+            ProjectileCoord::new(0, 0, 0),
+            ProjectileCoord::new(1, 0, 0),
+        ),
+    );
+    assert_eq!(
+        wave.restore_after_snapshot_load(),
+        Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+            registry: "WaveStore",
+            object_id: wave_id,
+        })
+    );
 }
 
 #[test]

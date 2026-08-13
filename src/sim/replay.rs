@@ -10,6 +10,7 @@
 //! parity tests. It is deliberately separate from [`NativeReplay`].
 
 use std::collections::BTreeMap;
+use std::num::NonZeroI32;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -21,7 +22,11 @@ use crate::sim::command::{COMMAND_RECORD_LEN, CommandEnvelope, CommandRecord};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::world::{Simulation, TickLane, TriggerInputs};
 
-/// Value written by the retail executable at the start of every recording.
+/// Value written by the compiled legacy recorder at the start of a stream.
+///
+/// Active retail YR playback does not reject other values, and its record bit
+/// is unreachable; this constant is therefore a tooling default, not a
+/// playback version gate.
 pub const NATIVE_REPLAY_VERSION: u32 = 10;
 /// Exact byte width of the seven-field retail recording header.
 pub const NATIVE_REPLAY_HEADER_LEN: usize = 0x1d0;
@@ -30,9 +35,11 @@ pub const NATIVE_REPLAY_SCENARIO_NAME_LEN: usize = 0x104;
 /// Raw retail options block stored at the end of the native header.
 pub const NATIVE_REPLAY_OPTIONS_LEN: usize = 0xb8;
 
-/// Recording-mode bits used by the retail main loop.
+/// Legacy recorder bit. No active retail YR caller sets it.
 pub const REPLAY_FLAG_RECORD: u32 = 0x01;
+/// Playback bit set when session preparation opens an external `RECORD.BIN`.
 pub const REPLAY_FLAG_PLAYBACK: u32 = 0x02;
+/// Availability bit set by active retail YR's `-ATTRACT` command-line path.
 pub const REPLAY_FLAG_AVAILABLE: u32 = 0x04;
 
 /// Malformed native recording data.
@@ -46,6 +53,8 @@ pub enum NativeReplayError {
     CountOverflow { field: &'static str, count: usize },
     #[error("native replay command record is malformed: {0}")]
     Command(#[from] crate::sim::command::CommandRecordError),
+    #[error("native replay frame order does not allow {operation}")]
+    FrameOrder { operation: &'static str },
 }
 
 /// Exact seven-field startup header used by retail recordings.
@@ -62,6 +71,25 @@ pub struct NativeReplayHeader {
     pub session_value: u32,
     pub special_flags: u32,
     options: [u8; NATIVE_REPLAY_OPTIONS_LEN],
+}
+
+impl Default for NativeReplayHeader {
+    /// An explicit zero-initialized destination for best-effort header reads.
+    ///
+    /// Callers that need native-like preexisting values should supply those
+    /// values instead; short reads preserve the unread suffix of that
+    /// destination.
+    fn default() -> Self {
+        Self {
+            version: 0,
+            seed: 0,
+            scenario_value: 0,
+            scenario_name: [0; NATIVE_REPLAY_SCENARIO_NAME_LEN],
+            session_value: 0,
+            special_flags: 0,
+            options: [0; NATIVE_REPLAY_OPTIONS_LEN],
+        }
+    }
 }
 
 impl NativeReplayHeader {
@@ -231,7 +259,11 @@ impl NativeReplayFrame {
     }
 }
 
-/// Exact native recording document.
+/// Eager legacy-format document codec used by tooling and fixtures.
+///
+/// Active retail YR cannot enter the corresponding recording path, and its
+/// playback path is streaming and tolerant of presentation short reads. Use
+/// [`NativeReplayStream`] when reproducing playback behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeReplay {
     pub header: NativeReplayHeader,
@@ -351,6 +383,196 @@ impl<'a, S> NativeReplayPlayback<'a, S> {
     }
 }
 
+/// Exact successful updates from the pre-object playback reads of one frame.
+///
+/// Retail ignores the return value of several reads. A corrupt short read can
+/// therefore leave native stack/storage bytes stale. This safe translation
+/// consumes the same available bytes but exposes only fully read values; it
+/// never manufactures updates from a partial value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeReplayPresentationUpdate {
+    pub view: Option<[u8; 8]>,
+    pub selection_count: Option<i32>,
+    pub selection_checksum: Option<u32>,
+    pub selected_objects: Vec<u32>,
+    pub cursor: [Option<u32>; 2],
+}
+
+/// Session-owned command-transfer cadence for attract playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeReplayCadence {
+    pub game_mode: i32,
+    pub timing_mode: i32,
+    pub frame_send_rate: NonZeroI32,
+}
+
+impl NativeReplayCadence {
+    /// Whether retail's late command rung reads a batch on this frame.
+    ///
+    /// VERIFIED gamemd.exe `Process_Command_Queues` caller at `0x00647260`:
+    /// frame zero reads only in game mode zero. Positive frames in modes other
+    /// than zero/five use the negotiated send-rate divisor only for timing
+    /// selector two; negative frames and all remaining paths read every frame.
+    pub fn reads_command_batch(self, frame: i32) -> bool {
+        if frame == 0 {
+            return self.game_mode == 0;
+        }
+        if frame > 0 && self.game_mode != 0 && self.game_mode != 5 && self.timing_mode == 2 {
+            return frame % self.frame_send_rate.get() == 0;
+        }
+        true
+    }
+}
+
+/// On-demand active-retail playback cursor over one shared byte stream.
+///
+/// The header initializes a normal scenario first. Each frame then has a
+/// best-effort presentation rung and an optional, fatal-boundary command rung.
+pub struct NativeReplayStream<'a, S> {
+    pub state: S,
+    header: NativeReplayHeader,
+    bytes: &'a [u8],
+    cursor: usize,
+    frame_open: bool,
+}
+
+impl<'a, S> NativeReplayStream<'a, S> {
+    /// Consume the seven header reads and initialize the scenario normally.
+    ///
+    /// VERIFIED gamemd.exe attract playback initialization: the seven reads
+    /// total `0x1D0` bytes when complete, but neither read counts nor the
+    /// version word are checked. Partial reads overwrite only their returned
+    /// prefix, so the caller supplies the initialized destination explicitly.
+    pub fn initialize<E>(
+        bytes: &'a [u8],
+        mut header: NativeReplayHeader,
+        initialize_scenario: impl FnOnce(&NativeReplayHeader) -> std::result::Result<S, E>,
+    ) -> std::result::Result<Self, E> {
+        let mut cursor = 0;
+        read_stream_u32(bytes, &mut cursor, &mut header.version);
+        read_stream_u32(bytes, &mut cursor, &mut header.seed);
+        read_stream_u32(bytes, &mut cursor, &mut header.scenario_value);
+        read_stream_into(bytes, &mut cursor, &mut header.scenario_name);
+        read_stream_u32(bytes, &mut cursor, &mut header.session_value);
+        read_stream_u32(bytes, &mut cursor, &mut header.special_flags);
+        read_stream_into(bytes, &mut cursor, &mut header.options);
+
+        let state = initialize_scenario(&header)?;
+        Ok(Self {
+            state,
+            header,
+            bytes,
+            cursor,
+            frame_open: false,
+        })
+    }
+
+    pub fn header(&self) -> &NativeReplayHeader {
+        &self.header
+    }
+
+    /// Consume the pre-object presentation reads for one frame.
+    ///
+    /// VERIFIED gamemd.exe main-tick playback rung: view and selection count
+    /// update only on exact reads; an exact selection count causes the ignored-
+    /// return checksum read and a strictly-positive token loop. Cursor read
+    /// returns are ignored. Partial bytes are still consumed from the stream.
+    pub fn begin_frame(
+        &mut self,
+    ) -> std::result::Result<NativeReplayPresentationUpdate, NativeReplayError> {
+        if self.frame_open {
+            return Err(NativeReplayError::FrameOrder {
+                operation: "begin_frame while the previous frame is open",
+            });
+        }
+        self.frame_open = true;
+
+        let view = self.read_best_effort::<8>();
+        let selection_count = self.read_best_effort::<4>().map(i32::from_le_bytes);
+        let mut selection_checksum = None;
+        let mut selected_objects = Vec::new();
+        if let Some(count) = selection_count {
+            selection_checksum = self.read_best_effort::<4>().map(u32::from_le_bytes);
+            if count > 0 {
+                // Once EOF is reached, further native reads cannot advance or
+                // produce a successful token. Breaking is output/cursor
+                // equivalent and avoids a corrupt count becoming an OOM/DoS.
+                for _ in 0..count {
+                    match self.read_best_effort::<4>() {
+                        Some(token) => selected_objects.push(u32::from_le_bytes(token)),
+                        None => break,
+                    }
+                }
+            }
+        }
+        let cursor = [
+            self.read_best_effort::<4>().map(u32::from_le_bytes),
+            self.read_best_effort::<4>().map(u32::from_le_bytes),
+        ];
+
+        Ok(NativeReplayPresentationUpdate {
+            view,
+            selection_count,
+            selection_checksum,
+            selected_objects,
+            cursor,
+        })
+    }
+
+    /// Consume the late command rung when the session schedule selects it.
+    ///
+    /// An omitted rung reads no bytes. A selected rung requires an exact count
+    /// and exact `0x6F` bytes per positive-count command; any short read is the
+    /// retail game-stop boundary. Admission clears only command flag bit zero.
+    pub fn finish_frame(
+        &mut self,
+        read_batch: bool,
+    ) -> std::result::Result<Option<Vec<CommandRecord>>, NativeReplayError> {
+        if !self.frame_open {
+            return Err(NativeReplayError::FrameOrder {
+                operation: "finish_frame before begin_frame",
+            });
+        }
+        self.frame_open = false;
+        if !read_batch {
+            return Ok(None);
+        }
+
+        let command_count = i32::from_le_bytes(self.read_exact::<4>("command count")?);
+        let mut commands = Vec::new();
+        if command_count > 0 {
+            for _ in 0..command_count {
+                let record = self.read_exact::<COMMAND_RECORD_LEN>("command record")?;
+                commands.push(CommandRecord::admit_exact(&record)?);
+            }
+        }
+        Ok(Some(commands))
+    }
+
+    /// Finish through the verified native caller/session cadence.
+    pub fn finish_scheduled_frame(
+        &mut self,
+        frame: i32,
+        cadence: NativeReplayCadence,
+    ) -> std::result::Result<Option<Vec<CommandRecord>>, NativeReplayError> {
+        self.finish_frame(cadence.reads_command_batch(frame))
+    }
+
+    fn read_best_effort<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let mut value = [0; N];
+        read_stream_into(self.bytes, &mut self.cursor, &mut value).then_some(value)
+    }
+
+    fn read_exact<const N: usize>(
+        &mut self,
+        field: &'static str,
+    ) -> std::result::Result<[u8; N], NativeReplayError> {
+        let offset = self.cursor;
+        self.read_best_effort::<N>()
+            .ok_or(NativeReplayError::Truncated { offset, field })
+    }
+}
+
 /// Native wrapping selection checksum.
 pub fn selection_checksum(selected_objects: &[u32]) -> u32 {
     selected_objects
@@ -467,6 +689,23 @@ fn take<const N: usize>(
     let value = bytes[*cursor..end].try_into().unwrap();
     *cursor = end;
     Ok(value)
+}
+
+fn read_stream_u32(bytes: &[u8], cursor: &mut usize, destination: &mut u32) -> bool {
+    let mut value = destination.to_le_bytes();
+    let complete = read_stream_into(bytes, cursor, &mut value);
+    *destination = u32::from_le_bytes(value);
+    complete
+}
+
+/// Reproduce one `fread(destination, 1, destination.len())`-style transfer.
+/// The returned prefix is copied even when the requested width is unavailable.
+fn read_stream_into(bytes: &[u8], cursor: &mut usize, destination: &mut [u8]) -> bool {
+    let available = bytes.len().saturating_sub(*cursor).min(destination.len());
+    let end = *cursor + available;
+    destination[..available].copy_from_slice(&bytes[*cursor..end]);
+    *cursor = end;
+    available == destination.len()
 }
 
 /// Header for the Rust-only deterministic diagnostic log.
@@ -828,6 +1067,237 @@ mod tests {
             NativeReplay::decode_with_command_schedule(&bytes, |frame, _| frame != 0).unwrap(),
             replay
         );
+    }
+
+    #[test]
+    fn gsi_17_07_stream_header_accepts_nonstandard_and_partial_values_before_normal_init() {
+        let mut header = NativeReplayHeader::new(0x1234_5678, "arena.map");
+        header.version = 77;
+        let bytes = header.encode();
+        let playback =
+            NativeReplayStream::initialize(&bytes, NativeReplayHeader::default(), |loaded| {
+                Ok::<_, ()>((loaded.version, loaded.seed, loaded.scenario_name()))
+            })
+            .unwrap();
+        assert_eq!(playback.state, (77, 0x1234_5678, "arena.map".to_owned()));
+
+        let mut initialized = NativeReplayHeader::default();
+        initialized.version = 0x1122_3344;
+        initialized.seed = 0xaabb_ccdd;
+        let partial = [0xaa, 0xbb];
+        let playback = NativeReplayStream::initialize(&partial, initialized, |loaded| {
+            Ok::<_, ()>((loaded.version, loaded.seed))
+        })
+        .unwrap();
+        assert_eq!(playback.state, (0x1122_bbaa, 0xaabb_ccdd));
+        assert_eq!(playback.header().version, 0x1122_bbaa);
+    }
+
+    #[test]
+    fn gsi_17_07_presentation_short_reads_are_safe_until_the_fatal_command_rung() {
+        let header = NativeReplayHeader::new(1, "x.map").encode();
+        let mut exact_view = Vec::from([0x11; 8]);
+        let mut partial_count = exact_view.clone();
+        partial_count.extend_from_slice(&[1, 2]);
+
+        let mut partial_checksum = exact_view.clone();
+        partial_checksum.extend_from_slice(&1_i32.to_le_bytes());
+        partial_checksum.extend_from_slice(&[3, 4]);
+
+        let mut partial_token = exact_view.clone();
+        partial_token.extend_from_slice(&1_i32.to_le_bytes());
+        partial_token.extend_from_slice(&0x1234_u32.to_le_bytes());
+        partial_token.extend_from_slice(&[5, 6]);
+
+        let mut partial_cursor = exact_view.split_off(0);
+        partial_cursor.extend_from_slice(&0_i32.to_le_bytes());
+        partial_cursor.extend_from_slice(&0x5678_u32.to_le_bytes());
+        partial_cursor.extend_from_slice(&[7, 8]);
+
+        for (tail, expected_view, expected_count, expected_checksum) in [
+            (Vec::new(), None, None, None),
+            (vec![1, 2, 3], None, None, None),
+            (partial_count, Some([0x11; 8]), None, None),
+            (partial_checksum, Some([0x11; 8]), Some(1), None),
+            (partial_token, Some([0x11; 8]), Some(1), Some(0x1234)),
+            (partial_cursor, Some([0x11; 8]), Some(0), Some(0x5678)),
+        ] {
+            let mut bytes = header.to_vec();
+            bytes.extend_from_slice(&tail);
+            let mut playback =
+                NativeReplayStream::initialize(&bytes, NativeReplayHeader::default(), |_| {
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            let update = playback.begin_frame().unwrap();
+            assert_eq!(update.view, expected_view);
+            assert_eq!(update.selection_count, expected_count);
+            assert_eq!(update.selection_checksum, expected_checksum);
+            assert!(update.selected_objects.is_empty());
+            assert_eq!(update.cursor, [None, None]);
+            assert!(matches!(
+                playback.finish_frame(true),
+                Err(NativeReplayError::Truncated {
+                    field: "command count",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn gsi_17_07_omitted_batch_preserves_the_shared_cursor_for_the_next_frame() {
+        let mut command_bytes = [0x7b; COMMAND_RECORD_LEN];
+        command_bytes[0] = 0xfe;
+        command_bytes[1] = 0xa4;
+        command_bytes[2] = 3;
+        command_bytes[3..7].copy_from_slice(&2_i32.to_le_bytes());
+        let command = CommandRecord::decode_exact(&command_bytes).unwrap();
+        let replay = NativeReplay {
+            header: NativeReplayHeader::new(9, "x.map"),
+            frames: vec![
+                NativeReplayFrame::record(
+                    NativeReplayPresentation::new(
+                        [0x11; 8],
+                        vec![0x3400_0001, 0x3400_0002],
+                        [3, 4],
+                    ),
+                    1,
+                    false,
+                    std::iter::empty::<&CommandRecord>(),
+                ),
+                NativeReplayFrame::record(
+                    NativeReplayPresentation::new([0x22; 8], Vec::new(), [5, 6]),
+                    2,
+                    true,
+                    [&command],
+                ),
+            ],
+        };
+        let mut bytes = replay.encode().unwrap();
+        let admitted_flags_offset = bytes.len() - COMMAND_RECORD_LEN + 1;
+        bytes[admitted_flags_offset] = 0xa5;
+        let cadence = NativeReplayCadence {
+            game_mode: 1,
+            timing_mode: 2,
+            frame_send_rate: NonZeroI32::new(2).unwrap(),
+        };
+        let mut playback =
+            NativeReplayStream::initialize(&bytes, NativeReplayHeader::default(), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        let first = playback.begin_frame().unwrap();
+        assert_eq!(first.view, Some([0x11; 8]));
+        assert_eq!(first.selection_count, Some(2));
+        assert_eq!(first.selection_checksum, Some(0x6800_0003));
+        assert_eq!(first.selected_objects, [0x3400_0001, 0x3400_0002]);
+        assert_eq!(first.cursor, [Some(3), Some(4)]);
+        assert_eq!(playback.finish_scheduled_frame(1, cadence).unwrap(), None);
+
+        let second = playback.begin_frame().unwrap();
+        assert_eq!(second.view, Some([0x22; 8]));
+        assert_eq!(second.cursor, [Some(5), Some(6)]);
+        let commands = playback
+            .finish_scheduled_frame(2, cadence)
+            .unwrap()
+            .unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].flags(), 0xa4);
+        assert_eq!(commands[0].opcode(), 0xfe);
+        assert_eq!(commands[0].payload(), &command_bytes[7..]);
+    }
+
+    #[test]
+    fn gsi_17_07_negative_counts_are_empty_and_short_command_records_stop_playback() {
+        let mut bytes = NativeReplayHeader::new(1, "x.map").encode().to_vec();
+        bytes.extend_from_slice(&[0x44; 8]);
+        bytes.extend_from_slice(&(-3_i32).to_le_bytes());
+        bytes.extend_from_slice(&0x0102_0304_u32.to_le_bytes());
+        bytes.extend_from_slice(&7_u32.to_le_bytes());
+        bytes.extend_from_slice(&8_u32.to_le_bytes());
+        bytes.extend_from_slice(&(-2_i32).to_le_bytes());
+        let mut playback =
+            NativeReplayStream::initialize(&bytes, NativeReplayHeader::default(), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let update = playback.begin_frame().unwrap();
+        assert_eq!(update.selection_count, Some(-3));
+        assert_eq!(update.selection_checksum, Some(0x0102_0304));
+        assert!(update.selected_objects.is_empty());
+        assert_eq!(update.cursor, [Some(7), Some(8)]);
+        assert!(playback.finish_frame(true).unwrap().unwrap().is_empty());
+
+        let mut truncated = NativeReplayHeader::new(1, "x.map").encode().to_vec();
+        truncated.extend_from_slice(&[0; 8]);
+        truncated.extend_from_slice(&0_i32.to_le_bytes());
+        truncated.extend_from_slice(&0_u32.to_le_bytes());
+        truncated.extend_from_slice(&[0; 8]);
+        truncated.extend_from_slice(&1_i32.to_le_bytes());
+        truncated.extend_from_slice(&[0xcc; COMMAND_RECORD_LEN - 1]);
+        let mut playback =
+            NativeReplayStream::initialize(&truncated, NativeReplayHeader::default(), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        playback.begin_frame().unwrap();
+        assert!(matches!(
+            playback.finish_frame(true),
+            Err(NativeReplayError::Truncated {
+                field: "command record",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gsi_17_07_frame_order_and_native_cadence_are_explicit() {
+        let mode_zero = NativeReplayCadence {
+            game_mode: 0,
+            timing_mode: 2,
+            frame_send_rate: NonZeroI32::new(3).unwrap(),
+        };
+        let mode_five = NativeReplayCadence {
+            game_mode: 5,
+            ..mode_zero
+        };
+        let gated = NativeReplayCadence {
+            game_mode: 1,
+            ..mode_zero
+        };
+        let ungated_timing = NativeReplayCadence {
+            timing_mode: 1,
+            ..gated
+        };
+        assert!(mode_zero.reads_command_batch(0));
+        assert!(!gated.reads_command_batch(0));
+        assert!(gated.reads_command_batch(-1));
+        assert!(mode_zero.reads_command_batch(1));
+        assert!(mode_five.reads_command_batch(1));
+        assert!(ungated_timing.reads_command_batch(1));
+        assert!(!gated.reads_command_batch(1));
+        assert!(gated.reads_command_batch(3));
+
+        let bytes = NativeReplayHeader::new(1, "x.map").encode();
+        let mut playback =
+            NativeReplayStream::initialize(&bytes, NativeReplayHeader::default(), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(matches!(
+            playback.finish_frame(false),
+            Err(NativeReplayError::FrameOrder { .. })
+        ));
+        playback.begin_frame().unwrap();
+        assert!(matches!(
+            playback.begin_frame(),
+            Err(NativeReplayError::FrameOrder { .. })
+        ));
+        assert_eq!(playback.finish_frame(false).unwrap(), None);
+        playback.begin_frame().unwrap();
+        assert_eq!(playback.finish_frame(false).unwrap(), None);
     }
 
     #[test]

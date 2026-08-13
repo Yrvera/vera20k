@@ -96,7 +96,7 @@ use crate::sim::world::Simulation;
 // enforces exact map/rules/session metadata before stable-ID fixup.
 // Bumped 35 -> 36: lifecycle target and animation identity state is persisted.
 // Bumped 36 -> 37: process-global Main/MapGen RNG cursors are no longer
-// serialized; production load retains their live pre-load process state.
+// serialized; in-scenario production load retains their live process state.
 // Bumped 37 -> 38: DriveLocomotionRuntime persists the independent head-to
 // occupation footprint and whether the current-cell occupation was cleared.
 // Bumped 38 -> 39: overlay wall ownership became authoritative persisted state.
@@ -224,14 +224,29 @@ use crate::sim::world::Simulation;
 // payload, infantry subcell owners, fogged-object footprints, and per-house
 // sensor state are serialized and hashed.
 // Bumped 68 -> 69: CellClass per-cell cloak-owner words are serialized and hashed.
-const SNAPSHOT_VERSION: u32 = 69;
+// Bumped 69 -> 70: terrain, projectile, and wave stores dropped their local
+// counters after consolidation into the serialized global object-id source.
+// Bumped 70 -> 71: ProjectileTarget adds the explicit native null-target
+// discriminant and stores CellClass identity rather than a frozen target Vec3.
+// Bumped 71 -> 72: the snapshot prefix now carries explicit VERA product and
+// public-envelope identity plus the player-authored save description.
+const SNAPSHOT_VERSION: u32 = 72;
+
+const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
+const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
 
 /// Binary snapshot envelope — wraps the full `Simulation` state plus
 /// compatibility hashes for the map and rules that were active at save time.
 #[derive(Serialize, Deserialize)]
 pub struct GameSnapshot {
+    /// Stable VERA snapshot identity, independent of the file name.
+    pub product_magic: [u8; 8],
+    /// Public envelope contract. This changes only when the outer prefix does.
+    pub envelope_version: u32,
     /// Format version — checked on load to reject incompatible saves.
     pub version: u32,
+    /// Player-authored save description used by the load-game list.
+    pub description: String,
     /// Hash of the map file — caller verifies on load to ensure same map.
     pub map_hash: u64,
     /// Hash of the merged rules — caller verifies on load to ensure same rules.
@@ -251,7 +266,10 @@ pub struct GameSnapshot {
 /// so bincode can decode them as a prefix.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameSnapshotHeader {
+    pub product_magic: [u8; 8],
+    pub envelope_version: u32,
     pub version: u32,
+    pub description: String,
     pub map_hash: u64,
     pub rules_hash: u64,
     pub tick: u64,
@@ -259,9 +277,20 @@ pub struct GameSnapshotHeader {
     pub map_name: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct GameSnapshotPreamble {
+    product_magic: [u8; 8],
+    envelope_version: u32,
+    version: u32,
+}
+
 /// Errors that can occur during snapshot deserialization.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
+    #[error("snapshot product identity {found:?} is not a VERA20k save")]
+    ProductMismatch { found: [u8; 8] },
+    #[error("snapshot envelope version {found} does not match expected {expected}")]
+    EnvelopeVersionMismatch { expected: u32, found: u32 },
     #[error("snapshot version {found} does not match expected {expected}")]
     VersionMismatch { expected: u32, found: u32 },
     #[error("map hash {found:#018x} does not match active map {expected:#018x}")]
@@ -317,6 +346,26 @@ pub enum SnapshotRestoreError {
     DuplicateLogicIdentity { object_id: u64 },
     #[error("LogicVector object id {object_id} has no restored registry identity")]
     MissingLogicIdentity { object_id: u64 },
+    #[error("live {registry} object id {object_id} is absent from LogicVector")]
+    MissingRequiredLogicIdentity {
+        registry: &'static str,
+        object_id: u64,
+    },
+    #[error("inactive {registry} object id {object_id} remains in LogicVector")]
+    InactiveLogicIdentity {
+        registry: &'static str,
+        object_id: u64,
+    },
+    #[error("terminal {registry} object id {object_id} is absent from PendingDeleteList")]
+    MissingDeferredDeleteIdentity {
+        registry: &'static str,
+        object_id: u64,
+    },
+    #[error("PendingDeleteList {registry} object id {object_id} remains in LogicVector")]
+    DeferredDeleteLogicIdentity {
+        registry: &'static str,
+        object_id: u64,
+    },
     #[error(
         "{source_registry} object {source_id} field {field} references missing {target_registry} object {target_id}"
     )]
@@ -352,7 +401,10 @@ pub enum SnapshotRestoreError {
 /// Internal borrow-based envelope for serialization (avoids cloning Simulation).
 #[derive(Serialize)]
 struct GameSnapshotRef<'a> {
+    product_magic: [u8; 8],
+    envelope_version: u32,
     version: u32,
+    description: String,
     map_hash: u64,
     rules_hash: u64,
     tick: u64,
@@ -367,10 +419,20 @@ impl GameSnapshot {
         map_hash: u64,
         rules_hash: u64,
         map_name: &str,
+        description: &str,
         save_timestamp: u64,
     ) -> Vec<u8> {
+        // Retail provenance: Save_Game_To_File @ 0x0067CEF0 supplies a distinct
+        // outer file identity; Write_Savegame_Metadata_To_Storage @ 0x006812E0
+        // writes public Version=1, exact internal version, and Scenario
+        // Description. The active list admits only an exact internal-version
+        // match at 0x00559ED0..0x0055A04A. VERA keeps its Rust-native bincode
+        // body while making the same load-bearing envelope identities explicit.
         let snapshot = GameSnapshotRef {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
             version: SNAPSHOT_VERSION,
+            description: description.to_string(),
             map_hash,
             rules_hash,
             tick: sim.session.tick,
@@ -391,6 +453,7 @@ impl GameSnapshot {
         sim: &Simulation,
         map_hash: u64,
         rules_hash: u64,
+        description: &str,
         save_timestamp: u64,
     ) -> Vec<u8> {
         Self::serialize(
@@ -398,6 +461,7 @@ impl GameSnapshot {
             map_hash,
             rules_hash,
             &sim.session.map_name,
+            description,
             save_timestamp,
         )
     }
@@ -411,13 +475,22 @@ impl GameSnapshot {
         map_name: &str,
         save_timestamp: u64,
     ) -> Vec<u8> {
-        Self::serialize(sim, map_hash, rules_hash, map_name, save_timestamp)
+        Self::serialize(
+            sim,
+            map_hash,
+            rules_hash,
+            map_name,
+            map_name,
+            save_timestamp,
+        )
     }
 
     /// Deserialize a current-version snapshot without content validation.
     ///
     /// This exists for internal tests and diagnostics. Production restoration
-    /// must use [`Self::load_validated`].
+    /// must use [`Self::load_validated`]. Like retail's post-read Scenario
+    /// reinitializer, full deserialization resets the embedded Scenario RNG to
+    /// `Random__Seed(0)` even though its saved bytes remain in the wire layout.
     pub(crate) fn load_unchecked(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
         let _ = Self::read_header(bytes)?;
         Ok(bincode::deserialize(bytes)?)
@@ -435,8 +508,9 @@ impl GameSnapshot {
     /// Version and compatibility metadata are rejected before the simulation
     /// body is admitted. The duplicated preview metadata must also agree with
     /// `ScenarioSession`; no warning/continue or zero-hash sentinel exists.
-    /// The returned Main/MapGen fields are deserialize placeholders; the app's
-    /// production load seam replaces them with the live process cursors.
+    /// The returned Scenario RNG is the canonical seed-zero state. Main/MapGen
+    /// fields are deserialize placeholders; the app's in-scenario production
+    /// load seam replaces them with the live process cursors and seed.
     pub fn load_validated(
         bytes: &[u8],
         expected_map_hash: u64,
@@ -482,14 +556,25 @@ impl GameSnapshot {
     /// Read only the header fields from a save file without deserializing the
     /// full Simulation. Useful for listing saves in the UI.
     pub fn read_header(bytes: &[u8]) -> Result<GameSnapshotHeader, SnapshotError> {
-        let header: GameSnapshotHeader = bincode::deserialize(bytes)?;
-        if header.version != SNAPSHOT_VERSION {
-            return Err(SnapshotError::VersionMismatch {
-                expected: SNAPSHOT_VERSION,
-                found: header.version,
+        let preamble: GameSnapshotPreamble = bincode::deserialize(bytes)?;
+        if preamble.product_magic != SNAPSHOT_PRODUCT_MAGIC {
+            return Err(SnapshotError::ProductMismatch {
+                found: preamble.product_magic,
             });
         }
-        Ok(header)
+        if preamble.envelope_version != SNAPSHOT_ENVELOPE_VERSION {
+            return Err(SnapshotError::EnvelopeVersionMismatch {
+                expected: SNAPSHOT_ENVELOPE_VERSION,
+                found: preamble.envelope_version,
+            });
+        }
+        if preamble.version != SNAPSHOT_VERSION {
+            return Err(SnapshotError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                found: preamble.version,
+            });
+        }
+        Ok(bincode::deserialize(bytes)?)
     }
 }
 
@@ -525,6 +610,28 @@ impl RestoredObjectIndex {
                 registry_id,
                 system.stable_id,
             )?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, terrain) in &sim.production.terrain_objects {
+            Self::register(
+                &mut identities,
+                "TerrainObjectStore",
+                registry_id,
+                terrain.stable_id,
+            )?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, projectile) in sim.projectiles.iter() {
+            Self::register(
+                &mut identities,
+                "ProjectileStore",
+                registry_id,
+                projectile.id,
+            )?;
+            highest_id = highest_id.max(registry_id);
+        }
+        for (&registry_id, wave) in sim.waves.iter() {
+            Self::register(&mut identities, "WaveStore", registry_id, wave.id)?;
             highest_id = highest_id.max(registry_id);
         }
 
@@ -645,6 +752,7 @@ fn restore_object_references(
     use crate::sim::game_entity::BunkerLink;
     use crate::sim::movement::homing_movement::HomingTarget;
     use crate::sim::passenger::PassengerRole;
+    use crate::sim::projectile::ProjectileTarget;
 
     let entity_ids: BTreeSet<u64> = sim.substrate.entities.keys_sorted().into_iter().collect();
     let anim_ids: BTreeSet<u64> = sim.substrate.anims.iter().map(|(&id, _)| id).collect();
@@ -681,6 +789,60 @@ fn restore_object_references(
                     passenger_id,
                 )?;
             }
+        }
+
+        // SpawnManagerClass__Load @ 0x006B7F10 queues every non-null
+        // SpawnControl child pointer plus its current and queued target slots
+        // for the common post-load swizzle pass. Rust keeps stable IDs in those
+        // fields, so admission requires the same references to resolve before
+        // any cleanup mutates the restored graph.
+        if let Some(manager) = entity.spawn_manager.as_ref() {
+            for slot in &manager.slots {
+                if let Some(spawn_id) = slot.spawn {
+                    require_resolved_reference(
+                        entity_ids.contains(&spawn_id),
+                        "EntityStore",
+                        entity_id,
+                        "spawn_manager.slots.spawn",
+                        "EntityStore",
+                        spawn_id,
+                    )?;
+                }
+            }
+            if let Some(TargetKind::Entity(target_id)) = manager.current_target {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "spawn_manager.current_target",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+            if let Some(TargetKind::Entity(target_id)) = manager.queued_target {
+                require_resolved_reference(
+                    entity_ids.contains(&target_id),
+                    "EntityStore",
+                    entity_id,
+                    "spawn_manager.queued_target",
+                    "EntityStore",
+                    target_id,
+                )?;
+            }
+        }
+
+        // TechnoClass__Load @ 0x0070BF50 queues the spawned-child parent
+        // pointer at Techno+0x2D4. It is an independently swizzled slot: native
+        // load does not require a reciprocal SpawnControl entry.
+        if let Some(parent_id) = entity.spawn_owner_id {
+            require_resolved_reference(
+                entity_ids.contains(&parent_id),
+                "EntityStore",
+                entity_id,
+                "spawn_owner_id",
+                "EntityStore",
+                parent_id,
+            )?;
         }
 
         if let Some(TargetKind::Entity(target_id)) =
@@ -967,6 +1129,33 @@ fn restore_object_references(
         }
     }
 
+    // BulletClass__Load @ 0x0046AE70 queues the non-null source/firer pointer
+    // at +0xB0 and target pointer at +0x10C for global swizzling. VERA's zero
+    // source sentinel and non-entity Cell/null targets are the corresponding
+    // null/non-pointer representations and therefore need no object lookup.
+    for (&projectile_id, projectile) in sim.projectiles.iter() {
+        if projectile.source_id != crate::sim::combat::RAD_NO_ATTACKER {
+            require_resolved_reference(
+                entity_ids.contains(&projectile.source_id),
+                "ProjectileStore",
+                projectile_id,
+                "source_id",
+                "EntityStore",
+                projectile.source_id,
+            )?;
+        }
+        if let ProjectileTarget::Entity(target_id) = projectile.target {
+            require_resolved_reference(
+                entity_ids.contains(&target_id),
+                "ProjectileStore",
+                projectile_id,
+                "target",
+                "EntityStore",
+                target_id,
+            )?;
+        }
+    }
+
     for &object_id in &sim.substrate.pending_delete {
         require_resolved_reference(
             identities.contains_key(&object_id),
@@ -1077,6 +1266,72 @@ impl Simulation {
             }
             if !identities.contains_key(&object_id) {
                 return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
+            }
+        }
+        let pending_delete_ids = self
+            .substrate
+            .pending_delete
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for terrain in self.production.terrain_objects.values() {
+            let in_logic = seen_logic.contains(&terrain.stable_id);
+            let pending_delete = pending_delete_ids.contains(&terrain.stable_id);
+            if terrain.is_live() && !in_logic {
+                return Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+                    registry: "TerrainObjectStore",
+                    object_id: terrain.stable_id,
+                });
+            }
+            if !terrain.is_live() && in_logic {
+                return Err(SnapshotRestoreError::InactiveLogicIdentity {
+                    registry: "TerrainObjectStore",
+                    object_id: terrain.stable_id,
+                });
+            }
+            if terrain.is_live() && pending_delete {
+                return Err(SnapshotRestoreError::DeferredDeleteLogicIdentity {
+                    registry: "TerrainObjectStore",
+                    object_id: terrain.stable_id,
+                });
+            }
+            if !terrain.is_live() && !pending_delete {
+                return Err(SnapshotRestoreError::MissingDeferredDeleteIdentity {
+                    registry: "TerrainObjectStore",
+                    object_id: terrain.stable_id,
+                });
+            }
+        }
+        for (&object_id, _) in self.projectiles.iter() {
+            let in_logic = seen_logic.contains(&object_id);
+            let pending_delete = pending_delete_ids.contains(&object_id);
+            if !in_logic && !pending_delete {
+                return Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+                    registry: "ProjectileStore",
+                    object_id,
+                });
+            }
+            if in_logic && pending_delete {
+                return Err(SnapshotRestoreError::DeferredDeleteLogicIdentity {
+                    registry: "ProjectileStore",
+                    object_id,
+                });
+            }
+        }
+        for (&object_id, _) in self.waves.iter() {
+            let in_logic = seen_logic.contains(&object_id);
+            let pending_delete = pending_delete_ids.contains(&object_id);
+            if !in_logic && !pending_delete {
+                return Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+                    registry: "WaveStore",
+                    object_id,
+                });
+            }
+            if in_logic && pending_delete {
+                return Err(SnapshotRestoreError::DeferredDeleteLogicIdentity {
+                    registry: "WaveStore",
+                    object_id,
+                });
             }
         }
 
@@ -1332,6 +1587,12 @@ mod tests {
             tick(&mut sim_b);
         }
 
+        // Native in-scenario load restarts Scenario RNG from Seed0. Put both
+        // source/reference branches on that cursor before testing unrelated
+        // snapshot persistence and continued deterministic execution.
+        sim_a.scenario_rng = crate::sim::rng::SimRng::new(0);
+        sim_b.scenario_rng = crate::sim::rng::SimRng::new(0);
+
         // Snapshot sim_a at tick 50.
         let hash_at_50 = sim_a.state_hash();
         let bytes = GameSnapshot::save(&sim_a, 0, 0, "test_map", 0);
@@ -1376,8 +1637,8 @@ mod tests {
         let sim = Simulation::new();
         let mut bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
 
-        // Corrupt the version field (first 4 bytes in bincode little-endian).
-        bytes[0] = 255;
+        // Product magic and public envelope version occupy the first 12 bytes.
+        bytes[12] = 255;
 
         assert!(matches!(
             GameSnapshot::load(&bytes),
@@ -1391,7 +1652,10 @@ mod tests {
     #[test]
     fn gsi_04_07_v38_header_is_rejected_before_wall_owner_decode() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
             version: 38,
+            description: "v38 fixture".to_string(),
             map_hash: 1,
             rules_hash: 2,
             tick: 3,
@@ -1412,7 +1676,10 @@ mod tests {
     #[test]
     fn current_header_with_missing_body_reports_deserialization_failure() {
         let bytes = bincode::serialize(&GameSnapshotHeader {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
             version: SNAPSHOT_VERSION,
+            description: "current fixture".to_string(),
             map_hash: 1,
             rules_hash: 2,
             tick: 3,
@@ -1424,6 +1691,67 @@ mod tests {
         assert!(matches!(
             GameSnapshot::load(&bytes),
             Err(SnapshotError::DeserializeFailed(_))
+        ));
+    }
+
+    #[test]
+    fn gsi_17_02_header_roundtrip_carries_identity_versions_and_description() {
+        let mut sim = Simulation::new();
+        sim.session.map_name = "OFFICIAL.MAP".to_string();
+        let bytes =
+            GameSnapshot::save_validated(&sim, 0x1234, 0x5678, "Hold the northern ridge", 0x9abc);
+
+        let header = GameSnapshot::read_header(&bytes).expect("current VERA header");
+        assert_eq!(header.product_magic, SNAPSHOT_PRODUCT_MAGIC);
+        assert_eq!(header.envelope_version, SNAPSHOT_ENVELOPE_VERSION);
+        assert_eq!(header.version, SNAPSHOT_VERSION);
+        assert_eq!(header.description, "Hold the northern ridge");
+        assert_eq!(header.map_name, "OFFICIAL.MAP");
+    }
+
+    #[test]
+    fn gsi_17_02_wrong_product_is_rejected_before_missing_body_decode() {
+        let foreign_preamble = GameSnapshotPreamble {
+            product_magic: *b"NOTVERA\0",
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
+            version: SNAPSHOT_VERSION,
+        };
+        let preamble_only = bincode::serialize(&foreign_preamble).expect("foreign preamble");
+
+        assert!(matches!(
+            GameSnapshot::load(&preamble_only),
+            Err(SnapshotError::ProductMismatch { found }) if found == *b"NOTVERA\0"
+        ));
+    }
+
+    #[test]
+    fn gsi_17_02_public_and_internal_versions_gate_before_missing_body_decode() {
+        let wrong_public = GameSnapshotPreamble {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION + 1,
+            version: SNAPSHOT_VERSION,
+        };
+        let preamble_only = bincode::serialize(&wrong_public).expect("public-version preamble");
+        assert!(matches!(
+            GameSnapshot::load(&preamble_only),
+            Err(SnapshotError::EnvelopeVersionMismatch {
+                expected: SNAPSHOT_ENVELOPE_VERSION,
+                found: 2,
+            })
+        ));
+
+        let wrong_internal = GameSnapshotPreamble {
+            product_magic: SNAPSHOT_PRODUCT_MAGIC,
+            envelope_version: SNAPSHOT_ENVELOPE_VERSION,
+            version: SNAPSHOT_VERSION - 1,
+        };
+        let preamble_only = bincode::serialize(&wrong_internal).expect("schema-version preamble");
+        assert!(matches!(
+            GameSnapshot::load(&preamble_only),
+            Err(SnapshotError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                found: 71,
+            })
         ));
     }
 
@@ -1471,10 +1799,15 @@ mod tests {
     /// added Wave, aircraft-tail, guided-projectile, Cell visibility,
     /// BuildingLight, and Anim state; 67 -> 68 added projectile collision,
     /// Wave recorded-cell payloads, infantry owners, and fog/sensor state; 68
-    /// -> 69 added per-cell cloak-owner words.
+    /// -> 69 added per-cell cloak-owner words; 69 -> 70 removed the terrain,
+    /// projectile, and wave local counters in favor of the global object-id
+    /// source; 70 -> 71 added ProjectileTarget's native null discriminant and
+    /// replaced frozen cell-target coordinates with stable CellClass identity;
+    /// 71 -> 72 added explicit product/public-envelope identity and the save
+    /// description to the common prefix.
     #[test]
-    fn snapshot_version_is_69() {
-        assert_eq!(super::SNAPSHOT_VERSION, 69);
+    fn snapshot_version_is_72() {
+        assert_eq!(super::SNAPSHOT_VERSION, 72);
     }
 
     #[test]
@@ -1489,6 +1822,9 @@ mod tests {
             crate::sim::scenario_session::ScenarioLightingProfile::Ion;
         original.session.lighting.transition_timer = crate::sim::timer::CdTimer::from_raw(17, 3);
 
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // lighting persistence on that same post-load cursor.
+        original.scenario_rng = crate::sim::rng::SimRng::new(0);
         let saved_hash = original.state_hash();
         let bytes = GameSnapshot::save(&original, 11, 22, "", 33);
         let mut restored = GameSnapshot::load(&bytes)
@@ -1526,6 +1862,9 @@ mod tests {
         crate::sim::vision::apply_gap_generators(&mut sim.fog, &[(gapper, 6, 6, 2)], &sim.interner);
         assert!(sim.fog.is_cell_revealed(owner, 0, 0));
         assert!(!sim.fog.is_cell_revealed(owner, 6, 6));
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // SpySat/map-knowledge persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_18_shroud", 0);
@@ -1571,6 +1910,9 @@ mod tests {
             .logic
             .try_push(entity_id)
             .expect("active TubeMovement fixture enters LogicClass order");
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // TubeMovement persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_15_tube", 0);
@@ -1638,6 +1980,9 @@ mod tests {
                 17,
                 crate::sim::command::Command::SellWallAtCell { x: -3, y: 9 },
             ));
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // pending-command/house-mode persistence on that post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
         sim.houses.get_mut(&owner).unwrap().player_control = false;
         assert_ne!(sim.state_hash(), expected_hash);
@@ -1739,6 +2084,9 @@ mod tests {
             crate::sim::house_state::HouseState::new(threat_peer, 1, None, false, 0, 51),
         );
         sim.session.house_order.extend([owner, threat_peer]);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // damage-authority persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         sim.substrate
@@ -1917,6 +2265,9 @@ mod tests {
             .raw_cell_occupation
             .mark_deck_infantry(17, 23, 0x08, 7002);
         sim.substrate.raw_cell_occupation.mark_ground(2, 31, 0x02);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // occupation-plane persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_12_raw_occupation", 0);
@@ -1976,6 +2327,9 @@ mod tests {
             sim.fog
                 .draw_objects_cloaked(Some(source_owner), source_owner, 7, 3, 3)
         );
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // fog/sensor/cloak persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "cell_fog_sensor_cloak", 0);
@@ -2007,6 +2361,9 @@ mod tests {
         sim.substrate.entities.insert(building);
         sim.add_entity_occupancy(entity_id);
 
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // hidden-occupation persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
         sim.substrate
             .hidden_occupation
@@ -2064,6 +2421,9 @@ mod tests {
         let mut conyard = GameEntity::test_default(entity_id, "GACNST", "AMERICANS", 10, 10);
         conyard.category = EntityCategory::Structure;
         sim.substrate.entities.insert(conyard);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // waypoint-edge profile persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let without_profile = sim.state_hash();
         sim.substrate
             .entities
@@ -2120,6 +2480,9 @@ mod tests {
             1 << 1,
             "distinct valid-linear null slots share the dummy before save"
         );
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // base-reservation persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         sim.substrate
@@ -2211,6 +2574,9 @@ mod tests {
             ..Default::default()
         });
         sim.substrate.cell_occupation = CellOccupationGrid::rebuild(&sim.substrate.entities);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // Drive footprint persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_05", 0);
@@ -2267,8 +2633,12 @@ mod tests {
         let mut overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
         overlays.place_owned_wall(3, 4, 2, 0x1A, owner);
         sim.overlay_grid = Some(overlays);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // wall-owner persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
         let mut unowned = Simulation::new();
+        unowned.scenario_rng = crate::sim::rng::SimRng::new(0);
         let _ = unowned.interner.intern("AMERICANS");
         let mut unowned_overlays = crate::sim::overlay_grid::OverlayGrid::new(8, 8);
         unowned_overlays.place_overlay(3, 4, 2, 0x1A);
@@ -2317,10 +2687,10 @@ mod tests {
         sim.scatter_rng().next_u32();
         sim.weapon_spread_rng().next_u32();
         sim.mapgen_rng.next_u32();
-        let rng_before = sim.rng_state();
         let process_default = crate::sim::rng::SimRng::new(0).logical_state();
+        assert_ne!(sim.rng_state().scenario, process_default);
 
-        let bytes = GameSnapshot::save_validated(&sim, 0x11, 0x22, 0x33);
+        let bytes = GameSnapshot::save_validated(&sim, 0x11, 0x22, "Campaign foothold", 0x33);
         let restored =
             GameSnapshot::load_validated(&bytes, 0x11, 0x22, "MAP01.MAP").expect("exact metadata");
         assert_eq!(restored.tick, sim.session.tick);
@@ -2331,7 +2701,8 @@ mod tests {
         assert_eq!(restored.sim.pending_commands, sim.pending_commands);
         assert_eq!(
             restored.sim.scenario_rng.logical_state(),
-            rng_before.scenario
+            process_default,
+            "native post-read Scenario reinitialization must reset the saved cursor"
         );
         assert_eq!(restored.sim.main_rng.logical_state(), process_default);
         assert_eq!(restored.sim.mapgen_rng.logical_state(), process_default);
@@ -2409,7 +2780,7 @@ mod tests {
         });
         sim.set_logic_order_for_test(vec![particle_id, entity_id]);
 
-        let bytes = GameSnapshot::save_validated(&sim, 7, 8, 9);
+        let bytes = GameSnapshot::save_validated(&sim, 7, 8, "Restore fixture", 9);
         let mut restored = GameSnapshot::load_validated(&bytes, 7, 8, "RESTORE.MAP")
             .expect("strict snapshot")
             .sim;
@@ -2526,6 +2897,291 @@ mod tests {
         );
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct Gsi1703Ids {
+        parent: u64,
+        child: u64,
+        target: u64,
+        projectile: u64,
+    }
+
+    fn gsi_17_03_projectile(
+        source_id: u64,
+        target: crate::sim::projectile::ProjectileTarget,
+    ) -> crate::sim::projectile::ProjectileSpawn {
+        use crate::sim::intern::InternedId;
+        use crate::sim::projectile::{
+            ProjectileCollisionPolicy, ProjectileCoord, ProjectilePayload, ProjectileSpawn,
+            ProjectileTrajectory, ProjectileVelocity, ProjectileVisualState, TargetExpiryPolicy,
+        };
+
+        ProjectileSpawn {
+            source_id,
+            origin: ProjectileCoord::new(0, 0, 0),
+            target,
+            initial_target_position: ProjectileCoord::new(256, 256, 0),
+            payload: ProjectilePayload {
+                base_damage: 1,
+                warhead: InternedId::from_index(0),
+                weapon: InternedId::from_index(0),
+                owner: InternedId::from_index(0),
+            },
+            speed_leptons_per_frame: 64,
+            velocity: ProjectileVelocity::new(64, 0, 0),
+            trajectory: ProjectileTrajectory::Straight,
+            guidance: None,
+            visual: ProjectileVisualState::new(0, 0, 0),
+            arm_frames: 0,
+            fuse_frames: None,
+            ranged_fuse: false,
+            tracks_target: false,
+            target_expiry: TargetExpiryPolicy::Expire,
+            collision: ProjectileCollisionPolicy::NONE,
+        }
+    }
+
+    fn gsi_17_03_reference_fixture() -> (Simulation, Gsi1703Ids) {
+        use crate::sim::combat::TargetKind;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::projectile::ProjectileTarget;
+        use crate::sim::spawn_manager::{
+            SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
+        };
+
+        let mut sim = Simulation::new();
+        let parent = sim.allocate_stable_id();
+        let child = sim.allocate_stable_id();
+        let target = sim.allocate_stable_id();
+
+        let mut parent_entity = GameEntity::test_default(parent, "CARRIER", "AMERICANS", 1, 1);
+        parent_entity.last_attacker_id = Some(9_999);
+        parent_entity.spawn_manager = Some(SpawnManagerState {
+            spawn_type: sim.interner.intern("HORNET"),
+            missile_family: None,
+            regen_rate: 45,
+            reload_rate: 20,
+            kamikaze_wait_frames: 0,
+            slots: vec![
+                SpawnSlot {
+                    spawn: Some(child),
+                    state: SpawnSlotState::ReadyDocked,
+                    timer: SpawnTimer::ready(),
+                    is_missile_spawn: false,
+                },
+                // A second saved pointer to the same child deliberately proves
+                // that swizzle aliases are valid, not duplicate ownership.
+                SpawnSlot {
+                    spawn: Some(child),
+                    state: SpawnSlotState::ReadyDocked,
+                    timer: SpawnTimer::ready(),
+                    is_missile_spawn: false,
+                },
+            ],
+            update_timer: SpawnTimer::ready(),
+            reload_timer: SpawnTimer::ready(),
+            current_target: Some(TargetKind::Entity(target)),
+            queued_target: Some(TargetKind::Entity(target)),
+            mode: SpawnManagerMode::Launching,
+        });
+        sim.substrate.entities.insert(parent_entity);
+
+        let mut child_entity = GameEntity::test_default(child, "HORNET", "AMERICANS", 2, 1);
+        child_entity.spawn_owner_id = Some(parent);
+        sim.substrate.entities.insert(child_entity);
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(target, "E1", "SOVIET", 3, 1));
+        sim.register_live_object(parent);
+        sim.register_live_object(child);
+        sim.register_live_object(target);
+
+        let projectile = sim.allocate_stable_id();
+        sim.admit_projectile(
+            projectile,
+            gsi_17_03_projectile(target, ProjectileTarget::Entity(target)),
+        );
+
+        (
+            sim,
+            Gsi1703Ids {
+                parent,
+                child,
+                target,
+                projectile,
+            },
+        )
+    }
+
+    #[test]
+    fn gsi_17_03_each_spawn_and_projectile_pointer_role_must_resolve_atomically() {
+        #[derive(Debug, Clone, Copy)]
+        enum MissingRole {
+            SpawnSlot,
+            CurrentTarget,
+            QueuedTarget,
+            SpawnOwner,
+            ProjectileSource,
+            ProjectileTarget,
+        }
+
+        let cases = [
+            MissingRole::SpawnSlot,
+            MissingRole::CurrentTarget,
+            MissingRole::QueuedTarget,
+            MissingRole::SpawnOwner,
+            MissingRole::ProjectileSource,
+            MissingRole::ProjectileTarget,
+        ];
+        for role in cases {
+            let (mut sim, ids) = gsi_17_03_reference_fixture();
+            let (source_registry, source_id, field) = match role {
+                MissingRole::SpawnSlot => {
+                    sim.substrate
+                        .entities
+                        .get_mut(ids.parent)
+                        .unwrap()
+                        .spawn_manager
+                        .as_mut()
+                        .unwrap()
+                        .slots[0]
+                        .spawn = Some(9_999);
+                    ("EntityStore", ids.parent, "spawn_manager.slots.spawn")
+                }
+                MissingRole::CurrentTarget => {
+                    sim.substrate
+                        .entities
+                        .get_mut(ids.parent)
+                        .unwrap()
+                        .spawn_manager
+                        .as_mut()
+                        .unwrap()
+                        .current_target = Some(crate::sim::combat::TargetKind::Entity(9_999));
+                    ("EntityStore", ids.parent, "spawn_manager.current_target")
+                }
+                MissingRole::QueuedTarget => {
+                    sim.substrate
+                        .entities
+                        .get_mut(ids.parent)
+                        .unwrap()
+                        .spawn_manager
+                        .as_mut()
+                        .unwrap()
+                        .queued_target = Some(crate::sim::combat::TargetKind::Entity(9_999));
+                    ("EntityStore", ids.parent, "spawn_manager.queued_target")
+                }
+                MissingRole::SpawnOwner => {
+                    sim.substrate
+                        .entities
+                        .get_mut(ids.child)
+                        .unwrap()
+                        .spawn_owner_id = Some(9_999);
+                    ("EntityStore", ids.child, "spawn_owner_id")
+                }
+                MissingRole::ProjectileSource => {
+                    sim.projectiles.get_mut(ids.projectile).unwrap().source_id = 9_999;
+                    ("ProjectileStore", ids.projectile, "source_id")
+                }
+                MissingRole::ProjectileTarget => {
+                    sim.projectiles.get_mut(ids.projectile).unwrap().target =
+                        crate::sim::projectile::ProjectileTarget::Entity(9_999);
+                    ("ProjectileStore", ids.projectile, "target")
+                }
+            };
+
+            assert_eq!(
+                sim.restore_after_snapshot_load(),
+                Err(SnapshotRestoreError::UnresolvedObjectReference {
+                    source_registry,
+                    source_id,
+                    field,
+                    target_registry: "EntityStore",
+                    target_id: 9_999,
+                }),
+                "missing {role:?} must reject the snapshot"
+            );
+            assert_eq!(
+                sim.substrate
+                    .entities
+                    .get(ids.parent)
+                    .unwrap()
+                    .last_attacker_id,
+                Some(9_999),
+                "{role:?} rejection must precede later weak-reference cleanup"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_17_03_null_and_cell_reference_forms_need_no_object_identity() {
+        use crate::sim::combat::{RAD_NO_ATTACKER, TargetKind};
+        use crate::sim::projectile::ProjectileTarget;
+
+        let (mut sim, ids) = gsi_17_03_reference_fixture();
+        let manager = sim
+            .substrate
+            .entities
+            .get_mut(ids.parent)
+            .unwrap()
+            .spawn_manager
+            .as_mut()
+            .unwrap();
+        for slot in &mut manager.slots {
+            slot.spawn = None;
+        }
+        manager.current_target = Some(TargetKind::Cell(7, 8));
+        manager.queued_target = Some(TargetKind::Cell(9, 10));
+        sim.substrate
+            .entities
+            .get_mut(ids.child)
+            .unwrap()
+            .spawn_owner_id = None;
+        let projectile = sim.projectiles.get_mut(ids.projectile).unwrap();
+        projectile.source_id = RAD_NO_ATTACKER;
+        projectile.target = ProjectileTarget::Cell { rx: 11, ry: 12 };
+
+        let null_target_projectile = sim.allocate_stable_id();
+        sim.admit_projectile(
+            null_target_projectile,
+            gsi_17_03_projectile(RAD_NO_ATTACKER, ProjectileTarget::None),
+        );
+
+        assert_eq!(sim.restore_after_snapshot_load(), Ok(()));
+    }
+
+    #[test]
+    fn gsi_17_03_repeated_aliases_do_not_imply_reciprocal_spawn_ownership() {
+        let (mut sim, ids) = gsi_17_03_reference_fixture();
+        sim.substrate
+            .entities
+            .get_mut(ids.child)
+            .unwrap()
+            .spawn_owner_id = Some(ids.target);
+
+        assert_eq!(sim.restore_after_snapshot_load(), Ok(()));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(ids.parent)
+                .unwrap()
+                .spawn_manager
+                .as_ref()
+                .unwrap()
+                .slots
+                .iter()
+                .map(|slot| slot.spawn)
+                .collect::<Vec<_>>(),
+            vec![Some(ids.child), Some(ids.child)]
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(ids.child)
+                .unwrap()
+                .spawn_owner_id,
+            Some(ids.target)
+        );
+    }
+
     #[test]
     fn restore_recreates_active_move_sound_without_rng_or_countdown_mutation() {
         use crate::rules::ini_parser::IniFile;
@@ -2554,7 +3210,7 @@ mod tests {
         entity.move_sound_countdown = 2;
         sim.substrate.entities.insert(entity);
 
-        let bytes = GameSnapshot::save_validated(&sim, 17, 18, 19);
+        let bytes = GameSnapshot::save_validated(&sim, 17, 18, "Move sound fixture", 19);
         let mut restored = GameSnapshot::load_validated(&bytes, 17, 18, "MOVESOUND.MAP")
             .expect("strict snapshot")
             .sim;
@@ -2715,6 +3371,9 @@ mod tests {
         let mut house = HouseState::new(owner, 0, None, false, 0, 10);
         house.difficulty = HouseDifficulty::Easy;
         sim.houses.insert(owner, house);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // house-difficulty persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
@@ -2844,6 +3503,9 @@ mod tests {
         entity.owned_count_released = true;
         sim.substrate.entities.insert(entity);
         sim.substrate.pending_delete.extend([7, 3, 7]);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // lifecycle-boundary persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let hash_before = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
@@ -2907,6 +3569,9 @@ mod tests {
         sim.substrate
             .entities
             .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // lifecycle bookkeeping persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let default_hash = sim.state_hash();
 
         let entity = sim.substrate.entities.get_mut(1).expect("fixture entity");
@@ -2951,6 +3616,9 @@ mod tests {
 
         let incremental = cell_order(&sim, 5, 5, MovementLayer::Ground);
         assert_eq!(incremental, vec![10, 50, 100]);
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // occupancy-order persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let hash_at_save = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "order_test", 0);
@@ -3006,6 +3674,7 @@ mod tests {
         let spawner_type = sim.interner.intern("TIBTRE01");
         let damaged = TerrainObjectState {
             stable_id: damaged_id,
+            in_logic_vector: false,
             type_ref: tree_type,
             rx: damaged_cell.0,
             ry: damaged_cell.1,
@@ -3016,6 +3685,7 @@ mod tests {
         };
         let destroyed = TerrainObjectState {
             stable_id: destroyed_id,
+            in_logic_vector: false,
             type_ref: sim.interner.intern("TREE01"),
             rx: destroyed_cell.0,
             ry: destroyed_cell.1,
@@ -3026,6 +3696,7 @@ mod tests {
         };
         let spawner = TerrainObjectState {
             stable_id: spawner_id,
+            in_logic_vector: false,
             type_ref: spawner_type,
             rx: spawner_cell.0,
             ry: spawner_cell.1,
@@ -3038,6 +3709,7 @@ mod tests {
             sim.production
                 .terrain_objects
                 .insert(terrain.stable_id, terrain.clone());
+            assert!(sim.register_terrain_object(terrain.stable_id));
             sim.production
                 .terrain_object_cells
                 .insert(terrain.cell(), terrain.stable_id);
@@ -3047,7 +3719,7 @@ mod tests {
                 terrain.occupation_bits,
             );
         }
-        sim.production.next_terrain_object_id = spawner_id + 1;
+        sim.substrate.next_stable_object_id = spawner_id + 1;
         sim.production.terrain_spawners.insert(
             spawner_cell,
             TerrainSpawnerState::new(spawner_type, 3_000, 3, 22),
@@ -3089,12 +3761,17 @@ mod tests {
             sim.resolved_terrain.as_mut(),
         );
         assert_eq!(result, TerrainDamageResult::Destroyed);
+        assert!(sim.unregister_non_entity_object(destroyed_id));
+        sim.substrate.pending_delete.push(destroyed_id);
         sim.terrain_costs =
             crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids(
                 sim.resolved_terrain
                     .as_ref()
                     .expect("post-destruction terrain"),
             );
+        // Native in-scenario load restarts Scenario RNG from Seed0; isolate
+        // destroyed-terrain persistence on that same post-load cursor.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let authoritative_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_10_destroyed_terrain", 0);
@@ -3151,7 +3828,7 @@ mod tests {
                 .tiberium_spawning_terrain_cells
                 .contains(&spawner_cell)
         );
-        assert_eq!(restored.production.next_terrain_object_id, spawner_id + 1);
+        assert_eq!(restored.substrate.next_stable_object_id, spawner_id + 1);
         let reconciled = restored
             .resolved_terrain
             .as_ref()

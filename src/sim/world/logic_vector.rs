@@ -33,6 +33,10 @@ impl LogicVector {
     /// Fallible tail-append. The caller sets object-local membership only after
     /// this succeeds; allocation failure must not roll back an already-successful
     /// cell Mark transaction.
+    ///
+    /// gamemd-derived: active YR's unsorted LogicClass path calls
+    /// `DynamicVector__Insert @ 0x005519B0` with a zero sort argument, which
+    /// appends the new element at the current tail after capacity succeeds.
     pub(crate) fn try_push(&mut self, id: u64) -> Result<(), LogicInsertError> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_insert) {
@@ -48,6 +52,9 @@ impl LogicVector {
 
     /// Remove the first matching slot and compact later entries left. This
     /// deliberately does not remove duplicates beyond the first match.
+    ///
+    /// gamemd-derived: active YR `LogicClass__UnregisterObject @ 0x0055BAE0`
+    /// removes only the first matching vector slot and preserves later order.
     pub(crate) fn remove_first(&mut self, id: u64) -> bool {
         let Some(index) = self.order.iter().position(|&candidate| candidate == id) else {
             return false;

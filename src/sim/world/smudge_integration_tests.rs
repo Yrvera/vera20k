@@ -144,6 +144,9 @@ fn smudge_grid_survives_snapshot_roundtrip() {
     let mut sim_orig = build_test_sim_with_seed(7);
     advance_n(&mut sim_orig, 25);
 
+    // Native in-scenario load resets Scenario RNG; isolate smudge persistence
+    // by comparing against that same post-load baseline.
+    sim_orig.scenario_rng = crate::sim::rng::SimRng::new(0);
     let hash_at_save = sim_orig.state_hash();
     let bytes = GameSnapshot::save(&sim_orig, 0, 0, "smudge_roundtrip_test", 0);
     let snap = GameSnapshot::load(&bytes).expect("snapshot load must succeed");
