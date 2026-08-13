@@ -2178,11 +2178,13 @@ pub(crate) fn load_map_from_initial(
         apply_skirmish_ai_opening_credits(sim);
     }
 
-    // gamemd `Post_Map_Init` step 3: with the lobby Crates option on (the stock
-    // default), scatter `min(max(CrateMinimum, players), CrateMaximum)` crates
-    // over the map. Native runs this after the starting force and after the
-    // cell-attribute rebuild, which is exactly this point.
-    if let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref()) {
+    // gamemd `ScenarioClass::Post_Map_Init @ 0x00686890`: an active session's
+    // Crates byte gates the initial scatter. The count uses human session seats
+    // only; AI houses are not players for this clamp. Campaign/editor loads do
+    // not own that lobby byte and must not inherit GameOptions' lobby default.
+    if skirmish_launch_session.is_some()
+        && let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref())
+    {
         let player_count = crate::sim::crates::human_player_count(sim);
         crate::sim::crates::place_scenario_start_crates(
             sim,

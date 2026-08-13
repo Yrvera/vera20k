@@ -1229,6 +1229,8 @@ pub struct CrateRules {
     pub maximum: u32,
     /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
     pub crate_img: String,
+    /// `WoodCrateImg=` — overlay type used for random land crates (stock CRATE).
+    pub wood_crate_img: String,
     /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
     pub water_crate_img: String,
 }
@@ -1239,6 +1241,7 @@ impl Default for CrateRules {
             minimum: 1,
             maximum: 255,
             crate_img: "CRATE".to_string(),
+            wood_crate_img: "CRATE".to_string(),
             water_crate_img: "WCRATE".to_string(),
         }
     }
@@ -1267,6 +1270,7 @@ impl CrateRules {
                 .unwrap_or(defaults.maximum as i32)
                 .max(0) as u32,
             crate_img: name("CrateImg", defaults.crate_img),
+            wood_crate_img: name("WoodCrateImg", defaults.wood_crate_img),
             water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
         }
     }
