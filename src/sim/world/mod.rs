@@ -274,6 +274,21 @@ pub struct TickResult {
     pub movement: movement::MovementTickStats,
 }
 
+/// One authoritative frame plus the transient facts emitted while producing it.
+///
+/// Channel order is preserved within each vector. The app owns cross-channel
+/// presentation order; collecting this value only transfers ownership and does
+/// not invent a single mixed event timeline.
+#[derive(Debug)]
+pub(crate) struct SimFrameOutput {
+    pub tick: TickResult,
+    pub trigger_effects: Vec<TriggerEffect>,
+    pub lifecycle_outputs: Vec<LifecycleOutput>,
+    pub sound_events: Vec<SimSoundEvent>,
+    pub fire_events: Vec<SimFireEvent>,
+    pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+}
+
 /// Front-end admission lane for one Main_Tick call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TickLane {
@@ -4470,6 +4485,62 @@ impl Simulation {
             None,
             None,
         )
+    }
+
+    /// App-facing authoritative frame transaction.
+    ///
+    /// The app submits commands and immutable map/rules inputs, then consumes
+    /// the returned facts instead of reaching back into Simulation-owned
+    /// transient queues. Headless/replay callers retain `advance_tick` and the
+    /// lower-level master-frame adapter.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_app_frame(
+        &mut self,
+        commands: &[CommandEnvelope],
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        path_grid: Option<&PathGrid>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        tick_ms: u32,
+        lane: TickLane,
+        animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
+        trigger_inputs: Option<TriggerInputs<'_>>,
+    ) -> SimFrameOutput {
+        let tick = self.advance_master_frame(
+            commands,
+            rules,
+            height_map,
+            path_grid,
+            overlay_registry,
+            tick_ms,
+            lane,
+            animation_sequences,
+            trigger_inputs,
+        );
+        self.collect_frame_output(tick)
+    }
+
+    fn collect_frame_output(&mut self, tick: TickResult) -> SimFrameOutput {
+        let trigger_effects = std::mem::take(&mut self.trigger_effects);
+        // Preserve the established terminal-frame gate: these are committed
+        // light-vector facts and the next admitted frame clears the producer
+        // buffer before combat runs.
+        let invulnerability_impacts = if tick.frame_committed {
+            std::mem::take(&mut self.invulnerability_impact_effects)
+        } else {
+            Vec::new()
+        };
+        let lifecycle_outputs = std::mem::take(&mut self.lifecycle_outputs);
+        let fire_events = std::mem::take(&mut self.fire_events);
+        let sound_events = std::mem::take(&mut self.sound_events);
+        SimFrameOutput {
+            tick,
+            trigger_effects,
+            lifecycle_outputs,
+            sound_events,
+            fire_events,
+            invulnerability_impacts,
+        }
     }
 
     /// Advance exactly one authoritative simulation frame.

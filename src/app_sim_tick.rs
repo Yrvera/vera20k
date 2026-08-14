@@ -32,7 +32,9 @@ use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane, TriggerInputs};
+use crate::sim::world::{
+    LifecycleOutput, SimFireEvent, SimFrameOutput, SimSoundEvent, TickLane, TriggerInputs,
+};
 use crate::ui::game_screen::GameScreen;
 
 /// Directory for Rust-only deterministic diagnostic logs.
@@ -1096,7 +1098,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             } else {
                 Vec::new()
             };
-            let tick_result = sim.advance_master_frame(
+            let SimFrameOutput {
+                tick: tick_result,
+                trigger_effects: frame_trigger_effects,
+                lifecycle_outputs: frame_lifecycle_outputs,
+                sound_events: frame_sound_events,
+                fire_events: frame_fire_events,
+                invulnerability_impacts,
+            } = sim.advance_app_frame(
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
@@ -1107,11 +1116,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 Some(&state.animation_sequences),
                 Some(trigger_inputs),
             );
-            trigger_effects = sim.drain_trigger_effects();
+            trigger_effects = frame_trigger_effects;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
-                drained_combat_lights =
-                    crate::app_combat_lights::drain_simulation_impacts(sim, state.rules.as_ref());
+                drained_combat_lights = crate::app_combat_lights::materialize_simulation_impacts(
+                    invulnerability_impacts,
+                    state.rules.as_ref(),
+                    &sim.interner,
+                );
             }
             // Parity capture, if requested. Placed directly after the committed tick so
             // it observes the same state the tick hash covers, and before any app-layer
@@ -1127,7 +1139,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
             census_tick = tick_result.frame_committed.then_some(tick_result.tick);
-            drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
+            drained_lifecycle_outputs = frame_lifecycle_outputs;
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
                 if sim.session.tick == 1 {
@@ -1138,10 +1150,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
-            drained_fire_events.extend(sim.fire_events.drain(..));
+            drained_fire_events = frame_fire_events;
             append_fire_effect_batch(&mut state.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
-            for sim_event in drain_sim_sound_events(sim) {
+            for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
                     SimSoundEvent::AnimationStarted {
                         anim_id,
@@ -1737,10 +1749,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     frame_committed
 }
 
-fn drain_sim_sound_events(sim: &mut crate::sim::world::Simulation) -> Vec<SimSoundEvent> {
-    sim.sound_events.drain(..).collect()
-}
-
 /// Samples pending light records backward and swaps the completed grid forward,
 /// matching YR `LightSourceClass::UpdateLightConverts`' all-gathered-before-commit
 /// boundary. This is app-local renderer state, never deterministic simulation state.
@@ -2306,9 +2314,9 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        drain_sim_sound_events, finish_fire_effect_batch, outcome_eva_entry,
-        rebuild_dynamic_terrain_navigation, upsert_overlay_entries, validate_exact_step_receipt,
-        wall_sell_sound_for_local, world_point_to_cell,
+        finish_fire_effect_batch, outcome_eva_entry, rebuild_dynamic_terrain_navigation,
+        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
+        world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2384,28 +2392,6 @@ mod tests {
         assert!(
             wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
         );
-    }
-
-    #[test]
-    fn gsi_13_04_pre_tick_animation_started_event_drains_exactly_once() {
-        let mut sim = crate::sim::world::Simulation::new();
-        let sound_id = sim.interner.intern("WaterfallLoop");
-        sim.sound_events
-            .push(crate::sim::world::SimSoundEvent::AnimationStarted {
-                anim_id: 9,
-                sound_id,
-                world: crate::sim::anim_class::AnimWorldCoord {
-                    x: 128,
-                    y: 128,
-                    z: 0,
-                },
-            });
-
-        assert!(matches!(
-            drain_sim_sound_events(&mut sim).as_slice(),
-            [crate::sim::world::SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
-        ));
-        assert!(drain_sim_sound_events(&mut sim).is_empty());
     }
 
     #[test]

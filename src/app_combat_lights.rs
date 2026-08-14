@@ -7,8 +7,8 @@
 
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::InvulnerabilityImpactEffect;
+use crate::sim::intern::StringInterner;
 use crate::sim::projectile::ProjectileCoord;
-use crate::sim::world::Simulation;
 
 const STAGE_STEP: u8 = 8;
 const EXPIRE_STAGE: u8 = 0x50;
@@ -78,20 +78,19 @@ impl CombatLightRuntime {
     }
 }
 
-/// Drain current-frame receiver records exactly once and materialize the final
-/// native light-vector fields. Helper-only provenance (target, warhead, damage)
-/// intentionally stops at this boundary.
-pub(crate) fn drain_simulation_impacts(
-    sim: &mut Simulation,
+/// Materialize current-frame receiver records into the final native light-vector
+/// fields. Helper-only provenance (target, warhead, damage) intentionally stops
+/// at this boundary.
+pub(crate) fn materialize_simulation_impacts(
+    impacts: Vec<InvulnerabilityImpactEffect>,
     rules: Option<&RuleSet>,
+    interner: &StringInterner,
 ) -> Vec<CombatLight> {
-    let impacts: Vec<InvulnerabilityImpactEffect> =
-        std::mem::take(&mut sim.invulnerability_impact_effects);
     impacts
         .into_iter()
         .filter_map(|effect| {
             let warhead =
-                rules.and_then(|rules| rules.warhead(sim.interner.resolve(effect.warhead_ref)));
+                rules.and_then(|rules| rules.warhead(interner.resolve(effect.warhead_ref)));
             if !effect.force_create && !warhead.is_some_and(|warhead| warhead.bright) {
                 return None;
             }
@@ -126,6 +125,7 @@ fn scaled_surface_index(base_size: u8, stage: u8) -> u8 {
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+    use crate::sim::world::Simulation;
 
     fn effect(
         sim: &mut Simulation,
@@ -144,17 +144,15 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_07_invulnerability_light_committed_frame_drains_once_and_draws_reverse_order() {
+    fn gsi_04_07_invulnerability_light_materializes_and_draws_reverse_order() {
         let ini = IniFile::from_str("[Warheads]\n0=WH\n[WH]\nCombatLightSize=40%\n");
         let rules = RuleSet::from_ini(&ini).expect("rules");
         let mut sim = Simulation::new();
         let first = effect(&mut sim, 256, 1, 400);
         let second = effect(&mut sim, 768, 6, 400);
-        sim.invulnerability_impact_effects.extend([first, second]);
-
         let mut runtime = CombatLightRuntime::default();
-        let new_entries = drain_simulation_impacts(&mut sim, Some(&rules));
-        assert!(sim.invulnerability_impact_effects.is_empty());
+        let new_entries =
+            materialize_simulation_impacts(vec![first, second], Some(&rules), &sim.interner);
         assert_eq!(
             new_entries.iter().map(|e| e.base_size).collect::<Vec<_>>(),
             vec![25, 25]
@@ -171,7 +169,7 @@ mod tests {
             draw.iter().map(|r| r.surface_index).collect::<Vec<_>>(),
             vec![1, 1]
         );
-        assert!(drain_simulation_impacts(&mut sim, Some(&rules)).is_empty());
+        assert!(materialize_simulation_impacts(Vec::new(), Some(&rules), &sim.interner).is_empty());
     }
 
     #[test]

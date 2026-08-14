@@ -160,6 +160,52 @@ fn terminal_master_frame_does_not_advance_living_animation() {
     assert_eq!(entity.facing, 0);
 }
 
+#[test]
+fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() {
+    let mut sim = Simulation::new();
+    let sound_id = sim.interner.intern("WaterfallLoop");
+    sim.sound_events.push(SimSoundEvent::AnimationStarted {
+        anim_id: 9,
+        sound_id,
+        world: crate::sim::anim_class::AnimWorldCoord {
+            x: 128,
+            y: 128,
+            z: 0,
+        },
+    });
+
+    let first = sim.advance_app_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(matches!(
+        first.sound_events.as_slice(),
+        [SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
+    ));
+    assert_eq!(first.tick.state_hash, sim.state_hash());
+
+    let second = sim.advance_app_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(second.sound_events.is_empty());
+    assert_eq!(second.tick.state_hash, sim.state_hash());
+}
+
 fn gsi_13_10_art_model_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\nFixtureOnly=1\n\
