@@ -234,23 +234,6 @@ pub(super) fn dispatch_draw_passes(
         state.palette_set.as_ref(),
     );
 
-    // --- Step 5.5: PixelFX water/ore sparkles ---
-    // Per-frame 1-pixel sparkles over visible water and ore cells. Matches
-    // gamemd's DrawPixelFXSparkles position (between unit pass and UI pass).
-    // Opaque sprite, no blend; passthrough pipeline bypasses depth test.
-    // Empty buffer when graphics.extra_animations is off — draw_with_buffer_passthrough
-    // short-circuits at count == 0.
-    if let (Some(overlay), Some((buf, count))) =
-        (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
-    {
-        state.batch_renderer.draw_with_buffer_passthrough(
-            &mut pass,
-            overlay.white_texture(),
-            buf,
-            count,
-        );
-    }
-
     if let (Some(overlay), Some((buffer, count))) =
         (state.selection_overlay.as_ref(), pool.get("weapon_waves"))
     {
@@ -599,6 +582,24 @@ pub(super) fn dispatch_draw_passes(
         invalid_tex,
         "placement_invalid",
     );
+
+    // --- Step 10.5: PixelFX water/ore sparkles ---
+    // gamemd writes these opaque one-pixel effects at the tactical tail, after
+    // object/effect/status/action/placement drawing and before screen-fixed
+    // chrome. In VERA the global shroud translation must therefore run first.
+    // The passthrough pipeline bypasses depth; an empty buffer when
+    // graphics.extra_animations is off short-circuits at count == 0.
+    if let (Some(overlay), Some((buf, count))) =
+        (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
+    {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            overlay.white_texture(),
+            buf,
+            count,
+        );
+    }
+
     // --- Screen-fixed UI: sidebar, minimap, cursor — use UI camera (zoom=1.0) ---
     // Chrome owns the whole window: the sidebar column, the message list that
     // starts at the tactical origin, tooltips, and the cursor, which the native
@@ -858,5 +859,58 @@ fn draw_pooled_bridge_railing<'a>(
 ) {
     if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
         batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const SOURCE: &str = include_str!("draw_passes.rs");
+
+    fn source_offset(needle: &str) -> usize {
+        SOURCE
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing production draw anchor {needle:?}"))
+    }
+
+    #[test]
+    fn gsi_13_01_pixel_fx_is_last_tactical_write_before_screen_chrome() {
+        let shroud = source_offset("// --- Step 9: Shroud");
+        let target_lines = source_offset("\"target_lines\"");
+        let status = source_offset("\"status_unit_fill\"");
+        let placement = source_offset("\"placement_invalid\"");
+        let sparkle = source_offset("pool.get(\"cell_sparkles\")");
+        let screen_fixed = source_offset("// --- Screen-fixed UI:");
+        let full_window_scissor = source_offset(
+            "pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());",
+        );
+        let first_screen_submission = source_offset("\"minimap\"");
+
+        assert!(shroud < target_lines);
+        assert!(target_lines < status);
+        assert!(status < placement);
+        assert!(placement < sparkle);
+        assert!(sparkle < screen_fixed);
+        assert!(screen_fixed < full_window_scissor);
+        assert!(full_window_scissor < first_screen_submission);
+
+        let final_tactical_slice = &SOURCE[sparkle..screen_fixed];
+        assert_eq!(
+            final_tactical_slice.matches(".draw").count(),
+            1,
+            "PixelFX must remain the final tactical draw submission"
+        );
+    }
+
+    #[test]
+    fn gsi_13_01_pixel_fx_tail_remains_passthrough_and_tactically_scissored() {
+        let tactical_scissor = source_offset("pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);");
+        let sparkle = source_offset("pool.get(\"cell_sparkles\")");
+        let full_window_scissor = source_offset(
+            "pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());",
+        );
+
+        assert!(tactical_scissor < sparkle);
+        assert!(sparkle < full_window_scissor);
+        assert!(SOURCE[sparkle..full_window_scissor].contains("draw_with_buffer_passthrough"));
     }
 }
