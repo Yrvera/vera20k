@@ -4,10 +4,20 @@
 //! captures, and loading-after-present remain in their original source order.
 
 use super::{
-    ActiveEventLoop, App, AppState, GameScreen, Instant, MAIN_MENU_SHELL_PRELUDE, Result,
-    ShellFramePreludeStep, app_render, app_sim_tick, app_startup_splash, app_transitions,
-    main_menu,
+    ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, app_sim_tick,
+    app_startup_splash, app_transitions, main_menu,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellFramePreludeStep {
+    MaintainIntro,
+    ObserveEntry,
+}
+
+const MAIN_MENU_SHELL_PRELUDE: &[ShellFramePreludeStep] = &[
+    ShellFramePreludeStep::MaintainIntro,
+    ShellFramePreludeStep::ObserveEntry,
+];
 
 impl App {
     /// Dispatch rendering based on current GameScreen state.
@@ -644,5 +654,21 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_menu_intro_precedes_entry_observation() {
+        assert_eq!(
+            MAIN_MENU_SHELL_PRELUDE,
+            [
+                ShellFramePreludeStep::MaintainIntro,
+                ShellFramePreludeStep::ObserveEntry,
+            ]
+        );
     }
 }

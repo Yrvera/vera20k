@@ -1,6 +1,5 @@
-//! Application orchestrator — ties all subsystems together.
-//! Implements winit's ApplicationHandler. GPU init deferred to resumed().
-//! Helpers: app_init.rs (loading), app_render.rs (rendering).
+//! Application facade and shared imports for the focused orchestrator modules
+//! under `app/`. GPU initialization remains deferred to `resumed()`.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -85,24 +84,6 @@ pub(crate) use shell_random_map::{
 };
 pub(crate) use state::{AppState, reset_scenario_exit_runtime};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShellFramePreludeStep {
-    MaintainIntro,
-    ObserveEntry,
-}
-
-const MAIN_MENU_SHELL_PRELUDE: &[ShellFramePreludeStep] = &[
-    ShellFramePreludeStep::MaintainIntro,
-    ShellFramePreludeStep::ObserveEntry,
-];
-
-/// Caption gamemd loads onto the abort-mission confirmation's action button.
-/// Its two mode-dependent siblings (`GUI:Restart` in campaign, `GUI:Observe` in
-/// multiplayer) sit on a second button that offline skirmish hides outright.
-const ABORT_CONFIRM_LEAVE_KEY: &str = "GUI:Leave";
-/// The shipped English table resolves `GUI:Leave` to "Quit"; the fallback only
-/// applies when the string table is missing entirely, so it says the same.
-const ABORT_CONFIRM_LEAVE_FALLBACK: &str = "Quit";
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;
 const SHELL_WINDOW_HEIGHT: u32 = 600;
@@ -156,51 +137,6 @@ impl Default for App {
 }
 
 impl App {
-    fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
-        state.gpu.resize(size.width, size.height);
-        state.depth_view = state.gpu.create_depth_texture();
-        state.shell_surface_presenter.resize(&state.gpu);
-        // The frame-index wave is driven by wall-clock ticks and repaints every
-        // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
-        let new_scale = auto_detect_ui_scale(size.width, size.height);
-        if (new_scale - state.ui_scale).abs() > f32::EPSILON {
-            log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
-            state.sidebar_layout_spec = state.sidebar_layout_spec_base.with_scale(new_scale);
-            state.ui_scale = new_scale;
-        }
-        Self::invalidate_main_menu_movie_if_base_changed(state);
-    }
-
-    pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
-        state.window.set_resizable(false);
-        let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
-        if state.window.inner_size() == target {
-            return;
-        }
-        if let Some(applied_size) = state.window.request_inner_size(target) {
-            Self::resize_surface_for_window_size(state, applied_size);
-        }
-        state.window.request_redraw();
-    }
-
-    fn enter_game_window_mode(state: &AppState) {
-        state.window.set_resizable(true);
-    }
-
-    fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
-        config.and_then(|cfg| match AssetManager::new(&cfg.paths.ra2_dir) {
-            Ok(manager) => Some(manager),
-            Err(err) => {
-                log::warn!("Could not load startup shell assets: {err:#}");
-                None
-            }
-        })
-    }
-
-    fn load_version_txt() -> String {
-        crate::util::version::retail_internal_version().to_owned()
-    }
-
     pub fn new(startup_options: crate::app_startup_options::RetailStartupOptions) -> Self {
         Self {
             state: None,
@@ -293,16 +229,4 @@ mod tests {
             assert_eq!(should_load_audio_indices(persisted_in_state), audio_enabled);
         }
     }
-
-    #[test]
-    fn main_menu_intro_precedes_entry_observation() {
-        assert_eq!(
-            MAIN_MENU_SHELL_PRELUDE,
-            [
-                ShellFramePreludeStep::MaintainIntro,
-                ShellFramePreludeStep::ObserveEntry,
-            ]
-        );
-    }
-
 }

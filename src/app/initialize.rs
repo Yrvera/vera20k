@@ -1,16 +1,30 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
 use super::{
-    ActiveEventLoop, App, AppState, Arc, BTreeMap, BasicSection, BatchRenderer, BitFont,
-    CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen, GpuContext,
-    HashMap, HashSet, HouseRoster, Instant, LightingConfig, MapMenuEntry, ModifiersState,
-    MusicPlayer, PhysicalSize, RandomMapGenerationRetention, RefCell, Result, SHELL_WINDOW_HEIGHT,
-    SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec, SidebarTab,
-    SoundEventQueue, StartupAudioDisposition, TriggerGraph, Window, WindowAttributes,
+    ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
+    BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
+    GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig, MapMenuEntry,
+    ModifiersState, MusicPlayer, PhysicalSize, RandomMapGenerationRetention, RefCell, Result,
+    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
+    SidebarTab, SoundEventQueue, StartupAudioDisposition, TriggerGraph, Window, WindowAttributes,
     app_list_maps, app_render, app_startup_splash, auto_detect_ui_scale, should_load_audio_indices,
 };
 
 impl App {
+    fn build_startup_asset_manager(config: Option<&GameConfig>) -> Option<AssetManager> {
+        config.and_then(|cfg| match AssetManager::new(&cfg.paths.ra2_dir) {
+            Ok(manager) => Some(manager),
+            Err(err) => {
+                log::warn!("Could not load startup shell assets: {err:#}");
+                None
+            }
+        })
+    }
+
+    fn load_version_txt() -> String {
+        crate::util::version::retail_internal_version().to_owned()
+    }
+
     /// Create window, GPU context, and egui integration. Does NOT load a map —
     /// starts in MainMenu state. Map loading is deferred to when the user
     /// clicks "Quick Play".

@@ -4,10 +4,44 @@
 //! module keeps the original handler body intact.
 
 use super::{
-    ActiveEventLoop, App, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
+    ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
-    ShellKey, WindowEvent, WindowId, app_input,
+    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId, app_input,
+    auto_detect_ui_scale,
 };
+
+impl App {
+    fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
+        state.gpu.resize(size.width, size.height);
+        state.depth_view = state.gpu.create_depth_texture();
+        state.shell_surface_presenter.resize(&state.gpu);
+        // The frame-index wave is driven by wall-clock ticks and repaints every
+        // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
+        let new_scale = auto_detect_ui_scale(size.width, size.height);
+        if (new_scale - state.ui_scale).abs() > f32::EPSILON {
+            log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
+            state.sidebar_layout_spec = state.sidebar_layout_spec_base.with_scale(new_scale);
+            state.ui_scale = new_scale;
+        }
+        Self::invalidate_main_menu_movie_if_base_changed(state);
+    }
+
+    pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
+        state.window.set_resizable(false);
+        let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
+        if state.window.inner_size() == target {
+            return;
+        }
+        if let Some(applied_size) = state.window.request_inner_size(target) {
+            Self::resize_surface_for_window_size(state, applied_size);
+        }
+        state.window.request_redraw();
+    }
+
+    pub(super) fn enter_game_window_mode(state: &AppState) {
+        state.window.set_resizable(true);
+    }
+}
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

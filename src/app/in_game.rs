@@ -1,10 +1,15 @@
 //! Match-session focus, modal, return, save/load, and developer-overlay control.
 
-use super::{
-    ABORT_CONFIRM_LEAVE_FALLBACK, ABORT_CONFIRM_LEAVE_KEY, App, AppState, GameScreen, Instant,
-    ModifiersState,
-};
+use super::{App, AppState, GameScreen, Instant, ModifiersState};
 use crate::app_input;
+
+/// Caption gamemd loads onto the abort-mission confirmation's action button.
+/// Its two mode-dependent siblings (`GUI:Restart` in campaign, `GUI:Observe` in
+/// multiplayer) sit on a second button that offline skirmish hides outright.
+const ABORT_CONFIRM_LEAVE_KEY: &str = "GUI:Leave";
+/// The shipped English table resolves `GUI:Leave` to "Quit"; the fallback only
+/// applies when the string table is missing entirely, so it says the same.
+const ABORT_CONFIRM_LEAVE_FALLBACK: &str = "Quit";
 
 impl App {
     /// Hand the scenario RNG cursor back to the offline shell when a match ends.
