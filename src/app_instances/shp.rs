@@ -18,7 +18,6 @@ use crate::app_render::draw_plan_lowering::{
     PlannedGroundObjectInstance,
 };
 use crate::map::entities::EntityCategory;
-use crate::map::lighting;
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
@@ -41,6 +40,21 @@ use crate::sim::components::BuildingUp;
 ///
 /// Only ever read by key, never iterated, so the hash order is not observable.
 pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
+
+fn shp_body_tint(
+    grid: &crate::map::lighting::CellLightGrid,
+    cell: (u16, u16),
+    category: EntityCategory,
+    extra_unit_light: i32,
+    extra_infantry_light: i32,
+) -> [f32; 3] {
+    match category {
+        EntityCategory::Unit => grid.unit_tint_at(cell, extra_unit_light),
+        EntityCategory::Infantry => grid.infantry_tint_at(cell, extra_infantry_light),
+        EntityCategory::Structure => grid.building_body_tint_at(cell),
+        _ => grid.techno_tint_at(cell),
+    }
+}
 
 /// Iterate visible SHP sprite entities from EntityStore and build SpriteInstances.
 ///
@@ -294,25 +308,19 @@ pub(crate) fn build_shp_instances(
         if entity.parachute_state.is_some() {
             parachute_body_depths.insert(entity.stable_id, depth);
         }
-        let mut tint: [f32; 3] = match entity.category {
-            EntityCategory::Infantry => state.lighting_grid.infantry_tint_at((pos.rx, pos.ry)),
-            EntityCategory::Structure => {
-                state.lighting_grid.building_body_tint_at((pos.rx, pos.ry))
-            }
-            _ => state.lighting_grid.techno_tint_at((pos.rx, pos.ry)),
-        };
-        // Entity ambient glow so infantry are visible on dark maps.
-        // Buildings do NOT get entity glow; only non-building technos use the extra-light rules.
-        if entity.category == EntityCategory::Infantry {
-            if let Some(rules) = &state.rules {
-                let glow = rules.general.extra_infantry_light;
-                if glow > 0.0 {
-                    tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                    tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                    tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                }
-            }
-        }
+        let tint = shp_body_tint(
+            &state.lighting_grid,
+            (pos.rx, pos.ry),
+            entity.category,
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_unit_light),
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_infantry_light),
+        );
         let under_bridge = is_under_bridge_render_state(state, entity)
             && entity.category != EntityCategory::Structure;
         let collect_ground = band == EntityDrawBand::Ground && !under_bridge;
@@ -1103,7 +1111,10 @@ mod tests {
     use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
     use super::selected_building_anim_view;
+    use super::shp_body_tint;
     use crate::app_building_anim::building_anim_rate_logic_frames;
+    use crate::map::entities::EntityCategory;
+    use crate::map::lighting::CellLightGrid;
     use crate::rules::art_data::{
         ArtRegistry, BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig,
     };
@@ -1116,6 +1127,29 @@ mod tests {
 
     fn stock_game_options() -> GameOptions {
         GameOptions::default()
+    }
+
+    #[test]
+    fn gsi_13_10_shp_selector_keeps_unit_and_infantry_extras_distinct() {
+        let mut grid = CellLightGrid::new();
+        grid.insert_profiled_light((4, 5), [1.0, 0.88, 0.88], 1.0);
+
+        let unit = shp_body_tint(&grid, (4, 5), EntityCategory::Unit, 200, 300);
+        let infantry = shp_body_tint(&grid, (4, 5), EntityCategory::Infantry, 200, 300);
+        let structure = shp_body_tint(&grid, (4, 5), EntityCategory::Structure, 200, 300);
+        for (actual, expected) in unit.into_iter().zip([1.2, 1.056, 1.056]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in infantry.into_iter().zip([1.3, 1.144, 1.144]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in structure.into_iter().zip([1.0, 0.88, 0.88]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        assert_ne!(
+            unit, infantry,
+            "Unit and Infantry extras must not cross-feed"
+        );
     }
 
     #[test]

@@ -643,14 +643,13 @@ pub struct GeneralRules {
     /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
     pub wheeled_downhill: SimFixed,
 
-    // -- Entity ambient glow on dark maps --
-    /// Additive brightness boost for unit sprites (ExtraUnitLight= in [General]).
-    /// Makes vehicles visible on dark maps. Default 0.2.
-    pub extra_unit_light: f32,
-    /// Additive brightness boost for infantry sprites (ExtraInfantryLight= in [General]).
-    pub extra_infantry_light: f32,
-    /// Additive brightness boost for aircraft sprites (ExtraAircraftLight= in [General]).
-    pub extra_aircraft_light: f32,
+    // -- Per-object draw-light offsets --
+    /// Signed `[AudioVisual] ExtraUnitLight=` body-light offset (`1000 == 1.0`).
+    pub extra_unit_light: i32,
+    /// Signed `[AudioVisual] ExtraInfantryLight=` body-light offset (`1000 == 1.0`).
+    pub extra_infantry_light: i32,
+    /// Signed `[AudioVisual] ExtraAircraftLight=` draw offset (`1000 == 1.0`).
+    pub extra_aircraft_light: i32,
 
     // -- Movement arrival --
     /// Distance in leptons below which a blocked unit stops instead of repathing.
@@ -1030,9 +1029,9 @@ impl Default for GeneralRules {
             tracked_downhill: SimFixed::lit("1.2"),
             wheeled_uphill: SimFixed::lit("1.0"),
             wheeled_downhill: SimFixed::lit("1.2"),
-            extra_unit_light: 0.2,
-            extra_infantry_light: 0.2,
-            extra_aircraft_light: 0.2,
+            extra_unit_light: 0,
+            extra_infantry_light: 0,
+            extra_aircraft_light: 0,
             // CloseEnough=2.25 cells in vanilla rulesmd.ini → 576 leptons.
             close_enough: SimFixed::from_num(576),
             // URepairRate=.016 min = 0.96 sec ≈ 14 ticks at 15 Hz.
@@ -1855,9 +1854,32 @@ impl GeneralRules {
                 .get_f32("WheeledDownhill")
                 .map(sim_from_f32)
                 .unwrap_or(defaults.wheeled_downhill),
-            extra_unit_light: general.get_f32("ExtraUnitLight").unwrap_or(0.2),
-            extra_infantry_light: general.get_f32("ExtraInfantryLight").unwrap_or(0.2),
-            extra_aircraft_light: general.get_f32("ExtraAircraftLight").unwrap_or(0.2),
+            // RulesClass's AudioVisual pass stores these ReadDouble values as
+            // signed milliunits after the active x87 chop-toward-zero conversion.
+            extra_unit_light: (audio_visual
+                .map(|section| {
+                    section.read_double("ExtraUnitLight", defaults.extra_unit_light as f64 / 1000.0)
+                })
+                .unwrap_or(defaults.extra_unit_light as f64 / 1000.0)
+                * 1000.0) as i32,
+            extra_infantry_light: (audio_visual
+                .map(|section| {
+                    section.read_double(
+                        "ExtraInfantryLight",
+                        defaults.extra_infantry_light as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(defaults.extra_infantry_light as f64 / 1000.0)
+                * 1000.0) as i32,
+            extra_aircraft_light: (audio_visual
+                .map(|section| {
+                    section.read_double(
+                        "ExtraAircraftLight",
+                        defaults.extra_aircraft_light as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(defaults.extra_aircraft_light as f64 / 1000.0)
+                * 1000.0) as i32,
             close_enough: general
                 .get_f32("CloseEnough")
                 .map(|cells| sim_from_f32(cells * 256.0))
@@ -3808,6 +3830,35 @@ CellSpread=0
         assert!((rules.production.max_low_power_production_speed - 0.85).abs() < 0.0001);
         assert_eq!(rules.bridge_rules.strength, 1500);
         assert!(rules.bridge_rules.destroyable_by_default);
+    }
+
+    #[test]
+    fn gsi_13_10_extra_object_lights_default_zero_and_parse_signed_truncated_milliunits() {
+        let defaults = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             FixtureOnly=1\n\
+             ExtraUnitLight=9.0\n\
+             ExtraInfantryLight=8.0\n\
+             ExtraAircraftLight=7.0\n",
+        ));
+        assert_eq!(defaults.extra_unit_light, 0);
+        assert_eq!(defaults.extra_infantry_light, 0);
+        assert_eq!(defaults.extra_aircraft_light, 0);
+
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             FixtureOnly=1\n\
+             ExtraUnitLight=9.0\n\
+             ExtraInfantryLight=8.0\n\
+             ExtraAircraftLight=7.0\n\
+             [AudioVisual]\n\
+             ExtraUnitLight=.2\n\
+             ExtraInfantryLight=-.1259\n\
+             ExtraAircraftLight=.3339\n",
+        ));
+        assert_eq!(parsed.extra_unit_light, 200);
+        assert_eq!(parsed.extra_infantry_light, -125);
+        assert_eq!(parsed.extra_aircraft_light, 333);
     }
 
     #[test]

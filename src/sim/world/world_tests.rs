@@ -10,6 +10,7 @@ use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::terrain;
 use crate::map::tube_facts::{TubeFact, TubeId};
+use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
@@ -44,6 +45,54 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+fn gsi_13_10_art_model_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[General]\nFixtureOnly=1\n\
+         [InfantryTypes]\n0=FALLBACKINF\n\
+         [VehicleTypes]\n0=DLPH\n1=DRON\n2=SQD\n3=VXLTEST\n4=ALIASED\n5=OMITTED\n6=FALLBACKVEH\n\
+         [AircraftTypes]\n0=FALLBACKAIR\n\
+         [BuildingTypes]\n0=FALLBACKBLD\n\
+         [DLPH]\nStrength=100\n\
+         [DRON]\nStrength=100\n\
+         [SQD]\nStrength=100\n\
+         [VXLTEST]\nStrength=100\n\
+         [ALIASED]\nStrength=100\nImage=ALT\n\
+         [OMITTED]\nStrength=100\n\
+         [FALLBACKVEH]\nStrength=100\n\
+         [FALLBACKAIR]\nStrength=100\n\
+         [FALLBACKINF]\nStrength=100\n\
+         [FALLBACKBLD]\nStrength=100\n",
+    );
+    let art = ArtRegistry::from_ini(&IniFile::from_str(
+        "[DLPH]\nVoxel=no\n\
+         [DRON]\nVoxel=no\n\
+         [SQD]\nVoxel=no\n\
+         [VXLTEST]\nVoxel=yes\n\
+         [ALT]\nVoxel=no\n\
+         [OMITTED]\nCameo=OMITTEDICON\n",
+    ));
+    let mut rules = RuleSet::from_ini(&ini).expect("art model rules");
+    rules.merge_art_data(&art);
+    rules
+}
+
+fn assert_gsi_13_10_shp_unit(entity: &GameEntity) {
+    assert_eq!(entity.category, EntityCategory::Unit);
+    assert!(
+        !entity.is_voxel,
+        "SHP Unit must enter the non-voxel cadence path"
+    );
+    assert!(entity.animation.is_some());
+    assert!(entity.voxel_animation.is_none());
+}
+
+fn assert_gsi_13_10_vxl_unit(entity: &GameEntity) {
+    assert_eq!(entity.category, EntityCategory::Unit);
+    assert!(entity.is_voxel);
+    assert!(entity.animation.is_none());
+    assert!(entity.voxel_animation.is_some());
 }
 
 fn move_sound_test_rules(configured: bool) -> RuleSet {
@@ -2351,6 +2400,73 @@ fn test_spawn_infantry_has_sprite_marker() {
         .filter(|e| !e.is_voxel)
         .count();
     assert_eq!(sprite_count, 1, "Infantry should have SpriteModel marker");
+}
+
+#[test]
+fn gsi_13_10_art_voxel_no_selects_shp_unit_in_all_three_spawn_constructors() {
+    let rules = gsi_13_10_art_model_rules();
+    let mut sim = Simulation::new();
+
+    assert_eq!(
+        sim.spawn_from_map(
+            &[make_test_entity("DLPH", EntityCategory::Unit)],
+            Some(&rules),
+            &empty_heights(),
+        ),
+        1
+    );
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(1).expect("map DLPH"));
+
+    let dron = sim
+        .spawn_object_at_height("DRON", "Americans", 31, 40, 64, 0, &rules)
+        .expect("placed DRON");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(dron).expect("DRON entity"));
+
+    let squid = sim
+        .spawn_object_limbo_at_height("SQD", "Americans", 32, 40, 64, 0, &rules)
+        .expect("limbo SQD");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(squid).expect("SQD entity"));
+}
+
+#[test]
+fn gsi_13_10_effective_art_metadata_precedes_complete_category_fallback() {
+    let rules = gsi_13_10_art_model_rules();
+    let mut sim = Simulation::new();
+
+    let vxl = sim
+        .spawn_object_limbo_at_height("VXLTEST", "Americans", 1, 1, 0, 0, &rules)
+        .expect("explicit VXL vehicle");
+    assert_gsi_13_10_vxl_unit(sim.substrate.entities.get(vxl).expect("VXL entity"));
+
+    let aliased = sim
+        .spawn_object_limbo_at_height("ALIASED", "Americans", 2, 1, 0, 0, &rules)
+        .expect("Image=ALT vehicle");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(aliased).expect("aliased entity"));
+
+    let omitted = sim
+        .spawn_object_limbo_at_height("OMITTED", "Americans", 3, 1, 0, 0, &rules)
+        .expect("art entry with omitted Voxel");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(omitted).expect("omitted entity"));
+
+    for (type_id, expected_voxel) in [
+        ("FALLBACKVEH", true),
+        ("FALLBACKAIR", true),
+        ("FALLBACKINF", false),
+        ("FALLBACKBLD", false),
+    ] {
+        let id = sim
+            .spawn_object_limbo_at_height(type_id, "Americans", 4, 1, 0, 0, &rules)
+            .unwrap_or_else(|| panic!("missing-metadata fallback spawn {type_id}"));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(id)
+                .expect("fallback entity")
+                .is_voxel,
+            expected_voxel,
+            "category fallback for {type_id}"
+        );
+    }
 }
 
 #[test]

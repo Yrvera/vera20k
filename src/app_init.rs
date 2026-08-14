@@ -729,8 +729,8 @@ mod map_wall_owner_candidate_tests {
             "both centered sources accumulate over the selected scenario profile"
         );
         assert_ne!(
-            composed.unit_tint_at((4, 5)),
-            base.unit_tint_at((4, 5)),
+            composed.unit_tint_at((4, 5), 0),
+            base.unit_tint_at((4, 5), 0),
             "the world-instance unit tint consumer observes the composed grid"
         );
     }

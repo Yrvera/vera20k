@@ -44,6 +44,33 @@ static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
 
 const NO_SPAWN_ALT_SUFFIX: &str = "WO";
 
+fn vxl_body_tint(
+    grid: &lighting::CellLightGrid,
+    cell: (u16, u16),
+    category: EntityCategory,
+    extra_unit_light: i32,
+    extra_aircraft_light: i32,
+) -> [f32; 3] {
+    match category {
+        EntityCategory::Unit => grid.unit_tint_at(cell, extra_unit_light),
+        EntityCategory::Aircraft => {
+            // AircraftClass adds a separate altitude/Scenario-Level term in
+            // gamemd. Until that term is represented, preserve this existing
+            // compatibility RGB path while consuming the native i32 parser
+            // value at its normalized scale.
+            let mut tint = grid.aircraft_tint_at(cell);
+            let glow = extra_aircraft_light as f32 / lighting::LIGHT_UNIT as f32;
+            if glow > 0.0 {
+                tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+                tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+                tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+            }
+            tint
+        }
+        _ => grid.techno_tint_at(cell),
+    }
+}
+
 /// The active `NoSpawnAlt` art id for one Unit draw, if any.
 ///
 /// `UnitClass` reads `NoSpawnAlt`, calls
@@ -305,25 +332,19 @@ pub(crate) fn build_unit_instances(
             continue;
         }
         let draw_state = draw_decision.state;
-        let mut tint: [f32; 3] = match entity.category {
-            crate::map::entities::EntityCategory::Aircraft => {
-                state.lighting_grid.aircraft_tint_at((pos.rx, pos.ry))
-            }
-            _ => state.lighting_grid.unit_tint_at((pos.rx, pos.ry)),
-        };
-        // Entity ambient glow so VXL units/aircraft are visible on dark maps.
-        if let Some(rules) = &state.rules {
-            use crate::map::entities::EntityCategory;
-            let glow = match entity.category {
-                EntityCategory::Aircraft => rules.general.extra_aircraft_light,
-                _ => rules.general.extra_unit_light,
-            };
-            if glow > 0.0 {
-                tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-            }
-        }
+        let tint = vxl_body_tint(
+            &state.lighting_grid,
+            (pos.rx, pos.ry),
+            entity.category,
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_unit_light),
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_aircraft_light),
+        );
         let center_x: f32 = sx;
         let center_y: f32 = sy;
 
@@ -1002,6 +1023,27 @@ mod tests {
             Some("V3WO"),
             "the next presentation query sees the slot transition without an AI pass"
         );
+    }
+
+    #[test]
+    fn gsi_13_10_vxl_selector_uses_unit_scalar_and_keeps_aircraft_compatibility_path() {
+        let mut grid = lighting::CellLightGrid::new();
+        grid.insert_profiled_light((4, 5), [1.0, 0.88, 0.88], 1.0);
+
+        let unit = vxl_body_tint(&grid, (4, 5), EntityCategory::Unit, 200, 200);
+        let aircraft = vxl_body_tint(&grid, (4, 5), EntityCategory::Aircraft, 200, 200);
+        let structure = vxl_body_tint(&grid, (4, 5), EntityCategory::Structure, 200, 200);
+
+        for (actual, expected) in unit.into_iter().zip([1.2, 1.056, 1.056]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in aircraft.into_iter().zip([1.2, 1.08, 1.08]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in structure.into_iter().zip([1.0, 0.88, 0.88]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        assert_ne!(unit, aircraft);
     }
 
     #[test]

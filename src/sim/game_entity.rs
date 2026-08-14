@@ -348,7 +348,7 @@ pub struct GameEntity {
     pub vision_range: u16,
 
     // --- Render model (mutually exclusive) ---
-    /// true = VXL voxel model (vehicles/aircraft), false = SHP sprite (infantry/buildings).
+    /// True = VXL/HVA model, false = SHP sprite; effective art metadata is authoritative.
     pub is_voxel: bool,
 
     // --- Bool markers (were zero-size ECS components) ---
