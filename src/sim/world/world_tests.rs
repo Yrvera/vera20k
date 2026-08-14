@@ -829,7 +829,40 @@ fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
     assert!(grid.cell(1, 1).expect("west bridgehead").transition);
     assert!(grid.cell(2, 1).expect("bridge body").bridge_walkable);
     assert!(grid.cell(3, 1).expect("east bridgehead").transition);
-    assert!(sim.zone_grid.is_some());
+    assert_eq!(
+        sim.terrain_costs.len(),
+        crate::rules::locomotor_type::SpeedType::ALL_WITH_COSTS.len(),
+        "canonical publication must install every terrain-cost row"
+    );
+    for speed_type in crate::rules::locomotor_type::SpeedType::ALL_WITH_COSTS {
+        assert!(sim.terrain_costs.contains_key(speed_type));
+    }
+    let normal_zones = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+        .expect("normal movement zones");
+    assert_ne!(
+        normal_zones.zone_at(0, 0, MovementLayer::Ground),
+        crate::sim::pathfinding::zone_map::ZONE_INVALID,
+        "canonical publication must assign a reachable ground cell"
+    );
+
+    let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
+    let _ = bridge_state.write_overlay_byte(2, 1, 0xE8);
+    bridge_state
+        .cell_mut(2, 1)
+        .expect("bridge body runtime cell")
+        .damage_state = crate::sim::bridge_state::DamageState::Destroyed;
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let collapsed_grid = sim.path_grid().expect("collapsed navigation publication");
+    assert!(
+        !collapsed_grid
+            .cell(2, 1)
+            .expect("collapsed bridge body")
+            .bridge_walkable,
+        "canonical publication must project the live bridge runtime state"
+    );
 }
 
 #[test]

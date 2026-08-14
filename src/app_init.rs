@@ -62,7 +62,6 @@ use crate::render::unit_atlas::UnitAtlas;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::{GeneralRules, RuleSet};
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
 
@@ -2134,56 +2133,12 @@ pub(crate) fn load_map_from_initial(
         }
     }
 
-    // Build PathGrid with terrain walkability derived from resolved terrain:
-    // terrain/object/overlay blocking plus dynamic structure occupancy.
-    let path_grid: Option<PathGrid> = {
-        let mut grid: PathGrid = PathGrid::from_resolved_terrain(&resolved_terrain);
-
-        // Block building footprints using foundation sizes from rules.ini.
-        for ent in &map_data.entities {
-            if ent.category == crate::map::entities::EntityCategory::Structure {
-                let obj = rules.as_ref().and_then(|r| r.object(&ent.type_id));
-                let foundation: &str = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-                let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
-                grid.block_building_movement_cells(ent.cell_x, ent.cell_y, foundation, has_bib);
-            }
-        }
-
-        // Build per-SpeedType terrain cost grids for cost-aware pathfinding.
-        // Units look up their SpeedType to pick the right grid at move time.
-        {
-            use crate::rules::locomotor_type::SpeedType;
-            use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
-            let speed_types = [
-                SpeedType::Foot,
-                SpeedType::Track,
-                SpeedType::Wheel,
-                SpeedType::Float,
-                SpeedType::Amphibious,
-                SpeedType::Hover,
-                SpeedType::FloatBeach,
-            ];
-            let mut terrain_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
-            for &st in &speed_types {
-                let cost_grid = TerrainCostGrid::from_resolved_terrain(&resolved_terrain, st);
-                terrain_costs.insert(st, cost_grid);
-            }
-            if let Some(sim) = &mut simulation {
-                sim.terrain_costs = terrain_costs;
-            }
-            // Winged units ignore terrain — no need for a Winged cost grid
-            // (find_path_with_costs falls back to find_path when no grid found).
-            log::info!(
-                "Built {} terrain cost grids for cost-aware pathfinding",
-                speed_types.len()
-            );
-        }
-
-        Some(grid)
-    };
-
-    if let (Some(sim), Some(grid)) = (&mut simulation, path_grid.as_ref()) {
-        sim.rebuild_zone_grid(grid);
+    // Publish the initial terrain, bridge, live-structure, cost, and zone
+    // projection through the same simulation-owned seam used at runtime.
+    if let (Some(sim), Some(rules_for_navigation)) = (&mut simulation, rules.as_ref())
+        && !sim.rebuild_dynamic_navigation(rules_for_navigation)
+    {
+        log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
     }
 
     // Active YR applies the AI-only opening grant from
@@ -2204,11 +2159,12 @@ pub(crate) fn load_map_from_initial(
         && let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref())
     {
         let player_count = crate::sim::crates::human_player_count(sim);
+        let initial_path = sim.path_grid_snapshot();
         crate::sim::crates::place_scenario_start_crates(
             sim,
             rules_for_crates,
             &overlay_registry,
-            path_grid.as_ref(),
+            initial_path.as_deref(),
             player_count,
         );
     }
