@@ -25,7 +25,7 @@ const TABLE_LEN: usize = 16384;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::trig::file_offset_of;
+    use crate::map::retail_trig::file_offset_of;
     use crate::map::rmg::x87::sqrt_table_entry;
 
     fn retail_executable() -> Option<Vec<u8>> {

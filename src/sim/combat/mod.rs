@@ -1243,7 +1243,7 @@ pub struct CombatTickResult {
     /// Wall writes committed inline in exact cell/recursive cleanup order.
     pub wall_mutations: Vec<WallMutation>,
     /// Scanned-cell target detach visits committed inline, descending stable ID.
-    pub cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
+    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     /// Terrain cells whose inline receiver removed live spatial authority.
     /// World rebuilds cost/path/zone caches from the already-mutated resolved
     /// terrain before later same-frame consumers.
@@ -1606,7 +1606,7 @@ pub(crate) enum ReceiverStageTrace {
 /// concrete fatal receiver. Passenger teardown precedes the nested death
 /// weapon; represented UnInit follows it before the next outer receiver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FatalLifecycleStage {
+pub(crate) enum FatalLifecycleStage {
     /// Surviving Techno ReceiveDamage postlude, before Infantry scatter and
     /// synchronous retaliation. The world owns ParticleSystem storage and the
     /// shared LogicVector, so maintenance crosses the existing inline hook.
@@ -3356,7 +3356,7 @@ fn commit_damage_events_with_isolation(
             continue;
         }
 
-        if let Some((damage, reached_survivor_postlude, hostile_source)) = positive_postlude {
+        if let Some((damage, _reached_survivor_postlude, _hostile_source)) = positive_postlude {
             // InfantryClass's concrete receiver dispatches Scatter only for a
             // surviving result state (1..=3), after HP has changed and before
             // fear or the shared Techno postlude. The attacker coordinate is
@@ -5736,7 +5736,7 @@ pub(crate) fn resolve_attacker_fire(
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
     binary_frame: u32,
-    tick_ms: u32,
+    _tick_ms: u32,
     scenario_rng: &mut SimRng,
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,

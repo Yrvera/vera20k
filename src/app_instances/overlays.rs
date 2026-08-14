@@ -1020,7 +1020,7 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         let Some(image) = projectile_type.image.as_deref() else {
             continue;
         };
-        let Some((screen_x, screen_y, rx, ry, projectile_z)) =
+        let Some((screen_x, screen_y, _rx, _ry, projectile_z)) =
             projectile_authoritative_screen_position(projectile.position)
         else {
             continue;

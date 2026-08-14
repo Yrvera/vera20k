@@ -308,9 +308,6 @@ impl CellBridgeView {
 //   - The `Level + 4` height seed the gate applies is the Level-unit pathfinding
 //     seed (1 ElevationIncrement) — DISTINCT from the lepton coordinate-Z deck
 //     offset (`BRIDGE_DECK_HEIGHT_LEPTONS`). The two are never mixed (A1 §5).
-pub(crate) use crate::sim::pathfinding::{
-    BridgeTraversalInput, BridgeTraversalResult, check_bridge_traversal as bridge_traversal_gate,
-};
 
 #[cfg(test)]
 mod tests {
@@ -318,7 +315,10 @@ mod tests {
     use crate::map::bridge_facts::{
         BRIDGE_FLAG_ANCHOR_SELF, BRIDGE_FLAG_STRUCTURAL, BRIDGE_FLAG_TRANSITION,
     };
-    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::pathfinding::{
+        BridgeTraversalInput, BridgeTraversalResult, PathGrid,
+        check_bridge_traversal as bridge_traversal_gate,
+    };
 
     /// Build a view directly from raw fields (bypasses `from_resolved` so a test
     /// can pin a precise flag/level/tile combination without a full terrain cell).

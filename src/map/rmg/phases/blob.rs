@@ -11,7 +11,7 @@
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::scratch::RmgScratch;
-use crate::map::rmg::tiles::{TILE_UNASSIGNED, TileIds};
+use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, Gaussian, TruncF64, approx_sqrt};
 
 use super::shore::{self, ShoreCtx, TileBlocks};
@@ -384,7 +384,7 @@ fn self_gauss(ctx: &mut BlobCtx<'_>) -> f64 {
 mod tests {
     use super::*;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock};
-    use crate::map::rmg::tiles::SpecialTerrain;
+    use crate::map::rmg::tiles::{SpecialTerrain, TILE_UNASSIGNED};
 
     struct OneByOne(TileBlock);
 

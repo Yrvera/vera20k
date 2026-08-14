@@ -11,7 +11,7 @@ fn ra2_dir() -> String {
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
 fn inspect_buildngz() {
-    let mut asset_manager = AssetManager::new(Path::new(&ra2_dir())).expect("AssetManager");
+    let asset_manager = AssetManager::new(Path::new(&ra2_dir())).expect("AssetManager");
     // Try both extensions
     let data = asset_manager
         .get("buildngz.sha")
@@ -116,7 +116,7 @@ fn inspect_buildngz() {
 #[test]
 #[ignore] // Requires RA2_DIR (retail game files)
 fn inspect_buildngz_vertical() {
-    let mut asset_manager = AssetManager::new(Path::new(&ra2_dir())).expect("AssetManager");
+    let asset_manager = AssetManager::new(Path::new(&ra2_dir())).expect("AssetManager");
     let data = asset_manager
         .get("buildngz.sha")
         .or_else(|| asset_manager.get("buildngz.shp"))

@@ -158,7 +158,7 @@ fn economy_purifier_count_is_building_count() {
     let proc_ty = sim.interner.intern("GAPROC");
     let powr_ty = sim.interner.intern("GAPOWR"); // not a purifier (absent from rules)
 
-    let mut add_structure = |sim: &mut Simulation, id: u64, ty: InternedId, rx: u16| {
+    let add_structure = |sim: &mut Simulation, id: u64, ty: InternedId, rx: u16| {
         let mut e = GameEntity::test_default(id, "GAPROC", "Americans", rx, 5);
         e.category = EntityCategory::Structure;
         e.owner = owner;

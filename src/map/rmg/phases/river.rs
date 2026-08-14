@@ -34,7 +34,6 @@
 //! currently never *survive* — the deck stamping that resolves the junction
 //! for the finish pass is not ported, and its module doc carries the details.
 
-use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
 use crate::map::rmg::x87::{self, Gaussian, TruncF64};
 

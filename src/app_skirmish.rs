@@ -301,7 +301,7 @@ fn apply_resolved_skirmish_launch_session(
         .mode
         .override_file
         .eq_ignore_ascii_case("MPCoopMD.ini");
-    let (starts, start_assignment) = if let Some(plan) = preloaded_battle_plan {
+    let (_starts, start_assignment) = if let Some(plan) = preloaded_battle_plan {
         debug_assert!(!cooperative, "Cooperative never owns a Battle preload plan");
         // The same immutable table already drove the first loading markers.
         // Its constructor/assignment RNG prefix was installed before terrain

@@ -18,7 +18,6 @@ mod mission_handlers;
 
 use mission_handlers::*;
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use super::Simulation;
 use crate::map::entities::EntityCategory;
@@ -26,8 +25,7 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::miner::MinerConfig;
-use crate::sim::mission::authority::EntityReadyInputProvider;
-use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::mission::MissionType;
 use crate::sim::pathfinding::PathGrid;
 
 /// Non-rules world context the mission handler bodies dispatched from the
@@ -1199,7 +1197,6 @@ impl Simulation {
     /// regardless of routing precision.
     #[cfg(test)]
     pub(crate) fn factory_oracle_step_trace(&self) -> Vec<(u64, StepOutcome)> {
-        use crate::sim::economy::Economy;
         let mut out: Vec<(u64, StepOutcome)> = Vec::new();
         for id in self.live_object_order_snapshot() {
             let Some(entity) = self.substrate.entities.get(id) else {
@@ -1280,6 +1277,7 @@ mod tests {
     };
     use crate::sim::movement::drive_track::begin_forced_turn_track;
     use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
     use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
     use crate::sim::rng::SimRngLogicalState;

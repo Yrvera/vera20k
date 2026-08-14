@@ -2491,7 +2491,7 @@ mod random_map_retail_tests {
                 let (seed_dir, seed_name) = write_seed(&options, &tag);
 
                 let mut asset_manager = AssetManager::new(&ra2).expect("AssetManager::new");
-                let mut initial = load_map_initial_with_assets(
+                let initial = load_map_initial_with_assets(
                     seed_dir,
                     &mut asset_manager,
                     Some(&seed_name),

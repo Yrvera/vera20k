@@ -3584,7 +3584,7 @@ mod tests {
         use crate::sim::mission::state::MissionTestFixture;
         use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionLeafState};
         use crate::sim::movement::locomotor::LocomotorState;
-        use crate::sim::movement::locomotor_ready::LocomotorReadyState;
+
 
         let leaves = [
             MissionLeafState::unit_raw_for_test(1, 2, 3, 4),

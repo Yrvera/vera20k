@@ -13,7 +13,6 @@
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1664,6 +1663,7 @@ mod tests {
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::occupancy::CellListInsertion;
     use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 

@@ -5,7 +5,7 @@
 use crate::sim::components::RockingState;
 use crate::sim::rocking::impulse::apply_rocker_impulse;
 use crate::sim::rocking::rocking_system::{
-    BASE_DECAY_RATE, IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10,
+    IMPULSE_VEL_CAP, NORMAL_RANGE_PI2, SATURATION_PI4, SATURATION_PI10,
     SLOPE_TRANSITION_TICKS, TILT_DEADBAND, advance_axis, advance_ship_rocking,
     update_slope_transition,
 };

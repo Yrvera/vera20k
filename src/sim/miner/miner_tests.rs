@@ -2527,7 +2527,7 @@ fn wait_no_ore_retry_gate_is_exactly_105_frames() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3217,7 +3217,7 @@ fn unreachable_ore_filtered_out() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3271,7 +3271,7 @@ fn reachable_ore_picked_over_closer_unreachable() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3327,7 +3327,7 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());

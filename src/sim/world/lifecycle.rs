@@ -1450,6 +1450,8 @@ impl Simulation {
         else {
             return ConcealOutcome::MissingOrDead;
         };
+        #[cfg(not(test))]
+        let _ = object_alive;
         // gamemd-derived: `ObjectClass::Conceal @ 0x005F4D30` tests InLimbo
         // at `0x005F4D45` and returns before Destroy on the already-limbo path.
         if in_limbo {

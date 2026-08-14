@@ -13,7 +13,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::map::terrain;
 use crate::render::batch::SpriteInstance;
-use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
+use crate::rules::house_colors::{HouseColorRamps, NO_REMAP};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::command::{Command, CommandEnvelope};
@@ -389,6 +389,7 @@ fn emit_rally_line(
 mod tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::house_colors::HouseColorIndex;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::components::MovementTarget;
     use crate::sim::game_entity::GameEntity;

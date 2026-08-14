@@ -301,7 +301,7 @@ fn survivor_smudge_cell_passable(
 /// a 50/50 scorch/crater is rolled and placed at a random-offset cell within
 /// 1 cell of the foundation (mirrors `SpawnSurvivors` magnitude 0x80).
 #[allow(clippy::too_many_arguments)]
-pub fn try_dispatch_building_survivor_smudges(
+pub(crate) fn try_dispatch_building_survivor_smudges(
     foundation_cells: &[(u16, u16)],
     art: &ArtRegistry,
     smudge_types: &SmudgeTypeRegistry,
@@ -371,7 +371,7 @@ pub fn try_dispatch_building_survivor_smudges(
 /// Commit one producer-ordered batch of `SmudgeSpawnRequest` events, mutating
 /// `SmudgeGrid` and tiberium state before the producer returns.
 #[allow(clippy::too_many_arguments)]
-pub fn drain_smudge_spawn_requests(
+pub(crate) fn drain_smudge_spawn_requests(
     requests: &[SmudgeSpawnRequest],
     art: &ArtRegistry,
     smudge_types: &SmudgeTypeRegistry,

@@ -10,7 +10,6 @@
 //!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
@@ -266,6 +265,7 @@ pub(super) fn apply_pending_bridge_render_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::pathfinding::PathCell;
 
     /// Construct a synthetic PathCell with the bridge fields we care about.

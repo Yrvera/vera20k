@@ -320,6 +320,8 @@ impl Simulation {
         let Some(terrain) = self.resolved_terrain.as_ref() else {
             return;
         };
+        #[cfg(not(test))]
+        let _ = sold_cell;
         let Some(zone_grid) = self.zone_grid.as_mut() else {
             return;
         };
