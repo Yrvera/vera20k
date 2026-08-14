@@ -869,6 +869,23 @@ impl MapLoadInitial {
     }
 }
 
+/// Continue loading from the exact map produced by the accepted setup run.
+///
+/// gamemd provenance: FUN_00595BC0's accepted generated scenario reaches
+/// Scenario initialization 0x00684620 and Full_Init 0x00686B20; loading does
+/// not invoke a second generator solely to recover that scenario.
+pub(crate) fn retained_random_map_initial(
+    seed_name: String,
+    generated: crate::map::rmg::GeneratedMap,
+    progress: &mut dyn crate::app_loading::LoadingProgressSink,
+) -> MapLoadInitial {
+    progress.milestone(8);
+    MapLoadInitial {
+        map_data: generated.map_file,
+        map_source: LoadedMapSource::Generated { seed_name },
+    }
+}
+
 pub(crate) fn load_csf(
     asset_manager: &AssetManager,
 ) -> anyhow::Result<crate::assets::csf_file::CsfFile> {

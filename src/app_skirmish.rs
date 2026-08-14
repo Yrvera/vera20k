@@ -937,23 +937,30 @@ impl PreloadedBattleStartPlan {
     }
 }
 
-/// Prepare the terrain-independent standard-Battle prefix exactly once.
+/// Prepare the terrain-independent stock Battle/FFA prefix exactly once.
 ///
 /// Sparse or deficient authored starts deliberately return `None`: their two
 /// Gather passes depend on resolved terrain and must stay runtime-owned.
+/// Random maps are eligible once their retained GeneratedMap exists: gamemd's
+/// Full_Init 0x00686B20 assigns the retained RmgRegion start waypoints before
+/// DrawLoadingScreen 0x00552D60 consumes that same table.
+/// FFA provenance: constructor 0x005C5CE0 installs vtable 0x007EE424, whose
+/// +0x80 (0x005D6BE0), +0x84 (0x005D6C70), and +0xC4 (0x005D6890) callbacks
+/// are byte-identical to Battle's active start-assignment callbacks. Full_Init
+/// 0x00686B20 calls +0x80 and ordinarily +0x84 for offline g_GameMode 5 before
+/// DrawLoadingScreen.
 pub(crate) fn preload_standard_battle_start_plan(
     session: &SkirmishLaunchSession,
     map_data: &MapFile,
     launch_seed: u32,
 ) -> Option<PreloadedBattleStartPlan> {
-    if !is_standard_battle_mode(session) {
+    if !has_verified_preload_start_callbacks(session) {
         return None;
     }
     let selected_map = session.selected_map_file.as_deref()?;
     if selected_map.trim() != selected_map
         || selected_map.is_empty()
         || selected_map.eq_ignore_ascii_case("auto")
-        || crate::map::rmg::is_seed_selection(selected_map)
     {
         return None;
     }
@@ -976,7 +983,7 @@ pub(crate) fn preload_standard_battle_start_plan(
     let scenario_rng_before = scenario_rng.logical_state();
     let scenario_rng_before_fingerprint = scenario_rng.state();
 
-    // HouseClass construction precedes both Battle callbacks. Every generated
+    // HouseClass construction precedes both Battle/FFA callbacks. Every generated
     // participant plus Neutral and Special consumes one rejection-capable
     // RandomRanged(450,1800), in HouseClass order.
     for _ in 0..participant_count + 2 {
@@ -984,8 +991,8 @@ pub(crate) fn preload_standard_battle_start_plan(
             .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
     }
 
-    // Battle +0x80 and +0x84 each Gather. With a complete contiguous authored
-    // vector both calls return this same data and consume no RNG.
+    // Battle and FFA +0x80/+0x84 each Gather. With a complete contiguous
+    // authored vector both calls return this same data and consume no RNG.
     let assignment = native_assign_launch_starts(session, &gathered_starts, &mut scenario_rng);
     let scenario_rng_after = scenario_rng.logical_state();
 
@@ -999,16 +1006,31 @@ pub(crate) fn preload_standard_battle_start_plan(
     })
 }
 
-fn is_standard_battle_mode(session: &SkirmishLaunchSession) -> bool {
+fn has_verified_preload_start_callbacks(session: &SkirmishLaunchSession) -> bool {
     let mode = &session.mode;
-    mode.id == 1
-        && mode.ui_name_key.eq_ignore_ascii_case("GUI:Battle")
-        && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeBattle")
-        && mode.override_file.eq_ignore_ascii_case("MPBattleMD.ini")
-        && mode.map_filter.eq_ignore_ascii_case("standard")
-        && mode.random_maps_allowed
-        && mode.allies_allowed
-        && !mode.must_ally
+    if !mode.map_filter.eq_ignore_ascii_case("standard")
+        || !mode.random_maps_allowed
+        || mode.must_ally
+    {
+        return false;
+    }
+    match mode.id {
+        1 => {
+            mode.ui_name_key.eq_ignore_ascii_case("GUI:Battle")
+                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeBattle")
+                && mode.override_file.eq_ignore_ascii_case("MPBattleMD.ini")
+                && mode.allies_allowed
+        }
+        2 => {
+            mode.ui_name_key.eq_ignore_ascii_case("GUI:FreeForAll")
+                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeFreeForAll")
+                && mode
+                    .override_file
+                    .eq_ignore_ascii_case("MPFreeForAllMD.ini")
+                && !mode.allies_allowed
+        }
+        _ => false,
+    }
 }
 
 fn native_assign_launch_starts(

@@ -132,6 +132,59 @@ pub(crate) struct RandomMapGenerationJob {
     accept_on_finish: bool,
 }
 
+/// Generated-map ownership across the setup dialog and loading handoff.
+///
+/// The candidate belongs only to the open setup dialog. The accepted map is
+/// retained until the matching `.SED` launch transfers it to LoadingRequest.
+/// gamemd provenance: random-map setup runner FUN_00595BC0 and accepted caller
+/// 0x005E8590 retain the generated scenario consumed by Scenario initialization.
+#[derive(Default)]
+pub(crate) struct RandomMapGenerationRetention {
+    candidate: Option<crate::map::rmg::GeneratedMap>,
+    accepted: Option<(String, crate::map::rmg::GeneratedMap)>,
+}
+
+impl RandomMapGenerationRetention {
+    fn begin_generation(&mut self) {
+        self.candidate = None;
+        self.accepted = None;
+    }
+
+    fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
+        self.candidate = Some(generated);
+    }
+
+    fn cancel_setup(&mut self) {
+        self.candidate = None;
+        self.accepted = None;
+    }
+
+    fn accept_setup(&mut self, selected_map_file: &str) {
+        self.accepted = self
+            .candidate
+            .take()
+            .map(|generated| (selected_map_file.to_owned(), generated));
+    }
+
+    fn select_map(&mut self, selected_map_file: &str) {
+        if self.accepted.as_ref().is_some_and(|(accepted_file, _)| {
+            !accepted_file.eq_ignore_ascii_case(selected_map_file)
+        }) {
+            self.accepted = None;
+        }
+    }
+
+    fn take_for_loading(
+        &mut self,
+        selected_map_file: Option<&str>,
+    ) -> Option<crate::map::rmg::GeneratedMap> {
+        let (accepted_file, generated) = self.accepted.take()?;
+        selected_map_file
+            .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
+            .then_some(generated)
+    }
+}
+
 /// What the generator worker sends back as it goes.
 enum RandomMapUpdate {
     /// The map at one of the boundaries the original redraws its preview at.
@@ -326,6 +379,8 @@ pub(crate) struct AppState {
     /// enough to freeze the window if done inline, which also means the
     /// dialog's "Working / Please Wait" never gets a frame to appear in.
     pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
+    /// Exact setup-generated map retained through OK until loading owns it.
+    pub(crate) random_map_retention: RandomMapGenerationRetention,
     pub(crate) skirmish_preview_texture:
         Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
@@ -1016,15 +1071,30 @@ impl App {
             log::warn!("No loadable Skirmish map entry exists for {file_name}");
             return false;
         };
+        Self::apply_selected_shell_map_index(state, map_idx)
+    }
+
+    /// One production mutation point for shell selection plus retained-RMG
+    /// identity invalidation, whether selection came from Cooperative repair or
+    /// the Choose Map dialog.
+    fn apply_selected_shell_map_index(state: &mut AppState, map_idx: usize) -> bool {
+        let Some(file_name) = state
+            .skirmish_shell_maps
+            .get(map_idx)
+            .map(|map| map.file_name.clone())
+        else {
+            return false;
+        };
         crate::ui::skirmish_shell::accept_selected_map(
             &mut state.skirmish_shell_state,
             &state.skirmish_shell_maps,
             map_idx,
         );
+        state.random_map_retention.select_map(&file_name);
         if let Some(legacy_idx) = state
             .available_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&file_name))
         {
             state.skirmish_settings.selected_map_idx = legacy_idx;
         }
@@ -1215,6 +1285,9 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
+        let retained_random_map = state
+            .random_map_retention
+            .take_for_loading(session.selected_map_file.as_deref());
         let request = match crate::match_bootstrap::classify_startup_session(&session) {
             crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,
@@ -1249,7 +1322,8 @@ impl App {
                     state.skirmish_settings.clone(),
                 )
             }
-        };
+        }
+        .with_retained_random_map(retained_random_map);
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         state.main_menu_show_single_player_shell = false;
@@ -1625,19 +1699,8 @@ impl App {
             &mut state.skirmish_shell_state,
             &state.skirmish_modes,
         );
-        crate::ui::skirmish_shell::accept_selected_map(
-            &mut state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
-            map_idx,
-        );
-        if let Some(legacy_idx) = state
-            .available_maps
-            .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
-        {
-            state.skirmish_settings.selected_map_idx = legacy_idx;
-        }
-        state.skirmish_preview_texture = None;
+        let applied = Self::apply_selected_shell_map_index(state, map_idx);
+        debug_assert!(applied, "validated chooser map index must remain loadable");
 
         // Native 0x4B2: setting the right-panel game-type / map-label text
         // restarts that static's reveal from the first character. The title is
@@ -1750,6 +1813,9 @@ impl App {
         options: &crate::map::rmg::RmgOptions,
         accept_on_finish: bool,
     ) -> bool {
+        // A second Generate makes the previous dialog result stale immediately,
+        // even when setup cannot progress far enough to spawn the worker.
+        state.random_map_retention.begin_generation();
         let Some(asset_manager) = state.asset_manager.as_mut() else {
             return false;
         };
@@ -1879,6 +1945,7 @@ impl App {
                 .take()
                 .expect("checked present above");
             let preview = Self::rasterise_generated_map(state, &job, &generated);
+            state.random_map_retention.finish_generation(*generated);
             if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(preview);
             }
@@ -1919,16 +1986,24 @@ impl App {
         true
     }
 
-    /// Close the setup dialog, abandoning any generation still running for it.
+    /// Remove the setup dialog and any in-flight worker without changing the
+    /// retention disposition already chosen by accept or cancel.
+    fn dismiss_random_map_setup(state: &mut AppState) {
+        state.skirmish_shell_state.random_map_setup_modal = None;
+        state.random_map_generation = None;
+    }
+
+    /// Cancel the setup dialog, abandoning any generation and every retained
+    /// result associated with this random-map selection.
     ///
     /// Dropping the job drops the receiver, so a worker still going finds a
     /// closed channel on its next send and its remaining output goes nowhere.
     /// That matters beyond tidiness: a late finish would otherwise overwrite
     /// `RandMap.img`, changing the chooser's thumbnail to a map the player
     /// walked away from.
-    fn close_random_map_setup(state: &mut AppState) {
-        state.skirmish_shell_state.random_map_setup_modal = None;
-        state.random_map_generation = None;
+    fn cancel_random_map_setup(state: &mut AppState) {
+        Self::dismiss_random_map_setup(state);
+        state.random_map_retention.cancel_setup();
     }
 
     /// Commit the dialog's options and close it. Shared by the immediate accept
@@ -1943,7 +2018,12 @@ impl App {
             return;
         };
         match Self::commit_random_map_setup(state, &options) {
-            Ok(()) => Self::close_random_map_setup(state),
+            Ok(()) => {
+                state.random_map_retention.accept_setup(RANDMAP_SED_FILE);
+                // Successful OK already chose the retained result; dialog
+                // teardown must not run the cancellation invalidation path.
+                Self::dismiss_random_map_setup(state);
+            }
             Err(err) => {
                 // Staying open is deliberate: a missing seed file makes the
                 // launch path fall back to defaults, which would silently
@@ -2546,7 +2626,7 @@ impl App {
             Self::accept_random_map_setup(state);
         }
         if close_setup {
-            Self::close_random_map_setup(state);
+            Self::cancel_random_map_setup(state);
         }
         true
     }
@@ -4593,6 +4673,7 @@ impl App {
 
         let mut state = AppState {
             random_map_generation: None,
+            random_map_retention: RandomMapGenerationRetention::default(),
             window,
             window_active: true,
             window_hidden: false,
@@ -6111,6 +6192,113 @@ mod tests {
         assert_eq!(
             drawn[5],
             GenerationPoint::After(crate::map::rmg::Stage::Rocks)
+        );
+    }
+
+    fn retained_map(seed: i32, start_x: u16) -> crate::map::rmg::GeneratedMap {
+        let mut options = crate::map::rmg::RmgOptions::default();
+        options.seed = seed;
+        crate::map::rmg::GeneratedMap {
+            map_file: crate::map::rmg::emit::empty_map_file(&options, 32, 32),
+            start_waypoints: vec![(0, start_x, 20)],
+            stages_run: Vec::new(),
+            unfilled_start_slots: 0,
+        }
+    }
+
+    #[test]
+    fn gsi_03_09_random_map_retention_invalidates_and_transfers_exactly_once() {
+        let mut regenerated = RandomMapGenerationRetention::default();
+        regenerated.finish_generation(retained_map(11, 10));
+        regenerated.accept_setup("RandMap.Sed");
+        regenerated.begin_generation();
+        assert!(
+            regenerated.take_for_loading(Some("RandMap.Sed")).is_none(),
+            "starting a genuine regeneration invalidates accepted map A"
+        );
+
+        let mut reopened_then_cancelled_without_generate = RandomMapGenerationRetention::default();
+        reopened_then_cancelled_without_generate.finish_generation(retained_map(12, 11));
+        reopened_then_cancelled_without_generate.accept_setup("RandMap.Sed");
+        reopened_then_cancelled_without_generate.cancel_setup();
+        assert!(
+            reopened_then_cancelled_without_generate
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "a genuine setup Cancel invalidates accepted map A"
+        );
+
+        let mut reopened_then_cancelled = RandomMapGenerationRetention::default();
+        reopened_then_cancelled.finish_generation(retained_map(13, 12));
+        reopened_then_cancelled.accept_setup("RandMap.Sed");
+        reopened_then_cancelled.begin_generation();
+        reopened_then_cancelled.finish_generation(retained_map(14, 13));
+        reopened_then_cancelled.cancel_setup();
+        assert!(
+            reopened_then_cancelled
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "reopen, regenerate, then Cancel cannot resurrect accepted map A"
+        );
+
+        let mut cancelled = RandomMapGenerationRetention::default();
+        cancelled.finish_generation(retained_map(22, 20));
+        cancelled.cancel_setup();
+        cancelled.accept_setup("RandMap.Sed");
+        assert!(cancelled.take_for_loading(Some("RandMap.Sed")).is_none());
+
+        let mut selected_elsewhere = RandomMapGenerationRetention::default();
+        selected_elsewhere.finish_generation(retained_map(33, 30));
+        selected_elsewhere.accept_setup("RandMap.Sed");
+        selected_elsewhere.select_map("mp01t4.map");
+        assert!(
+            selected_elsewhere
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none()
+        );
+
+        let mut alternate_seed = RandomMapGenerationRetention::default();
+        alternate_seed.finish_generation(retained_map(34, 35));
+        alternate_seed.accept_setup("RandMap.Sed");
+        // This is the retention authority used by apply_selected_shell_map_file:
+        // another seed selection must invalidate, not merely refuse this call.
+        alternate_seed.select_map("Other.Sed");
+        assert!(
+            alternate_seed
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none()
+        );
+        assert!(alternate_seed.take_for_loading(Some("Other.Sed")).is_none());
+
+        let mut mismatched_launch = RandomMapGenerationRetention::default();
+        mismatched_launch.finish_generation(retained_map(35, 36));
+        mismatched_launch.accept_setup("RandMap.Sed");
+        assert!(
+            mismatched_launch
+                .take_for_loading(Some("Other.Sed"))
+                .is_none()
+        );
+        assert!(
+            mismatched_launch
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "a refused nonmatching launch invalidates the prior accepted map"
+        );
+
+        let mut accepted_after_successful_close = RandomMapGenerationRetention::default();
+        accepted_after_successful_close.finish_generation(retained_map(44, 40));
+        accepted_after_successful_close.accept_setup("RandMap.Sed");
+        // App::dismiss_random_map_setup has no retention side effect after OK.
+        accepted_after_successful_close.select_map("RANDMAP.SED");
+        let transferred = accepted_after_successful_close
+            .take_for_loading(Some("randmap.sed"))
+            .expect("successful accept close preserves the newly accepted map");
+        assert_eq!(transferred.start_waypoints, vec![(0, 40, 20)]);
+        assert!(
+            accepted_after_successful_close
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "successful accept still transfers exactly once"
         );
     }
 

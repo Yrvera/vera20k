@@ -31,9 +31,8 @@ const WIDE_ART_SIZE: [i32; 2] = [800, 600];
 /// Skirmish mode whose briefing block sits lower on the loading screen.
 const COOPERATIVE_MODE_OVERRIDE_FILE: &str = "MPCoopMD.ini";
 
-/// Bitmap the random-map setup dialog writes, and the only preview source the
-/// random-map loading branch has: at composition time the scenario has not been
-/// generated yet, so there is nothing to derive a preview from.
+/// Bitmap the random-map setup dialog writes and the preview source the
+/// random-map loading branch consumes.
 pub(crate) const RANDOM_MAP_PREVIEW_FILE: &str = "RandMap.img";
 
 /// Loading-art viewport size for the current screen width.
@@ -388,28 +387,34 @@ pub(crate) fn build_loading_composition(
 /// from the scenario. The four text layers sit after that branch and are drawn
 /// exactly as they are for a selected map.
 ///
-/// This produces no `mmpb` markers and no burned start indicators, and that is a
-/// **VERA-internal ordering difference, not gamemd's behavior**: gamemd calls
-/// the marker helper unconditionally on the same preview holder from both
-/// branches, with waypoints and start assignments already resolved, so it draws
-/// house-colored markers on the random-map loading screen too. VERA generates
-/// the map inside the loader, *after* this composition is built, so markers here
-/// would need the snapshot rebuilt once generation finishes.
+/// gamemd provenance: DrawLoadingScreen 0x00552D60 loads `RandMap.img` at
+/// 0x00553592/0x00553599, then unconditionally calls compositor 0x00640A40 at
+/// 0x00553687 with the retained scenario waypoints and resolved assignments.
 pub(crate) fn build_random_map_loading_composition(
     session: &SkirmishLaunchSession,
     csf: Option<&CsfFile>,
     render_size: [u32; 2],
     preview_image: Option<DecodedPreview>,
+    retained_map: Option<&MapFile>,
+    assignments: &[LoadingStartAssignment],
 ) -> LoadingCompositionSnapshot {
     let region = mmpb_region_rect(render_size[0]);
+    let mut markers = Vec::new();
     let preview = preview_image
         .filter(valid_preview_buffer)
-        .and_then(|image| {
+        .and_then(|mut image| {
             let fit = aspect_fit_preview(region, image.width, image.height)?;
+            if let Some(map) = retained_map {
+                let prefix = native_loading_waypoint_prefix(&map.waypoints);
+                if let Some(bounds) = projected_playfield_bounds(map) {
+                    burn_black_start_indicators(&mut image, &prefix, bounds);
+                    markers = build_mmpb_marker_records(&prefix, assignments, bounds, region, fit);
+                }
+            }
             Some(PreparedLoadingPreview { image, region, fit })
         });
 
-    finish_loading_composition(session, csf, render_size, preview, Vec::new())
+    finish_loading_composition(session, csf, render_size, preview, markers)
 }
 
 /// Attach the map-independent layers — the four localized text strings and their
@@ -954,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn random_map_composition_keeps_every_text_layer_without_map_data() {
+    fn gsi_03_09_missing_random_preview_keeps_text_without_markers() {
         let csf = test_csf(&[
             ("Name:Americans", "America"),
             ("Name:Para", "paradrop"),
@@ -966,6 +971,8 @@ mod tests {
             Some(&csf),
             [800, 600],
             None,
+            None,
+            &[],
         );
 
         assert_eq!(composition.text.country_name.as_deref(), Some("America"));
@@ -981,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn random_map_composition_aspect_fits_the_setup_dialog_bitmap() {
+    fn gsi_03_09_random_preview_aspect_fits_without_invented_starts() {
         let image = DecodedPreview {
             width: 200,
             height: 80,
@@ -992,6 +999,8 @@ mod tests {
             None,
             [800, 600],
             Some(image),
+            None,
+            &[],
         );
 
         let preview = composition.preview.expect("valid bitmap fits the region");
@@ -1000,10 +1009,136 @@ mod tests {
             preview.fit,
             aspect_fit_preview(mmpb_region_rect(800), 200, 80).expect("valid fit")
         );
-        // The bitmap already carries the setup dialog's own start markers, so no
-        // black indicators are burned into it here.
+        // Without retained scenario data, the loader never invents starts.
         assert!(preview.image.rgba.iter().all(|byte| *byte == 255));
         assert!(composition.markers.is_empty());
+    }
+
+    #[test]
+    fn gsi_03_09_retained_random_first_frame_has_black_starts_markers_text_and_name() {
+        use crate::map::map_file::MapCell;
+
+        let mut map = crate::map::rmg::emit::empty_map_file(
+            &crate::map::rmg::RmgOptions::default(),
+            100,
+            100,
+        );
+        map.cells = vec![
+            MapCell {
+                rx: 0,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            },
+            MapCell {
+                rx: 0,
+                ry: 100,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            },
+            MapCell {
+                rx: 100,
+                ry: 0,
+                tile_index: 0,
+                sub_tile: 0,
+                z: 0,
+            },
+        ];
+        map.waypoints = HashMap::from([
+            (0, waypoint(0, 20, 20)),
+            (1, waypoint(1, 40, 20)),
+            (2, waypoint(2, 20, 40)),
+        ]);
+        let assignments = [
+            LoadingStartAssignment {
+                start_index: 0,
+                participant: LoadingParticipantId::Local,
+                color_priority: 3,
+            },
+            LoadingStartAssignment {
+                start_index: 1,
+                participant: LoadingParticipantId::Opponent(0),
+                color_priority: 6,
+            },
+        ];
+        let csf = test_csf(&[
+            ("Name:Americans", "America"),
+            ("Name:Para", "paradrop"),
+            ("LoadBrief:USA", "A briefing."),
+            ("GUI:LoadingEx", "Loading..."),
+        ]);
+        let image = DecodedPreview {
+            width: 300,
+            height: 100,
+            rgba: vec![255; 300 * 100 * 4],
+        };
+        let session = test_launch_session();
+        let composition = build_random_map_loading_composition(
+            &session,
+            Some(&csf),
+            [800, 600],
+            Some(image),
+            Some(&map),
+            &assignments,
+        );
+
+        let preview = composition.preview.expect("retained preview");
+        assert_eq!(
+            preview
+                .image
+                .rgba
+                .chunks_exact(4)
+                .filter(|pixel| *pixel == [0, 0, 0, 255])
+                .count(),
+            3 * 4 * 4,
+            "both assigned starts and the unassigned start are burned black"
+        );
+        assert_eq!(composition.markers.len(), 2);
+        assert_eq!(
+            composition.markers[0],
+            MmpbMarkerRecord {
+                anchor: composition.markers[0].anchor,
+                start_index: 0,
+                waypoint: waypoint(0, 20, 20),
+                participant: LoadingParticipantId::Local,
+                color_priority: 3,
+            }
+        );
+        assert_eq!(composition.markers[1].start_index, 1);
+        assert_eq!(
+            composition.markers[1].participant,
+            LoadingParticipantId::Opponent(0)
+        );
+        assert_eq!(composition.markers[1].color_priority, 6);
+        assert!(
+            composition
+                .markers
+                .iter()
+                .all(|marker| marker.start_index != 2)
+        );
+        assert_eq!(composition.text.country_name.as_deref(), Some("America"));
+        assert_eq!(composition.text.special_unit.as_deref(), Some("PARADROP"));
+        assert_eq!(composition.text.load_brief.as_deref(), Some("A briefing."));
+        assert_eq!(composition.text.loading.as_deref(), Some("Loading..."));
+        assert!(
+            composition
+                .layers
+                .contains(&LoadingCompositionLayer::PreviewWithBlackStartIndicators)
+        );
+        assert!(
+            composition
+                .layers
+                .contains(&LoadingCompositionLayer::AssignedMmpbMarkers)
+        );
+        assert_eq!(
+            crate::app_loading_progress_row::LoadingProgressRowSnapshot::from_launch_session(
+                &session
+            )
+            .label,
+            "Player"
+        );
     }
 
     #[test]
