@@ -222,11 +222,6 @@ pub(super) fn defer_drive_arrival_clear(entity: &mut GameEntity) -> bool {
     true
 }
 
-pub(super) fn process_pending_empty_drive_arrivals(entities: &mut EntityStore) {
-    let ids = entities.keys_sorted();
-    process_pending_empty_drive_arrivals_in_order(entities, &ids);
-}
-
 pub(super) fn process_pending_empty_drive_arrivals_in_order(
     entities: &mut EntityStore,
     ids: &[u64],

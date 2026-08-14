@@ -103,6 +103,7 @@ pub fn splash_cells(cell_spread: SimFixed) -> &'static [(i16, i16)] {
 /// gamemd splash fine-filter radius in leptons = `ftol(CellSpread * 256)` (multiply by 256, then
 /// truncate toward zero). An object is damaged only if its 3D lepton distance `<=` this. The cell
 /// sweep is a coarse pre-filter; this is the true radius gate. `CS <= 0` → 0.
+#[cfg(test)]
 pub fn splash_threshold_leptons(cell_spread: SimFixed) -> i64 {
     if cell_spread <= SIM_ZERO {
         return 0;

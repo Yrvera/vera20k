@@ -105,6 +105,7 @@ pub(crate) fn scatter_inviso_effect_coord(
     split_valid_coord(x, y)
 }
 
+#[cfg(test)]
 fn scatter_effect_coord_for_byte(
     byte: u8,
     rx: u16,

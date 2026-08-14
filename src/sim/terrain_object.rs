@@ -221,11 +221,13 @@ impl TerrainAreaState {
         &self.tiberium_spawning_terrain_cells
     }
 
+    #[cfg(test)]
     pub(crate) fn is_finalizing(&self, stable_id: u64) -> bool {
         self.finalizing_terrain.contains(&stable_id)
     }
 
     /// Enter the shared Object damage kernel for one captured Terrain receiver.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn receive_area_damage(
         &mut self,
@@ -458,6 +460,7 @@ pub fn unmark_terrain_occupation(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn limbo_terrain_object_at_cell(
     production: &mut ProductionState,
     cell: (u16, u16),
@@ -472,6 +475,7 @@ pub(crate) fn limbo_terrain_object_at_cell(
     .is_some()
 }
 
+#[cfg(test)]
 fn production_authority_parts<'a>(
     production: &'a mut ProductionState,
     raw_occupation: &'a mut RawCellOccupationGrid,
@@ -521,6 +525,7 @@ fn limbo_terrain_object_at_cell_parts(
     Some(stable_id)
 }
 
+#[cfg(test)]
 pub(crate) fn damage_terrain_object_at_cell(
     production: &mut ProductionState,
     raw_occupation: &mut RawCellOccupationGrid,

@@ -10,7 +10,6 @@
 //!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
-
 use crate::sim::components::{BridgeOccupancy, Position};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::pathfinding::PathGrid;
@@ -84,6 +83,7 @@ pub(crate) fn evaluate_runtime_bridge_transition(
 }
 
 /// Read-only runtime bridge row for oracle diagnostics.
+#[cfg(test)]
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct BridgeRuntimeOracleTick {
     pub tick: u64,
@@ -192,6 +192,7 @@ pub(super) fn resolve_cell_transition_bridge_state(
 /// Diagnostic wrapper for a single boundary crossing. It computes the same
 /// bridge update as `resolve_cell_transition_bridge_state` and returns an
 /// oracle row; callers opt in explicitly from tests/tools.
+#[cfg(test)]
 pub(super) fn resolve_cell_transition_bridge_state_oracle(
     position: &mut Position,
     path_grid: Option<&PathGrid>,

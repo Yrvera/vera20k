@@ -281,6 +281,7 @@ impl BlockerNeighborCounts {
 
     /// Reverse one single-cell producer's eight raw-byte neighbor increments.
     /// Overlay removal wiring is intentionally deferred to its owning batch.
+    #[allow(dead_code)]
     pub(crate) fn remove_single_cell_neighbor_source(&mut self, x: u16, y: u16) {
         for dy in -1i32..=1 {
             for dx in -1i32..=1 {
@@ -318,6 +319,8 @@ impl BlockerNeighborCounts {
         self.counts[idx] = self.counts[idx].wrapping_add(1);
     }
 
+    // Retained with the deferred single-cell removal seam above.
+    #[allow(dead_code)]
     fn decrement_i32(&mut self, x: i32, y: i32) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
@@ -2728,6 +2731,7 @@ pub(crate) fn find_layered_path_hierarchy_marker(
 }
 
 /// Resolve a gamemd foundation name into pathfinding footprint dimensions.
+#[cfg(test)]
 fn parse_foundation(foundation: &str) -> (u16, u16) {
     crate::rules::foundation::foundation_dimensions(foundation)
 }

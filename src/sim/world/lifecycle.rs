@@ -40,7 +40,9 @@ impl<'a> UninitContext<'a> {
         Self { terrain }
     }
 
-    pub(crate) const fn terrain(self) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
+    pub(crate) const fn terrain(
+        self,
+    ) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
         self.terrain
     }
 }
@@ -73,8 +75,7 @@ fn object_get_coords_cell(entity: &crate::sim::game_entity::GameEntity) -> Optio
         .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
         .wrapping_add(entity.position.sub_y.to_num::<i32>());
     if entity.category == EntityCategory::Structure {
-        let (width, height) =
-            crate::rules::foundation::foundation_dimensions(&entity.foundation);
+        let (width, height) = crate::rules::foundation::foundation_dimensions(&entity.foundation);
         world_x = world_x.wrapping_add(i32::from(width.saturating_sub(1)).wrapping_mul(128));
         world_y = world_y.wrapping_add(i32::from(height.saturating_sub(1)).wrapping_mul(128));
     }
@@ -1414,6 +1415,7 @@ impl Simulation {
 
     /// Compatibility dispatch which keeps AnimClass logic-only and routes every
     /// GameEntity through the complete common Object Conceal transaction.
+    #[cfg(test)]
     pub(crate) fn conceal(&mut self, stable_id: u64) -> ConcealOutcome {
         if self.substrate.anims.contains_key(stable_id) {
             return if self.conceal_anim(stable_id) {
@@ -1433,6 +1435,7 @@ impl Simulation {
     }
 
     /// ObjectClass::Conceal represented order. Conceal does not mutate Alive.
+    #[cfg(test)]
     pub(crate) fn object_conceal(&mut self, stable_id: u64) -> ConcealOutcome {
         self.object_conceal_with_context(stable_id, UninitContext::default())
     }
@@ -1738,11 +1741,7 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::UninitClassPre { stable_id });
     }
 
-    fn uninit_carried_passengers(
-        &mut self,
-        carrier_id: u64,
-        context: UninitContext<'_>,
-    ) {
+    fn uninit_carried_passengers(&mut self, carrier_id: u64, context: UninitContext<'_>) {
         let passenger_ids = self
             .substrate
             .entities
@@ -2099,11 +2098,7 @@ impl Simulation {
     /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
     /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
     /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
-    fn notify_pointer_expired(
-        &mut self,
-        expired_id: u64,
-        context: UninitContext<'_>,
-    ) {
+    fn notify_pointer_expired(&mut self, expired_id: u64, context: UninitContext<'_>) {
         let Some((
             expired_cell,
             expired_target_cell,
@@ -2245,11 +2240,7 @@ impl Simulation {
         self.uninit_with_context(stable_id, UninitContext::default());
     }
 
-    pub(crate) fn uninit_with_context(
-        &mut self,
-        stable_id: u64,
-        context: UninitContext<'_>,
-    ) {
+    pub(crate) fn uninit_with_context(&mut self, stable_id: u64, context: UninitContext<'_>) {
         if !self.substrate.entities.contains(stable_id) {
             return;
         }
@@ -2303,6 +2294,7 @@ impl Simulation {
         self.trace_lifecycle_for_test(LifecycleTestEvent::PendingDeleteQueued { stable_id });
     }
 
+    #[cfg(test)]
     pub(crate) fn despawn_entity(&mut self, stable_id: u64) {
         self.uninit(stable_id);
     }

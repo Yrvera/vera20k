@@ -398,52 +398,6 @@ fn is_exit_cell_passable(
     true
 }
 
-/// Diamond-ring spiral search from `(ox, oy)`.
-///
-/// Mirrors the iteration order of `FootClass::Find_Nearby_Passable_Cell`
-/// (gamemd 0x56DC20): ring `r=0` is the anchor itself; subsequent rings
-/// walk top/bottom rows first (delta = -r..=r), then left/right columns
-/// excluding corners (delta = 1-r..=r-1). Returns the **first** passable
-/// cell encountered.
-///
-/// Note: gamemd's implementation collects up to 24 candidates from the
-/// first non-empty ring and picks one at random (via `g_CurrentFrameCounter
-/// % count`); see [`find_nearby_passable_cells_first_ring`] for the
-/// candidate-collecting variant used by conditional reciprocal-link release
-/// geometry.
-pub(crate) fn find_nearby_passable_cell(
-    ox: i32,
-    oy: i32,
-    grid: &PathGrid,
-    occupancy: Option<&OccupancyGrid>,
-    max_radius: i32,
-) -> Option<(u16, u16)> {
-    if is_exit_cell_passable(ox, oy, grid, occupancy) {
-        return Some((ox as u16, oy as u16));
-    }
-    for r in 1..=max_radius {
-        // Segment 1: top + bottom rows.
-        for delta in -r..=r {
-            if is_exit_cell_passable(ox + delta, oy - r, grid, occupancy) {
-                return Some(((ox + delta) as u16, (oy - r) as u16));
-            }
-            if is_exit_cell_passable(ox + delta, oy + r, grid, occupancy) {
-                return Some(((ox + delta) as u16, (oy + r) as u16));
-            }
-        }
-        // Segment 2: left + right columns (corners already covered by segment 1).
-        for delta in (1 - r)..=(r - 1) {
-            if is_exit_cell_passable(ox - r, oy + delta, grid, occupancy) {
-                return Some(((ox - r) as u16, (oy + delta) as u16));
-            }
-            if is_exit_cell_passable(ox + r, oy + delta, grid, occupancy) {
-                return Some(((ox + r) as u16, (oy + delta) as u16));
-            }
-        }
-    }
-    None
-}
-
 /// Diamond-ring spiral that collects ALL passable cells in the first
 /// non-empty ring, mirroring gamemd's `FootClass::Find_Nearby_Passable_Cell`
 /// (0x56DC20) candidate-collection block. The original engine then picks

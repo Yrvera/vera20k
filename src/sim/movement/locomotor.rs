@@ -101,10 +101,6 @@ pub enum AirMovePhase {
     Descending,
 }
 
-/// Default cruise altitude for Fly locomotor aircraft (in leptons).
-/// Used only in tests and as a fallback — runtime code uses `GeneralRules.flight_level`.
-const FLY_CRUISE_ALTITUDE: SimFixed = SimFixed::lit("1500");
-
 /// Rate at which Fly aircraft ascend/descend (leptons per second).
 const FLY_CLIMB_RATE: SimFixed = SimFixed::lit("300");
 
@@ -161,7 +157,7 @@ pub struct LocomotorState {
     /// Jumpjets use their own `jumpjet_current_speed` instead.
     pub fly_current_speed: SimFixed,
     /// Current altitude in leptons (0 = on the ground).
-    /// Fly units cruise at FLY_CRUISE_ALTITUDE; Jumpjets hover at JumpjetHeight.
+    /// Fly units cruise at `GeneralRules.flight_level`; Jumpjets hover at JumpjetHeight.
     pub altitude: SimFixed,
     /// Target altitude — what the unit is ascending/descending toward.
     pub target_altitude: SimFixed,

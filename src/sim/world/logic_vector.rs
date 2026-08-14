@@ -77,18 +77,6 @@ impl LogicVector {
         self.order.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.order.is_empty()
-    }
-
-    pub(crate) fn contains(&self, id: u64) -> bool {
-        self.order.contains(&id)
-    }
-
-    pub fn clear(&mut self) {
-        self.order.clear();
-    }
-
     /// Test-only: force a specific order (e.g. opposite stable-id order).
     #[cfg(test)]
     pub fn set_order_for_test(&mut self, order: Vec<u64>) {

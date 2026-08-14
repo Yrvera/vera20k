@@ -24,6 +24,9 @@ use super::spark::{
 };
 use super::spark_world::{SparkCollisionWorld, SparkWorldError};
 
+// Retained with the verified Spark activation seam while live dispatch keeps
+// Spark and Railgun systems dormant.
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub(crate) enum SparkSystemTickError {
     #[error("particle type {0:?} is not behavior-3 Spark")]
@@ -159,6 +162,7 @@ fn tick_fire(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
 /// Normal particle-system dispatch deliberately does not call this yet. The
 /// function exists so parity tests and the eventual activation change use the
 /// verified begin/query/finish ownership boundary instead of inventing another.
+#[allow(dead_code)]
 pub(crate) fn tick_spark_system_compat(
     sys: &mut ParticleSystem,
     sim: &mut Simulation,
@@ -169,6 +173,8 @@ pub(crate) fn tick_spark_system_compat(
     })
 }
 
+// Shared tested kernel behind the deferred production activation gate.
+#[allow(dead_code)]
 fn tick_spark_system_with_query<F>(
     sys: &mut ParticleSystem,
     sim: &mut Simulation,

@@ -35,7 +35,11 @@ const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;
 const BUILDING_RENDER_ORIGIN_LEPTONS: i32 = 128;
 const DAMAGE_FIRE_SLOT_COUNT: usize = 8;
+// Retained with the verified multiplayer-feedback spawn seam until command
+// feedback owns its production call site.
+#[allow(dead_code)]
 const MULTIPLAYER_FEEDBACK_Z_ADJUST: i32 = -5000;
+#[allow(dead_code)]
 const SYNC_EXEMPT_NATIVE_UNIQUE_ID: i32 = -2;
 
 /// Pure YR `AnimClass_UpdateBouncePhysics` directional-frame projection.
@@ -459,6 +463,7 @@ impl Simulation {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn spawn_anim_object(
         &mut self,
         rules: &RuleSet,
@@ -548,6 +553,9 @@ impl Simulation {
         Ok(stable_id)
     }
 
+    // The move-feedback producer is not wired yet; keep the verified
+    // sync-exempt allocation path available for that activation slice.
+    #[allow(dead_code)]
     pub(crate) fn spawn_multiplayer_feedback_anim_at_world(
         &mut self,
         rules: &RuleSet,

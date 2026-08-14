@@ -94,18 +94,22 @@ impl MissionLeafState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn set_unit_deploy_begin_active(&mut self, raw: u8) {
         self.expect_unit_mut().deploy_begin_active = raw;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_unit_deploy_reverse_active(&mut self, raw: u8) {
         self.expect_unit_mut().deploy_reverse_active = raw;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_unit_tracker_byte_18(&mut self, raw: u8) {
         self.expect_unit_mut().tracker_byte_18 = raw;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_unit_tracker_byte_19(&mut self, raw: u8) {
         self.expect_unit_mut().tracker_byte_19 = raw;
     }
@@ -127,6 +131,7 @@ impl MissionLeafState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn set_aircraft_transition_ready(&mut self, raw: u8) {
         self.expect_aircraft_mut().transition_ready_latch = raw;
     }
@@ -136,11 +141,13 @@ impl MissionLeafState {
         self.expect_aircraft_mut().action_latch = 0;
     }
 
+    #[cfg(test)]
     pub(crate) fn set_building_ready_latch(&mut self, raw: u8) {
         self.expect_building_mut().ready_latch = raw;
     }
 
     #[track_caller]
+    #[cfg(test)]
     fn expect_unit_mut(&mut self) -> &mut UnitMissionLeaf {
         match self {
             Self::Unit(leaf) => leaf,
@@ -165,6 +172,7 @@ impl MissionLeafState {
     }
 
     #[track_caller]
+    #[cfg(test)]
     fn expect_building_mut(&mut self) -> &mut BuildingMissionLeaf {
         match self {
             Self::Building(leaf) => leaf,

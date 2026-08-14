@@ -26,21 +26,29 @@
 //! - Part of sim/ — depends on sim/entity_store, sim/game_entity, sim/pathfinding.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+#[cfg(test)]
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
+#[cfg(test)]
 use crate::sim::lifecycle_request::LifecycleRequest;
 use crate::sim::pathfinding::PathGrid;
+#[cfg(test)]
 use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
+#[cfg(test)]
 use crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig;
 use crate::sim::pathfinding::zone_map::ZoneGrid;
+#[cfg(test)]
 use crate::sim::rng::SimRng;
-use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed, facing_from_delta_int};
+use crate::util::fixed_math::{SIM_ONE, SimFixed, facing_from_delta_int};
+#[cfg(test)]
+use crate::util::fixed_math::SIM_ZERO;
 
 // --- Internal submodules ---
 mod drive_locomotion;
@@ -101,11 +109,12 @@ pub use movement_commands::{
 pub(crate) use movement_path::{
     path_search_used_zone_grid_marker, reset_path_search_used_zone_grid_marker,
 };
-// Re-export the tick function so callers can use `movement::tick_movement_with_grids`.
 pub(crate) use movement_tick::{
     sync_formation_speeds_after_live_pass, tick_movement_object_with_grids,
-    tick_movement_with_grids,
 };
+// Legacy batch tick used by focused movement fixtures.
+#[cfg(test)]
+pub(crate) use movement_tick::tick_movement_with_grids;
 
 /// Install the active-YR `DriveLocomotion::Force_Track` state for a flat-ground
 /// unit. The caller supplies head offsets from the unit's current cell origin;
@@ -430,6 +439,7 @@ pub(crate) fn tick_locomotor_piggyback_restore_one(entities: &mut EntityStore, i
 ///
 /// Called once per admitted native gameplay frame.
 /// Entities that reach their destination have MovementTarget removed automatically.
+#[cfg(test)]
 pub(crate) fn tick_movement(
     entities: &mut EntityStore,
     interner: &mut crate::sim::intern::StringInterner,
@@ -457,6 +467,7 @@ pub(crate) fn tick_movement(
 /// `terrain_costs` is the per-SpeedType cost map for cost-aware repath.
 /// When provided, repath attempts use `find_path_with_costs` to prefer
 /// roads and avoid rough terrain.
+#[cfg(test)]
 pub(crate) fn tick_movement_with_grid(
     entities: &mut EntityStore,
     path_grid: Option<&PathGrid>,

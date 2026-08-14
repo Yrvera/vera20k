@@ -547,11 +547,6 @@ impl CellReservationGrid {
         result
     }
 
-    pub(crate) fn reset(&mut self) {
-        self.masks.clear();
-        self.dummy_mask = 0;
-    }
-
     pub(crate) fn entries(&self) -> impl Iterator<Item = (u16, u16, u32)> + '_ {
         self.masks.iter().map(|(&(rx, ry), &mask)| (rx, ry, mask))
     }

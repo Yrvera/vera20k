@@ -43,7 +43,9 @@
 
 use super::spawn::spawn_particle_with_insert;
 use super::{Particle, ParticleSystem};
-use crate::rules::particle_type::{ParticleType, ParticleTypeId};
+use crate::rules::particle_type::ParticleType;
+#[cfg(test)]
+use crate::rules::particle_type::ParticleTypeId;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::rng::SimRng;
 use crate::sim::world::Simulation;
@@ -54,6 +56,7 @@ use glam::IVec3;
 /// within the last 4 slots create the non-monotonic flame trail.
 const FIRE_INSERT_RANGE: usize = 4;
 
+#[cfg(test)]
 fn make_particle(
     type_id: ParticleTypeId,
     coords: IVec3,
@@ -162,6 +165,8 @@ pub(super) fn tick_particle(
 ///
 /// Bridge-layer interaction is deferred to C6 — fire particles pass
 /// through bridges in the binary too (no bridge check in fire move).
+// Ground-height ownership is not wired into the live particle tick yet.
+#[allow(dead_code)]
 pub(super) fn move_fire(p: &mut Particle, old_ground: i32, new_ground: i32) {
     if p.velocity <= SIM_ZERO {
         return;

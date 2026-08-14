@@ -144,12 +144,15 @@ pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, image_frame_cou
 /// magnitude scale (this is the smoke/gas asymmetry).
 ///
 /// Bridge collision is deferred — see module-level notes.
+// Live dispatch still lacks the rules-owned wind direction and bridge query.
+#[allow(dead_code)]
 pub(super) fn move_gas(p: &mut Particle, pt: &ParticleType, tick: u64) {
     move_gas_with_wind(p, pt, tick, gas_wind_dir());
 }
 
 /// Internal helper exposed for testing — lets a test pin a specific wind
 /// direction without touching global rules state.
+#[allow(dead_code)]
 pub(super) fn move_gas_with_wind(p: &mut Particle, pt: &ParticleType, tick: u64, wind_dir: u8) {
     // Gas movement only progresses on odd frames.
     if tick & 1 == 0 {
@@ -171,6 +174,7 @@ pub(super) fn move_gas_with_wind(p: &mut Particle, pt: &ParticleType, tick: u64,
 
 /// Default gas wind direction. Real value comes from `[General] WindDirection=`
 /// once that's parsed; until then everything stays at index 0 (north).
+#[allow(dead_code)]
 fn gas_wind_dir() -> u8 {
     0
 }

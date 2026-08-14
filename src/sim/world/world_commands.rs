@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{SimSoundEvent, Simulation};
 use crate::map::houses::are_houses_friendly;
-use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
+#[cfg(test)]
+use crate::rules::locomotor_type::MovementZone;
+use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
 use crate::rules::object_type::ObjectCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::cell_rect::canonical_cell_coord;
@@ -58,14 +60,19 @@ pub(crate) struct MoveInfo {
     pub(crate) accel_factor: SimFixed,
     pub(crate) decel_factor: SimFixed,
     pub(crate) slowdown_distance: SimFixed,
+    #[cfg(test)]
     pub(crate) movement_zone: MovementZone,
     pub(crate) position: (u16, u16),
+    #[cfg(test)]
     pub(crate) regular_crusher: bool,
+    #[cfg(test)]
     pub(crate) omni_crusher: bool,
+    #[cfg(test)]
     pub(crate) drive_accelerates: bool,
     pub(crate) mover_is_crusher: bool,
 }
 
+#[cfg(test)]
 impl MoveInfo {
     pub(crate) fn crush_capability(&self) -> bump_crush::CrushCapability {
         bump_crush::CrushCapability::new(self.regular_crusher, self.omni_crusher)
@@ -502,16 +509,21 @@ impl Simulation {
             accel_factor: obj.map_or(SIM_ZERO, |o| o.accel_factor),
             decel_factor: obj.map_or(SIM_ZERO, |o| o.decel_factor),
             slowdown_distance: obj.map_or(SIM_ZERO, |o| SimFixed::from_num(o.slowdown_distance)),
+            #[cfg(test)]
             movement_zone: obj.map_or(MovementZone::Normal, |o| o.movement_zone),
             position: (e.position.rx, e.position.ry),
+            #[cfg(test)]
             regular_crusher: e.regular_crusher,
+            #[cfg(test)]
             omni_crusher: e.omni_crusher,
+            #[cfg(test)]
             drive_accelerates: e.drive_accelerates,
             mover_is_crusher: e.regular_crusher || e.omni_crusher,
         })
     }
 
     /// Dispatch a single command, returning true if it was successfully applied.
+    #[cfg(test)]
     pub(crate) fn apply_command(
         &mut self,
         command_owner: &str,

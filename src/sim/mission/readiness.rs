@@ -131,6 +131,7 @@ pub(crate) struct BuildingReadyView<'a> {
 
 /// Base MissionClass, RadioClass, and FootClass add no readiness gate.
 #[inline]
+#[cfg(test)]
 pub(crate) const fn base_ready_to_commence() -> ReadyResult {
     Ok(true)
 }

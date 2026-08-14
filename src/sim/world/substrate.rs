@@ -109,6 +109,8 @@ pub(crate) struct ObjectSubstrate {
     /// registry and never enter the ordinary LogicVector.
     #[serde(skip)]
     pub(crate) multiplayer_feedback_anims: AnimStore,
+    // Reserved for the verified sync-exempt feedback spawn path, which is not wired yet.
+    #[allow(dead_code)]
     #[serde(skip, default = "first_multiplayer_feedback_anim_id")]
     pub(crate) next_multiplayer_feedback_anim_id: u64,
     #[serde(skip)]

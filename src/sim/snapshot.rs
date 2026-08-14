@@ -508,6 +508,7 @@ impl GameSnapshot {
     /// must use [`Self::load_validated`]. Like retail's post-read Scenario
     /// reinitializer, full deserialization resets the embedded Scenario RNG to
     /// `Random__Seed(0)` even though its saved bytes remain in the wire layout.
+    #[cfg(test)]
     pub(crate) fn load_unchecked(bytes: &[u8]) -> Result<GameSnapshot, SnapshotError> {
         let _ = Self::read_header(bytes)?;
         Ok(bincode::deserialize(bytes)?)
@@ -3584,7 +3585,6 @@ mod tests {
         use crate::sim::mission::state::MissionTestFixture;
         use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionLeafState};
         use crate::sim::movement::locomotor::LocomotorState;
-
 
         let leaves = [
             MissionLeafState::unit_raw_for_test(1, 2, 3, 4),

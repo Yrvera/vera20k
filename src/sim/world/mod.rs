@@ -1967,21 +1967,26 @@ impl Simulation {
     pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
+    #[allow(dead_code)] // Stream-routing audit anchor; callers currently co-borrow the field.
     pub(crate) fn subcell_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // infantry sub-cell rotation, paradrop sub-cell
+    #[allow(dead_code)] // Stream-routing audit anchor; callers currently co-borrow the field.
     pub(crate) fn smudge_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // destruction smudge/survivor/debris, smudge type pick
+    #[allow(dead_code)] // Stream-routing audit anchor; callers currently co-borrow the field.
     pub(crate) fn wall_damage_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // overlay/wall damage roll
     pub(crate) fn bridge_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bridge collapse/debris/explosion
+    #[allow(dead_code)] // Stream-routing audit anchor; callers currently co-borrow the field.
     pub(crate) fn ore_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // ore growth/spread queue + direction + variant, TIBTRE
+    #[allow(dead_code)] // Stream-routing audit anchor; callers currently co-borrow the field.
     pub(crate) fn anim_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // building damage-fire type/start-frame
@@ -2002,9 +2007,11 @@ impl Simulation {
     }
 
     // --- Main/global gameplay stream ---
+    #[allow(dead_code)] // Named Main-stream audit anchor retained beside direct borrows.
     pub(crate) fn weapon_spread_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
     } // verified main-only weapon/warhead property rolls; not detonation scatter
+    #[allow(dead_code)] // Named Main-stream audit anchor for the staged House AI consumer.
     pub(crate) fn house_ai_rng(&mut self) -> &mut SimRng {
         &mut self.main_rng
     } // HouseClass superpower/AI gate roll
@@ -2013,6 +2020,7 @@ impl Simulation {
     ///
     /// Same-process MapGen reset/retention is unverified, so reseeding the
     /// per-game pair must preserve the current MapGen object.
+    #[cfg(test)]
     pub(crate) fn reseed_scenario_and_main(&mut self, seed: u64) {
         self.scenario_rng = SimRng::new(seed);
         self.main_rng = SimRng::new(seed);
