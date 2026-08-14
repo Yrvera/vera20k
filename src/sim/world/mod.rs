@@ -40,6 +40,7 @@ pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::map::actions::ActionMap;
 use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
@@ -707,9 +708,10 @@ pub struct Simulation {
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
     pub zone_grid: Option<ZoneGrid>,
-    /// Previous PathGrid snapshot for incremental zone diffing.
+    /// Canonical dynamic navigation projection. Arc snapshots let one master
+    /// frame pin its entry view while the sim publishes the next projection.
     #[serde(skip)]
-    prev_path_grid: Option<PathGrid>,
+    path_grid: Option<Arc<PathGrid>>,
     #[serde(skip)]
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
     pub bridge_state: Option<BridgeRuntimeState>,
@@ -1700,7 +1702,7 @@ impl Simulation {
             }
         }
         if !navigation_changed_cells.is_empty() {
-            let prior_path_grid = self.prev_path_grid.clone();
+            let prior_path_grid = self.path_grid.as_deref().cloned();
             let _ = self.refresh_navigation_after_terrain_changes(
                 prior_path_grid.as_ref(),
                 &navigation_changed_cells,
@@ -1931,7 +1933,7 @@ impl Simulation {
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),
             zone_grid: None,
-            prev_path_grid: None,
+            path_grid: None,
             resolved_terrain: None,
             bridge_state: None,
             overlay_grid: None,
@@ -3294,6 +3296,16 @@ impl Simulation {
         // serialized facts. Load repair must never derive them from this vector.
     }
 
+    /// Borrow the current canonical dynamic navigation projection.
+    pub fn path_grid(&self) -> Option<&PathGrid> {
+        self.path_grid.as_deref()
+    }
+
+    /// Pin the current navigation projection across a mutable simulation frame.
+    pub fn path_grid_snapshot(&self) -> Option<Arc<PathGrid>> {
+        self.path_grid.clone()
+    }
+
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
     /// Call after the PathGrid has been rebuilt so that zones reflect the latest
     /// walkability state.
@@ -3306,7 +3318,7 @@ impl Simulation {
         }
 
         // Try incremental update if we have previous state.
-        if let (Some(prev), Some(zones)) = (&self.prev_path_grid, &mut self.zone_grid) {
+        if let (Some(prev), Some(zones)) = (self.path_grid.as_deref(), &mut self.zone_grid) {
             if let Some(changed) = prev.diff_cells(path_grid) {
                 if changed.is_empty()
                     && self
@@ -3317,7 +3329,7 @@ impl Simulation {
                     // PathGrid does not carry CellClass reduced zone type.
                     // Boolean path state and retained base classes must both
                     // match before connectivity can be reused.
-                    self.prev_path_grid = Some(path_grid.clone());
+                    self.path_grid = Some(Arc::new(path_grid.clone()));
                     return;
                 }
                 if !changed.is_empty()
@@ -3334,7 +3346,7 @@ impl Simulation {
                     )
                 {
                     log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
-                    self.prev_path_grid = Some(path_grid.clone());
+                    self.path_grid = Some(Arc::new(path_grid.clone()));
                     return;
                 }
             }
@@ -3364,7 +3376,7 @@ impl Simulation {
             width,
             height,
         ));
-        self.prev_path_grid = Some(path_grid.clone());
+        self.path_grid = Some(Arc::new(path_grid.clone()));
     }
 
     /// Refresh navigation authority after inline overlay mutation or terrain
@@ -3407,7 +3419,7 @@ impl Simulation {
     ) {
         let input_path_grid = input_path_grid
             .cloned()
-            .or_else(|| self.prev_path_grid.clone());
+            .or_else(|| self.path_grid.as_deref().cloned());
         let Some(input_path_grid) = input_path_grid else {
             return;
         };
@@ -4251,7 +4263,9 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
-        let mut tail_path_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
+        let mut tail_path_grid = path_grid
+            .cloned()
+            .or_else(|| self.path_grid.as_deref().cloned());
 
         let mut house_order = self.session.house_order.clone();
         for command in commands
@@ -4279,9 +4293,9 @@ impl Simulation {
                     overlay_registry,
                 );
                 if matches!(command.payload, Command::SellWallAtCell { .. }) {
-                    tail_path_grid = self.prev_path_grid.clone();
+                    tail_path_grid = self.path_grid.as_deref().cloned();
                 } else if applied && self.is_wall_placement_command(&command.payload, rules) {
-                    tail_path_grid = self.prev_path_grid.clone().or(tail_path_grid);
+                    tail_path_grid = self.path_grid.as_deref().cloned().or(tail_path_grid);
                 }
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
@@ -4399,7 +4413,7 @@ impl Simulation {
             self.ai_players = ai_state;
             let mut ai_tail_path_grid = path_grid
                 .cloned()
-                .or_else(|| self.prev_path_grid.clone());
+                .or_else(|| self.path_grid.as_deref().cloned());
             for cmd in &ai_commands {
                 let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
                 let applied = self.apply_command_with_overlays(
@@ -4411,7 +4425,7 @@ impl Simulation {
                     overlay_registry,
                 );
                 if applied && self.is_wall_placement_command(&cmd.payload, rules) {
-                    ai_tail_path_grid = self.prev_path_grid.clone().or(ai_tail_path_grid);
+                    ai_tail_path_grid = self.path_grid.as_deref().cloned().or(ai_tail_path_grid);
                 }
                 if applied
                     && match cmd.payload {

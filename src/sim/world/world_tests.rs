@@ -441,7 +441,7 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
         expected_ground_zone,
         crate::sim::pathfinding::zone_map::ZONE_INVALID
     );
-    sim.prev_path_grid = Some(path.clone());
+    sim.path_grid = Some(std::sync::Arc::new(path.clone()));
 
     for (id, target) in [(10, (4, 4)), (20, (4, 3))] {
         let mut listener = GameEntity::test_default(id, "E1", "Receiver", 2, 2);
@@ -496,9 +496,9 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
             .map(|t| t.target),
         Some(crate::sim::combat::TargetKind::Cell(4, 3))
     ));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 4));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 3));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(5, 4));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 4));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 3));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(5, 4));
     let ground_zone_after = sim
         .zone_grid
         .as_ref()
@@ -564,6 +564,31 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
     assert!(matches!(
         sim.sound_events.as_slice(),
         [SimSoundEvent::WallSold { receiver: event_receiver }] if *event_receiver == receiver
+    ));
+}
+
+#[test]
+fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(2, 1));
+    let first = PathGrid::new(2, 1);
+    sim.rebuild_zone_grid(&first);
+    let pinned = sim.path_grid_snapshot().expect("first navigation snapshot");
+
+    let mut second = first.clone();
+    second.set_blocked(0, 0, true);
+    sim.rebuild_zone_grid(&second);
+
+    assert!(pinned.is_walkable(0, 0));
+    assert!(
+        !sim
+            .path_grid()
+            .expect("published navigation")
+            .is_walkable(0, 0)
+    );
+    assert!(!std::sync::Arc::ptr_eq(
+        &pinned,
+        &sim.path_grid_snapshot().expect("second navigation snapshot")
     ));
 }
 

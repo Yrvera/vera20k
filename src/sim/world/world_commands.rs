@@ -405,7 +405,9 @@ impl Simulation {
         }
         let _discarded_actual_cost = rules.building_actual_cost(wall_type);
 
-        let mut tail_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
+        let mut tail_grid = path_grid
+            .cloned()
+            .or_else(|| self.path_grid.as_deref().cloned());
         let sold_navigation_changed = if let Some(grid) = self.overlay_grid.as_mut() {
             grid.clear_overlay(rx, ry);
             if let Some(terrain) = self.resolved_terrain.as_mut() {
@@ -470,7 +472,7 @@ impl Simulation {
             } else {
                 self.rebuild_zone_grid_full(&tail_grid);
             }
-            self.prev_path_grid = Some(tail_grid);
+            self.path_grid = Some(std::sync::Arc::new(tail_grid));
         }
         true
     }
