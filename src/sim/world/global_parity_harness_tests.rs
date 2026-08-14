@@ -317,8 +317,13 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // `ObjectSubstrate::next_stable_object_id`. Removing the three obsolete local
 // counter folds moves every hash composition; the exact stream tuple and every
 // record/replay tick comparison remain unchanged.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x8C03_0059_B011_95F9;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x498C_585F_D4BF_5EB3;
+// Re-baselined 2026-08-14 for the v77 GSI-13.06 SHP body-cadence state.
+// The persisted body counter and signed Drive/Ship owner-speed/runtime bytes
+// are folded outside the old v28/v29 blocks, so both named probes must include
+// them. Record/replay remained equal at every tick and FINAL_STREAM_STATES is
+// byte-identical, ruling out nondeterminism or an RNG-stream routing change.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x842F_D9AE_7080_8B89;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4C5B_B09C_D7B8_61ED;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -435,7 +440,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x498C_585F_D4BF_5EB3;
 /// Re-baselined 2026-08-13 for the same GSI-05.01 global-ID composition change
 /// documented at the legacy probes above; RNG cursors held and record/replay
 /// hash equality remained exact.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xF24A_55FE_79D7_B549;
+/// Re-baselined 2026-08-14 for the same v77 authoritative-state composition
+/// documented at the legacy probes above. The absolute RNG tuple remains the
+/// committed value and record/replay equality remains exact.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2327_2C3C_37D9_6CD3;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

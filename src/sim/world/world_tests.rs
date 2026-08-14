@@ -3811,7 +3811,10 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
         None,
         100,
     );
-    for _ in 0..80 {
+    // GSI-13.06: Ship Process_Drive_Track (0x6A05F0) spends the integer
+    // GetCurrentSpeed budget in strict 7-unit points; DEST's default ramp can
+    // reach the 0.3 brake floor while its final raw-track tail is still live.
+    for _ in 0..100 {
         let _ = sim.advance_tick(
             &[],
             Some(&rules),
@@ -3820,6 +3823,14 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
             None,
             100,
         );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
     }
 
     let ship = sim
@@ -3880,7 +3891,7 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
         None,
         100,
     );
-    for _ in 0..80 {
+    for _ in 0..100 {
         let _ = sim.advance_tick(
             &[],
             Some(&rules),
@@ -3889,6 +3900,14 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
             None,
             100,
         );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
     }
 
     let ship = sim
