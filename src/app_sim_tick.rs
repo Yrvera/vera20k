@@ -26,7 +26,6 @@ use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::recalc_overlay_passability;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
@@ -1040,7 +1039,7 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 
 /// Tick simulation: advance movement and animation systems.
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
-    let mut refresh_after_tick = false;
+    let mut refresh_atlases_after_tick = false;
     let mut crane_owners: Vec<String> = Vec::new();
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
@@ -1079,6 +1078,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
+        let mut frame_overlay_updates = Vec::new();
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
@@ -1100,6 +1100,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 tick: tick_result,
                 trigger_effects: frame_trigger_effects,
                 lifecycle_outputs: frame_lifecycle_outputs,
+                overlay_updates,
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
@@ -1114,6 +1115,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 Some(trigger_inputs),
             );
             trigger_effects = frame_trigger_effects;
+            frame_overlay_updates = overlay_updates;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
                 drained_combat_lights = crate::app_combat_lights::materialize_simulation_impacts(
@@ -1583,16 +1585,16 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 state.sound_events.push(app_event);
             }
             if tick_result.destroyed_structure {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.bridge_state_changed {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.ownership_changed {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.spawned_entities {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
                 log::debug!(
                     "spawned_entities=true, checking {} due_commands for PlaceReadyBuilding",
                     due_commands.len()
@@ -1605,8 +1607,8 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Trigger one-shot crane animation on ConYard for each owner that placed a building.
                         let owner_str = sim.interner.resolve(*owner).to_string();
                         let type_str = sim.interner.resolve(*type_id).to_string();
-                        // Walls are overlays — inject OverlayEntry so the overlay renderer
-                        // draws them with auto-tiled connectivity frames.
+                        // Wall placement has no ConYard crane animation; its
+                        // render identity arrives through SimFrameOutput.
                         let is_wall = state
                             .rules
                             .as_ref()
@@ -1652,7 +1654,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                 }
                 LifecycleOutput::DisplayRemove { .. } => {
-                    refresh_after_tick = true;
+                    refresh_atlases_after_tick = true;
                 }
                 LifecycleOutput::RevealDisplay { .. }
                 | LifecycleOutput::DirtyTacticalRect { .. }
@@ -1676,53 +1678,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
 
         apply_trigger_effects(state, &trigger_effects);
 
-        // Drain overlay dirty cells and recompute passability. If any cell's
-        // passability flipped, trigger zone rebuild via `refresh_after_tick`.
-        // Uses the existing `rebuild_dynamic_path_grid` → `rebuild_zone_grid`
-        // path; no new zone-rebuild plumbing.
-        //
-        // Also collect the authoritative live identity for occupied cells that
-        // changed this tick (e.g. TIBTRE-spawned ore or ore-growth spread). The
-        // renderer iterates `state.overlays` (the static map list), so the render
-        // handoff must both insert new coordinates and replace a stale identity
-        // when a cleared cell is later populated with a different variant.
-        let new_render_overlays: Vec<crate::map::overlay::OverlayEntry> = {
-            let mut collected: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
-            if let (Some(sim), Some(registry)) =
-                (state.simulation.as_mut(), state.overlay_registry.as_ref())
-            {
-                if let (Some(overlay_grid), Some(terrain)) =
-                    (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
-                {
-                    let (dirty, mut passability_changed) =
-                        overlay_grid.take_dirty_cells_with_passability_signal();
-                    if !dirty.is_empty() {
-                        for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(overlay_grid, terrain, registry, rx, ry) {
-                                passability_changed = true;
-                            }
-                        }
-                        for &(rx, ry) in &dirty {
-                            let cell = overlay_grid.cell(rx, ry);
-                            if let Some(overlay_id) = cell.overlay_id {
-                                collected.push(crate::map::overlay::OverlayEntry {
-                                    rx,
-                                    ry,
-                                    overlay_id,
-                                    frame: cell.overlay_data,
-                                });
-                            }
-                        }
-                    }
-                    if passability_changed {
-                        refresh_after_tick = true;
-                    }
-                }
-            }
-            collected
-        };
-        if !new_render_overlays.is_empty() {
-            sync_new_overlay_cells_to_render_list(state, new_render_overlays);
+        // Simulation has already finalized identity, passability, navigation,
+        // and the returned hash. The app only updates its render-side list.
+        if !frame_overlay_updates.is_empty() {
+            sync_new_overlay_cells_to_render_list(state, frame_overlay_updates);
         }
     }
 
@@ -1738,9 +1697,8 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         crate::app_building_anim::trigger_crane_anim(state, owner);
     }
 
-    // Inject overlay entries for walls placed this frame, then recompute connectivity.
-    if refresh_after_tick {
-        rebuild_dynamic_path_grid(state);
+    // Entity identity or ownership changes require presentation atlas refresh.
+    if refresh_atlases_after_tick {
         refresh_entity_atlases(state);
     }
     frame_committed
@@ -2272,7 +2230,6 @@ mod tests {
     use crate::sim::combat::TargetKind;
     use crate::sim::combat::combat_weapon::WeaponSlot;
     use crate::sim::intern::{InternedId, StringInterner, test_intern};
-    use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::terrain_object::{
         TerrainObjectLifecycle, TerrainObjectState, mark_terrain_occupation,
         unmark_terrain_occupation,
@@ -2548,27 +2505,7 @@ mod tests {
         let old_variant = entry(4, 4, 2, 7);
         let untouched = entry(5, 4, 99, 3);
         let mut render_entries = vec![old_variant.clone(), untouched.clone()];
-        let mut live = OverlayGrid::from_overlay_entries(&[old_variant], 8, 8);
-
-        live.clear_overlay(4, 4);
-        let cleared = live.take_dirty_cells();
-        assert_eq!(cleared, vec![(4, 4)]);
-        assert_eq!(live.cell(4, 4).overlay_id, None);
-
-        live.place_overlay(4, 4, 3, 1);
-        let repopulated = live.take_dirty_cells();
-        let authoritative = repopulated
-            .into_iter()
-            .filter_map(|(rx, ry)| {
-                let cell = live.cell(rx, ry);
-                cell.overlay_id.map(|overlay_id| OverlayEntry {
-                    rx,
-                    ry,
-                    overlay_id,
-                    frame: cell.overlay_data,
-                })
-            })
-            .collect();
+        let authoritative = vec![entry(4, 4, 3, 1)];
 
         assert_eq!(
             upsert_overlay_entries(&mut render_entries, authoritative),

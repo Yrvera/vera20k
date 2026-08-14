@@ -1865,19 +1865,49 @@ impl PathGrid {
     }
 
     /// Replace one derived terrain cell while retaining every other dynamic
-    /// blocker already stamped into this grid.
+    /// blocker already stamped into other cells. Callers must guarantee that
+    /// the refreshed coordinate has no independent structure blocker. Canonical
+    /// grids copy both terrain-object side tables; tableless test/headless grids
+    /// retain their documented PathCell fallback.
     pub(crate) fn replace_cell_from(&mut self, source: &PathGrid, x: u16, y: u16) -> bool {
         let Some(source_cell) = source.cell(x, y).copied() else {
+            return false;
+        };
+        let source_idx = y as usize * source.width as usize + x as usize;
+        let source_size = source.cells.len();
+        let source_aux = if source.terrain_object_cell_bits.len() == source_size
+            && source.ground_walkable_without_terrain_object.len() == source_size
+        {
+            Some((
+                source.terrain_object_cell_bits[source_idx],
+                source.ground_walkable_without_terrain_object[source_idx],
+            ))
+        } else if source.terrain_object_cell_bits.is_empty()
+            && source.ground_walkable_without_terrain_object.is_empty()
+        {
+            None
+        } else {
             return false;
         };
         if x >= self.width || y >= self.height {
             return false;
         }
         let idx = y as usize * self.width as usize + x as usize;
-        let Some(target_cell) = self.cells.get_mut(idx) else {
+        let target_size = self.cells.len();
+        let target_has_aux = self.terrain_object_cell_bits.len() == target_size
+            && self.ground_walkable_without_terrain_object.len() == target_size;
+        let target_has_no_aux = self.terrain_object_cell_bits.is_empty()
+            && self.ground_walkable_without_terrain_object.is_empty();
+        if self.cells.get(idx).is_none() || (!target_has_aux && !target_has_no_aux) {
             return false;
-        };
-        *target_cell = source_cell;
+        }
+        self.cells[idx] = source_cell;
+        if target_has_aux {
+            let (terrain_object_bits, walkable_without_terrain_object) =
+                source_aux.unwrap_or((0, source_cell.ground_walkable));
+            self.terrain_object_cell_bits[idx] = terrain_object_bits;
+            self.ground_walkable_without_terrain_object[idx] = walkable_without_terrain_object;
+        }
         true
     }
 

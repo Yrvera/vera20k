@@ -204,6 +204,146 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
     assert_eq!(second.tick.state_hash, sim.state_hash());
 }
 
+#[test]
+fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(4, 4));
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(4, 4));
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let owner = sim.interner.intern("WallOwner");
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_owned_wall(2, 2, 2, 0x23, owner);
+
+    let deferred = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(deferred.overlay_updates.is_empty());
+    assert!(
+        sim.path_grid()
+            .expect("pre-finalization navigation")
+            .is_walkable(2, 2),
+        "a partial-input frame must retain dirty overlay work for later finalization"
+    );
+
+    let first = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert_eq!(first.overlay_updates.len(), 1);
+    let update = &first.overlay_updates[0];
+    assert_eq!((update.rx, update.ry), (2, 2));
+    assert_eq!((update.overlay_id, update.frame), (2, 0x23));
+    assert!(
+        !sim.path_grid()
+            .expect("finalized navigation")
+            .is_walkable(2, 2)
+    );
+    assert_eq!(first.tick.state_hash, sim.state_hash());
+
+    let second = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(second.overlay_updates.is_empty());
+    assert_eq!(second.tick.state_hash, sim.state_hash());
+}
+
+#[test]
+fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [OverlayTypes]\n0=ORE\n1=WALL\n\
+         [ORE]\nTiberium=yes\n[WALL]\nWall=yes\nStrength=100\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("terminal overlay rules");
+    let overlays = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let mut terrain = gsi_04_10_clear_terrain(2, 1);
+    terrain.cell_mut(0, 0).expect("terrain cell").slope_type = 5;
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(terrain);
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(2, 1));
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    {
+        let grid = sim.overlay_grid.as_mut().expect("overlay grid");
+        grid.place_overlay(0, 0, 0, 3);
+        grid.place_overlay(1, 0, 1, 7);
+    }
+    let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
+
+    let output = sim.advance_app_frame(
+        &[exit],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(!output.tick.frame_committed);
+    assert_eq!(output.overlay_updates.len(), 1);
+    assert_eq!(
+        (
+            output.overlay_updates[0].rx,
+            output.overlay_updates[0].ry,
+            output.overlay_updates[0].overlay_id,
+            output.overlay_updates[0].frame,
+        ),
+        (1, 0, 1, 7)
+    );
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(0, 0)
+            .overlay_id,
+        None
+    );
+    assert!(
+        !sim.path_grid()
+            .expect("terminal navigation")
+            .is_walkable(1, 0)
+    );
+    assert_eq!(output.tick.state_hash, sim.state_hash());
+
+    let next = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+        None,
+    );
+    assert!(!next.tick.frame_committed);
+    assert!(next.overlay_updates.is_empty());
+}
+
 fn gsi_13_10_art_model_rules() -> RuleSet {
     let ini = IniFile::from_str(
         "[General]\nFixtureOnly=1\n\
@@ -497,11 +637,49 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 4));
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 3));
     assert!(sim.path_grid.as_deref().unwrap().is_walkable(5, 4));
+    let projected = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    assert_eq!(
+        sim.path_grid.as_deref().unwrap().diff_cells(&projected),
+        Some(Vec::new()),
+        "wall-sale tail must already publish the final path cells"
+    );
+    assert!(
+        sim.zone_grid
+            .as_ref()
+            .expect("zone grid")
+            .movement_classes_match(sim.resolved_terrain.as_ref().expect("terrain")),
+        "ordered wall-sale repair must publish every reduced movement class"
+    );
+    let (zone_ids_ptr, repaired_zone_ids) = {
+        let map = sim
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+            .expect("normal zone map before frame finalization");
+        (
+            map.zone_ids_slice().as_ptr() as usize,
+            map.zone_ids_slice().to_vec(),
+        )
+    };
+    assert!(
+        sim.finalize_frame_overlays_and_navigation(Some(&rules), Some(&overlays), false)
+            .is_empty(),
+        "the sold and cleanup cells are cleared, so no occupied render update remains"
+    );
     let ground_zone_after = sim
         .zone_grid
         .as_ref()
         .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
         .expect("normal zone map");
+    assert_eq!(
+        ground_zone_after.zone_ids_slice().as_ptr() as usize,
+        zone_ids_ptr,
+        "diff-empty finalization must retain the ordered wall-sale zone repair"
+    );
+    assert_eq!(ground_zone_after.zone_ids_slice(), repaired_zone_ids);
     assert_eq!(
         ground_zone_after.zone_at(4, 3, MovementLayer::Ground),
         expected_ground_zone,
@@ -1777,6 +1955,8 @@ fn gsi_04_10_in_tick_refresh_updates_tail_path_and_cost_before_consumers() {
     let phase_six_consumer_grid = phase_six_consumer_grid.expect("tail grid");
 
     assert!(phase_six_consumer_grid.is_walkable(0, 0));
+    assert_eq!(phase_six_consumer_grid.terrain_object_cell_bits_at(0, 0), 0);
+    assert!(phase_six_consumer_grid.is_walkable_for_infantry(0, 0));
     assert!(
         !phase_six_consumer_grid.is_walkable(1, 0),
         "unrelated dynamic blockers from the input grid must survive"

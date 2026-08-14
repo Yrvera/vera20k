@@ -47,6 +47,7 @@ use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCT
 use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
+use crate::map::overlay::OverlayEntry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
@@ -262,15 +263,15 @@ pub struct TickResult {
     pub executed_commands: usize,
     pub state_hash: u64,
     pub spawned_entities: bool,
-    /// A structure was destroyed (combat, sell, crush) — PathGrid needs rebuild
-    /// to unblock the footprint.
+    /// A structure was destroyed (combat, sell, crush); the frame finalizer
+    /// rebuilds navigation to unblock the footprint.
     pub destroyed_structure: bool,
     /// An entity's owner changed (garrison reconciliation, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
-    /// A bridge cell transitioned to `DamageState::Destroyed` this tick —
-    /// PathGrid needs rebuild so A* sees collapsed cells as non-traversable
-    /// starting next tick. Matches gamemd's one-tick-delayed visibility.
+    /// A bridge cell transitioned to `DamageState::Destroyed` this tick; the
+    /// frame finalizer publishes the collapsed navigation snapshot for the next
+    /// tick. Matches gamemd's one-tick-delayed visibility.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
 }
@@ -285,6 +286,7 @@ pub(crate) struct SimFrameOutput {
     pub tick: TickResult,
     pub trigger_effects: Vec<TriggerEffect>,
     pub lifecycle_outputs: Vec<LifecycleOutput>,
+    pub overlay_updates: Vec<OverlayEntry>,
     pub sound_events: Vec<SimSoundEvent>,
     pub fire_events: Vec<SimFireEvent>,
     pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
@@ -623,6 +625,10 @@ pub struct Simulation {
     /// The app drains these without feeding them back into simulation.
     #[serde(skip)]
     pub(crate) lifecycle_outputs: Vec<LifecycleOutput>,
+    /// Ordered occupied-cell identities finalized at the authoritative frame
+    /// boundary. The app drains these into its render-only overlay list.
+    #[serde(skip)]
+    frame_overlay_updates: Vec<OverlayEntry>,
     /// Reusable movement-to-world lifecycle request buffer. Requests are applied
     /// immediately after the movement call returns.
     #[serde(skip)]
@@ -1910,6 +1916,7 @@ impl Simulation {
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
+            frame_overlay_updates: Vec::new(),
             pending_lifecycle_requests: Vec::new(),
             pending_rocket_detonations: Vec::new(),
             pending_missile_detonations: Vec::new(),
@@ -3344,6 +3351,50 @@ impl Simulation {
         true
     }
 
+    /// Finalize mutable overlay identity, passability, and canonical navigation
+    /// before the frame hash is latched. Only occupied cells cross the app
+    /// boundary; cleared cells remain render-inert through OverlayGrid authority.
+    fn finalize_frame_overlays_and_navigation(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        mut navigation_rebuild_requested: bool,
+    ) -> Vec<OverlayEntry> {
+        let mut overlay_updates = Vec::new();
+        let overlay_ready =
+            rules.is_some() && self.resolved_terrain.is_some() && overlay_registry.is_some();
+        if overlay_ready && let Some(grid) = self.overlay_grid.as_mut() {
+            let (dirty_cells, synchronous_passability_changed) =
+                grid.take_dirty_cells_with_passability_signal();
+            let synchronous_navigation_cells = grid.take_synchronous_navigation_cells();
+            navigation_rebuild_requested |= synchronous_passability_changed
+                || !synchronous_navigation_cells.is_empty();
+
+            let terrain = self.resolved_terrain.as_mut().expect("overlay-ready terrain");
+            let registry = overlay_registry.expect("overlay-ready registry");
+            for &(rx, ry) in &dirty_cells {
+                navigation_rebuild_requested |=
+                    recalc_overlay_passability(grid, terrain, registry, rx, ry);
+            }
+            for (rx, ry) in dirty_cells {
+                let cell = grid.cell(rx, ry);
+                if let Some(overlay_id) = cell.overlay_id {
+                    overlay_updates.push(OverlayEntry {
+                        rx,
+                        ry,
+                        overlay_id,
+                        frame: cell.overlay_data,
+                    });
+                }
+            }
+        }
+
+        if navigation_rebuild_requested && let Some(rules) = rules {
+            let _ = self.rebuild_dynamic_navigation(rules);
+        }
+        overlay_updates
+    }
+
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
     /// Call after the PathGrid has been rebuilt so that zones reflect the latest
     /// walkability state.
@@ -4639,12 +4690,14 @@ impl Simulation {
             Vec::new()
         };
         let lifecycle_outputs = std::mem::take(&mut self.lifecycle_outputs);
+        let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
         let fire_events = std::mem::take(&mut self.fire_events);
         let sound_events = std::mem::take(&mut self.sound_events);
         SimFrameOutput {
             tick,
             trigger_effects,
             lifecycle_outputs,
+            overlay_updates,
             sound_events,
             fire_events,
             invulnerability_impacts,
@@ -5531,6 +5584,11 @@ impl Simulation {
             &mut executed_commands,
             &mut spawned_entities,
             &mut destroyed_structure,
+        );
+        self.frame_overlay_updates = self.finalize_frame_overlays_and_navigation(
+            rules,
+            overlay_registry,
+            destroyed_structure || bridge_state_changed || spawned_entities,
         );
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();
