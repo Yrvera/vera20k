@@ -493,6 +493,7 @@ impl ResolvedTerrainGrid {
 
     /// Update the shared fallback level without exposing an unsupported runtime
     /// slope writer.
+    #[cfg(test)]
     pub(crate) fn set_dummy_cell_level(&mut self, level: i8) {
         self.dummy_cell_level = level;
     }

@@ -15,6 +15,7 @@ use super::{
     SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView, compute_layout_with_spec,
 };
 
+#[cfg(test)]
 pub(crate) fn build_sidebar_view(
     screen_w: f32,
     screen_h: f32,

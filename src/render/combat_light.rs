@@ -32,7 +32,8 @@ struct CompositionTargets {
     render_view: wgpu::TextureView,
     encoded_view: wgpu::TextureView,
     scratch_texture: wgpu::Texture,
-    scratch_encoded_view: wgpu::TextureView,
+    // Retained with the bind group to make GPU resource ownership explicit.
+    _scratch_encoded_view: wgpu::TextureView,
     scene_bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
@@ -444,7 +445,7 @@ fn create_composition_targets(
         render_view,
         encoded_view,
         scratch_texture,
-        scratch_encoded_view,
+        _scratch_encoded_view: scratch_encoded_view,
         scene_bind_group,
         width: extent.width,
         height: extent.height,

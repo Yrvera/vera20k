@@ -91,6 +91,7 @@ impl TargetLineState {
         self.unit_action_lines_enabled = enabled;
     }
 
+    #[cfg(test)]
     pub(crate) fn unit_action_lines_enabled(&self) -> bool {
         self.unit_action_lines_enabled
     }
@@ -388,8 +389,8 @@ fn emit_rally_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::ini_parser::IniFile;
     use crate::rules::house_colors::HouseColorIndex;
+    use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::components::MovementTarget;
     use crate::sim::game_entity::GameEntity;

@@ -35,47 +35,6 @@ fn resolve_owner(state: &mut AppState) -> String {
     preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string())
 }
 
-pub(crate) fn queue_default_build(state: &mut AppState) {
-    let owner: String = resolve_owner(state);
-    let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
-        return;
-    };
-    let Some(default_type) = production::build_options_for_owner(sim, rules, &owner)
-        .into_iter()
-        .find(|o| {
-            o.enabled
-                && matches!(
-                    o.queue_category,
-                    production::ProductionCategory::Infantry
-                        | production::ProductionCategory::Vehicle
-                        | production::ProductionCategory::Aircraft
-                )
-        })
-        .map(|o| o.type_id)
-    else {
-        log::warn!("No default buildable unit available for owner={}", owner);
-        return;
-    };
-    let owner_id = intern_in_sim(state, &owner);
-    schedule_command(
-        state,
-        &owner,
-        Command::QueueProduction {
-            owner: owner_id,
-            type_id: default_type,
-            mode: QueueMode::Append,
-        },
-    );
-    let type_name = state.simulation.as_ref().map_or("?".to_string(), |s| {
-        s.interner.resolve(default_type).to_string()
-    });
-    log::info!(
-        "Build command queued: owner={} type={} issue_frame=current",
-        owner,
-        type_name
-    );
-}
-
 pub(crate) fn queue_build_by_type(state: &mut AppState, type_id: &str) {
     let owner: String = resolve_owner(state);
     let owner_id = intern_in_sim(state, &owner);
@@ -166,31 +125,6 @@ pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
         owner,
         type_id
     );
-}
-
-/// Sell all selected buildings owned by the local player.
-pub(crate) fn sell_selected_buildings(state: &mut AppState) {
-    let owner: String = preferred_local_owner(state).unwrap_or_else(|| DEFAULT_OWNER.to_string());
-    let Some(sim) = &state.simulation else {
-        return;
-    };
-    let to_sell: Vec<u64> = sim
-        .entities()
-        .values()
-        .filter(|e| {
-            e.selected
-                && e.category == EntityCategory::Structure
-                && sim.interner.resolve(e.owner).eq_ignore_ascii_case(&owner)
-        })
-        .map(|e| e.stable_id)
-        .collect();
-    let count = to_sell.len();
-    for entity_id in to_sell {
-        schedule_command(state, &owner, Command::SellBuilding { entity_id });
-    }
-    if count > 0 {
-        log::info!("Sell command queued for {} buildings", count);
-    }
 }
 
 /// Stable id of the visible object selected by the tactical object picker.

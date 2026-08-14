@@ -83,10 +83,6 @@ impl SpscRing {
         let head = self.head.load(Ordering::Acquire);
         self.tail.store(head, Ordering::Release);
     }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
 }
 
 use std::num::NonZero;

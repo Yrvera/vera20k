@@ -2,7 +2,7 @@
 //!
 //! Extracted from app_init_helpers.rs for file-size limits.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
@@ -666,62 +666,6 @@ fn launch_alliance_map(
         }
     }
     alliances
-}
-
-/// Assign participants to original map waypoints without terrain fallback.
-///
-/// Explicit requests reserve their waypoint first. Remaining `Auto` requests
-/// then take the first still-free waypoint in participant order. This helper
-/// intentionally performs no randomized/distance selection and consumes no RNG.
-pub(crate) fn original_launch_start_assignments(
-    session: &SkirmishLaunchSession,
-    starts: &[Waypoint],
-) -> Vec<(usize, Waypoint)> {
-    let requested_starts: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
-        .chain(
-            session
-                .opponents
-                .iter()
-                .map(|opponent| opponent.start_position),
-        )
-        .collect();
-    let mut assignments: Vec<Option<Waypoint>> = vec![None; requested_starts.len()];
-    let mut used_start_indices = BTreeSet::new();
-
-    for (idx, requested) in requested_starts.iter().enumerate() {
-        let LaunchStartPosition::Position(position) = requested else {
-            continue;
-        };
-        let Some(start) = starts
-            .iter()
-            .find(|start| start.index == u32::from(*position))
-        else {
-            continue;
-        };
-        if used_start_indices.insert(start.index) {
-            assignments[idx] = Some(*start);
-        }
-    }
-
-    for (idx, requested) in requested_starts.iter().enumerate() {
-        if assignments[idx].is_some() || *requested != LaunchStartPosition::Auto {
-            continue;
-        }
-        let Some(start) = starts
-            .iter()
-            .find(|start| !used_start_indices.contains(&start.index))
-        else {
-            continue;
-        };
-        used_start_indices.insert(start.index);
-        assignments[idx] = Some(*start);
-    }
-
-    assignments
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, start)| start.map(|start| (idx, start)))
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2060,43 +2004,6 @@ mod tests {
 
         assert_eq!(slots[0].owner_name, "Commander");
         assert!(slots[0].is_human);
-    }
-
-    #[test]
-    fn original_launch_start_assignments_preserve_explicit_and_auto_slot_identity() {
-        let mut session = test_session();
-        session.opponents.push(SkirmishAiSlot {
-            country: LaunchCountry::Cuba,
-            country_random: false,
-            color_index: 3,
-            color_random: false,
-            start_position: LaunchStartPosition::Position(0),
-            team: LaunchTeam::None,
-            difficulty: Default::default(),
-        });
-        let starts = [
-            Waypoint {
-                index: 0,
-                rx: 10,
-                ry: 10,
-            },
-            Waypoint {
-                index: 3,
-                rx: 30,
-                ry: 30,
-            },
-            Waypoint {
-                index: 5,
-                rx: 50,
-                ry: 50,
-            },
-        ];
-
-        let assignments = original_launch_start_assignments(&session, &starts);
-
-        assert_eq!(assignments[0], (0, starts[1]));
-        assert_eq!(assignments[1], (1, starts[2]));
-        assert_eq!(assignments[2], (2, starts[0]));
     }
 
     #[test]

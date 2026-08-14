@@ -208,24 +208,6 @@ pub(super) fn push_entry_sized_alpha(
     });
 }
 
-pub(super) fn push_entry_fit(
-    out: &mut Vec<SpriteInstance>,
-    entry: SkirmishShellChromeEntry,
-    rect: RectPx,
-    depth: f32,
-) {
-    let [src_w, src_h] = entry.pixel_size;
-    if src_w <= 0.0 || src_h <= 0.0 || rect.w <= 0 || rect.h <= 0 {
-        return;
-    }
-    let scale = (rect.w as f32 / src_w).min(rect.h as f32 / src_h);
-    let w = (src_w * scale).round();
-    let h = (src_h * scale).round();
-    let x = rect.x as f32 + ((rect.w as f32 - w) * 0.5).round();
-    let y = rect.y as f32 + ((rect.h as f32 - h) * 0.5).round();
-    push_entry_sized(out, entry, x, y, [w, h], depth);
-}
-
 pub(super) fn push_flag_entry_native_clipped_centered(
     out: &mut Vec<SpriteInstance>,
     mut entry: SkirmishShellChromeEntry,
@@ -523,24 +505,6 @@ pub(super) fn push_bevel_ring_px(
             depth,
         );
     }
-}
-
-pub(super) fn push_bevel_ring(
-    out: &mut Vec<SpriteInstance>,
-    atlas: &SkirmishShellChromeAtlas,
-    rect: RectPx,
-    top_left_tint: [f32; 3],
-    bottom_right_tint: [f32; 3],
-    depth: f32,
-) {
-    push_bevel_ring_px(
-        out,
-        atlas.white_pixel,
-        rect,
-        top_left_tint,
-        bottom_right_tint,
-        depth,
-    );
 }
 
 pub(super) fn push_ownerdraw_two_pixel_bevel_frame_px(

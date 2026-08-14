@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 const FRAME_BUCKET_SHIFT: u32 = 4;
+#[cfg(test)]
 const FRAME_BUCKET_MS: u64 = 1 << FRAME_BUCKET_SHIFT;
 const MIN_TIMED_GAME_SPEED: u8 = 1;
 const MAX_TIMED_GAME_SPEED: u8 = 6;

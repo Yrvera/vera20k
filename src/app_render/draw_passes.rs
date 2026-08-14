@@ -34,7 +34,6 @@ pub(super) struct DrawPassData<'a> {
     pub unit_pages: &'a [usize],
     pub unit_transition_paged: &'a [Vec<SpriteInstance>],
     pub shp_paged: &'a [Vec<SpriteInstance>],
-    pub particle_paged: &'a [Vec<SpriteInstance>],
     pub top_unit_pages: &'a [usize],
     pub top_shp_pages: &'a [usize],
     pub ghost_page: u8,

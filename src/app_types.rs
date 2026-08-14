@@ -397,12 +397,4 @@ impl TargetingMode {
             _ => None,
         }
     }
-
-    pub fn is_building_placement(&self) -> bool {
-        matches!(self, Self::BuildingPlacement(_))
-    }
-
-    pub fn is_super_weapon(&self) -> bool {
-        matches!(self, Self::SuperWeapon(_))
-    }
 }

@@ -95,9 +95,6 @@ const PLAIN_DILATE_RINGS: i32 = 2;
 /// Half-cell offset: cell centres, and the round-half-up on the width.
 const HALF: f64 = 0.5;
 
-/// The four cardinals, as direction indices.
-const CARDINALS: [usize; 4] = [0, 2, 4, 6];
-
 fn unit_draw(rng: &mut RmgRng) -> TruncF64 {
     TruncF64::from_f64(f64::from(rng.next_u32()))
         .mul(TruncF64::from_f64(f64::from_bits(RANGE_K_BITS)))
@@ -581,9 +578,6 @@ pub fn carve(
     quota.placed += walk.steps;
     true
 }
-
-/// Cardinal directions, exported for the tests' connectivity walk.
-pub(crate) const RIVER_CARDINALS: [usize; 4] = CARDINALS;
 
 /// Convenience for tests and the seeder: is this water amount above the gate?
 pub fn carries_a_river(water_percent: i32) -> bool {

@@ -550,6 +550,7 @@ impl TacticalScript {
         self.stage
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_command(&self) -> Option<&PendingCommand> {
         self.pending.as_ref()
     }
@@ -572,10 +573,6 @@ impl TacticalScript {
 
     pub(crate) fn observed_ledger(&self) -> &TacticalObservedLedger {
         &self.observed
-    }
-
-    pub(crate) fn failure(&self) -> Option<&TacticalFailure> {
-        self.failure.as_ref()
     }
 
     /// Consume one renderer-free snapshot and yield at most one action.
