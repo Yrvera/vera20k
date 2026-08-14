@@ -177,7 +177,7 @@ fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
 pub(crate) fn render_single_player_shell(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+    destination: &wgpu::Texture,
 ) -> Result<SinglePlayerShellRenderResult> {
     crate::app_main_menu_shell_render::ensure_movie_for_current_layout(
         state,
@@ -201,9 +201,10 @@ pub(crate) fn render_single_player_shell(
         }
     }
 
+    let color = state.shell_surface_presenter.source_render_view();
     let depth = state.depth_view.clone();
     let target = ShellRenderTarget {
-        color: target,
+        color: &color,
         depth: &depth,
     };
     let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
@@ -345,6 +346,9 @@ pub(crate) fn render_single_player_shell(
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
     }
     drop(pass);
+    state
+        .shell_surface_presenter
+        .encode_present(encoder, destination);
 
     Ok(SinglePlayerShellRenderResult::Rendered)
 }
@@ -383,5 +387,58 @@ mod tests {
         );
         assert!(SP_STATUS_ALIGN.contains(ShellAlign::V_CENTER));
         assert!(!SP_STATUS_ALIGN.contains(ShellAlign::H_CENTER));
+    }
+
+    #[test]
+    fn gsi_13_26_single_player_steady_frame_uses_rgb565_presenter_after_full_composition() {
+        let source = include_str!("app_single_player_shell_render.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("test module follows production renderer")
+            .0;
+        let renderer = &production[production
+            .find("pub(crate) fn render_single_player_shell")
+            .expect("production renderer")..];
+
+        assert!(renderer.contains("destination: &wgpu::Texture"));
+        assert!(!renderer.contains("target: &wgpu::TextureView"));
+        let source_view = renderer
+            .find("shell_surface_presenter.source_render_view()")
+            .expect("RGB565 presenter source view");
+        let fallback_returns: Vec<_> = renderer
+            .match_indices("return Ok(SinglePlayerShellRenderResult::Fallback)")
+            .map(|(index, _)| index)
+            .collect();
+        let render_pass = renderer
+            .find("encoder.begin_render_pass")
+            .expect("complete shell render pass");
+        let cursor = renderer
+            .find("Software cursor draws last")
+            .expect("software cursor submission");
+        let pass_end = renderer.find("drop(pass);").expect("render pass end");
+        let present = renderer
+            .find(".encode_present(encoder, destination);")
+            .expect("RGB565 encode/present");
+
+        assert_eq!(fallback_returns.len(), 2);
+        assert!(fallback_returns.iter().all(|&index| index < source_view));
+        assert!(source_view < render_pass);
+        assert!(render_pass < cursor);
+        assert!(cursor < pass_end);
+        assert!(pass_end < present);
+
+        let app_source = include_str!("app.rs");
+        let dispatch = &app_source[app_source
+            .find("else if Self::single_player_shell_active(state)")
+            .expect("single-player steady dispatch")..];
+        let shell_call = dispatch
+            .find("render_single_player_shell")
+            .expect("single-player renderer call");
+        let overlay = dispatch
+            .find("state.egui.end_frame_and_render")
+            .expect("post-shell egui overlay");
+        assert!(dispatch[shell_call..overlay].contains("&output.texture"));
+        assert!(dispatch[overlay..].starts_with("state.egui.end_frame_and_render"));
+        assert!(dispatch[overlay..].contains("&view"));
     }
 }

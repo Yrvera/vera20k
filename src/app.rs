@@ -5138,7 +5138,6 @@ impl App {
                     state,
                     &mut encoder,
                     &output.texture,
-                    &view,
                 )? {
                     pending_main_menu_entry_token = main_menu_entry_token;
                 } else if Self::native_skirmish_shell_active(state) {
@@ -5151,7 +5150,7 @@ impl App {
                     match crate::app_single_player_shell_render::render_single_player_shell(
                         state,
                         &mut encoder,
-                        &view,
+                        &output.texture,
                     )? {
                         crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);

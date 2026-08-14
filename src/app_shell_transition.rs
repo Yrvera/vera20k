@@ -393,7 +393,6 @@ pub(crate) fn render_shell_first_paint_slide(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
-    target: &wgpu::TextureView,
 ) -> Result<ShellFirstPaintRenderResult> {
     if state.shell_first_paint_slide.is_none() {
         return Ok(ShellFirstPaintRenderResult::NotRendered);
@@ -453,7 +452,9 @@ pub(crate) fn render_shell_first_paint_slide(
         }
         ShellSlideKind::SinglePlayer => matches!(
             crate::app_single_player_shell_render::render_single_player_shell(
-                state, encoder, target
+                state,
+                encoder,
+                destination,
             )?,
             crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered
         ),
@@ -506,6 +507,28 @@ mod tests {
         assert_eq!(ShellSlideKind::MainMenu.slot_count(), 5);
         assert_eq!(ShellSlideKind::SinglePlayer.slot_count(), 4);
         assert_eq!(ShellSlideKind::Skirmish.slot_count(), 3);
+    }
+
+    #[test]
+    fn gsi_13_26_single_player_first_paint_uses_same_presenter_entrypoint() {
+        let source = include_str!("app_shell_transition.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("test module follows production transition renderer")
+            .0;
+        let renderer = &production[production
+            .find("pub(crate) fn render_shell_first_paint_slide")
+            .expect("production first-paint renderer")..];
+        let branch = &renderer[renderer
+            .find("ShellSlideKind::SinglePlayer =>")
+            .expect("single-player first-paint branch")..];
+        let branch = branch
+            .split_once("ShellSlideKind::MainMenu")
+            .map_or(branch, |(branch, _)| branch);
+
+        assert!(branch.contains("render_single_player_shell"));
+        assert!(branch.contains("destination"));
+        assert!(!branch.contains("target"));
     }
 
     #[test]
