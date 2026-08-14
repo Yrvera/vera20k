@@ -6125,11 +6125,10 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
 
 #[test]
 fn test_bridgehead_walkability_invariant_across_non_bridge_rebuild_triggers() {
-    // In production app_sim_tick fires `rebuild_dynamic_path_grid` on each of
-    // `destroyed_structure | ownership_changed | spawned_entities` events.
-    // The rebuild is just `PathGrid::from_resolved_terrain_with_bridges(...)`.
-    // Calling it N times models N rebuild triggers; bridgehead walkability
-    // must hold across every rebuild.
+    // Simulation's frame finalizer republishes canonical navigation after
+    // structure, bridge, or overlay passability changes. Calling the shared
+    // bridge-aware projection N times models those rebuilds; bridgehead
+    // walkability must hold across every publication.
     let mut sim = Simulation::new();
     let terrain = make_realistic_bridgehead_terrain();
     sim.resolved_terrain = Some(terrain.clone());
@@ -6196,8 +6195,8 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         "intact bridge must allow Ground→Bridge→Ground A* path"
     );
 
-    // Simulate the rebuild_dynamic_path_grid path that fires on every
-    // unrelated structure death / unit spawn / ownership change.
+    // Simulate canonical navigation publication after an unrelated structure
+    // or overlay-authority change.
     let grid_after_rebuild = PathGrid::from_resolved_terrain_with_bridges(
         sim.resolved_terrain.as_ref().unwrap(),
         sim.bridge_state.as_ref(),

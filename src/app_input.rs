@@ -1663,7 +1663,6 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     let metallic_debris = current_sim.metallic_debris.clone();
     let bridge_anim_sounds = current_sim.bridge_anim_sounds.clone();
     let effect_frame_counts = current_sim.effect_frame_counts.clone();
-    let terrain_costs = current_sim.terrain_costs.clone();
 
     let resolved_terrain = match state.resolved_terrain.clone() {
         Some(rt) => rt,
@@ -1691,7 +1690,6 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         metallic_debris,
         bridge_anim_sounds,
         effect_frame_counts,
-        terrain_costs,
     );
     let Some(overlay_registry) = state.overlay_registry.as_ref() else {
         log::error!(
@@ -1700,10 +1698,14 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         );
         return;
     };
-    crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
-        &mut sim,
-        overlay_registry,
-    );
+    let restored_overlay_snapshot =
+        match sim.restore_map_authority_after_snapshot_load(rules, overlay_registry) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log::error!("Load: restoration validation failed: {error}");
+                return;
+            }
+        };
     let native_tiberium_stats = match rebuild_native_tiberium_after_snapshot_load(
         &mut sim,
         Some(overlay_registry),
@@ -1728,9 +1730,10 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     crate::app::reset_scenario_exit_runtime(state);
     state.simulation = Some(sim);
     state.combat_lights.clear();
-
-    // Rebuild the app-layer dynamic path grid (building footprints + walls).
-    crate::app_sim_tick::rebuild_dynamic_path_grid(state);
+    crate::app_sim_tick::upsert_occupied_overlay_render_entries(
+        state,
+        restored_overlay_snapshot,
+    );
 
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.
@@ -1954,7 +1957,6 @@ mod gsi_17_04_tests {
             Default::default(),
             Vec::new(),
             Vec::new(),
-            BTreeMap::new(),
             BTreeMap::new(),
             BTreeMap::new(),
         );

@@ -2,7 +2,8 @@
 //!
 //! Serializes the full `Simulation` state into a compact binary blob via
 //! bincode. Caches and event queues are `#[serde(skip)]`'d on `Simulation`
-//! and must be rebuilt by the caller via `rebuild_caches_after_load()`.
+//! and must be rebuilt through the validated cache and map-authority restore
+//! sequence before the simulation is exposed again.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends only on sim/world (Simulation).
@@ -416,6 +417,21 @@ pub enum SnapshotRestoreError {
         "entity {object_id} has active MoveSound state but no restorable configured sound identity"
     )]
     ActiveMoveSoundUnresolvable { object_id: u64 },
+    #[error("snapshot restore requires the {component}")]
+    MissingMapAuthorityComponent { component: &'static str },
+    #[error(
+        "snapshot overlay grid is {overlay_width}x{overlay_height}, but restored terrain is {terrain_width}x{terrain_height}"
+    )]
+    MapAuthorityDimensionMismatch {
+        overlay_width: u16,
+        overlay_height: u16,
+        terrain_width: u16,
+        terrain_height: u16,
+    },
+    #[error(
+        "snapshot overlay grid storage has {found} cells, but its dimensions require {expected}"
+    )]
+    MapAuthorityCellStorageMismatch { expected: usize, found: usize },
 }
 
 /// Internal borrow-based envelope for serialization (avoids cloning Simulation).
@@ -1452,6 +1468,95 @@ impl Simulation {
         }
         Ok(())
     }
+
+    /// Reproject serialized overlay and bridge authority onto the fresh
+    /// map-derived terrain cache, then publish canonical navigation before the
+    /// restored simulation can run another frame.
+    ///
+    /// The full row-major sweep is required because OverlayGrid's dirty queues
+    /// are transient: a saved cell may have been cleared since map load, so an
+    /// occupied-only replay would leave the original map overlay's passability
+    /// behind. Low-bridge state is reconciled afterward because its serialized
+    /// runtime cell is the final authority for the bridge surface.
+    pub(crate) fn restore_map_authority_after_snapshot_load(
+        &mut self,
+        rules: &crate::rules::ruleset::RuleSet,
+        overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    ) -> Result<Vec<crate::map::overlay::OverlayEntry>, SnapshotRestoreError> {
+        let (overlay_width, overlay_height, overlay_cell_count) = self
+            .overlay_grid
+            .as_ref()
+            .map(|grid| (grid.width(), grid.height(), grid.cell_storage_len()))
+            .ok_or(SnapshotRestoreError::MissingMapAuthorityComponent {
+                component: "OverlayGrid",
+            })?;
+        let expected_overlay_cell_count = overlay_width as usize * overlay_height as usize;
+        if overlay_cell_count != expected_overlay_cell_count {
+            return Err(SnapshotRestoreError::MapAuthorityCellStorageMismatch {
+                expected: expected_overlay_cell_count,
+                found: overlay_cell_count,
+            });
+        }
+        let (terrain_width, terrain_height) = self
+            .resolved_terrain
+            .as_ref()
+            .map(|terrain| (terrain.width(), terrain.height()))
+            .ok_or(SnapshotRestoreError::MissingMapAuthorityComponent {
+                component: "ResolvedTerrainGrid",
+            })?;
+        if (overlay_width, overlay_height) != (terrain_width, terrain_height) {
+            return Err(SnapshotRestoreError::MapAuthorityDimensionMismatch {
+                overlay_width,
+                overlay_height,
+                terrain_width,
+                terrain_height,
+            });
+        }
+
+        {
+            let overlay_grid = self.overlay_grid.as_mut().expect("validated overlay cache");
+            let resolved_terrain = self
+                .resolved_terrain
+                .as_mut()
+                .expect("validated terrain cache");
+            for ry in 0..overlay_height {
+                for rx in 0..overlay_width {
+                    let _ = crate::sim::overlay_grid::recalc_overlay_passability(
+                        overlay_grid,
+                        resolved_terrain,
+                        overlay_registry,
+                        rx,
+                        ry,
+                    );
+                }
+            }
+        }
+
+        crate::sim::world::bridge_orchestrator::reconcile_low_bridge_surface_after_cache_load(
+            self,
+            overlay_registry,
+        );
+        if !self.rebuild_dynamic_navigation(rules) {
+            return Err(SnapshotRestoreError::MissingMapAuthorityComponent {
+                component: "ResolvedTerrainGrid",
+            });
+        }
+
+        Ok(self
+            .overlay_grid
+            .as_ref()
+            .expect("validated overlay cache")
+            .iter_occupied()
+            .filter_map(|(rx, ry, cell)| {
+                cell.overlay_id.map(|overlay_id| crate::map::overlay::OverlayEntry {
+                    rx,
+                    ry,
+                    overlay_id,
+                    frame: cell.overlay_data,
+                })
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -1562,7 +1667,6 @@ mod tests {
     }
 
     fn rebuild_load_caches(sim: &mut Simulation, terrain: ResolvedTerrainGrid) {
-        let terrain_costs = all_terrain_costs(&terrain);
         // Synthetic fixtures use unchecked snapshots and often bypass the
         // monotonic allocators. Rebuild their substrate caches directly; the
         // production path uses `restore_after_snapshot_load`.
@@ -1579,8 +1683,158 @@ mod tests {
             Vec::new(),
             BTreeMap::new(),
             BTreeMap::new(),
-            terrain_costs,
         );
+    }
+
+    #[test]
+    fn snapshot_restore_replays_overlay_passability_and_publishes_canonical_navigation() {
+        use crate::map::overlay::OverlayEntry;
+        use crate::map::overlay_types::OverlayTypeRegistry;
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::overlay_grid::{OverlayGrid, recalc_overlay_passability};
+        use crate::sim::pathfinding::zone_map::ZONE_INVALID;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [OverlayTypes]\n0=WALL\n\
+             [WALL]\nWall=yes\nStrength=100\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("snapshot overlay rules");
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        let cleared_since_map_load = (0, 0);
+        let runtime_wall = (2, 0);
+        let mut map_terrain = flat_terrain(3, 1);
+        let mut map_overlays = OverlayGrid::from_overlay_entries(
+            &[OverlayEntry {
+                rx: cleared_since_map_load.0,
+                ry: cleared_since_map_load.1,
+                overlay_id: 0,
+                frame: 0,
+            }],
+            3,
+            1,
+        );
+        assert!(recalc_overlay_passability(
+            &mut map_overlays,
+            &mut map_terrain,
+            &registry,
+            cleared_since_map_load.0,
+            cleared_since_map_load.1,
+        ));
+        assert!(
+            map_terrain
+                .cell(cleared_since_map_load.0, cleared_since_map_load.1)
+                .expect("map wall terrain")
+                .overlay_blocks
+        );
+
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(OverlayGrid::from_overlay_entries(
+            &[OverlayEntry {
+                rx: runtime_wall.0,
+                ry: runtime_wall.1,
+                overlay_id: 0,
+                frame: 0x21,
+            }],
+            3,
+            1,
+        ));
+        sim.resolved_terrain = Some(map_terrain.clone());
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "overlay_restore.map", 0);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("snapshot with runtime overlay authority")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("stable snapshot identity");
+        let authoritative_hash = restored.state_hash();
+        restored.rebuild_caches_after_load(
+            map_terrain,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let occupied = restored
+            .restore_map_authority_after_snapshot_load(&rules, &registry)
+            .expect("restored overlay and navigation authority");
+        let terrain = restored.resolved_terrain.as_ref().expect("restored terrain");
+        assert!(!terrain.cell(0, 0).expect("cleared cell").overlay_blocks);
+        assert!(terrain.cell(2, 0).expect("runtime wall cell").overlay_blocks);
+        let path = restored.path_grid().expect("canonical restored path grid");
+        assert!(path.is_walkable(0, 0));
+        assert!(!path.is_walkable(2, 0));
+        assert_eq!(restored.terrain_costs[&SpeedType::Track].cost_at(0, 0), 100);
+        assert_eq!(restored.terrain_costs[&SpeedType::Track].cost_at(2, 0), 0);
+        let normal_zones = restored
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(MovementZone::Normal))
+            .expect("canonical restored ground zones");
+        assert_ne!(
+            normal_zones.zone_at(0, 0, MovementLayer::Ground),
+            ZONE_INVALID
+        );
+        assert_eq!(
+            normal_zones.zone_at(2, 0, MovementLayer::Ground),
+            ZONE_INVALID
+        );
+        assert_eq!(occupied.len(), 1);
+        assert_eq!(
+            (
+                occupied[0].rx,
+                occupied[0].ry,
+                occupied[0].overlay_id,
+                occupied[0].frame,
+            ),
+            (2, 0, 0, 0x21)
+        );
+        assert_eq!(restored.state_hash(), authoritative_hash);
+    }
+
+    #[test]
+    fn snapshot_restore_rejects_truncated_overlay_cell_storage() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::overlay_grid::{OverlayCell, OverlayGrid};
+
+        #[derive(serde::Serialize)]
+        struct OverlayGridWire {
+            width: u16,
+            height: u16,
+            cells: Vec<OverlayCell>,
+        }
+
+        let malformed_bytes = bincode::serialize(&OverlayGridWire {
+            width: 2,
+            height: 1,
+            cells: vec![OverlayCell::default()],
+        })
+        .expect("malformed overlay wire fixture");
+        let malformed: OverlayGrid =
+            bincode::deserialize(&malformed_bytes).expect("wire-compatible OverlayGrid");
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [OverlayTypes]\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("truncated-grid rules");
+        let registry = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(malformed);
+        sim.resolved_terrain = Some(flat_terrain(2, 1));
+
+        assert!(matches!(
+            sim.restore_map_authority_after_snapshot_load(&rules, &registry),
+            Err(SnapshotRestoreError::MapAuthorityCellStorageMismatch {
+                expected: 2,
+                found: 1,
+            })
+        ));
     }
 
     fn cell_order(sim: &Simulation, rx: u16, ry: u16, layer: MovementLayer) -> Vec<u64> {
@@ -4124,7 +4378,6 @@ mod tests {
         restored
             .restore_after_snapshot_load()
             .expect("restore serialized authority");
-        let stale_costs = all_terrain_costs(&stale_original_grid);
         restored.rebuild_caches_after_load(
             stale_original_grid,
             crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
@@ -4132,7 +4385,6 @@ mod tests {
             Vec::new(),
             BTreeMap::new(),
             BTreeMap::new(),
-            stale_costs,
         );
 
         assert_eq!(

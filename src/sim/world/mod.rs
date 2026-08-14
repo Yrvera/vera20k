@@ -3211,9 +3211,9 @@ impl Simulation {
     /// `restore_after_snapshot_load`, which resolves stable-ID references and
     /// rebuilds registry, LogicVector-membership, and CellClass-list caches.
     ///
-    /// Note: dynamic navigation is NOT rebuilt here because structure foundations
-    /// require the bound rules. The caller must invoke
-    /// `rebuild_dynamic_navigation()` after restoring those rules.
+    /// Overlay, bridge, and navigation authority are restored separately by
+    /// `restore_map_authority_after_snapshot_load` once rules and the overlay
+    /// registry are bound.
     pub fn rebuild_caches_after_load(
         &mut self,
         mut resolved_terrain: ResolvedTerrainGrid,
@@ -3222,7 +3222,6 @@ impl Simulation {
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
         effect_frame_counts: BTreeMap<InternedId, u16>,
-        _terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
     ) {
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.

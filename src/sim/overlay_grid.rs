@@ -501,6 +501,12 @@ impl OverlayGrid {
         self.height
     }
 
+    /// Serialized cell storage must remain exactly width × height. Snapshot
+    /// restoration validates this before any coordinate-indexed sweep.
+    pub(crate) fn cell_storage_len(&self) -> usize {
+        self.cells.len()
+    }
+
     /// Drain the list of cells mutated since last call. Simulation's frame
     /// finalizer recalculates passability and may trigger a navigation rebuild.
     ///

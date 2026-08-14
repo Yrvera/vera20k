@@ -1681,7 +1681,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // Simulation has already finalized identity, passability, navigation,
         // and the returned hash. The app only updates its render-side list.
         if !frame_overlay_updates.is_empty() {
-            sync_new_overlay_cells_to_render_list(state, frame_overlay_updates);
+            upsert_occupied_overlay_render_entries(state, frame_overlay_updates);
         }
     }
 
@@ -1846,16 +1846,6 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     let (rx, ry) = (waypoint.rx, waypoint.ry);
     // Centres on the tactical viewport, not the window.
     crate::app_camera::center_camera_on_cell(state, rx, ry);
-}
-
-pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
-    let Some(rules) = state.rules.as_ref() else {
-        return;
-    };
-    let Some(ref mut sim) = state.simulation else {
-        return;
-    };
-    let _ = sim.rebuild_dynamic_navigation(rules);
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
@@ -2024,8 +2014,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     }
 }
 
-/// Sync occupied dirty overlay cells (TIBTRE, ore-spread, walls) into
-/// `state.overlays`.
+/// Upsert authoritative occupied-overlay entries into `state.overlays`.
 ///
 /// Background: the overlay renderer iterates `state.overlays`, the static list
 /// loaded from the map's `[OverlayPack]`. Sim-side mutations that create new
@@ -2035,19 +2024,21 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 /// be cleared and later receive a different overlay variant; the renderer only
 /// accepts live data when the cached identity matches. This sync therefore
 /// inserts absent coordinates and updates identity plus frame in place for
-/// existing coordinates.
+/// existing coordinates. Candidates may be one frame's delta or the full live
+/// occupied set returned after snapshot restoration.
 ///
 /// Cleared cached entries are render-inert because the renderer treats live
-/// `OverlayGrid` state as authoritative; a later occupied dirty update replaces
-/// their stale identity. Unrelated entries retain their order and fields.
-fn sync_new_overlay_cells_to_render_list(
+/// `OverlayGrid` state as authoritative; a later occupied update or post-load
+/// snapshot replaces their stale identity. Unrelated entries retain their order
+/// and fields.
+pub(crate) fn upsert_occupied_overlay_render_entries(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
     let synced = upsert_overlay_entries(&mut state.overlays, candidates);
     if synced != 0 {
         log::trace!(
-            "Synced {} occupied dirty cells from OverlayGrid to state.overlays",
+            "Synced {} occupied cells from OverlayGrid to state.overlays",
             synced
         );
     }
