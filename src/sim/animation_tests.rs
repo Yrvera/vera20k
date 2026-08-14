@@ -5,15 +5,19 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::animation::*;
 use crate::sim::combat::{AttackTarget, PendingInfantryFire};
-use crate::sim::components::{Health, MovementTarget};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, Health, MovementTarget, ShipLocomotionRuntime,
+};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::game_options::GameOptions;
 use crate::sim::intern::StringInterner;
 use crate::sim::movement::FacingClass;
-use crate::sim::movement::locomotor::MovementLayer;
+use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
+use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
 use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 
 /// Helper: create a SequenceDef for tests.
@@ -217,6 +221,389 @@ fn test_shp_vehicle_non_eight_facings_draws_slot_zero() {
     assert_eq!(resolve_shp_frame(&def, 0, 0), 0);
     assert_eq!(resolve_shp_frame(&def, 128, 0), 0);
     assert_eq!(resolve_shp_frame(&def, 128, 2), 2);
+}
+
+fn gsi_13_06_active_shp_unit(kind: LocomotorKind) -> GameEntity {
+    let mut entity = GameEntity::test_default(13_006, "DRON", "Soviet", 5, 5);
+    entity.is_voxel = false;
+    entity.lifecycle.in_limbo = false;
+    entity.locomotor = Some(LocomotorState::for_test_kind(kind));
+    let head = DriveCoord::cell(6, 5, 0);
+    match kind {
+        LocomotorKind::Drive => {
+            entity.drive_locomotion = Some(DriveLocomotionRuntime {
+                destination: Some(head),
+                head_to: Some(head),
+                current_speed_fraction: SimFixed::from_num(1),
+                owner_current_speed: 1,
+                ..Default::default()
+            });
+        }
+        LocomotorKind::Ship => {
+            entity.ship_locomotion = Some(ShipLocomotionRuntime {
+                destination: Some(head),
+                head_to: Some(head),
+                current_speed_fraction: SimFixed::from_num(1),
+                owner_current_speed: 1,
+                ..Default::default()
+            });
+        }
+        _ => unreachable!("stock SHP vehicle fixture uses Drive or Ship"),
+    }
+    let mut target = make_movement_target();
+    target.current_speed = SimFixed::from_num(1);
+    entity.movement_target = Some(target);
+    entity
+}
+
+#[test]
+fn gsi_13_06_body_counter_uses_absolute_precommit_binary_frame_phase() {
+    let cadence = ShpVehicleCadence {
+        walk_rate: 4,
+        idle_rate: 8,
+    };
+
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut entity = gsi_13_06_active_shp_unit(kind);
+        tick_shp_vehicle_body_frame_counter(&mut entity, cadence, 3);
+        assert_eq!(entity.body_frame_counter, 0);
+        tick_shp_vehicle_body_frame_counter(&mut entity, cadence, 4);
+        assert_eq!(entity.body_frame_counter, 1);
+        tick_shp_vehicle_body_frame_counter(&mut entity, cadence, 5);
+        assert_eq!(entity.body_frame_counter, 1);
+        tick_shp_vehicle_body_frame_counter(&mut entity, cadence, 8);
+        assert_eq!(entity.body_frame_counter, 2);
+    }
+}
+
+#[test]
+fn gsi_13_06_body_counter_wraps_and_survives_moving_idle_transitions() {
+    let mut entity = gsi_13_06_active_shp_unit(LocomotorKind::Drive);
+    entity.body_frame_counter = u32::MAX;
+    tick_shp_vehicle_body_frame_counter(
+        &mut entity,
+        ShpVehicleCadence {
+            walk_rate: 1,
+            idle_rate: 8,
+        },
+        4,
+    );
+    assert_eq!(entity.body_frame_counter, 0, "native dword wraps");
+
+    entity.body_frame_counter = 9;
+    if let Some(drive) = entity.drive_locomotion.as_mut() {
+        drive.destination = None;
+        drive.head_to = None;
+        drive.current_speed_fraction = SIM_ZERO;
+        drive.owner_current_speed = 0;
+    }
+    tick_shp_vehicle_body_frame_counter(
+        &mut entity,
+        ShpVehicleCadence {
+            walk_rate: 4,
+            idle_rate: 8,
+        },
+        8,
+    );
+    assert_eq!(
+        entity.body_frame_counter, 10,
+        "switching to idle changes only the absolute divisor"
+    );
+}
+
+#[test]
+fn gsi_13_06_counter_suppressions_hold_the_persistent_value() {
+    let cadence = ShpVehicleCadence {
+        walk_rate: 1,
+        idle_rate: 1,
+    };
+    let base = gsi_13_06_active_shp_unit(LocomotorKind::Drive);
+    let mut variants = Vec::new();
+
+    let mut in_limbo = base.clone();
+    in_limbo.lifecycle.in_limbo = true;
+    variants.push(("in limbo", in_limbo));
+    let mut dead = base.clone();
+    dead.lifecycle.object_alive = false;
+    variants.push(("not native-alive", dead));
+    let mut dying = base.clone();
+    dying.dying = true;
+    variants.push(("dying", dying));
+    let mut falling = base.clone();
+    falling.set_object_is_falling_down_for_test(1);
+    variants.push(("falling", falling));
+    let mut deployed = base.clone();
+    deployed.deploy_state = Some(crate::sim::deploy::DeployPhase::Deployed);
+    variants.push(("deploy state", deployed));
+    let mut warp_out = base.clone();
+    warp_out.teleport_state = Some(TeleportState {
+        phase: TeleportPhase::Relocate,
+        target_rx: 8,
+        target_ry: 8,
+        being_warped_ticks: 0,
+    });
+    variants.push(("warp out", warp_out));
+    let mut warp_in = base.clone();
+    warp_in.teleport_state = Some(TeleportState {
+        phase: TeleportPhase::ChronoDelay,
+        target_rx: 8,
+        target_ry: 8,
+        being_warped_ticks: 1,
+    });
+    variants.push(("warp in", warp_in));
+    let mut piggyback = base.clone();
+    assert!(
+        piggyback
+            .locomotor
+            .as_mut()
+            .expect("locomotor")
+            .begin_piggyback(LocomotorKind::Teleport, MovementLayer::Ground)
+    );
+    variants.push(("piggyback", piggyback));
+
+    for (name, mut entity) in variants {
+        entity.body_frame_counter = 17;
+        tick_shp_vehicle_body_frame_counter(&mut entity, cadence, 1);
+        assert_eq!(entity.body_frame_counter, 17, "{name}");
+    }
+}
+
+#[test]
+fn gsi_13_06_draw_and_cadence_use_distinct_movement_predicates() {
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut entity = gsi_13_06_active_shp_unit(kind);
+        match kind {
+            LocomotorKind::Drive => {
+                entity
+                    .drive_locomotion
+                    .as_mut()
+                    .expect("Drive runtime")
+                    .owner_current_speed = 0;
+            }
+            LocomotorKind::Ship => {
+                entity
+                    .ship_locomotion
+                    .as_mut()
+                    .expect("Ship runtime")
+                    .owner_current_speed = 0;
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(&entity),
+            "slot-4 Is_Moving sees the class-owned destination"
+        );
+        assert!(
+            !crate::sim::movement::ready_producer::is_moving_now_for(&entity, 4),
+            "slot-32 Is_Moving_Now also requires positive applied speed"
+        );
+        tick_shp_vehicle_body_frame_counter(
+            &mut entity,
+            ShpVehicleCadence {
+                walk_rate: 4,
+                idle_rate: 0,
+            },
+            4,
+        );
+        assert_eq!(entity.body_frame_counter, 0, "IdleRate=0 holds the counter");
+    }
+}
+
+#[test]
+fn gsi_13_06_positive_fraction_below_get_current_speed_threshold_is_idle() {
+    use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+
+    for (name, kind, raw_speed) in [
+        ("DLPH", LocomotorKind::Ship, 8),
+        ("SQD", LocomotorKind::Ship, 8),
+        ("DRON", LocomotorKind::Drive, 10),
+    ] {
+        let mut entity = gsi_13_06_active_shp_unit(kind);
+        let fraction = SimFixed::lit("0.03");
+        let owner_speed = crate::sim::movement::owner_current_speed_from_fraction(
+            ra2_speed_to_leptons_per_second(raw_speed),
+            fraction,
+        );
+        assert_eq!(owner_speed, 0, "{name} +0x538 truncation");
+        match kind {
+            LocomotorKind::Drive => {
+                let drive = entity.drive_locomotion.as_mut().expect("Drive runtime");
+                drive.current_speed_fraction = fraction;
+                drive.owner_current_speed = owner_speed;
+            }
+            LocomotorKind::Ship => {
+                let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
+                ship.current_speed_fraction = fraction;
+                ship.owner_current_speed = owner_speed;
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(&entity),
+            "{name} slot +0x10 still sees its locomotor destination"
+        );
+        assert!(
+            !crate::sim::movement::ready_producer::is_moving_now_for(&entity, 1),
+            "{name} slot +0x80 requires truncated GetCurrentSpeed > 0"
+        );
+        tick_shp_vehicle_body_frame_counter(
+            &mut entity,
+            ShpVehicleCadence {
+                walk_rate: 1,
+                idle_rate: 0,
+            },
+            1,
+        );
+        assert_eq!(entity.body_frame_counter, 0, "{name} remains idle");
+    }
+}
+
+#[test]
+fn gsi_13_06_shp_movement_predicates_ignore_path_execution_surrogates() {
+    for kind in [LocomotorKind::Drive, LocomotorKind::Ship] {
+        let mut entity = gsi_13_06_active_shp_unit(kind);
+        let owner = DriveCoord::cell(5, 5, 0);
+
+        // A live MovementTarget is not either native class coordinate. With a
+        // null destination and an equal-X/Y head, both slots answer false even
+        // though the execution adapter still reports a positive speed.
+        match kind {
+            LocomotorKind::Drive => {
+                entity.drive_locomotion = Some(DriveLocomotionRuntime {
+                    head_to: Some(owner),
+                    current_speed_fraction: SimFixed::from_num(1),
+                    owner_current_speed: 1,
+                    ..Default::default()
+                });
+            }
+            LocomotorKind::Ship => {
+                entity.ship_locomotion = Some(ShipLocomotionRuntime {
+                    head_to: Some(owner),
+                    current_speed_fraction: SimFixed::from_num(1),
+                    owner_current_speed: 1,
+                    ..Default::default()
+                });
+            }
+            _ => unreachable!(),
+        }
+        assert!(!crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(&entity));
+        assert!(!crate::sim::movement::ready_producer::is_moving_now_for(
+            &entity, 4
+        ));
+
+        // Conversely, locomotor-owned state alone is sufficient; no
+        // MovementTarget is needed by either draw or cadence.
+        entity.movement_target = None;
+        let head = DriveCoord::cell(6, 5, 0);
+        match kind {
+            LocomotorKind::Drive => {
+                entity.drive_locomotion = Some(DriveLocomotionRuntime {
+                    destination: Some(head),
+                    head_to: Some(head),
+                    current_speed_fraction: SimFixed::from_num(1),
+                    owner_current_speed: 1,
+                    ..Default::default()
+                });
+            }
+            LocomotorKind::Ship => {
+                entity.ship_locomotion = Some(ShipLocomotionRuntime {
+                    destination: Some(head),
+                    head_to: Some(head),
+                    current_speed_fraction: SimFixed::from_num(1),
+                    owner_current_speed: 1,
+                    ..Default::default()
+                });
+            }
+            _ => unreachable!(),
+        }
+        assert!(crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(&entity));
+        assert!(crate::sim::movement::ready_producer::is_moving_now_for(
+            &entity, 4
+        ));
+    }
+}
+
+fn gsi_13_06_shp_set(
+    walk_frames: u16,
+    stand_start: u16,
+    cadence: ShpVehicleCadence,
+) -> SequenceSet {
+    let mut set = SequenceSet::new();
+    set.set_shp_vehicle_cadence(cadence);
+    set.insert(
+        SequenceKind::Walk,
+        SequenceDef {
+            start_frame: 0,
+            frame_count: walk_frames,
+            facings: 8,
+            facing_multiplier: walk_frames,
+            frame_delay: 1,
+            normalized: false,
+            completion_facing: None,
+            loop_mode: LoopMode::Loop,
+            facing_slots: FacingSlots::VehicleOctant,
+        },
+    );
+    set.insert(
+        SequenceKind::Stand,
+        SequenceDef {
+            start_frame: stand_start,
+            frame_count: 1,
+            facings: 8,
+            facing_multiplier: 1,
+            frame_delay: 1,
+            normalized: false,
+            completion_facing: None,
+            loop_mode: LoopMode::Loop,
+            facing_slots: FacingSlots::VehicleOctant,
+        },
+    );
+    set
+}
+
+#[test]
+fn gsi_13_06_dlph_sqd_and_dron_draw_from_native_counter_blocks() {
+    let dlph = gsi_13_06_shp_set(
+        6,
+        48,
+        ShpVehicleCadence {
+            walk_rate: 4,
+            idle_rate: 8,
+        },
+    );
+    assert_eq!(
+        resolve_shp_vehicle_body_frame(&dlph, 0, 7, false),
+        Some(7),
+        "idle Dolphin uses walk/swim slot 1 and counter 7 % 6"
+    );
+
+    let sqd = gsi_13_06_shp_set(
+        20,
+        160,
+        ShpVehicleCadence {
+            walk_rate: 2,
+            idle_rate: 4,
+        },
+    );
+    assert_eq!(
+        resolve_shp_vehicle_body_frame(&sqd, 0, 3, false),
+        Some(23),
+        "idle Squid uses walk/swim slot 1 and counter 3"
+    );
+
+    let dron = gsi_13_06_shp_set(6, 48, ShpVehicleCadence::native_defaults());
+    assert_eq!(
+        resolve_shp_vehicle_body_frame(&dron, 0, 99, false),
+        Some(49),
+        "idle Terror Drone with IdleRate=0 uses standing slot 1"
+    );
+    assert_eq!(
+        resolve_shp_vehicle_body_frame(&dron, 0, 7, true),
+        Some(7),
+        "moving Terror Drone uses counter 7 % 6"
+    );
 }
 
 // --- advance_animation tests ---

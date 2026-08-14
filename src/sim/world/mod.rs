@@ -104,6 +104,16 @@ use crate::util::fixed_math::SimFixed;
 /// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
+/// Whether this Unit visit reaches FootClass's SHP body-counter cadence.
+///
+/// An entry-active TubeMovement owns the UnitClass AI call and returns before
+/// FootClass AI. Tube state armed later during an ordinary Foot visit does not
+/// retroactively suppress work already reached by that visit, so only the
+/// entry snapshot belongs in this admission predicate.
+fn shp_vehicle_counter_admitted(tube_active_at_entry: bool) -> bool {
+    !tube_active_at_entry
+}
+
 #[derive(Default)]
 struct ActiveVisionStructures {
     spy_sat_owners: Vec<InternedId>,
@@ -4621,6 +4631,34 @@ impl Simulation {
                 &mut sim.sound_events,
                 &mut sim.pending_lifecycle_requests,
             ));
+
+            // FootClass advances the SHP Unit body counter immediately after
+            // this object's locomotor Process, against the still-current
+            // absolute binary frame. The global frame commits only after the
+            // complete live-object pass.
+            if shp_vehicle_counter_admitted(tube_active_at_entry) {
+                let shp_vehicle_cadence =
+                    sim.substrate.entities.get(stable_id).and_then(|entity| {
+                        if entity.category != EntityCategory::Unit || entity.is_voxel {
+                            return None;
+                        }
+                        let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
+                        Some(crate::sim::animation::ShpVehicleCadence {
+                            walk_rate: object.walk_rate,
+                            idle_rate: object.idle_rate,
+                        })
+                    });
+                if let (Some(cadence), Some(entity)) = (
+                    shp_vehicle_cadence,
+                    sim.substrate.entities.get_mut(stable_id),
+                ) {
+                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
+                        entity,
+                        cadence,
+                        sim.session.binary_frame,
+                    );
+                }
+            }
 
             // A direction-8 producer also ends this object's ordinary turn as
             // soon as it arms TubeMovement.  The leaf itself starts on the

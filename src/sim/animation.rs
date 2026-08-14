@@ -326,6 +326,33 @@ pub fn sequence_is_fire_action(sequence: SequenceKind) -> bool {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequenceSet {
     sequences: BTreeMap<SequenceKind, SequenceDef>,
+    /// Derived type configuration for UnitClass SHP bodies. This is not
+    /// per-entity animation state; the persistent native state is the Foot
+    /// body-frame counter on `GameEntity`.
+    #[serde(default)]
+    shp_vehicle_cadence: Option<ShpVehicleCadence>,
+}
+
+/// Rules-owned divisors consumed by the SHP Unit body-counter path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShpVehicleCadence {
+    pub walk_rate: i32,
+    pub idle_rate: i32,
+}
+
+impl ShpVehicleCadence {
+    pub const fn native_defaults() -> Self {
+        Self {
+            walk_rate: 1,
+            idle_rate: 0,
+        }
+    }
+}
+
+impl Default for ShpVehicleCadence {
+    fn default() -> Self {
+        Self::native_defaults()
+    }
 }
 
 impl SequenceSet {
@@ -333,7 +360,18 @@ impl SequenceSet {
     pub fn new() -> Self {
         Self {
             sequences: BTreeMap::new(),
+            shp_vehicle_cadence: None,
         }
+    }
+
+    /// Mark this as a UnitClass SHP frame layout and attach its rules-owned
+    /// cadence. The frame blocks themselves remain art-owned `SequenceDef`s.
+    pub fn set_shp_vehicle_cadence(&mut self, cadence: ShpVehicleCadence) {
+        self.shp_vehicle_cadence = Some(cadence);
+    }
+
+    pub fn shp_vehicle_cadence(&self) -> Option<ShpVehicleCadence> {
+        self.shp_vehicle_cadence
     }
 
     /// Add a sequence definition.
@@ -395,6 +433,79 @@ pub fn resolve_shp_frame(def: &SequenceDef, facing: u8, frame_index: u16) -> u16
     };
 
     def.start_frame + facing_slot * def.facing_multiplier + clamped
+}
+
+/// Advance the persistent Unit SHP body counter at FootClass's post-Process
+/// point for the current absolute binary frame.
+///
+/// The moving branch deliberately does not guard a zero `WalkRate`: retail
+/// feeds that raw signed value to IDIV, making zero invalid content. `IdleRate`
+/// is different â€” zero is its documented branch-off switch and performs no
+/// division. The counter itself is a native dword, so increment wraps.
+pub(crate) fn tick_shp_vehicle_body_frame_counter(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    cadence: ShpVehicleCadence,
+    binary_frame: u32,
+) {
+    if entity.category != crate::map::entities::EntityCategory::Unit
+        || entity.is_voxel
+        || entity.dying
+        || !entity.lifecycle.object_alive
+        || entity.lifecycle.in_limbo
+        || entity.object_is_falling_down != 0
+    {
+        return;
+    }
+
+    let Some(locomotor) = entity.locomotor.as_ref() else {
+        return;
+    };
+    if locomotor.piggyback.is_some()
+        || entity.deploy_state.is_some()
+        || entity
+            .teleport_state
+            .as_ref()
+            .is_some_and(|state| state.warp_out_active() || state.warp_in_active())
+    {
+        return;
+    }
+
+    let rate = if crate::sim::movement::ready_producer::is_moving_now_for(entity, binary_frame) {
+        cadence.walk_rate
+    } else {
+        if cadence.idle_rate == 0 {
+            return;
+        }
+        cadence.idle_rate
+    };
+
+    if (binary_frame as i32) % rate == 0 {
+        entity.body_frame_counter = entity.body_frame_counter.wrapping_add(1);
+    }
+}
+
+/// Resolve the ordinary UnitClass SHP body frame from the persistent Foot
+/// counter. Firing and death counters intentionally stay on their existing
+/// paths; this helper covers only the standing/walking draw branch.
+pub fn resolve_shp_vehicle_body_frame(
+    set: &SequenceSet,
+    facing: u8,
+    body_frame_counter: u32,
+    locomotor_is_moving: bool,
+) -> Option<u16> {
+    let cadence = set.shp_vehicle_cadence()?;
+    let sequence = if locomotor_is_moving || cadence.idle_rate != 0 {
+        SequenceKind::Walk
+    } else {
+        SequenceKind::Stand
+    };
+    let def = set.get(&sequence)?;
+    let frame_index = if sequence == SequenceKind::Walk && def.frame_count != 0 {
+        (body_frame_counter % u32::from(def.frame_count)) as u16
+    } else {
+        0
+    };
+    Some(resolve_shp_frame(def, facing, frame_index))
 }
 
 /// Advance a single animation by one reached native gameplay frame.
@@ -584,6 +695,17 @@ fn tick_animations_impl(
         let Some(def) = set.get(&anim.sequence) else {
             continue;
         };
+
+        // UnitClass SHP Stand/Walk images are selected from Foot's persistent
+        // body counter at draw time. Do not advance a second relative clock or
+        // reset cadence when the generic visual sequence changes.
+        if entity.category == crate::map::entities::EntityCategory::Unit
+            && !entity.is_voxel
+            && set.shp_vehicle_cadence().is_some()
+            && matches!(anim.sequence, SequenceKind::Stand | SequenceKind::Walk)
+        {
+            continue;
+        }
 
         if let Some(next) = advance_animation(anim, def, game_options) {
             // gamemd-derived: `InfantryClass::DoType_Sequencer` @ 0x00520AE0

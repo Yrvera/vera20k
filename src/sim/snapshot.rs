@@ -239,7 +239,10 @@ use crate::sim::world::Simulation;
 // remaining counter and saved weapon slot across save/load.
 // Bumped 75 -> 76: AnimClass now persists its cell-drawer and
 // terrain-attached constructor bytes.
-const SNAPSHOT_VERSION: u32 = 76;
+// Bumped 76 -> 77: GameEntity now persists FootClass's wrapping SHP body-frame
+// counter plus Drive/Ship's SHP movement-predicate runtime. Both are
+// hash-authoritative and resume without a visual-sequence reset.
+const SNAPSHOT_VERSION: u32 = 77;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1860,10 +1863,96 @@ mod tests {
     /// accepted outcome kind, SavourDelay target, and expiry latch; 73 -> 74
     /// added the serialized pending-command EXIT payload; 74 -> 75 added the
     /// generic Building delayed-fire signed counter and saved weapon slot; 75
-    /// -> 76 added AnimClass cell-drawer and terrain-attached bytes.
+    /// -> 76 added AnimClass cell-drawer and terrain-attached bytes; 76 -> 77
+    /// added the persistent Foot SHP body-frame counter and Ship-owned
+    /// destination/target/current speed state used by its SHP movement slots.
     #[test]
-    fn gsi_13_04_snapshot_version_is_76() {
-        assert_eq!(super::SNAPSHOT_VERSION, 76);
+    fn gsi_13_06_snapshot_version_is_77() {
+        assert_eq!(super::SNAPSHOT_VERSION, 77);
+    }
+
+    #[test]
+    fn gsi_13_06_body_frame_counter_roundtrips_and_changes_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::components::{DriveCoord, Health, ShipLocomotionRuntime};
+        use crate::sim::game_entity::GameEntity;
+        use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Soviet");
+        let type_ref = sim.interner.intern("DRON");
+        sim.substrate
+            .entities
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                1,
+                5,
+                5,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 100,
+                    max: 100,
+                },
+                type_ref,
+                EntityCategory::Unit,
+                0,
+                5,
+                false,
+            ));
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let zero_counter_hash = sim.state_hash();
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("Terror Drone")
+            .body_frame_counter = u32::MAX;
+        let populated_counter_hash = sim.state_hash();
+        assert_ne!(populated_counter_hash, zero_counter_hash);
+
+        let ship_head = DriveCoord::cell(6, 5, 0);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .expect("SHP unit")
+            .ship_locomotion = Some(ShipLocomotionRuntime {
+            destination: Some(ship_head),
+            head_to: Some(ship_head),
+            target_speed_fraction: SIM_ONE,
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+            ..Default::default()
+        });
+        let populated_shp_state_hash = sim.state_hash();
+        assert_ne!(populated_shp_state_hash, populated_counter_hash);
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v77 body-counter snapshot")
+            .sim;
+        assert_eq!(
+            restored
+                .substrate
+                .entities
+                .get(1)
+                .expect("restored Terror Drone")
+                .body_frame_counter,
+            u32::MAX
+        );
+        let restored_ship = restored
+            .substrate
+            .entities
+            .get(1)
+            .expect("restored SHP unit")
+            .ship_locomotion
+            .as_ref()
+            .expect("restored Ship runtime");
+        assert_eq!(restored_ship.destination, Some(ship_head));
+        assert_eq!(restored_ship.head_to, Some(ship_head));
+        assert_eq!(restored_ship.target_speed_fraction, SIM_ONE);
+        assert_eq!(restored_ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(restored_ship.owner_current_speed, 10);
+        assert_eq!(restored.state_hash(), populated_shp_state_hash);
     }
 
     #[test]

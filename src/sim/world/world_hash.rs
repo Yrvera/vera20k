@@ -861,6 +861,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            entity.body_frame_counter.hash(hasher);
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);

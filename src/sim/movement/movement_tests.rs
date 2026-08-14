@@ -490,6 +490,7 @@ fn gsi_04_05_forced_refinery_exit_preserves_lists_until_terminal_relink() {
     assert_eq!(drive.head_to, Some(head));
     assert_eq!(drive.track_index, 0x47);
     assert!(drive.track_valid);
+    assert_eq!(drive.owner_current_speed, 8);
     assert_eq!(drive.residual_budget, 5);
     assert_eq!(
         sim.substrate

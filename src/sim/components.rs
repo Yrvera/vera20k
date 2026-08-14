@@ -330,16 +330,26 @@ pub struct DrivePathQueue {
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned committed head and path replay state.
+/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
 ///
-/// Ships share the ordinary TurnTrack/RawTrack curves with Drive, but do not
-/// own Drive's speed, tube, forced-track, or raw-occupation state.
+/// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
+/// fractions, and cached owner-speed result with Drive, but do not own Drive's
+/// tube, forced-track, or raw-occupation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
+    #[serde(default)]
+    pub destination: Option<DriveCoord>,
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
     pub path: DrivePathQueue,
+    #[serde(default)]
+    pub target_speed_fraction: SimFixed,
+    #[serde(default)]
+    pub current_speed_fraction: SimFixed,
+    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
+    #[serde(default)]
+    pub owner_current_speed: i32,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -399,6 +409,9 @@ pub struct DriveLocomotionRuntime {
     pub target_speed_fraction: SimFixed,
     #[serde(default)]
     pub current_speed_fraction: SimFixed,
+    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
+    #[serde(default)]
+    pub owner_current_speed: i32,
     #[serde(default)]
     pub residual_budget: i32,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
@@ -433,6 +446,7 @@ impl Default for DriveLocomotionRuntime {
             is_reversed: false,
             target_speed_fraction: SIM_ZERO,
             current_speed_fraction: SIM_ZERO,
+            owner_current_speed: 0,
             residual_budget: 0,
             occupation_head_to: None,
             occupation_handoff: None,
@@ -1168,6 +1182,7 @@ mod tests {
         assert!(!drive.is_reversed);
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(drive.owner_current_speed, 0);
         assert_eq!(drive.residual_budget, 0);
     }
 

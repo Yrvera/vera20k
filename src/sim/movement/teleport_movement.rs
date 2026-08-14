@@ -489,6 +489,8 @@ mod tests {
             special_threat_value: 0.0,
             armor: "none".to_string(),
             speed: 6,
+            walk_rate: 1,
+            idle_rate: 0,
             weight: SimFixed::lit("2.0"),
             accel_factor: SimFixed::lit("0.03"),
             decel_factor: SimFixed::lit("0.02"),

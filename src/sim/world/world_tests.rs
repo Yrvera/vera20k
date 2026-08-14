@@ -16,13 +16,15 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, MovementTarget};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, MovementTarget, ShipLocomotionRuntime,
+};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -4653,6 +4655,108 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             .cell_occupation
             .vehicle_bits(6, 4, MovementLayer::Ground),
         0
+    );
+}
+
+#[test]
+fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
+    let mut sim = Simulation::new();
+    sim.spawn_from_map(
+        &[MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "DLPH".to_string(),
+            health: 256,
+            cell_x: 4,
+            cell_y: 4,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+            mission: None,
+        }],
+        None,
+        &empty_heights(),
+    );
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+        entity.ship_locomotion = Some(ShipLocomotionRuntime::default());
+        entity.facing = 64;
+    }
+
+    let grid = PathGrid::new(16, 16);
+    let issued = {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        crate::sim::movement::issue_move_command_with_layered(
+            entities,
+            &grid,
+            1,
+            (8, 4),
+            SimFixed::from_num(120),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(cell_occupation),
+        )
+    };
+    assert!(issued);
+    let committed_head = {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        assert!(entity.drive_track.is_some());
+        let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
+        ship.target_speed_fraction = SIM_ONE;
+        ship.current_speed_fraction = SIM_HALF;
+        ship.owner_current_speed = 10;
+        ship.head_to.expect("Ship curve has a committed head")
+    };
+    let committed_cell = (
+        u16::try_from(committed_head.x.div_euclid(256)).unwrap(),
+        u16::try_from(committed_head.y.div_euclid(256)).unwrap(),
+    );
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 1 },
+        None,
+        Some(&grid),
+        &empty_heights(),
+    ));
+
+    let stopped = sim.substrate.entities.get(1).unwrap();
+    let target = stopped
+        .movement_target
+        .as_ref()
+        .expect("committed Ship segment survives Stop");
+    assert_eq!(target.path, vec![(4, 4), committed_cell]);
+    assert_eq!(target.final_goal, Some(committed_cell));
+    let ship = stopped.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship.destination, None);
+    assert_eq!(ship.head_to, Some(committed_head));
+    assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
+    assert_eq!(ship.current_speed_fraction, SIM_HALF);
+    assert_eq!(ship.owner_current_speed, 10);
+}
+
+#[test]
+fn gsi_13_06_shp_counter_admission_uses_only_tube_state_at_unit_ai_entry() {
+    assert!(shp_vehicle_counter_admitted(false));
+    assert!(!shp_vehicle_counter_admitted(true));
+
+    let tube_active_at_entry = false;
+    let tube_armed_during_ordinary_foot_visit = true;
+    assert!(tube_armed_during_ordinary_foot_visit);
+    assert!(
+        shp_vehicle_counter_admitted(tube_active_at_entry),
+        "post-Process tube state must not retroactively suppress this Foot visit"
     );
 }
 

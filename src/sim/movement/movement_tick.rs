@@ -1949,9 +1949,12 @@ fn tick_movement_with_grids_scoped(
                     crate::rules::locomotor_type::LocomotorKind::Drive
                 )
             });
+            let uses_ship_locomotor = snap.locomotor.as_ref().is_some_and(|loco| {
+                matches!(loco.kind, crate::rules::locomotor_type::LocomotorKind::Ship)
+            });
             // Speed ramping: acceleration toward max speed, deceleration near goal.
-            // Matches original engine's Process_Drive_Track speed computation.
-            if uses_drive_locomotor {
+            // Matches the Drive/Ship Process_Drive_Track fraction computation.
+            if uses_drive_locomotor || uses_ship_locomotor {
                 let goal = target.final_goal.unwrap_or_else(|| {
                     target
                         .path
@@ -1971,11 +1974,38 @@ fn tick_movement_with_grids_scoped(
                     }
                 }
 
-                if let Some(drive) = entity.drive_locomotion.as_mut() {
+                if uses_drive_locomotor {
                     let raw_speed_per_frame = target.speed / SimFixed::from_num(15);
-                    super::drive_locomotion::update_drive_speed_fraction(
-                        drive,
-                        cell_speed_mod,
+                    if let Some(drive) = entity.drive_locomotion.as_mut() {
+                        super::drive_locomotion::update_drive_speed_fraction(
+                            drive,
+                            cell_speed_mod,
+                            snap.drive_accelerates,
+                            raw_speed_per_frame,
+                            target.accel_factor,
+                            target.decel_factor,
+                            target.slowdown_distance,
+                            dist,
+                        );
+                        target.current_speed = target.speed * drive.current_speed_fraction;
+                        drive.owner_current_speed =
+                            super::drive_locomotion::owner_current_speed_from_fraction(
+                                target.speed,
+                                drive.current_speed_fraction,
+                            );
+                    } else {
+                        target.current_speed = target.speed * cell_speed_mod;
+                    }
+                } else if let Some(ship) = entity.ship_locomotion.as_mut() {
+                    let raw_speed_per_frame = target.speed / SimFixed::from_num(15);
+                    let requested_fraction =
+                        super::drive_locomotion::ship_process_target_speed_fraction(
+                            ship,
+                            cell_speed_mod,
+                        );
+                    super::drive_locomotion::update_ship_speed_fraction(
+                        ship,
+                        requested_fraction,
                         snap.drive_accelerates,
                         raw_speed_per_frame,
                         target.accel_factor,
@@ -1983,7 +2013,12 @@ fn tick_movement_with_grids_scoped(
                         target.slowdown_distance,
                         dist,
                     );
-                    target.current_speed = target.speed * drive.current_speed_fraction;
+                    target.current_speed = target.speed * ship.current_speed_fraction;
+                    ship.owner_current_speed =
+                        super::drive_locomotion::owner_current_speed_from_fraction(
+                            target.speed,
+                            ship.current_speed_fraction,
+                        );
                 } else {
                     target.current_speed = target.speed * cell_speed_mod;
                 }
@@ -2099,7 +2134,7 @@ fn tick_movement_with_grids_scoped(
                 // No ramping data — constant speed fallback.
                 target.current_speed = target.speed;
             }
-            let mut effective_speed: SimFixed = if uses_drive_locomotor {
+            let mut effective_speed: SimFixed = if uses_drive_locomotor || uses_ship_locomotor {
                 target.current_speed
             } else {
                 target.current_speed * cell_speed_mod

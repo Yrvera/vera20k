@@ -230,15 +230,7 @@ pub(crate) fn build_shp_instances(
                     };
                     (frame, None)
                 }
-                _ => (
-                    resolve_infantry_shp_frame(
-                        state,
-                        type_str,
-                        entity.facing,
-                        entity.animation.as_ref(),
-                    ),
-                    None,
-                ),
+                _ => (resolve_infantry_shp_frame(state, type_str, entity), None),
             }
         };
         let key: ShpSpriteKey = ShpSpriteKey {
@@ -1007,22 +999,39 @@ fn resting_building_anim_frame_values(loop_start: u16, loop_end: u16, start_fram
 fn resolve_infantry_shp_frame(
     state: &AppState,
     type_id: &str,
-    facing: u8,
-    anim: Option<&animation::Animation>,
+    entity: &crate::sim::game_entity::GameEntity,
 ) -> u16 {
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
     let sequence_set = state.animation_sequences.get(type_id);
-    if let (Some(anim_state), Some(set)) = (anim, sequence_set) {
+    if entity.category == EntityCategory::Unit
+        && !entity.is_voxel
+        && entity.animation.as_ref().is_none_or(|anim_state| {
+            matches!(
+                anim_state.sequence,
+                animation::SequenceKind::Stand | animation::SequenceKind::Walk
+            )
+        })
+        && let Some(set) = sequence_set
+        && let Some(frame) = animation::resolve_shp_vehicle_body_frame(
+            set,
+            entity.facing,
+            entity.body_frame_counter,
+            crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(entity),
+        )
+    {
+        return frame;
+    }
+    if let (Some(anim_state), Some(set)) = (entity.animation.as_ref(), sequence_set) {
         if let Some(def) = set.get(&anim_state.sequence) {
-            return animation::resolve_shp_frame(def, facing, anim_state.frame_index);
+            return animation::resolve_shp_frame(def, entity.facing, anim_state.frame_index);
         }
     }
     // Fallback when no sequence data was built for this type: the standing
     // block is frames 0..7, so the facing slot is the frame index. Uses the
     // same native facing table as the real path so the two cannot disagree.
-    animation::infantry_facing_slot(facing)
+    animation::infantry_facing_slot(entity.facing)
 }
 
 /// Rendered body SHP frame index for a `CanBeOccupied=yes` building.

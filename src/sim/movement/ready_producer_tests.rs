@@ -4,7 +4,9 @@
 //! feed is separately proven exhaustively in `locomotor_ready.rs`.
 
 use super::*;
-use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, MovementTarget};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, MovementTarget, ShipLocomotionRuntime,
+};
 use crate::sim::movement::teleport_movement::TeleportState;
 use crate::util::fixed_math::{SIM_ONE, SimFixed};
 
@@ -36,20 +38,23 @@ fn parked_drive_unit_reports_not_moving() {
     );
 }
 
-/// A vehicle with a live movement target, a head-to away from its own cell and
-/// ramped speed reports moving.
+/// A vehicle with a class-owned destination/head and positive owner-applied
+/// speed reports moving without a path-execution adapter.
 #[test]
 fn driving_unit_reports_moving() {
     let mut entity = entity_with(LocomotorKind::Drive);
+    let head = DriveCoord {
+        x: 6 * 256 + 128,
+        y: 5 * 256 + 128,
+        z: 0,
+    };
     entity.drive_locomotion = Some(DriveLocomotionRuntime {
-        head_to: Some(DriveCoord {
-            x: 6 * 256 + 128,
-            y: 5 * 256 + 128,
-            z: 0,
-        }),
+        destination: Some(head),
+        head_to: Some(head),
+        current_speed_fraction: SIM_ONE,
+        owner_current_speed: 25,
         ..DriveLocomotionRuntime::default()
     });
-    entity.movement_target = Some(moving_target(40));
 
     let state = ready_state_for(&entity, 100).expect("Drive has a producer");
     assert!(state.is_moving_now(), "a driving tank must report moving");
@@ -78,10 +83,18 @@ fn unit_parked_on_its_head_to_reports_not_moving() {
 /// behave identically to Drive on identical state — but keep its own variant.
 #[test]
 fn ship_mirrors_drive_but_keeps_its_own_variant() {
-    let entity = entity_with(LocomotorKind::Ship);
+    let mut entity = entity_with(LocomotorKind::Ship);
+    let head = DriveCoord::cell(6, 5, 0);
+    entity.ship_locomotion = Some(ShipLocomotionRuntime {
+        destination: Some(head),
+        head_to: Some(head),
+        current_speed_fraction: SIM_ONE,
+        owner_current_speed: 20,
+        ..Default::default()
+    });
     let state = ready_state_for(&entity, 100).expect("Ship has a producer");
     assert!(matches!(state, LocomotorReadyState::Ship { .. }));
-    assert!(!state.is_moving_now());
+    assert!(state.is_moving_now());
 }
 
 /// The trap this producer exists to avoid: a warped unit sitting out its chrono

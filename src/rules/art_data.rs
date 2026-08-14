@@ -91,10 +91,6 @@ pub struct ArtEntry {
     pub delayed_fire_delay: i32,
     /// SHP vehicle: walk animation frame count per facing (from `WalkFrames=`).
     pub walk_frames: Option<u16>,
-    /// SHP vehicle: native game frames between walk-animation advances.
-    pub walk_rate: u16,
-    /// SHP vehicle: native game frames between idle-animation advances.
-    pub idle_rate: u16,
     /// SHP vehicle: firing animation frame count per facing (from `FiringFrames=`).
     pub firing_frames: Option<u16>,
     /// SHP vehicle: standing animation frame count per facing (from `StandingFrames=`).
@@ -849,14 +845,6 @@ impl ArtRegistry {
 
             // SHP vehicle frame tags (only meaningful when Voxel=no for vehicles).
             let walk_frames: Option<u16> = section.get_i32("WalkFrames").map(|v| v.max(0) as u16);
-            let walk_rate: u16 = section
-                .get_i32("WalkRate")
-                .map(|v| v.max(1) as u16)
-                .unwrap_or(1);
-            let idle_rate: u16 = section
-                .get_i32("IdleRate")
-                .map(|v| v.max(1) as u16)
-                .unwrap_or(1);
             let firing_frames: Option<u16> =
                 section.get_i32("FiringFrames").map(|v| v.max(0) as u16);
             let standing_frames: Option<u16> =
@@ -1035,8 +1023,6 @@ impl ArtRegistry {
                     is_anim_delayed_fire,
                     delayed_fire_delay,
                     walk_frames,
-                    walk_rate,
-                    idle_rate,
                     firing_frames,
                     standing_frames,
                     shp_facings,

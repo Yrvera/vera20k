@@ -526,7 +526,18 @@ pub fn build_sprite_atlas(
                         }
                         art_entry
                             .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
-                            .map(crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences)
+                            .map(|entry| {
+                                let cadence = rules
+                                    .and_then(|registry| registry.object(type_str))
+                                    .map(|object| crate::sim::animation::ShpVehicleCadence {
+                                        walk_rate: object.walk_rate,
+                                        idle_rate: object.idle_rate,
+                                    })
+                                    .unwrap_or_default();
+                                crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
+                                    entry, cadence,
+                                )
+                            })
                     });
 
                 if let Some(ref set) = seq_set {

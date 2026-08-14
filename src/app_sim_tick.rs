@@ -690,7 +690,16 @@ pub(crate) fn build_animation_sequences(
                 if let Some(art) = art_entry {
                     if art.walk_frames.is_some() || art.firing_frames.is_some() {
                         data_driven_count += 1;
-                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(art)
+                        let cadence = rules
+                            .and_then(|registry| registry.object(type_str))
+                            .map(|object| animation::ShpVehicleCadence {
+                                walk_rate: object.walk_rate,
+                                idle_rate: object.idle_rate,
+                            })
+                            .unwrap_or_default();
+                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
+                            art, cadence,
+                        )
                     } else {
                         continue;
                     }

@@ -40,16 +40,14 @@
 //! its state is absent, and families without a faithful mapping return `None`
 //! rather than a guess.
 //!
-//! Two mappings carry a deliberate conservative floor, each labelled
-//! VERA-internal at its definition: Drive/Ship's owner speed, and Walk's
-//! blocked-phase exclusion. Both compensate for a state-lifetime mismatch
-//! against native, and both err toward "not moving".
+//! Walk's blocked-phase exclusion carries a deliberate conservative floor,
+//! labelled VERA-internal at its definition. It compensates for a
+//! state-lifetime mismatch against native and errs toward "not moving".
 //!
 //! ## Parity status
-//! The predicate is VERIFIED (exhaustive over its input space). Every mapping
-//! here is **UNCHECKED**: each was traced to its native field, but no
-//! gamemd-derived executable check compares the two, so this is a
-//! well-provenanced correspondence and not proof.
+//! The predicate is VERIFIED (exhaustive over its input space). Drive and Ship
+//! are VERIFIED against their slot-4/slot-32 bodies, owner receiver, and active
+//! stock callsites. Other family mappings remain field-traced but UNCHECKED.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/ movement and entity state only.
@@ -110,6 +108,21 @@ pub(crate) fn is_moving_now_for(entity: &GameEntity, binary_frame: u32) -> bool 
     ready_state_for(entity, binary_frame).is_some_and(LocomotorReadyState::is_moving_now)
 }
 
+/// UnitClass draw-time `ILocomotion::Is_Moving` answer for the two active-stock
+/// SHP vehicle families. This is deliberately separate from
+/// [`is_moving_now_for`]: drawing does not fold in hull rotation or applied
+/// owner speed.
+pub(crate) fn is_moving_for_unit_shp_draw(entity: &GameEntity) -> bool {
+    let Some(locomotor) = entity.locomotor.as_ref() else {
+        return false;
+    };
+    match locomotor.active_kind() {
+        LocomotorKind::Drive => drive_family_motion_slot(entity, DriveFamily::Drive).0,
+        LocomotorKind::Ship => drive_family_motion_slot(entity, DriveFamily::Ship).0,
+        _ => false,
+    }
+}
+
 /// IEEE-754 binary64 bit patterns for the only two speed-fraction values the
 /// Walk family's native field ever holds.
 ///
@@ -125,6 +138,29 @@ const F64_BITS_HALF: u64 = 0x3FE0_0000_0000_0000;
 enum DriveFamily {
     Drive,
     Ship,
+}
+
+/// Produce the native slot-4 movement bit and slot-32 head-to-presence input
+/// from the same class-owned coordinates, so the two consumers cannot drift.
+fn drive_family_motion_slot(entity: &GameEntity, family: DriveFamily) -> (bool, bool) {
+    let (destination, head_to) = match family {
+        DriveFamily::Drive => entity
+            .drive_locomotion
+            .as_ref()
+            .map_or((None, None), |drive| (drive.destination, drive.head_to)),
+        DriveFamily::Ship => entity
+            .ship_locomotion
+            .as_ref()
+            .map_or((None, None), |ship| (ship.destination, ship.head_to)),
+    };
+
+    // Native compares X/Y leptons and deliberately ignores Z.
+    let current_x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
+    let current_y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
+    let slot_moving = destination.is_some()
+        || head_to.is_some_and(|point| (point.x, point.y) != (current_x, current_y));
+
+    (slot_moving, head_to.is_some())
 }
 
 /// Drive and Ship read the same four inputs through separate native slots.
@@ -155,34 +191,22 @@ fn drive_family(
         .as_ref()
         .is_some_and(|facing| facing.is_rotating(binary_frame));
 
-    let drive = entity.drive_locomotion.as_ref();
-    let head_to = match family {
-        DriveFamily::Drive => drive.and_then(|drive| drive.head_to),
+    let (slot_moving, head_to_nonnull) = drive_family_motion_slot(entity, family);
+
+    // The movement pass caches the exact signed owner +0x538 result after its
+    // two native truncations. Reading that value (rather than just the sign of
+    // +0x578) preserves the first low-fraction acceleration frame where stock
+    // DLPH/SQD still return zero.
+    let owner_speed = match family {
+        DriveFamily::Drive => entity
+            .drive_locomotion
+            .as_ref()
+            .map_or(0, |drive| drive.owner_current_speed),
         DriveFamily::Ship => entity
             .ship_locomotion
             .as_ref()
-            .and_then(|ship| ship.head_to),
+            .map_or(0, |ship| ship.owner_current_speed),
     };
-    let head_to_nonnull = head_to.is_some();
-
-    // Native compares the head-to point against the owner's world coordinate in
-    // leptons, and deliberately ignores Z.
-    let current_x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
-    let current_y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
-    let slot_moving = match family {
-        DriveFamily::Drive => drive.and_then(|drive| drive.destination).is_some(),
-        DriveFamily::Ship => entity.drive_track.is_some() || entity.movement_target.is_some(),
-    } || head_to
-        .is_some_and(|point| (point.x, point.y) != (current_x, current_y));
-
-    // Native reads the owner's applied speed, which its locomotor drives to
-    // exactly zero once the unit comes fully to rest. We have no separate
-    // owner-side fraction, so this reads the movement target's ramped speed and
-    // is zero whenever there is no movement target — the conservative direction.
-    let owner_speed = entity
-        .movement_target
-        .as_ref()
-        .map_or(0, |target| target.current_speed.to_num::<i32>());
 
     match family {
         DriveFamily::Drive => LocomotorReadyState::Drive {
