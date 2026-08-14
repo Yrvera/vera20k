@@ -307,8 +307,8 @@ pub(crate) struct AppState {
     /// Owner name → house color index mapping for atlas key lookups.
     pub(crate) house_color_map: HouseColorMap,
     pub(crate) house_roster: HouseRoster,
-    /// End-of-match score screen contents, resolved off the houses when the match
-    /// ends and held until the player leaves the screen. `None` for result
+    /// End-of-match score presentation, decorated from the sim-owned terminal
+    /// snapshot and held until the player leaves the screen. `None` for result
     /// screens with no native score analogue (a load failure, a trigger-driven
     /// campaign end), which keep the non-art fallback.
     pub(crate) score_screen: Option<crate::ui::score_shell::ScoreScreenModel>,

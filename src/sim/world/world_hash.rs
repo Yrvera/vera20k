@@ -146,7 +146,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -155,7 +155,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false)
+        self.state_hash_with_schema(true, false, false, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -164,7 +164,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false)
+        self.state_hash_with_schema(false, false, false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -174,6 +174,7 @@ impl Simulation {
         include_master_frame_v43: bool,
         include_entity_animation_v44: bool,
         include_building_anim_overlays_v45: bool,
+        include_terminal_score_v46: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -214,6 +215,9 @@ impl Simulation {
 
         self.hash_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
+        if include_terminal_score_v46 {
+            self.hash_terminal_score_snapshot(&mut hasher);
+        }
         self.hash_production(&mut hasher);
         self.hash_power_states(&mut hasher);
         self.hash_fog_and_alliances(&mut hasher);
@@ -238,6 +242,24 @@ impl Simulation {
         self.hash_session_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    fn hash_terminal_score_snapshot(&self, hasher: &mut impl Hasher) {
+        let Some(snapshot) = self.terminal_score_snapshot.as_ref() else {
+            return;
+        };
+        b"terminal-score-v1".hash(hasher);
+        snapshot.rows.len().hash(hasher);
+        for row in &snapshot.rows {
+            row.owner.hash(hasher);
+            row.country.hash(hasher);
+            row.survived.hash(hasher);
+            row.kills.hash(hasher);
+            row.losses.hash(hasher);
+            row.built.hash(hasher);
+            row.raw_score.hash(hasher);
+            row.score.hash(hasher);
+        }
     }
 
     fn hash_projectiles(&self, hasher: &mut impl Hasher) {

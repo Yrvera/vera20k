@@ -253,7 +253,10 @@ use crate::sim::world::Simulation;
 // order, and every overlay field participate in the lockstep hash. This is a
 // behavior/hash-only boundary: old bytes would decode, but resume under different
 // timing and produce an incompatible returned hash, so cross-version load is refused.
-const SNAPSHOT_VERSION: u32 = 79;
+// Bumped 79 -> 80: the natural win/loss terminal edge now serializes and hashes
+// its one-shot raw score snapshot before returning. This adds the snapshot field
+// and prevents score-bonus Scenario RNG draws from repeating after load.
+const SNAPSHOT_VERSION: u32 = 80;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2552,14 +2555,15 @@ mod tests {
     /// destination/target/current speed state used by its SHP movement slots;
     /// 77 -> 78 made living GameEntity Animation timing hash-authoritative;
     /// 78 -> 79 moved building-overlay finalization before the returned hash
-    /// and made the already-serialized overlay component hash-authoritative.
+    /// and made the already-serialized overlay component hash-authoritative;
+    /// 79 -> 80 added the serialized/hash-authoritative terminal score snapshot.
     #[test]
-    fn gsi_13_06_snapshot_version_is_79() {
-        assert_eq!(super::SNAPSHOT_VERSION, 79);
+    fn gsi_13_06_snapshot_version_is_80() {
+        assert_eq!(super::SNAPSHOT_VERSION, 80);
     }
 
     #[test]
-    fn building_anim_overlay_roundtrips_with_v79_hash_and_version() {
+    fn building_anim_overlay_roundtrips_with_current_hash_and_version() {
         use crate::map::entities::EntityCategory;
         use crate::sim::components::{AnimOverlayState, BuildingAnimOverlays, Health};
         use crate::sim::game_entity::GameEntity;
@@ -2602,14 +2606,14 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v79 building-overlay header");
-        assert_eq!(header.version, 79);
+        let header = GameSnapshot::read_header(&bytes).expect("v80 building-overlay header");
+        assert_eq!(header.version, 80);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v79 building-overlay snapshot")
+            .expect("v80 building-overlay snapshot")
             .sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v79 building-overlay snapshot restores structurally");
+            .expect("v80 building-overlay snapshot restores structurally");
         let overlays = restored
             .substrate
             .entities
@@ -2687,7 +2691,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v79 body-counter snapshot")
+            .expect("v80 body-counter snapshot")
             .sim;
         assert_eq!(
             restored

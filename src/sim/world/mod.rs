@@ -263,6 +263,8 @@ pub struct TickResult {
     pub frame_committed: bool,
     pub executed_commands: usize,
     pub state_hash: u64,
+    /// This call latched the natural win/loss score snapshot before hashing.
+    pub terminal_score_finalized: bool,
     pub spawned_entities: bool,
     /// A structure was destroyed (combat, sell, crush); the frame finalizer
     /// rebuilds navigation to unblock the footprint.
@@ -597,9 +599,10 @@ pub struct Simulation {
     /// Scenario RNG — gamemd `Scenario->Random` (Scen+0x218). Drives in-object-tick
     /// sim draws: scatter, sub-cell placement, smudge/destruction, particles,
     /// wall/overlay damage, bridge collapse/destruction presentation, ore growth/spread, TIBTRE,
-    /// anim scorch/50-50, miner-dock jitter. Saved in the Scenario-shaped snapshot
-    /// and hashed while live. Native load reads those bytes but immediately calls
-    /// `Random__Seed(0)`, so deserialization deliberately discards the saved cursor.
+    /// anim scorch/50-50, miner-dock jitter, and the terminal score projection.
+    /// Saved in the Scenario-shaped snapshot and hashed while live. Native load
+    /// reads those bytes but immediately calls `Random__Seed(0)`, so deserialization
+    /// deliberately discards the saved cursor.
     #[serde(deserialize_with = "deserialize_scenario_rng_reset")]
     pub(crate) scenario_rng: SimRng,
     /// Main/global RNG — gamemd `g_MainRng` (0x00886B88). This is a
@@ -630,6 +633,9 @@ pub struct Simulation {
     /// boundary. The app drains these into its render-only overlay list.
     #[serde(skip)]
     frame_overlay_updates: Vec<OverlayEntry>,
+    /// One-shot raw post-match score result. Serialized and hashed so a save at
+    /// the outcome wait cannot repeat its Scenario RNG draws after load.
+    pub(super) terminal_score_snapshot: Option<crate::sim::score::TerminalScoreSnapshot>,
     /// Reusable movement-to-world lifecycle request buffer. Requests are applied
     /// immediately after the movement call returns.
     #[serde(skip)]
@@ -1918,6 +1924,7 @@ impl Simulation {
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
             frame_overlay_updates: Vec::new(),
+            terminal_score_snapshot: None,
             pending_lifecycle_requests: Vec::new(),
             pending_rocket_detonations: Vec::new(),
             pending_missile_detonations: Vec::new(),
@@ -1987,9 +1994,6 @@ impl Simulation {
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
     // Keep accessors distinct even though several return the same stream today:
     // the intent name is the per-consumer routing record and the grep/audit anchor.
-    pub(crate) fn score_bonus_rng(&mut self) -> &mut SimRng {
-        &mut self.scenario_rng
-    } // end-of-match score screen: surviving houses' displayed-score bonus
     pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
@@ -2378,20 +2382,22 @@ impl Simulation {
         }
     }
 
-    fn termination_frame_requested(&self) -> bool {
+    fn natural_outcome_exit_ready(&self) -> bool {
         let contending_houses = self.contending_house_count();
-        self.quit_requested
-            || self.connection_lost
-            || self.houses.values().any(|house| {
-                house.is_human
-                    && house.outcome_state.is_some_and(|outcome| {
-                        outcome.exit_ready
+        self.houses.values().any(|house| {
+            house.is_human
+                && house.outcome_state.is_some_and(|outcome| {
+                    outcome.exit_ready
                         && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
                             // VERA-internal opponent precondition; gamemd equivalent
                             // UNCHECKED. See `contending_house_count`.
                             || contending_houses > 1)
-                    })
-            })
+                })
+        })
+    }
+
+    fn termination_frame_requested(&self) -> bool {
+        self.quit_requested || self.connection_lost || self.natural_outcome_exit_ready()
     }
 
     /// Advance the global ambient scalar before ore and active superweapons.
@@ -5663,12 +5669,15 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_lifecycle_consistent();
+        let terminal_score_finalized = self.natural_outcome_exit_ready()
+            && self.finalize_terminal_score_snapshot();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,
             frame_committed,
             executed_commands,
             state_hash,
+            terminal_score_finalized,
             spawned_entities,
             destroyed_structure,
             ownership_changed: passenger_ownership_changed,
