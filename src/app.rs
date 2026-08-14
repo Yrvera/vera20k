@@ -1665,8 +1665,11 @@ impl App {
             return false;
         };
         if let Some(button) = crate::ui::skirmish_shell::choose_map_modal_button_at(&layout, x, y) {
-            modal.pressed_button = Some(button);
-            Self::play_main_menu_button_sound(state);
+            let armed = modal.press_button(button, &state.skirmish_modes);
+            let _ = modal;
+            if armed {
+                Self::play_main_menu_button_sound(state);
+            }
             return true;
         }
         let prior_mode = modal.selected_mode_id;
@@ -1694,19 +1697,19 @@ impl App {
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
-        let pressed_button = modal.pressed_button.take();
         let released_button = crate::ui::skirmish_shell::choose_map_modal_button_at(&layout, x, y);
-        let should_fire = pressed_button.is_some() && pressed_button == released_button;
-        if !should_fire {
-            return layout.dialog.contains(x, y) || pressed_button.is_some();
-        }
+        let (had_pressed_button, fired_button) =
+            modal.release_button(released_button, &state.skirmish_modes);
+        let Some(fired_button) = fired_button else {
+            return layout.dialog.contains(x, y) || had_pressed_button;
+        };
 
         let mut selection_to_commit = None;
         let mut close_modal = false;
         // Copied out inside the arm so the `modal` borrow ends before anything
         // below reborrows `state`. `ChooseMapSelection` is `Copy`.
         let mut open_random_map_setup = None;
-        match released_button.expect("checked equal to pressed button") {
+        match fired_button {
             crate::ui::skirmish_shell::ChooseMapModalButton::UseMap0x6c5 => {
                 selection_to_commit = modal.accept_selection();
             }

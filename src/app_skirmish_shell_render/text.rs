@@ -11,9 +11,9 @@ use crate::render::shell_paint::{self, PaintLabel};
 use crate::render::shell_text::{self, Reveal, ShellAlign, ShellTextDraw, TextRect};
 use crate::ui::main_menu::SkirmishCountry;
 use crate::ui::skirmish_shell::{
-    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalLayout,
-    OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS, SavedSeedLayout,
-    SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem,
+    COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, COMBO_TEXT_LEFT_INSET, ChooseMapModalButton,
+    ChooseMapModalLayout, OwnerDrawButton, RandomMapSetupLayout, RectPx, SETUP_COMBO_ROWS,
+    SavedSeedLayout, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboId, SkirmishComboItem,
     SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent, SkirmishShellState,
     SkirmishTrackbarId, ValidationModalLayout, checkbox_text_rect, choose_map_listbox_content_rect,
     choose_map_listbox_row_rect, choose_map_listbox_row_rect as seed_row_rect,
@@ -160,6 +160,16 @@ pub(super) fn push_button_label_draw(
 
 pub(super) fn button_label_color() -> [f32; 3] {
     SHELL_LABEL_TEXT_RGB
+}
+
+/// Retail provenance: disabled `OwnerDraw_Button_00612B70` replaces the normal
+/// yellow label with its disabled palette color at `0x00612F5F`.
+pub(super) fn button_label_color_for_disabled(disabled: bool) -> [f32; 3] {
+    if disabled {
+        SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+    } else {
+        button_label_color()
+    }
 }
 
 pub(super) fn combo_face_text_color(disabled: bool) -> [f32; 3] {
@@ -993,26 +1003,30 @@ pub(super) fn push_choose_map_modal_text_draws(
         );
     }
 
-    for (label, rect) in [
+    for (label, rect, button) in [
         (
             localized_label(state, "GUI:UseMap", "Use Map"),
             layout.use_map_button,
+            ChooseMapModalButton::UseMap0x6c5,
         ),
         (
             localized_label(state, "GUI:Cancel", "Cancel"),
             layout.cancel_button,
+            ChooseMapModalButton::Cancel0x5c0,
         ),
         (
             localized_label(state, "GUI:CreateRandomMap", "Create Random Map"),
             layout.create_random_map_button,
+            ChooseMapModalButton::CreateRandomMap0x583,
         ),
     ] {
+        let disabled = !modal.button_enabled(button, &state.skirmish_modes);
         push_text_draw(
             out,
             state,
             &label,
             rect_to_text_rect(rect),
-            SHELL_LABEL_TEXT_RGB,
+            button_label_color_for_disabled(disabled),
             ShellAlign::H_CENTER | ShellAlign::V_CENTER,
             SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
         );
