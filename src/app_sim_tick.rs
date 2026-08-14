@@ -764,7 +764,7 @@ impl SessionMode {
 /// when no fixed tick is already in progress. Offline campaign/skirmish freeze
 /// the world; message, input, and repaint still run in the surrounding loop.
 /// Pure and total, so it is unit-tested without an `AppState`. The live
-/// app-layer consumer is `service_tick_should_advance_sim`, which reads the
+/// app-layer consumer is `current_wall_clock_service_admission`, which reads the
 /// running session mode and gates the one-frame admission inside
 /// `advance_in_game_runtime`.
 pub fn modal_pump_should_advance_sim(
@@ -775,6 +775,38 @@ pub fn modal_pump_should_advance_sim(
     mode.is_network() && !service_only_blocked && !reentrancy_in_progress
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallClockServiceAdmission {
+    simulation: bool,
+    tactical_mutation: bool,
+}
+
+/// Map the app's two pause sources onto their distinct production effects.
+/// A real in-scenario modal follows the native service pump for both simulation
+/// and tactical-view mutation. VERA's developer pause has no native modal, so
+/// it stops simulation only and leaves ordinary per-render camera/placement
+/// updates admitted.
+///
+/// gamemd-derived: modal service pump, verified `FUN_00623120 @ 0x00623120`.
+fn wall_clock_service_admission(
+    paused: bool,
+    modal_open: bool,
+    mode: SessionMode,
+    service_only_blocked: bool,
+    reentrancy_in_progress: bool,
+) -> WallClockServiceAdmission {
+    let tactical_mutation = !modal_open
+        || modal_pump_should_advance_sim(mode, service_only_blocked, reentrancy_in_progress);
+    WallClockServiceAdmission {
+        simulation: if modal_open {
+            tactical_mutation
+        } else {
+            !paused
+        },
+        tactical_mutation,
+    }
+}
+
 /// Live front-end session mode for the running client. This build is offline
 /// only, and offline campaign and skirmish freeze the world identically behind a
 /// modal, so it reports `Skirmish`. When networking lands, this reads the live
@@ -783,21 +815,20 @@ pub(crate) fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
-/// App-layer modal-pump service decision: should the simulation advance
-/// this frame? While the in-game Options modal is open (`state.paused` is the
-/// 0xBBB modal in this port), the verified pump contract decides — offline
-/// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
-/// world always runs. Re-entrancy is always clear here: the single-threaded
-/// frame loop never re-enters a simulation frame mid-advance.
-fn service_tick_should_advance_sim(state: &AppState) -> bool {
-    if state.paused {
-        // The current build has no network-session owner, so neither native
-        // service-only blocker can be active here. Networking must supply their
-        // combined state when `current_session_mode` becomes live.
-        modal_pump_should_advance_sim(current_session_mode(state), false, false)
-    } else {
-        true
-    }
+/// Current app-layer service decision. Actual in-scenario modals follow the
+/// native pump; the app-only debug pause suppresses simulation without claiming
+/// ownership of tactical-view updates.
+fn current_wall_clock_service_admission(state: &AppState) -> WallClockServiceAdmission {
+    // The current build has no network-session owner, so neither native
+    // service-only blocker can be active here. Networking must supply their
+    // combined state when `current_session_mode` becomes live.
+    wall_clock_service_admission(
+        state.paused,
+        state.in_game_menu.is_open(),
+        current_session_mode(state),
+        false,
+        false,
+    )
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
@@ -876,6 +907,17 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
 }
 
 fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) {
+    // Exact diagnostic stepping is an explicit request, not a wall-clock modal
+    // pump. Preserve its pre-existing one-step behavior even if the app happens
+    // to be paused; only ordinary wall-clock advancement follows the service
+    // decision below.
+    let service_admission = match mode {
+        RuntimeAdvanceMode::WallClock { .. } => current_wall_clock_service_admission(state),
+        RuntimeAdvanceMode::ExactOneStep => WallClockServiceAdmission {
+            simulation: true,
+            tactical_mutation: true,
+        },
+    };
     let mut admitted_by_pacer = false;
     let run_sim = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
@@ -885,12 +927,15 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
                 state.frame_pacer.reanchor(now_ms);
                 true
             } else {
-                let paused = !service_tick_should_advance_sim(state);
                 let game_speed = state.simulation.as_ref().map_or_else(
                     || state.in_game_options.game_speed.min(6) as u8,
                     |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
                 );
-                let admit = state.frame_pacer.should_admit(now_ms, game_speed, paused);
+                let admit = state.frame_pacer.should_admit(
+                    now_ms,
+                    game_speed,
+                    !service_admission.simulation,
+                );
                 admitted_by_pacer = admit;
                 admit
             }
@@ -970,8 +1015,10 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
         player.update(assets, music_now_ms);
     }
-    crate::app_camera::update_camera(state);
-    update_building_placement_preview(state);
+    if service_admission.tactical_mutation {
+        crate::app_camera::update_camera(state);
+        update_building_placement_preview(state);
+    }
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     state.batch_renderer.update_camera(
@@ -2656,7 +2703,81 @@ mod tests {
 
 #[cfg(test)]
 mod modal_pump_tests {
-    use super::{SessionMode, modal_pump_should_advance_sim, score_row_display_name};
+    use super::{
+        SessionMode, modal_pump_should_advance_sim, score_row_display_name,
+        wall_clock_service_admission,
+    };
+
+    #[test]
+    fn gsi_01_03_debug_pause_does_not_impersonate_an_offline_modal() {
+        let debug_pause =
+            wall_clock_service_admission(true, false, SessionMode::Skirmish, false, false);
+        assert!(!debug_pause.simulation);
+        assert!(debug_pause.tactical_mutation);
+
+        let actual_modal =
+            wall_clock_service_admission(true, true, SessionMode::Skirmish, false, false);
+        assert!(!actual_modal.simulation);
+        assert!(!actual_modal.tactical_mutation);
+    }
+
+    #[test]
+    fn gsi_01_03_tactical_view_mutators_follow_modal_service_admission() {
+        // No modal means the ordinary app loop owns camera/placement updates;
+        // modal-pump blockers have no authority on that path.
+        for mode in [
+            SessionMode::Campaign,
+            SessionMode::Skirmish,
+            SessionMode::Lan,
+            SessionMode::Wol,
+        ] {
+            assert_eq!(
+                wall_clock_service_admission(false, false, mode, true, true),
+                super::WallClockServiceAdmission {
+                    simulation: true,
+                    tactical_mutation: true,
+                }
+            );
+        }
+
+        // The active offline Menu, Abort and Options callers all enter the
+        // service-only return: their frozen battlefield cannot pan or rebuild a
+        // placement preview underneath the dialog.
+        for mode in [SessionMode::Campaign, SessionMode::Skirmish] {
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, false),
+                super::WallClockServiceAdmission {
+                    simulation: false,
+                    tactical_mutation: false,
+                }
+            );
+        }
+
+        // Preserve the existing network-modal branch, including both native
+        // reasons it falls back to service-only work.
+        for mode in [SessionMode::Lan, SessionMode::Wol] {
+            let admitted = super::WallClockServiceAdmission {
+                simulation: true,
+                tactical_mutation: true,
+            };
+            let denied = super::WallClockServiceAdmission {
+                simulation: false,
+                tactical_mutation: false,
+            };
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, false),
+                admitted
+            );
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, true, false),
+                denied
+            );
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, true),
+                denied
+            );
+        }
+    }
 
     #[test]
     fn session_mode_maps_writer_proofed_game_mode_values() {
