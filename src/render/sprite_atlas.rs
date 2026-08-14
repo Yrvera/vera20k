@@ -35,6 +35,47 @@ const SPRITE_PADDING: u32 = 1;
 const INFANTRY_FACING_STEP: u8 = 32;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
 
+/// Number of SHP frames available to an animation consumer.
+///
+/// gamemd.exe's AnimType INI load at 0x00427D00 calls the loader at 0x00427B50,
+/// which replaces a zero `End` with the signed SHP header count and halves it
+/// only when `Shadow=yes`; a zero `LoopEnd` then copies `End`. Scheduler-owned
+/// types still need their complete raw range resident because their bound runtime
+/// metadata owns body/shadow bounds.
+fn available_effect_anim_frame_count(raw_count: u16, scheduler_owned: bool, shadow: bool) -> u16 {
+    if scheduler_owned || !shadow {
+        return raw_count;
+    }
+
+    let body_count = raw_count / 2;
+    if body_count > 0 {
+        body_count
+    } else {
+        raw_count
+    }
+}
+
+fn register_effect_anim_frames(
+    needed: &mut HashSet<ShpSpriteKey>,
+    frame_counts: &mut HashMap<String, u16>,
+    anim_type: &str,
+    raw_count: u16,
+    scheduler_owned: bool,
+    shadow: bool,
+) -> u16 {
+    let count = available_effect_anim_frame_count(raw_count, scheduler_owned, shadow);
+    for frame in 0..count {
+        needed.insert(ShpSpriteKey {
+            type_id: anim_type.to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        });
+    }
+    frame_counts.insert(anim_type.to_ascii_uppercase(), count);
+    count
+}
+
 fn scan_building_anim_frame_count(
     asset_manager: &AssetManager,
     art_reg: &ArtRegistry,
@@ -827,30 +868,23 @@ pub fn build_sprite_atlas(
             if let Some(data) = candidates.iter().find_map(|c| asset_manager.get_ref(c)) {
                 if let Ok(shp) = ShpFile::from_bytes(data) {
                     let raw_count = shp.frames.len() as u16;
+                    let name_upper = name.to_ascii_uppercase();
                     let scheduler_owned = art.is_some_and(|registry| {
-                        registry
-                            .scheduler_anim_types()
-                            .contains(&name.to_ascii_uppercase())
+                        registry.scheduler_anim_types().contains(&name_upper)
                     });
-                    let real = raw_count / 2;
-                    let count: u16 = if scheduler_owned {
-                        raw_count
-                    } else if real > 0 {
-                        real
-                    } else {
-                        raw_count
-                    };
-                    for f in 0..count {
-                        needed.insert(ShpSpriteKey {
-                            type_id: name.clone(),
-                            facing: 0,
-                            frame: f,
-                            house_color: HouseColorIndex(0),
-                        });
-                    }
-                    // Store frame count so sim systems (miner chrono-teleport) can
-                    // look up real frame counts instead of hardcoding them.
-                    active_anim_frame_counts.insert(name.to_uppercase(), count);
+                    let shadow = art
+                        .and_then(|registry| registry.anim_runtime_config(name))
+                        .is_some_and(|config| config.shadow);
+                    // Keep the atlas keys and the sim-facing count in one registration
+                    // so consumers cannot observe a frame that was not preloaded.
+                    let count = register_effect_anim_frames(
+                        &mut needed,
+                        &mut active_anim_frame_counts,
+                        name,
+                        raw_count,
+                        scheduler_owned,
+                        shadow,
+                    );
                     effect_type_ids.insert(name.clone());
                     log::info!("WorldEffect SHP {}: {} frames loaded", name, count);
                 }

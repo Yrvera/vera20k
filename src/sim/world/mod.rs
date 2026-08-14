@@ -755,7 +755,7 @@ pub struct Simulation {
     /// Ticked each frame, auto-removed when finished.
     #[serde(skip)]
     pub world_effects: Vec<crate::sim::components::WorldEffect>,
-    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 20).
+    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 21).
     /// Populated from the sprite atlas at init time so sim code can spawn effects
     /// with the correct frame count without hardcoding it.
     #[serde(skip)]

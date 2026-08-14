@@ -175,6 +175,82 @@ fn declared_special_animation_frames_are_all_preloaded() {
 }
 
 #[test]
+fn gsi_13_08_effect_frame_count_halves_only_shadowed_non_scheduler_assets() {
+    assert_eq!(available_effect_anim_frame_count(21, false, false), 21);
+    assert_eq!(available_effect_anim_frame_count(21, false, true), 10);
+    assert_eq!(available_effect_anim_frame_count(20, false, true), 10);
+    assert_eq!(available_effect_anim_frame_count(20, true, true), 20);
+    assert_eq!(available_effect_anim_frame_count(1, false, true), 1);
+    assert_eq!(available_effect_anim_frame_count(0, false, true), 0);
+}
+
+#[test]
+fn gsi_13_08_warpout_keeps_all_frames_and_drives_the_progressive_alpha_ladder() {
+    let ini = crate::rules::ini_parser::IniFile::from_str("[WARPOUT]\nTranslucent=yes\nRate=120\n");
+    let art = ArtRegistry::from_ini(&ini);
+    let warpout = art
+        .anim_runtime_config("WARPOUT")
+        .expect("parsed WARPOUT animation type");
+    assert!(warpout.translucent);
+    assert!(!warpout.shadow);
+    assert_eq!(warpout.explicit_end, None);
+    assert_eq!(warpout.explicit_loop_end, None);
+
+    let mut needed = HashSet::new();
+    let mut active_anim_frame_counts = HashMap::new();
+    let frame_count = register_effect_anim_frames(
+        &mut needed,
+        &mut active_anim_frame_counts,
+        "WARPOUT",
+        21,
+        art.scheduler_anim_types().contains("WARPOUT"),
+        warpout.shadow,
+    );
+
+    assert_eq!(active_anim_frame_counts["WARPOUT"], 21);
+    assert_eq!(needed.len(), 21);
+    for frame in 0..=20 {
+        assert!(needed.contains(&ShpSpriteKey {
+            type_id: "WARPOUT".to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        }));
+    }
+
+    for (frame, expected_alpha) in [
+        (4, 1.0),
+        (5, 0.75),
+        (8, 0.75),
+        (9, 0.5),
+        (12, 0.5),
+        (13, 0.25),
+        (20, 0.25),
+    ] {
+        let selection = crate::sim::anim_class::anim_translucency_selection(
+            crate::sim::anim_class::AnimTranslucencyInput {
+                base_flags: 0,
+                forced_translucent: false,
+                forced_uses_75: false,
+                translucency_detail_level: warpout.translucency_detail_level,
+                game_detail_level: 2,
+                translucent_ramp: warpout.translucent,
+                current_frame: frame,
+                frame_count: i32::from(frame_count),
+                explicit_translucency: warpout.translucency,
+                instance_ramp: 0,
+            },
+        );
+        assert!(selection.draw);
+        assert_eq!(
+            crate::rules::art_data::anim_translucency_source_alpha(selection.flags),
+            expected_alpha,
+            "WARPOUT frame {frame}",
+        );
+    }
+}
+
+#[test]
 fn collect_effect_names_includes_weapon_anim_entries() {
     let ini = crate::rules::ini_parser::IniFile::from_str(
         "\
