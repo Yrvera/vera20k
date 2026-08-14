@@ -5559,6 +5559,16 @@ impl App {
         state.keys_held.clear();
         state.hotkey_modifiers = ModifiersState::empty();
         state.type_select.clear_held();
+        // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
+        // stops/restores the primary DirectSound output through 0x00407020 /
+        // 0x00407040 while secondary playback cursors continue. Keep this on
+        // the same edge as the main-loop gate rather than pausing each stream.
+        if let Some(player) = state.music_player.as_mut() {
+            player.set_focus_output_active(active);
+        }
+        if let Some(player) = state.sfx_player.as_mut() {
+            player.set_focus_output_active(active);
+        }
         if active {
             // The deactivated span must not buy a catch-up frame: forget the
             // pacing window so exactly one frame runs immediately, then normal

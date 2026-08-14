@@ -31,6 +31,19 @@ use crate::rules::ini_parser::IniFile;
 /// this same default when the saved `ScoreVolume` setting is absent.
 pub const DEFAULT_SCORE_VOLUME: f64 = 0.4;
 
+/// Compose the independent gains that reach the music output buffer.
+///
+/// Keeping this absolute avoids reconstructing a non-zero volume from a muted
+/// player when either the lifecycle or foreground gate opens again.
+fn effective_music_volume(
+    user_volume: f64,
+    lifecycle_scale: f64,
+    theme_scale: f64,
+    focus_output_scale: f64,
+) -> f32 {
+    (user_volume * lifecycle_scale * theme_scale * focus_output_scale) as f32
+}
+
 /// User settings filename in the RA2 install dir holding `[Audio] ScoreVolume`.
 const RA2MD_INI_FILENAME: &str = "RA2MD.INI";
 /// Section and key for the saved music volume in RA2MD.INI.
@@ -141,6 +154,9 @@ pub struct MusicPlayer {
     /// App-owned output multiplier used by lifecycle fades. Kept separate from
     /// the user setting so a scenario teardown never overwrites ScoreVolume.
     output_scale: f64,
+    /// Foreground-owned primary-output gate. This never pauses the stream: its
+    /// cursor and theme transition continue while the window is inactive.
+    focus_output_scale: f64,
     /// When set, the resolved sound stem to re-play on finish instead of
     /// advancing the playlist (honors a theme's `Repeat=yes`, e.g. the menu
     /// [INTRO] theme which loops the entire time the shell is shown).
@@ -171,6 +187,7 @@ impl MusicPlayer {
             playlist_index: 0,
             volume: DEFAULT_SCORE_VOLUME,
             output_scale: 1.0,
+            focus_output_scale: 1.0,
             looping_track: None,
             menu_theme: None,
             menu_theme_repeats: false,
@@ -254,9 +271,7 @@ impl MusicPlayer {
 
         let source = SamplesBuffer::new(channels, rate, samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(
-            (self.volume * self.output_scale * self.scenario_theme.internal_scale) as f32,
-        );
+        player.set_volume(self.effective_volume());
         player.append(source);
         log::info!(
             "Playing music track: requested='{}', resolved='{}'",
@@ -372,11 +387,30 @@ impl MusicPlayer {
         self.apply_effective_volume();
     }
 
+    /// Gate the primary music output on the application-activation edge.
+    ///
+    /// gamemd-derived: the active `WM_ACTIVATEAPP` changed edge at `0x007778AC`
+    /// reaches primary-buffer Stop through `FUN_00407020 @
+    /// 0x00407020` -> `FUN_0040A940 @ 0x0040A940`, and primary-buffer restore /
+    /// looping Play through `FUN_00407040 @ 0x00407040` -> `FUN_0040A950 @
+    /// 0x0040A950`. Secondary playback cursors are not paused.
+    pub fn set_focus_output_active(&mut self, active: bool) {
+        self.focus_output_scale = if active { 1.0 } else { 0.0 };
+        self.apply_effective_volume();
+    }
+
+    fn effective_volume(&self) -> f32 {
+        effective_music_volume(
+            self.volume,
+            self.output_scale,
+            self.scenario_theme.internal_scale,
+            self.focus_output_scale,
+        )
+    }
+
     fn apply_effective_volume(&self) {
         if let Some(ref player) = self.current_player {
-            player.set_volume(
-                (self.volume * self.output_scale * self.scenario_theme.internal_scale) as f32,
-            );
+            player.set_volume(self.effective_volume());
         }
     }
 
@@ -690,6 +724,21 @@ fn playlist_from_theme_ini(ini: &IniFile, aliases: &HashMap<String, String>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gsi_01_02_music_focus_gate_composes_with_lifecycle_and_theme_gains() {
+        let audible = effective_music_volume(0.8, 0.5, 0.25, 1.0);
+        let inactive = effective_music_volume(0.8, 0.5, 0.25, 0.0);
+        let restored = effective_music_volume(0.8, 0.5, 0.25, 1.0);
+
+        assert!((audible - 0.1).abs() < f32::EPSILON);
+        assert_eq!(inactive, 0.0);
+        assert_eq!(restored, audible);
+        // Theme/lifecycle state continues changing behind a closed primary
+        // output, then contributes at its current value when output returns.
+        assert_eq!(effective_music_volume(0.8, 0.75, 0.4, 0.0), 0.0);
+        assert!((effective_music_volume(0.8, 0.75, 0.4, 1.0) - 0.24).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn gsi_01_04_start_theme_resolver_uses_section_keys_not_sound_aliases() {

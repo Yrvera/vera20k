@@ -114,6 +114,45 @@ struct QueuedVoice {
     volume: f32,
 }
 
+/// Absolute gain retained beside one live secondary output.
+///
+/// The intended gain already includes the user, sound-entry, and spatial
+/// factors. Lifecycle and foreground gates are recomposed from it so opening a
+/// gate after zero never has to infer the original value from a muted Player.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SfxOutputGain {
+    intended: f32,
+}
+
+impl SfxOutputGain {
+    fn new(intended: f32) -> Self {
+        Self { intended }
+    }
+
+    fn effective(self, lifecycle_scale: f32, focus_output_scale: f32) -> f32 {
+        self.intended * lifecycle_scale * focus_output_scale
+    }
+}
+
+struct LiveSfxOutput {
+    player: Player,
+    gain: SfxOutputGain,
+}
+
+impl LiveSfxOutput {
+    fn new(player: Player, intended_volume: f32) -> Self {
+        Self {
+            player,
+            gain: SfxOutputGain::new(intended_volume),
+        }
+    }
+
+    fn apply_scales(&self, lifecycle_scale: f32, focus_output_scale: f32) {
+        self.player
+            .set_volume(self.gain.effective(lifecycle_scale, focus_output_scale));
+    }
+}
+
 /// Manages sound effect playback with separate SFX pool and voice slot.
 ///
 /// Matches the original engine's architecture:
@@ -123,12 +162,12 @@ pub struct SfxPlayer {
     /// rodio mixer device sink — must be kept alive or all audio stops.
     _device: MixerDeviceSink,
     /// Active SFX players — oldest first. Capped at MAX_CONCURRENT_SFX.
-    active: VecDeque<Player>,
+    active: VecDeque<LiveSfxOutput>,
     /// Active sound handle owned by each authoritative animation ID.
-    animation_active: BTreeMap<u64, Player>,
+    animation_active: BTreeMap<u64, LiveSfxOutput>,
     /// Dedicated voice player — unit responses cut off the previous voice.
     /// Separate from SFX pool so voices never compete with weapon sounds.
-    voice_player: Option<Player>,
+    voice_player: Option<LiveSfxOutput>,
     /// Queued EVA/voice announcements waiting for the dedicated voice slot.
     queued_voice: VecDeque<QueuedVoice>,
     /// Sound id currently occupying the dedicated voice slot, when known.
@@ -137,6 +176,9 @@ pub struct SfxPlayer {
     volume: f64,
     /// Temporary app-lifecycle multiplier over every live SFX/voice output.
     output_scale: f32,
+    /// Foreground-owned primary-output gate. Secondary Players stay running so
+    /// their playback cursors continue while global output is suppressed.
+    focus_output_scale: f32,
     /// Simple counter used as seed for pseudo-random sound selection.
     /// Not cryptographic — just needs variety.
     random_counter: u32,
@@ -158,6 +200,7 @@ impl SfxPlayer {
             current_voice_id: None,
             volume: 0.7,
             output_scale: 1.0,
+            focus_output_scale: 1.0,
             random_counter: 0,
         })
     }
@@ -275,16 +318,17 @@ impl SfxPlayer {
         };
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume * self.output_scale);
-        player.append(source);
-        self.animation_active.insert(anim_id, player);
+        let output = LiveSfxOutput::new(player, final_volume);
+        output.apply_scales(self.output_scale, self.focus_output_scale);
+        output.player.append(source);
+        self.animation_active.insert(anim_id, output);
         true
     }
 
     /// Release only the handle owned by `anim_id`. Idempotent.
     pub fn stop_animation_sound(&mut self, anim_id: u64) {
-        if let Some(player) = self.animation_active.remove(&anim_id) {
-            player.stop();
+        if let Some(output) = self.animation_active.remove(&anim_id) {
+            output.player.stop();
         }
     }
 
@@ -376,7 +420,7 @@ impl SfxPlayer {
         if self
             .voice_player
             .as_ref()
-            .is_some_and(|player| !player.empty())
+            .is_some_and(|output| !output.player.empty())
             || !self.queued_voice.is_empty()
         {
             return false;
@@ -407,8 +451,8 @@ impl SfxPlayer {
         audio_indices: &[crate::assets::audio_bag::AudioIndex],
     ) -> bool {
         self.queued_voice.clear();
-        if let Some(player) = self.voice_player.take() {
-            player.stop();
+        if let Some(output) = self.voice_player.take() {
+            output.player.stop();
         }
         self.current_voice_id = None;
 
@@ -450,7 +494,7 @@ impl SfxPlayer {
         if self
             .voice_player
             .as_ref()
-            .is_some_and(|player| !player.empty())
+            .is_some_and(|output| !output.player.empty())
         {
             return;
         }
@@ -472,7 +516,7 @@ impl SfxPlayer {
     ) -> bool {
         // Cut off previous voice immediately.
         if let Some(old) = self.voice_player.take() {
-            old.stop();
+            old.player.stop();
         }
         self.current_voice_id = None;
 
@@ -494,9 +538,10 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume * self.output_scale);
-        player.append(source);
-        self.voice_player = Some(player);
+        let output = LiveSfxOutput::new(player, final_volume);
+        output.apply_scales(self.output_scale, self.focus_output_scale);
+        output.player.append(source);
+        self.voice_player = Some(output);
         self.current_voice_id = sound_id;
         true
     }
@@ -515,7 +560,7 @@ impl SfxPlayer {
         if self.active.len() >= MAX_CONCURRENT_SFX {
             // Stop and evict oldest sound.
             if let Some(old) = self.active.pop_front() {
-                old.stop();
+                old.player.stop();
             }
         }
 
@@ -531,16 +576,18 @@ impl SfxPlayer {
 
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
         let player: Player = Player::connect_new(self._device.mixer());
-        player.set_volume(final_volume * self.output_scale);
-        player.append(source);
-        self.active.push_back(player);
+        let output = LiveSfxOutput::new(player, final_volume);
+        output.apply_scales(self.output_scale, self.focus_output_scale);
+        output.player.append(source);
+        self.active.push_back(output);
         true
     }
 
     /// Remove handles for sounds that have finished playing.
     fn cleanup_finished(&mut self) {
-        self.active.retain(|p: &Player| !p.empty());
-        self.animation_active.retain(|_, player| !player.empty());
+        self.active.retain(|output| !output.player.empty());
+        self.animation_active
+            .retain(|_, output| !output.player.empty());
         self.advance_voice_queue();
     }
 
@@ -550,25 +597,34 @@ impl SfxPlayer {
     }
 
     /// Apply a temporary multiplier to all live outputs without changing the
-    /// saved SFX setting. Scenario teardown only restores from zero after
-    /// [`Self::stop_all`], so no base-volume reconstruction is required.
+    /// saved SFX setting or foreground gate.
     pub fn set_output_scale(&mut self, scale: f64) {
-        let next = scale.clamp(0.0, 1.0) as f32;
-        let ratio = if self.output_scale > 0.0 {
-            next / self.output_scale
-        } else {
-            0.0
-        };
-        for player in &self.active {
-            player.set_volume(player.volume() * ratio);
+        self.output_scale = scale.clamp(0.0, 1.0) as f32;
+        self.apply_live_output_scales();
+    }
+
+    /// Gate global SFX/voice output on the application-activation edge.
+    ///
+    /// gamemd-derived: the active `WM_ACTIVATEAPP` changed edge at `0x007778AC`
+    /// reaches primary-buffer Stop through `FUN_00407020 @
+    /// 0x00407020` -> `FUN_0040A940 @ 0x0040A940`, and primary-buffer restore /
+    /// looping Play through `FUN_00407040 @ 0x00407040` -> `FUN_0040A950 @
+    /// 0x0040A950`. It does not pause the secondary buffers modelled here.
+    pub fn set_focus_output_active(&mut self, active: bool) {
+        self.focus_output_scale = if active { 1.0 } else { 0.0 };
+        self.apply_live_output_scales();
+    }
+
+    fn apply_live_output_scales(&self) {
+        for output in &self.active {
+            output.apply_scales(self.output_scale, self.focus_output_scale);
         }
-        for player in self.animation_active.values() {
-            player.set_volume(player.volume() * ratio);
+        for output in self.animation_active.values() {
+            output.apply_scales(self.output_scale, self.focus_output_scale);
         }
-        if let Some(player) = self.voice_player.as_ref() {
-            player.set_volume(player.volume() * ratio);
+        if let Some(output) = self.voice_player.as_ref() {
+            output.apply_scales(self.output_scale, self.focus_output_scale);
         }
-        self.output_scale = next;
     }
 
     /// Pump the dedicated voice queue once and report whether any voice work
@@ -580,14 +636,14 @@ impl SfxPlayer {
 
     /// Hard-stop every SFX/voice source and discard queued announcements.
     pub fn stop_all(&mut self) {
-        for player in self.active.drain(..) {
-            player.stop();
+        for output in self.active.drain(..) {
+            output.player.stop();
         }
-        for (_, player) in std::mem::take(&mut self.animation_active) {
-            player.stop();
+        for (_, output) in std::mem::take(&mut self.animation_active) {
+            output.player.stop();
         }
-        if let Some(player) = self.voice_player.take() {
-            player.stop();
+        if let Some(output) = self.voice_player.take() {
+            output.player.stop();
         }
         self.queued_voice.clear();
         self.current_voice_id = None;
@@ -612,7 +668,10 @@ impl SfxPlayer {
     /// Non-blocking (rodio `Player::empty()` is a poll). Used by the quit cascade
     /// to wait for trailing voices before tearing down.
     pub fn voices_active(&self) -> bool {
-        self.voice_player.as_ref().is_some_and(|p| !p.empty()) || !self.queued_voice.is_empty()
+        self.voice_player
+            .as_ref()
+            .is_some_and(|output| !output.player.empty())
+            || !self.queued_voice.is_empty()
     }
 }
 
@@ -968,6 +1027,27 @@ fn decode_pcm(pcm: &[u8], channels: u16, bits_per_sample: u16) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gsi_01_02_focus_gate_restores_distinct_live_sfx_gains_absolutely() {
+        let quiet = SfxOutputGain::new(0.2);
+        let loud = SfxOutputGain::new(0.75);
+
+        assert_eq!(quiet.effective(0.6, 0.0), 0.0);
+        assert_eq!(loud.effective(0.6, 0.0), 0.0);
+        assert!((quiet.effective(0.6, 1.0) - 0.12).abs() < f32::EPSILON);
+        assert!((loud.effective(0.6, 1.0) - 0.45).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn gsi_01_02_sfx_armed_while_inactive_retains_gain_for_restore() {
+        // Construction while inactive still creates/starts the Player in the
+        // production path; only this independently retained output gain is 0.
+        let armed_while_inactive = SfxOutputGain::new(0.35);
+
+        assert_eq!(armed_while_inactive.effective(1.0, 0.0), 0.0);
+        assert!((armed_while_inactive.effective(1.0, 1.0) - 0.35).abs() < f32::EPSILON);
+    }
 
     /// An idle voice slot with an empty queue reports no active voices. Skips
     /// gracefully when no audio device is available (CI).
