@@ -347,7 +347,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Load sound.ini / soundmd.ini for SFX sound ID resolution.
     if let Some(ref assets) = state.asset_manager {
         state.sound_registry = load_sound_registry(assets);
-        state.audio_indices = load_audio_indices(assets);
+        state.audio_indices = if crate::app::should_load_audio_indices(state.audio_indices_enabled)
+        {
+            load_audio_indices(assets)
+        } else {
+            Vec::new()
+        };
         state.eva_registry = load_eva_registry(assets);
     }
 

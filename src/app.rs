@@ -585,6 +585,8 @@ pub(crate) struct AppState {
     /// audio.idx/bag indices for bag-based sound lookup (voices, EVA).
     /// Searched in order (YR audiomd first, then base audio).
     pub(crate) audio_indices: Vec<crate::assets::audio_bag::AudioIndex>,
+    /// The process-start audio decision persisted for later scenario reloads.
+    pub(crate) audio_indices_enabled: bool,
     /// EVA announcement registry from eva.ini / evamd.ini.
     /// Maps EVA event names to per-faction audio.bag sound IDs.
     pub(crate) eva_registry: crate::rules::sound_ini::EvaRegistry,
@@ -773,11 +775,46 @@ pub struct App {
     state: Option<AppState>,
     shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
     tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
+    startup_audio: StartupAudioDisposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupAudioDisposition {
+    initialize_music_output: bool,
+    initialize_sfx_output: bool,
+    load_audio_indices: bool,
+}
+
+impl StartupAudioDisposition {
+    /// gamemd-derived: `FUN_0052F620 @ 0x0052F620` clears the audio global for
+    /// `-NOAUDIO`; active `Init_Game @ 0x0052BA60` passes that value to
+    /// `AudioSystem::Init @ 0x00406B10`, whose false branch skips output and
+    /// audio MIX/index construction while the later bookkeeping remains live.
+    const fn for_audio_enabled(audio_enabled: bool) -> Self {
+        Self {
+            initialize_music_output: audio_enabled,
+            initialize_sfx_output: audio_enabled,
+            load_audio_indices: audio_enabled,
+        }
+    }
+}
+
+/// Keep initial and later scenario audio-index loads on the same process-start
+/// decision. This deliberately does not inspect the optional output players:
+/// an enabled DirectSound/output initialization may independently fail.
+pub(crate) const fn should_load_audio_indices(audio_indices_enabled: bool) -> bool {
+    audio_indices_enabled
+}
+
+impl Default for StartupAudioDisposition {
+    fn default() -> Self {
+        Self::for_audio_enabled(true)
+    }
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::app_startup_options::RetailStartupOptions::default())
     }
 }
 
@@ -3555,11 +3592,14 @@ impl App {
         }
     }
 
-    pub fn new() -> Self {
+    pub fn new(startup_options: crate::app_startup_options::RetailStartupOptions) -> Self {
         Self {
             state: None,
             shell_capture: None,
             tactical_capture: None,
+            startup_audio: StartupAudioDisposition::for_audio_enabled(
+                startup_options.audio_enabled,
+            ),
         }
     }
 
@@ -3568,6 +3608,7 @@ impl App {
             state: None,
             shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
             tactical_capture: None,
+            startup_audio: StartupAudioDisposition::default(),
         }
     }
 
@@ -3578,6 +3619,7 @@ impl App {
             tactical_capture: Some(
                 crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
             ),
+            startup_audio: StartupAudioDisposition::default(),
         }
     }
 
@@ -3608,7 +3650,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match Self::initialize(event_loop, capture_dimensions) {
+        match Self::initialize(event_loop, capture_dimensions, self.startup_audio) {
             Ok(mut state) => {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.prepare_state(&mut state);
@@ -4222,6 +4264,7 @@ impl App {
     fn initialize(
         event_loop: &ActiveEventLoop,
         capture_dimensions: Option<(u32, u32)>,
+        startup_audio: StartupAudioDisposition,
     ) -> Result<AppState> {
         let (window_width, window_height, window_visible) = capture_dimensions
             .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |size| {
@@ -4363,10 +4406,14 @@ impl App {
             .as_ref()
             .map(crate::app_transitions::load_sound_registry)
             .unwrap_or_default();
-        let startup_audio_indices = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_audio_indices)
-            .unwrap_or_default();
+        let startup_audio_indices = if should_load_audio_indices(startup_audio.load_audio_indices) {
+            startup_asset_manager
+                .as_ref()
+                .map(crate::app_transitions::load_audio_indices)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let startup_eva_registry = startup_asset_manager
             .as_ref()
             .map(crate::app_transitions::load_eva_registry)
@@ -4730,10 +4777,17 @@ impl App {
             sidebar_scroll_rows: 0,
             sidebar_scroll_rows_parked: [0; 4],
             asset_manager: startup_asset_manager,
-            music_player: MusicPlayer::new(),
-            sfx_player: SfxPlayer::new(),
+            music_player: startup_audio
+                .initialize_music_output
+                .then(MusicPlayer::new)
+                .flatten(),
+            sfx_player: startup_audio
+                .initialize_sfx_output
+                .then(SfxPlayer::new)
+                .flatten(),
             sound_registry: startup_sound_registry,
             audio_indices: startup_audio_indices,
+            audio_indices_enabled: startup_audio.load_audio_indices,
             eva_registry: startup_eva_registry,
             sound_events: SoundEventQueue::new(),
             pending_fire_effects: Vec::new(),
@@ -5978,6 +6032,38 @@ fn auto_detect_ui_scale(screen_width: u32, screen_height: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gsi_01_01_noaudio_suppresses_music_and_sfx_output() {
+        let disposition = StartupAudioDisposition::for_audio_enabled(false);
+
+        assert!(!disposition.initialize_music_output);
+        assert!(!disposition.initialize_sfx_output);
+        assert!(!disposition.load_audio_indices);
+    }
+
+    #[test]
+    fn gsi_01_01_default_startup_enables_music_and_sfx_output() {
+        let disposition = StartupAudioDisposition::default();
+
+        assert!(disposition.initialize_music_output);
+        assert!(disposition.initialize_sfx_output);
+        assert!(disposition.load_audio_indices);
+    }
+
+    #[test]
+    fn gsi_01_01_audio_index_decision_survives_scenario_transitions() {
+        for audio_enabled in [false, true] {
+            let startup = StartupAudioDisposition::for_audio_enabled(audio_enabled);
+            let persisted_in_state = startup.load_audio_indices;
+
+            assert_eq!(
+                should_load_audio_indices(startup.load_audio_indices),
+                audio_enabled
+            );
+            assert_eq!(should_load_audio_indices(persisted_in_state), audio_enabled);
+        }
+    }
 
     #[test]
     fn main_menu_intro_precedes_entry_observation() {

@@ -106,8 +106,8 @@ pub struct RetailStartupOptions {
     /// `-WIN` asked for windowed presentation. This engine only ever presents
     /// in a window, so the switch is accepted and has nothing left to change.
     pub windowed: bool,
-    /// Cleared by `-NOAUDIO`. Parsed and reported, but **not yet applied** —
-    /// no audio-init caller reads it, so the switch is accepted without effect.
+    /// Cleared by `-NOAUDIO`; the interactive `App` consumes it before audio
+    /// output and index construction.
     pub audio_enabled: bool,
     /// Screen width, or [`SCREEN_SIZE_UNSET`] while nothing has chosen one.
     pub screen_width: i32,
@@ -347,10 +347,11 @@ pub fn usage_text() -> String {
         "",
         "  -CD             Use the wildcard media-archive branch.",
         "  -WIN            Run in a window (this engine is always windowed).",
+        "  -NOAUDIO        Disable music and sound output.",
         "  -? -h /? /h     Show this message.",
         "",
         "Other retail switches are accepted so a launch never fails on them,",
-        "but are not applied yet: -<W>X<H>, -480, -16, -NOAUDIO, -RECORD,",
+        "but are not applied yet: -<W>X<H>, -480, -16, -RECORD,",
         "-PLAY, -SOCKET, -DESTNET and the remaining net/debug flags.",
     ]
     .join("\n")

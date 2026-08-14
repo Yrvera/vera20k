@@ -70,11 +70,11 @@ fn main() -> Result<()> {
         vera20k::app_launch::AppLaunchMode::Usage => unreachable!("usage returned above"),
         vera20k::app_launch::AppLaunchMode::Interactive(options) => {
             // The switch table's results are process-global in native and are
-            // re-read where each one is consumed (the display owner for the
-            // screen size, AssetManager for `-CD`); logging them here records
-            // what the command line asked for.
+            // re-read where most are consumed (the display owner for screen
+            // size, AssetManager for `-CD`). Audio init is owned by `App`, so
+            // carry the already-parsed `-NOAUDIO` result into that owner.
             log::info!("Retail startup switches: {options:?}");
-            vera20k::app::App::new()
+            vera20k::app::App::new(options)
         }
         vera20k::app_launch::AppLaunchMode::ShellCapture(request) => {
             request.validate_runtime_environment()?;
