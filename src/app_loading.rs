@@ -14,7 +14,9 @@ use crate::app_loading_composition::{
 use crate::app_loading_progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
-use crate::app_skirmish::PreloadedBattleStartPlan;
+use crate::sim::scenario_bootstrap::{
+    PreloadedBattleStartPlan, preload_standard_battle_start_plan,
+};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Color;
 use crate::assets::pcx_file::PcxFile;
@@ -323,7 +325,7 @@ impl LoadingRequest {
             let seed = self
                 .startup()
                 .seed_or_else(|| unreachable!("a launch session always owns a launch seed"));
-            crate::app_skirmish::preload_standard_battle_start_plan(session, map, seed)
+            preload_standard_battle_start_plan(session, map, seed)
         });
         self.preloaded_battle_start_plan = plan.map_or(
             PreloadedBattleStartPlanState::Unavailable,

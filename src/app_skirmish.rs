@@ -31,7 +31,16 @@ use crate::rules::tiberium_type::TiberiumTypeRegistry;
 use crate::sim::ai::AiPlayerState;
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
-use crate::sim::rng::{SimRng, SimRngLogicalState};
+#[cfg(test)]
+use crate::sim::rng::SimRng;
+use crate::sim::scenario_bootstrap::{NativeStartBounds, PreloadedBattleStartPlan};
+#[cfg(test)]
+use crate::sim::scenario_bootstrap::{
+    HOUSE_CONSTRUCTOR_TIMER_MAX, HOUSE_CONSTRUCTOR_TIMER_MIN, ScenarioBootstrapRng,
+    choose_battle_automatic_start, deficient_start_rect_track_passable,
+    native_assign_cooperative_launch_starts, native_assign_launch_starts,
+    native_gather_start_positions, native_start_distance, preload_standard_battle_start_plan,
+};
 use crate::sim::world::Simulation;
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
@@ -306,15 +315,16 @@ fn apply_resolved_skirmish_launch_session(
         // The same immutable table already drove the first loading markers.
         // Its constructor/assignment RNG prefix was installed before terrain
         // Fill, so consuming it here must not draw or replace the live cursor.
-        (plan.gathered_starts.clone(), plan.assignment.clone())
+        (
+            plan.gathered_starts().to_vec(),
+            plan.assignment().clone(),
+        )
     } else {
-        let preassignment_starts = native_gather_start_positions(
+        let preassignment_starts = sim.gather_native_start_positions(
             &map_data.waypoints,
             slots.len(),
             resolved_terrain,
-            &sim.substrate.occupancy,
             bounds,
-            &mut sim.scenario_rng,
         );
         // Standard Battle +0x80 gathers once before explicit preassignment,
         // then +0x84 gathers again before final assignment. The first vector's
@@ -322,13 +332,11 @@ fn apply_resolved_skirmish_launch_session(
         let starts = if cooperative {
             preassignment_starts
         } else {
-            native_gather_start_positions(
+            sim.gather_native_start_positions(
                 &map_data.waypoints,
                 slots.len(),
                 resolved_terrain,
-                &sim.substrate.occupancy,
                 bounds,
-                &mut sim.scenario_rng,
             )
         };
         let assignment = if cooperative {
@@ -338,14 +346,9 @@ fn apply_resolved_skirmish_launch_session(
                 .and_then(|header| header.get_i32("NumCoopHumanStartSpots"))
                 .unwrap_or(0)
                 .max(0) as usize;
-            native_assign_cooperative_launch_starts(
-                session,
-                &starts,
-                human_start_spots,
-                &mut sim.scenario_rng,
-            )
+            sim.assign_native_cooperative_starts(session, &starts, human_start_spots)
         } else {
-            native_assign_launch_starts(session, &starts, &mut sim.scenario_rng)
+            sim.assign_native_battle_starts(session, &starts)
         };
         (starts, assignment)
     };
@@ -666,529 +669,6 @@ fn launch_alliance_map(
         }
     }
     alliances
-}
-
-#[derive(Debug, Clone, Copy)]
-struct NativeStartBounds {
-    min_rx: u16,
-    min_ry: u16,
-    width: u16,
-    height: u16,
-}
-
-impl NativeStartBounds {
-    fn from_session(sim: &Simulation, terrain: &ResolvedTerrainGrid) -> Self {
-        if sim.session.local_width != 0 && sim.session.local_height != 0 {
-            Self {
-                min_rx: sim.session.local_left,
-                min_ry: sim.session.local_top,
-                width: sim.session.local_width,
-                height: sim.session.local_height,
-            }
-        } else {
-            Self {
-                min_rx: 0,
-                min_ry: 0,
-                width: terrain.width(),
-                height: terrain.height(),
-            }
-        }
-    }
-
-    fn max_rx(self) -> u16 {
-        self.min_rx.saturating_add(self.width.saturating_sub(1))
-    }
-
-    fn max_ry(self) -> u16 {
-        self.min_ry.saturating_add(self.height.saturating_sub(1))
-    }
-
-    fn clamp(self, rx: i32, ry: i32) -> (u16, u16) {
-        (
-            rx.clamp(i32::from(self.min_rx), i32::from(self.max_rx())) as u16,
-            ry.clamp(i32::from(self.min_ry), i32::from(self.max_ry())) as u16,
-        )
-    }
-
-    fn contains(self, rx: u16, ry: u16) -> bool {
-        rx >= self.min_rx && rx <= self.max_rx() && ry >= self.min_ry && ry <= self.max_ry()
-    }
-}
-
-/// Build the native multiplayer-start vector before assigning houses.
-///
-/// Only waypoint indices below the computed target count are examined. When
-/// authored starts are deficient, each retry consumes the two asymmetric
-/// ranged draws and runs the 8x8 nearby-passable search; invalid searches do
-/// not advance the vector and have no artificial retry cap.
-fn native_gather_start_positions(
-    waypoints: &HashMap<u32, Waypoint>,
-    participant_count: usize,
-    terrain: &ResolvedTerrainGrid,
-    occupancy: &crate::sim::occupancy::OccupancyGrid,
-    bounds: NativeStartBounds,
-    rng: &mut SimRng,
-) -> Vec<Waypoint> {
-    let authored_prefix = (0..8u32)
-        .take_while(|index| waypoints.contains_key(index))
-        .count();
-    let target_count = authored_prefix.max(participant_count);
-    let mut starts = Vec::with_capacity(target_count);
-
-    for index in 0..target_count as u32 {
-        if let Some(waypoint) = waypoints.get(&index) {
-            starts.push(*waypoint);
-        }
-    }
-
-    while starts.len() < target_count {
-        let x_span = u32::from(bounds.width.saturating_sub(10));
-        let y_high = u32::from(bounds.height.saturating_sub(10));
-        let seed_rx = rng
-            .next_range_u32_inclusive(0, x_span)
-            .wrapping_add(u32::from(bounds.min_rx))
-            .wrapping_add(10) as u16;
-        let seed_ry = rng
-            .next_range_u32_inclusive(10, y_high)
-            .wrapping_add(u32::from(bounds.min_ry)) as u16;
-
-        let Some((rx, ry)) = find_nearby_start_rect(terrain, occupancy, bounds, seed_rx, seed_ry)
-        else {
-            continue;
-        };
-        starts.push(Waypoint {
-            index: starts.len() as u32,
-            rx,
-            ry,
-        });
-    }
-
-    starts
-}
-
-/// Reduced active call-shape of FootClass::Find_Nearby_Passable_Cell used by
-/// start gathering: scan square rings from the seed, finish the first ring
-/// containing an 8x8 passable candidate, and select its first candidate at
-/// frame zero.
-fn find_nearby_start_rect(
-    terrain: &ResolvedTerrainGrid,
-    occupancy: &crate::sim::occupancy::OccupancyGrid,
-    bounds: NativeStartBounds,
-    seed_rx: u16,
-    seed_ry: u16,
-) -> Option<(u16, u16)> {
-    for radius in 0..32i32 {
-        let mut ring = Vec::new();
-        let r = radius;
-        for dx in -r..=r {
-            ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) - r));
-            if r != 0 {
-                ring.push((i32::from(seed_rx) + dx, i32::from(seed_ry) + r));
-            }
-        }
-        for dy in (1 - r)..r {
-            ring.push((i32::from(seed_rx) - r, i32::from(seed_ry) + dy));
-            if r != 0 {
-                ring.push((i32::from(seed_rx) + r, i32::from(seed_ry) + dy));
-            }
-        }
-
-        let mut accepted = Vec::new();
-        for (rx, ry) in ring {
-            if rx < i32::from(bounds.min_rx)
-                || ry < i32::from(bounds.min_ry)
-                || rx + i32::from(DEFICIENT_START_RECT_W) - 1 > i32::from(bounds.max_rx())
-                || ry + i32::from(DEFICIENT_START_RECT_H) - 1 > i32::from(bounds.max_ry())
-            {
-                continue;
-            }
-            let (rx, ry) = (rx as u16, ry as u16);
-            if deficient_start_rect_track_passable(terrain, occupancy, rx, ry) {
-                accepted.push((rx, ry));
-                if accepted.len() == 24 {
-                    break;
-                }
-            }
-        }
-        if let Some(first) = accepted.first().copied() {
-            return Some(first);
-        }
-    }
-    None
-}
-
-/// Assign the gathered vector through standard Battle mode's `+0x84` callback.
-/// Explicit starts populate a last-writer-wins table before the HouseClass
-/// pass; every non-special House then honors its table entry or uses the
-/// Battle selector's first-random/then-farthest rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeStartAssignment {
-    placements: Vec<(usize, Waypoint)>,
-    start_table: Vec<Option<usize>>,
-}
-
-const NATIVE_MULTIPLAYER_START_LIMIT: usize = 8;
-const HOUSE_CONSTRUCTOR_TIMER_MIN: u32 = 450;
-const HOUSE_CONSTRUCTOR_TIMER_MAX: u32 = 1800;
-
-/// Immutable standard-Battle state prepared before the first loading frame.
-///
-/// Complete authored start vectors need no terrain-dependent fallback, so the
-/// frontend can reproduce the native pre-render constructor and assignment RNG
-/// prefix once. The resulting table is then shared by loading composition and
-/// gameplay initialization.
-#[derive(Debug, Clone)]
-pub(crate) struct PreloadedBattleStartPlan {
-    gathered_starts: Vec<Waypoint>,
-    assignment: NativeStartAssignment,
-    scenario_rng_before: SimRngLogicalState,
-    scenario_rng_before_fingerprint: u64,
-    scenario_rng_after: SimRngLogicalState,
-    scenario_rng_after_cursor: SimRng,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum PreloadedBattleStartPlanError {
-    #[error(
-        "preloaded Battle plan expected Scenario RNG fingerprint {expected:#018x}, got {actual:#018x}"
-    )]
-    ScenarioRngPrestateMismatch { expected: u64, actual: u64 },
-}
-
-impl PreloadedBattleStartPlan {
-    pub(crate) fn gathered_starts(&self) -> &[Waypoint] {
-        &self.gathered_starts
-    }
-
-    pub(crate) fn start_table(&self) -> &[Option<usize>] {
-        &self.assignment.start_table
-    }
-
-    /// Validate and transfer the one pre-loading RNG prefix to the stream that
-    /// later terrain Fill and Simulation construction will continue.
-    pub(crate) fn install_before_terrain(
-        &self,
-        scenario_rng: &mut SimRng,
-    ) -> Result<(), PreloadedBattleStartPlanError> {
-        if scenario_rng.logical_state() != self.scenario_rng_before {
-            return Err(PreloadedBattleStartPlanError::ScenarioRngPrestateMismatch {
-                expected: self.scenario_rng_before_fingerprint,
-                actual: scenario_rng.state(),
-            });
-        }
-        *scenario_rng = self.scenario_rng_after_cursor.clone();
-        debug_assert_eq!(scenario_rng.logical_state(), self.scenario_rng_after);
-        Ok(())
-    }
-}
-
-/// Prepare the terrain-independent stock Battle/FFA prefix exactly once.
-///
-/// Sparse or deficient authored starts deliberately return `None`: their two
-/// Gather passes depend on resolved terrain and must stay runtime-owned.
-/// Random maps are eligible once their retained GeneratedMap exists: gamemd's
-/// Full_Init 0x00686B20 assigns the retained RmgRegion start waypoints before
-/// DrawLoadingScreen 0x00552D60 consumes that same table.
-/// FFA provenance: constructor 0x005C5CE0 installs vtable 0x007EE424, whose
-/// +0x80 (0x005D6BE0), +0x84 (0x005D6C70), and +0xC4 (0x005D6890) callbacks
-/// are byte-identical to Battle's active start-assignment callbacks. Full_Init
-/// 0x00686B20 calls +0x80 and ordinarily +0x84 for offline g_GameMode 5 before
-/// DrawLoadingScreen.
-pub(crate) fn preload_standard_battle_start_plan(
-    session: &SkirmishLaunchSession,
-    map_data: &MapFile,
-    launch_seed: u32,
-) -> Option<PreloadedBattleStartPlan> {
-    if !has_verified_preload_start_callbacks(session) {
-        return None;
-    }
-    let selected_map = session.selected_map_file.as_deref()?;
-    if selected_map.trim() != selected_map
-        || selected_map.is_empty()
-        || selected_map.eq_ignore_ascii_case("auto")
-    {
-        return None;
-    }
-
-    let participant_count = 1usize.checked_add(session.opponents.len())?;
-    let authored_prefix = (0..NATIVE_MULTIPLAYER_START_LIMIT)
-        .take_while(|index| map_data.waypoints.contains_key(&(*index as u32)))
-        .count();
-    let authored_count = (0..NATIVE_MULTIPLAYER_START_LIMIT)
-        .filter(|index| map_data.waypoints.contains_key(&(*index as u32)))
-        .count();
-    if authored_prefix != authored_count || authored_prefix < participant_count {
-        return None;
-    }
-
-    let gathered_starts: Vec<Waypoint> = (0..authored_prefix)
-        .filter_map(|index| map_data.waypoints.get(&(index as u32)).copied())
-        .collect();
-    let mut scenario_rng = SimRng::new(u64::from(launch_seed));
-    let scenario_rng_before = scenario_rng.logical_state();
-    let scenario_rng_before_fingerprint = scenario_rng.state();
-
-    // HouseClass construction precedes both Battle/FFA callbacks. Every generated
-    // participant plus Neutral and Special consumes one rejection-capable
-    // RandomRanged(450,1800), in HouseClass order.
-    for _ in 0..participant_count + 2 {
-        let _ = scenario_rng
-            .next_range_u32_inclusive(HOUSE_CONSTRUCTOR_TIMER_MIN, HOUSE_CONSTRUCTOR_TIMER_MAX);
-    }
-
-    // Battle and FFA +0x80/+0x84 each Gather. With a complete contiguous
-    // authored vector both calls return this same data and consume no RNG.
-    let assignment = native_assign_launch_starts(session, &gathered_starts, &mut scenario_rng);
-    let scenario_rng_after = scenario_rng.logical_state();
-
-    Some(PreloadedBattleStartPlan {
-        gathered_starts,
-        assignment,
-        scenario_rng_before,
-        scenario_rng_before_fingerprint,
-        scenario_rng_after,
-        scenario_rng_after_cursor: scenario_rng,
-    })
-}
-
-fn has_verified_preload_start_callbacks(session: &SkirmishLaunchSession) -> bool {
-    let mode = &session.mode;
-    if !mode.map_filter.eq_ignore_ascii_case("standard")
-        || !mode.random_maps_allowed
-        || mode.must_ally
-    {
-        return false;
-    }
-    match mode.id {
-        1 => {
-            mode.ui_name_key.eq_ignore_ascii_case("GUI:Battle")
-                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeBattle")
-                && mode.override_file.eq_ignore_ascii_case("MPBattleMD.ini")
-                && mode.allies_allowed
-        }
-        2 => {
-            mode.ui_name_key.eq_ignore_ascii_case("GUI:FreeForAll")
-                && mode.tooltip_key.eq_ignore_ascii_case("STT:ModeFreeForAll")
-                && mode
-                    .override_file
-                    .eq_ignore_ascii_case("MPFreeForAllMD.ini")
-                && !mode.allies_allowed
-        }
-        _ => false,
-    }
-}
-
-fn native_assign_launch_starts(
-    session: &SkirmishLaunchSession,
-    starts: &[Waypoint],
-    rng: &mut SimRng,
-) -> NativeStartAssignment {
-    if starts.is_empty() {
-        return NativeStartAssignment {
-            placements: Vec::new(),
-            start_table: Vec::new(),
-        };
-    }
-
-    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
-        .chain(
-            session
-                .opponents
-                .iter()
-                .map(|opponent| opponent.start_position),
-        )
-        .collect();
-    let mut explicit_owner = vec![None; starts.len()];
-    for (slot, request) in requested.iter().enumerate() {
-        let LaunchStartPosition::Position(index) = request else {
-            continue;
-        };
-        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
-            *owner = Some(slot);
-        }
-    }
-
-    // Battle +0x84 builds its occupied-byte array from the complete
-    // Scenario+0x1180 table before its HouseClass pass begins. The selected
-    // mode's +0x80 callback populated that table in HouseClass order, so
-    // duplicate explicit starts have already resolved last-writer-wins.
-    let mut occupied: Vec<bool> = explicit_owner.iter().map(Option::is_some).collect();
-    let mut assigned = vec![None; requested.len()];
-
-    // Unlike generic AssignStartingPoints, standard Battle walks every
-    // non-special House once and honors table ownership for AI houses too.
-    for slot in 0..requested.len() {
-        let explicit = explicit_owner
-            .iter()
-            .rposition(|owner| *owner == Some(slot));
-        let start_index =
-            explicit.unwrap_or_else(|| choose_battle_automatic_start(starts, &occupied, rng));
-        occupied[start_index] = true;
-        explicit_owner[start_index] = Some(slot);
-        assigned[slot] = Some(starts[start_index]);
-    }
-
-    NativeStartAssignment {
-        placements: assigned
-            .into_iter()
-            .enumerate()
-            .filter_map(|(slot, start)| start.map(|start| (slot, start)))
-            .collect(),
-        start_table: explicit_owner,
-    }
-}
-
-/// Cooperative's custom start callback partitions authored positions into a
-/// human prefix and an AI suffix. The explicit Scenario start table reserves
-/// all of its entries before HouseClass iteration; automatic human placement
-/// draws within the prefix and probes forward, while the remaining houses
-/// take the first free suffix entry without a draw.
-fn native_assign_cooperative_launch_starts(
-    session: &SkirmishLaunchSession,
-    starts: &[Waypoint],
-    human_start_spots: usize,
-    rng: &mut SimRng,
-) -> NativeStartAssignment {
-    if starts.is_empty() {
-        return NativeStartAssignment {
-            placements: Vec::new(),
-            start_table: Vec::new(),
-        };
-    }
-
-    let requested: Vec<LaunchStartPosition> = std::iter::once(session.local.start_position)
-        .chain(
-            session
-                .opponents
-                .iter()
-                .map(|opponent| opponent.start_position),
-        )
-        .collect();
-    let mut explicit_owner = vec![None; starts.len()];
-    for (slot, request) in requested.iter().enumerate() {
-        let LaunchStartPosition::Position(index) = request else {
-            continue;
-        };
-        if let Some(owner) = explicit_owner.get_mut(usize::from(*index)) {
-            *owner = Some(slot);
-        }
-    }
-
-    let mut occupied: Vec<bool> = explicit_owner.iter().map(Option::is_some).collect();
-    let human_house_count = 1usize;
-    let human_start_spots = human_start_spots.min(starts.len());
-    let mut assigned = vec![None; requested.len()];
-
-    for slot in 0..requested.len() {
-        let explicit = explicit_owner.iter().position(|owner| *owner == Some(slot));
-        let start_index = if let Some(explicit) = explicit {
-            explicit
-        } else {
-            let occupied_count = occupied.iter().filter(|used| **used).count();
-            if occupied_count < human_house_count && human_start_spots != 0 {
-                let mut candidate =
-                    rng.next_range_u32_inclusive(0, human_start_spots as u32 - 1) as usize;
-                while occupied[candidate] {
-                    candidate = (candidate + 1) % human_start_spots;
-                }
-                candidate
-            } else {
-                (human_start_spots..starts.len())
-                    .find(|candidate| !occupied[*candidate])
-                    .or_else(|| occupied.iter().position(|used| !*used))
-                    .expect("participant count cannot exceed gathered starts")
-            }
-        };
-        occupied[start_index] = true;
-        explicit_owner[start_index] = Some(slot);
-        assigned[slot] = Some(starts[start_index]);
-    }
-
-    NativeStartAssignment {
-        placements: assigned
-            .into_iter()
-            .enumerate()
-            .filter_map(|(slot, start)| start.map(|start| (slot, start)))
-            .collect(),
-        start_table: explicit_owner,
-    }
-}
-
-fn choose_battle_automatic_start(
-    starts: &[Waypoint],
-    occupied: &[bool],
-    rng: &mut SimRng,
-) -> usize {
-    let used_count = occupied.iter().filter(|used| **used).count();
-    if used_count == 0 {
-        return rng.next_range_u32_inclusive(0, starts.len() as u32 - 1) as usize;
-    }
-
-    let free: Vec<usize> = occupied
-        .iter()
-        .enumerate()
-        .filter_map(|(index, used)| (!*used).then_some(index))
-        .collect();
-    let distance_sum = |candidate: usize| -> i32 {
-        occupied
-            .iter()
-            .enumerate()
-            .filter(|(_, used)| **used)
-            .map(|(other, _)| native_start_distance(starts[candidate], starts[other]))
-            .sum()
-    };
-    let mut iter = free.into_iter();
-    let mut selected = iter
-        .next()
-        .expect("participant count cannot exceed gathered starts");
-    let mut selected_sum = distance_sum(selected);
-    for candidate in iter {
-        let sum = distance_sum(candidate);
-        if sum > selected_sum {
-            selected = candidate;
-            selected_sum = sum;
-        }
-    }
-    selected
-}
-
-fn native_start_distance(left: Waypoint, right: Waypoint) -> i32 {
-    let dx = i32::from((left.rx as i16).wrapping_sub(right.rx as i16));
-    let dy = i32::from((left.ry as i16).wrapping_sub(right.ry as i16));
-    crate::map::rmg::x87::approx_sqrt_f32(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)))
-        as i32
-}
-
-const DEFICIENT_START_RECT_W: u16 = 8;
-const DEFICIENT_START_RECT_H: u16 = 8;
-
-fn deficient_start_rect_track_passable(
-    terrain: &ResolvedTerrainGrid,
-    occupancy: &crate::sim::occupancy::OccupancyGrid,
-    rx: u16,
-    ry: u16,
-) -> bool {
-    crate::sim::cell_rect::check_passability_rect(
-        crate::sim::cell_rect::CellRectPassabilityContext {
-            rect: crate::sim::cell_rect::CellRect::new(
-                i32::from(rx),
-                i32::from(ry),
-                i32::from(DEFICIENT_START_RECT_W),
-                i32::from(DEFICIENT_START_RECT_H),
-            ),
-            speed_type: crate::rules::locomotor_type::SpeedType::Track,
-            required_zone_id: None,
-            movement_zone: crate::rules::locomotor_type::MovementZone::Normal,
-            required_height_or_level: None,
-            bridge_aware_zone: false,
-            reject_any_overlay: false,
-            path_grid: None,
-            resolved_terrain: Some(terrain),
-            overlay_grid: None,
-            occupancy: Some(occupancy),
-            zone_grid: None,
-        },
-    )
 }
 
 const STARTING_MCV_FACING: u8 = 64;
@@ -2571,9 +2051,15 @@ mod tests {
             ]
         );
 
-        let mut sim = Simulation::with_seed(u64::from(launch_seed));
-        plan.install_before_terrain(&mut sim.scenario_rng)
+        let mut bootstrap_rng = ScenarioBootstrapRng::new(launch_seed);
+        bootstrap_rng
+            .install_preloaded_battle_plan(&plan)
             .expect("fresh launch cursor matches plan prestate");
+        let descriptor = crate::sim::scenario_session::ScenarioDescriptor {
+            seed: launch_seed,
+            ..Default::default()
+        };
+        let mut sim = bootstrap_rng.into_simulation(&descriptor);
         let mut expected_rng = SimRng::new(u64::from(launch_seed));
         for _ in 0..4 {
             let _ = expected_rng

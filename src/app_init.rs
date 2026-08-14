@@ -20,13 +20,14 @@ use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
-    PreloadedBattleStartPlan, apply_explicit_skirmish_launch_session,
-    apply_preloaded_battle_launch_session, apply_skirmish_ai_opening_credits,
+    apply_explicit_skirmish_launch_session, apply_preloaded_battle_launch_session,
+    apply_skirmish_ai_opening_credits,
     apply_skirmish_launch_alliances, build_overlay_atlas_from_map,
     house_color_map_for_launch_session, initialize_skirmish_launch_houses,
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
+use crate::sim::scenario_bootstrap::{PreloadedBattleStartPlan, ScenarioBootstrapRng};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
@@ -1522,17 +1523,17 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
-    let mut terrain_scenario_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let mut bootstrap_rng = ScenarioBootstrapRng::new(match_seed);
     if let Some(plan) = preloaded_battle_start_plan.as_ref() {
         // Native constructs houses and resolves Battle starts before the first
         // loading composition; terrain Fill continues that same Scenario
         // stream afterwards. Validate the launch cursor before installing the
         // immutable pre-render prefix so it can never be consumed twice.
-        plan.install_before_terrain(&mut terrain_scenario_rng)?;
+        bootstrap_rng.install_preloaded_battle_plan(plan)?;
     }
-    let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
     let mut scenario_fill_ranged =
-        |low, high| terrain_scenario_rng.next_range_u32_inclusive(low, high);
+        |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
     let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
@@ -1566,6 +1567,8 @@ pub(crate) fn load_map_from_initial(
     drop(variant_selector);
     drop(variant_draw);
     drop(scenario_fill_ranged);
+    drop(variant_main_rng);
+    drop(scenario_fill_rng);
     // Native Fill snapshots prior process-global ClearTile/WaterSet values
     // before the current theater registry reload. Rust loads assets earlier,
     // so defer publishing current results until materialization is complete.
@@ -1575,10 +1578,6 @@ pub(crate) fn load_map_from_initial(
             theater.rmg_tiles.water_set,
         );
     }
-    let terrain_load_advanced_scenario_rng = (preloaded_battle_start_plan.is_some()
-        || map_fill_scenario_advances != 0)
-        .then_some(terrain_scenario_rng);
-    let variant_advanced_main_rng = variant_table_generated.then_some(variant_main_rng);
     log::info!(
         "Map terrain load: {} Scenario Fill cursor advances; TMP variant table {} this load, {} raw Main draws",
         map_fill_scenario_advances,
@@ -1791,8 +1790,7 @@ pub(crate) fn load_map_from_initial(
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
-        terrain_load_advanced_scenario_rng,
-        variant_advanced_main_rng,
+        bootstrap_rng,
         initialize_houses_before_objects,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
