@@ -14,7 +14,8 @@ use super::helpers::{
 };
 use crate::app::AppState;
 use crate::app_render::draw_plan_lowering::{
-    PlannedBuildingPieceInstance, lower_building_piece_instances,
+    GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedBuildingPieceInstance,
+    PlannedGroundObjectInstance,
 };
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
@@ -22,7 +23,7 @@ use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
-    BlitPolicy, BuildingPieceKind, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalLayer,
+    BlitPolicy, BuildingPieceKind, SpriteEncoding, TacticalCoord,
 };
 use crate::render::unit_atlas::{UnitSpriteKey, VxlLayer, canonical_turret_facing};
 use crate::rules::house_colors::HouseColorIndex;
@@ -44,12 +45,9 @@ pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
 /// Iterate visible SHP sprite entities from EntityStore and build SpriteInstances.
 ///
 /// Build SpriteInstances for all SHP entities (buildings, infantry).
-/// Building bibs and anims are emitted into `paged` together with bodies,
-/// matching the original engine where bibs are drawn inside BuildingClass_DrawBody.
-/// `unit_instances` receives building turret VXLs. They go into the ordinary
-/// voxel stream, at the building's own sort depth and emitted right after the
-/// body, because gamemd draws them inside the building's own display call in
-/// the sorted ground layer rather than in a pass of their own.
+/// Ground bodies, building bibs/anims, and building turret VXLs are emitted as
+/// one parent-owned group so the native global order cannot split their display
+/// call at an atlas boundary.
 /// `top_paged` receives SHP bodies whose locomotor puts them above the Ground
 /// band — in stock YR that is the Rocketeer at hover height, the one infantry
 /// type on a Jumpjet locomotor.
@@ -66,10 +64,10 @@ pub(crate) fn build_shp_instances(
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
     top_paged: &mut [Vec<SpriteInstance>],
-    unit_instances: &mut Vec<SpriteInstance>,
-    unit_instance_pages: &mut Vec<usize>,
     parachute_body_depths: &mut ParachuteBodyDepths,
     selected_building_depth_paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut Vec<PlannedGroundObjectInstance>,
+    ground_order: &NativeGroundOrder,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -87,7 +85,8 @@ pub(crate) fn build_shp_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    let encounter_order =
+        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -319,15 +318,13 @@ pub(crate) fn build_shp_instances(
                 }
             }
         }
+        let under_bridge = is_under_bridge_render_state(state, entity)
+            && entity.category != EntityCategory::Structure;
+        let collect_ground = band == EntityDrawBand::Ground && !under_bridge;
         let target_pages = match band {
             // Above the Ground band, so also above any bridge deck.
             EntityDrawBand::Top => &mut *top_paged,
-            EntityDrawBand::Ground
-                if is_under_bridge_render_state(state, entity)
-                    && entity.category != EntityCategory::Structure =>
-            {
-                &mut *bridge_paged
-            }
+            EntityDrawBand::Ground if under_bridge => &mut *bridge_paged,
             EntityDrawBand::Ground => &mut *paged,
         };
         let body = SpriteInstance {
@@ -371,9 +368,26 @@ pub(crate) fn build_shp_instances(
                 },
                 z_bias: 0,
                 policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-                page: entry.page as usize,
+                target: GroundTexture::ShpPage(entry.page as usize),
                 instance: body,
             });
+        } else if collect_ground {
+            let coord = TacticalCoord {
+                x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
+                y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
+                z: i32::from(pos.z),
+            };
+            if let Some(parent) =
+                ground_order.object_draw(entity.stable_id, coord, SpriteEncoding::Plain)
+            {
+                ground_objects.push(PlannedGroundObjectInstance::object(
+                    parent,
+                    vec![GroundPieceInstance {
+                        target: GroundTexture::ShpPage(entry.page as usize),
+                        instance: body,
+                    }],
+                ));
+            }
         } else {
             target_pages[entry.page as usize].push(body);
         }
@@ -440,9 +454,7 @@ pub(crate) fn build_shp_instances(
             if let Some(rules_obj) = state.rules.as_ref().and_then(|r| r.object(type_str)) {
                 if rules_obj.turret_anim_is_voxel {
                     if let Some(turret_id) = &rules_obj.turret_anim {
-                        emit_building_turret_vxl(
-                            unit_instances,
-                            unit_instance_pages,
+                        if let Some((page, instance)) = emit_building_turret_vxl(
                             state,
                             turret_id,
                             entity
@@ -459,28 +471,42 @@ pub(crate) fn build_shp_instances(
                             draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
-                        );
+                        ) {
+                            building_pieces.push(PlannedBuildingPieceInstance {
+                                kind: BuildingPieceKind::PoweredOrActiveOverlay,
+                                z_bias: 0,
+                                policy: BlitPolicy::opaque(SpriteEncoding::Voxel),
+                                target: GroundTexture::UnitAtlasPage(page),
+                                instance,
+                            });
+                        }
                     }
                 }
             }
         }
 
         if entity.category == EntityCategory::Structure {
-            let coord = TacticalCoord {
+            let location = TacticalCoord {
                 x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let parent = ObjectDraw {
-                id: entity.stable_id,
-                layer: TacticalLayer(2),
-                coord,
-                y_sort_adjust: 0,
-                registration_order: entity.stable_id,
-                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-            };
-            for (page, instance) in lower_building_piece_instances(parent, building_pieces) {
-                paged[page].push(instance);
+            let actual_type = state
+                .rules
+                .as_ref()
+                .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
+            if let Some(parent) = actual_type.and_then(|object_type| {
+                ground_order.building_object_draw(
+                    entity.stable_id,
+                    location,
+                    object_type,
+                    SpriteEncoding::Plain,
+                )
+            }) {
+                ground_objects.push(PlannedGroundObjectInstance::building(
+                    parent,
+                    building_pieces,
+                ));
             }
         }
     }
@@ -499,12 +525,9 @@ pub(crate) fn build_shp_instances(
 /// toward the camera and put it over units standing in front of the building —
 /// by 1.3 to 4 iso rows on the defences a player actually fights around
 /// (SAM Site and Sentry Gun −20, Flak and Gattling Cannon −40, Slave Miner −50,
-/// Grand Cannon −60), more on a couple of civilian map props. The +32/−16 key
-/// terms are a separate gap. Note the set is small and does not include Prism
-/// Tower, whose turret is not a voxel.
+/// Grand Cannon −60), more on a couple of civilian map props. The set is small
+/// and does not include Prism Tower, whose turret is not a voxel.
 fn emit_building_turret_vxl(
-    instances: &mut Vec<SpriteInstance>,
-    instance_pages: &mut Vec<usize>,
     state: &AppState,
     turret_id: &str,
     turret_facing: u16,
@@ -517,10 +540,10 @@ fn emit_building_turret_vxl(
     draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
-) {
+) -> Option<(usize, SpriteInstance)> {
     let unit_atlas = match &state.unit_atlas {
         Some(a) => a,
-        None => return,
+        None => return None,
     };
     let key = UnitSpriteKey {
         type_id: turret_id.to_string(),
@@ -529,27 +552,27 @@ fn emit_building_turret_vxl(
         frame: 0,
         slope_type: 0, // building turrets don't tilt on slopes
     };
-    let Some(entry) = unit_atlas.get(&key) else {
-        return;
-    };
+    let entry = unit_atlas.get(&key)?;
     // Position turret at building cell origin + pixel offset from INI.
     // TurretAnimX/Y are screen pixel offsets added to the building's own draw
     // point, which is exactly what the native turret draw does with them.
     let center_x: f32 = building_sx;
     let tx: f32 = center_x + anim_x as f32 + entry.offset_x;
     let ty: f32 = building_sy + anim_y as f32 + entry.offset_y + 3.0;
-    instances.push(SpriteInstance {
-        position: [tx, ty],
-        size: entry.pixel_size,
-        uv_origin: entry.uv_origin,
-        uv_size: entry.uv_size,
-        depth: building_depth,
-        tint,
-        alpha: 1.0,
-        draw_state,
-        ..Default::default()
-    });
-    instance_pages.push(entry.page);
+    Some((
+        entry.page,
+        SpriteInstance {
+            position: [tx, ty],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth: building_depth,
+            tint,
+            alpha: 1.0,
+            draw_state,
+            ..Default::default()
+        },
+    ))
 }
 
 /// Emit the BibShape SpriteInstance for a building's ground-level pad.
@@ -603,7 +626,7 @@ fn emit_building_bib(
         kind: BuildingPieceKind::Bib,
         z_bias: 0,
         policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-        page: bib_entry.page as usize,
+        target: GroundTexture::ShpPage(bib_entry.page as usize),
         instance: SpriteInstance {
             position: [bx, by],
             size: bib_entry.pixel_size,
@@ -945,7 +968,7 @@ fn emit_building_anims(
             kind: BuildingPieceKind::PoweredOrActiveOverlay,
             z_bias: z_adjust_px,
             policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-            page: anim_entry.page as usize,
+            target: GroundTexture::ShpPage(anim_entry.page as usize),
             instance: SpriteInstance {
                 position: [ax, ay],
                 size: anim_entry.pixel_size,

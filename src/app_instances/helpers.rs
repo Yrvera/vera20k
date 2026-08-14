@@ -21,7 +21,10 @@ use crate::util::fixed_math::SIM_ZERO;
 /// the live ObjectClass registration order rather than falling back to map-key
 /// order. Entities absent from the live vector are appended in creation order
 /// solely so pre-reveal test/dev objects retain the renderer's old visibility.
-pub(crate) fn tactical_entity_encounter_order(sim: &crate::sim::world::Simulation) -> Vec<u64> {
+pub(crate) fn tactical_entity_encounter_order(
+    sim: &crate::sim::world::Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+) -> Vec<u64> {
     use crate::render::tactical_draw_plan::{
         BlitPolicy, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalDrawInput, TacticalDrawPlan,
         TacticalLayer,
@@ -49,17 +52,29 @@ pub(crate) fn tactical_entity_encounter_order(sim: &crate::sim::world::Simulatio
                 EntityDrawBand::Ground => 2,
                 EntityDrawBand::Top => 4,
             };
+            let location = TacticalCoord {
+                x: i32::from(entity.position.rx) * 256
+                    + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
+                y: i32::from(entity.position.ry) * 256
+                    + crate::util::fixed_math::sim_to_i32(entity.position.sub_y),
+                z: i32::from(entity.position.z),
+            };
+            let (coord, y_sort_adjust) = if entity.category == EntityCategory::Structure {
+                let object_type =
+                    rules.and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
+                crate::app_render::draw_plan_lowering::building_ground_order_parts(
+                    location,
+                    object_type.is_some_and(|object| object.turret_anim_is_voxel),
+                    object_type.is_some_and(|object| object.gate),
+                )
+            } else {
+                (location, 0)
+            };
             Some(TacticalDrawInput::Object(ObjectDraw {
                 id: *id,
                 layer: TacticalLayer(layer),
-                coord: TacticalCoord {
-                    x: i32::from(entity.position.rx) * 256
-                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_x),
-                    y: i32::from(entity.position.ry) * 256
-                        + crate::util::fixed_math::sim_to_i32(entity.position.sub_y),
-                    z: i32::from(entity.position.z),
-                },
-                y_sort_adjust: 0,
+                coord,
+                y_sort_adjust,
                 registration_order: registration as u64,
                 policy: BlitPolicy::opaque(SpriteEncoding::Plain),
             }))
@@ -145,6 +160,7 @@ fn tactical_bounded_entity_encounter_order(
 
     compose_tactical_screen_entity_encounter_order(
         sim,
+        state.rules.as_ref(),
         (min_x, min_y, max_x, max_y),
         local_owner.as_deref(),
         local_owner_id,
@@ -158,6 +174,7 @@ fn tactical_bounded_entity_encounter_order(
 #[allow(clippy::too_many_arguments)]
 fn compose_tactical_screen_entity_encounter_order(
     sim: &crate::sim::world::Simulation,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
     bounds: (f32, f32, f32, f32),
     local_owner: Option<&str>,
     local_owner_id: Option<InternedId>,
@@ -167,7 +184,7 @@ fn compose_tactical_screen_entity_encounter_order(
     bulk_register_live_buildings: bool,
 ) -> Vec<u64> {
     let (min_x, min_y, max_x, max_y) = bounds;
-    tactical_entity_encounter_order(sim)
+    tactical_entity_encounter_order(sim, rules)
         .into_iter()
         .filter(|id| {
             sim.entities().get(*id).is_some_and(|entity| {
@@ -517,7 +534,7 @@ mod tests {
         sim.entities_mut()
             .insert(GameEntity::test_default(2, "E1", "Americans", 10, 10));
         sim.set_logic_order_for_test(vec![2, 1]);
-        assert_eq!(tactical_entity_encounter_order(&sim), [2, 1]);
+        assert_eq!(tactical_entity_encounter_order(&sim, None), [2, 1]);
     }
 
     #[test]
@@ -626,6 +643,7 @@ mod tests {
         );
         let visible = compose_tactical_screen_entity_encounter_order(
             &sim,
+            None,
             bounds,
             Some("Americans"),
             Some(local_owner),
@@ -636,6 +654,7 @@ mod tests {
         );
         let preflight = compose_tactical_screen_entity_encounter_order(
             &sim,
+            None,
             bounds,
             Some("Americans"),
             Some(local_owner),

@@ -25,6 +25,7 @@ use super::merge_passes;
 /// because they're computed fresh each frame and (for the merge passes) need CPU-side
 /// depth values that match the uploaded GPU buffers.
 pub(super) struct DrawPassData<'a> {
+    pub ground: &'a super::draw_plan_lowering::GroundObjectPass,
     pub bridge_unit_instances: &'a [SpriteInstance],
     pub bridge_unit_pages: &'a [usize],
     pub bridge_unit_transition_paged: &'a [Vec<SpriteInstance>],
@@ -200,8 +201,24 @@ pub(super) fn dispatch_draw_passes(
         state.palette_set.as_ref(),
     );
 
-    // --- Step 5: Ground objects (unified multi-way Y-merge) ---
-    // All ground objects Y-sorted together (Layer 2).
+    // --- Step 5: Ground objects (native integer LayerClass order) ---
+    // Terrain, units, infantry, and building-owned pieces share the exact
+    // signed X+Y + stable-registration order. Atlas bindings dispatch only
+    // after the parent slot has been selected.
+    merge_passes::draw_native_ground_object_pass(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        data.ground,
+        state.overlay_atlas.as_ref(),
+        state.unit_atlas.as_ref(),
+        &transition_cache,
+        state.sprite_atlas.as_ref(),
+        state.palette_set.as_ref(),
+    );
+
+    // Scheduler-owned effects not yet carrying verified class-specific
+    // YSortAdjust remain in the pre-existing residual SHP stream.
     merge_passes::draw_merged_object_pass(
         &mut pass,
         &state.batch_renderer,

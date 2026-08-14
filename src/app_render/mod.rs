@@ -140,6 +140,7 @@ pub(crate) fn render_game(
         encoder,
         &composition_view,
         &draw_passes::DrawPassData {
+            ground: &world.ground,
             bridge_unit_instances: &world.bridge_unit,
             bridge_unit_pages: &world.bridge_unit_pages,
             bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
@@ -194,6 +195,7 @@ fn upload_to_gpu(
     // Terrain + overlays
     pool.upload(&state.gpu, "terrain", &world.terrain.normal);
     pool.upload(&state.gpu, "overlay", &world.overlay);
+    pool.upload(&state.gpu, "ground_objects", &world.ground.instances);
     pool.upload(&state.gpu, "overlay_bridge_body", &world.bridge_body);
     pool.upload(
         &state.gpu,

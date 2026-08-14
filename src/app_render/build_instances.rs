@@ -33,6 +33,8 @@ use crate::sidebar::SidebarView;
 pub(super) struct WorldInstances {
     pub terrain: terrain::TerrainInstances,
     pub overlay: Vec<SpriteInstance>,
+    /// TerrainClass and Techno parents in exact signed Layer-2 order.
+    pub ground: super::draw_plan_lowering::GroundObjectPass,
     /// Static smudge decals (craters, scorches) — drawn between terrain and entities.
     pub smudge: Vec<SpriteInstance>,
     pub bridge_body: Vec<SpriteInstance>,
@@ -198,13 +200,26 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         terrain::TerrainInstances { normal: Vec::new() }
     };
 
-    // Map overlays and walls are lowered through the fixed per-cell draw plan.
-    // Terrain objects remain an explicit fallback until they carry LayerClass
-    // registration metadata. Low bridges (LOBRDG*) ride in `overlay`; high
-    // bridge bodies are emitted by `app_instances::bridges` instead.
+    // Map overlays and walls remain in the fixed per-cell draw plan. Terrain
+    // objects join live Ground registrations below; low bridges (LOBRDG*) ride
+    // in `overlay`, while high bridge bodies use app_instances::bridges.
+    let ground_order = super::draw_plan_lowering::NativeGroundOrder::new(
+        state
+            .simulation
+            .as_ref()
+            .map_or(&[], |sim| sim.tactical_registration_order()),
+    );
+    let mut ground_objects = Vec::new();
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    app_instances::build_overlay_instances(state, sw, sh, &mut overlay);
+    app_instances::build_overlay_instances(
+        state,
+        sw,
+        sh,
+        &mut overlay,
+        &mut ground_objects,
+        &ground_order,
+    );
     // Bridge body, shadow, and railing emission live in app_instances::bridges
     // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
     let mut bridge_body: Vec<SpriteInstance> = Vec::new();
@@ -271,6 +286,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit_transition_paged,
         &mut bridge_unit_transition_paged,
         &mut shp_paged,
+        &mut ground_objects,
+        &ground_order,
     );
     sort_by_depth_desc_with_pages(&mut bridge_unit, &mut bridge_unit_pages);
     for page in &mut unit_transition_paged {
@@ -279,14 +296,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     for page in &mut bridge_unit_transition_paged {
         sort_by_depth_desc(page);
     }
-    // A building's voxel turret is drawn inside the building's own display
-    // call, in the sorted ground layer, immediately after its body — gamemd
-    // has no post-layer-2 turret pass. So the turrets join the same UnitAtlas
-    // stream as the vehicles and are sorted with it, at the building's own
-    // depth. That leaves the body and turret tied, and the merge resolves a tie
-    // in favour of the SHP group, so the body goes down first and the turret
-    // lands on top of it — the stacking the native single draw produces —
-    // while a vehicle standing at a nearer iso row still draws over both.
+    // A building's voxel turret remains owned by the building display call.
+    // The SHP builder therefore adds it to the same contiguous Ground parent
+    // instead of leaking it into an atlas-level tie.
     // Parachute canopies are composed into their body's draw, so they take the
     // body's key rather than deriving one. Collected here, consumed by
     // `build_parachute_instances` below — which is why it must run after this.
@@ -296,10 +308,10 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut shp_paged,
         &mut bridge_shp_paged,
         &mut top_shp_paged,
-        &mut unit,
-        &mut unit_pages,
         &mut parachute_body_depths,
         &mut selected_building_depth_paged,
+        &mut ground_objects,
+        &ground_order,
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
@@ -313,7 +325,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
     // with the GI body, at the body's own key).
-    app_instances::build_parachute_instances(state, &mut shp_paged, &parachute_body_depths);
+    app_instances::build_parachute_instances(state, &mut ground_objects, &parachute_body_depths);
     for page in &mut shp_paged {
         sort_by_depth_desc(page);
     }
@@ -328,13 +340,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
-    // `LayerClass` needs integer ObjectClass::GetYSort and registration order.
-    // Existing atlas vectors retain neither, so publish the typed fallback once.
-    super::draw_plan_lowering::report_object_buffer_fallbacks(
-        !unit.is_empty(),
-        unit_transition_paged.iter().any(|page| !page.is_empty()),
-        shp_paged.iter().any(|page| !page.is_empty()),
-    );
+    let ground = super::draw_plan_lowering::lower_ground_object_instances(ground_objects);
 
     // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
     let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
@@ -344,11 +350,11 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let total_grid: usize = state.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
         log::info!(
-            "First frame: {} terrain (of {} cells) + {} overlay + {} vxl + {} shp",
+            "First frame: {} terrain tiles (of {} cells) + {} fixed overlays + {} Ground sprites + {} residual SHP",
             terrain.normal.len(),
             total_grid,
             overlay.len() + bridge_body.len(),
-            unit.len(),
+            ground.instances.len(),
             shp_paged.iter().map(|p| p.len()).sum::<usize>(),
         );
     }
@@ -364,6 +370,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     WorldInstances {
         terrain,
         overlay,
+        ground,
         smudge,
         bridge_body,
         bridge_body_shadow,

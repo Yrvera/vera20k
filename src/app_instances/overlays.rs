@@ -33,6 +33,7 @@ use super::helpers::{
 /// simulation authority exists the live cell index decides whether an instance
 /// still exists. This keeps loading/fallback screens static without letting a
 /// destroyed runtime object remain visible forever.
+#[cfg(test)]
 fn terrain_object_is_render_visible(
     object: &crate::map::overlay::TerrainObject,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -401,6 +402,8 @@ pub(crate) fn build_overlay_instances(
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
+    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
 ) {
     let atlas = match &state.overlay_atlas {
         Some(a) => a,
@@ -590,11 +593,14 @@ pub(crate) fn build_overlay_instances(
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
 
-    let terrain_authority = state.simulation.as_ref().map(|sim| &sim.production);
-    for obj in &state.terrain_objects {
-        if !terrain_object_is_render_visible(obj, state.rules.as_ref(), terrain_authority) {
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    for obj in sim.production.terrain_objects.values() {
+        if !obj.is_live() || !obj.in_logic_vector {
             continue;
         }
+        let name = sim.interner.resolve(obj.type_ref);
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, obj.rx, obj.ry) {
                 continue;
@@ -620,7 +626,7 @@ pub(crate) fn build_overlay_instances(
 
         // Animated terrain objects (flags) cycle through all frames using the
         // global idle animation timer. Static terrain uses frame 0.
-        let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(&obj.name) {
+        let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(name) {
             // RA2 terrain animation rate: ~83ms per frame (12 fps).
             const TERRAIN_ANIM_RATE_MS: u32 = 83;
             let tick = state.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
@@ -629,7 +635,7 @@ pub(crate) fn build_overlay_instances(
             0
         };
         let key = OverlaySpriteKey {
-            name: obj.name.clone(),
+            name: name.to_string(),
             frame,
         };
         let Some(spr) = atlas.get(&key) else { continue };
@@ -638,26 +644,37 @@ pub(crate) fn build_overlay_instances(
         let spawns_tiberium = state
             .rules
             .as_ref()
-            .and_then(|rules| rules.terrain_object_type_case_insensitive(&obj.name))
+            .and_then(|rules| rules.terrain_object_type_case_insensitive(name))
             .map(|terrain_type| terrain_type.spawns_tiberium)
             .unwrap_or(false);
         let tint: [f32; 3] = state
             .lighting_grid
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
-        instances.push(SpriteInstance {
-            position: [
-                screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
-                screen_y + TILE_HEIGHT / 2.0 + spr.offset_y + TERRAIN_OBJECT_Y_FUDGE,
-            ],
-            size: spr.pixel_size,
-            uv_origin: spr.uv_origin,
-            uv_size: spr.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
-        });
+        let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
+            continue;
+        };
+        ground_objects.push(
+            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                parent,
+                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app_render::draw_plan_lowering::GroundTexture::OverlayAtlas,
+                    instance: SpriteInstance {
+                        position: [
+                            screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
+                            screen_y + TILE_HEIGHT / 2.0 + spr.offset_y + TERRAIN_OBJECT_Y_FUDGE,
+                        ],
+                        size: spr.pixel_size,
+                        uv_origin: spr.uv_origin,
+                        uv_size: spr.uv_size,
+                        depth,
+                        tint,
+                        alpha: 1.0,
+                        ..Default::default()
+                    },
+                }],
+            ),
+        );
     }
 }
 
@@ -1054,7 +1071,7 @@ pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstanc
 /// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
 pub(crate) fn build_parachute_instances(
     state: &AppState,
-    paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut [crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance],
     body_depths: &super::shp::ParachuteBodyDepths,
 ) {
     /// Depth epsilon — chute sorts slightly above the GI body. Half of the
@@ -1132,16 +1149,29 @@ pub(crate) fn build_parachute_instances(
         // to camera = on top.
         let depth = (body_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
 
-        paged[entry.page as usize].push(SpriteInstance {
-            position: [cx, cy],
-            size: entry.pixel_size,
-            uv_origin: entry.uv_origin,
-            uv_size: entry.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
-        });
+        let Some(parent) = ground_objects
+            .iter_mut()
+            .find(|object| object.parent.id == anim.target_id)
+        else {
+            continue;
+        };
+        parent
+            .pieces
+            .push(crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+                    entry.page as usize,
+                ),
+                instance: SpriteInstance {
+                    position: [cx, cy],
+                    size: entry.pixel_size,
+                    uv_origin: entry.uv_origin,
+                    uv_size: entry.uv_size,
+                    depth,
+                    tint,
+                    alpha: 1.0,
+                    ..Default::default()
+                },
+            });
     }
 }
 

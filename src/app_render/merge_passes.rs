@@ -1,18 +1,20 @@
-//! Y-sorted multi-way merge passes for interleaving draw calls across atlas textures.
+//! Native-ordered and residual multi-way draw passes across atlas textures.
 //!
-//! The original engine renders all ground objects in a single Y-sorted pass (Layer 2).
-//! Our engine has multiple atlas textures (VXL units and SHP pages),
-//! so we interleave draw calls by walking cursors through each Y-sorted buffer and
-//! emitting sub-range draws in depth-descending order (back-to-front).
+//! The live Ground path consumes one integer-ordered parent stream and changes
+//! texture bindings only between contiguous runs. Bridge and not-yet-promoted
+//! residual families retain their existing depth merge.
 //!
 //! ## Dependency rules
 //! - Internal to app_render — only called from draw_passes.rs.
 
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
+use crate::render::overlay_atlas::OverlayAtlas;
 use crate::render::palette_textures::PaletteSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::unit_atlas::UnitAtlas;
 use crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache;
+
+use super::draw_plan_lowering::{GroundObjectPass, GroundTexture};
 
 /// Which pipeline a `DrawGroup` should dispatch through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +219,89 @@ pub(super) fn draw_merged_bridge_occluded_pass<'a>(
             }
         }
         groups[best_idx].cursor = end;
+    }
+}
+
+/// Dispatch the already-lowered native Ground sequence without re-sorting it.
+///
+/// Every run is a contiguous slice of one flat instance buffer. Texture page,
+/// atlas family, and `SpriteInstance.depth` select only GPU state; none can
+/// change the signed integer parent order established by `TacticalDrawPlan`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_native_ground_object_pass<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    pool: &'a InstanceBufferPool,
+    ground: &GroundObjectPass,
+    overlay_atlas: Option<&'a OverlayAtlas>,
+    unit_atlas: Option<&'a UnitAtlas>,
+    transition_cache: &'a VxlSlopeTransitionCache,
+    sprite_atlas: Option<&'a SpriteAtlas>,
+    palette_set: Option<&'a PaletteSet>,
+) {
+    let Some((buffer, count)) = pool.get("ground_objects") else {
+        return;
+    };
+    assert_eq!(
+        count as usize,
+        ground.instances.len(),
+        "native Ground upload must preserve every lowered instance"
+    );
+
+    for run in &ground.runs {
+        match run.target {
+            GroundTexture::OverlayAtlas => {
+                if let Some(atlas) = overlay_atlas {
+                    batch.draw_passthrough_range(
+                        pass,
+                        &atlas.texture,
+                        buffer,
+                        run.start,
+                        run.count,
+                    );
+                }
+            }
+            GroundTexture::UnitAtlasPage(page) => {
+                if let (Some(palette), Some(texture)) = (
+                    palette_set,
+                    unit_atlas.and_then(|atlas| atlas.page_texture(page)),
+                ) {
+                    batch.draw_voxel_sprites_range(
+                        pass,
+                        texture,
+                        &palette.bind_group,
+                        buffer,
+                        run.start,
+                        run.count,
+                    );
+                }
+            }
+            GroundTexture::UnitTransitionPage(page) => {
+                if let (Some(texture), Some(palette)) =
+                    (transition_cache.page_texture(page), palette_set)
+                {
+                    batch.draw_voxel_sprites_range(
+                        pass,
+                        texture,
+                        &palette.bind_group,
+                        buffer,
+                        run.start,
+                        run.count,
+                    );
+                }
+            }
+            GroundTexture::ShpPage(page) => {
+                if let Some(texture) = sprite_atlas.and_then(|atlas| atlas.page(page)) {
+                    batch.draw_passthrough_range(
+                        pass,
+                        &texture.texture,
+                        buffer,
+                        run.start,
+                        run.count,
+                    );
+                }
+            }
+        }
     }
 }
 

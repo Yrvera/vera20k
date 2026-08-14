@@ -11,6 +11,9 @@ use super::helpers::{
     ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
+use crate::app_render::draw_plan_lowering::{
+    GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedGroundObjectInstance,
+};
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
@@ -184,6 +187,8 @@ pub(crate) fn build_unit_instances(
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     shp_paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut Vec<PlannedGroundObjectInstance>,
+    ground_order: &NativeGroundOrder,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.unit_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -201,7 +206,8 @@ pub(crate) fn build_unit_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    let encounter_order =
+        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -311,6 +317,8 @@ pub(crate) fn build_unit_instances(
         // beneath, which cannot apply to something in a layer above it.
         let is_bridge_unit =
             band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
+        let collect_ground = band == EntityDrawBand::Ground && !is_bridge_unit;
+        let mut ground_pieces = Vec::new();
         let (target_instances, target_instance_pages) = match band {
             EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
             EntityDrawBand::Ground if is_bridge_unit => {
@@ -349,6 +357,8 @@ pub(crate) fn build_unit_instances(
                 bridge_transition_instances,
                 is_bridge_unit,
                 band,
+                collect_ground,
+                &mut ground_pieces,
             );
         } else {
             // Non-turret unit: single composite sprite.
@@ -383,17 +393,18 @@ pub(crate) fn build_unit_instances(
                     is_bridge_unit,
                     texture_source,
                     sprite,
+                    collect_ground,
+                    &mut ground_pieces,
                 );
             }
         }
 
         // Emit harvest overlay (oregath.shp) if the miner is actively harvesting.
-        // OREGATH is an SHP sprite from sprite_atlas — it must go into shp_paged
-        // (not the voxel unit instance list) so it draws with the correct texture.
+        // OREGATH is an SHP sprite from sprite_atlas, but remains an owned piece
+        // of its harvester's Ground slot so atlas identity cannot re-sort it.
         if let Some(ref ho) = entity.harvest_overlay {
             if ho.visible {
-                emit_harvest_overlay(
-                    shp_paged,
+                if let Some((page, instance)) = emit_harvest_overlay(
                     state,
                     entity,
                     entity.facing,
@@ -403,7 +414,47 @@ pub(crate) fn build_unit_instances(
                     pos.z,
                     tint,
                     draw_state,
-                );
+                ) {
+                    if collect_ground {
+                        ground_pieces.push(GroundPieceInstance {
+                            target: GroundTexture::ShpPage(page),
+                            instance,
+                        });
+                    } else if let Some(bucket) = shp_paged.get_mut(page) {
+                        bucket.push(instance);
+                    }
+                }
+            }
+        }
+
+        if collect_ground && !ground_pieces.is_empty() {
+            let location = crate::render::tactical_draw_plan::TacticalCoord {
+                x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
+                y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
+                z: i32::from(pos.z),
+            };
+            let parent = if entity.category == EntityCategory::Structure {
+                state
+                    .rules
+                    .as_ref()
+                    .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)))
+                    .and_then(|object_type| {
+                        ground_order.building_object_draw(
+                            entity.stable_id,
+                            location,
+                            object_type,
+                            crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
+                        )
+                    })
+            } else {
+                ground_order.object_draw(
+                    entity.stable_id,
+                    location,
+                    crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
+                )
+            };
+            if let Some(parent) = parent {
+                ground_objects.push(PlannedGroundObjectInstance::object(parent, ground_pieces));
             }
         }
     }
@@ -544,7 +595,20 @@ fn push_unit_sprite(
     is_bridge_unit: bool,
     texture_source: UnitTextureSource,
     sprite: SpriteInstance,
+    collect_ground: bool,
+    ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
+    if collect_ground {
+        let target = match texture_source {
+            UnitTextureSource::Transition(page) => GroundTexture::UnitTransitionPage(page),
+            UnitTextureSource::Stable(page) => GroundTexture::UnitAtlasPage(page),
+        };
+        ground_pieces.push(GroundPieceInstance {
+            target,
+            instance: sprite,
+        });
+        return;
+    }
     match texture_source {
         UnitTextureSource::Transition(page) if is_bridge_unit => {
             push_transition_sprite(bridge_transition_instances, page, sprite);
@@ -588,6 +652,8 @@ fn emit_turret_unit_sprites(
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     is_bridge_unit: bool,
     band: EntityDrawBand,
+    collect_ground: bool,
+    ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
     let slope_type = stable_slope_for_key(slope_state);
     let body_key = UnitSpriteKey {
@@ -653,6 +719,8 @@ fn emit_turret_unit_sprites(
             is_bridge_unit,
             texture_source,
             sprite,
+            collect_ground,
+            ground_pieces,
         );
     }
 
@@ -694,6 +762,8 @@ fn emit_turret_unit_sprites(
                 is_bridge_unit,
                 texture_source,
                 sprite,
+                collect_ground,
+                ground_pieces,
             );
         }
     }
@@ -713,7 +783,6 @@ const OREGATH_ARM_OFFSET_LEPTONS: f32 = 30.0;
 /// facing (verified from binary at 0x0073D12F–0x0073D1D6). This places the overlay
 /// at the harvest arm position rather than dead center on the unit.
 fn emit_harvest_overlay(
-    shp_paged: &mut [Vec<SpriteInstance>],
     state: &AppState,
     entity: &crate::sim::game_entity::GameEntity,
     body_facing: u8,
@@ -723,10 +792,10 @@ fn emit_harvest_overlay(
     z: u8,
     tint: [f32; 3],
     draw_state: DrawState,
-) {
+) -> Option<(usize, SpriteInstance)> {
     let sprite_atlas = match &state.sprite_atlas {
         Some(a) => a,
-        None => return,
+        None => return None,
     };
     // Map body facing (0-255) to counter-clockwise SHP frame index (0..7).
     // +32 offset for isometric rotation (SHP frame 0 = screen-N, not cell-N).
@@ -738,13 +807,8 @@ fn emit_harvest_overlay(
         frame: shp_frame,
         house_color: HouseColorIndex::default(),
     };
-    let Some(entry) = sprite_atlas.get(&key) else {
-        return;
-    };
+    let entry = sprite_atlas.get(&key)?;
     let page = entry.page as usize;
-    if page >= shp_paged.len() {
-        return;
-    }
     // Compute arm offset: rotate 30 leptons by body facing, then convert to screen.
     // Same sin/cos + isometric transform used by turret_screen_offset.
     let (arm_sx, arm_sy) = harvest_arm_screen_offset(body_facing);
@@ -753,17 +817,20 @@ fn emit_harvest_overlay(
     let depth_y: f32 = draw_y + entry.offset_y + entry.pixel_size[1];
     let depth: f32 =
         apply_bridge_depth_bias(state, entity, compute_sprite_depth(state, depth_y, z));
-    shp_paged[page].push(SpriteInstance {
-        position: [draw_x + entry.offset_x, draw_y + entry.offset_y],
-        size: entry.pixel_size,
-        uv_origin: entry.uv_origin,
-        uv_size: entry.uv_size,
-        depth,
-        tint,
-        alpha: 1.0,
-        draw_state,
-        ..Default::default()
-    });
+    Some((
+        page,
+        SpriteInstance {
+            position: [draw_x + entry.offset_x, draw_y + entry.offset_y],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            draw_state,
+            ..Default::default()
+        },
+    ))
 }
 
 /// Convert the oregath arm offset (30 leptons) into isometric screen pixels.
@@ -830,6 +897,7 @@ mod tests {
         let mut stable_pages = Vec::new();
         let mut transition = Vec::new();
         let mut bridge_transition = Vec::new();
+        let mut ground_pieces = Vec::new();
 
         push_unit_sprite(
             &mut stable,
@@ -839,6 +907,8 @@ mod tests {
             false,
             UnitTextureSource::Stable(3),
             sprite,
+            false,
+            &mut ground_pieces,
         );
         push_unit_sprite(
             &mut stable,
@@ -848,6 +918,8 @@ mod tests {
             false,
             UnitTextureSource::Transition(2),
             sprite,
+            false,
+            &mut ground_pieces,
         );
 
         assert_eq!(stable.len(), 1);
@@ -866,6 +938,8 @@ mod tests {
             true,
             UnitTextureSource::Stable(5),
             sprite,
+            false,
+            &mut ground_pieces,
         );
         push_unit_sprite(
             &mut bridge_stable,
@@ -875,6 +949,8 @@ mod tests {
             true,
             UnitTextureSource::Transition(1),
             sprite,
+            false,
+            &mut ground_pieces,
         );
 
         assert_eq!(bridge_stable.len(), 1);
