@@ -388,8 +388,6 @@ pub(crate) struct AppState {
     pub(crate) eva_under_attack_block_until_tick: u64,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
-    /// When true, computer-controlled players do nothing (no AI commands issued).
-    pub(crate) disable_ai: bool,
     /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
     pub(crate) spawn_pick_pending: bool,
     /// Mutually-exclusive cursor-on-tactical-map targeting mode (building

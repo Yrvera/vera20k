@@ -1083,11 +1083,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
-            // Clear AI players when disabled — prevents computer houses from acting.
-            if state.disable_ai && !sim.ai_players.is_empty() {
-                log::info!("AI disabled — clearing {} AI players", sim.ai_players.len());
-                sim.ai_players.clear();
-            }
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.

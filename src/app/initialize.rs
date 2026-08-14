@@ -533,7 +533,6 @@ impl App {
             eva_announced_dying: std::collections::HashSet::new(),
             eva_under_attack_block_until_tick: 0,
             sandbox_full_visibility: false,
-            disable_ai: true,
             spawn_pick_pending: false,
             targeting_mode: None,
             building_placement_preview: None,
