@@ -22,7 +22,6 @@ use crate::render::tactical_draw_plan::{
 use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig, anim_translucency_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
-use crate::sim::miner::ResourceType;
 use crate::sim::projectile::ProjectileCoord;
 use crate::util::fixed_math::SimFixed;
 
@@ -104,6 +103,39 @@ fn overlay_render_identity(
     }
     (live_cell.overlay_id == Some(static_overlay_id))
         .then_some((static_overlay_id, live_cell.overlay_data))
+}
+
+/// Choose the display-only identity for a flat resource cell.
+///
+/// Active YR `CellClass__DrawOverlay_Body @ 0x0047F6A0` keeps the Cell's
+/// overlay identity/data as resource state but selects a coordinate-derived
+/// flat image when the resolved cell is not sloped. Missing render metadata,
+/// invalid signed indices, slopes, and non-resource overlays retain the live
+/// identity without approximation.
+fn overlay_display_identity(
+    live_overlay_id: u8,
+    overlay_data: u8,
+    rx: u16,
+    ry: u16,
+    slope_type: Option<u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    tiberium_types: Option<&crate::rules::tiberium_type::TiberiumTypeRegistry>,
+) -> (u8, u8) {
+    let (Some(overlay_registry), Some(tiberium_types)) = (overlay_registry, tiberium_types) else {
+        return (live_overlay_id, overlay_data);
+    };
+    if slope_type != Some(0)
+        || !overlay_registry
+            .flags(live_overlay_id)
+            .is_some_and(|flags| flags.tiberium)
+    {
+        return (live_overlay_id, overlay_data);
+    }
+
+    let display_overlay_id = overlay_registry
+        .flat_tiberium_display_overlay_id(tiberium_types, live_overlay_id, rx, ry)
+        .unwrap_or(live_overlay_id);
+    (display_overlay_id, overlay_data)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -547,55 +579,45 @@ pub(crate) fn build_overlay_instances(
             .as_ref()
             .and_then(|sim| sim.overlay_grid.as_ref())
             .map(|grid| grid.cell(entry.rx, entry.ry));
-        let Some((render_overlay_id, live_overlay_data)) =
+        let Some((live_overlay_id, live_overlay_data)) =
             overlay_render_identity(entry.overlay_id, entry.frame, live_overlay_cell)
         else {
             continue;
         };
-        let Some(name) = state.overlay_names.get(&render_overlay_id) else {
+        let overlay_registry = state.overlay_registry.as_ref();
+        let overlay_flags = overlay_registry.and_then(|reg| reg.flags(live_overlay_id));
+        let slope_type = state
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
+            .map(|cell| cell.slope_type);
+        let (display_overlay_id, live_overlay_data) = overlay_display_identity(
+            live_overlay_id,
+            live_overlay_data,
+            entry.rx,
+            entry.ry,
+            slope_type,
+            overlay_registry,
+            state.rules.as_ref().map(|rules| &rules.tiberium_types),
+        );
+        let name = if display_overlay_id == live_overlay_id {
+            state.overlay_names.get(&live_overlay_id).cloned()
+        } else {
+            overlay_registry
+                .and_then(|registry| registry.name(display_overlay_id).map(str::to_owned))
+        };
+        let Some(name) = name else {
             continue;
         };
-        if is_high_bridge_body_name(name) {
+        if is_high_bridge_body_name(&name) {
             continue;
         }
 
-        // Derive the live render data for this overlay. If OverlayGrid is
-        // available, its mutable identity/data owns ore density, wall damage,
-        // and low-bridge variants. Otherwise retain the loading-screen fallback.
-        let upper = name.to_ascii_uppercase();
-        let overlay_flags = state
-            .overlay_registry
-            .as_ref()
-            .and_then(|reg| reg.flags(render_overlay_id));
+        // The live identity owns resource type, wall/crate flags, and bridge
+        // state even when a flat resource cell selects another display image.
         let is_wall: bool = overlay_flags.map(|f| f.wall).unwrap_or(false);
         let is_crate: bool = overlay_flags.map(|f| f.crate_type).unwrap_or(false);
-        let is_resource = upper.starts_with("TIB") || upper.starts_with("GEM");
-
-        let render_frame: u8 = if live_overlay_cell.is_some() {
-            live_overlay_data
-        } else {
-            // No OverlayGrid — fall back to old behavior.
-            if is_resource {
-                match state
-                    .simulation
-                    .as_ref()
-                    .and_then(|sim| sim.production.resource_nodes.get(&(entry.rx, entry.ry)))
-                {
-                    None => continue,
-                    Some(node) => {
-                        let base: u16 = match node.resource_type {
-                            ResourceType::Ore => 120,
-                            ResourceType::Gem => 180,
-                        };
-                        let richness = (node.remaining / base).max(1);
-                        (richness - 1).min(11) as u8
-                    }
-                }
-            } else {
-                entry.frame
-            }
-        };
-        let render_frame: u8 = overlay_body_frame(is_crate, render_frame);
+        let render_frame: u8 = overlay_body_frame(is_crate, live_overlay_data);
 
         // FA2 IsoView.cpp:5955-5956: track overlays render +CellHeight (15px) lower.
         let track_y_offset: f32 = if overlay_flags.map(|f| f.track).unwrap_or(false) {
@@ -1261,13 +1283,15 @@ mod tests {
         ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, OverlayRenderBucket,
         anim_instance_alpha, anim_render_destination, apply_shape_z_adjust,
         classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
-        overlay_render_identity, terrain_object_is_render_visible, weapon_muzzle_flash_key,
-        world_effect_screen_position,
+        overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
+        weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::rules::tiberium_type::TiberiumTypeRegistry;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
     use crate::sim::intern::StringInterner;
     use crate::sim::overlay_grid::OverlayCell;
@@ -1479,6 +1503,80 @@ mod tests {
             overlay_render_identity(5, 3, Some(&live)),
             None,
             "ordinary overlays retain exact identity matching"
+        );
+    }
+
+    #[test]
+    fn gsi_13_05_flat_resource_changes_only_display_identity_on_known_flat_cells() {
+        let mut text = String::from(
+            "[Tiberiums]\n0=Riparius\n1=Cruentus\n\
+             [Riparius]\nImage=1\n\
+             [Cruentus]\nImage=2\n\
+             [OverlayTypes]\n",
+        );
+        let mut resource_names = Vec::new();
+        for overlay_id in 0..=113 {
+            let name = match overlay_id {
+                27..=38 => format!("GEM{:02}", overlay_id - 26),
+                102..=113 => format!("TIB{:02}", overlay_id - 101),
+                _ => format!("FILL{overlay_id:03}"),
+            };
+            text.push_str(&format!("{overlay_id}={name}\n"));
+            if matches!(overlay_id, 27..=38 | 102..=113) {
+                resource_names.push(name);
+            }
+        }
+        for name in resource_names {
+            text.push_str(&format!("[{name}]\nTiberium=yes\n"));
+        }
+        let ini = IniFile::from_str(&text);
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let tiberiums = TiberiumTypeRegistry::from_ini(&ini);
+        let tib12 = overlays.id_for_name("TIB12").expect("TIB12");
+        let tib01 = overlays.id_for_name("TIB01").expect("TIB01");
+        let tib05 = overlays.id_for_name("TIB05").expect("TIB05");
+        let gem12 = overlays.id_for_name("GEM12").expect("GEM12");
+        let gem01 = overlays.id_for_name("GEM01").expect("GEM01");
+        let non_tiberium = overlays.id_for_name("FILL000").expect("FILL000");
+
+        assert_eq!(
+            overlay_display_identity(tib12, 8, 4, 7, Some(0), Some(&overlays), Some(&tiberiums),),
+            (tib05, 8)
+        );
+        assert_eq!(
+            overlay_display_identity(gem12, 11, 0, 7, Some(0), Some(&overlays), Some(&tiberiums),),
+            (gem01, 11)
+        );
+        assert_eq!(
+            overlay_display_identity(tib12, 8, 4, 7, Some(2), Some(&overlays), Some(&tiberiums),),
+            (tib12, 8),
+            "sloped resource cells retain their stored display identity"
+        );
+        assert_eq!(
+            overlay_display_identity(
+                non_tiberium,
+                9,
+                4,
+                7,
+                Some(0),
+                Some(&overlays),
+                Some(&tiberiums),
+            ),
+            (non_tiberium, 9),
+            "non-resource overlays remain unchanged"
+        );
+        assert_eq!(
+            overlay_display_identity(
+                tib12,
+                8,
+                u16::MAX,
+                1,
+                Some(0),
+                Some(&overlays),
+                Some(&tiberiums),
+            ),
+            (tib01.checked_sub(1).expect("registered base - 1"), 8),
+            "signed base-relative display selection must not change live density state"
         );
     }
 

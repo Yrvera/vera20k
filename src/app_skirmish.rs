@@ -27,6 +27,7 @@ use crate::rules::color_scheme::scheme_entry_for_priority;
 use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
+use crate::rules::tiberium_type::TiberiumTypeRegistry;
 use crate::sim::ai::AiPlayerState;
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
@@ -3698,7 +3699,6 @@ pub(crate) fn build_overlay_atlas_from_map(
     Vec<OverlayEntry>,
     HashMap<(u8, u8), [u8; 3]>,
 ) {
-    let empty_names: BTreeMap<u8, String> = BTreeMap::new();
     let force_tib_remap_enabled: bool = std::env::var("RA2_FORCE_TIB3_TO_TIB01")
         .ok()
         .map(|v| {
@@ -3720,17 +3720,8 @@ pub(crate) fn build_overlay_atlas_from_map(
         );
     }
 
-    if map_data.overlays.is_empty() && map_data.terrain_objects.is_empty() {
-        return (
-            None,
-            None,
-            None,
-            empty_names,
-            map_data.overlays.clone(),
-            HashMap::new(),
-        );
-    }
     let overlay_registry: OverlayTypeRegistry = OverlayTypeRegistry::from_ini(rules_ini, None);
+    let tiberium_types = TiberiumTypeRegistry::from_ini(rules_ini);
 
     // Compute wall connectivity bitmasks on a mutable clone so the atlas
     // and AppState see correct auto-tiled frames (0–15 per wall type).
@@ -3870,6 +3861,7 @@ pub(crate) fn build_overlay_atlas_from_map(
             theater_ext,
             &map_data.header.theater,
             &overlay_registry,
+            &tiberium_types,
             rules_ini,
             art_registry,
             smudge_types,
