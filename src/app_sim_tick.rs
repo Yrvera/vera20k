@@ -981,20 +981,10 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
         crate::app_building_anim::drain_sound_events(state);
-        // Drain bale events into building anim overlays + particle bursts before
-        // the per-frame anim tick so the SpecialAnim is visible this same frame.
-        crate::app_building_anim::consume_bale_events(state);
-        // Drain tank-bunker wall-anim events into SpecialAnim overlays the same
-        // frame so the walls rise/fall in step with the install/teardown.
-        crate::app_building_anim::consume_bunker_wall_events(state);
-        // Two clocks. The 16ms is wall time for the terrain-overlay animations,
-        // which are not part of the building animation model. Building animation
-        // frame delays are counted in logic frames, so they take the number of
-        // sim frames actually committed this iteration — zero when the lockstep
-        // lane declined to advance, so they never step on a frame that did not
-        // happen.
-        let sim_frames_advanced: u32 = garrison_flash_elapsed_ticks as u32;
-        crate::app_building_anim::tick_crane_animations(state, 16, sim_frames_advanced);
+        // Building one-shots, refinery particles, and their logic-frame clocks
+        // were finalized inside the authoritative sim transaction. Only the
+        // independent wall-clock terrain-overlay timer remains app-owned.
+        crate::app_building_anim::tick_terrain_overlay_animations(state, 16);
         // Looping slot animations are phased off the logic frame their building
         // was placed, so the base has to be recorded on a sim frame boundary
         // rather than on a render frame.
@@ -1040,7 +1030,6 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 /// Tick simulation: advance movement and animation systems.
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_atlases_after_tick = false;
-    let mut crane_owners: Vec<String> = Vec::new();
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
         return false;
@@ -1119,9 +1108,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     &sim.interner,
                 );
             }
-            // Parity capture, if requested. Placed directly after the committed tick so
-            // it observes the same state the tick hash covers, and before any app-layer
-            // animation work that the original engine accounts for elsewhere.
+            // Parity capture, if requested. The sim has already finalized all
+            // authoritative animation and particle work, so this observes the
+            // exact state covered by the returned frame hash.
             if tick_result.frame_committed {
                 if let Some(sink) = state.parity_digest_sink.as_mut() {
                     let digest = sim.parity_digest();
@@ -1590,31 +1579,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
             if tick_result.spawned_entities {
                 refresh_atlases_after_tick = true;
-                log::debug!(
-                    "spawned_entities=true, checking {} due_commands for PlaceReadyBuilding",
-                    due_commands.len()
-                );
-                for cmd in &due_commands {
-                    if let crate::sim::command::Command::PlaceReadyBuilding {
-                        owner, type_id, ..
-                    } = &cmd.payload
-                    {
-                        // Trigger one-shot crane animation on ConYard for each owner that placed a building.
-                        let owner_str = sim.interner.resolve(*owner).to_string();
-                        let type_str = sim.interner.resolve(*type_id).to_string();
-                        // Wall placement has no ConYard crane animation; its
-                        // render identity arrives through SimFrameOutput.
-                        let is_wall = state
-                            .rules
-                            .as_ref()
-                            .and_then(|r| r.object(&type_str))
-                            .map(|o| o.wall)
-                            .unwrap_or(false);
-                        if !is_wall {
-                            crane_owners.push(owner_str);
-                        }
-                    }
-                }
             }
             // A terminal EventClass command still belongs to the deterministic
             // command stream even though Main_Tick skips its frame commit.
@@ -1678,18 +1642,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         if !frame_overlay_updates.is_empty() {
             upsert_occupied_overlay_render_entries(state, frame_overlay_updates);
         }
-    }
-
-    // Trigger one-shot crane animations for owners that placed buildings this frame.
-    if !crane_owners.is_empty() {
-        log::info!(
-            "Triggering crane anims for {} owners: {:?}",
-            crane_owners.len(),
-            crane_owners
-        );
-    }
-    for owner in &crane_owners {
-        crate::app_building_anim::trigger_crane_anim(state, owner);
     }
 
     // Entity identity or ownership changes require presentation atlas refresh.

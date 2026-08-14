@@ -146,7 +146,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -155,7 +155,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false)
+        self.state_hash_with_schema(true, false, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -164,7 +164,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false)
+        self.state_hash_with_schema(false, false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -173,6 +173,7 @@ impl Simulation {
         include_mission_v29: bool,
         include_master_frame_v43: bool,
         include_entity_animation_v44: bool,
+        include_building_anim_overlays_v45: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -230,6 +231,7 @@ impl Simulation {
             include_lifecycle_v28,
             include_mission_v29,
             include_entity_animation_v44,
+            include_building_anim_overlays_v45,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -829,6 +831,7 @@ impl Simulation {
         include_lifecycle_v28: bool,
         include_mission_v29: bool,
         include_entity_animation_v44: bool,
+        include_building_anim_overlays_v45: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -877,6 +880,24 @@ impl Simulation {
                 animation.frame_index.hash(hasher);
                 animation.elapsed_frames.hash(hasher);
                 animation.finished.hash(hasher);
+            }
+            if include_building_anim_overlays_v45
+                && let Some(overlays) = entity.building_anim_overlays.as_ref()
+            {
+                b"building-anim-overlays-v1".hash(hasher);
+                overlays.anims.len().hash(hasher);
+                for anim in &overlays.anims {
+                    self.interner
+                        .resolve(anim.anim_type)
+                        .to_ascii_uppercase()
+                        .hash(hasher);
+                    anim.frame.hash(hasher);
+                    anim.loop_start.hash(hasher);
+                    anim.loop_end.hash(hasher);
+                    anim.rate_logic_frames.hash(hasher);
+                    anim.elapsed_logic_frames.hash(hasher);
+                    anim.finished.hash(hasher);
+                }
             }
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
@@ -2640,6 +2661,165 @@ mod radio_contact_hash_tests {
             with_stale_contact.state_hash(),
             never_contacted.state_hash(),
             "cleanup should leave the same hash as a sim that never carried the stale contact",
+        );
+    }
+}
+
+#[cfg(test)]
+mod building_anim_overlay_hash_tests {
+    use super::Simulation;
+    use crate::map::entities::EntityCategory;
+    use crate::sim::components::{AnimOverlayState, BuildingAnimOverlays, Health};
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::intern::InternedId;
+
+    fn base_overlay(anim_type: InternedId) -> AnimOverlayState {
+        AnimOverlayState {
+            anim_type,
+            frame: 5,
+            loop_start: 3,
+            loop_end: 12,
+            rate_logic_frames: 6,
+            elapsed_logic_frames: 2,
+            finished: false,
+        }
+    }
+
+    fn hash_with_overlays(
+        build: impl FnOnce(InternedId, InternedId) -> Option<BuildingAnimOverlays>,
+    ) -> u64 {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Allies");
+        let type_ref = sim.interner.intern("GACNST");
+        let first_anim = sim.interner.intern("GACNST_B");
+        let second_anim = sim.interner.intern("GACNST_C");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            1,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.building_anim_overlays = build(first_anim, second_anim);
+        sim.substrate.entities.insert(entity);
+        sim.state_hash()
+    }
+
+    fn hash_with_mutation(mutate: impl FnOnce(&mut AnimOverlayState, InternedId)) -> u64 {
+        hash_with_overlays(|first_anim, second_anim| {
+            let mut overlay = base_overlay(first_anim);
+            mutate(&mut overlay, second_anim);
+            Some(BuildingAnimOverlays {
+                anims: vec![overlay],
+            })
+        })
+    }
+
+    #[test]
+    fn presence_vector_order_and_every_overlay_field_change_state_hash() {
+        let absent = hash_with_overlays(|_, _| None);
+        let empty = hash_with_overlays(|_, _| Some(BuildingAnimOverlays { anims: Vec::new() }));
+        let base = hash_with_mutation(|_, _| {});
+        assert_ne!(absent, empty, "overlay component presence is hashed");
+        assert_ne!(empty, base, "overlay vector length is hashed");
+
+        let forward = hash_with_overlays(|first, second| {
+            Some(BuildingAnimOverlays {
+                anims: vec![base_overlay(first), base_overlay(second)],
+            })
+        });
+        let reversed = hash_with_overlays(|first, second| {
+            Some(BuildingAnimOverlays {
+                anims: vec![base_overlay(second), base_overlay(first)],
+            })
+        });
+        assert_ne!(forward, reversed, "overlay vector order is hashed");
+
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, second| overlay.anim_type = second),
+            "anim_type is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.frame += 1),
+            "frame is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.loop_start += 1),
+            "loop_start is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.loop_end += 1),
+            "loop_end is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.rate_logic_frames += 1),
+            "rate_logic_frames is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.elapsed_logic_frames += 1),
+            "elapsed_logic_frames is hashed"
+        );
+        assert_ne!(
+            base,
+            hash_with_mutation(|overlay, _| overlay.finished = true),
+            "finished is hashed"
+        );
+    }
+
+    #[test]
+    fn overlay_hash_uses_canonical_animation_name_not_process_local_id() {
+        fn build(with_unreferenced_intern: bool, anim_name: &str) -> u64 {
+            let mut sim = Simulation::new();
+            let owner = sim.interner.intern("Allies");
+            let type_ref = sim.interner.intern("GACNST");
+            if with_unreferenced_intern {
+                sim.interner.intern("PRESENTATION_ONLY_NAME");
+            }
+            let anim_type = sim.interner.intern(anim_name);
+            let mut entity = GameEntity::new_at_frame_zero_for_test(
+                1,
+                5,
+                5,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 1000,
+                    max: 1000,
+                },
+                type_ref,
+                EntityCategory::Structure,
+                0,
+                5,
+                false,
+            );
+            entity.building_anim_overlays = Some(BuildingAnimOverlays {
+                anims: vec![base_overlay(anim_type)],
+            });
+            sim.substrate.entities.insert(entity);
+            sim.state_hash()
+        }
+
+        assert_eq!(
+            build(false, "GACNST_B"),
+            build(true, "gacnst_b"),
+            "hashing ignores process-local ID allocation and first-seen casing"
         );
     }
 }

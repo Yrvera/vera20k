@@ -140,7 +140,8 @@ use crate::sim::world::Simulation;
 // animation is roughly 44x too slow and looks stopped. Identical width is what
 // makes this dangerous rather than safe — the test a unit change has to pass is
 // whether old bytes still deserialize to the correct meaning, not whether they
-// deserialize at all. Presentation state, so NOT hashed.
+// deserialize at all. At v45 this was treated as presentation state and was not
+// hashed; v79 below changes that contract.
 // (44 is claimed by the in-flight spawner slice, which lands first; this jumps
 // over it deliberately.)
 //
@@ -246,7 +247,13 @@ use crate::sim::world::Simulation;
 // Bumped 77 -> 78: living GameEntity Animation state now advances inside the
 // committed master frame and all four serialized fields participate in the
 // lockstep hash. Layout is unchanged, but cross-version replay would diverge.
-const SNAPSHOT_VERSION: u32 = 78;
+// Bumped 78 -> 79: BuildingAnimOverlays was already serialized with this exact
+// layout, but crane, refinery-bale, and tank-bunker overlays now finalize inside
+// the committed master frame before `state_hash`, and component presence, vector
+// order, and every overlay field participate in the lockstep hash. This is a
+// behavior/hash-only boundary: old bytes would decode, but resume under different
+// timing and produce an incompatible returned hash, so cross-version load is refused.
+const SNAPSHOT_VERSION: u32 = 79;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2543,10 +2550,84 @@ mod tests {
     /// -> 76 added AnimClass cell-drawer and terrain-attached bytes; 76 -> 77
     /// added the persistent Foot SHP body-frame counter and Ship-owned
     /// destination/target/current speed state used by its SHP movement slots;
-    /// 77 -> 78 made living GameEntity Animation timing hash-authoritative.
+    /// 77 -> 78 made living GameEntity Animation timing hash-authoritative;
+    /// 78 -> 79 moved building-overlay finalization before the returned hash
+    /// and made the already-serialized overlay component hash-authoritative.
     #[test]
-    fn gsi_13_06_snapshot_version_is_78() {
-        assert_eq!(super::SNAPSHOT_VERSION, 78);
+    fn gsi_13_06_snapshot_version_is_79() {
+        assert_eq!(super::SNAPSHOT_VERSION, 79);
+    }
+
+    #[test]
+    fn building_anim_overlay_roundtrips_with_v79_hash_and_version() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::components::{AnimOverlayState, BuildingAnimOverlays, Health};
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        let entity_id = sim.allocate_stable_id();
+        let owner = sim.interner.intern("Allies");
+        let type_ref = sim.interner.intern("GACNST");
+        let anim_type = sim.interner.intern("GACNST_B");
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            entity_id,
+            5,
+            5,
+            0,
+            0,
+            owner,
+            Health {
+                current: 1000,
+                max: 1000,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            5,
+            false,
+        );
+        entity.building_anim_overlays = Some(BuildingAnimOverlays {
+            anims: vec![AnimOverlayState {
+                anim_type,
+                frame: 5,
+                loop_start: 3,
+                loop_end: 12,
+                rate_logic_frames: 6,
+                elapsed_logic_frames: 2,
+                finished: false,
+            }],
+        });
+        sim.substrate.entities.insert(entity);
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
+        let header = GameSnapshot::read_header(&bytes).expect("v79 building-overlay header");
+        assert_eq!(header.version, 79);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("v79 building-overlay snapshot")
+            .sim;
+        restored
+            .restore_after_snapshot_load()
+            .expect("v79 building-overlay snapshot restores structurally");
+        let overlays = restored
+            .substrate
+            .entities
+            .get(entity_id)
+            .expect("restored Construction Yard")
+            .building_anim_overlays
+            .as_ref()
+            .expect("restored building overlays");
+        assert_eq!(overlays.anims.len(), 1);
+        let overlay = &overlays.anims[0];
+        assert_eq!(restored.interner.resolve(overlay.anim_type), "GACNST_B");
+        assert_eq!(overlay.frame, 5);
+        assert_eq!(overlay.loop_start, 3);
+        assert_eq!(overlay.loop_end, 12);
+        assert_eq!(overlay.rate_logic_frames, 6);
+        assert_eq!(overlay.elapsed_logic_frames, 2);
+        assert!(!overlay.finished);
+        assert_eq!(restored.state_hash(), expected_hash);
     }
 
     #[test]
@@ -2606,7 +2687,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v78 body-counter snapshot")
+            .expect("v79 body-counter snapshot")
             .sim;
         assert_eq!(
             restored

@@ -11,6 +11,7 @@
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 
 pub(crate) mod bridge_orchestrator;
+pub(crate) mod building_anim;
 pub mod edge_cell;
 mod lifecycle;
 mod logic_vector;
@@ -658,17 +659,18 @@ pub struct Simulation {
     lifecycle_test_events: Vec<LifecycleTestEvent>,
     /// App-visible outcomes produced by the authoritative trigger rung.
     /// Trigger actions mutate `trigger_runtime` during the frame; only their
-    /// presentation outcomes are drained by the app after the tick.
+    /// presentation outcomes are moved into `SimFrameOutput` after the tick.
     #[serde(skip)]
     trigger_effects: Vec<TriggerEffect>,
     #[cfg(test)]
     #[serde(skip)]
     master_frame_test_trace: Vec<MasterFrameTestRung>,
-    /// Sound events produced during the current tick — drained by the app layer.
+    /// Sound events produced during the current tick and moved into the owned
+    /// app-frame output batch.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
-    /// Fire events produced during combat — drained by the app layer for
-    /// muzzle flash rendering and future projectile origin computation.
+    /// Fire events produced during combat and moved into the app-frame output
+    /// for muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
     /// Native IC/ForceShield impact combat-light requests emitted in receiver
@@ -689,15 +691,14 @@ pub struct Simulation {
     /// never persists across ticks.
     #[serde(skip)]
     pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
-    /// Bale deposit events emitted during refinery dock unloading — drained
-    /// by the app layer for SpecialAnim trigger and particle bursts.
+    /// Bale deposit events emitted during refinery dock unloading and consumed
+    /// by the authoritative frame tail for SpecialAnim and particle creation.
     #[serde(skip)]
-    pub bale_events: Vec<crate::sim::components::BaleDepositEvent>,
+    pub(crate) bale_events: Vec<crate::sim::components::BaleDepositEvent>,
     /// Tank-bunker wall-anim events — walls rising on install / falling on
-    /// teardown. Drained by the app layer to create SpecialAnim overlays.
-    /// Render-only; never persisted or hashed.
+    /// teardown. Consumed by the authoritative frame tail before hashing.
     #[serde(skip)]
-    pub bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
+    pub(crate) bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
     /// Resolved TeamClass/ScriptType runtime; scenario INI parsing remains a
@@ -3980,7 +3981,7 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> (bool, bool, bool) {
+    ) -> (bool, bool, bool, Option<InternedId>) {
         let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
         let applied = self.apply_command_with_overlays(
             &cmd_owner_str,
@@ -3990,22 +3991,43 @@ impl Simulation {
             height_map,
             overlay_registry,
         );
-        let spawned_entity = applied
-            && match cmd.payload {
-                Command::PlaceReadyBuilding { type_id, .. } => rules
-                    .and_then(|rules| rules.object(self.interner.resolve(type_id)))
-                    .is_some_and(|object| !object.wall),
-                Command::DeployMcv { .. }
-                | Command::UndeployBuilding { .. }
-                | Command::LaunchSuperWeapon { .. } => true,
-                _ => false,
-            };
+        let placed_building_owner =
+            self.successful_non_wall_placement_owner(cmd, applied, rules);
+        let spawned_entity = placed_building_owner.is_some()
+            || applied
+                && matches!(
+                    cmd.payload,
+                    Command::DeployMcv { .. }
+                        | Command::UndeployBuilding { .. }
+                        | Command::LaunchSuperWeapon { .. }
+                );
         let destroyed_structure = applied
             && matches!(
                 cmd.payload,
                 Command::SellBuilding { .. } | Command::UndeployBuilding { .. }
             );
-        (applied, spawned_entity, destroyed_structure)
+        (
+            applied,
+            spawned_entity,
+            destroyed_structure,
+            placed_building_owner,
+        )
+    }
+
+    fn successful_non_wall_placement_owner(
+        &self,
+        command: &CommandEnvelope,
+        applied: bool,
+        rules: Option<&RuleSet>,
+    ) -> Option<InternedId> {
+        let Command::PlaceReadyBuilding { type_id, .. } = command.payload else {
+            return None;
+        };
+        (applied
+            && rules
+                .and_then(|rules| rules.object(self.interner.resolve(type_id)))
+                .is_some_and(|object| !object.wall))
+        .then_some(command.owner)
     }
 
     fn is_wall_placement_command(&self, command: &Command, rules: Option<&RuleSet>) -> bool {
@@ -4338,7 +4360,8 @@ impl Simulation {
     /// Apply all due commands in HouseClass registration
     /// order. Each house preserves insertion order within the normal and
     /// staged-megamission streams. Returns
-    /// `(executed_commands, spawned_entities, destroyed_structure)`.
+    /// `(executed_commands, spawned_entities, destroyed_structure,
+    /// successful_non_wall_placement_owners)`.
     fn apply_due_commands(
         &mut self,
         commands: &[CommandEnvelope],
@@ -4347,10 +4370,11 @@ impl Simulation {
         height_map: &BTreeMap<(u16, u16), u8>,
         execute_tick: u64,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> (usize, bool, bool) {
+    ) -> (usize, bool, bool, Vec<InternedId>) {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut placed_building_owners = Vec::new();
         let mut tail_path_grid = path_grid
             .cloned()
             .or_else(|| self.path_grid.as_deref().cloned());
@@ -4373,7 +4397,7 @@ impl Simulation {
                     && command.owner == owner
                     && !Self::command_uses_megamission(&command.payload)
             }) {
-                let (applied, spawned, destroyed) = self.apply_one_due_command(
+                let (applied, spawned, destroyed, placed_owner) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4387,6 +4411,7 @@ impl Simulation {
                 }
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
+                placed_building_owners.extend(placed_owner);
                 executed_commands += 1;
             }
 
@@ -4401,7 +4426,7 @@ impl Simulation {
                 .collect::<Vec<_>>();
             self.adjust_staged_megamission_destinations(&mut staged, tail_path_grid.as_ref());
             for command in &staged {
-                let (_, spawned, destroyed) = self.apply_one_due_command(
+                let (_, spawned, destroyed, placed_owner) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4410,11 +4435,17 @@ impl Simulation {
                 );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
+                placed_building_owners.extend(placed_owner);
                 executed_commands += 1;
             }
         }
 
-        (executed_commands, spawned_entities, destroyed_structure)
+        (
+            executed_commands,
+            spawned_entities,
+            destroyed_structure,
+            placed_building_owners,
+        )
     }
 
     /// Spine region (LATE): AI commands, defeat detection, building animations,
@@ -4433,6 +4464,7 @@ impl Simulation {
         executed_commands: &mut usize,
         spawned_entities: &mut bool,
         destroyed_structure: &mut bool,
+        placed_building_owners: &mut Vec<InternedId>,
     ) -> bool {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
@@ -4515,16 +4547,16 @@ impl Simulation {
                 if applied && self.is_wall_placement_command(&cmd.payload, rules) {
                     ai_tail_path_grid = self.path_grid.as_deref().cloned().or(ai_tail_path_grid);
                 }
-                if applied
-                    && match cmd.payload {
-                        Command::PlaceReadyBuilding { type_id, .. } => rules
-                            .and_then(|rules| rules.object(self.interner.resolve(type_id)))
-                            .is_some_and(|object| !object.wall),
-                        Command::DeployMcv { .. }
-                        | Command::UndeployBuilding { .. }
-                        | Command::LaunchSuperWeapon { .. } => true,
-                        _ => false,
-                    }
+                let placed_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
+                placed_building_owners.extend(placed_owner);
+                if placed_owner.is_some()
+                    || applied
+                        && matches!(
+                            cmd.payload,
+                            Command::DeployMcv { .. }
+                                | Command::UndeployBuilding { .. }
+                                | Command::LaunchSuperWeapon { .. }
+                        )
                 {
                     *spawned_entities = true;
                 }
@@ -4570,7 +4602,7 @@ impl Simulation {
         // EventClass dispatch is a Main_Tick tail rung: the complete live
         // Logic walk observes frame N's pre-command state, so an accepted
         // command first changes that object's AI behavior on frame N+1.
-        let (executed, spawned, destroyed) = self.apply_due_commands(
+        let (executed, spawned, destroyed, placed_owners) = self.apply_due_commands(
             commands,
             rules,
             path_grid,
@@ -4581,6 +4613,7 @@ impl Simulation {
         *executed_commands += executed;
         *spawned_entities |= spawned;
         *destroyed_structure |= destroyed;
+        placed_building_owners.extend(placed_owners);
 
         // Main_Tick returns immediately on a terminal result. The wrapping
         // frame commit, pacing tail, and pending-delete drain are all skipped
@@ -4732,6 +4765,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut placed_building_owners = Vec::new();
         let mut tail_path_grid: Option<PathGrid> = None;
         // No command-boundary drain: command-applied deaths (sell, MCV/slave
         // deploy-undeploy, engineer capture) now stay in the Dying window like
@@ -5583,6 +5617,7 @@ impl Simulation {
             &mut executed_commands,
             &mut spawned_entities,
             &mut destroyed_structure,
+            &mut placed_building_owners,
         );
         self.frame_overlay_updates = self.finalize_frame_overlays_and_navigation(
             rules,
@@ -5623,6 +5658,11 @@ impl Simulation {
             animation::tick_voxel_animations(self.entities_mut());
             animation::tick_harvest_overlays(self.entities_mut());
         }
+        building_anim::finalize(self, &placed_building_owners, frame_committed, rules);
+        #[cfg(debug_assertions)]
+        self.debug_assert_logic_membership_consistent();
+        #[cfg(debug_assertions)]
+        self.debug_assert_lifecycle_consistent();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,
