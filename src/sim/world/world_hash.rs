@@ -146,7 +146,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true)
+        self.state_hash_with_schema(true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -155,7 +155,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false)
+        self.state_hash_with_schema(true, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -164,7 +164,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false)
+        self.state_hash_with_schema(false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -172,6 +172,7 @@ impl Simulation {
         include_lifecycle_v28: bool,
         include_mission_v29: bool,
         include_master_frame_v43: bool,
+        include_entity_animation_v44: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -224,7 +225,12 @@ impl Simulation {
             self.hash_waves(&mut hasher);
         }
         self.hash_super_weapons(&mut hasher);
-        self.hash_entities(&mut hasher, include_lifecycle_v28, include_mission_v29);
+        self.hash_entities(
+            &mut hasher,
+            include_lifecycle_v28,
+            include_mission_v29,
+            include_entity_animation_v44,
+        );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
         self.hash_session_identity(&mut hasher);
@@ -822,6 +828,7 @@ impl Simulation {
         hasher: &mut impl Hasher,
         include_lifecycle_v28: bool,
         include_mission_v29: bool,
+        include_entity_animation_v44: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -862,6 +869,15 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.body_frame_counter.hash(hasher);
+            if include_entity_animation_v44
+                && let Some(animation) = entity.animation.as_ref()
+            {
+                b"entity-animation-v1".hash(hasher);
+                animation.sequence.hash(hasher);
+                animation.frame_index.hash(hasher);
+                animation.elapsed_frames.hash(hasher);
+                animation.finished.hash(hasher);
+            }
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
@@ -2632,7 +2648,7 @@ mod radio_contact_hash_tests {
 mod infantry_hash_tests {
     use super::Simulation;
     use crate::map::entities::EntityCategory;
-    use crate::sim::animation::SequenceKind;
+    use crate::sim::animation::{Animation, SequenceKind};
     use crate::sim::combat::{AttackTarget, PendingInfantryFire};
     use crate::sim::components::Health;
     use crate::sim::game_entity::{GameEntity, InfantryRuntime};
@@ -2655,6 +2671,38 @@ mod infantry_hash_tests {
             5,
             false,
         )
+    }
+
+    fn hash_with_animation(animation: Option<Animation>) -> u64 {
+        let mut sim = Simulation::new();
+        let mut entity = infantry_entity(&mut sim);
+        entity.animation = animation;
+        sim.substrate.entities.insert(entity);
+        sim.state_hash()
+    }
+
+    #[test]
+    fn every_gameplay_read_animation_field_changes_state_hash() {
+        let absent = hash_with_animation(None);
+        let base = Animation::new(SequenceKind::Stand);
+        let base_hash = hash_with_animation(Some(base.clone()));
+        assert_ne!(absent, base_hash);
+
+        let mut sequence = base.clone();
+        sequence.sequence = SequenceKind::Attack;
+        assert_ne!(base_hash, hash_with_animation(Some(sequence)));
+
+        let mut frame_index = base.clone();
+        frame_index.frame_index = 1;
+        assert_ne!(base_hash, hash_with_animation(Some(frame_index)));
+
+        let mut elapsed_frames = base.clone();
+        elapsed_frames.elapsed_frames = 1;
+        assert_ne!(base_hash, hash_with_animation(Some(elapsed_frames)));
+
+        let mut finished = base;
+        finished.finished = true;
+        assert_ne!(base_hash, hash_with_animation(Some(finished)));
     }
 
     #[test]

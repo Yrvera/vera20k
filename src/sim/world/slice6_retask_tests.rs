@@ -254,7 +254,9 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xAAC4_502B_90AF_E0A6;
 // Re-baselined 2026-08-13 for the same global-ID hash-composition change above.
 // Re-baselined 2026-08-14 for the same v77 authoritative-state composition
 // described at the two legacy probes above.
-const SLICE6_BASELINE_HASH: u64 = 0xC469_B8C1_050F_D1A7;
+// Re-baselined 2026-08-14 for v44 entity-animation hash authority. Both legacy
+// probes remain exact, isolating this to the current-schema composition change.
+const SLICE6_BASELINE_HASH: u64 = 0x315B_AED2_F4AD_52E6;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

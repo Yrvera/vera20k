@@ -242,7 +242,10 @@ use crate::sim::world::Simulation;
 // Bumped 76 -> 77: GameEntity now persists FootClass's wrapping SHP body-frame
 // counter plus Drive/Ship's SHP movement-predicate runtime. Both are
 // hash-authoritative and resume without a visual-sequence reset.
-const SNAPSHOT_VERSION: u32 = 77;
+// Bumped 77 -> 78: living GameEntity Animation state now advances inside the
+// committed master frame and all four serialized fields participate in the
+// lockstep hash. Layout is unchanged, but cross-version replay would diverge.
+const SNAPSHOT_VERSION: u32 = 78;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1866,10 +1869,11 @@ mod tests {
     /// generic Building delayed-fire signed counter and saved weapon slot; 75
     /// -> 76 added AnimClass cell-drawer and terrain-attached bytes; 76 -> 77
     /// added the persistent Foot SHP body-frame counter and Ship-owned
-    /// destination/target/current speed state used by its SHP movement slots.
+    /// destination/target/current speed state used by its SHP movement slots;
+    /// 77 -> 78 made living GameEntity Animation timing hash-authoritative.
     #[test]
-    fn gsi_13_06_snapshot_version_is_77() {
-        assert_eq!(super::SNAPSHOT_VERSION, 77);
+    fn gsi_13_06_snapshot_version_is_78() {
+        assert_eq!(super::SNAPSHOT_VERSION, 78);
     }
 
     #[test]
@@ -1929,7 +1933,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v77 body-counter snapshot")
+            .expect("v78 body-counter snapshot")
             .sim;
         assert_eq!(
             restored

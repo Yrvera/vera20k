@@ -443,7 +443,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4C5B_B09C_D7B8_61ED;
 /// Re-baselined 2026-08-14 for the same v77 authoritative-state composition
 /// documented at the legacy probes above. The absolute RNG tuple remains the
 /// committed value and record/replay equality remains exact.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x2327_2C3C_37D9_6CD3;
+/// Re-baselined 2026-08-14 for v44 entity-animation hash authority. The legacy
+/// probes and absolute RNG tuple remain unchanged; record/replay equality proves
+/// the measured delta is the intentional hash-schema addition.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE6E7_B06A_F993_DC6D;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

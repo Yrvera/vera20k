@@ -51,8 +51,7 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
-#[test]
-fn master_frame_hash_observes_living_animation_completion_facing() {
+fn animation_boundary_fixture() -> (Simulation, BTreeMap<String, SequenceSet>) {
     let mut sim = Simulation::with_seed(0xA11A_7100);
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("E1");
@@ -103,6 +102,12 @@ fn master_frame_hash_observes_living_animation_completion_facing() {
     set.insert(SequenceKind::Idle1, idle);
     set.insert(SequenceKind::Stand, stand);
     let sequences = BTreeMap::from([("E1".to_string(), set)]);
+    (sim, sequences)
+}
+
+#[test]
+fn master_frame_hash_observes_living_animation_completion_facing() {
+    let (mut sim, sequences) = animation_boundary_fixture();
 
     let result = sim.advance_master_frame(
         &[],
@@ -123,6 +128,36 @@ fn master_frame_hash_observes_living_animation_completion_facing() {
         SequenceKind::Stand
     );
     assert_eq!(result.state_hash, sim.state_hash());
+}
+
+#[test]
+fn terminal_master_frame_does_not_advance_living_animation() {
+    let (mut sim, sequences) = animation_boundary_fixture();
+    let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
+
+    let result = sim.advance_master_frame(
+        &[exit],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        Some(&sequences),
+        None,
+    );
+
+    assert!(!result.frame_committed);
+    assert_eq!(sim.session.tick, 0);
+    assert_eq!(sim.session.binary_frame, 0);
+    let entity = sim.substrate.entities.get(1).expect("living infantry");
+    let animation = entity.animation.as_ref().expect("animation");
+    assert_eq!(animation.sequence, SequenceKind::Idle1);
+    assert_eq!(animation.frame_index, 0);
+    assert_eq!(animation.elapsed_frames, 0);
+    assert!(!animation.finished);
+    assert_eq!(entity.facing, 0);
 }
 
 fn gsi_13_10_art_model_rules() -> RuleSet {
