@@ -818,8 +818,6 @@ pub struct MapLoadResult {
     /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
     pub bridge_height_map: BTreeMap<(u16, u16), u8>,
     pub tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
-    /// Pre-built pathfinding grid with water/cliff/building walkability.
-    pub path_grid: Option<PathGrid>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
     pub rules: Option<RuleSet>,
     /// Art.ini registry — kept for building animation overlay lookups at render time.
@@ -2355,7 +2353,6 @@ pub(crate) fn load_map_from_initial(
         height_map,
         bridge_height_map,
         tactical_bridge_inverse_map,
-        path_grid,
         rules,
         art_registry: art,
         infantry_sequences,

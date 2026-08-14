@@ -267,7 +267,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
             continue;
         }
         let mut goal = (target_rx, target_ry);
-        if let Some(grid) = state.path_grid.as_ref() {
+        if let Some(grid) = sim.path_grid() {
             if !crate::app_sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
                 if let Some(nearest) =
                     crate::app_sim_tick::nearest_walkable_cell_layered(grid, goal, 12)

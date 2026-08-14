@@ -484,7 +484,6 @@ impl App {
             selection_voice_enabled: true,
             loaded_map_source: None,
             loaded_map_hash: None,
-            path_grid: None,
             animation_sequences: BTreeMap::new(),
             parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
                 Ok(sink) => {

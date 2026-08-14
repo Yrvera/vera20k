@@ -10,7 +10,7 @@ use super::{
     EguiIntegration, EventMap, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, InfantrySequenceRegistry, Instant, KeyCode, LightingConfig, MapMenuEntry,
     MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayEntry, OverlayTypeRegistry,
-    PathGrid, RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
+    RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
     SelectionOverlay, SelectionState, SequenceSet, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, Simulation, SkirmishSettings,
     SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
@@ -289,8 +289,6 @@ pub(crate) struct AppState {
     /// Existing selection paths speak by default; held TypeSelect batches
     /// temporarily suppress and restore this latch.
     pub(crate) selection_voice_enabled: bool,
-    /// A* pathfinding grid — walkability data from terrain.
-    pub(crate) path_grid: Option<PathGrid>,
     /// Sequence definitions per entity type for animation ticking.
     pub(crate) animation_sequences: BTreeMap<String, SequenceSet>,
     /// Optional per-tick parity digest stream, opened only when the environment asks.

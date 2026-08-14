@@ -670,7 +670,7 @@ impl TacticalCaptureSession {
                 && state.minimap.is_some()
                 && state.sidebar_chrome.is_some()
                 && state.software_cursor.is_some()
-                && state.path_grid.is_some()
+                && sim.path_grid().is_some()
                 && state.asset_manager.is_some(),
             "Rust L0 is missing one or more production render/simulation resources"
         );
@@ -804,9 +804,8 @@ impl TacticalCaptureSession {
             .and_then(|script| script.structure_bindings().yard.as_ref())
             .and_then(|yard| {
                 ready_buildings.first().map(|ready| {
-                    let path_grid = state
-                        .path_grid
-                        .as_ref()
+                    let path_grid = sim
+                        .path_grid()
                         .context("ready building lacks production PathGrid")?;
                     first_valid_placement(
                         sim,

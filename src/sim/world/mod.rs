@@ -3204,11 +3204,9 @@ impl Simulation {
     /// `restore_after_snapshot_load`, which resolves stable-ID references and
     /// rebuilds registry, LogicVector-membership, and CellClass-list caches.
     ///
-    /// Note: `zone_grid` is NOT rebuilt here — it requires the app layer's
-    /// `PathGrid` (built from resolved terrain + bridge state + building
-    /// footprints). The caller
-    /// should call `rebuild_dynamic_path_grid()` after this method, which triggers
-    /// `rebuild_zone_grid()` as part of the normal tick flow.
+    /// Note: dynamic navigation is NOT rebuilt here because structure foundations
+    /// require the bound rules. The caller must invoke
+    /// `rebuild_dynamic_navigation()` after restoring those rules.
     pub fn rebuild_caches_after_load(
         &mut self,
         mut resolved_terrain: ResolvedTerrainGrid,
@@ -3304,6 +3302,46 @@ impl Simulation {
     /// Pin the current navigation projection across a mutable simulation frame.
     pub fn path_grid_snapshot(&self) -> Option<Arc<PathGrid>> {
         self.path_grid.clone()
+    }
+
+    /// Rebuild terrain costs, dynamic structure blockers, zones, and the
+    /// canonical PathGrid as one simulation-owned projection.
+    pub fn rebuild_dynamic_navigation(&mut self, rules: &RuleSet) -> bool {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return false;
+        };
+        let mut grid =
+            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
+        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+
+        let mut structures: Vec<(u16, u16, String)> = self
+            .substrate
+            .entities
+            .values()
+            .filter_map(|entity| {
+                (entity.category == EntityCategory::Structure).then_some((
+                    entity.position.rx,
+                    entity.position.ry,
+                    self.interner.resolve(entity.type_ref).to_string(),
+                ))
+            })
+            .collect();
+        structures.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (rx, ry, type_id) in structures {
+            let object_type = rules.object(&type_id);
+            let foundation = object_type
+                .map(|object| object.foundation.as_str())
+                .unwrap_or("1x1");
+            let has_bib = object_type.is_some_and(|object| object.bib);
+            grid.block_building_movement_cells(rx, ry, foundation, has_bib);
+        }
+
+        self.rebuild_zone_grid(&grid);
+        true
     }
 
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
@@ -4569,18 +4607,18 @@ impl Simulation {
         commands: &[CommandEnvelope],
         rules: Option<&RuleSet>,
         height_map: &BTreeMap<(u16, u16), u8>,
-        path_grid: Option<&PathGrid>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         lane: TickLane,
         animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> SimFrameOutput {
+        let path_grid = self.path_grid_snapshot();
         let tick = self.advance_master_frame(
             commands,
             rules,
             height_map,
-            path_grid,
+            path_grid.as_deref(),
             overlay_registry,
             tick_ms,
             lane,

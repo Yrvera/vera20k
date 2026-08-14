@@ -179,7 +179,6 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
         None,
         &empty_heights(),
         None,
-        None,
         67,
         TickLane::Ordinary,
         None,
@@ -195,7 +194,6 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
         &[],
         None,
         &empty_heights(),
-        None,
         None,
         67,
         TickLane::Ordinary,
@@ -590,6 +588,70 @@ fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
         &pinned,
         &sim.path_grid_snapshot().expect("second navigation snapshot")
     ));
+}
+
+#[test]
+fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=GAREFN\n\
+         [GAREFN]\nStrength=100\nFoundation=4x3\nBib=yes\n",
+    ))
+    .expect("dynamic navigation rules");
+    let mut terrain = gsi_04_10_clear_terrain(16, 16);
+    for rx in [1, 3] {
+        let cell = terrain.cell_mut(rx, 1).expect("bridgehead cell");
+        cell.bridge_walkable = true;
+        cell.bridge_transition = true;
+        cell.bridge_deck_level = 4;
+    }
+    {
+        let cell = terrain.cell_mut(2, 1).expect("bridge body cell");
+        cell.ground_walk_blocked = true;
+        cell.build_blocked = true;
+        cell.base_build_blocked = true;
+        cell.is_water = true;
+        cell.bridge_walkable = true;
+        cell.has_bridge_deck = true;
+        cell.bridge_deck_level = 4;
+    }
+
+    let mut sim = Simulation::new();
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
+        &terrain, true, 10,
+    ));
+    sim.resolved_terrain = Some(terrain);
+    let owner = sim.interner.intern("Americans");
+    let type_ref = sim.interner.intern("GAREFN");
+    sim.substrate.entities.insert(
+        GameEntity::new_at_frame_zero_for_test(
+            1,
+            8,
+            8,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            0,
+            false,
+        ),
+    );
+
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let grid = sim.path_grid().expect("published navigation");
+    assert!(!grid.is_walkable(8, 9));
+    assert!(!grid.is_walkable(10, 9));
+    assert!(grid.is_walkable(11, 9), "Bib must relax the east edge");
+    assert!(grid.cell(1, 1).expect("west bridgehead").transition);
+    assert!(grid.cell(2, 1).expect("bridge body").bridge_walkable);
+    assert!(grid.cell(3, 1).expect("east bridgehead").transition);
+    assert!(sim.zone_grid.is_some());
 }
 
 #[test]

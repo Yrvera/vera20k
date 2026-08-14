@@ -27,8 +27,6 @@ use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
 use crate::sim::animation::{self, SequenceSet};
 use crate::sim::overlay_grid::recalc_overlay_passability;
-use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
@@ -1109,7 +1107,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
-                state.path_grid.as_ref(),
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
                 tick_lane,
@@ -1893,64 +1890,14 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     crate::app_camera::center_camera_on_cell(state, rx, ry);
 }
 
-/// Rebuild both terrain-derived navigation caches from one resolved-terrain
-/// snapshot. Runtime terrain removal mutates that snapshot, so refreshing only
-/// PathGrid would leave movement's per-SpeedType costs permanently blocked.
-fn rebuild_dynamic_terrain_navigation(sim: &mut crate::sim::world::Simulation) -> Option<PathGrid> {
-    let terrain = sim.resolved_terrain.as_ref()?;
-    let grid = PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
-    sim.terrain_costs = build_canonical_terrain_cost_grids(terrain);
-    Some(grid)
-}
-
 pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
-    // Build fresh from terrain + current bridge_state every time. Bridge
-    // runtime walkability mutates during gameplay (collapse/repair), so a
-    // cached "terrain-only" base would silently go stale.
     let Some(rules) = state.rules.as_ref() else {
         return;
     };
     let Some(ref mut sim) = state.simulation else {
         return;
     };
-    let Some(mut grid) = rebuild_dynamic_terrain_navigation(sim) else {
-        return;
-    };
-
-    let mut structures: Vec<(u16, u16, String)> = sim
-        .entities()
-        .values()
-        .filter_map(|entity| {
-            (entity.category == EntityCategory::Structure).then_some((
-                entity.position.rx,
-                entity.position.ry,
-                sim.interner.resolve(entity.type_ref).to_string(),
-            ))
-        })
-        .collect();
-    structures.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-
-    for (rx, ry, type_id) in &structures {
-        let obj = rules.object(type_id);
-        let foundation = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-        let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
-        grid.block_building_movement_cells(*rx, *ry, foundation, has_bib);
-    }
-
-    state.path_grid = Some(grid);
-
-    // Rebuild zone connectivity map for instant unreachability detection.
-    // The unified PathGrid already contains building/wall/bridge data from
-    // resolved terrain, so no separate sync step is needed.
-    if let Some(ref mut sim) = state.simulation {
-        if let Some(ref grid) = state.path_grid {
-            sim.rebuild_zone_grid(grid);
-        }
-    }
+    let _ = sim.rebuild_dynamic_navigation(rules);
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
@@ -1999,7 +1946,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         type_id,
         rx,
         ry,
-        state.path_grid.as_ref(),
+        sim.path_grid(),
         &state.height_map,
         state.overlay_registry.as_ref(),
     );
@@ -2314,9 +2261,8 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, outcome_eva_entry, rebuild_dynamic_terrain_navigation,
-        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
-        world_point_to_cell,
+        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
+        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2396,6 +2342,12 @@ mod tests {
 
     #[test]
     fn gsi_04_10_dynamic_navigation_rebuild_refreshes_path_and_track_costs() {
+        let rules = crate::rules::ruleset::RuleSet::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(
+                "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+            ),
+        )
+        .unwrap();
         let speed_costs = SpeedCostProfile {
             foot: Some(100),
             track: Some(100),
@@ -2483,8 +2435,8 @@ mod tests {
             mark_terrain_occupation(production, &tree, resolved.as_mut());
         }
 
-        let blocked_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
-        assert!(!blocked_path.is_walkable(0, 0));
+        assert!(sim.rebuild_dynamic_navigation(&rules));
+        assert!(!sim.path_grid().expect("terrain").is_walkable(0, 0));
         assert_eq!(
             sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
             0,
@@ -2495,9 +2447,9 @@ mod tests {
             let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
             unmark_terrain_occupation(production, &tree, resolved.as_mut());
         }
-        let rebuilt_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+        assert!(sim.rebuild_dynamic_navigation(&rules));
 
-        assert!(rebuilt_path.is_walkable(0, 0));
+        assert!(sim.path_grid().expect("terrain").is_walkable(0, 0));
         assert_eq!(
             sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
             100,

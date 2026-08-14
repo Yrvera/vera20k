@@ -451,10 +451,14 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let sh: f32 = state.render_height() as f32;
     let (mut base_rx, mut base_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
+    let path_grid = state
+        .simulation
+        .as_ref()
+        .and_then(crate::sim::world::Simulation::path_grid_snapshot);
     let (Some(sim), Some(rules)) = (&mut state.simulation, &state.rules) else {
         return;
     };
-    if let Some(grid) = &state.path_grid {
+    if let Some(grid) = path_grid.as_deref() {
         (base_rx, base_ry) = crate::app_sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
     }
 
@@ -493,12 +497,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
             base_rx.saturating_add(2 + i as u16 * 2),
             base_ry.saturating_add(2),
         );
-        if let Some(grid) = &state.path_grid {
+        if let Some(grid) = path_grid.as_deref() {
             desired = crate::app_sim_tick::clamp_cell_to_grid(grid, desired);
         }
-        let spawn_cell = state
-            .path_grid
-            .as_ref()
+        let spawn_cell = path_grid
+            .as_deref()
             .and_then(|g| crate::app_sim_tick::nearest_walkable_cell(g, desired, 16))
             .unwrap_or(desired);
         if sim

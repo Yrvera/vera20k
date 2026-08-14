@@ -70,7 +70,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         tactical_bridge_inverse_map: BTreeMap::new(),
         lighting_grid: crate::map::lighting::CellLightGrid::new(),
         map_lighting_config: crate::map::lighting::LightingConfig::default(),
-        path_grid: None,
         rules: None,
         art_registry: None,
         csf: None,
@@ -179,7 +178,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
-    state.path_grid = result.path_grid;
     state.rules = result.rules;
     state.art_registry = result.art_registry;
     state.infantry_sequences = result.infantry_sequences;
@@ -298,7 +296,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Create GPU ABuffer for per-pixel shroud darkening.
     // Loads SHROUD.SHP brightness data and the 256-byte edge LUT.
     if let Some(ref am) = state.asset_manager {
-        if let Some(ref grid) = state.path_grid {
+        if let Some(grid) = state
+            .simulation
+            .as_ref()
+            .and_then(crate::sim::world::Simulation::path_grid)
+        {
             if let Some(shp_data) = am.get_ref("shroud.shp") {
                 if let Ok(shp) = crate::assets::shp_file::ShpFile::from_bytes(shp_data) {
                     let (frame_pixels, cw, ch) =

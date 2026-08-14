@@ -159,7 +159,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             best_id,
             hover,
             state.rules.as_ref(),
-            state.path_grid.as_ref(),
+            sim.path_grid(),
         );
         return Some(kind);
     }
@@ -171,7 +171,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         sim,
         best_id,
         (hover_rx, hover_ry),
-        state.path_grid.as_ref(),
+        sim.path_grid(),
         modifier,
     );
     if cell_action == CellAction::NoMove {

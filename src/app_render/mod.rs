@@ -91,8 +91,9 @@ pub(crate) fn render_game(
     let rw = state.render_width();
     let rh = state.render_height();
     let shroud_height_grid = state
-        .path_grid
+        .simulation
         .as_ref()
+        .and_then(crate::sim::world::Simulation::path_grid)
         .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
     if let Some(ref mut shroud_buf) = state.shroud_buffer {
         if !state.sandbox_full_visibility {

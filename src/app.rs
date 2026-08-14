@@ -58,7 +58,6 @@ use crate::rules::infantry_sequence::InfantrySequenceRegistry;
 use crate::rules::sound_ini::SoundRegistry;
 use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
 use crate::sim::animation::SequenceSet;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::production::BuildingPlacementPreview;
 use crate::sim::selection::SelectionState;
 use crate::sim::world::Simulation;

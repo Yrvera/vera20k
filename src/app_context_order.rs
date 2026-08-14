@@ -682,7 +682,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                     rules,
                                     sid,
                                     transport_id,
-                                    state.path_grid.as_ref(),
+                                    sim.path_grid(),
                                 )
                             })
                         })
@@ -1030,7 +1030,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .get(target_id)
                         .map_or((target_rx, target_ry), |e| (e.position.rx, e.position.ry));
                     let (goal_rx, goal_ry) =
-                        nearest_reachable_goal(state.path_grid.as_ref(), (goal_rx, goal_ry));
+                        nearest_reachable_goal(sim.path_grid(), (goal_rx, goal_ry));
                     object_click_payload(
                         order_mode,
                         force_fire,
@@ -1077,7 +1077,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         // water doesn't silently stall.
                         let goal: (u16, u16) = {
                             let mut g = (target_rx, target_ry);
-                            if let Some(grid) = state.path_grid.as_ref() {
+                            if let Some(grid) = sim.path_grid() {
                                 if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
                                     if let Some(nearest) =
                                         crate::app_sim_tick::nearest_walkable_cell_layered(
@@ -1103,7 +1103,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         OrderMode::Move | OrderMode::AttackMove => {
                             let goal: (u16, u16) = {
                                 let mut g = (target_rx, target_ry);
-                                if let Some(grid) = state.path_grid.as_ref() {
+                                if let Some(grid) = sim.path_grid() {
                                     if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
                                         if let Some(nearest) =
                                             crate::app_sim_tick::nearest_walkable_cell_layered(
