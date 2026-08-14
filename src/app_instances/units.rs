@@ -28,6 +28,7 @@ use crate::render::unit_slope_transition_cache::{
 };
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One-shot tripwire: fires the first time a `slope_type >= 17` byte is
@@ -40,6 +41,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// this log surfaces them at runtime so the deferred TMP scan can be
 /// scheduled if it ever fires.
 static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
+
+const NO_SPAWN_ALT_SUFFIX: &str = "WO";
+
+/// The active `NoSpawnAlt` art id for one Unit draw, if any.
+///
+/// `UnitClass` reads `NoSpawnAlt`, calls
+/// `SpawnManagerClass::CountDockedSpawns` (`0x006B7D50`), and selects the
+/// preloaded `%sWO` auxiliary voxel only when that count is zero. This is a
+/// presentation-time query: live but non-docked children still select the
+/// alternate model, and no spawn-manager AI cadence participates.
+fn no_spawn_alt_type_id(
+    base_type: &str,
+    no_spawn_alt: bool,
+    manager: Option<&crate::sim::spawn_manager::SpawnManagerState>,
+) -> Option<String> {
+    (no_spawn_alt && manager.is_some_and(|manager| manager.count_docked_spawns() == 0))
+        .then(|| format!("{base_type}{NO_SPAWN_ALT_SUFFIX}"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnitRenderSlopeState {
@@ -218,19 +237,36 @@ pub(crate) fn build_unit_instances(
         // Common visibility, passenger, limbo, and DrawState admission is shared below.
         let pos = &entity.position;
         let owner_str = sim.interner.resolve(entity.owner);
-        // Honor display_type_override (set by the dock sub-FSM during Unloading)
-        // so the miner renders as its UnloadingClass model (HORV/CMON) while
-        // depositing ore. Mirrors gamemd's TypeClass+0x6B8 swap at draw time.
+        // Disguise remains the outer display-type choice. For an ordinary
+        // undisguised Unit, `NoSpawnAlt` is selected from the current docked
+        // slot count at draw time; the serialized override remains solely the
+        // miner dock sub-FSM's UnloadingClass (HORV/CMON) hint.
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
-        let type_str: &str = active_disguise
-            .and_then(|state| state.disguise_type)
+        let base_type = sim.interner.resolve(entity.type_ref);
+        let no_spawn_alt = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.object(base_type))
+            .is_some_and(|object| object.no_spawn_alt);
+        let no_spawn_alt_type =
+            no_spawn_alt_type_id(base_type, no_spawn_alt, entity.spawn_manager.as_ref());
+        let type_name: Cow<'_, str> = if let Some(disguise_type) = active_disguise
+            .and_then(|disguise| disguise.disguise_type)
             .map(|id| sim.interner.resolve(id))
-            .or_else(|| {
-                entity
-                    .display_type_override
-                    .map(|id| sim.interner.resolve(id))
-            })
-            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
+        {
+            Cow::Borrowed(disguise_type)
+        } else if let Some(no_spawn_alt_type) = no_spawn_alt_type {
+            Cow::Owned(no_spawn_alt_type)
+        } else if let Some(display_override) = (!no_spawn_alt)
+            .then_some(entity.display_type_override)
+            .flatten()
+            .map(|id| sim.interner.resolve(id))
+        {
+            Cow::Borrowed(display_override)
+        } else {
+            Cow::Borrowed(base_type)
+        };
+        let type_str = type_name.as_ref();
         let remap_owner = active_disguise
             .and_then(|state| state.disguised_as_house)
             .map(|id| sim.interner.resolve(id))
@@ -869,6 +905,104 @@ pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::intern::InternedId;
+    use crate::sim::spawn_manager::{
+        SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
+    };
+
+    fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {
+        SpawnManagerState {
+            spawn_type: InternedId::default(),
+            missile_family: None,
+            regen_rate: 400,
+            reload_rate: 0,
+            kamikaze_wait_frames: 0,
+            slots: states
+                .iter()
+                .enumerate()
+                .map(|(index, &state)| SpawnSlot {
+                    spawn: (state != SpawnSlotState::Regenerating).then_some(index as u64 + 1),
+                    state,
+                    timer: SpawnTimer::ready(),
+                    is_missile_spawn: true,
+                })
+                .collect(),
+            update_timer: SpawnTimer::armed(10, 20),
+            reload_timer: SpawnTimer::ready(),
+            current_target: None,
+            queued_target: None,
+            mode: SpawnManagerMode::Idle,
+        }
+    }
+
+    #[test]
+    fn gsi_13_07_no_spawn_alt_uses_zero_docked_not_zero_alive() {
+        for (state, expects_alt) in [
+            (SpawnSlotState::ReadyDocked, false),
+            (SpawnSlotState::KamikazeWait, true),
+            (SpawnSlotState::InFlight, true),
+            (SpawnSlotState::ReturningToDock, true),
+            (SpawnSlotState::LandingAtDock, true),
+            (SpawnSlotState::Reloading, false),
+            (SpawnSlotState::Regenerating, true),
+        ] {
+            let manager = spawn_manager(&[state]);
+            assert_eq!(
+                no_spawn_alt_type_id("V3", true, Some(&manager)).as_deref(),
+                expects_alt.then_some("V3WO"),
+                "state {state:?}"
+            );
+        }
+
+        let in_flight = spawn_manager(&[SpawnSlotState::InFlight]);
+        assert_eq!(in_flight.count_alive_spawns(), 1);
+        assert_eq!(
+            no_spawn_alt_type_id("V3", true, Some(&in_flight)).as_deref(),
+            Some("V3WO"),
+            "a live child away from its dock still selects the empty rack"
+        );
+        assert_eq!(no_spawn_alt_type_id("V3", false, Some(&in_flight)), None);
+        assert_eq!(no_spawn_alt_type_id("V3", true, None), None);
+    }
+
+    #[test]
+    fn gsi_13_07_dreadnought_stays_loaded_while_any_slot_is_docked() {
+        for (states, expected) in [
+            (
+                [SpawnSlotState::ReadyDocked, SpawnSlotState::InFlight],
+                None,
+            ),
+            (
+                [SpawnSlotState::Reloading, SpawnSlotState::Regenerating],
+                None,
+            ),
+            (
+                [SpawnSlotState::InFlight, SpawnSlotState::Regenerating],
+                Some("DREDWO"),
+            ),
+        ] {
+            let manager = spawn_manager(&states);
+            assert_eq!(
+                no_spawn_alt_type_id("DRED", true, Some(&manager)).as_deref(),
+                expected,
+                "states {states:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_13_07_no_spawn_alt_selection_is_not_manager_timer_gated() {
+        let mut manager = spawn_manager(&[SpawnSlotState::ReadyDocked]);
+        assert!(!manager.update_timer.due(10));
+        assert_eq!(no_spawn_alt_type_id("V3", true, Some(&manager)), None);
+
+        manager.slots[0].state = SpawnSlotState::InFlight;
+        assert_eq!(
+            no_spawn_alt_type_id("V3", true, Some(&manager)).as_deref(),
+            Some("V3WO"),
+            "the next presentation query sees the slot transition without an AI pass"
+        );
+    }
 
     #[test]
     fn drive_vxl_slope_transition_phase_counts_three_visible_frames() {

@@ -1126,11 +1126,15 @@ fn missile_flight_speed_uses_the_ra2_conversion() {
     );
 }
 
-/// `NoSpawnAlt=yes`: while the pool is empty the launcher renders as its
-/// `<TYPE>WO` empty-rack art, which is the player's only cue that a V3 has
-/// already fired.
 #[test]
-fn no_spawn_alt_swaps_the_launcher_art_while_the_pool_is_empty() {
+fn gsi_13_07_no_spawn_alt_parser_defaults_false_and_reads_yes() {
+    let rules = make_spawner_rules();
+    assert!(rules.object("V3").expect("V3 rules").no_spawn_alt);
+    assert!(!rules.object("DRED").expect("DRED rules").no_spawn_alt);
+}
+
+#[test]
+fn gsi_13_07_count_docked_spawns_accepts_only_states_zero_and_six() {
     let rules = make_spawner_rules();
     let mut sim = Simulation::new();
     let hm = empty_height_map();
@@ -1138,50 +1142,25 @@ fn no_spawn_alt_swaps_the_launcher_art_while_the_pool_is_empty() {
         .spawn_object("V3", "Soviet", 10, 10, 0, &rules, &hm)
         .expect("spawn V3");
 
-    // Loaded: no override.
-    if let Some(manager) = sim
+    let manager = sim
         .substrate
         .entities
         .get_mut(v3)
         .and_then(|e| e.spawn_manager.as_mut())
-    {
-        manager.update_timer = SpawnTimer::ready();
-    }
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
-    assert_eq!(
-        sim.substrate
-            .entities
-            .get(v3)
-            .and_then(|e| e.display_type_override),
-        None,
-        "a loaded launcher keeps its normal art"
-    );
+        .expect("V3 spawn manager");
 
-    // Empty the pool the way a launch does, then run one manager pass.
-    if let Some(manager) = sim
-        .substrate
-        .entities
-        .get_mut(v3)
-        .and_then(|e| e.spawn_manager.as_mut())
-    {
-        manager.slots[0].spawn = None;
-        manager.slots[0].state = SpawnSlotState::Regenerating;
-        manager.slots[0].timer = SpawnTimer::armed(sim.session.binary_frame, 400);
-        manager.update_timer = SpawnTimer::ready();
+    for (state, expected) in [
+        (SpawnSlotState::ReadyDocked, 1),
+        (SpawnSlotState::KamikazeWait, 0),
+        (SpawnSlotState::InFlight, 0),
+        (SpawnSlotState::ReturningToDock, 0),
+        (SpawnSlotState::LandingAtDock, 0),
+        (SpawnSlotState::Reloading, 1),
+        (SpawnSlotState::Regenerating, 0),
+    ] {
+        manager.slots[0].state = state;
+        assert_eq!(manager.count_docked_spawns(), expected, "state {state:?}");
     }
-    tick_spawn_managers(&mut sim, &rules, &[v3]);
-
-    let alt = sim
-        .substrate
-        .entities
-        .get(v3)
-        .and_then(|e| e.display_type_override)
-        .map(|id| sim.interner.resolve(id).to_string());
-    assert_eq!(
-        alt.as_deref(),
-        Some("V3WO"),
-        "an out-of-spawns V3 shows its empty-launcher voxel"
-    );
 }
 
 /// A freshly launched Hornet holds station over the deck instead of peeling

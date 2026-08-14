@@ -192,6 +192,22 @@ impl SpawnManagerState {
             .count()
     }
 
+    /// Slots physically docked on the parent. Native
+    /// `SpawnManagerClass::CountDockedSpawns` (`0x006B7D50`) counts only
+    /// states 0 (`ReadyDocked`) and 6 (`Reloading`). `NoSpawnAlt` queries this
+    /// at draw time; [`Self::count_alive_spawns`] belongs to the fire gate.
+    pub fn count_docked_spawns(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                    slot.state,
+                    SpawnSlotState::ReadyDocked | SpawnSlotState::Reloading
+                )
+            })
+            .count()
+    }
+
     /// `SpawnManagerClass::SetTarget` (`0x006B7B90`): a target that differs
     /// from the live one is queued, never written straight through. The next AI
     /// pass promotes it.
@@ -347,49 +363,6 @@ fn tick_one_manager(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame:
     }
 
     step_manager_mode(sim, rules, owner_id, frame);
-    refresh_no_spawn_alt(sim, rules, owner_id);
-}
-
-/// Suffix of the empty-launcher art named by `NoSpawnAlt=yes`.
-///
-/// `ini/rulesmd.ini` spells the convention out at each use site — `[V3]` L7744
-/// "alternate voxel for out of spawns: xxxxWO (V3WO)", and the same comment on
-/// `[DRED]` L8129 and `[CDEST]` L10458. The suffix is a hardcoded art-side
-/// convention, not an INI key.
-const NO_SPAWN_ALT_SUFFIX: &str = "WO";
-
-/// Swap the launcher to its empty-rack art while the pool has nothing left.
-///
-/// `NoSpawnAlt=yes` is the player's only cue that a V3 or Dreadnought has
-/// already fired and is inside its regen wait — which, at `SpawnRegenRate=400`
-/// plus the tilt window, is most of the unit's visible life. Written as
-/// `display_type_override`, the same sim-side render hint the miner uses for
-/// `UnloadingClass=`; it is serialized but not hashed, so it cannot affect
-/// lockstep.
-fn refresh_no_spawn_alt(sim: &mut Simulation, rules: &RuleSet, owner_id: u64) {
-    let Some(type_name) = sim
-        .substrate
-        .entities
-        .get(owner_id)
-        .map(|e| sim.interner.resolve(e.type_ref).to_string())
-    else {
-        return;
-    };
-    if !rules.object(&type_name).is_some_and(|obj| obj.no_spawn_alt) {
-        return;
-    }
-    let empty = manager_field(sim, owner_id, |m| m.count_alive_spawns() == 0).unwrap_or(false);
-    let alt = if empty {
-        Some(
-            sim.interner
-                .intern(&format!("{type_name}{NO_SPAWN_ALT_SUFFIX}")),
-        )
-    } else {
-        None
-    };
-    if let Some(entity) = sim.substrate.entities.get_mut(owner_id) {
-        entity.display_type_override = alt;
-    }
 }
 
 /// `SpawnManagerClass::PointerExpired` for the child-death case: a slot whose

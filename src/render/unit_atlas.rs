@@ -197,6 +197,109 @@ impl CachedUnitSprite {
     }
 }
 
+const NO_SPAWN_ALT_SUFFIX: &str = "WO";
+
+/// One voxel model that an entity can select at presentation time.
+///
+/// Initial atlas construction and incremental coverage checks must enumerate
+/// the same set. Otherwise an already-valid base model can hide a missing
+/// UnloadingClass or `%sWO` auxiliary model until the draw lookup fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnitAtlasVariant {
+    type_id: String,
+    has_turret: bool,
+}
+
+fn unit_atlas_variants(type_id: &str, rules: Option<&RuleSet>) -> Vec<UnitAtlasVariant> {
+    let object = rules.and_then(|rules| rules.object(type_id));
+    let mut variants = vec![UnitAtlasVariant {
+        type_id: type_id.to_string(),
+        has_turret: object.is_some_and(|object| object.has_turret),
+    }];
+
+    if let Some((unloading_type, unloading_object)) = object
+        .and_then(|object| object.unloading_class.as_deref())
+        .and_then(|unloading_type| {
+            rules
+                .and_then(|rules| rules.object(unloading_type))
+                .map(|object| (unloading_type, object))
+        })
+    {
+        variants.push(UnitAtlasVariant {
+            type_id: unloading_type.to_string(),
+            has_turret: unloading_object.has_turret,
+        });
+    }
+
+    if object.is_some_and(|object| object.no_spawn_alt) {
+        variants.push(UnitAtlasVariant {
+            type_id: format!("{type_id}{NO_SPAWN_ALT_SUFFIX}"),
+            // Native stores the `%sWO` pair in the same AuxVoxel slot used by
+            // turrets. Stock NoSpawnAlt types therefore render it as one
+            // composite body and cannot also own a turret.
+            has_turret: false,
+        });
+    }
+
+    variants
+}
+
+fn insert_unit_layer_keys(
+    needed: &mut HashSet<UnitSpriteKey>,
+    type_id: &str,
+    layer: VxlLayer,
+    num_frames: u32,
+    is_ground_vehicle: bool,
+) {
+    let (step, buckets) = facing_config_for_layer(layer);
+    let slope_range = if is_ground_vehicle { 0..=16 } else { 0..=0 };
+    for bucket in 0..buckets {
+        let facing = (bucket * u16::from(step)) as u8;
+        for frame in 0..num_frames {
+            for slope_type in slope_range.clone() {
+                needed.insert(UnitSpriteKey {
+                    type_id: type_id.to_string(),
+                    facing,
+                    layer,
+                    frame,
+                    slope_type,
+                });
+            }
+        }
+    }
+}
+
+fn seed_unit_variant_keys(
+    needed: &mut HashSet<UnitSpriteKey>,
+    frame_counts: &mut BTreeMap<(String, VxlLayer), u32>,
+    variant: &UnitAtlasVariant,
+    is_ground_vehicle: bool,
+    asset_manager: &AssetManager,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+) {
+    let layers = seed_layers_for(
+        asset_manager,
+        &variant.type_id,
+        variant.has_turret,
+        rules,
+        art,
+    );
+    for &layer in layers {
+        let frame_key = (variant.type_id.clone(), layer);
+        let num_frames = *frame_counts.entry(frame_key).or_insert_with(|| {
+            detect_hva_frame_count(asset_manager, &variant.type_id, layer, rules, art)
+        });
+        insert_unit_layer_keys(
+            needed,
+            &variant.type_id,
+            layer,
+            num_frames,
+            is_ground_vehicle,
+        );
+    }
+}
+
 /// Collect the set of unit sprite keys needed by the current ECS world.
 ///
 /// Used by the incremental rebuild path to diff against the existing atlas.
@@ -217,42 +320,17 @@ pub fn collect_needed_unit_keys(
             continue;
         }
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-        // Ground vehicles can drive onto any ramp, so pre-render all 9 slope
-        // variants (0=flat, 1-8=ramps) upfront. Aircraft never tilt on slopes.
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
-        let has_turret: bool = rules
-            .and_then(|r| r.object(type_str))
-            .map(|o| o.has_turret)
-            .unwrap_or(false);
-        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
-        for &layer in layers {
-            let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
-            if !frame_counts.contains_key(&fc_key) {
-                let fc: u32 = detect_hva_frame_count(asset_manager, type_str, layer, rules, art);
-                frame_counts.insert(fc_key.clone(), fc);
-            }
-            let num_frames: u32 = frame_counts[&fc_key];
-            let (step, buckets) = facing_config_for_layer(layer);
-            // Ground vehicles: pre-render all 17 slope variants (0-16) so no
-            // atlas rebuild is needed when driving onto any populated ramp
-            // (gamemd has no matrices for slopes 17-20; the consumer in
-            // app_instances/units.rs clamps those to 0). Aircraft never tilt.
-            let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=16 } else { 0..=0 };
-            for bucket in 0..buckets {
-                let facing: u8 = (bucket * u16::from(step)) as u8;
-                for frame in 0..num_frames {
-                    for slope in slope_range.clone() {
-                        needed.insert(UnitSpriteKey {
-                            type_id: type_str.to_string(),
-                            facing,
-                            layer,
-                            frame,
-                            slope_type: slope,
-                        });
-                    }
-                }
-            }
+        for variant in unit_atlas_variants(type_str, rules) {
+            seed_unit_variant_keys(
+                &mut needed,
+                &mut frame_counts,
+                &variant,
+                is_ground_vehicle,
+                asset_manager,
+                rules,
+                art,
+            );
         }
     }
 
@@ -327,45 +405,16 @@ pub fn build_unit_atlas(
         }
         let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
         let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
-        let has_turret: bool = rules
-            .and_then(|r| r.object(type_str))
-            .map(|o| o.has_turret)
-            .unwrap_or(false);
-        let layers: &[VxlLayer] = seed_layers_for(asset_manager, type_str, has_turret, rules, art);
-        for &layer in layers {
-            let fc_key: (String, VxlLayer) = (type_str.to_string(), layer);
-            if !frame_counts.contains_key(&fc_key) {
-                let fc: u32 = detect_hva_frame_count(asset_manager, type_str, layer, rules, art);
-                if fc > 1 {
-                    log::info!(
-                        "VXL {}/{:?} has {} HVA frames — rendering all",
-                        type_str,
-                        layer,
-                        fc,
-                    );
-                }
-                frame_counts.insert(fc_key.clone(), fc);
-            }
-            let num_frames: u32 = frame_counts[&fc_key];
-            let (step, buckets) = facing_config_for_layer(layer);
-            // Ground vehicles: 17 slope variants (0-16) covering every
-            // populated entry in gamemd's slope-matrix table.
-            let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=16 } else { 0..=0 };
-            for bucket in 0..buckets {
-                let facing: u8 = (bucket * u16::from(step)) as u8;
-                for frame in 0..num_frames {
-                    for slope in slope_range.clone() {
-                        needed.insert(UnitSpriteKey {
-                            type_id: type_str.to_string(),
-                            facing,
-                            layer,
-                            frame,
-                            slope_type: slope,
-                        });
-                    }
-                }
-            }
+        for variant in unit_atlas_variants(type_str, rules) {
+            seed_unit_variant_keys(
+                &mut needed,
+                &mut frame_counts,
+                &variant,
+                is_ground_vehicle,
+                asset_manager,
+                rules,
+                art,
+            );
         }
     }
 
@@ -397,65 +446,6 @@ pub fn build_unit_atlas(
                     frame: 0,
                     slope_type: 0,
                 });
-            }
-        }
-    }
-
-    // Step 1c: UnloadingClass referents (e.g. HORV for HARV, CMON for CMIN).
-    // These types are never spawned but are rendered as the visible model while
-    // the parent miner is docked unloading. Mirrors the original engine's
-    // TypeClass+0x6B8 swap at draw time. Without this seeding the override would
-    // resolve to a missing atlas entry and the unit would disappear.
-    for entity in entities.values() {
-        if !entity.is_voxel {
-            continue;
-        }
-        let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-        let uc_name = match rules
-            .and_then(|r| r.object(type_str))
-            .and_then(|o| o.unloading_class.as_deref())
-        {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-        let uc_obj = match rules.and_then(|r| r.object(&uc_name)) {
-            Some(o) => o,
-            None => {
-                log::warn!(
-                    "UnloadingClass={} on {} not found in rules — atlas seeding skipped",
-                    uc_name,
-                    type_str,
-                );
-                continue;
-            }
-        };
-        let is_ground_vehicle: bool = entity.category != EntityCategory::Aircraft;
-        let layers: &[VxlLayer] =
-            seed_layers_for(asset_manager, &uc_name, uc_obj.has_turret, rules, art);
-        for &layer in layers {
-            let fc_key: (String, VxlLayer) = (uc_name.clone(), layer);
-            if !frame_counts.contains_key(&fc_key) {
-                let fc: u32 = detect_hva_frame_count(asset_manager, &uc_name, layer, rules, art);
-                frame_counts.insert(fc_key.clone(), fc);
-            }
-            let num_frames: u32 = frame_counts[&fc_key];
-            let (step, buckets) = facing_config_for_layer(layer);
-            // Same slope range as the parent type (0-16 for ground vehicles).
-            let slope_range: std::ops::RangeInclusive<u8> =
-                if is_ground_vehicle { 0..=16 } else { 0..=0 };
-            for bucket in 0..buckets {
-                let facing: u8 = (bucket * u16::from(step)) as u8;
-                for frame in 0..num_frames {
-                    for slope in slope_range.clone() {
-                        needed.insert(UnitSpriteKey {
-                            type_id: uc_name.clone(),
-                            facing,
-                            layer,
-                            frame,
-                            slope_type: slope,
-                        });
-                    }
-                }
             }
         }
     }
