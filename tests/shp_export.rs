@@ -1,3 +1,6 @@
+// This integration utility reuses only the hash dictionary from the binary's
+// shared data module; the remaining browser data APIs are intentionally idle here.
+#[allow(dead_code)]
 #[path = "../src/bin/mix_browser_data.rs"]
 mod mix_browser_data;
 

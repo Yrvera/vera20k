@@ -10,7 +10,7 @@ use crate::ui::shell::geom::LOWER_STRIP_H;
 use crate::ui::skirmish_shell::{
     COMBO_DROPDOWN_ROW_H, COMBO_FACE_H, ChooseMapModalButton, ChooseMapModalLayout,
     RandomMapSetupControl, RandomMapSetupLayout, RandomMapSetupModalState, RectPx,
-    SETUP_COMBO_ROWS, SavedSeedBrowserState, SavedSeedControl, SavedSeedLayout, SavedSeedMode,
+    SETUP_COMBO_ROWS, SavedSeedBrowserState, SavedSeedControl, SavedSeedLayout,
     SkirmishShellLayout, SkirmishShellState, ValidationModalLayout,
     choose_map_listbox_content_rect, choose_map_listbox_row_rect,
     choose_map_listbox_scroll_thumb_rect, choose_map_listbox_scrollbar_rect,
@@ -592,12 +592,6 @@ pub(super) fn push_saved_seed_modal_instances(
             SHELL_DROPDOWN_DEPTH - 0.00012,
         );
     }
-}
-
-/// The saved-seed browser's mode drives only its captions, so the renderer
-/// takes it separately from the layout it already carries.
-pub(super) const fn saved_seed_mode_of(browser: &SavedSeedBrowserState) -> SavedSeedMode {
-    browser.mode
 }
 
 #[cfg(test)]

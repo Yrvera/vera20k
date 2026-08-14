@@ -401,7 +401,7 @@ pub(super) fn handle_vehicle_rotation(
     facing: &mut u8,
     facing_target: &mut Option<u8>,
     body_facing: &mut Option<super::facing_class::FacingClass>,
-    position: &mut Position,
+    _position: &mut Position,
     locomotor: &mut Option<LocomotorState>,
     rot: i32,
     native_frame: u32,

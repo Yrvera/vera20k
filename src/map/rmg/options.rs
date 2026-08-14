@@ -131,7 +131,7 @@ impl RmgOptions {
         if let Some(raw) = section.get("Description") {
             self.description = decode_description(raw);
         }
-        let mut read = |key: &str, field: &mut i32| {
+        let read = |key: &str, field: &mut i32| {
             if let Some(value) = section.get_i32(key) {
                 *field = value;
             }

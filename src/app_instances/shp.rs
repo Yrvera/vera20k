@@ -991,6 +991,7 @@ fn emit_building_anims(
     }
 }
 
+#[cfg(test)]
 fn resting_building_anim_frame(anim: &crate::rules::art_data::BuildingAnimConfig) -> u16 {
     resting_building_anim_frame_values(anim.loop_start, anim.loop_end, anim.start_frame)
 }

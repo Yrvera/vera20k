@@ -15,7 +15,7 @@
 use super::gates::evaluate_gates;
 use super::kernel::apply_warhead_damage;
 use super::{
-    ArmorClass, CombatMods, DamageGate, DamageOutcome, DamageState, ImmunityInputs,
+    CombatMods, DamageGate, DamageOutcome, DamageState, ImmunityInputs,
     TargetDamageView,
 };
 

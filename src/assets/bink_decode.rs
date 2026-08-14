@@ -179,19 +179,6 @@ pub(crate) fn copy_block8(dst: &mut [u8], src: &[u8], dst_stride: usize, src_str
     }
 }
 
-/// Copy an 8x8 block where source and destination live in the same buffer and
-/// may overlap. Stages through a stack scratch array.
-/// Port of `put_pixels8x8_overlapped` in FFmpeg bink.c.
-pub(crate) fn copy_block8_overlapped(dst: &mut [u8], src: &[u8], stride: usize) {
-    let mut tmp = [0u8; 64];
-    for row in 0..8 {
-        tmp[row * 8..row * 8 + 8].copy_from_slice(&src[row * stride..row * stride + 8]);
-    }
-    for row in 0..8 {
-        dst[row * stride..row * stride + 8].copy_from_slice(&tmp[row * 8..row * 8 + 8]);
-    }
-}
-
 /// Fill an `n x n` square at `dst` with the constant value `v`.
 /// `n` must be 8 or 16.
 pub(crate) fn fill_block(dst: &mut [u8], v: u8, stride: usize, n: usize) {

@@ -337,7 +337,7 @@ fn detect_file_type(data: &[u8]) -> String {
         // Old SHP: after frame count, offsets table starts
         // Check if byte 2-3 looks like a reasonable offset
         let first_offset = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
-        let expected_offset = 2 + (w0 as u32 + 2) * 8; // header + offsets table
+        let _expected_offset = 2 + (w0 as u32 + 2) * 8; // header + offsets table
         if first_offset > 0 && first_offset < data.len() as u32 {
             return format!("SHP(old?) {} frames, off0={}", w0, first_offset);
         }

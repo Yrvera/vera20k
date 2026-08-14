@@ -2526,7 +2526,7 @@ fn queue_selection_snapshot_command(state: &mut AppState, selected_ids: Vec<u64>
 }
 
 fn queue_stop_for_selected(state: &mut AppState) {
-    let mut selected_ids = selected_stable_ids_in_order(state);
+    let selected_ids = selected_stable_ids_in_order(state);
     if selected_ids.is_empty() {
         return;
     }

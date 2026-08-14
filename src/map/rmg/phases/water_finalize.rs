@@ -7,7 +7,7 @@
 //! to different variants.
 
 use crate::map::rmg::grid::RmgGrid;
-use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
+use crate::map::rmg::rng::RmgRng;
 use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64};
 

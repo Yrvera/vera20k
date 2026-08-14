@@ -23,6 +23,7 @@ fn make_test_sim() -> Simulation {
         sub_cell: 0,
         veterancy: 0,
         high: false,
+        mission: None,
     };
     let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
     sim.spawn_from_map(&[entity], None, &heights);
@@ -127,6 +128,7 @@ fn replay_reapplies_header_seed() {
             sub_cell: 0,
             veterancy: 0,
             high: false,
+            mission: None,
         };
         let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         sim.spawn_from_map(&[entity], None, &heights);
@@ -172,7 +174,12 @@ fn replay_reapplies_header_seed() {
     }
 
     // Playback constructed FROM the header — the descriptor contract.
-    let mut playback = sim_with_unit(&ScenarioDescriptor::from_replay_header(&replay.header));
+    let descriptor_from_header = |header: &ReplayHeader| ScenarioDescriptor {
+        seed: u32::try_from(header.seed).expect("diagnostic replay seed fits native width"),
+        map_name: header.map_name.clone(),
+        ..Default::default()
+    };
+    let mut playback = sim_with_unit(&descriptor_from_header(&replay.header));
     let replayed = ReplayRunner::run(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
     assert_eq!(
         live, replayed,
@@ -182,7 +189,7 @@ fn replay_reapplies_header_seed() {
     // Corrupt the header: a consistent-but-wrong seed must diverge.
     let mut corrupted = replay.clone();
     corrupted.header.seed ^= 1;
-    let mut wrong = sim_with_unit(&ScenarioDescriptor::from_replay_header(&corrupted.header));
+    let mut wrong = sim_with_unit(&descriptor_from_header(&corrupted.header));
     let diverged = ReplayRunner::run(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
     assert_ne!(
         live, diverged,

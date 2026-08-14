@@ -18,16 +18,13 @@ mod mission_handlers;
 
 use mission_handlers::*;
 
-use crate::sim::movement::locomotion::LocomotorSlot;
-
 use super::Simulation;
 use crate::map::entities::EntityCategory;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::rules::particle_system_type::ParticleSystemBehavesLike;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::miner::MinerConfig;
-use crate::sim::mission::authority::EntityReadyInputProvider;
-use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::mission::MissionType;
 use crate::sim::pathfinding::PathGrid;
 
 /// Non-rules world context the mission handler bodies dispatched from the
@@ -58,6 +55,7 @@ impl Simulation {
     /// `techno_ai_shell` for the `+0xC4`
     /// AI-counter increment and queued-mission promotion at the verified
     /// per-category AI position (see `Simulation::mission_host_promote`).
+    #[cfg(test)]
     pub(crate) fn object_ai_stage(&mut self, rules: Option<&RuleSet>) {
         self.object_ai_stage_with(rules, ObjectAiCtx::default());
     }
@@ -85,6 +83,7 @@ impl Simulation {
     ///
     /// The AI counter is NOT ticked here. Native increments it once per AI pass,
     /// and the pre-movement mission step already did so for every category.
+    #[cfg(test)]
     pub(crate) fn object_ai_post_movement_promote(&mut self, rules: Option<&RuleSet>) {
         let Some(rules) = rules else {
             return;
@@ -230,11 +229,7 @@ impl Simulation {
                 .expect("wave remained present for its Logic slot");
             if let Some(request) = request {
                 if let Some(rules) = rules {
-                    self.commit_logic_wave_damage_request(
-                        rules,
-                        ctx.overlay_registry,
-                        &request,
-                    );
+                    self.commit_logic_wave_damage_request(rules, ctx.overlay_registry, &request);
                 } else {
                     // Rules-less fixture dispatch retains the former buffer;
                     // production Wave AI commits before lifetime retirement.
@@ -294,6 +289,7 @@ impl Simulation {
 
     /// [`Simulation::object_ai_stage`] with the world context the dispatched
     /// mission handler bodies need (the production spine entry).
+    #[cfg(test)]
     pub(crate) fn object_ai_stage_with(&mut self, rules: Option<&RuleSet>, ctx: ObjectAiCtx<'_>) {
         let visited = self.object_ai_walk(cfg!(debug_assertions), rules, ctx);
 
@@ -317,6 +313,7 @@ impl Simulation {
     /// not enter the ordinary per-category shell. When `record`, return the
     /// visited ids in order (debug/test observation); otherwise the returned
     /// `Vec` is empty and unallocated.
+    #[cfg(test)]
     fn object_ai_walk(
         &mut self,
         record: bool,
@@ -1199,7 +1196,6 @@ impl Simulation {
     /// regardless of routing precision.
     #[cfg(test)]
     pub(crate) fn factory_oracle_step_trace(&self) -> Vec<(u64, StepOutcome)> {
-        use crate::sim::economy::Economy;
         let mut out: Vec<(u64, StepOutcome)> = Vec::new();
         for id in self.live_object_order_snapshot() {
             let Some(entity) = self.substrate.entities.get(id) else {
@@ -1279,6 +1275,7 @@ mod tests {
         MissionCom, MissionControl, MissionDispatchTimer, MissionId, MissionType,
     };
     use crate::sim::movement::drive_track::begin_forced_turn_track;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
     use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
     use crate::sim::movement::{DriveProcessOutcome, process_drive_locomotion_shell};
@@ -2462,15 +2459,6 @@ mod tests {
                 .is_some(),
             "only a scanner-acquired target is dropped"
         );
-    }
-
-    /// A moving drive `UnitClass` with no combat, miner, dock, or aircraft
-    /// concern (shared fixture for host/verb tests).
-    fn scoped_move_unit(id: u64) -> GameEntity {
-        let mut e = GameEntity::test_default(id, "TEST", "Americans", 5, 5); // category Unit
-        e.movement_target = Some(MovementTarget::default());
-        e.drive_locomotion = Some(DriveLocomotionRuntime::default());
-        e
     }
 
     // ===== Checkpoint A — cloned ordinary-Drive host trace =====
@@ -5275,8 +5263,8 @@ MinLowPowerProductionSpeed=0.4\nMaxLowPowerProductionSpeed=0.85\n\n\
 
     // ===== In-loop dispatch authority =====
 
-    /// Like `scoped_move_unit`, but interned through the SIM's interner so the
-    /// unit survives a real `advance_tick` (test_intern ids don't exist in
+    /// A scoped moving-unit fixture interned through the simulation's interner,
+    /// so it survives a real `advance_tick` (test_intern ids don't exist in
     /// `sim.interner`, and tick-path resolves would panic).
     fn insert_s2_scoped_move_unit(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
         let owner = sim.interner.intern("Americans");

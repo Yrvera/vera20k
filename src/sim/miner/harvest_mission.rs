@@ -167,27 +167,6 @@ fn dispatch_harvest_for_object_with_resource_authority(
     commit_miner_snapshot(sim, &snap, now);
 }
 
-/// One Harvest handler step: the miner FSM body, unchanged from the
-/// pre-absorption `process_miner`.
-pub(super) fn harvest_mission_step(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &super::MinerConfig,
-    path_grid: Option<&PathGrid>,
-    overlay_registry: Option<&OverlayTypeRegistry>,
-    snap: &mut MinerSnapshot,
-) {
-    harvest_mission_step_with_resource_authority(
-        sim,
-        rules,
-        config,
-        path_grid,
-        overlay_registry,
-        snap,
-        ResourceQueryAuthority::OverlayGrid,
-    );
-}
-
 fn harvest_mission_step_with_resource_authority(
     sim: &mut Simulation,
     rules: &RuleSet,

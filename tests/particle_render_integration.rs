@@ -67,7 +67,7 @@ fn smoke_animation_state_advances_over_ticks() {
     // remove → tick → reinsert; pull whichever system survives by walking
     // the store (single system in this test).
     let sys = sim
-        .particle_systems
+        .particle_systems()
         .iter()
         .next()
         .map(|(_id, sys)| sys)

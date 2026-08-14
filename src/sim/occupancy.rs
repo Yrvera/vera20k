@@ -218,6 +218,7 @@ impl RawCellOccupationGrid {
         self.cells.get(&(rx, ry)).map_or(0, |cell| cell.ground)
     }
 
+    #[cfg(test)]
     pub(crate) fn ground_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
         self.cells
             .get(&(rx, ry))
@@ -266,6 +267,7 @@ impl RawCellOccupationGrid {
         self.cells.get(&(rx, ry)).map_or(0, |cell| cell.deck)
     }
 
+    #[cfg(test)]
     pub(crate) fn deck_infantry_owner(&self, rx: u16, ry: u16) -> Option<u64> {
         self.cells
             .get(&(rx, ry))
@@ -489,6 +491,7 @@ impl VehicleOccupationPlane {
         self.owners.remove(&entity_id);
     }
 
+    #[cfg(test)]
     fn bits(&self) -> u8 {
         self.owners
             .values()
@@ -762,6 +765,7 @@ impl CellOccupationGrid {
 
     /// Mark-layer selection: elevated objects use the deck only when the cell
     /// still carries the structural bridge fact.
+    #[cfg(test)]
     pub(crate) fn mark_vehicle_by_height(
         &mut self,
         rx: u16,
@@ -781,6 +785,7 @@ impl CellOccupationGrid {
 
     /// Clear-layer selection: the height result alone selects the deck. This
     /// preserves cleanup after the structural bridge flag has disappeared.
+    #[cfg(test)]
     pub(crate) fn clear_vehicle_by_height(
         &mut self,
         rx: u16,
@@ -797,6 +802,7 @@ impl CellOccupationGrid {
         layer
     }
 
+    #[cfg(test)]
     pub(crate) fn vehicle_bits(&self, rx: u16, ry: u16, layer: MovementLayer) -> u8 {
         self.cells
             .get(&(rx, ry))

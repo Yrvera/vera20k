@@ -8,7 +8,6 @@
 
 use crate::map::rmg::grid::RmgGrid;
 use crate::map::rmg::rng::{RANGE_K_BITS, RmgRng};
-use crate::map::rmg::tiles::TileIds;
 use crate::map::rmg::x87::{self, TruncF64, approx_sqrt};
 
 use super::blob::{self, BlobCtx, BlobParams};
@@ -556,7 +555,7 @@ mod tests {
     use super::*;
     use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
     use crate::map::rmg::scratch::RmgScratch;
-    use crate::map::rmg::tiles::SpecialTerrain;
+    use crate::map::rmg::tiles::{SpecialTerrain, TileIds};
     use crate::map::rmg::x87::Gaussian;
 
     struct OneByOne(TileBlock);

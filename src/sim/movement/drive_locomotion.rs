@@ -20,9 +20,6 @@ const DRIVE_DESTINATION_BRAKE_FLOOR: SimFixed = SimFixed::lit("0.3");
 pub(crate) enum DriveProcessOutcome {
     NotDrive,
     Processed,
-    Waiting,
-    Arrived,
-    Blocked,
 }
 
 pub(crate) fn process_drive_locomotion_shell(entity: &GameEntity) -> DriveProcessOutcome {
@@ -60,19 +57,6 @@ pub(crate) fn drive_locomotor_is_moving(entity: &GameEntity) -> bool {
     let owner_x = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
     let owner_y = i32::from(entity.position.ry) * 256 + entity.position.sub_y.to_num::<i32>();
     head.x != owner_x || head.y != owner_y
-}
-
-pub(super) fn refresh_drive_head_to_from_navcom(
-    entity: &mut GameEntity,
-    entities: &EntityStore,
-) -> bool {
-    let Some(target) = entity.navigation.nav_com else {
-        return false;
-    };
-    let Some(coord) = super::navcom::resolve_entity_nav_target_drive_coord(target, entities) else {
-        return false;
-    };
-    refresh_drive_head_to_coord(entity, coord)
 }
 
 pub(super) fn refresh_drive_head_to_coord(entity: &mut GameEntity, coord: DriveCoord) -> bool {

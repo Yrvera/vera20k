@@ -39,7 +39,11 @@ pub(crate) const NEIGHBORS: [(i32, i32, bool); 8] = [
 pub(crate) struct BaseZoneTopology {
     pub(crate) movement_classes: Vec<u8>,
     pub(crate) zone_ids: Vec<ZoneId>,
+    // Retained as exact base-topology state for incremental-repair parity
+    // fixtures; current production projections consume the derived rows.
+    #[allow(dead_code)]
     pub(crate) zone_count: ZoneId,
+    #[allow(dead_code)]
     pub(crate) adjacency: ZoneAdjacency,
     /// Raw `MapClass+0x18[row][base_cluster]` values. Label 1 and `0xffff`
     /// remain represented here even though the flattened compatibility maps
@@ -151,6 +155,7 @@ pub(crate) enum BridgeRecordFilter {
     /// bridge zone edges; the verified loop does not read `bridge_kind`.
     AllActive,
     /// `FindBridgeRecord @ 0x0056DA10` skips records where `bridge_kind != 0`.
+    #[allow(dead_code)]
     HighActiveOnly,
 }
 

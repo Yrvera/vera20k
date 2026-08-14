@@ -16,7 +16,6 @@
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::sim::debug_event_log::DebugEventKind;
 use crate::sim::entity_store::EntityStore;
@@ -140,6 +139,7 @@ mod tests {
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO};
 
     /// Mirrors the helper used in droppod_movement.rs tests.

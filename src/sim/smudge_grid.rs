@@ -553,7 +553,6 @@ mod tests {
         )
         .unwrap();
         let registry = SmudgeTypeRegistry::from_rules_ini(&ini);
-        let mut grid = SmudgeGrid::new(8, 8);
         let terrain = make_terrain(8, 8, true);
         let overlay = OverlayGrid::new(8, 8);
         let occupancy = OccupancyGrid::new();
@@ -566,7 +565,7 @@ mod tests {
         // Run try_place 50 times; with dmg=60, dmg2=50 only CR1 (1x1) should be picked.
         // Verify no 2x2 footprints land (CR2 would write 4 cells; CR1 writes 1).
         for _ in 0..50 {
-            grid = SmudgeGrid::new(8, 8); // reset
+            let mut grid = SmudgeGrid::new(8, 8);
             grid.try_place(
                 SmudgeKind::Crater,
                 coord,

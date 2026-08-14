@@ -54,24 +54,6 @@ fn read_u16_le(data: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([data[offset], data[offset + 1]])
 }
 
-fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-fn read_i32_le(data: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
 fn ra2_dir() -> String {
     std::env::var("RA2_DIR")
         .unwrap_or_else(|_| panic!("Set RA2_DIR env var to your RA2/YR install directory"))

@@ -209,6 +209,7 @@ pub fn build_entity_block_set(
     (ground.union(&bridge).copied().collect(), entity_block_map)
 }
 
+#[cfg(test)]
 pub(crate) fn build_blocker_neighbor_counts(
     entities: &EntityStore,
     width: u16,

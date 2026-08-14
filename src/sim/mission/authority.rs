@@ -25,10 +25,12 @@ use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::world::Simulation;
 
+#[cfg(test)]
+use super::concrete_effects::UnavailableConcreteMissionEffects;
 use super::concrete_effects::{
     AuthorityUnavailable, ConcreteMissionEffects, ConcreteSetterRequest,
-    RepresentedConcreteMissionEffects, UnavailableConcreteMissionEffects,
-    represented_assign_destination_mode_one, represented_assign_target,
+    RepresentedConcreteMissionEffects, represented_assign_destination_mode_one,
+    represented_assign_target,
 };
 use super::readiness::{
     AircraftReadyView, BuildingReadyView, InfantryReadyView, ReadyLeptonPoint, ReadyResult,
@@ -216,6 +218,7 @@ fn represented_archived_destination(
 }
 
 const AIRCRAFT_ACTION_EXCEPTION: MissionId = MissionId::from_raw(0x1e);
+#[cfg(test)]
 const MISSION_GUARD: MissionId = MissionId::from_raw(5);
 /// Mission id 1, the `[Attack]` control entry. The selector every ground
 /// locomotor overrides onto when an object it is not allied with stands in the
@@ -230,6 +233,7 @@ const AIRCRAFT_PROTECTED: [MissionId; 5] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct OverridePacket {
     pub mission: MissionId,
     pub combat_target: Option<TargetKind>,
@@ -274,6 +278,10 @@ pub(crate) trait ReadyInputProvider: ready_private::Sealed {
 pub(crate) struct EntityReadyInputProvider;
 
 /// Production view with the Unit world lookups live (rules in scope).
+///
+/// Retained as the rules-aware exact readiness provider while the current host
+/// evaluates the same inputs directly.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct LiveReadyInputProvider<'r> {
     pub(crate) rules: &'r RuleSet,
@@ -719,6 +727,7 @@ impl Simulation {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn mission_override_exact(
         &mut self,
         receiver: u64,
@@ -728,6 +737,7 @@ impl Simulation {
         self.mission_override_exact_with_effects(receiver, packet, &mut effects)
     }
 
+    #[cfg(test)]
     pub(crate) fn mission_restore_exact(
         &mut self,
         receiver: u64,
@@ -810,6 +820,7 @@ impl Simulation {
     ///
     /// Returns whether the Override ran. It does not when either object is
     /// gone, or when the mover considers the blocker an ally.
+    #[cfg(test)]
     pub(crate) fn mission_override_blocked_by_object(&mut self, mover: u64, blocker: u64) -> bool {
         override_mission_on_blocked_step(
             &mut self.substrate.entities,
@@ -820,6 +831,7 @@ impl Simulation {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn mission_refinery_completion_exact(
         &mut self,
         receiver: u64,
@@ -835,6 +847,7 @@ impl Simulation {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn mission_jumpjet_move_to_completion_exact(
         &mut self,
         receiver: u64,
@@ -870,6 +883,7 @@ impl Simulation {
         Ok(())
     }
 
+    #[cfg(test)]
     fn validate_jumpjet_second_gate_previews(
         &self,
         receiver: u64,
@@ -903,6 +917,7 @@ impl Simulation {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn mission_try_consume_building_ready_exact(
         &mut self,
         receiver: u64,
@@ -936,6 +951,7 @@ impl Simulation {
         Ok(true)
     }
 
+    #[cfg(test)]
     fn mission_override_exact_with_effects<E: ConcreteMissionEffects>(
         &mut self,
         receiver: u64,

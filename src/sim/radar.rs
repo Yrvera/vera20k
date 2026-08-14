@@ -349,7 +349,7 @@ mod tests {
     fn spawn_building(sim: &mut Simulation, id: u64, owner: &str, type_id: &str) {
         let owner_id = sim.interner.intern(owner);
         let type_ref = sim.interner.intern(type_id);
-        let mut e = GameEntity::new_at_frame_zero_for_test(
+        let e = GameEntity::new_at_frame_zero_for_test(
             id,
             0,
             0,

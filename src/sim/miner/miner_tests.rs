@@ -2527,7 +2527,7 @@ fn wait_no_ore_retry_gate_is_exactly_105_frames() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3217,7 +3217,7 @@ fn unreachable_ore_filtered_out() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3271,7 +3271,7 @@ fn reachable_ore_picked_over_closer_unreachable() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -3327,7 +3327,7 @@ fn harvester_on_tiberium_falls_back_to_neighbor_zone() {
             .entities
             .get_mut(miner_id)
             .expect("miner entity");
-        let miner = entity.miner.as_mut().expect("miner component");
+        let _miner = entity.miner.as_mut().expect("miner component");
         entity
             .mission
             .set_handler_state(MinerState::SearchOre.cursor());
@@ -7469,23 +7469,20 @@ fn full_unload_credits_unchanged_over_bus() {
 }
 
 // ==========================================================================
-// Slice L5 — Harvest mission handler seam (harvest_mission_step)
+// Slice L5 — Harvest mission handler dispatch
 //
-// The seam routes the miner FSM through `harvest_mission_step`, which calls
-// the unchanged `process_miner`. These tests pin that the seam is observably a
-// no-op and baseline the derived-mission ↔ FSM-cursor invariant for the later
-// substate-authority flip (shell S5). The whole existing miner suite already
-// runs through the seam (tick_miners → harvest_mission_step), so it is the
-// collective bit-identical proof; these add explicit named pins.
+// The seam routes the miner FSM through the Harvest dispatcher and its explicit
+// resource authority. These tests pin that routing and baseline the
+// derived-mission ↔ FSM-cursor invariant for the later substate-authority flip
+// (shell S5). The whole existing miner suite already runs through that dispatch,
+// so it is the collective bit-identical proof; these add explicit named pins.
 // ==========================================================================
 
 /// Full harvest→dock→unload→depart cycle driven through the seam reproduces the
-/// canonical `process_miner` outcome (one slot drain, full payout, cargo
-/// drained, reservation released). `harvest_mission_step` calls `process_miner`
-/// unchanged, so routing through the seam cannot diverge from calling it
-/// directly; this pins the end-to-end seam path.
+/// canonical miner-FSM outcome (one slot drain, full payout, cargo drained,
+/// reservation released), pinning the end-to-end dispatch path.
 #[test]
-fn harvest_seam_dispatch_matches_direct_process_miner() {
+fn harvest_seam_dispatch_matches_miner_fsm() {
     let mut sim = Simulation::new();
     let rules = miner_rules();
 

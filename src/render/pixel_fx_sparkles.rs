@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn lerp_at_phase_0x1FFF_is_near_base() {
+    fn lerp_at_phase_0x1fff_is_near_base() {
         // L16: phase 0x1FFF → near base (one step before re-init).
         // With lerp = 0xFFF flipped via bit 0x1000, the inv weight is 0xFFF
         // and the lerp weight is 1 — overwhelmingly base.

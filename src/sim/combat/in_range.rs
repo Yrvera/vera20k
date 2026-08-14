@@ -13,7 +13,6 @@
 //! height + bridge), util/lepton (constants), util/fixed_math (isqrt_i64).
 //! Does NOT depend on render/ui/sidebar/audio/net.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -27,7 +26,7 @@ use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 use crate::sim::production::foundation_dimensions;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, isqrt_i64};
 use crate::util::lepton::{
-    BRIDGE_HEIGHT_DELTA_LEPTONS, HIGH_FLIGHT_THRESHOLD_LEPTONS, LEPTONS_PER_LEVEL,
+    BRIDGE_HEIGHT_DELTA_LEPTONS, HIGH_FLIGHT_THRESHOLD_LEPTONS,
     WEAPON_RANGE_ALWAYS_IN_RANGE_LEPTONS, ground_height_leptons,
 };
 
@@ -448,7 +447,9 @@ mod tests {
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
+    use crate::util::lepton::LEPTONS_PER_LEVEL;
 
     fn ground_entity_at_level(level: u8) -> GameEntity {
         let mut e = GameEntity::test_default(1, "MTNK", "Test", 10, 10);

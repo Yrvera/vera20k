@@ -192,6 +192,7 @@ impl MissionCom {
         self.handler_state = value;
     }
 
+    #[cfg(test)]
     pub(super) fn set_movement_bypass_after_verified_queue(&mut self) {
         self.movement_bypass_latch = 1;
     }

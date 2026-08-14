@@ -28,6 +28,7 @@ pub(crate) enum ConcreteSetterRequest {
 pub(crate) enum AuthorityUnavailable {
     #[error("exact concrete Target setter is unavailable for Mission receiver {0}")]
     TargetSetter(u64),
+    #[cfg(test)]
     #[error("exact mode-one destination setter is unavailable for Mission receiver {0}")]
     DestinationSetter(u64),
 }
@@ -64,11 +65,14 @@ pub(crate) trait ConcreteMissionEffects: private::Sealed {
 
 /// Honest production boundary until full concrete Target and destination
 /// setters are implemented.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct UnavailableConcreteMissionEffects;
 
+#[cfg(test)]
 impl private::Sealed for UnavailableConcreteMissionEffects {}
 
+#[cfg(test)]
 impl ConcreteMissionEffects for UnavailableConcreteMissionEffects {
     type Prepared = ();
 

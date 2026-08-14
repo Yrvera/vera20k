@@ -338,7 +338,7 @@ fn flank(ctx: &mut BlobCtx<'_>, x: i32, y: i32, region: i32) {
 /// The stamp refusals are deliberately ignored here: the original discards
 /// every ok-flag on this path, so a deck that could not fully stamp still
 /// counts as placed.
-fn deck(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, layout: &Layout) {
+fn deck(ctx: &mut BlobCtx<'_>, args: &BridgeArgs, _layout: &Layout) {
     let base = ctx.ids.special.waterfalls[args.heading_dir / 2];
     if base < 0 {
         // No waterfall set in this theater: nothing to stamp. The placement

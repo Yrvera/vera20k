@@ -395,24 +395,6 @@ pub(crate) struct EntityDamageEvent {
 }
 
 impl EntityDamageEvent {
-    pub(crate) fn precomputed(
-        target_id: u64,
-        damage: u16,
-        attacker_id: u64,
-        warhead_ref: InternedId,
-    ) -> Self {
-        Self {
-            target_id,
-            damage: i32::from(damage),
-            attacker_id,
-            source_house: None,
-            warhead_ref,
-            distance_leptons: None,
-            receiver_flags: None,
-            near_center_ic_isolation_eligible: false,
-        }
-    }
-
     pub(crate) fn area(
         target_id: u64,
         raw_damage: i32,
@@ -1243,7 +1225,9 @@ pub struct CombatTickResult {
     /// Wall writes committed inline in exact cell/recursive cleanup order.
     pub wall_mutations: Vec<WallMutation>,
     /// Scanned-cell target detach visits committed inline, descending stable ID.
-    pub cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
+    /// Runtime applies them in-place; tests retain the ledger as an order audit.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) cell_target_detaches: Vec<combat_aoe::CellTargetDetach>,
     /// Terrain cells whose inline receiver removed live spatial authority.
     /// World rebuilds cost/path/zone caches from the already-mutated resolved
     /// terrain before later same-frame consumers.
@@ -1606,7 +1590,7 @@ pub(crate) enum ReceiverStageTrace {
 /// concrete fatal receiver. Passenger teardown precedes the nested death
 /// weapon; represented UnInit follows it before the next outer receiver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FatalLifecycleStage {
+pub(crate) enum FatalLifecycleStage {
     /// Surviving Techno ReceiveDamage postlude, before Infantry scatter and
     /// synchronous retaliation. The world owns ParticleSystem storage and the
     /// shared LogicVector, so maintenance crosses the existing inline hook.
@@ -2774,6 +2758,7 @@ fn area_near_center_ic_isolation_armed(
 /// records that precede the arming Techno while dispatch itself remains in the
 /// captured CellClass/object-list order.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn commit_area_damage_receivers(
     receivers: &[combat_aoe::AreaDamageReceiver],
     entities: &mut EntityStore,
@@ -2994,6 +2979,7 @@ pub(crate) fn commit_area_damage_receivers_with_scenario(
 /// world-owned deferred lifecycle handoff; only ReceiveDamage consequences are
 /// recursive here.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn commit_damage_events(
     damage_events: &[EntityDamageEvent],
     entities: &mut EntityStore,
@@ -3356,7 +3342,7 @@ fn commit_damage_events_with_isolation(
             continue;
         }
 
-        if let Some((damage, reached_survivor_postlude, hostile_source)) = positive_postlude {
+        if let Some((damage, _reached_survivor_postlude, _hostile_source)) = positive_postlude {
             // InfantryClass's concrete receiver dispatches Scatter only for a
             // surviving result state (1..=3), after HP has changed and before
             // fear or the shared Techno postlude. The attacker coordinate is
@@ -5736,7 +5722,7 @@ pub(crate) fn resolve_attacker_fire(
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
     binary_frame: u32,
-    tick_ms: u32,
+    _tick_ms: u32,
     scenario_rng: &mut SimRng,
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
@@ -6535,21 +6521,6 @@ pub(crate) fn resolve_attacker_fire(
     if is_garrison {
         out.garrison_advance.push(snap.stable_id);
     }
-}
-
-/// Check if a squared cell distance is within weapon range.
-/// Compares entirely in u32 to avoid I16F16 overflow on large maps
-/// (dist_sq can exceed SimFixed max of 32,767 for distant entities).
-pub(crate) fn is_within_weapon_range_sq(dist_sq_cells: u32, range_cells: SimFixed) -> bool {
-    let range_i64: i64 = sim_to_i32(range_cells) as i64;
-    let range_sq: u32 = (range_i64 * range_i64) as u32;
-    dist_sq_cells <= range_sq
-}
-
-pub(crate) fn cell_distance_sq(ax: u16, ay: u16, bx: u16, by: u16) -> u32 {
-    let dx = ax as i64 - bx as i64;
-    let dy = ay as i64 - by as i64;
-    (dx * dx + dy * dy) as u32
 }
 
 /// Squared distance in leptons between two positions (sub-cell precise).

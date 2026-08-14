@@ -549,24 +549,6 @@ pub(crate) fn tick_miners(
 }
 
 #[cfg(test)]
-pub(crate) fn tick_miners_with_overlay_registry(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    path_grid: Option<&PathGrid>,
-    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-) {
-    tick_miners_test_walk(
-        sim,
-        rules,
-        config,
-        path_grid,
-        overlay_registry,
-        ResourceQueryAuthority::OverlayGrid,
-    );
-}
-
-#[cfg(test)]
 fn tick_miners_test_walk(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -593,29 +575,6 @@ fn tick_miners_test_walk(
             resource_authority,
         );
     }
-}
-
-/// Process one miner through one tick of its state machine.
-///
-/// `pub(super)` so the Harvest mission handler seam (`harvest_mission.rs`) can
-/// dispatch to it; the visibility widening is behavior-neutral.
-pub(super) fn process_miner(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    config: &MinerConfig,
-    path_grid: Option<&PathGrid>,
-    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    snap: &mut MinerSnapshot,
-) {
-    process_miner_with_resource_authority(
-        sim,
-        rules,
-        config,
-        path_grid,
-        overlay_registry,
-        snap,
-        ResourceQueryAuthority::OverlayGrid,
-    );
 }
 
 pub(super) fn process_miner_with_resource_authority(
@@ -2196,6 +2155,7 @@ pub(crate) fn search_local_ore(
 }
 
 /// Hand a selected stock-miner destination to the normal Drive command authority.
+#[cfg(test)]
 pub(crate) fn issue_stock_miner_drive_move(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -2373,6 +2333,7 @@ fn is_within_close_enough(pos: (u16, u16), target: (u16, u16), close_enough: Sim
 /// For deposit-time credit math use [`count_purifiers_for_owner`] — gamemd
 /// multiplies the bonus by the live count, so a 2-purifier player should
 /// receive +50%, not +25%.
+#[allow(dead_code)]
 pub(crate) fn player_has_purifier(sim: &Simulation, rules: &RuleSet, owner: &str) -> bool {
     count_purifiers_for_owner(sim, rules, owner) > 0
 }

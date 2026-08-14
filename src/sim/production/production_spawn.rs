@@ -8,12 +8,14 @@ use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::rules::object_type::{FactoryType, ObjectCategory};
 use crate::rules::ruleset::RuleSet;
+use crate::sim::entity_store::EntityStore;
+use crate::sim::world::Simulation;
+
+#[cfg(test)]
 use crate::sim::cell_rect::{
     CellRect, CellRectOccupancyContext, CellRectPassabilityContext, check_occupancy_rect,
     check_passability_rect,
 };
-use crate::sim::entity_store::EntityStore;
-use crate::sim::world::Simulation;
 
 use super::production_tech::producer_candidates_for_owner_category;
 use super::production_types::ProductionCategory;

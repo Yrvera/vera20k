@@ -35,7 +35,9 @@ use crate::sim::overlay_grid::{
 };
 use crate::sim::rng::SimRng;
 use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+#[cfg(test)]
+use crate::util::fixed_math::SIM_ZERO;
+use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{CELL_CENTER_LEPTON, LEPTONS_PER_LEVEL, ground_height_leptons};
 use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
@@ -294,6 +296,7 @@ pub(crate) fn bridge_adjusted_impact_z(
 /// matching RA2 behavior (e.g., V3 rockets can damage your own units).
 ///
 /// `base_damage` is the weapon's raw damage value (before Verses scaling).
+#[cfg(test)]
 pub(crate) fn apply_aoe_damage<O: Into<AoEDamageOrigin>>(
     entities: &mut EntityStore,
     impact_rx: u16,
@@ -319,6 +322,7 @@ pub(crate) fn apply_aoe_damage<O: Into<AoEDamageOrigin>>(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
     entities: &mut EntityStore,
     impact_rx: u16,
@@ -1064,6 +1068,7 @@ fn push_terrain_aoe_damage(
 /// At distance 0 (epicenter): full `base_damage * verses_pct / 100`.
 /// At distance == cell_spread (edge): `base_damage * verses_pct * percent_at_max_pct / 10000`.
 /// Linear interpolation between those extremes.
+#[cfg(test)]
 fn aoe_damage_at_distance(
     base_damage: i32,
     distance: SimFixed,

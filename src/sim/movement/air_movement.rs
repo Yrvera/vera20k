@@ -24,7 +24,6 @@
 //! - Part of sim/ — depends on sim/components, sim/locomotor, map/terrain.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::components::MovementTarget;
@@ -552,6 +551,7 @@ fn tick_altitude(loco: &mut LocomotorState, dt: SimFixed) {
 mod tests {
     use super::*;
     use crate::sim::game_entity::GameEntity;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::sim_from_f32;
 
     #[test]

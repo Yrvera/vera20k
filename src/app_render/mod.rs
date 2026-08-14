@@ -149,7 +149,6 @@ pub(crate) fn render_game(
             unit_pages: &world.unit_pages,
             unit_transition_paged: &world.unit_transition_paged,
             shp_paged: &world.shp_paged,
-            particle_paged: &world.particle_paged,
             top_unit_pages: &world.top_unit_pages,
             top_shp_pages: &world.top_shp_pages,
             ghost_page: ui.ghost_page,

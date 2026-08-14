@@ -4676,7 +4676,7 @@ fn build_minimal_sim_with_gawall_row(
 #[test]
 fn concrete_wall_chain_reaction_runs_without_panic() {
     // Row of 4 GAWALL at (4..8, 5).
-    let (mut sim, rules, registry) = build_minimal_sim_with_gawall_row(5, 4..8);
+    let (mut sim, _rules, registry) = build_minimal_sim_with_gawall_row(5, 4..8);
     // Pre-set (5,5) to stage 2 with E+W connectivity so a single damage event
     // pushes it through the penultimate-stage chain trigger (stage 3 of
     // DamageLevels=4). Connectivity nibble 0b1010 = E+W = 0xA, byte = 0x2A.
@@ -4756,13 +4756,13 @@ fn wall_damage_deterministic_across_replays() {
     ];
 
     let snapshot_a: (Option<u8>, u8) = {
-        let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
+        let (mut sim, _rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
         sim.apply_wall_damage_events(&events, &registry);
         let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
         (cell.overlay_id, cell.overlay_data)
     };
     let snapshot_b: (Option<u8>, u8) = {
-        let (mut sim, rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
+        let (mut sim, _rules, registry) = build_minimal_sim_with_gawall_seeded(5, 5, seed);
         sim.apply_wall_damage_events(&events, &registry);
         let cell = sim.overlay_grid.as_ref().unwrap().cell(5, 5);
         (cell.overlay_id, cell.overlay_data)

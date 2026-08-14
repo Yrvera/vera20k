@@ -16,7 +16,6 @@
 //! - Part of sim/ — depends on sim/locomotor, sim/movement.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
 
 use crate::sim::movement::locomotor::{AirMovePhase, LocomotorState};
 use crate::util::fixed_math::{SIM_1_5, SIM_ZERO, SimFixed};
@@ -158,6 +157,7 @@ pub fn tick_jumpjet_altitude(loco: &mut LocomotorState, dt: SimFixed) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::{SIM_ONE, sim_from_f32};
 
     #[test]

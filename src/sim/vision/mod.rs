@@ -400,6 +400,7 @@ impl OwnerVisibility {
         }
     }
 
+    #[cfg(test)]
     fn resized_preserving_state(&self, width: u16, height: u16) -> Self {
         let mut expanded = Self::new(width, height);
         for ry in 0..self.height.min(height) {

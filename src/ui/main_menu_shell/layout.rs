@@ -57,10 +57,6 @@ pub struct MainMenuShellLayout {
     pub lower_strip: RectPx,
 }
 
-/// Native bottom-cap height at 800x600. Mirrors the retail RA2 SHP size verified
-/// in the skirmish shell research. (Documentation const; not in shared geom.)
-pub const RIGHT_PANEL_BOTTOM_H: i32 = 23;
-
 fn movie_origin(screen_w: i32, screen_h: i32) -> (i32, i32) {
     let x = if screen_w <= SHELL_BASE_W {
         0

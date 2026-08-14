@@ -694,7 +694,7 @@ fn emit_turret_unit_sprites(
     type_id: &str,
     body_facing: u8,
     turret_facing: u16,
-    hc: HouseColorIndex,
+    _hc: HouseColorIndex,
     center_x: f32,
     center_y: f32,
     state: &AppState,

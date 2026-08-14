@@ -11,7 +11,9 @@ use crate::rules::art_data::{ArtEntry, ArtRegistry};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::combat::TargetKind;
 use crate::sim::combat::combat_weapon::WeaponSlot;
-use crate::sim::components::{Position, WeaponMuzzleFlash};
+#[cfg(test)]
+use crate::sim::components::Position;
+use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::world::{SimFireEvent, Simulation};
 use crate::util::fixed_math::SimFixed;
 
@@ -52,10 +54,6 @@ pub(crate) struct ProjectileVisual {
     pub start_screen_y: f32,
     pub end_screen_x: f32,
     pub end_screen_y: f32,
-    pub start_rx: u16,
-    pub start_ry: u16,
-    pub end_rx: u16,
-    pub end_ry: u16,
     pub z: u8,
     pub frame: u16,
     pub duration_ms: u32,
@@ -90,6 +88,7 @@ pub(crate) fn select_weapon_muzzle_anim<'a>(anims: &'a [String], facing: u8) -> 
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_fire_origin_from_art(
     screen_origin: (f32, f32),
     position: &Position,
@@ -475,10 +474,6 @@ fn build_projectile_visuals(
             start_screen_y: origin.screen_y,
             end_screen_x: dest.screen_x,
             end_screen_y: dest.screen_y,
-            start_rx: origin.rx,
-            start_ry: origin.ry,
-            end_rx: dest.rx,
-            end_ry: dest.ry,
             z: origin.z.max(dest.z),
             frame: projectile_direction_frame(&origin, &dest, frame_count),
             duration_ms,

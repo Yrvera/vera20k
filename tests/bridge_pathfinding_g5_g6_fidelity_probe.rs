@@ -75,8 +75,6 @@ struct MetadataHealth {
     /// (tileset_index is Some). Low values mean the theater INI's tileset bounds
     /// don't cover this map's tile IDs — slope_type readings are unreliable.
     resolved_fraction: f32,
-    total_cells: u32,
-    resolved_cells: u32,
 }
 
 #[derive(Debug)]
@@ -112,8 +110,6 @@ fn metadata_health(grid: &ResolvedTerrainGrid) -> MetadataHealth {
     };
     MetadataHealth {
         resolved_fraction: frac,
-        total_cells: total,
-        resolved_cells: resolved,
     }
 }
 

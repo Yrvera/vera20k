@@ -1187,6 +1187,7 @@ fn neutral_cell_light(profiles: &mut LightProfileCache) -> CellLight {
     )
 }
 
+#[cfg(test)]
 fn normalize_light(raw_rgb: LightRgbKey, additive_intensity: i32) -> NormalizedLight {
     normalize_light_at_detail(raw_rgb, additive_intensity, 2)
 }

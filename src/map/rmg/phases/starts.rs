@@ -771,7 +771,7 @@ mod tests {
         // notice.
         let args = args();
         let identity = ids();
-        let mut accepts = |bx: i32, by: i32| {
+        let accepts = |bx: i32, by: i32| {
             let (mut grid, mut scratch) = world(&args);
             grid.get_mut(bx, by).expect("native cell").tile = 100;
             let mut rng = RmgRng::new(1);

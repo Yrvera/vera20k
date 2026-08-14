@@ -188,7 +188,7 @@ fn flag_entry(atlas: &SkirmishShellChromeAtlas, label: &str) -> Option<SkirmishS
         .map(|(_, entry)| *entry)
 }
 
-pub fn build_skirmish_shell_instances(
+fn build_skirmish_shell_instances(
     atlas: &SkirmishShellChromeAtlas,
     font: &BitFont,
     layout: &SkirmishShellLayout,

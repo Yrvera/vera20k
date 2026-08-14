@@ -58,6 +58,8 @@ impl PackedZoneCoord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZoneRepairKind {
     AssignOrphaned,
+    // Verified repair arm retained until its terrain mutation owner is wired.
+    #[allow(dead_code)]
     MergeAdjacent,
 }
 

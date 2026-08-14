@@ -12,7 +12,6 @@
 //! ## Dependency rules
 //! - Part of rules/ — no dependencies on sim/, render/, ui/, etc.
 
-use crate::rules::object_type::ObjectCategory;
 
 // ---------------------------------------------------------------------------
 // LocomotorKind

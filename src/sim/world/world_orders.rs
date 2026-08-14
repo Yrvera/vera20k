@@ -94,6 +94,7 @@ impl Simulation {
     /// resume their patrol/guard movement toward the original goal. The resume
     /// coords stay on `OrderIntent` — the `mission` substrate has no goal field
     /// yet (Slice-8 follow-up); only the busy-signalling role moved off it.
+    #[cfg(test)]
     pub(crate) fn tick_order_intents_post_combat(
         &mut self,
         path_grid: Option<&PathGrid>,
@@ -311,10 +312,6 @@ impl Simulation {
     ///
     /// Returns `true` if any repair mutated bridge state (caller ORs into
     /// `TickResult.bridge_state_changed` so the app rebuilds PathGrid).
-    pub(crate) fn tick_bridge_repair_orders(&mut self, rules: &RuleSet) -> bool {
-        self.tick_bridge_repair_orders_with_overlay_registry(rules, None, &BTreeSet::new())
-    }
-
     pub(crate) fn tick_bridge_repair_orders_with_overlay_registry(
         &mut self,
         rules: &RuleSet,
@@ -505,10 +502,6 @@ impl Simulation {
     /// Returns the per-tick C4 outcome: `destroyed_structure` is true if any
     /// building died, and `bridge_state_changed` is true if any C4 detonation
     /// on a `BridgeRepairHut` collapsed a bridge.
-    pub(crate) fn tick_c4_plants(&mut self, rules: &RuleSet) -> C4TickOutcome {
-        self.tick_c4_plants_with_overlay_registry(rules, None, &BTreeSet::new())
-    }
-
     pub(crate) fn tick_c4_plants_with_overlay_registry(
         &mut self,
         rules: &RuleSet,
@@ -1014,6 +1007,7 @@ impl Simulation {
     /// Without this skip an idle base-defence force would walk off across the
     /// map, unleashed, the first time an enemy scouted past: nothing carries
     /// these units home because they have no `OrderIntent` to resume.
+    #[cfg(test)]
     pub(crate) fn tick_attack_pursuit(&mut self, rules: &RuleSet, path_grid: Option<&PathGrid>) {
         self.tick_attack_pursuit_with_overlay_registry(rules, path_grid, None, &BTreeSet::new());
     }

@@ -18,14 +18,16 @@
 //! is `#[ignore]`d and skips loudly when the install is absent.
 
 /// Where the table sits in the loaded image.
+#[cfg(test)]
 const TABLE_VA: u32 = 0x0086_50BC;
 /// Entries, one `u32` each — the top 14 bits of a significand.
+#[cfg(test)]
 const TABLE_LEN: usize = 16384;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::rmg::trig::file_offset_of;
+    use crate::map::retail_trig::file_offset_of;
     use crate::map::rmg::x87::sqrt_table_entry;
 
     fn retail_executable() -> Option<Vec<u8>> {

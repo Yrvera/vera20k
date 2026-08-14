@@ -1,12 +1,15 @@
-//! Resource economy: harvester ticking and ore-node utilities.
+//! Resource economy: harvester ticking and legacy ore-node test utilities.
 //!
 //! Dispatches to the Miner-component systems (War, Chrono, Slave miners)
-//! and provides shared helpers like `pick_best_resource_node`.
+//! while preserving the retired node selector for compatibility fixtures.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use crate::rules::ruleset::RuleSet;
-use crate::sim::miner::{MinerConfig, ResourceNode, ResourceType};
+use crate::sim::miner::MinerConfig;
+#[cfg(test)]
+use crate::sim::miner::{ResourceNode, ResourceType};
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
@@ -44,6 +47,7 @@ pub fn is_harvester_type(rules: &RuleSet, type_id: &str) -> bool {
 ///
 /// `filter`, if provided, is called per candidate; only cells for which
 /// it returns `true` are considered. Pass `None` for unfiltered behavior.
+#[cfg(test)]
 pub fn pick_best_resource_node(
     nodes: &BTreeMap<(u16, u16), ResourceNode>,
     from: (u16, u16),

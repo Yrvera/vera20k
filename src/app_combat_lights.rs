@@ -50,6 +50,7 @@ impl CombatLightRuntime {
         self.entries.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }

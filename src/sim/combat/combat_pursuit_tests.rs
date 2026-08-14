@@ -5,7 +5,7 @@
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::aircraft::AircraftMission;
-use crate::sim::combat::{AttackTarget, TargetKind};
+use crate::sim::combat::AttackTarget;
 use crate::sim::components::Health;
 use crate::sim::docking::aircraft_dock::AircraftAmmo;
 use crate::sim::game_entity::GameEntity;

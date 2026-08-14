@@ -138,20 +138,6 @@ fn overlay_display_identity(
     (display_overlay_id, overlay_data)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayRenderBucket {
-    Generic,
-    Wall,
-}
-
-fn classify_overlay_render_bucket(is_wall: bool) -> OverlayRenderBucket {
-    if is_wall {
-        OverlayRenderBucket::Wall
-    } else {
-        OverlayRenderBucket::Generic
-    }
-}
-
 /// Build SpriteInstances for active world-position effects (warp sparkles, etc.).
 ///
 /// Appends to the SHP instance list so they draw in the same depth-sorted pass.
@@ -1020,7 +1006,7 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         let Some(image) = projectile_type.image.as_deref() else {
             continue;
         };
-        let Some((screen_x, screen_y, rx, ry, projectile_z)) =
+        let Some((screen_x, screen_y, _rx, _ry, projectile_z)) =
             projectile_authoritative_screen_position(projectile.position)
         else {
             continue;
@@ -1280,9 +1266,8 @@ pub(crate) fn build_parachute_instances(
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, OverlayRenderBucket,
-        anim_instance_alpha, anim_render_destination, apply_shape_z_adjust,
-        classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
+        ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, anim_instance_alpha,
+        anim_render_destination, apply_shape_z_adjust, garrison_flash_depth, overlay_body_frame,
         overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
         weapon_muzzle_flash_key, world_effect_screen_position,
     };
@@ -1427,22 +1412,6 @@ mod tests {
             Some(&rules),
             Some(&production),
         ));
-    }
-
-    #[test]
-    fn wall_routes_to_wall_bucket() {
-        assert_eq!(
-            classify_overlay_render_bucket(true),
-            OverlayRenderBucket::Wall
-        );
-    }
-
-    #[test]
-    fn non_wall_routes_to_generic_bucket() {
-        assert_eq!(
-            classify_overlay_render_bucket(false),
-            OverlayRenderBucket::Generic
-        );
     }
 
     #[test]

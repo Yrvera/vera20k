@@ -691,6 +691,7 @@ fn decode_multiplayer_handle_bytes(value: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+#[cfg(test)]
 fn decode_multiplayer_handle(value: &str) -> Option<String> {
     decode_multiplayer_handle_bytes(value)
         .map(|bytes| crate::util::native_string::acp_decode(&bytes))

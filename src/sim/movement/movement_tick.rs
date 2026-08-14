@@ -1367,6 +1367,7 @@ fn handle_deferred_drive_track_chain(
     true
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tick_movement_with_grids(
     entities: &mut EntityStore,

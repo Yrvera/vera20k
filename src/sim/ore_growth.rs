@@ -544,7 +544,7 @@ impl OreGrowthState {
         tiberium_types: &TiberiumTypeRegistry,
         resolved_terrain: Option<&ResolvedTerrainGrid>,
         source_object_cells: &BTreeSet<(u16, u16)>,
-        live_objects: Option<TiberiumPlacementObjectContext<'_>>,
+        _live_objects: Option<TiberiumPlacementObjectContext<'_>>,
         _resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
         rng: &mut SimRng,
         current_frame: u32,

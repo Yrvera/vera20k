@@ -103,6 +103,7 @@ fn rmg_keys_from_raw_theater(data: &[u8]) -> RmgTileKeys {
     RmgTileKeys {
         clear_tile: start("ClearTile"),
         ramp_base: start("RampBase"),
+        ramp_smooth: start("RampSmooth"),
         rough_tile: start("RoughTile"),
         sand_tile: start("SandTile"),
         green_tile: start("GreenTile"),
@@ -121,10 +122,11 @@ fn rmg_keys_from_raw_theater(data: &[u8]) -> RmgTileKeys {
     }
 }
 
-fn tile_id_projection(ids: TileIds) -> [i32; 17] {
+fn tile_id_projection(ids: TileIds) -> [i32; 18] {
     [
         ids.clear,
         ids.ramp_base,
+        ids.ramp_smooth,
         ids.rough,
         ids.sand,
         ids.green,

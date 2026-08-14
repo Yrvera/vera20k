@@ -13,8 +13,6 @@
 //! Same as sim/world: depends on sim/bridge_state, sim/rng, rules/, map/;
 //! never render / ui / audio / net.
 
-use crate::sim::movement::locomotion::LocomotorSlot;
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::map::bridge_facts::{
@@ -55,6 +53,7 @@ use crate::util::lepton::CELL_CENTER_LEPTON;
 /// Cascade side-effects (kill / DropIn / debris / rim / zone) run unconditionally
 /// when matching outcomes are present in this batch — they don't depend on
 /// the return value.
+#[cfg(test)]
 pub(crate) fn apply_bridge_damage_events(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -174,6 +173,7 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
 ///
 /// Caller ensures the hut itself is not damaged — the hut survives the
 /// collapse, mirroring the original game's `BridgeRepairHut` death branch.
+#[cfg(test)]
 pub(crate) fn dispatch_bridge_collapse_from_hut(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -1661,6 +1661,7 @@ mod tests {
     use crate::sim::components::{BridgeOccupancy, Health};
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::test_intern;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };

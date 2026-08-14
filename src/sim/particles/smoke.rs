@@ -131,12 +131,15 @@ pub(super) fn tick_particle(p: &mut Particle, pt: &ParticleType, image_frame_cou
 /// type scales the magnitude. Out-of-range wind directions are clamped to 0.
 ///
 /// Bridge collision and odd-frame gating are deferred — see module-level notes.
+// Live dispatch still lacks the rules-owned wind direction and bridge query.
+#[allow(dead_code)]
 pub(super) fn move_smoke(p: &mut Particle, pt: &ParticleType) {
     move_smoke_with_wind(p, pt, smoke_wind_dir());
 }
 
 /// Internal helper exposed for testing — lets a test pin a specific wind
 /// direction without touching global rules state.
+#[allow(dead_code)]
 pub(super) fn move_smoke_with_wind(p: &mut Particle, pt: &ParticleType, wind_dir: u8) {
     let idx = (wind_dir as usize).min(7);
     let scale = pt.wind_effect as i32;
@@ -149,6 +152,7 @@ pub(super) fn move_smoke_with_wind(p: &mut Particle, pt: &ParticleType, wind_dir
 
 /// Default smoke wind direction. Real value comes from `[General] WindDirection=`
 /// once that's parsed; until then everything stays at index 0 (north).
+#[allow(dead_code)]
 fn smoke_wind_dir() -> u8 {
     0
 }
