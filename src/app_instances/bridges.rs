@@ -19,10 +19,11 @@ use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::{BridgeAtlasLookup, is_high_bridge_body_name};
 use crate::render::bridge_railing_atlas::BridgeKind;
+use crate::render::draw_state::DrawState;
 use crate::sim::bridge_state::{Axis, BridgeRuntimeCell, BridgeRuntimeState, DamageState};
 use crate::sim::map::bridge_topology::CellBridgeView;
 
-use super::helpers::{compute_sprite_depth_params, in_view};
+use super::helpers::{apply_shape_z_adjust, compute_sprite_depth_params, in_view};
 
 /// Latin-square jitter for healthy bridge body frames at base state byte 0
 /// (NS) or 9 (EW). Verified raw memory read at gamemd's `g_LatinSquare`
@@ -40,6 +41,10 @@ const BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17: f32 = -31.0;
 /// Bonus added to `cell.deck_level` before the depth calc for HasBridge cells.
 /// RE doc §3.3.1, ledger #6.
 const BRIDGE_HEIGHT_BONUS: u8 = 4;
+
+/// Shape adjustment passed by the active high-bridge body call at
+/// `CellClass::DrawOverlay_Body @ 0x0047F6A0`.
+const BRIDGE_BODY_Z_ADJUST_PX: i32 = -2;
 
 /// Shadow X displacement on EW states 9..17.
 ///
@@ -93,6 +98,25 @@ fn compute_bridge_body_y_offset(state: DamageState, axis: Axis) -> f32 {
         9..=17 => BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17,
         _ => BRIDGE_BODY_Y_OFFSET_STATE_0_TO_8,
     }
+}
+
+/// Base and shape-adjusted depth for the high-bridge full-canvas quad.
+///
+/// The active call at `0x0047F7DA..0x0047F80B` seeds the extended SHP blitter
+/// from the shape's actual canvas top, bridge level plus four, and adjustment
+/// -2. Per-row decrements are supplied by the bridge depth atlas.
+fn compute_bridge_body_depth(
+    origin_y: f32,
+    world_height: f32,
+    quad_top_y: f32,
+    depth_z: u8,
+) -> f32 {
+    let base_depth = compute_sprite_depth_params(origin_y, world_height, quad_top_y, depth_z);
+    apply_shape_z_adjust(base_depth, BRIDGE_BODY_Z_ADJUST_PX, world_height)
+}
+
+fn bridge_body_depth_scale(world_height: f32) -> f32 {
+    255.0 / world_height.max(1.0)
 }
 
 /// Build sprite instances for the bridge body pass (RE doc §3.3, Step 5
@@ -150,20 +174,22 @@ pub fn build_bridge_body_instances_inner(
             continue;
         };
 
+        let body_x = sx + TILE_WIDTH / 2.0 + spr.offset_x;
+        let body_y = sy + TILE_HEIGHT / 2.0 + spr.offset_y;
         let depth_z = z.saturating_add(BRIDGE_HEIGHT_BONUS);
-        let depth = compute_sprite_depth_params(origin_y, world_height, sy, depth_z);
+        let depth = compute_bridge_body_depth(origin_y, world_height, body_y, depth_z);
+        let mut draw_state = DrawState::default();
+        draw_state.fx_params[3] = bridge_body_depth_scale(world_height);
         let tint: [f32; 3] = lighting_grid.bridge_body_tint_at((rx, ry));
         out.push(SpriteInstance {
-            position: [
-                sx + TILE_WIDTH / 2.0 + spr.offset_x,
-                sy + TILE_HEIGHT / 2.0 + spr.offset_y,
-            ],
+            position: [body_x, body_y],
             size: spr.pixel_size,
             uv_origin: spr.uv_origin,
             uv_size: spr.uv_size,
             depth,
             tint,
             alpha: 1.0,
+            draw_state,
             ..Default::default()
         });
     }
@@ -631,7 +657,7 @@ mod tests {
     /// render/. The bridge state is built directly via `test_seed_cell` to
     /// avoid pulling in any sim-test fixtures.
     #[test]
-    fn bridge_body_builder_queries_atlas_with_post_tick_state_byte_frame() {
+    fn gsi_13_09_body_builder_anchors_depth_to_canvas_top_and_applies_native_minus_two() {
         use crate::map::lighting::CellLightGrid;
         use crate::render::bridge_atlas::BridgeAtlasLookup;
         use crate::render::overlay_atlas::OverlaySpriteEntry;
@@ -658,9 +684,9 @@ mod tests {
             }
         }
 
-        // Seed cells (4,5), (5,5), (6,5) directly. (5,5) is forced Damaged —
-        // Task 16 is about the sim → render bridge, not which damage path
-        // produced Damaged. The other two cells stay Healthy{variant:0}.
+        // Seed three visible EW cells. Their 0xDC overlay byte is the render
+        // authority and decodes as Damaged for all three through
+        // `effective_render_state`; (5,5) is the depth assertion target.
         let mut bridge_state = BridgeRuntimeState::default();
         for x in 4u16..=6 {
             let damage_state = if x == 5 {
@@ -687,9 +713,8 @@ mod tests {
             );
         }
 
-        // Mock atlas accepts only ("BRIDGE1", frame 15) — the EW Damaged SHP
-        // frame. Per BRIDGE_RENDERING_GHIDRA_REPORT.md §12, EW body is SHP
-        // frames 0..=8 (axis_base = 0); Damaged adds local offset 6.
+        // Mock atlas accepts the EW Damaged body frame: axis base 9 plus the
+        // damaged local offset 6 gives frame 15.
         let mock = MockAtlas {
             expected_name: "BRIDGE1".to_string(),
             expected_frame: 15,
@@ -698,7 +723,7 @@ mod tests {
                 uv_size: [1.0, 1.0],
                 pixel_size: [60.0, 30.0],
                 offset_x: 0.0,
-                offset_y: 0.0,
+                offset_y: 7.0,
             },
             queries: std::cell::RefCell::new(Vec::new()),
         };
@@ -717,6 +742,7 @@ mod tests {
         let (cam_target_x, cam_target_y) = crate::map::terrain::iso_to_screen(5, 5, 4);
 
         let mut out: Vec<crate::render::batch::SpriteInstance> = Vec::new();
+        let world_height = 5000.0;
         build_bridge_body_instances_inner(
             &bridge_state,
             &mock,
@@ -724,7 +750,7 @@ mod tests {
             &height_map,
             &lighting_grid,
             /* origin_y */ 0.0,
-            /* world_height */ 1.0,
+            world_height,
             /* cam_x */ cam_target_x - 400.0,
             /* cam_y */ cam_target_y - 300.0,
             /* sw */ 800.0,
@@ -735,7 +761,7 @@ mod tests {
         let queries = mock.queries.borrow();
         assert!(
             !queries.is_empty(),
-            "body builder must query the atlas at least once for the seeded Damaged cell"
+            "body builder must query the atlas for the seeded damaged cells"
         );
         let queried_for_55 = queries
             .iter()
@@ -750,5 +776,32 @@ mod tests {
             !out.is_empty(),
             "expected at least one SpriteInstance for the Damaged EW bridge cell"
         );
+        let (cell_sx, cell_sy) = crate::map::terrain::iso_to_screen(5, 5, 4);
+        let expected_left = cell_sx + TILE_WIDTH / 2.0 + mock.entry.offset_x;
+        let expected_top =
+            cell_sy + BRIDGE_BODY_Y_OFFSET_STATE_9_TO_17 + TILE_HEIGHT / 2.0 + mock.entry.offset_y;
+        let instance = out
+            .iter()
+            .find(|instance| instance.position == [expected_left, expected_top])
+            .copied()
+            .expect("center bridge body must be identifiable by its final full-canvas position");
+        let expected_base = compute_sprite_depth_params(0.0, world_height, expected_top, 8);
+        let expected_depth =
+            apply_shape_z_adjust(expected_base, BRIDGE_BODY_Z_ADJUST_PX, world_height);
+        assert_eq!(instance.position[1], expected_top);
+        assert!((instance.depth - expected_depth).abs() < f32::EPSILON);
+        assert_eq!(
+            instance.draw_state.fx_params[3],
+            bridge_body_depth_scale(world_height)
+        );
+    }
+
+    #[test]
+    fn gsi_13_09_adjacent_body_rows_step_exactly_one_over_world_height() {
+        let world_height = 4096.0;
+        let scale = bridge_body_depth_scale(world_height);
+        let row_73 = (73.0 / 255.0) * scale;
+        let row_74 = (74.0 / 255.0) * scale;
+        assert!(((row_74 - row_73) - 1.0 / world_height).abs() < f32::EPSILON);
     }
 }

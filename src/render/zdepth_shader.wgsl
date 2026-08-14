@@ -28,6 +28,7 @@ struct Instance {
     @location(4) depth: f32,
     @location(5) tint: vec3f,
     @location(6) alpha: f32,
+    @location(9) fx_params: vec4f,
 };
 
 struct VertexOutput {
@@ -35,6 +36,7 @@ struct VertexOutput {
     @location(0) uv: vec2f,
     @location(1) tint: vec3f,
     @location(2) base_depth: f32,
+    @location(3) depth_scale: f32,
 };
 
 @vertex
@@ -66,6 +68,7 @@ fn vs_main(
     output.uv = instance.uv_origin + quad_uv[idx] * instance.uv_size;
     output.tint = instance.tint;
     output.base_depth = instance.depth;
+    output.depth_scale = instance.fx_params.w;
     return output;
 }
 
@@ -87,7 +90,10 @@ fn fs_main(input: VertexOutput) -> FragOutput {
     // Depth formula: base_depth is the tile's Y-sorted depth (0=near, 1=far).
     // z_sample offsets per-pixel: higher values push terrain pixels closer to
     // the camera (lower depth) in the shared terrain depth buffer.
-    let depth_scale: f32 = 0.0002;
+    // Bridge bodies carry 255/world_height in fx_params.w so an R8 row value
+    // advances exactly one normalized world pixel. Zero retains the terrain
+    // atlas's established scale.
+    let depth_scale: f32 = select(0.0002, input.depth_scale, input.depth_scale > 0.0);
     let frag_depth: f32 = clamp(input.base_depth - z_sample * depth_scale, 0.001, 0.999);
 
     var output: FragOutput;
