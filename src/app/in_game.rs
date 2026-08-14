@@ -523,3 +523,145 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// Persist the user-tunable settings the engine currently tracks to
+    /// `RA2MD.INI`, preserving the file's other keys and sections. Invoked on
+    /// quit-confirm OK strictly BEFORE the app tears down, matching the
+    /// original writing options before exit. Today only `[Audio] ScoreVolume`
+    /// (the live music volume, already read at boot) round-trips; further
+    /// sections are added as the engine grows to model them. A write failure is
+    /// logged, never fatal — a quit must not be blocked by a settings error.
+    pub(super) fn persist_settings_on_quit(state: &AppState) {
+        let Some(config) = state.game_config.as_ref() else {
+            return;
+        };
+        let Some(player) = state.music_player.as_ref() else {
+            return;
+        };
+        if let Err(err) =
+            crate::audio::music::write_score_volume_to_ra2md(&config.paths.ra2_dir, player.volume())
+        {
+            log::warn!("Failed to persist settings to RA2MD.INI on quit: {err}");
+        }
+    }
+
+    /// Begin the graceful quit cascade from the main-menu Exit-confirm OK. The
+    /// caller persists settings FIRST (so the captured volume is pre-fade), then
+    /// calls this instead of exiting immediately; `render_frame` drives it to
+    /// completion and then exits the event loop.
+    pub(super) fn start_quit_cascade(state: &mut AppState) {
+        let start_volume = state.music_player.as_ref().map_or(0.0, |p| p.volume());
+        state.quit_cascade = Some(crate::app_quit_cascade::QuitCascade::start(
+            Instant::now(),
+            start_volume,
+        ));
+    }
+
+    pub(super) fn drive_scenario_exit(state: &mut AppState, wall_ms: u64) {
+        if state.scenario_exit.is_none() {
+            return;
+        }
+        let poll_voices = state
+            .scenario_exit
+            .as_ref()
+            .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
+        let voices_active = poll_voices
+            && state
+                .sfx_player
+                .as_mut()
+                .is_some_and(|sfx| sfx.pump_and_check_voices());
+        let tick = state
+            .scenario_exit
+            .as_mut()
+            .expect("scenario exit remains present")
+            .tick(wall_ms, voices_active);
+
+        if let Some(scale) = tick.music_output_scale {
+            if let Some(player) = state.music_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if let Some(scale) = tick.sfx_output_scale {
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if tick.stop_audio {
+            if let Some(player) = state.music_player.as_mut() {
+                player.stop();
+                player.set_output_scale(1.0);
+            }
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.stop_all();
+                player.set_output_scale(1.0);
+            }
+        }
+        // ScoreDialog__WndProc @ 0x005C9B10 resolves the literal SCORE theme
+        // and starts it immediately on WM_INITDIALOG. Keep this after the
+        // hard stop and output-scale restoration so ScoreX begins audible.
+        if let Some(crate::app_scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
+            tick.after_stop
+            && let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager)
+        {
+            let _ = player.play_track(theme, assets);
+        }
+        if !tick.finished {
+            return;
+        }
+
+        let destination = state
+            .scenario_exit
+            .as_mut()
+            .and_then(crate::app_scenario_exit::ScenarioExitCascade::take_destination);
+        state.scenario_exit = None;
+        match destination {
+            Some(crate::app_scenario_exit::ScenarioExitDestination::Score {
+                title,
+                detail,
+                model,
+            }) => {
+                state.score_screen = Some(model);
+                state.score_shell_state = Default::default();
+                state.screen = GameScreen::MissionResult { title, detail };
+            }
+            Some(crate::app_scenario_exit::ScenarioExitDestination::MainMenu) => {
+                Self::return_to_main_menu(state);
+            }
+            None => log::error!("Scenario exit finished without a destination"),
+        }
+    }
+
+    fn apply_scenario_exit_voice_action(
+        state: &mut AppState,
+        action: crate::app_scenario_exit::ScenarioExitVoiceAction,
+    ) {
+        match action {
+            crate::app_scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
+                let Some(owner) = state.local_player_owner.as_deref() else {
+                    log::warn!("Battle-control termination EVA has no pinned local owner");
+                    return;
+                };
+                let faction = crate::app_building_anim::eva_faction_key(owner, &state.house_roster);
+                let fallback = match faction {
+                    "Russian" => "csof015",
+                    "Yuri" => "cyur015",
+                    _ => "ceva015",
+                };
+                let sound_id = state
+                    .eva_registry
+                    .get("EVA_BattleControlTerminated", faction)
+                    .unwrap_or(fallback)
+                    .to_string();
+                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) {
+                    let _ = sfx.interrupt_eva_sound(
+                        &sound_id,
+                        &state.sound_registry,
+                        assets,
+                        &state.audio_indices,
+                    );
+                }
+            }
+        }
+    }
+}
