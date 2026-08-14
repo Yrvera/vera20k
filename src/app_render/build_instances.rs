@@ -675,10 +675,12 @@ fn build_placement_preview(
                 // Draws place.shp on every intermediate cell between cursor and
                 // nearest same-type wall.
                 let (mut valid, mut invalid) = o.build_building_preview(preview, &state.height_map);
-                let autofill = compute_wall_autofill_cells(state, preview);
-                if !autofill.is_empty() {
-                    let (av, ai) =
-                        o.build_wall_autofill_diamonds(&autofill, preview.valid, &state.height_map);
+                if !preview.wall_autofill_cells.is_empty() {
+                    let (av, ai) = o.build_wall_autofill_diamonds(
+                        &preview.wall_autofill_cells,
+                        preview.valid,
+                        &state.height_map,
+                    );
                     valid.extend(av);
                     invalid.extend(ai);
                 }
@@ -713,70 +715,6 @@ fn build_placement_preview(
         }
         _ => (Vec::new(), Vec::new(), Vec::new(), 0, Vec::new()),
     }
-}
-
-/// Compute auto-fill cells for wall placement: intermediate cells between the
-/// cursor and the nearest existing same-type wall in each cardinal direction.
-///
-/// Walks each cardinal direction from the cursor until it hits a same-type
-/// wall, then fills the gap.
-fn compute_wall_autofill_cells(
-    state: &AppState,
-    preview: &crate::sim::production::BuildingPlacementPreview,
-) -> Vec<(u16, u16)> {
-    let Some(overlay_registry) = state.overlay_registry.as_ref() else {
-        return Vec::new();
-    };
-    let preview_type_str_wall = state
-        .simulation
-        .as_ref()
-        .map(|s| s.interner.resolve(preview.type_id).to_string())
-        .unwrap_or_default();
-    let Some(overlay_id) = overlay_registry.id_for_name(&preview_type_str_wall) else {
-        return Vec::new();
-    };
-    let sim = state.simulation.as_ref();
-    let rules = state.rules.as_ref();
-
-    let cursor_rx = preview.rx;
-    let cursor_ry = preview.ry;
-    let mut cells: Vec<(u16, u16)> = Vec::new();
-    let directions: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    for (drx, dry) in directions {
-        let mut cx = cursor_rx as i32 + drx;
-        let mut cy = cursor_ry as i32 + dry;
-        let mut line: Vec<(u16, u16)> = Vec::new();
-        loop {
-            if cx < 0 || cy < 0 || cx > 511 || cy > 511 {
-                break;
-            }
-            let cell = (cx as u16, cy as u16);
-            // Stop if a non-wall building occupies this cell (can't build through it).
-            if let (Some(s), Some(r)) = (sim, rules) {
-                if crate::sim::production::structure_occupies_cell(
-                    s.entities(),
-                    r,
-                    cell.0,
-                    cell.1,
-                    &s.interner,
-                ) {
-                    break;
-                }
-            }
-            let has_wall = state
-                .overlays
-                .iter()
-                .any(|e| e.rx == cell.0 && e.ry == cell.1 && e.overlay_id == overlay_id);
-            if has_wall {
-                cells.extend_from_slice(&line);
-                break;
-            }
-            line.push(cell);
-            cx += drx;
-            cy += dry;
-        }
-    }
-    cells
 }
 
 // ---------------------------------------------------------------------------

@@ -1223,6 +1223,9 @@ impl Simulation {
                 ry,
             } => {
                 let Some(rules) = rules else { return false };
+                if self.interner.get(command_owner) != Some(*owner) {
+                    return false;
+                }
                 let owner_s = self.interner.resolve(*owner).to_string();
                 let type_s = self.interner.resolve(*type_id).to_string();
                 production::place_ready_building_with_overlays(

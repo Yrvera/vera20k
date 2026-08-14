@@ -16,6 +16,7 @@ mod production_sell;
 mod production_spawn;
 mod production_tech;
 mod production_types;
+mod wall_placement;
 mod war_factory_exit;
 
 // Re-export everything so external code can still use `production::X`.
@@ -25,7 +26,6 @@ pub use self::factory::{
     build_step_time, category_for_object,
 };
 pub use self::production_economy::is_harvester_type;
-pub(crate) use self::production_placement::structure_occupies_cell;
 pub use self::production_placement::{
     active_producer_for_owner_category, cycle_active_producer_for_owner_category,
     place_ready_building_with_overlays, place_ready_building_without_overlays,

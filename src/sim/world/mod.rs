@@ -3399,6 +3399,45 @@ impl Simulation {
         Some(tail_path_grid)
     }
 
+    /// Publish wall-placement passability before a later command executes and
+    /// before the frame hash is latched.
+    pub(crate) fn finalize_wall_placement_navigation(
+        &mut self,
+        input_path_grid: Option<&PathGrid>,
+    ) {
+        let input_path_grid = input_path_grid
+            .cloned()
+            .or_else(|| self.prev_path_grid.clone());
+        let Some(input_path_grid) = input_path_grid else {
+            return;
+        };
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        let resolved_path_grid =
+            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
+        if input_path_grid.width() != resolved_path_grid.width()
+            || input_path_grid.height() != resolved_path_grid.height()
+        {
+            return;
+        }
+        let changed_cells = self
+            .overlay_grid
+            .as_mut()
+            .map(|grid| grid.take_synchronous_navigation_cells())
+            .unwrap_or_default();
+        if changed_cells.is_empty() {
+            return;
+        }
+        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+        let mut tail_path_grid = input_path_grid;
+        for (rx, ry) in changed_cells {
+            let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, rx, ry);
+            debug_assert!(replaced, "changed wall cell must be inside the map");
+        }
+        self.rebuild_zone_grid(&tail_path_grid);
+    }
+
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
         let terrain = self.resolved_terrain.as_ref()?;
         let cell = terrain.cell(rx, ry)?;
@@ -3841,7 +3880,7 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, bool) {
         let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
         let applied = self.apply_command_with_overlays(
             &cmd_owner_str,
@@ -3866,7 +3905,16 @@ impl Simulation {
                 cmd.payload,
                 Command::SellBuilding { .. } | Command::UndeployBuilding { .. }
             );
-        (spawned_entity, destroyed_structure)
+        (applied, spawned_entity, destroyed_structure)
+    }
+
+    fn is_wall_placement_command(&self, command: &Command, rules: Option<&RuleSet>) -> bool {
+        let Command::PlaceReadyBuilding { type_id, .. } = command else {
+            return false;
+        };
+        rules
+            .and_then(|rules| rules.object(self.interner.resolve(*type_id)))
+            .is_some_and(|object| object.wall)
     }
 
     pub(crate) fn command_uses_megamission(command: &Command) -> bool {
@@ -4223,7 +4271,7 @@ impl Simulation {
                     && command.owner == owner
                     && !Self::command_uses_megamission(&command.payload)
             }) {
-                let (spawned, destroyed) = self.apply_one_due_command(
+                let (applied, spawned, destroyed) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4232,6 +4280,8 @@ impl Simulation {
                 );
                 if matches!(command.payload, Command::SellWallAtCell { .. }) {
                     tail_path_grid = self.prev_path_grid.clone();
+                } else if applied && self.is_wall_placement_command(&command.payload, rules) {
+                    tail_path_grid = self.prev_path_grid.clone().or(tail_path_grid);
                 }
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
@@ -4249,7 +4299,7 @@ impl Simulation {
                 .collect::<Vec<_>>();
             self.adjust_staged_megamission_destinations(&mut staged, tail_path_grid.as_ref());
             for command in &staged {
-                let (spawned, destroyed) = self.apply_one_due_command(
+                let (_, spawned, destroyed) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4347,16 +4397,22 @@ impl Simulation {
                 overlay_registry,
             );
             self.ai_players = ai_state;
+            let mut ai_tail_path_grid = path_grid
+                .cloned()
+                .or_else(|| self.prev_path_grid.clone());
             for cmd in &ai_commands {
                 let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
                 let applied = self.apply_command_with_overlays(
                     &cmd_owner_str,
                     &cmd.payload,
                     rules,
-                    path_grid,
+                    ai_tail_path_grid.as_ref(),
                     height_map,
                     overlay_registry,
                 );
+                if applied && self.is_wall_placement_command(&cmd.payload, rules) {
+                    ai_tail_path_grid = self.prev_path_grid.clone().or(ai_tail_path_grid);
+                }
                 if applied
                     && match cmd.payload {
                         Command::PlaceReadyBuilding { type_id, .. } => rules

@@ -762,6 +762,7 @@ mod tests {
 
     use super::*;
     use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::components::Health;
     use crate::sim::miner::{MinerState, RefineryDockPhase, ResourceNode, ResourceType};
@@ -992,9 +993,12 @@ mod tests {
              Armor=concrete\n\
              Strength=300\n\
              Foundation=1x1\n\
-             Adjacent=0\n",
+             Adjacent=0\n\
+             GuardRange=5\n",
         );
-        let rules = RuleSet::from_ini(&ini).expect("AI wall rules");
+        let mut rules = RuleSet::from_ini(&ini).expect("AI wall rules");
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[GAWALL]\nToOverlay=GAWALL\n"));
+        rules.merge_art_data(&art);
         let registry = OverlayTypeRegistry::from_ini(&ini, None);
         let path_grid = PathGrid::new(32, 32);
         let height_map = BTreeMap::new();
