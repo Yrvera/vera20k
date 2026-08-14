@@ -765,14 +765,20 @@ pub struct AnimClassSpawnDescriptor {
     pub z: u8,
     /// Constructor `delay` argument, in native logic frames.
     pub delay: u16,
-    /// Constructor `loop` argument.
-    pub loop_count: u8,
+    /// Signed constructor `loop` argument.
+    pub loop_count: i32,
     /// Constructor draw flags argument.
     pub draw_flags: u32,
     /// Constructor `ZAdjust` argument.
     pub z_adjust: i32,
     /// Constructor reverse argument.
     pub reverse: bool,
+    /// AnimClass `+0x196`: draw through the owning cell's palette/light path.
+    #[serde(default)]
+    pub use_cell_drawer: bool,
+    /// AnimClass `+0x197`: marks the instance as terrain-attached.
+    #[serde(default)]
+    pub terrain_attached: bool,
     /// Instance draw-state bytes supplied by the native producer.
     pub draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
 }
@@ -798,6 +804,8 @@ impl AnimClassSpawnDescriptor {
             draw_flags: 0,
             z_adjust: 0,
             reverse: false,
+            use_cell_drawer: false,
+            terrain_attached: false,
             draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         }
     }

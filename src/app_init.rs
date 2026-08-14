@@ -14,7 +14,7 @@ use anyhow::Result;
 use crate::app_init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
-    spawn_entities, theater_ext_for,
+    scheduler_anim_roots, spawn_entities, theater_ext_for,
 };
 use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
@@ -1483,18 +1483,6 @@ pub(crate) fn load_map_from_initial(
     };
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
-        let damage_fire_roots: Vec<String> = r
-            .general
-            .damage_fire_types
-            .iter()
-            .map(|anim| anim.name.clone())
-            .collect();
-        a.bind_scheduler_anim_assets(
-            &damage_fire_roots,
-            &asset_manager,
-            theater_ext,
-            &map_data.header.theater,
-        )?;
         // Eagerly populate per-anim SHP frame dimensions so the smudge
         // dispatcher can size-filter without falling back to the (30, 30)
         // default that always loses the threshold check.
@@ -1562,6 +1550,19 @@ pub(crate) fn load_map_from_initial(
         &mut scenario_fill_ranged,
         &mut variant_selector,
     );
+    // Bind the complete scheduler closure only after theater Tile##Anim rows
+    // have resolved, but before any atlas or AnimClass construction. Missing
+    // tile art is a load error rather than a silently invisible map feature.
+    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
+        let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
+        a.bind_scheduler_anim_assets(
+            &roots,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        )?;
+        r.art_registry = a.clone();
+    }
     let variant_table_generated = variant_selector.generated_table();
     let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
     let variant_table_draws = variant_selector.raw_draw_count();
@@ -1788,6 +1789,7 @@ pub(crate) fn load_map_from_initial(
         &house_color_map,
         &height_map,
         unit_palette.as_ref(),
+        overlay_iso_palette.as_ref(),
         &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
@@ -1883,6 +1885,7 @@ pub(crate) fn load_map_from_initial(
                     art.as_ref(),
                     &house_color_map,
                     unit_palette.as_ref(),
+                    overlay_iso_palette.as_ref(),
                     &infantry_sequences,
                     vxl_compute.as_deref_mut(),
                 );

@@ -3,7 +3,7 @@
 //!
 //! Extracted from app_init.rs for file-size limits.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use crate::assets::asset_manager::AssetManager;
@@ -11,7 +11,7 @@ use crate::assets::pal_file::Palette;
 use crate::map::basic::BridgeDestroyabilityMode;
 use crate::map::houses::HouseColorMap;
 use crate::map::map_file::MapFile;
-use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::resolved_terrain::{ResolvedTerrainGrid, TerrainTileAnimation};
 use crate::map::terrain::TerrainGrid;
 use crate::map::theater::{self, TileImage, TileKey};
 use crate::map::trigger_graph;
@@ -24,6 +24,8 @@ use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::ruleset::RuleSet;
+use crate::sim::anim_class::{AnimDrawRuntime, AnimWorldCoord};
+use crate::sim::components::AnimClassSpawnDescriptor;
 use crate::sim::world::Simulation;
 
 use crate::app_skirmish::deployable_building_types;
@@ -448,6 +450,101 @@ pub(crate) fn generate_unverified_legacy_match_seed() -> u32 {
     now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(16)
 }
 
+/// Scheduler asset roots required by this map's surviving runtime objects.
+///
+/// Damage-fire roots remain part of the established closure. Terrain animation
+/// names come exclusively from resolved theater `Tile##Anim` data, so custom
+/// names take the same path without a WA/TUNTOP name table in Rust.
+pub(crate) fn scheduler_anim_roots(
+    rules: &RuleSet,
+    tile_animations: &[TerrainTileAnimation],
+) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    roots.extend(
+        rules
+            .general
+            .damage_fire_types
+            .iter()
+            .map(|anim| anim.name.trim().to_ascii_uppercase())
+            .filter(|name| !name.is_empty()),
+    );
+    roots.extend(
+        tile_animations
+            .iter()
+            .map(|anim| anim.anim_name.trim().to_ascii_uppercase())
+            .filter(|name| !name.is_empty()),
+    );
+    roots.into_iter().collect()
+}
+
+/// Construct the post-map-section terrain-attached AnimClass set.
+///
+/// gamemd-derived: the final `MapClass::InitCellAttributes @ 0x00568BB0`
+/// anti-diagonal pass calls `CellClass::RecalcAttributes @ 0x0047D2B0`; the
+/// constructor row at 0x0047DA3B..0x0047DA5F supplies delay 0, signed loop -1,
+/// flags 0x1600 and constructor ZAdjust 0. The delay-zero constructor calls
+/// `Middle`, then the producer writes the tile ZAdjust; the descriptor carries
+/// the producer's explicit +0x196/+0x197 state into the Rust object.
+pub(crate) fn spawn_terrain_tile_animations(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    tile_animations: &[TerrainTileAnimation],
+) -> Vec<u64> {
+    const TILE_ANIM_DRAW_FLAGS: u32 = 0x1600;
+    let mut spawned = Vec::with_capacity(tile_animations.len());
+    for tile in tile_animations {
+        let type_name = sim.interner.intern(&tile.anim_name);
+        let descriptor = AnimClassSpawnDescriptor {
+            type_name,
+            rx: tile.rx,
+            ry: tile.ry,
+            sub_x: crate::util::fixed_math::SimFixed::from_num(
+                tile.world_x
+                    .wrapping_sub(i32::from(tile.rx).wrapping_mul(256)),
+            ),
+            sub_y: crate::util::fixed_math::SimFixed::from_num(
+                tile.world_y
+                    .wrapping_sub(i32::from(tile.ry).wrapping_mul(256)),
+            ),
+            z: u8::try_from(
+                tile.world_z
+                    .div_euclid(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS),
+            )
+            .unwrap_or(0),
+            delay: 0,
+            loop_count: -1,
+            draw_flags: TILE_ANIM_DRAW_FLAGS,
+            z_adjust: 0,
+            reverse: false,
+            use_cell_drawer: true,
+            terrain_attached: true,
+            draw_runtime: AnimDrawRuntime::default(),
+        };
+        let id = sim
+            .spawn_anim_at_world(
+                rules,
+                descriptor,
+                AnimWorldCoord {
+                    x: tile.world_x,
+                    y: tile.world_y,
+                    z: tile.world_z,
+                },
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "resolved terrain animation [{}] must be bound before map spawn: {error}",
+                    tile.anim_name
+                )
+            });
+        assert!(
+            sim.set_terrain_anim_z_adjust_after_construction(id, tile.z_adjust),
+            "terrain animation {id} disappeared before its producer ZAdjust write"
+        );
+        spawned.push(id);
+    }
+    spawned
+}
+
 /// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
 pub(crate) fn spawn_entities<F>(
     map_data: &MapFile,
@@ -462,6 +559,7 @@ pub(crate) fn spawn_entities<F>(
     house_colors: &HouseColorMap,
     height_map: &BTreeMap<(u16, u16), u8>,
     theater_unit_palette: Option<&Palette>,
+    theater_iso_palette: Option<&Palette>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
@@ -613,6 +711,15 @@ where
             .count();
         log::info!("Miner components attached: {}", miner_count);
     }
+    if !resolved_terrain.tile_animations().is_empty() {
+        let rules = rules.expect("resolved terrain animations require bound art/rules data");
+        let spawned =
+            spawn_terrain_tile_animations(&mut sim, rules, resolved_terrain.tile_animations());
+        log::info!(
+            "Spawned {} terrain-attached animations after map objects",
+            spawned.len()
+        );
+    }
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
         &sim,
         asset_manager,
@@ -624,6 +731,7 @@ where
         art,
         house_colors,
         theater_unit_palette,
+        theater_iso_palette,
         infantry_sequences,
         vxl_compute,
     );
@@ -645,6 +753,7 @@ pub(crate) fn build_entity_atlases(
     art: Option<&ArtRegistry>,
     house_colors: &HouseColorMap,
     theater_unit_palette: Option<&Palette>,
+    theater_iso_palette: Option<&Palette>,
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
 ) -> (
@@ -683,6 +792,20 @@ pub(crate) fn build_entity_atlases(
     // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
     let extra_buildings: Vec<&str> =
         deployable_building_types(sim.entities(), rules, Some(&sim.interner));
+    let cell_drawer_type_ids: HashSet<String> = sim
+        .resolved_terrain
+        .as_ref()
+        .into_iter()
+        .flat_map(|terrain| terrain.tile_animations())
+        .map(|anim| anim.anim_name.to_ascii_uppercase())
+        .collect();
+    let loaded_iso_palette = theater_iso_palette.is_none().then(|| {
+        asset_manager
+            .get_ref(&format!("iso{}.pal", theater_ext.to_ascii_lowercase()))
+            .and_then(|bytes| Palette::from_bytes(bytes).ok())
+    });
+    let cell_palette =
+        theater_iso_palette.or_else(|| loaded_iso_palette.as_ref().and_then(Option::as_ref));
     let shp_atlas: Option<SpriteAtlas> = palette.as_ref().and_then(|pal| {
         sprite_atlas::build_sprite_atlas(
             gpu,
@@ -697,6 +820,8 @@ pub(crate) fn build_entity_atlases(
             house_colors,
             &extra_buildings,
             infantry_sequences,
+            &cell_drawer_type_ids,
+            cell_palette,
             None, // initial build — no existing cache
             Some(&sim.interner),
         )
@@ -727,12 +852,21 @@ mod retail_placement_oracle_tests;
 mod tests {
     use std::path::PathBuf;
 
-    use super::{LoadedRules, compose_rules_layers, load_rules_with_merged_ini};
+    use super::{
+        LoadedRules, compose_rules_layers, load_rules_with_merged_ini, scheduler_anim_roots,
+        spawn_terrain_tile_animations,
+    };
     use crate::assets::asset_manager::AssetManager;
+    use crate::map::entities::EntityCategory;
     use crate::map::overlay_types::OverlayTypeRegistry;
+    use crate::map::resolved_terrain::TerrainTileAnimation;
+    use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::world::{SimSoundEvent, Simulation};
 
     #[derive(Debug, PartialEq, Eq)]
     struct OverlayRegistryEntrySnapshot {
@@ -756,6 +890,137 @@ mod tests {
         land_speed_costs: Option<SpeedCostProfile>,
         strength: u16,
         damage_levels: u16,
+    }
+
+    #[test]
+    fn gsi_13_04_scheduler_roots_include_generic_resolved_tile_names() {
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]\nDamageFireTypes=FIRE_A,FIRE_B\n",
+        ))
+        .expect("rules");
+        let tiles = vec![
+            TerrainTileAnimation {
+                rx: 4,
+                ry: 1,
+                anim_name: "custom_falls".to_string(),
+                world_x: 0,
+                world_y: 0,
+                world_z: 0,
+                z_adjust: 0,
+            },
+            TerrainTileAnimation {
+                rx: 2,
+                ry: 3,
+                anim_name: "CUSTOM_MOUTH".to_string(),
+                world_x: 0,
+                world_y: 0,
+                world_z: 0,
+                z_adjust: 0,
+            },
+        ];
+
+        assert_eq!(
+            scheduler_anim_roots(&rules, &tiles),
+            vec!["CUSTOM_FALLS", "CUSTOM_MOUTH", "FIRE_A", "FIRE_B"]
+        );
+    }
+
+    #[test]
+    fn gsi_13_04_post_map_object_spawn_preserves_descriptor_order_state_and_sound() {
+        let mut rules =
+            RuleSet::from_ini(&IniFile::from_str("[General]\nDamageFireTypes=\n")).expect("rules");
+        let mut art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[CUSTOM_TOP]\nLoopCount=-1\nStartSound=WaterfallLoop\n\
+             [CUSTOM_GROUND]\nLayer=ground\nLoopCount=-1\nYSortAdjust=1000\n",
+        ));
+        art.bind_anim_frame_count_for_test("CUSTOM_TOP", 16);
+        art.bind_anim_frame_count_for_test("CUSTOM_GROUND", 2);
+        rules.art_registry = art;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Neutral");
+        let type_ref = sim.interner.intern("MAP_OBJECT");
+        let map_object_id = sim.allocate_stable_id();
+        sim.entities_mut()
+            .insert(GameEntity::new_at_frame_zero_for_test(
+                map_object_id,
+                1,
+                1,
+                0,
+                0,
+                owner,
+                Health {
+                    current: 100,
+                    max: 100,
+                },
+                type_ref,
+                EntityCategory::Unit,
+                0,
+                5,
+                false,
+            ));
+        sim.reveal(map_object_id);
+
+        let tiles = vec![
+            TerrainTileAnimation {
+                rx: 1,
+                ry: 2,
+                anim_name: "CUSTOM_TOP".to_string(),
+                world_x: 421,
+                world_y: 702,
+                world_z: 208,
+                z_adjust: -17,
+            },
+            TerrainTileAnimation {
+                rx: 0,
+                ry: 4,
+                anim_name: "CUSTOM_GROUND".to_string(),
+                world_x: 101,
+                world_y: 1_111,
+                world_z: 312,
+                z_adjust: 44,
+            },
+        ];
+        let ids = spawn_terrain_tile_animations(&mut sim, &rules, &tiles);
+        let expected_order = vec![map_object_id, ids[0], ids[1]];
+
+        assert_eq!(sim.live_object_order_snapshot(), expected_order);
+        for (id, tile) in ids.iter().zip(&tiles) {
+            let anim = sim.anim(*id).expect("spawned terrain AnimClass");
+            assert_eq!(
+                anim.world_coord,
+                crate::sim::anim_class::AnimWorldCoord {
+                    x: tile.world_x,
+                    y: tile.world_y,
+                    z: tile.world_z,
+                }
+            );
+            assert_eq!(anim.draw_flags, 0x1600);
+            assert_eq!(anim.z_adjust, tile.z_adjust);
+            assert_eq!(anim.runtime.loop_remaining, u8::MAX);
+            assert!(!anim.runtime.constructor_reverse);
+            assert!(anim.use_cell_drawer);
+            assert!(anim.terrain_attached);
+        }
+        assert!(matches!(
+            sim.sound_events.as_slice(),
+            [SimSoundEvent::AnimationStarted { anim_id, .. }] if *anim_id == ids[0]
+        ));
+        assert_eq!(sim.sound_events.drain(..).count(), 1);
+        assert!(sim.sound_events.is_empty());
+
+        // Native load resets Scenario RNG to Seed(0); isolate persistence of
+        // the AnimStore and authoritative LogicVector registration order.
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let expected_hash = sim.state_hash();
+        let bytes = bincode::serialize(&sim).expect("serialize terrain AnimClass state");
+        let mut restored: Simulation = bincode::deserialize(&bytes).expect("deserialize state");
+        restored.rebuild_logic_membership();
+        assert_eq!(restored.live_object_order_snapshot(), expected_order);
+        assert_eq!(restored.state_hash(), expected_hash);
+        assert!(restored.anim(ids[0]).unwrap().use_cell_drawer);
+        assert!(restored.anim(ids[0]).unwrap().terrain_attached);
+        assert!(restored.sound_events.is_empty());
     }
 
     fn overlay_registry_snapshot(
@@ -1038,7 +1303,7 @@ mod tests {
         let rules = RuleSet::from_ini(&IniFile::from_str(
             "[General]\nFixtureOnly=1\n[CombatDamage]\nFixtureOnly=1\n",
         ))
-            .expect("empty-section rules parse");
+        .expect("empty-section rules parse");
 
         // [General] scalar fallbacks == ctor defaults.
         assert_eq!(rules.general.flight_level, 500, "FlightLevel");

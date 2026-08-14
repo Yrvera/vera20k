@@ -48,7 +48,8 @@ pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
 /// Ground bodies, building bibs/anims, and building turret VXLs are emitted as
 /// one parent-owned group so the native global order cannot split their display
 /// call at an atlas boundary.
-/// `top_paged` receives SHP bodies whose locomotor puts them above the Ground
+/// `top_instances` and aligned `top_pages` receive SHP bodies whose locomotor
+/// puts them above the Ground
 /// band — in stock YR that is the Rocketeer at hover height, the one infantry
 /// type on a Jumpjet locomotor.
 /// `parachute_body_depths` collects the sort key of every body currently under
@@ -63,7 +64,9 @@ pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
-    top_paged: &mut [Vec<SpriteInstance>],
+    top_instances: &mut Vec<SpriteInstance>,
+    top_pages: &mut Vec<usize>,
+    top_ids: &mut Vec<u64>,
     parachute_body_depths: &mut ParachuteBodyDepths,
     selected_building_depth_paged: &mut [Vec<SpriteInstance>],
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
@@ -322,10 +325,10 @@ pub(crate) fn build_shp_instances(
             && entity.category != EntityCategory::Structure;
         let collect_ground = band == EntityDrawBand::Ground && !under_bridge;
         let target_pages = match band {
-            // Above the Ground band, so also above any bridge deck.
-            EntityDrawBand::Top => &mut *top_paged,
-            EntityDrawBand::Ground if under_bridge => &mut *bridge_paged,
-            EntityDrawBand::Ground => &mut *paged,
+            // Top stays flat; page identity is carried beside each instance.
+            EntityDrawBand::Top => None,
+            EntityDrawBand::Ground if under_bridge => Some(&mut *bridge_paged),
+            EntityDrawBand::Ground => Some(&mut *paged),
         };
         let body = SpriteInstance {
             position: [final_x, final_y],
@@ -388,8 +391,12 @@ pub(crate) fn build_shp_instances(
                     }],
                 ));
             }
+        } else if band == EntityDrawBand::Top {
+            top_instances.push(body);
+            top_pages.push(entry.page as usize);
+            top_ids.push(entity.stable_id);
         } else {
-            target_pages[entry.page as usize].push(body);
+            target_pages.expect("Ground SHP target was selected")[entry.page as usize].push(body);
         }
 
         // Emit building animation overlays and bib — but NOT during build-up/down.

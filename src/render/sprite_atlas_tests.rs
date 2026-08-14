@@ -119,17 +119,18 @@ fn alt_palette_art_takes_the_unit_palette_even_when_it_is_a_world_effect() {
         .iter()
         .map(|name| name.to_string())
         .collect();
+    let cell_drawers = HashSet::new();
 
     assert_eq!(
-        sprite_palette_choice("WCCLOUD1", Some(&art), &effects),
+        sprite_palette_choice("WCCLOUD1", Some(&art), &effects, &cell_drawers),
         SpritePaletteChoice::Unit
     );
     assert_eq!(
-        sprite_palette_choice("SQDG", Some(&art), &effects),
+        sprite_palette_choice("SQDG", Some(&art), &effects, &cell_drawers),
         SpritePaletteChoice::Unit
     );
     assert_eq!(
-        sprite_palette_choice("FBALL1", Some(&art), &effects),
+        sprite_palette_choice("FBALL1", Some(&art), &effects, &cell_drawers),
         SpritePaletteChoice::Anim
     );
 }
@@ -139,21 +140,22 @@ fn sprite_palette_choice_leaves_non_effect_and_unknown_art_on_the_unit_palette()
     let ini = crate::rules::ini_parser::IniFile::from_str("[GAPOWR]\nRemapable=yes\n");
     let art = ArtRegistry::from_ini(&ini);
     let effects: HashSet<String> = HashSet::new();
+    let cell_drawers = HashSet::new();
 
     // A structure that is not a world effect keeps the unit palette.
     assert_eq!(
-        sprite_palette_choice("GAPOWR", Some(&art), &effects),
+        sprite_palette_choice("GAPOWR", Some(&art), &effects, &cell_drawers),
         SpritePaletteChoice::Unit
     );
     // No art registry at all must not change the previous name-set behaviour.
     assert_eq!(
-        sprite_palette_choice("GAPOWR", None, &effects),
+        sprite_palette_choice("GAPOWR", None, &effects, &cell_drawers),
         SpritePaletteChoice::Unit
     );
     let mut with_effect: HashSet<String> = HashSet::new();
     with_effect.insert("FBALL1".to_string());
     assert_eq!(
-        sprite_palette_choice("FBALL1", None, &with_effect),
+        sprite_palette_choice("FBALL1", None, &with_effect, &cell_drawers),
         SpritePaletteChoice::Anim
     );
 }
@@ -247,6 +249,96 @@ fn gsi_13_08_warpout_keeps_all_frames_and_drives_the_progressive_alpha_ladder() 
             expected_alpha,
             "WARPOUT frame {frame}",
         );
+    }
+}
+
+fn make_raw_test_shp(frame_count: u16) -> Vec<u8> {
+    let headers_end = 8usize + usize::from(frame_count) * 24;
+    let mut data = Vec::with_capacity(headers_end + usize::from(frame_count));
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&frame_count.to_le_bytes());
+    for frame in 0..frame_count {
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&[0u8; 12]);
+        let offset = u32::try_from(headers_end + usize::from(frame)).unwrap();
+        data.extend_from_slice(&offset.to_le_bytes());
+    }
+    data.extend(std::iter::repeat_n(1u8, usize::from(frame_count)));
+    data
+}
+
+#[test]
+fn gsi_13_04_tem_only_tile_root_uses_iso_palette_and_registers_every_frame() {
+    let mut rules = crate::rules::ruleset::RuleSet::from_ini(
+        &crate::rules::ini_parser::IniFile::from_str("[General]\nDamageFireTypes=\n"),
+    )
+    .expect("rules");
+    let mut art = ArtRegistry::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[CUSTOM_TILE_ANIM]\nTheater=yes\nAltPalette=yes\nLoopCount=-1\n",
+    ));
+    art.bind_anim_frame_count_for_test("CUSTOM_TILE_ANIM", 4);
+    rules.art_registry = art;
+    let effects: HashSet<String> = ["CUSTOM_TILE_ANIM".to_string()].into_iter().collect();
+    let cell_drawers: HashSet<String> = ["CUSTOM_TILE_ANIM".to_string()].into_iter().collect();
+
+    assert!(
+        collect_effect_names(&rules)
+            .iter()
+            .any(|name| name == "CUSTOM_TILE_ANIM")
+    );
+    assert_eq!(
+        sprite_palette_choice(
+            "CUSTOM_TILE_ANIM",
+            Some(&rules.art_registry),
+            &effects,
+            &cell_drawers,
+        ),
+        SpritePaletteChoice::CellIso,
+        "cell-drawer palette authority overrides ordinary Anim.PAL/AltPalette selection"
+    );
+
+    let candidates = effect_anim_shp_candidates(
+        "CUSTOM_TILE_ANIM",
+        Some(&rules.art_registry),
+        "tem",
+        "TEMPERATE",
+    );
+    assert_eq!(
+        candidates,
+        vec!["CUSTOM_TILE_ANIM.TEM", "CUSTOM_TILE_ANIM.SHP"]
+    );
+    let tem_only = HashMap::from([("CUSTOM_TILE_ANIM.TEM".to_string(), make_raw_test_shp(4))]);
+    assert!(!tem_only.contains_key("CUSTOM_TILE_ANIM.SHP"));
+    let data = candidates
+        .iter()
+        .find_map(|candidate| tem_only.get(candidate))
+        .expect("theater-aware preload must resolve the TEM-only SHP");
+    let shp = ShpFile::from_bytes(data).expect("TEM candidate is valid SHP(TS) data");
+
+    let mut needed = HashSet::new();
+    let mut counts = HashMap::new();
+    let count = register_effect_anim_frames(
+        &mut needed,
+        &mut counts,
+        "CUSTOM_TILE_ANIM",
+        shp.frames.len() as u16,
+        true,
+        false,
+    );
+    assert_eq!(count, 4);
+    assert_eq!(counts["CUSTOM_TILE_ANIM"], 4);
+    for frame in 0..4 {
+        assert!(needed.contains(&ShpSpriteKey {
+            type_id: "CUSTOM_TILE_ANIM".to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        }));
     }
 }
 

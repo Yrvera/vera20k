@@ -175,6 +175,18 @@ impl NativeGroundOrder {
         self.object_draw_with_adjust(id, coord, y_sort_adjust, encoding)
     }
 
+    /// gamemd-derived: no-owner `AnimClass::GetLayer @ 0x00424CB0` submits
+    /// Ground types with `AnimClass::GetYSort @ 0x00422BC0`, which adds the
+    /// instance +0x104 value initialized from AnimType `YSortAdjust`.
+    pub(crate) fn anim_object_draw(
+        &self,
+        id: DrawId,
+        coord: TacticalCoord,
+        y_sort_adjust: i32,
+    ) -> Option<ObjectDraw> {
+        self.object_draw_with_adjust(id, coord, y_sort_adjust, SpriteEncoding::Plain)
+    }
+
     /// gamemd-derived: `TerrainClass__Read_Map_Section @ 0x0071CA70`
     /// constructs at the cell center, and the active Terrain virtuals
     /// `GetCoords @ 0x0041BE00`, `ObjectClass::GetYSort @ 0x005F6BD0`, and

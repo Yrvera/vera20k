@@ -16,8 +16,10 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
-use crate::render::tactical_draw_plan::{BlitPolicy, RenderZPolicy, SpriteEncoding};
-use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_translucency_source_alpha};
+use crate::render::tactical_draw_plan::{
+    BlitPolicy, ObjectDraw, RenderZPolicy, SpriteEncoding, TacticalCoord,
+};
+use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig, anim_translucency_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
 use crate::sim::miner::ResourceType;
@@ -200,8 +202,54 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimRenderDestination {
+    Ground(ObjectDraw),
+    Top,
+    Existing,
+}
+
+fn anim_render_destination(
+    stable_id: u64,
+    owner_entity: Option<u64>,
+    world_coord: crate::sim::anim_class::AnimWorldCoord,
+    config: Option<&AnimTypeRuntimeConfig>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+) -> Option<AnimRenderDestination> {
+    // Owner-attached damage fire retains its established parent-adjacent path.
+    // gamemd-derived: no-owner `AnimClass::GetLayer @ 0x00424CB0` returns the
+    // AnimType layer; `GetYSort @ 0x00422BC0` adds AnimType YSortAdjust.
+    if owner_entity.is_some() {
+        return Some(AnimRenderDestination::Existing);
+    }
+    let config = config?;
+    match config.layer {
+        AnimLayer::Ground => ground_order
+            .anim_object_draw(
+                stable_id,
+                TacticalCoord {
+                    x: world_coord.x,
+                    y: world_coord.y,
+                    z: world_coord.z,
+                },
+                config.y_sort_adjust,
+            )
+            .map(AnimRenderDestination::Ground),
+        AnimLayer::Top => Some(AnimRenderDestination::Top),
+        AnimLayer::Other(_) => Some(AnimRenderDestination::Existing),
+    }
+}
+
 /// Build ordinary scheduler-owned `AnimClass` sprites.
-pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+pub(crate) fn build_anim_class_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+    top_instances: &mut Vec<SpriteInstance>,
+    top_pages: &mut Vec<usize>,
+    top_ids: &mut Vec<u64>,
+    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
@@ -213,7 +261,10 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
         state.render_width() as f32 / z2,
         state.render_height() as f32 / z2,
     );
-    for (_, anim) in sim.anims() {
+    for &stable_id in sim.tactical_registration_order() {
+        let Some(anim) = sim.anim(stable_id) else {
+            continue;
+        };
         if anim.runtime.inactive {
             continue;
         }
@@ -276,7 +327,8 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
             .map(|grid| (grid.origin_y, grid.world_height))
             .unwrap_or((0.0, 1.0));
         let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
-        paged[entry.page as usize].push(SpriteInstance {
+        debug_assert!(!anim.terrain_attached || anim.use_cell_drawer);
+        let instance = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
@@ -289,7 +341,35 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
             tint,
             alpha,
             ..Default::default()
-        });
+        };
+        match anim_render_destination(
+            anim.stable_id,
+            anim.owner_entity,
+            anim.world_coord,
+            config,
+            ground_order,
+        ) {
+            Some(AnimRenderDestination::Ground(parent)) => ground_objects.push(
+                crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                    parent,
+                    vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                        target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+                            entry.page as usize,
+                        ),
+                        instance,
+                    }],
+                ),
+            ),
+            Some(AnimRenderDestination::Top) => {
+                top_instances.push(instance);
+                top_pages.push(entry.page as usize);
+                top_ids.push(anim.stable_id);
+            }
+            Some(AnimRenderDestination::Existing) => {
+                paged[entry.page as usize].push(instance);
+            }
+            None => {}
+        }
     }
 }
 
@@ -1178,10 +1258,11 @@ pub(crate) fn build_parachute_instances(
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, anim_instance_alpha,
-        apply_shape_z_adjust, classify_overlay_render_bucket, garrison_flash_depth,
-        overlay_body_frame, overlay_render_identity, terrain_object_is_render_visible,
-        weapon_muzzle_flash_key, world_effect_screen_position,
+        ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, OverlayRenderBucket,
+        anim_instance_alpha, anim_render_destination, apply_shape_z_adjust,
+        classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
+        overlay_render_identity, terrain_object_is_render_visible, weapon_muzzle_flash_key,
+        world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
     use crate::rules::art_data::ArtRegistry;
@@ -1193,6 +1274,63 @@ mod tests {
     use crate::sim::production::ProductionState;
     use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
     use crate::util::fixed_math::SimFixed;
+
+    #[test]
+    fn gsi_13_04_wa_top_and_tuntop_ground_use_native_layer_and_ysort_lowering() {
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[WA_CUSTOM]\nYSortAdjust=7\n\
+             [TUNTOP_CUSTOM]\nLayer=ground\nYSortAdjust=1000\n",
+        ));
+        let order = crate::app_render::draw_plan_lowering::NativeGroundOrder::new(&[5, 10, 20]);
+        let wa = art.anim_runtime_config("WA_CUSTOM");
+        let tuntop = art.anim_runtime_config("TUNTOP_CUSTOM");
+        let world = crate::sim::anim_class::AnimWorldCoord {
+            x: 400,
+            y: 600,
+            z: 208,
+        };
+
+        assert_eq!(
+            anim_render_destination(10, None, world, wa, &order),
+            Some(AnimRenderDestination::Top)
+        );
+        let Some(AnimRenderDestination::Ground(tunnel_draw)) =
+            anim_render_destination(20, None, world, tuntop, &order)
+        else {
+            panic!("ground tile animation must enter TacticalDrawPlan");
+        };
+        assert_eq!(tunnel_draw.coord.x, 400);
+        assert_eq!(tunnel_draw.coord.y, 600);
+        assert_eq!(tunnel_draw.coord.z, 208);
+        assert_eq!(tunnel_draw.y_sort_adjust, 1000);
+        assert_eq!(tunnel_draw.y_sort_key(), 2000);
+
+        let ordinary = order
+            .object_draw(
+                5,
+                crate::render::tactical_draw_plan::TacticalCoord {
+                    x: 900,
+                    y: 900,
+                    z: 0,
+                },
+                crate::render::tactical_draw_plan::SpriteEncoding::Plain,
+            )
+            .unwrap();
+        let pieces = |parent| {
+            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                parent,
+                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(0),
+                    instance: crate::render::batch::SpriteInstance::default(),
+                }],
+            )
+        };
+        let lowered = crate::app_render::draw_plan_lowering::lower_ground_object_instances(vec![
+            pieces(tunnel_draw),
+            pieces(ordinary),
+        ]);
+        assert_eq!(lowered.owners, [5, 20]);
+    }
 
     #[test]
     fn gsi_04_10_render_visibility_distinguishes_unregistered_live_and_destroyed() {

@@ -6,7 +6,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -71,9 +71,7 @@ fn flush_replay_log_to(
 
     let result = (|| {
         std::fs::create_dir_all(replays_dir)?;
-        let path = replays_dir.join(format!(
-            "replay_tick{session_tick}_{unix_secs}.json"
-        ));
+        let path = replays_dir.join(format!("replay_tick{session_tick}_{unix_secs}.json"));
         log.save(&path)?;
         Ok(Some(ReplayLogFlush {
             path,
@@ -1081,7 +1079,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 log::info!("AI disabled — clearing {} AI players", sim.ai_players.len());
                 sim.ai_players.clear();
             }
-            sim.sound_events.clear();
+            // Delay-zero AnimClass construction can emit StartSound during the
+            // final map-load sweep. Keep it until this first tactical drain;
+            // `drain(..)` below still consumes every event exactly once.
             let due_commands = if tick_lane == TickLane::Ordinary {
                 sim.take_due_commands()
             } else {
@@ -1144,7 +1144,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             drained_fire_events.extend(sim.fire_events.drain(..));
             append_fire_effect_batch(&mut state.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
-            for sim_event in sim.sound_events.drain(..) {
+            for sim_event in drain_sim_sound_events(sim) {
                 let app_event: GameSoundEvent = match sim_event {
                     SimSoundEvent::AnimationStarted {
                         anim_id,
@@ -1740,6 +1740,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     frame_committed
 }
 
+fn drain_sim_sound_events(sim: &mut crate::sim::world::Simulation) -> Vec<SimSoundEvent> {
+    sim.sound_events.drain(..).collect()
+}
+
 /// Samples pending light records backward and swaps the completed grid forward,
 /// matching YR `LightSourceClass::UpdateLightConverts`' all-gathered-before-commit
 /// boundary. This is app-local renderer state, never deterministic simulation state.
@@ -2079,6 +2083,14 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     if sprite_rebuild {
         log::warn!(">>> SPRITE ATLAS REBUILD TRIGGERED — new SHP entity types detected <<<");
         let existing = state.sprite_atlas.take();
+        let cell_drawer_type_ids: HashSet<String> = sim
+            .resolved_terrain
+            .as_ref()
+            .into_iter()
+            .flat_map(|terrain| terrain.tile_animations())
+            .map(|anim| anim.anim_name.to_ascii_uppercase())
+            .collect();
+        let cell_palette = load_iso_palette(asset_manager, &state.theater_ext);
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
             &state.gpu,
             &state.batch_renderer,
@@ -2092,6 +2104,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.house_color_map,
             &extra_buildings,
             &state.infantry_sequences,
+            &cell_drawer_type_ids,
+            cell_palette.as_ref(),
             existing,
             Some(&sim.interner),
         ) {
@@ -2178,6 +2192,13 @@ fn load_unit_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<
         }
     }
     None
+}
+
+fn load_iso_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<Palette> {
+    let name = format!("iso{}.pal", theater_ext.to_ascii_lowercase());
+    asset_manager
+        .get_ref(&name)
+        .and_then(|bytes| Palette::from_bytes(bytes).ok())
 }
 
 /// Check if a cell is walkable on either the ground or bridge layer.
@@ -2288,9 +2309,9 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, outcome_eva_entry, rebuild_dynamic_terrain_navigation,
-        upsert_overlay_entries, validate_exact_step_receipt, wall_sell_sound_for_local,
-        world_point_to_cell,
+        drain_sim_sound_events, finish_fire_effect_batch, outcome_eva_entry,
+        rebuild_dynamic_terrain_navigation, upsert_overlay_entries, validate_exact_step_receipt,
+        wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2366,6 +2387,28 @@ mod tests {
         assert!(
             wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
         );
+    }
+
+    #[test]
+    fn gsi_13_04_pre_tick_animation_started_event_drains_exactly_once() {
+        let mut sim = crate::sim::world::Simulation::new();
+        let sound_id = sim.interner.intern("WaterfallLoop");
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::AnimationStarted {
+                anim_id: 9,
+                sound_id,
+                world: crate::sim::anim_class::AnimWorldCoord {
+                    x: 128,
+                    y: 128,
+                    z: 0,
+                },
+            });
+
+        assert!(matches!(
+            drain_sim_sound_events(&mut sim).as_slice(),
+            [crate::sim::world::SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
+        ));
+        assert!(drain_sim_sound_events(&mut sim).is_empty());
     }
 
     #[test]

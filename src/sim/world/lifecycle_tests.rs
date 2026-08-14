@@ -1093,6 +1093,8 @@ fn insert_anim(sim: &mut Simulation, stable_id: u64, inactive: bool) {
             inactive,
         },
         draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
+        use_cell_drawer: false,
+        terrain_attached: false,
         in_logic_vector: false,
         owner_entity: None,
         start_sound_active: false,

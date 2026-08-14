@@ -237,7 +237,9 @@ use crate::sim::world::Simulation;
 // EXIT event. App-consumed execution edges remain transient and are not saved.
 // Bumped 74 -> 75: generic Building delayed-fire state now persists its signed
 // remaining counter and saved weapon slot across save/load.
-const SNAPSHOT_VERSION: u32 = 75;
+// Bumped 75 -> 76: AnimClass now persists its cell-drawer and
+// terrain-attached constructor bytes.
+const SNAPSHOT_VERSION: u32 = 76;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1800,8 +1802,8 @@ mod tests {
             GameSnapshot::load(&preamble_only),
             Err(SnapshotError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                found: 74,
-            })
+                found,
+            }) if found == SNAPSHOT_VERSION - 1
         ));
     }
 
@@ -1857,10 +1859,11 @@ mod tests {
     /// description to the common prefix; 72 -> 73 added persistent per-house
     /// accepted outcome kind, SavourDelay target, and expiry latch; 73 -> 74
     /// added the serialized pending-command EXIT payload; 74 -> 75 added the
-    /// generic Building delayed-fire signed counter and saved weapon slot.
+    /// generic Building delayed-fire signed counter and saved weapon slot; 75
+    /// -> 76 added AnimClass cell-drawer and terrain-attached bytes.
     #[test]
-    fn gsi_05_10_snapshot_version_is_75() {
-        assert_eq!(super::SNAPSHOT_VERSION, 75);
+    fn gsi_13_04_snapshot_version_is_76() {
+        assert_eq!(super::SNAPSHOT_VERSION, 76);
     }
 
     #[test]

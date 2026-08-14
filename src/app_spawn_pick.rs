@@ -105,6 +105,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     state.art_registry.as_ref(),
                     &state.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
+                    None, // cell palette reloads from the active theater archive
                     &state.infantry_sequences,
                     state.vxl_compute.as_mut(),
                 );

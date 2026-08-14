@@ -521,6 +521,31 @@ pub(super) fn draw_unit_atlas_page_runs<'a>(
     }
 }
 
+/// Draw one flat SHP stream without regrouping it by atlas page.
+///
+/// Contiguous page changes only rebind the texture; the instance range remains
+/// the native Top-layer append sequence.
+pub(super) fn draw_shp_atlas_page_runs<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    batch: &'a BatchRenderer,
+    atlas: &'a SpriteAtlas,
+    buffer: &'a wgpu::Buffer,
+    pages: &[usize],
+    start: u32,
+    count: u32,
+) {
+    for run in unit_page_runs(pages, start, count) {
+        let texture = atlas.page(run.page).unwrap_or_else(|| {
+            panic!(
+                "SpriteAtlas instance references missing page {} of {}",
+                run.page,
+                atlas.page_count()
+            )
+        });
+        batch.draw_passthrough_range(pass, &texture.texture, buffer, run.start, run.count);
+    }
+}
+
 fn draw_group_range<'a>(
     pass: &mut wgpu::RenderPass<'a>,
     batch: &'a BatchRenderer,
@@ -627,5 +652,36 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(visited, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn gsi_13_04_top_shp_page_runs_preserve_registration_append_order() {
+        let pages = [2usize, 0, 2, 1];
+        let runs: Vec<UnitPageRun> = unit_page_runs(&pages, 0, pages.len() as u32).collect();
+        assert_eq!(
+            runs,
+            vec![
+                UnitPageRun {
+                    page: 2,
+                    start: 0,
+                    count: 1,
+                },
+                UnitPageRun {
+                    page: 0,
+                    start: 1,
+                    count: 1,
+                },
+                UnitPageRun {
+                    page: 2,
+                    start: 2,
+                    count: 1,
+                },
+                UnitPageRun {
+                    page: 1,
+                    start: 3,
+                    count: 1,
+                },
+            ]
+        );
     }
 }

@@ -36,6 +36,7 @@ pub(super) struct DrawPassData<'a> {
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub particle_paged: &'a [Vec<SpriteInstance>],
     pub top_unit_pages: &'a [usize],
+    pub top_shp_pages: &'a [usize],
     pub ghost_page: u8,
 }
 
@@ -329,7 +330,6 @@ pub(super) fn dispatch_draw_passes(
     // row (see helpers::ground_sort_row) that test passes for everything the
     // body flies over, so the residual is a cliff face standing in a *nearer*
     // iso row than the body's own cell, which its lifted sprite does not reach.
-    const TOP_SHP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
     if let (Some(unit_atlas), Some(palette_set)) =
         (state.unit_atlas.as_ref(), state.palette_set.as_ref())
     {
@@ -348,21 +348,18 @@ pub(super) fn dispatch_draw_passes(
             }
         }
     }
-    for (i, key) in TOP_SHP_KEYS.iter().enumerate() {
-        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
-            if let Some((buf, count)) = pool.get(key) {
-                if count == 0 {
-                    continue;
-                }
-                state.batch_renderer.draw_passthrough_range(
-                    &mut pass,
-                    &page.texture,
-                    buf,
-                    0,
-                    count,
-                );
-            }
-        }
+    if let (Some(atlas), Some((buffer, count))) = (state.sprite_atlas.as_ref(), pool.get("shp_top"))
+        && count > 0
+    {
+        merge_passes::draw_shp_atlas_page_runs(
+            &mut pass,
+            &state.batch_renderer,
+            atlas,
+            buffer,
+            data.top_shp_pages,
+            0,
+            count,
+        );
     }
 
     // --- Step 7.8: Persistent combat-light vector ---
