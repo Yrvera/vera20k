@@ -304,8 +304,9 @@ pub(crate) fn entity_draw_band(entity: &GameEntity) -> EntityDrawBand {
 /// depth buffer clips it. Adding the lift back recovers the ground row, which
 /// is the screen-space image of X+Y.
 ///
-/// This also takes the infantry walking bob back out of the key. The bob is a
-/// VERA-internal ±1 px flourish; gamemd's key has no term for it.
+/// `height_lift_px` is therefore exactly the term needed to recover the Z-free
+/// row. Grounded infantry contribute zero lift, so their drawn and sort rows
+/// are identical.
 pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
     drawn_row_y + crate::render::locomotor_visual::height_lift_px(entity)
 }
