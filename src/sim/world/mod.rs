@@ -54,6 +54,7 @@ use crate::rules::locomotor_type::SpeedType;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
+use crate::sim::animation;
 use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
@@ -5364,6 +5365,28 @@ impl Simulation {
         self.refresh_production_shadow(rules);
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
+
+        // Living sprite/voxel/harvest animation state belongs to the committed
+        // simulation frame. Keep it inside the authoritative frame transaction
+        // so hashed side effects and every snapshot observe the same state.
+        // Dying animation advancement remains in the live-object scheduler,
+        // which owns the single pending-delete drain above.
+        if frame_committed && let Some(animation_sequences) = animation_sequences {
+            let game_options = self.session.game_options.clone();
+            let binary_frame = self.session.binary_frame;
+            {
+                let (entities, interner) = self.entities_mut_and_interner();
+                animation::tick_non_dying_animations(
+                    entities,
+                    animation_sequences,
+                    &game_options,
+                    interner,
+                    binary_frame,
+                );
+            }
+            animation::tick_voxel_animations(self.entities_mut());
+            animation::tick_harvest_overlays(self.entities_mut());
+        }
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,

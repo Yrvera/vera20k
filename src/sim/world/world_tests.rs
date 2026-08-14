@@ -14,6 +14,9 @@ use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::animation::{
+    Animation, FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet,
+};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -22,6 +25,7 @@ use crate::sim::components::{
 };
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::movement::FacingClass;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::pathfinding::PathGrid;
@@ -45,6 +49,80 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+#[test]
+fn master_frame_hash_observes_living_animation_completion_facing() {
+    let mut sim = Simulation::with_seed(0xA11A_7100);
+    let owner = sim.interner.intern("Americans");
+    let type_ref = sim.interner.intern("E1");
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
+        1,
+        4,
+        4,
+        0,
+        0,
+        owner,
+        crate::sim::components::Health {
+            current: 100,
+            max: 100,
+        },
+        type_ref,
+        EntityCategory::Infantry,
+        0,
+        0,
+        false,
+    );
+    entity.animation = Some(Animation::new(SequenceKind::Idle1));
+    entity.body_facing = Some(FacingClass::new(0, 4));
+    sim.substrate.entities.insert(entity);
+
+    let idle = SequenceDef {
+        start_frame: 0,
+        frame_count: 1,
+        facings: 8,
+        facing_multiplier: 1,
+        frame_delay: 1,
+        normalized: false,
+        completion_facing: Some(128),
+        loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
+        facing_slots: FacingSlots::InfantryTable,
+    };
+    let stand = SequenceDef {
+        start_frame: 1,
+        frame_count: 1,
+        facings: 8,
+        facing_multiplier: 1,
+        frame_delay: 1,
+        normalized: false,
+        completion_facing: None,
+        loop_mode: LoopMode::Loop,
+        facing_slots: FacingSlots::InfantryTable,
+    };
+    let mut set = SequenceSet::new();
+    set.insert(SequenceKind::Idle1, idle);
+    set.insert(SequenceKind::Stand, stand);
+    let sequences = BTreeMap::from([("E1".to_string(), set)]);
+
+    let result = sim.advance_master_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        Some(&sequences),
+        None,
+    );
+
+    let entity = sim.substrate.entities.get(1).expect("living infantry");
+    assert_eq!(entity.facing, 128);
+    assert_eq!(
+        entity.animation.as_ref().expect("animation").sequence,
+        SequenceKind::Stand
+    );
+    assert_eq!(result.state_hash, sim.state_hash());
 }
 
 fn gsi_13_10_art_model_rules() -> RuleSet {
