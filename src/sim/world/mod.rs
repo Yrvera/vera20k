@@ -104,6 +104,16 @@ use crate::util::fixed_math::SimFixed;
 /// `ScenarioDescriptor`; nothing on the launch path may rely on this value.
 const DEFAULT_SIM_SEED: u64 = 0x5EED_CAFE_D15E_A5E5;
 
+/// Whether this Unit visit reaches FootClass's SHP body-counter cadence.
+///
+/// An entry-active TubeMovement owns the UnitClass AI call and returns before
+/// FootClass AI. Tube state armed later during an ordinary Foot visit does not
+/// retroactively suppress work already reached by that visit, so only the
+/// entry snapshot belongs in this admission predicate.
+fn shp_vehicle_counter_admitted(tube_active_at_entry: bool) -> bool {
+    !tube_active_at_entry
+}
+
 #[derive(Default)]
 struct ActiveVisionStructures {
     spy_sat_owners: Vec<InternedId>,
@@ -363,6 +373,13 @@ pub enum SimSoundEvent {
     BuildingComplete { owner: InternedId },
     /// A unit finished training — play EVA "Unit ready".
     UnitComplete { owner: InternedId },
+    /// One accepted HouseClass win/loss transition. The app resolves the
+    /// local owner's faction-specific STANDARD EVA; this edge is transient so
+    /// loading a mid-Savour snapshot cannot replay the announcement.
+    MatchOutcome {
+        owner: InternedId,
+        kind: crate::sim::house_state::HouseOutcomeKind,
+    },
     /// Global `[AudioVisual] SellSound=` for a successful wall-sale event.
     /// The EventClass receiver can differ from the wall owner.
     WallSold { receiver: InternedId },
@@ -748,7 +765,7 @@ pub struct Simulation {
     /// Ticked each frame, auto-removed when finished.
     #[serde(skip)]
     pub world_effects: Vec<crate::sim::components::WorldEffect>,
-    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 20).
+    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 21).
     /// Populated from the sprite atlas at init time so sim code can spawn effects
     /// with the correct frame count without hardcoding it.
     #[serde(skip)]
@@ -770,6 +787,10 @@ pub struct Simulation {
     /// front-end connection/session facts, so they are transient and un-hashed.
     #[serde(skip)]
     pub quit_requested: bool,
+    /// One-shot owner-tagged edge raised only when a due native EXIT command
+    /// executes at the EventClass tail. App teardown consumes and clears it.
+    #[serde(skip)]
+    executed_exit_owner: Option<InternedId>,
     #[serde(skip)]
     pub connection_lost: bool,
     /// Pending gameplay commands waiting for their scheduled execution tick.
@@ -1922,6 +1943,7 @@ impl Simulation {
             replay_log: None,
             input_delay_ticks: 2,
             quit_requested: false,
+            executed_exit_owner: None,
             connection_lost: false,
             pending_commands: Vec::new(),
             trigger_runtime: TriggerRuntime::default(),
@@ -2170,6 +2192,11 @@ impl Simulation {
         self.pending_commands.push(cmd);
     }
 
+    /// Consume the terminal edge raised by one executed EXIT command.
+    pub(crate) fn take_executed_exit_owner(&mut self) -> Option<InternedId> {
+        self.executed_exit_owner.take()
+    }
+
     /// Drain commands that are due for the next tick from `pending_commands`.
     /// Returns owned commands; remaining commands stay queued.
     pub fn take_due_commands(&mut self) -> Vec<CommandEnvelope> {
@@ -2318,15 +2345,18 @@ impl Simulation {
     }
 
     fn termination_frame_requested(&self) -> bool {
+        let contending_houses = self.contending_house_count();
         self.quit_requested
             || self.connection_lost
             || self.houses.values().any(|house| {
                 house.is_human
-                    && (house.is_defeated
-                        || house.has_lost
-                        // VERA-internal opponent precondition; gamemd equivalent
-                        // UNCHECKED. See `contending_house_count`.
-                        || (self.contending_house_count() > 1 && house.has_won))
+                    && house.outcome_state.is_some_and(|outcome| {
+                        outcome.exit_ready
+                        && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
+                            // VERA-internal opponent precondition; gamemd equivalent
+                            // UNCHECKED. See `contending_house_count`.
+                            || contending_houses > 1)
+                    })
             })
     }
 
@@ -2935,25 +2965,44 @@ impl Simulation {
         }
     }
 
-    /// Change an entity's owner through the substrate chokepoint: updates the
-    /// `by_owner` index and the entity's owner field together. Index only — the
-    /// caller owns any HouseState owned-count adjustment (count semantics differ
-    /// by transfer kind: engineer capture adjusts counts; garrison transfers do not).
+    /// Change an entity's owner through the authoritative ownership chokepoint.
+    /// House counts, the `by_owner` index, and the entity owner move exactly once
+    /// for every live transfer, regardless of whether capture or garrison code
+    /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        let Some((old_owner, category, has_spawn_manager)) =
+            self.substrate.entities.get(stable_id).map(|entity| {
+                (
+                    entity.owner,
+                    entity.category,
+                    entity.spawn_manager.is_some(),
+                )
+            })
+        else {
+            return;
+        };
+        if old_owner == new_owner {
+            return;
+        }
+
+        // Active YR chain: BuildingClass::ChangeOwner (0x00448260) delegates
+        // to TechnoClass::ChangeOwner (0x007014A0), which calls
+        // HouseClass::Removed_From_Game (0x005025F0) before the owner swap and
+        // HouseClass::Added_To_Game (0x00502A80) afterward. Their building
+        // cases move the old/new HouseClass ownership totals.
+        let old_owner_name = self.interner.resolve(old_owner).to_string();
+        let new_owner_name = self.interner.resolve(new_owner).to_string();
+
         // `TechnoClass::ChangeOwner` calls `SpawnManagerClass::Kill_All_Spawns`
         // before the house swap: a mind-controlled V3/Dreadnought/Boomer loses
         // the pool it built for its old owner. Run first so the children are
         // destroyed while still attributed to the previous house. The owner is
         // still alive here, so the slots re-arm with a zero regen wait and the
         // new owner's pool is rebuilt on the next manager pass.
-        if self
-            .substrate
-            .entities
-            .get(stable_id)
-            .is_some_and(|entity| entity.spawn_manager.is_some())
-        {
+        if has_spawn_manager {
             crate::sim::spawn_manager::kill_all_spawns(self, stable_id);
         }
+        self.decrement_owned_count(&old_owner_name, category);
         // `TechnoClass::ChangeOwner` runs the live-detach targeting sweep next,
         // before the house swap: everything shooting at this object is released
         // while the object still belongs to its old house. Engineer capture and
@@ -2962,6 +3011,7 @@ impl Simulation {
         // shooting at what is now its own structure.
         self.stop_all_targeting_on_detach(stable_id);
         self.substrate.entities.change_owner(stable_id, new_owner);
+        self.increment_owned_count(&new_owner_name, category);
         self.refresh_waypoint_edge_from_committed_structure(stable_id);
     }
 
@@ -2974,6 +3024,14 @@ impl Simulation {
     /// Check each house for defeat and game completion
     /// (all remaining houses mutually allied).
     fn check_defeat(&mut self, rules: Option<&RuleSet>) {
+        let outcome_tick = self.session.tick.saturating_add(1);
+        let savour_frames = crate::rules::ruleset::savour_delay_frames(
+            rules
+                .map(|rules| rules.general.savour_delay_minutes)
+                // RulesClass__Constructor @ 0x00665650 stores the exact f64
+                // default 0.03 before any optional INI ReadDouble override.
+                .unwrap_or(0.03),
+        );
         // Short Game defeats houses with no buildings unless a BaseUnit remains.
         // Long games wait for all owned objects.
         let owners: Vec<InternedId> = self.houses.keys().copied().collect();
@@ -2991,17 +3049,25 @@ impl Simulation {
                 house.owned_building_count == 0 && house.owned_unit_count == 0
             };
             if should_defeat {
-                if let Some(h) = self.houses.get_mut(&owner) {
+                let accepted = if let Some(h) = self.houses.get_mut(&owner) {
                     h.is_defeated = true;
                     // A house that owns nothing (or, in Short Game, has no base
-                    // left) has lost from its own perspective. gamemd sets HasLost
-                    // via Flag_To_Lose after a borrowed-time delay; we commit the
-                    // end-state directly. NOTE: gamemd does NOT destroy the
+                    // left) has lost from its own perspective. Flag_To_Lose owns
+                    // the result transition and grace timer. NOTE: gamemd does
+                    // NOT destroy the
                     // defeated house's remaining objects — it scatters surviving
                     // units (ScatterAllUnits) and they persist; hard object
                     // removal only happens under the non-standard SpecialFlags
                     // 0x800 (HarvesterImmune). So no cleanup/destroy is done here.
-                    h.has_lost = true;
+                    h.flag_to_lose(outcome_tick, savour_frames)
+                } else {
+                    false
+                };
+                if accepted {
+                    self.sound_events.push(SimSoundEvent::MatchOutcome {
+                        owner,
+                        kind: crate::sim::house_state::HouseOutcomeKind::Defeat,
+                    });
                 }
             }
         }
@@ -3018,39 +3084,51 @@ impl Simulation {
             .map(|(k, _)| *k)
             .collect();
 
-        if alive.is_empty() {
-            return;
-        }
-
         if alive.len() == 1 {
             // Last player standing.
             if let Some(h) = self.houses.get_mut(&alive[0]) {
-                h.has_won = true;
-            }
-            return;
-        }
-
-        // O(n^2) mutual-alliance check. Native alliance is directional — each
-        // house owns its own ally bits — and the game-over scan requires BOTH
-        // houses of a pair to name the other, so a one-way alliance must not end
-        // the match.
-        let all_allied = alive.iter().all(|a| {
-            alive.iter().all(|b| {
-                a == b
-                    || crate::map::houses::are_houses_mutually_allied(
-                        &self.house_alliances,
-                        self.interner.resolve(*a),
-                        self.interner.resolve(*b),
-                    )
-            })
-        });
-
-        if all_allied {
-            for &owner in &alive {
-                if let Some(h) = self.houses.get_mut(&owner) {
-                    h.has_won = true;
+                if h.flag_to_win(outcome_tick, savour_frames) {
+                    self.sound_events.push(SimSoundEvent::MatchOutcome {
+                        owner: alive[0],
+                        kind: crate::sim::house_state::HouseOutcomeKind::Victory,
+                    });
                 }
             }
+        } else if !alive.is_empty() {
+            // O(n^2) mutual-alliance check. Native alliance is directional — each
+            // house owns its own ally bits — and the game-over scan requires BOTH
+            // houses of a pair to name the other, so a one-way alliance must not end
+            // the match.
+            let all_allied = alive.iter().all(|a| {
+                alive.iter().all(|b| {
+                    a == b
+                        || crate::map::houses::are_houses_mutually_allied(
+                            &self.house_alliances,
+                            self.interner.resolve(*a),
+                            self.interner.resolve(*b),
+                        )
+                })
+            });
+
+            if all_allied {
+                for &owner in &alive {
+                    if let Some(h) = self.houses.get_mut(&owner) {
+                        if h.flag_to_win(outcome_tick, savour_frames) {
+                            self.sound_events.push(SimSoundEvent::MatchOutcome {
+                                owner,
+                                kind: crate::sim::house_state::HouseOutcomeKind::Victory,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // HouseClass::Update @ 0x004F8440 advances the accepted result timer
+        // in the house rung. The expiry frame is terminal and therefore skips
+        // the wrapping frame commit below, matching Main_Tick's early return.
+        for house in self.houses.values_mut() {
+            house.advance_outcome_savour(outcome_tick);
         }
     }
 
@@ -4553,6 +4631,34 @@ impl Simulation {
                 &mut sim.sound_events,
                 &mut sim.pending_lifecycle_requests,
             ));
+
+            // FootClass advances the SHP Unit body counter immediately after
+            // this object's locomotor Process, against the still-current
+            // absolute binary frame. The global frame commits only after the
+            // complete live-object pass.
+            if shp_vehicle_counter_admitted(tube_active_at_entry) {
+                let shp_vehicle_cadence =
+                    sim.substrate.entities.get(stable_id).and_then(|entity| {
+                        if entity.category != EntityCategory::Unit || entity.is_voxel {
+                            return None;
+                        }
+                        let object = rules?.object(sim.interner.resolve(entity.type_ref))?;
+                        Some(crate::sim::animation::ShpVehicleCadence {
+                            walk_rate: object.walk_rate,
+                            idle_rate: object.idle_rate,
+                        })
+                    });
+                if let (Some(cadence), Some(entity)) = (
+                    shp_vehicle_cadence,
+                    sim.substrate.entities.get_mut(stable_id),
+                ) {
+                    crate::sim::animation::tick_shp_vehicle_body_frame_counter(
+                        entity,
+                        cadence,
+                        sim.session.binary_frame,
+                    );
+                }
+            }
 
             // A direction-8 producer also ends this object's ordinary turn as
             // soon as it arms TubeMovement.  The leaf itself starts on the

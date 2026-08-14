@@ -132,6 +132,59 @@ pub(crate) struct RandomMapGenerationJob {
     accept_on_finish: bool,
 }
 
+/// Generated-map ownership across the setup dialog and loading handoff.
+///
+/// The candidate belongs only to the open setup dialog. The accepted map is
+/// retained until the matching `.SED` launch transfers it to LoadingRequest.
+/// gamemd provenance: random-map setup runner FUN_00595BC0 and accepted caller
+/// 0x005E8590 retain the generated scenario consumed by Scenario initialization.
+#[derive(Default)]
+pub(crate) struct RandomMapGenerationRetention {
+    candidate: Option<crate::map::rmg::GeneratedMap>,
+    accepted: Option<(String, crate::map::rmg::GeneratedMap)>,
+}
+
+impl RandomMapGenerationRetention {
+    fn begin_generation(&mut self) {
+        self.candidate = None;
+        self.accepted = None;
+    }
+
+    fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
+        self.candidate = Some(generated);
+    }
+
+    fn cancel_setup(&mut self) {
+        self.candidate = None;
+        self.accepted = None;
+    }
+
+    fn accept_setup(&mut self, selected_map_file: &str) {
+        self.accepted = self
+            .candidate
+            .take()
+            .map(|generated| (selected_map_file.to_owned(), generated));
+    }
+
+    fn select_map(&mut self, selected_map_file: &str) {
+        if self.accepted.as_ref().is_some_and(|(accepted_file, _)| {
+            !accepted_file.eq_ignore_ascii_case(selected_map_file)
+        }) {
+            self.accepted = None;
+        }
+    }
+
+    fn take_for_loading(
+        &mut self,
+        selected_map_file: Option<&str>,
+    ) -> Option<crate::map::rmg::GeneratedMap> {
+        let (accepted_file, generated) = self.accepted.take()?;
+        selected_map_file
+            .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
+            .then_some(generated)
+    }
+}
+
 /// What the generator worker sends back as it goes.
 enum RandomMapUpdate {
     /// The map at one of the boundaries the original redraws its preview at.
@@ -326,6 +379,8 @@ pub(crate) struct AppState {
     /// enough to freeze the window if done inline, which also means the
     /// dialog's "Working / Please Wait" never gets a frame to appear in.
     pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
+    /// Exact setup-generated map retained through OK until loading owns it.
+    pub(crate) random_map_retention: RandomMapGenerationRetention,
     pub(crate) skirmish_preview_texture:
         Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
@@ -367,6 +422,13 @@ pub(crate) struct AppState {
     /// → exit). Some only between Exit-confirm OK and window close; freezes shell
     /// input while it runs.
     pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
+    /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
+    /// result and SavourDelay target live in serialized `HouseState`.
+    pub(crate) scenario_outcome: Option<crate::app_scenario_exit::ScenarioOutcomeVoiceWait>,
+    /// Active running-scenario audio teardown. While present the tactical
+    /// frame remains visible but simulation is frozen; its destination is
+    /// committed only after the retail fade/voice-wait sequence completes.
+    pub(crate) scenario_exit: Option<crate::app_scenario_exit::ScenarioExitCascade>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -578,6 +640,8 @@ pub(crate) struct AppState {
     /// audio.idx/bag indices for bag-based sound lookup (voices, EVA).
     /// Searched in order (YR audiomd first, then base audio).
     pub(crate) audio_indices: Vec<crate::assets::audio_bag::AudioIndex>,
+    /// The process-start audio decision persisted for later scenario reloads.
+    pub(crate) audio_indices_enabled: bool,
     /// EVA announcement registry from eva.ini / evamd.ini.
     /// Maps EVA event names to per-faction audio.bag sound IDs.
     pub(crate) eva_registry: crate::rules::sound_ini::EvaRegistry,
@@ -688,6 +752,21 @@ pub(crate) struct AppState {
     pub(crate) cached_unit_pages: Vec<usize>,
 }
 
+/// Drop app-owned scenario-exit runtime after a successful world replacement.
+/// Serialized HouseState remains the sole authority for any loaded SavourDelay;
+/// wall waits are reconstructed from its expiry latch without replaying EVA.
+pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
+    state.scenario_outcome = None;
+    state.scenario_exit = None;
+    if let Some(player) = state.music_player.as_mut() {
+        player.cancel_scenario_theme_request();
+        player.set_output_scale(1.0);
+    }
+    if let Some(player) = state.sfx_player.as_mut() {
+        player.set_output_scale(1.0);
+    }
+}
+
 impl AppState {
     /// Effective render target width — intermediate texture when upscaling, else window.
     pub(crate) fn render_width(&self) -> u32 {
@@ -751,11 +830,46 @@ pub struct App {
     state: Option<AppState>,
     shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
     tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
+    startup_audio: StartupAudioDisposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupAudioDisposition {
+    initialize_music_output: bool,
+    initialize_sfx_output: bool,
+    load_audio_indices: bool,
+}
+
+impl StartupAudioDisposition {
+    /// gamemd-derived: `FUN_0052F620 @ 0x0052F620` clears the audio global for
+    /// `-NOAUDIO`; active `Init_Game @ 0x0052BA60` passes that value to
+    /// `AudioSystem::Init @ 0x00406B10`, whose false branch skips output and
+    /// audio MIX/index construction while the later bookkeeping remains live.
+    const fn for_audio_enabled(audio_enabled: bool) -> Self {
+        Self {
+            initialize_music_output: audio_enabled,
+            initialize_sfx_output: audio_enabled,
+            load_audio_indices: audio_enabled,
+        }
+    }
+}
+
+/// Keep initial and later scenario audio-index loads on the same process-start
+/// decision. This deliberately does not inspect the optional output players:
+/// an enabled DirectSound/output initialization may independently fail.
+pub(crate) const fn should_load_audio_indices(audio_indices_enabled: bool) -> bool {
+    audio_indices_enabled
+}
+
+impl Default for StartupAudioDisposition {
+    fn default() -> Self {
+        Self::for_audio_enabled(true)
+    }
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::app_startup_options::RetailStartupOptions::default())
     }
 }
 
@@ -957,15 +1071,30 @@ impl App {
             log::warn!("No loadable Skirmish map entry exists for {file_name}");
             return false;
         };
+        Self::apply_selected_shell_map_index(state, map_idx)
+    }
+
+    /// One production mutation point for shell selection plus retained-RMG
+    /// identity invalidation, whether selection came from Cooperative repair or
+    /// the Choose Map dialog.
+    fn apply_selected_shell_map_index(state: &mut AppState, map_idx: usize) -> bool {
+        let Some(file_name) = state
+            .skirmish_shell_maps
+            .get(map_idx)
+            .map(|map| map.file_name.clone())
+        else {
+            return false;
+        };
         crate::ui::skirmish_shell::accept_selected_map(
             &mut state.skirmish_shell_state,
             &state.skirmish_shell_maps,
             map_idx,
         );
+        state.random_map_retention.select_map(&file_name);
         if let Some(legacy_idx) = state
             .available_maps
             .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
+            .position(|map| map.file_name.eq_ignore_ascii_case(&file_name))
         {
             state.skirmish_settings.selected_map_idx = legacy_idx;
         }
@@ -1156,6 +1285,9 @@ impl App {
         state: &mut AppState,
         session: crate::skirmish_launch::SkirmishLaunchSession,
     ) {
+        let retained_random_map = state
+            .random_map_retention
+            .take_for_loading(session.selected_map_file.as_deref());
         let request = match crate::match_bootstrap::classify_startup_session(&session) {
             crate::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,
@@ -1190,7 +1322,8 @@ impl App {
                     state.skirmish_settings.clone(),
                 )
             }
-        };
+        }
+        .with_retained_random_map(retained_random_map);
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         state.main_menu_show_single_player_shell = false;
@@ -1566,19 +1699,8 @@ impl App {
             &mut state.skirmish_shell_state,
             &state.skirmish_modes,
         );
-        crate::ui::skirmish_shell::accept_selected_map(
-            &mut state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
-            map_idx,
-        );
-        if let Some(legacy_idx) = state
-            .available_maps
-            .iter()
-            .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
-        {
-            state.skirmish_settings.selected_map_idx = legacy_idx;
-        }
-        state.skirmish_preview_texture = None;
+        let applied = Self::apply_selected_shell_map_index(state, map_idx);
+        debug_assert!(applied, "validated chooser map index must remain loadable");
 
         // Native 0x4B2: setting the right-panel game-type / map-label text
         // restarts that static's reveal from the first character. The title is
@@ -1606,8 +1728,11 @@ impl App {
             return false;
         };
         if let Some(button) = crate::ui::skirmish_shell::choose_map_modal_button_at(&layout, x, y) {
-            modal.pressed_button = Some(button);
-            Self::play_main_menu_button_sound(state);
+            let armed = modal.press_button(button, &state.skirmish_modes);
+            let _ = modal;
+            if armed {
+                Self::play_main_menu_button_sound(state);
+            }
             return true;
         }
         let prior_mode = modal.selected_mode_id;
@@ -1635,19 +1760,19 @@ impl App {
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
-        let pressed_button = modal.pressed_button.take();
         let released_button = crate::ui::skirmish_shell::choose_map_modal_button_at(&layout, x, y);
-        let should_fire = pressed_button.is_some() && pressed_button == released_button;
-        if !should_fire {
-            return layout.dialog.contains(x, y) || pressed_button.is_some();
-        }
+        let (had_pressed_button, fired_button) =
+            modal.release_button(released_button, &state.skirmish_modes);
+        let Some(fired_button) = fired_button else {
+            return layout.dialog.contains(x, y) || had_pressed_button;
+        };
 
         let mut selection_to_commit = None;
         let mut close_modal = false;
         // Copied out inside the arm so the `modal` borrow ends before anything
         // below reborrows `state`. `ChooseMapSelection` is `Copy`.
         let mut open_random_map_setup = None;
-        match released_button.expect("checked equal to pressed button") {
+        match fired_button {
             crate::ui::skirmish_shell::ChooseMapModalButton::UseMap0x6c5 => {
                 selection_to_commit = modal.accept_selection();
             }
@@ -1688,6 +1813,9 @@ impl App {
         options: &crate::map::rmg::RmgOptions,
         accept_on_finish: bool,
     ) -> bool {
+        // A second Generate makes the previous dialog result stale immediately,
+        // even when setup cannot progress far enough to spawn the worker.
+        state.random_map_retention.begin_generation();
         let Some(asset_manager) = state.asset_manager.as_mut() else {
             return false;
         };
@@ -1817,6 +1945,7 @@ impl App {
                 .take()
                 .expect("checked present above");
             let preview = Self::rasterise_generated_map(state, &job, &generated);
+            state.random_map_retention.finish_generation(*generated);
             if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(preview);
             }
@@ -1857,16 +1986,24 @@ impl App {
         true
     }
 
-    /// Close the setup dialog, abandoning any generation still running for it.
+    /// Remove the setup dialog and any in-flight worker without changing the
+    /// retention disposition already chosen by accept or cancel.
+    fn dismiss_random_map_setup(state: &mut AppState) {
+        state.skirmish_shell_state.random_map_setup_modal = None;
+        state.random_map_generation = None;
+    }
+
+    /// Cancel the setup dialog, abandoning any generation and every retained
+    /// result associated with this random-map selection.
     ///
     /// Dropping the job drops the receiver, so a worker still going finds a
     /// closed channel on its next send and its remaining output goes nowhere.
     /// That matters beyond tidiness: a late finish would otherwise overwrite
     /// `RandMap.img`, changing the chooser's thumbnail to a map the player
     /// walked away from.
-    fn close_random_map_setup(state: &mut AppState) {
-        state.skirmish_shell_state.random_map_setup_modal = None;
-        state.random_map_generation = None;
+    fn cancel_random_map_setup(state: &mut AppState) {
+        Self::dismiss_random_map_setup(state);
+        state.random_map_retention.cancel_setup();
     }
 
     /// Commit the dialog's options and close it. Shared by the immediate accept
@@ -1881,7 +2018,12 @@ impl App {
             return;
         };
         match Self::commit_random_map_setup(state, &options) {
-            Ok(()) => Self::close_random_map_setup(state),
+            Ok(()) => {
+                state.random_map_retention.accept_setup(RANDMAP_SED_FILE);
+                // Successful OK already chose the retained result; dialog
+                // teardown must not run the cancellation invalidation path.
+                Self::dismiss_random_map_setup(state);
+            }
             Err(err) => {
                 // Staying open is deliberate: a missing seed file makes the
                 // launch path fall back to defaults, which would silently
@@ -2484,7 +2626,7 @@ impl App {
             Self::accept_random_map_setup(state);
         }
         if close_setup {
-            Self::close_random_map_setup(state);
+            Self::cancel_random_map_setup(state);
         }
         true
     }
@@ -3017,6 +3159,113 @@ impl App {
         ));
     }
 
+    fn drive_scenario_exit(state: &mut AppState, wall_ms: u64) {
+        if state.scenario_exit.is_none() {
+            return;
+        }
+        let poll_voices = state
+            .scenario_exit
+            .as_ref()
+            .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
+        let voices_active = poll_voices
+            && state
+                .sfx_player
+                .as_mut()
+                .is_some_and(|sfx| sfx.pump_and_check_voices());
+        let tick = state
+            .scenario_exit
+            .as_mut()
+            .expect("scenario exit remains present")
+            .tick(wall_ms, voices_active);
+
+        if let Some(scale) = tick.music_output_scale {
+            if let Some(player) = state.music_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if let Some(scale) = tick.sfx_output_scale {
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.set_output_scale(scale);
+            }
+        }
+        if tick.stop_audio {
+            if let Some(player) = state.music_player.as_mut() {
+                player.stop();
+                player.set_output_scale(1.0);
+            }
+            if let Some(player) = state.sfx_player.as_mut() {
+                player.stop_all();
+                player.set_output_scale(1.0);
+            }
+        }
+        // ScoreDialog__WndProc @ 0x005C9B10 resolves the literal SCORE theme
+        // and starts it immediately on WM_INITDIALOG. Keep this after the
+        // hard stop and output-scale restoration so ScoreX begins audible.
+        if let Some(crate::app_scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
+            tick.after_stop
+            && let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager)
+        {
+            let _ = player.play_track(theme, assets);
+        }
+        if !tick.finished {
+            return;
+        }
+
+        let destination = state
+            .scenario_exit
+            .as_mut()
+            .and_then(crate::app_scenario_exit::ScenarioExitCascade::take_destination);
+        state.scenario_exit = None;
+        match destination {
+            Some(crate::app_scenario_exit::ScenarioExitDestination::Score {
+                title,
+                detail,
+                model,
+            }) => {
+                state.score_screen = Some(model);
+                state.score_shell_state = Default::default();
+                state.screen = GameScreen::MissionResult { title, detail };
+            }
+            Some(crate::app_scenario_exit::ScenarioExitDestination::MainMenu) => {
+                Self::return_to_main_menu(state);
+            }
+            None => log::error!("Scenario exit finished without a destination"),
+        }
+    }
+
+    fn apply_scenario_exit_voice_action(
+        state: &mut AppState,
+        action: crate::app_scenario_exit::ScenarioExitVoiceAction,
+    ) {
+        match action {
+            crate::app_scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
+                let Some(owner) = state.local_player_owner.as_deref() else {
+                    log::warn!("Battle-control termination EVA has no pinned local owner");
+                    return;
+                };
+                let faction = crate::app_building_anim::eva_faction_key(owner, &state.house_roster);
+                let fallback = match faction {
+                    "Russian" => "csof015",
+                    "Yuri" => "cyur015",
+                    _ => "ceva015",
+                };
+                let sound_id = state
+                    .eva_registry
+                    .get("EVA_BattleControlTerminated", faction)
+                    .unwrap_or(fallback)
+                    .to_string();
+                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) {
+                    let _ = sfx.interrupt_eva_sound(
+                        &sound_id,
+                        &state.sound_registry,
+                        assets,
+                        &state.audio_indices,
+                    );
+                }
+            }
+        }
+    }
+
     fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
         let x = state.cursor_x.round() as i32;
@@ -3146,9 +3395,10 @@ impl App {
         if state.screen != GameScreen::MainMenu || state.quit_cascade.is_some() {
             return;
         }
+        let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
         if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
             player.play_menu_theme(assets);
-            player.update(assets);
+            player.update(assets, now_ms);
         }
     }
 
@@ -3425,11 +3675,14 @@ impl App {
         }
     }
 
-    pub fn new() -> Self {
+    pub fn new(startup_options: crate::app_startup_options::RetailStartupOptions) -> Self {
         Self {
             state: None,
             shell_capture: None,
             tactical_capture: None,
+            startup_audio: StartupAudioDisposition::for_audio_enabled(
+                startup_options.audio_enabled,
+            ),
         }
     }
 
@@ -3438,6 +3691,7 @@ impl App {
             state: None,
             shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
             tactical_capture: None,
+            startup_audio: StartupAudioDisposition::default(),
         }
     }
 
@@ -3448,6 +3702,7 @@ impl App {
             tactical_capture: Some(
                 crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
             ),
+            startup_audio: StartupAudioDisposition::default(),
         }
     }
 
@@ -3478,7 +3733,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match Self::initialize(event_loop, capture_dimensions) {
+        match Self::initialize(event_loop, capture_dimensions, self.startup_audio) {
             Ok(mut state) => {
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.prepare_state(&mut state);
@@ -4092,6 +4347,7 @@ impl App {
     fn initialize(
         event_loop: &ActiveEventLoop,
         capture_dimensions: Option<(u32, u32)>,
+        startup_audio: StartupAudioDisposition,
     ) -> Result<AppState> {
         let (window_width, window_height, window_visible) = capture_dimensions
             .map_or((SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT, true), |size| {
@@ -4233,10 +4489,14 @@ impl App {
             .as_ref()
             .map(crate::app_transitions::load_sound_registry)
             .unwrap_or_default();
-        let startup_audio_indices = startup_asset_manager
-            .as_ref()
-            .map(crate::app_transitions::load_audio_indices)
-            .unwrap_or_default();
+        let startup_audio_indices = if should_load_audio_indices(startup_audio.load_audio_indices) {
+            startup_asset_manager
+                .as_ref()
+                .map(crate::app_transitions::load_audio_indices)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let startup_eva_registry = startup_asset_manager
             .as_ref()
             .map(crate::app_transitions::load_eva_registry)
@@ -4413,6 +4673,7 @@ impl App {
 
         let mut state = AppState {
             random_map_generation: None,
+            random_map_retention: RandomMapGenerationRetention::default(),
             window,
             window_active: true,
             window_hidden: false,
@@ -4507,6 +4768,8 @@ impl App {
             shell_slide_active_shell: None,
             shell_slide_generation: 0,
             quit_cascade: None,
+            scenario_outcome: None,
+            scenario_exit: None,
             minimap: None,
             minimap_dragging: false,
             radar_anim: None,
@@ -4598,10 +4861,17 @@ impl App {
             sidebar_scroll_rows: 0,
             sidebar_scroll_rows_parked: [0; 4],
             asset_manager: startup_asset_manager,
-            music_player: MusicPlayer::new(),
-            sfx_player: SfxPlayer::new(),
+            music_player: startup_audio
+                .initialize_music_output
+                .then(MusicPlayer::new)
+                .flatten(),
+            sfx_player: startup_audio
+                .initialize_sfx_output
+                .then(SfxPlayer::new)
+                .flatten(),
             sound_registry: startup_sound_registry,
             audio_indices: startup_audio_indices,
+            audio_indices_enabled: startup_audio.load_audio_indices,
             eva_registry: startup_eva_registry,
             sound_events: SoundEventQueue::new(),
             pending_fire_effects: Vec::new(),
@@ -4736,6 +5006,18 @@ impl App {
         }
         state.startup_splash = None;
 
+        // HouseClass keeps simulating for SavourDelay, then blocks on the
+        // current outcome Vox before it raises the victory/defeat exit global.
+        // Drive that gate before deciding whether another sim frame is legal.
+        let scenario_now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+        Self::consume_executed_abort_exit(state, scenario_now_ms);
+        crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, scenario_now_ms);
+
+        // The native victory/defeat handlers synchronously finish their audio
+        // teardown before entering the score dialog. Drive the equivalent
+        // sequence before either another sim frame or the destination screen.
+        Self::drive_scenario_exit(state, scenario_now_ms);
+
         // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
         // voice poll before borrowing the cascade mutably to avoid aliasing.
         if state.quit_cascade.is_some() {
@@ -4774,10 +5056,20 @@ impl App {
         if tactical_capture.is_none()
             && matches!(state.screen, GameScreen::InGame)
             && state.window_active
+            && state.scenario_exit.is_none()
+            && state.scenario_outcome.is_none()
         {
             let now = Instant::now();
             let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
             app_sim_tick::advance_in_game_runtime(state, now_ms);
+            // EventClass EXIT is dispatched at the simulation tail. Consume
+            // its terminal edge before any outcome route can claim teardown.
+            Self::consume_executed_abort_exit(state, now_ms);
+            // The SavourDelay expiry is decided in the late house rung of this
+            // exact frame. Anchor its 0x78-bucket wall wait to the same observed
+            // wall time instead of delaying it to the next render pass.
+            crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, now_ms);
+            Self::drive_scenario_exit(state, now_ms);
         }
 
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
@@ -4846,7 +5138,6 @@ impl App {
                     state,
                     &mut encoder,
                     &output.texture,
-                    &view,
                 )? {
                     pending_main_menu_entry_token = main_menu_entry_token;
                 } else if Self::native_skirmish_shell_active(state) {
@@ -4859,7 +5150,7 @@ impl App {
                     match crate::app_single_player_shell_render::render_single_player_shell(
                         state,
                         &mut encoder,
-                        &view,
+                        &output.texture,
                     )? {
                         crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.window);
@@ -5351,6 +5642,16 @@ impl App {
         state.keys_held.clear();
         state.hotkey_modifiers = ModifiersState::empty();
         state.type_select.clear_held();
+        // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
+        // stops/restores the primary DirectSound output through 0x00407020 /
+        // 0x00407040 while secondary playback cursors continue. Keep this on
+        // the same edge as the main-loop gate rather than pausing each stream.
+        if let Some(player) = state.music_player.as_mut() {
+            player.set_focus_output_active(active);
+        }
+        if let Some(player) = state.sfx_player.as_mut() {
+            player.set_focus_output_active(active);
+        }
         if active {
             // The deactivated span must not buy a catch-up frame: forget the
             // pacing window so exactly one frame runs immediately, then normal
@@ -5516,20 +5817,96 @@ impl App {
         }
     }
 
-    /// Leave the running match by the graceful-exit route.
+    /// Queue the running match's native graceful-exit event.
     ///
     /// gamemd's confirmed Abort queues an EXIT event for the local player; when
     /// that event executes it raises the graceful-exit session flag, and the
     /// session-end router tears the session down **without** the victory or
     /// defeat teardown — no outcome announcement, no result screen, straight
-    /// back to the shell. This port commits the same teardown directly instead
-    /// of round-tripping a command event; the residual DRIFT is that gamemd
-    /// spends at least one more scenario tick between the confirmation and the
-    /// teardown, which is invisible because the world is frozen behind the
-    /// modal for that whole span.
+    /// back to the shell. Confirmation itself only constructs and queues the
+    /// event; teardown begins after the event-tail dispatcher executes it.
     fn exit_match_to_shell(state: &mut AppState) {
-        log::info!("Abort Mission confirmed — leaving the match");
-        Self::return_to_main_menu(state);
+        log::info!("Abort Mission confirmed — queueing EXIT event");
+        if state.scenario_exit.is_some() {
+            return;
+        }
+        let Some(owner) = crate::app_commands::preferred_local_owner(state) else {
+            log::warn!("Abort Mission confirmation has no local command owner");
+            return;
+        };
+        if crate::app_commands::try_schedule_command(
+            state,
+            &owner,
+            crate::sim::command::Command::ExitMatch,
+        )
+        .is_none()
+        {
+            log::warn!("Abort Mission EXIT event could not be queued for '{owner}'");
+            return;
+        }
+        Self::enter_in_game_menu_state(state, crate::ui::pause_menu::InGameMenuState::Closed);
+    }
+
+    /// Consume EventClass opcode `0x13`'s executed edge and enter the existing
+    /// battle-abort teardown. A repeated drain without another dispatch is a
+    /// no-op because the simulation edge is taken.
+    fn consume_executed_abort_exit(state: &mut AppState, wall_ms: u64) {
+        let local_owner = crate::app_commands::preferred_local_owner(state);
+        let local_owner_id = local_owner.as_deref().and_then(|owner| {
+            state
+                .simulation
+                .as_ref()
+                .and_then(|sim| sim.interner.get(owner))
+        });
+        let local_outcome_exit_ready = local_owner_id.is_some_and(|owner| {
+            state
+                .simulation
+                .as_ref()
+                .and_then(|sim| sim.houses.get(&owner))
+                .and_then(|house| house.outcome_state)
+                .is_some_and(|outcome| outcome.exit_ready)
+        });
+        let executed_owner = state
+            .simulation
+            .as_mut()
+            .and_then(|sim| sim.take_executed_exit_owner());
+        let Some(executed_owner) = executed_owner else {
+            return;
+        };
+        if Some(executed_owner) != local_owner_id {
+            log::warn!("Ignoring executed EXIT event not owned by the local player");
+            return;
+        }
+        if matches!(
+            crate::app_scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app_scenario_exit::ExecutedExitDisposition::Outcome
+        ) {
+            // Main_Game observes the ready victory/loss route first. The EXIT
+            // edge is still consumed, but cannot clear or replace that route.
+            return;
+        }
+        if state.scenario_exit.is_some() {
+            return;
+        }
+
+        // Abort is the independent EXIT-event route: it never inherits the
+        // victory/defeat HouseClass SavourDelay or its outcome-voice wait.
+        state.scenario_outcome = None;
+        let _ = state.scenario_elapsed_clock.stop(wall_ms);
+        // gamemd provenance: battle abort teardown; verified
+        // GameExit__BattleControlTerminated @ 0x00686570 starts Theme's fade,
+        // then fades the independent audio master, bounds its voice pump to
+        // 300 timer buckets, and finally hard-stops audio.
+        let mut scenario_exit = crate::app_scenario_exit::ScenarioExitCascade::start(
+            wall_ms,
+            crate::app_scenario_exit::ScenarioExitDestination::MainMenu,
+        );
+        // `0x00686570` requests EVA_BattleControlTerminated as an INTERRUPT
+        // immediately before waiting for the two simultaneous audio fades.
+        if let Some(action) = scenario_exit.take_start_voice_action() {
+            Self::apply_scenario_exit_voice_action(state, action);
+        }
+        state.scenario_exit = Some(scenario_exit);
     }
 
     /// Draw the save/load panel and handle its actions.
@@ -5750,6 +6127,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gsi_01_01_noaudio_suppresses_music_and_sfx_output() {
+        let disposition = StartupAudioDisposition::for_audio_enabled(false);
+
+        assert!(!disposition.initialize_music_output);
+        assert!(!disposition.initialize_sfx_output);
+        assert!(!disposition.load_audio_indices);
+    }
+
+    #[test]
+    fn gsi_01_01_default_startup_enables_music_and_sfx_output() {
+        let disposition = StartupAudioDisposition::default();
+
+        assert!(disposition.initialize_music_output);
+        assert!(disposition.initialize_sfx_output);
+        assert!(disposition.load_audio_indices);
+    }
+
+    #[test]
+    fn gsi_01_01_audio_index_decision_survives_scenario_transitions() {
+        for audio_enabled in [false, true] {
+            let startup = StartupAudioDisposition::for_audio_enabled(audio_enabled);
+            let persisted_in_state = startup.load_audio_indices;
+
+            assert_eq!(
+                should_load_audio_indices(startup.load_audio_indices),
+                audio_enabled
+            );
+            assert_eq!(should_load_audio_indices(persisted_in_state), audio_enabled);
+        }
+    }
+
+    #[test]
     fn main_menu_intro_precedes_entry_observation() {
         assert_eq!(
             MAIN_MENU_SHELL_PRELUDE,
@@ -5782,6 +6191,113 @@ mod tests {
         assert_eq!(
             drawn[5],
             GenerationPoint::After(crate::map::rmg::Stage::Rocks)
+        );
+    }
+
+    fn retained_map(seed: i32, start_x: u16) -> crate::map::rmg::GeneratedMap {
+        let mut options = crate::map::rmg::RmgOptions::default();
+        options.seed = seed;
+        crate::map::rmg::GeneratedMap {
+            map_file: crate::map::rmg::emit::empty_map_file(&options, 32, 32),
+            start_waypoints: vec![(0, start_x, 20)],
+            stages_run: Vec::new(),
+            unfilled_start_slots: 0,
+        }
+    }
+
+    #[test]
+    fn gsi_03_09_random_map_retention_invalidates_and_transfers_exactly_once() {
+        let mut regenerated = RandomMapGenerationRetention::default();
+        regenerated.finish_generation(retained_map(11, 10));
+        regenerated.accept_setup("RandMap.Sed");
+        regenerated.begin_generation();
+        assert!(
+            regenerated.take_for_loading(Some("RandMap.Sed")).is_none(),
+            "starting a genuine regeneration invalidates accepted map A"
+        );
+
+        let mut reopened_then_cancelled_without_generate = RandomMapGenerationRetention::default();
+        reopened_then_cancelled_without_generate.finish_generation(retained_map(12, 11));
+        reopened_then_cancelled_without_generate.accept_setup("RandMap.Sed");
+        reopened_then_cancelled_without_generate.cancel_setup();
+        assert!(
+            reopened_then_cancelled_without_generate
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "a genuine setup Cancel invalidates accepted map A"
+        );
+
+        let mut reopened_then_cancelled = RandomMapGenerationRetention::default();
+        reopened_then_cancelled.finish_generation(retained_map(13, 12));
+        reopened_then_cancelled.accept_setup("RandMap.Sed");
+        reopened_then_cancelled.begin_generation();
+        reopened_then_cancelled.finish_generation(retained_map(14, 13));
+        reopened_then_cancelled.cancel_setup();
+        assert!(
+            reopened_then_cancelled
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "reopen, regenerate, then Cancel cannot resurrect accepted map A"
+        );
+
+        let mut cancelled = RandomMapGenerationRetention::default();
+        cancelled.finish_generation(retained_map(22, 20));
+        cancelled.cancel_setup();
+        cancelled.accept_setup("RandMap.Sed");
+        assert!(cancelled.take_for_loading(Some("RandMap.Sed")).is_none());
+
+        let mut selected_elsewhere = RandomMapGenerationRetention::default();
+        selected_elsewhere.finish_generation(retained_map(33, 30));
+        selected_elsewhere.accept_setup("RandMap.Sed");
+        selected_elsewhere.select_map("mp01t4.map");
+        assert!(
+            selected_elsewhere
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none()
+        );
+
+        let mut alternate_seed = RandomMapGenerationRetention::default();
+        alternate_seed.finish_generation(retained_map(34, 35));
+        alternate_seed.accept_setup("RandMap.Sed");
+        // This is the retention authority used by apply_selected_shell_map_file:
+        // another seed selection must invalidate, not merely refuse this call.
+        alternate_seed.select_map("Other.Sed");
+        assert!(
+            alternate_seed
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none()
+        );
+        assert!(alternate_seed.take_for_loading(Some("Other.Sed")).is_none());
+
+        let mut mismatched_launch = RandomMapGenerationRetention::default();
+        mismatched_launch.finish_generation(retained_map(35, 36));
+        mismatched_launch.accept_setup("RandMap.Sed");
+        assert!(
+            mismatched_launch
+                .take_for_loading(Some("Other.Sed"))
+                .is_none()
+        );
+        assert!(
+            mismatched_launch
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "a refused nonmatching launch invalidates the prior accepted map"
+        );
+
+        let mut accepted_after_successful_close = RandomMapGenerationRetention::default();
+        accepted_after_successful_close.finish_generation(retained_map(44, 40));
+        accepted_after_successful_close.accept_setup("RandMap.Sed");
+        // App::dismiss_random_map_setup has no retention side effect after OK.
+        accepted_after_successful_close.select_map("RANDMAP.SED");
+        let transferred = accepted_after_successful_close
+            .take_for_loading(Some("randmap.sed"))
+            .expect("successful accept close preserves the newly accepted map");
+        assert_eq!(transferred.start_waypoints, vec![(0, 40, 20)]);
+        assert!(
+            accepted_after_successful_close
+                .take_for_loading(Some("RandMap.Sed"))
+                .is_none(),
+            "successful accept still transfers exactly once"
         );
     }
 

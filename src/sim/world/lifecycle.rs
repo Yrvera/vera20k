@@ -12,6 +12,7 @@ use crate::sim::combat::TargetKind;
 use crate::sim::components::NavTargetRef;
 use crate::sim::intern::InternedId;
 use crate::sim::lifecycle_request::LifecycleRequest;
+use crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 use crate::sim::occupancy::{
     BUILDING_OCCUPATION_BIT, CellListInsertion, OBJECT_OCCUPATION_BIT, VEHICLE_OCCUPATION_BIT,
     air_spatial_bucket_index, air_spatial_tracks_entity, cell_list_layer_for_entity,
@@ -20,6 +21,7 @@ use crate::sim::occupancy::{
 use crate::sim::passenger::PassengerRole;
 use crate::sim::projectile::ProjectileTarget;
 use crate::util::fixed_math::SimFixed;
+use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
 use super::Simulation;
 
@@ -297,21 +299,51 @@ impl Simulation {
             })
     }
 
-    fn raw_occupation_cell_facts(&self, rx: u16, ry: u16) -> (i16, bool) {
+    fn raw_occupation_cell_facts(&self, position: RevealPosition) -> (i32, i32, bool) {
         let Some(terrain_cell) = self
             .resolved_terrain
             .as_ref()
-            .and_then(|terrain| terrain.cell(rx, ry))
+            .and_then(|terrain| terrain.cell(position.rx, position.ry))
         else {
-            return (0, false);
+            return (0, 0, false);
         };
-        let ground_level = i16::from(terrain_cell.level as i8);
+        let ground_level = i32::from(terrain_cell.level as i8);
+        let world_x = i32::from(position.rx)
+            .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+            .wrapping_add(position.sub_x.to_num::<i32>());
+        let world_y = i32::from(position.ry)
+            .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+            .wrapping_add(position.sub_y.to_num::<i32>());
+        let ground_z = ground_height_leptons(
+            terrain_cell.level,
+            terrain_cell.slope_type,
+            world_x,
+            world_y,
+        )
+        .unwrap_or_else(|_| {
+            i32::from(terrain_cell.level as i8).wrapping_mul(LEPTONS_PER_LEVEL as i32)
+        });
         let live_structural_bridge = terrain_cell.bridge_facts.has_structural_bridge()
             && self
                 .bridge_state
                 .as_ref()
-                .is_some_and(|state| state.is_bridge_walkable(rx, ry));
-        (ground_level, live_structural_bridge)
+                .is_some_and(|state| state.is_bridge_walkable(position.rx, position.ry));
+        (ground_level, ground_z, live_structural_bridge)
+    }
+
+    /// gamemd-derived: active YR `ObjectClass__Mark_Put @ 0x005F60A0` and
+    /// `ObjectClass__Mark_Remove @ 0x005F6120` compare the signed absolute
+    /// Object coordinate Z with exact ground Z plus the 416-lepton deck height.
+    fn raw_occupation_reaches_deck(
+        position: RevealPosition,
+        exact_z_leptons: Option<i32>,
+        ground_level: i32,
+        ground_z: i32,
+    ) -> bool {
+        exact_z_leptons.map_or_else(
+            || i32::from(position.z as i8) >= ground_level.wrapping_add(4),
+            |object_z| object_z >= ground_z.wrapping_add(BRIDGE_DECK_HEIGHT_LEPTONS),
+        )
     }
 
     fn mark_common_raw_occupation(
@@ -320,12 +352,19 @@ impl Simulation {
         category: EntityCategory,
         cells: &[(u16, u16)],
         position: RevealPosition,
+        exact_z_leptons: Option<i32>,
     ) -> bool {
         match category {
             EntityCategory::Unit => {
-                let (ground_level, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position.rx, position.ry);
-                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                let (ground_level, ground_z, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position);
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) && live_structural_bridge
+                {
                     self.substrate.raw_cell_occupation.mark_deck(
                         position.rx,
                         position.ry,
@@ -341,13 +380,18 @@ impl Simulation {
                 true
             }
             EntityCategory::Infantry => {
-                let (ground_level, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position.rx, position.ry);
-                let z = i16::from(position.z as i8);
+                let (ground_level, ground_z, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
                 // Native: InfantryClass::Mark (+0x743FC0) selects the deck only
                 // at/above the bridge plane and only while CellClass Flags&0x100 holds.
-                if z >= ground_level + 4 && live_structural_bridge {
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) && live_structural_bridge
+                {
                     self.substrate.raw_cell_occupation.mark_deck_infantry(
                         position.rx,
                         position.ry,
@@ -373,9 +417,15 @@ impl Simulation {
                 !cells.is_empty()
             }
             EntityCategory::Aircraft => {
-                let (ground_level, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position.rx, position.ry);
-                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                let (ground_level, ground_z, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position);
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) && live_structural_bridge
+                {
                     self.substrate.raw_cell_occupation.mark_deck(
                         position.rx,
                         position.ry,
@@ -399,11 +449,17 @@ impl Simulation {
         category: EntityCategory,
         cells: &[(u16, u16)],
         position: RevealPosition,
+        exact_z_leptons: Option<i32>,
     ) -> bool {
         match category {
             EntityCategory::Unit => {
-                let (ground_level, _) = self.raw_occupation_cell_facts(position.rx, position.ry);
-                if i16::from(position.z as i8) >= ground_level + 4 {
+                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position);
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) {
                     self.substrate.raw_cell_occupation.clear_deck(
                         position.rx,
                         position.ry,
@@ -429,9 +485,15 @@ impl Simulation {
                 !cells.is_empty()
             }
             EntityCategory::Aircraft => {
-                let (ground_level, live_structural_bridge) =
-                    self.raw_occupation_cell_facts(position.rx, position.ry);
-                if i16::from(position.z as i8) >= ground_level + 4 && live_structural_bridge {
+                let (ground_level, ground_z, live_structural_bridge) =
+                    self.raw_occupation_cell_facts(position);
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) && live_structural_bridge
+                {
                     self.substrate.raw_cell_occupation.clear_deck(
                         position.rx,
                         position.ry,
@@ -447,11 +509,16 @@ impl Simulation {
                 true
             }
             EntityCategory::Infantry => {
-                let (ground_level, _) = self.raw_occupation_cell_facts(position.rx, position.ry);
+                let (ground_level, ground_z, _) = self.raw_occupation_cell_facts(position);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
                 // Native: InfantryClass::Unmark (+0x744170) picks its plane from
                 // height alone, retaining the proven mark/unmark bridge-bit asymmetry.
-                if i16::from(position.z as i8) >= ground_level + 4 {
+                if Self::raw_occupation_reaches_deck(
+                    position,
+                    exact_z_leptons,
+                    ground_level,
+                    ground_z,
+                ) {
                     self.substrate.raw_cell_occupation.clear_deck_infantry(
                         position.rx,
                         position.ry,
@@ -625,6 +692,7 @@ impl Simulation {
             sub_x: entity.position.sub_x,
             sub_y: entity.position.sub_y,
         };
+        let exact_z_leptons = entity.position.exact_z_leptons;
         let inside_transport = entity.passenger_role.is_inside_transport();
         let air_spatial_bucket =
             (!inside_transport && air_spatial_tracks_entity(entity)).then(|| {
@@ -687,7 +755,13 @@ impl Simulation {
                         #[cfg(test)]
                         self.trace_lifecycle_for_test(LifecycleTestEvent::HiddenOccupationEntered);
                     }
-                    if self.mark_common_raw_occupation(stable_id, category, &cells, raw_position) {
+                    if self.mark_common_raw_occupation(
+                        stable_id,
+                        category,
+                        &cells,
+                        raw_position,
+                        exact_z_leptons,
+                    ) {
                         #[cfg(test)]
                         self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationMarked);
                     }
@@ -725,8 +799,9 @@ impl Simulation {
     }
 
     pub(crate) fn base_reservation_house_index(&self, owner: InternedId) -> Option<i32> {
-        // Map entities are intentionally revealed before the launch HouseClass
-        // array exists; the one-time post-registration rebuild owns that case.
+        // Active YR Full_Init constructs the complete HouseClass array before
+        // Terrain/Techno map sections reveal objects. Scenario loading preserves
+        // that order, so Reveal writes the final house-index bit immediately.
         if self.session.house_order.is_empty() {
             return None;
         }
@@ -850,22 +925,6 @@ impl Simulation {
         true
     }
 
-    /// New-game-only rebuild after the launch house array reaches final order.
-    /// Snapshot restore intentionally never calls this: serialized masks and the
-    /// shared dummy mask are authoritative.
-    pub(crate) fn rebuild_base_reservations_for_new_game(&mut self) {
-        self.substrate.base_reservations.reset();
-        let entity_ids = self
-            .substrate
-            .entities
-            .values()
-            .map(|entity| entity.stable_id)
-            .collect::<Vec<_>>();
-        for stable_id in entity_ids {
-            self.mark_building_base_reservation(stable_id);
-        }
-    }
-
     fn unmark_entity_remove(&mut self, stable_id: u64) -> bool {
         self.unmark_entity_remove_impl(stable_id, true)
     }
@@ -890,6 +949,7 @@ impl Simulation {
             sub_x: entity.position.sub_x,
             sub_y: entity.position.sub_y,
         };
+        let exact_z_leptons = entity.position.exact_z_leptons;
         let inside_transport = entity.passenger_role.is_inside_transport();
         if category == EntityCategory::Unit {
             let (entities, occupation) = (
@@ -936,7 +996,13 @@ impl Simulation {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::HiddenOccupationExited);
                 }
-                if self.clear_common_raw_occupation(stable_id, category, &cells, raw_position) {
+                if self.clear_common_raw_occupation(
+                    stable_id,
+                    category,
+                    &cells,
+                    raw_position,
+                    exact_z_leptons,
+                ) {
                     #[cfg(test)]
                     self.trace_lifecycle_for_test(LifecycleTestEvent::RawOccupationCleared);
                 }
@@ -1011,6 +1077,57 @@ impl Simulation {
         self.unmark_entity_remove(stable_id);
     }
 
+    /// gamemd-derived: active YR `FlyLocomotionClass__Process @ 0x004CD600`
+    /// reaches `FootClass__Set_Height_On_Bridge @ 0x005F5FA0` through the
+    /// Object vtable. It commits signed absolute Object Z from exact ground,
+    /// the `OnBridge` deck offset, and Fly altitude before the final Mark(PUT).
+    fn sync_fly_object_height(&mut self, stable_id: u64) {
+        use crate::rules::locomotor_type::LocomotorKind;
+        use crate::sim::movement::locomotor::MovementLayer;
+
+        let Some(entity) = self.substrate.entities.get(stable_id) else {
+            return;
+        };
+        let Some(locomotor) = entity.locomotor.as_ref() else {
+            return;
+        };
+        if locomotor.layer != MovementLayer::Air || locomotor.kind != LocomotorKind::Fly {
+            return;
+        }
+
+        let world_x = i32::from(entity.position.rx)
+            .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+            .wrapping_add(entity.position.sub_x.to_num::<i32>());
+        let world_y = i32::from(entity.position.ry)
+            .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
+            .wrapping_add(entity.position.sub_y.to_num::<i32>());
+        // CellClass__GetGroundHeight @ 0x00578080 resolves a missing/out-of-map
+        // lookup through the zero-height dummy CellClass, not Object's coarse Z.
+        let terrain_cell = self
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(entity.position.rx, entity.position.ry));
+        let ground_z = if let Some(cell) = terrain_cell {
+            let Ok(ground_z) = ground_height_leptons(cell.level, cell.slope_type, world_x, world_y)
+            else {
+                return;
+            };
+            ground_z
+        } else {
+            0
+        };
+        let surface_z = if entity.on_bridge {
+            ground_z.wrapping_add(BRIDGE_DECK_HEIGHT_LEPTONS)
+        } else {
+            ground_z
+        };
+        let exact_z = surface_z.wrapping_add(locomotor.altitude.to_num::<i32>());
+
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.position.exact_z_leptons = Some(exact_z);
+        }
+    }
+
     /// Run one production air-process visit with the active Fly
     /// remove-before/process/add-after cell-list transaction around it.
     pub(crate) fn tick_air_movement_with_cell_lists_one(
@@ -1042,6 +1159,8 @@ impl Simulation {
             &[stable_id],
             self.session.tick,
         );
+
+        self.sync_fly_object_height(stable_id);
 
         if transact_fly
             && self

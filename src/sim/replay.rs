@@ -1359,4 +1359,41 @@ mod tests {
         );
         assert_eq!(NATIVE_REPLAY_VERSION, 10);
     }
+
+    #[test]
+    fn gsi_01_04_exit_diagnostic_replay_roundtrips_without_native_version_bump() {
+        let mut sim = Simulation::with_seed(7);
+        let owner = sim.interner.intern("Local");
+        sim.houses.insert(
+            owner,
+            crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+        );
+        sim.session.house_order.push(owner);
+        sim.session.tick = 3;
+        let mut log = ReplayLog::new(ReplayHeader {
+            version: 1,
+            tick_hz: 15,
+            seed: 7,
+            map_name: "abort.map".to_string(),
+            rules_hash: 9,
+        });
+        log.record_tick(
+            4,
+            vec![CommandEnvelope::new(owner, 4, Command::ExitMatch)],
+            11,
+        );
+
+        let json = serde_json::to_string(&log).unwrap();
+        let decoded: ReplayLog = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.header.version, 1);
+        assert_eq!(decoded.ticks[0].commands[0].payload, Command::ExitMatch);
+        assert_eq!(NATIVE_REPLAY_VERSION, 10);
+
+        let hashes = ReplayRunner::run(&mut sim, &decoded, None, &BTreeMap::new(), None, 33);
+        assert_eq!(hashes.len(), 1);
+        assert!(sim.quit_requested);
+        assert_eq!(sim.take_executed_exit_owner(), Some(owner));
+        assert_eq!(sim.take_executed_exit_owner(), None);
+    }
 }

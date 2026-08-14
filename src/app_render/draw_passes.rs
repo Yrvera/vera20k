@@ -25,6 +25,7 @@ use super::merge_passes;
 /// because they're computed fresh each frame and (for the merge passes) need CPU-side
 /// depth values that match the uploaded GPU buffers.
 pub(super) struct DrawPassData<'a> {
+    pub ground: &'a super::draw_plan_lowering::GroundObjectPass,
     pub bridge_unit_instances: &'a [SpriteInstance],
     pub bridge_unit_pages: &'a [usize],
     pub bridge_unit_transition_paged: &'a [Vec<SpriteInstance>],
@@ -35,6 +36,7 @@ pub(super) struct DrawPassData<'a> {
     pub shp_paged: &'a [Vec<SpriteInstance>],
     pub particle_paged: &'a [Vec<SpriteInstance>],
     pub top_unit_pages: &'a [usize],
+    pub top_shp_pages: &'a [usize],
     pub ghost_page: u8,
 }
 
@@ -200,8 +202,24 @@ pub(super) fn dispatch_draw_passes(
         state.palette_set.as_ref(),
     );
 
-    // --- Step 5: Ground objects (unified multi-way Y-merge) ---
-    // All ground objects Y-sorted together (Layer 2).
+    // --- Step 5: Ground objects (native integer LayerClass order) ---
+    // Terrain, units, infantry, and building-owned pieces share the exact
+    // signed X+Y + stable-registration order. Atlas bindings dispatch only
+    // after the parent slot has been selected.
+    merge_passes::draw_native_ground_object_pass(
+        &mut pass,
+        &state.batch_renderer,
+        pool,
+        data.ground,
+        state.overlay_atlas.as_ref(),
+        state.unit_atlas.as_ref(),
+        &transition_cache,
+        state.sprite_atlas.as_ref(),
+        state.palette_set.as_ref(),
+    );
+
+    // Scheduler-owned effects not yet carrying verified class-specific
+    // YSortAdjust remain in the pre-existing residual SHP stream.
     merge_passes::draw_merged_object_pass(
         &mut pass,
         &state.batch_renderer,
@@ -215,23 +233,6 @@ pub(super) fn dispatch_draw_passes(
         state.sprite_atlas.as_ref(),
         state.palette_set.as_ref(),
     );
-
-    // --- Step 5.5: PixelFX water/ore sparkles ---
-    // Per-frame 1-pixel sparkles over visible water and ore cells. Matches
-    // gamemd's DrawPixelFXSparkles position (between unit pass and UI pass).
-    // Opaque sprite, no blend; passthrough pipeline bypasses depth test.
-    // Empty buffer when graphics.extra_animations is off — draw_with_buffer_passthrough
-    // short-circuits at count == 0.
-    if let (Some(overlay), Some((buf, count))) =
-        (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
-    {
-        state.batch_renderer.draw_with_buffer_passthrough(
-            &mut pass,
-            overlay.white_texture(),
-            buf,
-            count,
-        );
-    }
 
     if let (Some(overlay), Some((buffer, count))) =
         (state.selection_overlay.as_ref(), pool.get("weapon_waves"))
@@ -312,7 +313,6 @@ pub(super) fn dispatch_draw_passes(
     // row (see helpers::ground_sort_row) that test passes for everything the
     // body flies over, so the residual is a cliff face standing in a *nearer*
     // iso row than the body's own cell, which its lifted sprite does not reach.
-    const TOP_SHP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
     if let (Some(unit_atlas), Some(palette_set)) =
         (state.unit_atlas.as_ref(), state.palette_set.as_ref())
     {
@@ -331,21 +331,18 @@ pub(super) fn dispatch_draw_passes(
             }
         }
     }
-    for (i, key) in TOP_SHP_KEYS.iter().enumerate() {
-        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
-            if let Some((buf, count)) = pool.get(key) {
-                if count == 0 {
-                    continue;
-                }
-                state.batch_renderer.draw_passthrough_range(
-                    &mut pass,
-                    &page.texture,
-                    buf,
-                    0,
-                    count,
-                );
-            }
-        }
+    if let (Some(atlas), Some((buffer, count))) = (state.sprite_atlas.as_ref(), pool.get("shp_top"))
+        && count > 0
+    {
+        merge_passes::draw_shp_atlas_page_runs(
+            &mut pass,
+            &state.batch_renderer,
+            atlas,
+            buffer,
+            data.top_shp_pages,
+            0,
+            count,
+        );
     }
 
     // --- Step 7.8: Persistent combat-light vector ---
@@ -585,6 +582,24 @@ pub(super) fn dispatch_draw_passes(
         invalid_tex,
         "placement_invalid",
     );
+
+    // --- Step 10.5: PixelFX water/ore sparkles ---
+    // gamemd writes these opaque one-pixel effects at the tactical tail, after
+    // object/effect/status/action/placement drawing and before screen-fixed
+    // chrome. In VERA the global shroud translation must therefore run first.
+    // The passthrough pipeline bypasses depth; an empty buffer when
+    // graphics.extra_animations is off short-circuits at count == 0.
+    if let (Some(overlay), Some((buf, count))) =
+        (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
+    {
+        state.batch_renderer.draw_with_buffer_passthrough(
+            &mut pass,
+            overlay.white_texture(),
+            buf,
+            count,
+        );
+    }
+
     // --- Screen-fixed UI: sidebar, minimap, cursor — use UI camera (zoom=1.0) ---
     // Chrome owns the whole window: the sidebar column, the message list that
     // starts at the tactical origin, tooltips, and the cursor, which the native
@@ -844,5 +859,58 @@ fn draw_pooled_bridge_railing<'a>(
 ) {
     if let (Some(a), Some((buf, count))) = (atlas, pool.get(key)) {
         batch.draw_with_buffer_passthrough(pass, &a.texture, buf, count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    const SOURCE: &str = include_str!("draw_passes.rs");
+
+    fn source_offset(needle: &str) -> usize {
+        SOURCE
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing production draw anchor {needle:?}"))
+    }
+
+    #[test]
+    fn gsi_13_01_pixel_fx_is_last_tactical_write_before_screen_chrome() {
+        let shroud = source_offset("// --- Step 9: Shroud");
+        let target_lines = source_offset("\"target_lines\"");
+        let status = source_offset("\"status_unit_fill\"");
+        let placement = source_offset("\"placement_invalid\"");
+        let sparkle = source_offset("pool.get(\"cell_sparkles\")");
+        let screen_fixed = source_offset("// --- Screen-fixed UI:");
+        let full_window_scissor = source_offset(
+            "pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());",
+        );
+        let first_screen_submission = source_offset("\"minimap\"");
+
+        assert!(shroud < target_lines);
+        assert!(target_lines < status);
+        assert!(status < placement);
+        assert!(placement < sparkle);
+        assert!(sparkle < screen_fixed);
+        assert!(screen_fixed < full_window_scissor);
+        assert!(full_window_scissor < first_screen_submission);
+
+        let final_tactical_slice = &SOURCE[sparkle..screen_fixed];
+        assert_eq!(
+            final_tactical_slice.matches(".draw").count(),
+            1,
+            "PixelFX must remain the final tactical draw submission"
+        );
+    }
+
+    #[test]
+    fn gsi_13_01_pixel_fx_tail_remains_passthrough_and_tactically_scissored() {
+        let tactical_scissor = source_offset("pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);");
+        let sparkle = source_offset("pool.get(\"cell_sparkles\")");
+        let full_window_scissor = source_offset(
+            "pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());",
+        );
+
+        assert!(tactical_scissor < sparkle);
+        assert!(sparkle < full_window_scissor);
+        assert!(SOURCE[sparkle..full_window_scissor].contains("draw_with_buffer_passthrough"));
     }
 }

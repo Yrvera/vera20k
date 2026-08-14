@@ -142,6 +142,47 @@ impl ChooseMapModalState {
         })
     }
 
+    /// Whether the selected MPModes row admits the Create Random Map command.
+    ///
+    /// Retail provenance: `MultiplayerGameMode::RandomMapsAllowed` @ `0x005D6350`,
+    /// consumed by the Choose Map callback at `0x005E6CAF` and `0x005E6F6F`.
+    /// A missing selected-mode record is therefore not an enabled command.
+    pub fn random_map_button_enabled(&self, modes: &[SkirmishGameMode]) -> bool {
+        mode_by_id(modes, self.selected_mode_id).is_some_and(|mode| mode.random_maps_allowed)
+    }
+
+    pub fn button_enabled(&self, button: ChooseMapModalButton, modes: &[SkirmishGameMode]) -> bool {
+        button != ChooseMapModalButton::CreateRandomMap0x583
+            || self.random_map_button_enabled(modes)
+    }
+
+    /// Arm an enabled owner-draw button. Disabled controls consume the hit but
+    /// never acquire pressed state, which also keeps their click sound silent.
+    pub fn press_button(
+        &mut self,
+        button: ChooseMapModalButton,
+        modes: &[SkirmishGameMode],
+    ) -> bool {
+        let enabled = self.button_enabled(button, modes);
+        self.pressed_button = enabled.then_some(button);
+        enabled
+    }
+
+    /// Release the captured button, rechecking admission so a stale press can
+    /// never dispatch after the selected mode has disabled that command.
+    pub fn release_button(
+        &mut self,
+        released_button: Option<ChooseMapModalButton>,
+        modes: &[SkirmishGameMode],
+    ) -> (bool, Option<ChooseMapModalButton>) {
+        let Some(pressed_button) = self.pressed_button.take() else {
+            return (false, None);
+        };
+        let should_fire =
+            Some(pressed_button) == released_button && self.button_enabled(pressed_button, modes);
+        (true, should_fire.then_some(pressed_button))
+    }
+
     pub const fn cancel_selection(&self) -> ChooseMapSelection {
         self.saved_selection
     }
@@ -153,8 +194,9 @@ impl ChooseMapModalState {
         display_name: impl Into<String>,
         player_capacity: i32,
     ) -> Option<usize> {
-        let mode = mode_by_id(modes, self.selected_mode_id)?;
-        if !mode.random_maps_allowed {
+        // Keep the late defense even though normal input is disabled earlier:
+        // direct/programmatic callers must not write a disallowed sentinel.
+        if !self.random_map_button_enabled(modes) {
             return None;
         }
 
@@ -343,6 +385,50 @@ mod tests {
         modal.highlighted_filtered_index = Some(0);
         modal.map_top_index = 0;
         (modal, row_count)
+    }
+
+    #[test]
+    fn gsi_03_11_random_map_button_admission_tracks_stock_mode_and_transition() {
+        let modes = stock_skirmish_modes();
+        let mut modal = ChooseMapModalState::open(1, None, &modes, &[]);
+
+        for mode_id in [1, 2] {
+            assert!(modal.select_mode(mode_id, &modes, &[]));
+            assert!(modal.random_map_button_enabled(&modes));
+        }
+        for mode_id in 3..=9 {
+            assert!(modal.select_mode(mode_id, &modes, &[]));
+            assert!(!modal.random_map_button_enabled(&modes));
+        }
+
+        modal.selected_mode_id = i32::MAX;
+        assert!(!modal.random_map_button_enabled(&modes));
+    }
+
+    #[test]
+    fn gsi_03_11_random_map_button_disabled_input_and_stale_press_cannot_dispatch() {
+        let modes = stock_skirmish_modes();
+        let mut modal = ChooseMapModalState::open(9, None, &modes, &[]);
+        let random = ChooseMapModalButton::CreateRandomMap0x583;
+
+        assert!(!modal.press_button(random, &modes));
+        assert_eq!(modal.pressed_button, None);
+        assert_eq!(modal.release_button(Some(random), &modes), (false, None));
+
+        assert!(modal.select_mode(1, &modes, &[]));
+        assert!(modal.press_button(random, &modes));
+        assert!(modal.select_mode(9, &modes, &[]));
+        assert_eq!(modal.release_button(Some(random), &modes), (true, None));
+
+        let mut records = Vec::new();
+        assert_eq!(
+            modal.create_random_map(&mut records, &modes, "Disallowed", 4),
+            None
+        );
+        assert!(
+            records.is_empty(),
+            "late defense must not upsert a sentinel"
+        );
     }
 
     #[test]

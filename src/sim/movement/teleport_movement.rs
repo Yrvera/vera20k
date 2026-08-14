@@ -33,7 +33,7 @@ use crate::util::lepton::CELL_CENTER_LEPTON;
 
 const TELEPORT_WARP_DRAW_FLAGS: u32 = 0x600;
 const TELEPORT_WARP_DELAY: u16 = 0;
-const TELEPORT_WARP_LOOP_COUNT: u8 = 1;
+const TELEPORT_WARP_LOOP_COUNT: i32 = 1;
 const TELEPORT_WARP_Z_ADJUST: i32 = 0;
 const TELEPORT_WARP_REVERSE: bool = false;
 const FALLBACK_WARP_FRAME_COUNT: u16 = 20;
@@ -489,6 +489,8 @@ mod tests {
             special_threat_value: 0.0,
             armor: "none".to_string(),
             speed: 6,
+            walk_rate: 1,
+            idle_rate: 0,
             weight: SimFixed::lit("2.0"),
             accel_factor: SimFixed::lit("0.03"),
             decel_factor: SimFixed::lit("0.02"),

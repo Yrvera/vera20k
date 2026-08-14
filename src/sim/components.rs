@@ -330,16 +330,26 @@ pub struct DrivePathQueue {
     pub reference_cell: Option<(i16, i16)>,
 }
 
-/// ShipLocomotion-owned committed head and path replay state.
+/// ShipLocomotion-owned destination, committed head, speed, and path replay state.
 ///
-/// Ships share the ordinary TurnTrack/RawTrack curves with Drive, but do not
-/// own Drive's speed, tube, forced-track, or raw-occupation state.
+/// Ships share the ordinary TurnTrack/RawTrack curves, target/applied speed
+/// fractions, and cached owner-speed result with Drive, but do not own Drive's
+/// tube, forced-track, or raw-occupation state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShipLocomotionRuntime {
+    #[serde(default)]
+    pub destination: Option<DriveCoord>,
     #[serde(default)]
     pub head_to: Option<DriveCoord>,
     #[serde(default)]
     pub path: DrivePathQueue,
+    #[serde(default)]
+    pub target_speed_fraction: SimFixed,
+    #[serde(default)]
+    pub current_speed_fraction: SimFixed,
+    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
+    #[serde(default)]
+    pub owner_current_speed: i32,
 }
 
 /// Drive-owned 16-bit facing target and first-movement gate.
@@ -399,6 +409,9 @@ pub struct DriveLocomotionRuntime {
     pub target_speed_fraction: SimFixed,
     #[serde(default)]
     pub current_speed_fraction: SimFixed,
+    /// Cached owner `FootClass::GetCurrentSpeed` result for this process pass.
+    #[serde(default)]
+    pub owner_current_speed: i32,
     #[serde(default)]
     pub residual_budget: i32,
     /// Head-to vehicle-occupation mark, independent from CellClass object-list
@@ -433,6 +446,7 @@ impl Default for DriveLocomotionRuntime {
             is_reversed: false,
             target_speed_fraction: SIM_ZERO,
             current_speed_fraction: SIM_ZERO,
+            owner_current_speed: 0,
             residual_budget: 0,
             occupation_head_to: None,
             occupation_handoff: None,
@@ -765,14 +779,20 @@ pub struct AnimClassSpawnDescriptor {
     pub z: u8,
     /// Constructor `delay` argument, in native logic frames.
     pub delay: u16,
-    /// Constructor `loop` argument.
-    pub loop_count: u8,
+    /// Signed constructor `loop` argument.
+    pub loop_count: i32,
     /// Constructor draw flags argument.
     pub draw_flags: u32,
     /// Constructor `ZAdjust` argument.
     pub z_adjust: i32,
     /// Constructor reverse argument.
     pub reverse: bool,
+    /// AnimClass `+0x196`: draw through the owning cell's palette/light path.
+    #[serde(default)]
+    pub use_cell_drawer: bool,
+    /// AnimClass `+0x197`: marks the instance as terrain-attached.
+    #[serde(default)]
+    pub terrain_attached: bool,
     /// Instance draw-state bytes supplied by the native producer.
     pub draw_runtime: crate::sim::anim_class::AnimDrawRuntime,
 }
@@ -798,6 +818,8 @@ impl AnimClassSpawnDescriptor {
             draw_flags: 0,
             z_adjust: 0,
             reverse: false,
+            use_cell_drawer: false,
+            terrain_attached: false,
             draw_runtime: crate::sim::anim_class::AnimDrawRuntime::default(),
         }
     }
@@ -1160,6 +1182,7 @@ mod tests {
         assert!(!drive.is_reversed);
         assert_eq!(drive.target_speed_fraction, SIM_ZERO);
         assert_eq!(drive.current_speed_fraction, SIM_ZERO);
+        assert_eq!(drive.owner_current_speed, 0);
         assert_eq!(drive.residual_budget, 0);
     }
 

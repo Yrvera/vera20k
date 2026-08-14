@@ -87,7 +87,9 @@ pub struct DrawDecision {
 ///
 /// `remap_row` is the palette-ramp selection. `fx_params.x` is the final alpha
 /// multiplier selected by the native translucency bits; `fx_params.y` preserves
-/// those selector bits for diagnostics; `fx_params.z` is the 0..2 brightness scalar.
+/// those selector bits for diagnostics; `fx_params.z` is the 0..2 brightness scalar;
+/// `fx_params.w` optionally overrides the zdepth-atlas scale, with zero retaining
+/// the terrain default.
 /// `effect_tint` carries the scalar as RGB so SHP and voxel shaders apply the same
 /// native brightness channel after their normal palette/light work. The layout is
 /// part of `SpriteInstance`'s vertex ABI.
@@ -502,5 +504,14 @@ mod tests {
         let state = DrawState::for_entity(&entity, 45, 2, ObserverDrawContext::default()).state;
         assert_eq!(state.fx_flags, 0);
         assert_eq!(state.effect_tint, [1.0; 4]);
+    }
+
+    #[test]
+    fn gsi_13_09_zdepth_shader_uses_instance_scale_and_retains_terrain_default() {
+        let shader = include_str!("zdepth_shader.wgsl");
+        assert!(shader.contains("@location(9) fx_params: vec4f"));
+        assert!(shader.contains("output.depth_scale = instance.fx_params.w"));
+        assert!(shader.contains("select(0.0002, input.depth_scale, input.depth_scale > 0.0)"));
+        assert!(shader.contains("z_sample * depth_scale"));
     }
 }

@@ -139,9 +139,8 @@ fn parses_anim_start_sound_and_report() {
 
 #[test]
 fn parses_generic_animtype_rate_with_constructor_default() {
-    let ini: IniFile = IniFile::from_str(
-        "[UCFAST]\nRate=300\n\n[UCDEFAULT]\nFixtureOnly=1\n\n[UCSTOP]\nRate=0\n",
-    );
+    let ini: IniFile =
+        IniFile::from_str("[UCFAST]\nRate=300\n\n[UCDEFAULT]\nFixtureOnly=1\n\n[UCSTOP]\nRate=0\n");
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
 
     assert_eq!(reg.rate_ms("UCFAST"), Some(200));
@@ -159,9 +158,8 @@ fn parses_generic_animtype_rate_with_constructor_default() {
 
 #[test]
 fn test_resolve_effective_image_id_chain() {
-    let ini: IniFile = IniFile::from_str(
-        "[NACNST]\nImage=CIVNC\n\n[E1]\nFixtureOnly=1\n\n[MTNK]\nImage=MTNK\n",
-    );
+    let ini: IniFile =
+        IniFile::from_str("[NACNST]\nImage=CIVNC\n\n[E1]\nFixtureOnly=1\n\n[MTNK]\nImage=MTNK\n");
     let reg: ArtRegistry = ArtRegistry::from_ini(&ini);
 
     assert_eq!(reg.resolve_effective_image_id("NACNST", "NACNST"), "CIVNC");
@@ -668,4 +666,21 @@ fn test_parse_sequence_frames_helper() {
     assert_eq!(parse_sequence_frames("only-one"), None);
     assert_eq!(parse_sequence_frames("a,b,c"), None);
     assert_eq!(parse_sequence_frames(""), None);
+}
+
+#[test]
+fn gsi_05_10_delayed_building_fire_art_fields_keep_defaults_and_signed_delay() {
+    let ini = IniFile::from_str(
+        "[DEFAULTED]\nHeight=1\n\
+         [SIGNED]\nIsAnimDelayedFire=yes\nDelayedFireDelay=-7\n",
+    );
+    let registry = ArtRegistry::from_ini(&ini);
+
+    let defaulted = registry.get("DEFAULTED").expect("defaulted art entry");
+    assert!(!defaulted.is_anim_delayed_fire);
+    assert_eq!(defaulted.delayed_fire_delay, 0);
+
+    let signed = registry.get("SIGNED").expect("signed art entry");
+    assert!(signed.is_anim_delayed_fire);
+    assert_eq!(signed.delayed_fire_delay, -7);
 }

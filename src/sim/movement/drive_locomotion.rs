@@ -6,7 +6,9 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{LocomotorKind, SpeedType};
-use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime,
+};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::pathfinding::terrain_speed::{self, TerrainSpeedConfig};
@@ -139,14 +141,84 @@ pub(super) fn update_drive_speed_fraction(
     slowdown_distance: SimFixed,
     distance_to_goal: SimFixed,
 ) {
-    drive.target_speed_fraction = target_fraction.clamp(SIM_ZERO, SIM_ONE);
+    update_vehicle_speed_fraction(
+        &mut drive.target_speed_fraction,
+        &mut drive.current_speed_fraction,
+        target_fraction,
+        accelerates,
+        raw_speed_per_frame,
+        accel_factor,
+        decel_factor,
+        slowdown_distance,
+        distance_to_goal,
+    );
+}
+
+/// Update Ship's class-owned target fraction and owner-applied fraction.
+///
+/// The active Ship `Process_Drive_Track` body uses these same transitions
+/// before calling the owner's `SetSpeedFraction` slot. Keeping both values on
+/// Ship runtime gives `Is_Moving_Now` its native source without consulting the
+/// path-execution adapter.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_ship_speed_fraction(
+    ship: &mut ShipLocomotionRuntime,
+    target_fraction: SimFixed,
+    accelerates: bool,
+    raw_speed_per_frame: SimFixed,
+    accel_factor: SimFixed,
+    decel_factor: SimFixed,
+    slowdown_distance: SimFixed,
+    distance_to_goal: SimFixed,
+) {
+    update_vehicle_speed_fraction(
+        &mut ship.target_speed_fraction,
+        &mut ship.current_speed_fraction,
+        target_fraction,
+        accelerates,
+        raw_speed_per_frame,
+        accel_factor,
+        decel_factor,
+        slowdown_distance,
+        distance_to_goal,
+    );
+}
+
+/// Ship normally recomputes its requested fraction in `Process_Movement`.
+/// `Stop_Moving` is the active exception: after it clears destination while a
+/// committed head remains, `Process_Drive_Track` consumes the class-owned
+/// clamped target without running a fresh terrain request over it.
+pub(super) fn ship_process_target_speed_fraction(
+    ship: &ShipLocomotionRuntime,
+    movement_target_fraction: SimFixed,
+) -> SimFixed {
+    if ship.destination.is_none() && ship.head_to.is_some() {
+        ship.target_speed_fraction
+    } else {
+        movement_target_fraction
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_vehicle_speed_fraction(
+    target_slot: &mut SimFixed,
+    current_slot: &mut SimFixed,
+    target_fraction: SimFixed,
+    accelerates: bool,
+    raw_speed_per_frame: SimFixed,
+    accel_factor: SimFixed,
+    decel_factor: SimFixed,
+    slowdown_distance: SimFixed,
+    distance_to_goal: SimFixed,
+) {
+    *target_slot = target_fraction.clamp(SIM_ZERO, SIM_ONE);
     if !accelerates {
-        drive.current_speed_fraction = drive.target_speed_fraction;
+        *current_slot = *target_slot;
         return;
     }
 
-    let target = drive.target_speed_fraction;
-    let mut current = drive.current_speed_fraction.clamp(SIM_ZERO, SIM_ONE);
+    let target = *target_slot;
+    let mut current = (*current_slot).clamp(SIM_ZERO, SIM_ONE);
     if slowdown_distance > SIM_ZERO && distance_to_goal < slowdown_distance {
         current -= raw_speed_per_frame * decel_factor;
         if current < DRIVE_DESTINATION_BRAKE_FLOOR {
@@ -163,7 +235,22 @@ pub(super) fn update_drive_speed_fraction(
             current = target;
         }
     }
-    drive.current_speed_fraction = current.clamp(SIM_ZERO, SIM_ONE);
+    *current_slot = current.clamp(SIM_ZERO, SIM_ONE);
+}
+
+/// Reproduce the positive/zero value returned by owner slot `+0x538` for the
+/// active stock vehicle speed path.
+///
+/// `FootClass::GetCurrentSpeed` first truncates the type/owner-adjusted raw
+/// speed, then multiplies by owner `+0x578` and truncates again. Rust keeps the
+/// adjusted speed in leptons/second, so dividing by the 15-Hz native baseline
+/// recovers the first integer before applying the locomotor-owned fraction.
+pub(crate) fn owner_current_speed_from_fraction(
+    adjusted_speed_per_second: SimFixed,
+    current_speed_fraction: SimFixed,
+) -> i32 {
+    let adjusted_type_speed = (adjusted_speed_per_second / SimFixed::from_num(15)).to_num::<i32>();
+    (SimFixed::from_num(adjusted_type_speed) * current_speed_fraction).to_num::<i32>()
 }
 
 #[cfg(test)]
@@ -172,6 +259,104 @@ mod tests {
     use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO};
+
+    #[test]
+    fn gsi_13_06_ship_speed_fraction_uses_locomotor_owned_state() {
+        let mut ship = ShipLocomotionRuntime::default();
+
+        update_ship_speed_fraction(
+            &mut ship,
+            SIM_HALF,
+            false,
+            SimFixed::from_num(10),
+            SimFixed::lit("0.03"),
+            SimFixed::lit("0.002"),
+            SimFixed::from_num(500),
+            SimFixed::from_num(1000),
+        );
+        assert_eq!(ship.target_speed_fraction, SIM_HALF);
+        assert_eq!(ship.current_speed_fraction, SIM_HALF);
+
+        ship.current_speed_fraction = SIM_ZERO;
+        update_ship_speed_fraction(
+            &mut ship,
+            SIM_ONE,
+            true,
+            SimFixed::from_num(10),
+            SimFixed::lit("0.03"),
+            SimFixed::lit("0.002"),
+            SimFixed::from_num(500),
+            SimFixed::from_num(1000),
+        );
+        assert_eq!(ship.target_speed_fraction, SIM_ONE);
+        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.03"));
+    }
+
+    #[test]
+    fn gsi_13_06_stock_shp_current_speed_preserves_native_truncation() {
+        use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+
+        let stock_ship_speed = ra2_speed_to_leptons_per_second(8);
+        assert_eq!(
+            owner_current_speed_from_fraction(stock_ship_speed, SimFixed::lit("0.03")),
+            0,
+            "DLPH/SQD first acceleration step truncates to zero"
+        );
+        assert_eq!(
+            owner_current_speed_from_fraction(stock_ship_speed, SimFixed::lit("0.06")),
+            1
+        );
+        let stock_dron_speed = ra2_speed_to_leptons_per_second(10);
+        assert_eq!(
+            owner_current_speed_from_fraction(stock_dron_speed, SimFixed::lit("0.03")),
+            0,
+            "DRON's raw stage 25 still truncates 0.75 to zero"
+        );
+        assert_eq!(
+            owner_current_speed_from_fraction(stock_dron_speed, SIM_ONE),
+            25,
+            "Accelerates=false DRON uses its full converted type speed"
+        );
+    }
+
+    #[test]
+    fn gsi_13_06_nonterminal_ship_post_stop_process_preserves_clamped_target() {
+        use crate::util::fixed_math::ra2_speed_to_leptons_per_second;
+
+        let speed = ra2_speed_to_leptons_per_second(8);
+        let mut ship = ShipLocomotionRuntime {
+            destination: None,
+            head_to: Some(DriveCoord::cell(4, 3, 0)),
+            target_speed_fraction: SimFixed::lit("0.3"),
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+            ..Default::default()
+        };
+
+        for _ in 0..10 {
+            let requested = ship_process_target_speed_fraction(&ship, SIM_ONE);
+            assert_eq!(requested, SimFixed::lit("0.3"));
+            update_ship_speed_fraction(
+                &mut ship,
+                requested,
+                true,
+                speed / SimFixed::from_num(15),
+                SimFixed::lit("0.03"),
+                SimFixed::lit("0.002"),
+                SIM_ZERO,
+                SimFixed::from_num(256),
+            );
+            ship.owner_current_speed =
+                owner_current_speed_from_fraction(speed, ship.current_speed_fraction);
+            assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
+            assert!(ship.owner_current_speed > 0);
+        }
+
+        assert_eq!(ship.destination, None);
+        assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
+        assert_eq!(ship.current_speed_fraction, SimFixed::lit("0.3"));
+        assert_eq!(ship.owner_current_speed, 6);
+    }
 
     fn terrain_cell(rx: u16, ry: u16, speed_costs: SpeedCostProfile) -> ResolvedTerrainCell {
         ResolvedTerrainCell {

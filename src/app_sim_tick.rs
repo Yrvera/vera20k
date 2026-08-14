@@ -6,7 +6,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -71,9 +71,7 @@ fn flush_replay_log_to(
 
     let result = (|| {
         std::fs::create_dir_all(replays_dir)?;
-        let path = replays_dir.join(format!(
-            "replay_tick{session_tick}_{unix_secs}.json"
-        ));
+        let path = replays_dir.join(format!("replay_tick{session_tick}_{unix_secs}.json"));
         log.save(&path)?;
         Ok(Some(ReplayLogFlush {
             path,
@@ -299,61 +297,91 @@ fn announce_local_state_evas(state: &mut AppState) {
     }
 }
 
-/// After a sim step, surface a win/loss result screen for the LOCAL player.
-///
-/// `World::check_defeat` sets each house's `has_won` / `is_defeated` / `has_lost`
-/// every tick, but nothing consumed them: a skirmish would keep running
-/// invisibly after the player's base was destroyed, and a win was never
-/// announced. This reads the local player's house and, on the first tick the
-/// outcome is decided, transitions to the existing `GameScreen::MissionResult`
-/// screen. Switching away from `InGame` stops the in-game runtime next frame,
-/// so this fires exactly once. Loss is keyed off `is_defeated` (the flag set
-/// first and unconditionally in `check_defeat`) so it stays correct regardless
-/// of the `has_lost` companion.
-fn check_local_player_match_end(state: &mut AppState, now_ms: u64) {
-    if !matches!(state.screen, GameScreen::InGame) {
+/// Drive the app-owned Vox wait after serialized HouseState reaches its exact
+/// SavourDelay expiry frame. A loaded expiry latch reconstructs this wait but
+/// never reconstructs the already-consumed transition EVA edge.
+pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_ms: u64) {
+    if !matches!(state.screen, GameScreen::InGame) || state.scenario_exit.is_some() {
         return;
     }
-    let Some(owner) = crate::app_commands::preferred_local_owner_name(state) else {
-        return;
-    };
-    let outcome: Option<(&'static str, &'static str)> = {
-        let Some(sim) = state.simulation.as_ref() else {
+    if state.scenario_outcome.is_none() {
+        let Some(owner) = state.local_player_owner.as_deref() else {
             return;
         };
-        let Some(house) =
-            crate::sim::house_state::house_state_for_owner(&sim.houses, &owner, &sim.interner)
-        else {
+        let outcome = state.simulation.as_ref().and_then(|sim| {
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .and_then(|house| house.outcome_state)
+                .filter(|outcome| outcome.exit_ready)
+        });
+        let Some(outcome) = outcome else {
             return;
         };
-        // `check_defeat` flags the last house standing as the winner, which in a
-        // single-house sandbox is true from tick 0 — require a real opponent
-        // (>=2 contending houses) before announcing victory. Passive
-        // Civilian/JP houses do not count: they exist on nearly every roster and
-        // would make a one-player dev map look contested. Loss needs no guard.
-        if house.has_won && sim.contending_house_count() > 1 {
-            Some((
-                "You are Victorious!",
-                "All enemy forces have been defeated.",
-            ))
-        } else if house.is_defeated || house.has_lost {
-            Some(("You have Lost", "Your forces have been eliminated."))
-        } else {
-            None
-        }
-    };
-    let Some((title, detail)) = outcome else {
+        log::info!(
+            "Match end ready for local player '{owner}': {}",
+            crate::app_scenario_exit::outcome_title(outcome.kind)
+        );
+        state.scenario_outcome = Some(crate::app_scenario_exit::ScenarioOutcomeVoiceWait::start(
+            wall_ms,
+            outcome.kind,
+        ));
+    }
+
+    let voices_active = state
+        .sfx_player
+        .as_mut()
+        .is_some_and(|sfx| sfx.pump_and_check_voices());
+    let finished = state
+        .scenario_outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.tick(wall_ms, voices_active));
+    if !finished {
         return;
-    };
-    log::info!("Match end for local player '{owner}': {title}");
+    }
+
+    let outcome = state
+        .scenario_outcome
+        .as_ref()
+        .expect("finished outcome voice wait remains present")
+        .kind();
+    state.scenario_outcome = None;
     state.finished_game_count = state.finished_game_count.saturating_add(1);
-    let elapsed_seconds = state.scenario_elapsed_clock.stop(now_ms);
-    state.score_screen = Some(build_score_screen_model(state, elapsed_seconds));
-    state.score_shell_state = Default::default();
-    state.screen = GameScreen::MissionResult {
-        title: title.to_string(),
-        detail: detail.to_string(),
-    };
+    let elapsed_seconds = state.scenario_elapsed_clock.stop(wall_ms);
+    let model = build_score_screen_model(state, elapsed_seconds);
+    // The outcome handlers at 0x00685670 / 0x00685DC0 begin only after the
+    // HouseClass timer and 0x78-bucket Vox wait. From here the existing cascade
+    // performs their master fade, 300-bucket tail, hard stop, and SCORE handoff.
+    state.scenario_exit = Some(crate::app_scenario_exit::ScenarioExitCascade::start(
+        wall_ms,
+        crate::app_scenario_exit::ScenarioExitDestination::Score {
+            title: crate::app_scenario_exit::outcome_title(outcome).to_string(),
+            detail: crate::app_scenario_exit::outcome_detail(outcome).to_string(),
+            model,
+        },
+    ));
+}
+
+fn outcome_eva_entry(
+    kind: crate::sim::house_state::HouseOutcomeKind,
+    faction: &str,
+) -> (&'static str, &'static str) {
+    match (kind, faction) {
+        (crate::sim::house_state::HouseOutcomeKind::Victory, "Russian") => {
+            ("EVA_YouAreVictorious", "csof022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Victory, "Yuri") => {
+            ("EVA_YouAreVictorious", "cyur022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Victory, _) => {
+            ("EVA_YouAreVictorious", "ceva022")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Russian") => {
+            ("EVA_YouHaveLost", "csof023")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, "Yuri") => {
+            ("EVA_YouHaveLost", "cyur023")
+        }
+        (crate::sim::house_state::HouseOutcomeKind::Defeat, _) => ("EVA_YouHaveLost", "ceva023"),
+    }
 }
 
 /// The name one score row shows.
@@ -662,7 +690,16 @@ pub(crate) fn build_animation_sequences(
                 if let Some(art) = art_entry {
                     if art.walk_frames.is_some() || art.firing_frames.is_some() {
                         data_driven_count += 1;
-                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(art)
+                        let cadence = rules
+                            .and_then(|registry| registry.object(type_str))
+                            .map(|object| animation::ShpVehicleCadence {
+                                walk_rate: object.walk_rate,
+                                idle_rate: object.idle_rate,
+                            })
+                            .unwrap_or_default();
+                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
+                            art, cadence,
+                        )
                     } else {
                         continue;
                     }
@@ -734,7 +771,7 @@ impl SessionMode {
 /// when no fixed tick is already in progress. Offline campaign/skirmish freeze
 /// the world; message, input, and repaint still run in the surrounding loop.
 /// Pure and total, so it is unit-tested without an `AppState`. The live
-/// app-layer consumer is `service_tick_should_advance_sim`, which reads the
+/// app-layer consumer is `current_wall_clock_service_admission`, which reads the
 /// running session mode and gates the one-frame admission inside
 /// `advance_in_game_runtime`.
 pub fn modal_pump_should_advance_sim(
@@ -745,6 +782,38 @@ pub fn modal_pump_should_advance_sim(
     mode.is_network() && !service_only_blocked && !reentrancy_in_progress
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallClockServiceAdmission {
+    simulation: bool,
+    tactical_mutation: bool,
+}
+
+/// Map the app's two pause sources onto their distinct production effects.
+/// A real in-scenario modal follows the native service pump for both simulation
+/// and tactical-view mutation. VERA's developer pause has no native modal, so
+/// it stops simulation only and leaves ordinary per-render camera/placement
+/// updates admitted.
+///
+/// gamemd-derived: modal service pump, verified `FUN_00623120 @ 0x00623120`.
+fn wall_clock_service_admission(
+    paused: bool,
+    modal_open: bool,
+    mode: SessionMode,
+    service_only_blocked: bool,
+    reentrancy_in_progress: bool,
+) -> WallClockServiceAdmission {
+    let tactical_mutation = !modal_open
+        || modal_pump_should_advance_sim(mode, service_only_blocked, reentrancy_in_progress);
+    WallClockServiceAdmission {
+        simulation: if modal_open {
+            tactical_mutation
+        } else {
+            !paused
+        },
+        tactical_mutation,
+    }
+}
+
 /// Live front-end session mode for the running client. This build is offline
 /// only, and offline campaign and skirmish freeze the world identically behind a
 /// modal, so it reports `Skirmish`. When networking lands, this reads the live
@@ -753,21 +822,20 @@ pub(crate) fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
-/// App-layer modal-pump service decision: should the simulation advance
-/// this frame? While the in-game Options modal is open (`state.paused` is the
-/// 0xBBB modal in this port), the verified pump contract decides — offline
-/// campaign/skirmish freeze, network LAN/WOL advance. With no modal open the
-/// world always runs. Re-entrancy is always clear here: the single-threaded
-/// frame loop never re-enters a simulation frame mid-advance.
-fn service_tick_should_advance_sim(state: &AppState) -> bool {
-    if state.paused {
-        // The current build has no network-session owner, so neither native
-        // service-only blocker can be active here. Networking must supply their
-        // combined state when `current_session_mode` becomes live.
-        modal_pump_should_advance_sim(current_session_mode(state), false, false)
-    } else {
-        true
-    }
+/// Current app-layer service decision. Actual in-scenario modals follow the
+/// native pump; the app-only debug pause suppresses simulation without claiming
+/// ownership of tactical-view updates.
+fn current_wall_clock_service_admission(state: &AppState) -> WallClockServiceAdmission {
+    // The current build has no network-session owner, so neither native
+    // service-only blocker can be active here. Networking must supply their
+    // combined state when `current_session_mode` becomes live.
+    wall_clock_service_admission(
+        state.paused,
+        state.in_game_menu.is_open(),
+        current_session_mode(state),
+        false,
+        false,
+    )
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
@@ -846,6 +914,17 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
 }
 
 fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) {
+    // Exact diagnostic stepping is an explicit request, not a wall-clock modal
+    // pump. Preserve its pre-existing one-step behavior even if the app happens
+    // to be paused; only ordinary wall-clock advancement follows the service
+    // decision below.
+    let service_admission = match mode {
+        RuntimeAdvanceMode::WallClock { .. } => current_wall_clock_service_admission(state),
+        RuntimeAdvanceMode::ExactOneStep => WallClockServiceAdmission {
+            simulation: true,
+            tactical_mutation: true,
+        },
+    };
     let mut admitted_by_pacer = false;
     let run_sim = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
@@ -855,12 +934,15 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
                 state.frame_pacer.reanchor(now_ms);
                 true
             } else {
-                let paused = !service_tick_should_advance_sim(state);
                 let game_speed = state.simulation.as_ref().map_or_else(
                     || state.in_game_options.game_speed.min(6) as u8,
                     |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
                 );
-                let admit = state.frame_pacer.should_admit(now_ms, game_speed, paused);
+                let admit = state.frame_pacer.should_admit(
+                    now_ms,
+                    game_speed,
+                    !service_admission.simulation,
+                );
                 admitted_by_pacer = admit;
                 admit
             }
@@ -891,14 +973,6 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             };
             state.frame_pacer.record_admitted_frame(now_ms);
         }
-        // After the sim advances, surface a win/loss result screen for the
-        // local player — the sim computes the per-house outcome flags but
-        // nothing else consumes them, so a match would otherwise end invisibly.
-        let score_clock_now_ms = match mode {
-            RuntimeAdvanceMode::WallClock { now_ms } => now_ms,
-            RuntimeAdvanceMode::ExactOneStep => monotonic_frame_pacer_ms(state, Instant::now()),
-        };
-        check_local_player_match_end(state, score_clock_now_ms);
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);
@@ -944,11 +1018,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
     crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app_gadget_input::idle_tick(state);
+    let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
-        player.update(assets);
+        player.update(assets, music_now_ms);
     }
-    crate::app_camera::update_camera(state);
-    update_building_placement_preview(state);
+    if service_admission.tactical_mutation {
+        crate::app_camera::update_camera(state);
+        update_building_placement_preview(state);
+    }
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     state.batch_renderer.update_camera(
@@ -1011,7 +1088,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 log::info!("AI disabled — clearing {} AI players", sim.ai_players.len());
                 sim.ai_players.clear();
             }
-            sim.sound_events.clear();
+            // Delay-zero AnimClass construction can emit StartSound during the
+            // final map-load sweep. Keep it until this first tactical drain;
+            // `drain(..)` below still consumes every event exactly once.
             let due_commands = if tick_lane == TickLane::Ordinary {
                 sim.take_due_commands()
             } else {
@@ -1049,12 +1128,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
             census_tick = tick_result.frame_committed.then_some(tick_result.tick);
             let game_options = sim.session.game_options.clone();
+            let binary_frame = sim.session.binary_frame;
             let (ents, interner) = sim.entities_mut_and_interner();
             animation::tick_non_dying_animations(
                 ents,
                 &state.animation_sequences,
                 &game_options,
                 interner,
+                binary_frame,
             );
             drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
             animation::tick_voxel_animations(sim.entities_mut());
@@ -1072,7 +1153,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             drained_fire_events.extend(sim.fire_events.drain(..));
             append_fire_effect_batch(&mut state.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
-            for sim_event in sim.sound_events.drain(..) {
+            for sim_event in drain_sim_sound_events(sim) {
                 let app_event: GameSoundEvent = match sim_event {
                     SimSoundEvent::AnimationStarted {
                         anim_id,
@@ -1212,6 +1293,26 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             .unwrap_or("ceva062")
                             .to_string();
                         GameSoundEvent::UnitReady { sound_id }
+                    }
+                    SimSoundEvent::MatchOutcome { owner, kind } => {
+                        let owner_str = sim.interner.resolve(owner);
+                        if !local_owner_name
+                            .as_deref()
+                            .is_some_and(|local| local.eq_ignore_ascii_case(owner_str))
+                        {
+                            continue;
+                        }
+                        let faction = crate::app_building_anim::eva_faction_key(
+                            owner_str,
+                            &state.house_roster,
+                        );
+                        let (eva_key, fallback) = outcome_eva_entry(kind, faction);
+                        let eva_sound_id = state
+                            .eva_registry
+                            .get(eva_key, faction)
+                            .unwrap_or(fallback)
+                            .to_string();
+                        GameSoundEvent::OutcomeEva { eva_sound_id }
                     }
                     SimSoundEvent::WallSold { receiver } => {
                         let receiver_name = sim.interner.resolve(receiver);
@@ -1521,7 +1622,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                 }
             }
-            if tick_result.frame_committed {
+            // A terminal EventClass command still belongs to the deterministic
+            // command stream even though Main_Tick skips its frame commit.
+            // Recording a non-empty terminal batch lets diagnostic playback
+            // reproduce the same EXIT dispatch and one-shot terminal edge.
+            if tick_result.frame_committed || !due_commands.is_empty() {
                 if let Some(log) = &mut sim.replay_log {
                     log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
                 }
@@ -1642,6 +1747,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         refresh_entity_atlases(state);
     }
     frame_committed
+}
+
+fn drain_sim_sound_events(sim: &mut crate::sim::world::Simulation) -> Vec<SimSoundEvent> {
+    sim.sound_events.drain(..).collect()
 }
 
 /// Samples pending light records backward and swaps the completed grid forward,
@@ -1983,6 +2092,14 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     if sprite_rebuild {
         log::warn!(">>> SPRITE ATLAS REBUILD TRIGGERED — new SHP entity types detected <<<");
         let existing = state.sprite_atlas.take();
+        let cell_drawer_type_ids: HashSet<String> = sim
+            .resolved_terrain
+            .as_ref()
+            .into_iter()
+            .flat_map(|terrain| terrain.tile_animations())
+            .map(|anim| anim.anim_name.to_ascii_uppercase())
+            .collect();
+        let cell_palette = load_iso_palette(asset_manager, &state.theater_ext);
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
             &state.gpu,
             &state.batch_renderer,
@@ -1996,6 +2113,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.house_color_map,
             &extra_buildings,
             &state.infantry_sequences,
+            &cell_drawer_type_ids,
+            cell_palette.as_ref(),
             existing,
             Some(&sim.interner),
         ) {
@@ -2082,6 +2201,13 @@ fn load_unit_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<
         }
     }
     None
+}
+
+fn load_iso_palette(asset_manager: &AssetManager, theater_ext: &str) -> Option<Palette> {
+    let name = format!("iso{}.pal", theater_ext.to_ascii_lowercase());
+    asset_manager
+        .get_ref(&name)
+        .and_then(|bytes| Palette::from_bytes(bytes).ok())
 }
 
 /// Check if a cell is walkable on either the ground or bridge layer.
@@ -2192,8 +2318,9 @@ pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        finish_fire_effect_batch, rebuild_dynamic_terrain_navigation, upsert_overlay_entries,
-        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
+        drain_sim_sound_events, finish_fire_effect_batch, outcome_eva_entry,
+        rebuild_dynamic_terrain_navigation, upsert_overlay_entries, validate_exact_step_receipt,
+        wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2219,6 +2346,24 @@ mod tests {
             overlay_id,
             frame,
         }
+    }
+
+    #[test]
+    fn gsi_01_04_outcome_transition_resolves_exact_standard_eva_entries() {
+        use crate::sim::house_state::HouseOutcomeKind;
+
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Victory, "Allied"),
+            ("EVA_YouAreVictorious", "ceva022")
+        );
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Victory, "Russian"),
+            ("EVA_YouAreVictorious", "csof022")
+        );
+        assert_eq!(
+            outcome_eva_entry(HouseOutcomeKind::Defeat, "Yuri"),
+            ("EVA_YouHaveLost", "cyur023")
+        );
     }
 
     #[test]
@@ -2251,6 +2396,28 @@ mod tests {
         assert!(
             wall_sell_sound_for_local(receiver_name, Some("Receiver"), Some(&no_sound)).is_none()
         );
+    }
+
+    #[test]
+    fn gsi_13_04_pre_tick_animation_started_event_drains_exactly_once() {
+        let mut sim = crate::sim::world::Simulation::new();
+        let sound_id = sim.interner.intern("WaterfallLoop");
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::AnimationStarted {
+                anim_id: 9,
+                sound_id,
+                world: crate::sim::anim_class::AnimWorldCoord {
+                    x: 128,
+                    y: 128,
+                    z: 0,
+                },
+            });
+
+        assert!(matches!(
+            drain_sim_sound_events(&mut sim).as_slice(),
+            [crate::sim::world::SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
+        ));
+        assert!(drain_sim_sound_events(&mut sim).is_empty());
     }
 
     #[test]
@@ -2588,7 +2755,81 @@ mod tests {
 
 #[cfg(test)]
 mod modal_pump_tests {
-    use super::{SessionMode, modal_pump_should_advance_sim, score_row_display_name};
+    use super::{
+        SessionMode, modal_pump_should_advance_sim, score_row_display_name,
+        wall_clock_service_admission,
+    };
+
+    #[test]
+    fn gsi_01_03_debug_pause_does_not_impersonate_an_offline_modal() {
+        let debug_pause =
+            wall_clock_service_admission(true, false, SessionMode::Skirmish, false, false);
+        assert!(!debug_pause.simulation);
+        assert!(debug_pause.tactical_mutation);
+
+        let actual_modal =
+            wall_clock_service_admission(true, true, SessionMode::Skirmish, false, false);
+        assert!(!actual_modal.simulation);
+        assert!(!actual_modal.tactical_mutation);
+    }
+
+    #[test]
+    fn gsi_01_03_tactical_view_mutators_follow_modal_service_admission() {
+        // No modal means the ordinary app loop owns camera/placement updates;
+        // modal-pump blockers have no authority on that path.
+        for mode in [
+            SessionMode::Campaign,
+            SessionMode::Skirmish,
+            SessionMode::Lan,
+            SessionMode::Wol,
+        ] {
+            assert_eq!(
+                wall_clock_service_admission(false, false, mode, true, true),
+                super::WallClockServiceAdmission {
+                    simulation: true,
+                    tactical_mutation: true,
+                }
+            );
+        }
+
+        // The active offline Menu, Abort and Options callers all enter the
+        // service-only return: their frozen battlefield cannot pan or rebuild a
+        // placement preview underneath the dialog.
+        for mode in [SessionMode::Campaign, SessionMode::Skirmish] {
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, false),
+                super::WallClockServiceAdmission {
+                    simulation: false,
+                    tactical_mutation: false,
+                }
+            );
+        }
+
+        // Preserve the existing network-modal branch, including both native
+        // reasons it falls back to service-only work.
+        for mode in [SessionMode::Lan, SessionMode::Wol] {
+            let admitted = super::WallClockServiceAdmission {
+                simulation: true,
+                tactical_mutation: true,
+            };
+            let denied = super::WallClockServiceAdmission {
+                simulation: false,
+                tactical_mutation: false,
+            };
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, false),
+                admitted
+            );
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, true, false),
+                denied
+            );
+            assert_eq!(
+                wall_clock_service_admission(true, true, mode, false, true),
+                denied
+            );
+        }
+    }
 
     #[test]
     fn session_mode_maps_writer_proofed_game_mode_values() {

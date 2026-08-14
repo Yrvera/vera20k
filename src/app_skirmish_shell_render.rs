@@ -1192,6 +1192,21 @@ mod tests {
     }
 
     #[test]
+    fn gsi_03_11_random_map_button_disabled_render_uses_idle_art_alpha_and_text() {
+        assert_eq!(right_panel_button_sdbtnanm_frame_index(true, true), 2);
+        assert_f32_close(
+            right_panel_button_sdbtnanm_alpha(true),
+            BUTTON_DISABLED_ALPHA,
+        );
+        assert_f32_close(right_panel_button_sdbtnanm_alpha(false), 1.0);
+        assert_eq!(
+            button_label_color_for_disabled(true),
+            SHELL_DISABLED_TEXT_RGB_FROM_PACKED_0000009F
+        );
+        assert_eq!(button_label_color_for_disabled(false), SHELL_LABEL_TEXT_RGB);
+    }
+
+    #[test]
     fn validation_modal_body_text_is_left_top_wrapped_not_centered() {
         assert_eq!(validation_modal_body_text_align(), ShellAlign::NONE);
     }

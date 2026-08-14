@@ -200,6 +200,12 @@ pub struct ObjectType {
     pub armor: String,
     /// Movement speed (0 = immobile, e.g., buildings).
     pub speed: i32,
+    /// `WalkRate=` — signed native-frame divisor for Foot body animation.
+    /// TechnoTypeClass owns this value; art.ini owns only the frame layout.
+    pub walk_rate: i32,
+    /// `IdleRate=` — signed native-frame divisor for idle Foot body animation.
+    /// Zero disables idle counter advancement.
+    pub idle_rate: i32,
     /// Inertia weight (`Weight=` in vehicle/aircraft sections). Default 2.0.
     /// Used as the divisor in rocker-impulse force scaling: heavier units rock
     /// proportionally less per equivalent impulse. Retail range: 0.5 (lightest
@@ -211,8 +217,8 @@ pub struct ObjectType {
     /// Fraction of max speed lost per tick during braking (DeaccelerationFactor=).
     /// Default 0.02. Applied when within slowdown_distance of destination.
     pub decel_factor: SimFixed,
-    /// Whether Drive locomotors ramp toward target speed (`Accelerates=`).
-    /// Defaults to true; `Accelerates=false` is handled by DriveLocomotion speed
+    /// Whether Drive/Ship locomotors ramp toward target speed (`Accelerates=`).
+    /// Defaults to true; `Accelerates=false` is handled by locomotor speed
     /// fraction ownership, not by mutating raw `Speed=`.
     pub accelerates: bool,
     /// Lepton distance from destination at which braking begins (SlowdownDistance=).
@@ -1069,6 +1075,11 @@ impl ObjectType {
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),
             armor: section.get("Armor").unwrap_or("none").to_string(),
             speed: section.get_i32("Speed").unwrap_or(0),
+            // TechnoTypeClass ctor/read contract: raw signed ints, with no
+            // clamp or conversion. A zero WalkRate is invalid content natively
+            // (the live consumer executes IDIV without a zero guard).
+            walk_rate: section.get_i32("WalkRate").unwrap_or(1),
+            idle_rate: section.get_i32("IdleRate").unwrap_or(0),
             weight: section
                 .get_f32("Weight")
                 .map(sim_from_f32)
@@ -1807,8 +1818,7 @@ mod tests {
 
     #[test]
     fn parse_laser_fence_flag() {
-        let ini: IniFile =
-            IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\nFixtureOnly=1\n");
+        let ini: IniFile = IniFile::from_str("[FENCE]\nLaserFence=yes\n[OTHER]\nFixtureOnly=1\n");
         let fence = ObjectType::from_ini_section(
             "FENCE",
             ini.section("FENCE").unwrap(),
@@ -1825,8 +1835,7 @@ mod tests {
 
     #[test]
     fn parse_no_force_shield_flag() {
-        let ini: IniFile =
-            IniFile::from_str("[TST1]\nNoForceShield=yes\n[TST2]\nFixtureOnly=1\n");
+        let ini: IniFile = IniFile::from_str("[TST1]\nNoForceShield=yes\n[TST2]\nFixtureOnly=1\n");
         let obj_on: ObjectType = ObjectType::from_ini_section(
             "TST1",
             ini.section("TST1").unwrap(),
@@ -1852,6 +1861,8 @@ mod tests {
         assert_eq!(obj.strength, 0);
         assert_eq!(obj.armor, "none");
         assert_eq!(obj.speed, 0);
+        assert_eq!(obj.walk_rate, 1);
+        assert_eq!(obj.idle_rate, 0);
         assert_eq!(obj.sight, 0);
         assert_eq!(obj.tech_level, -1);
         assert!((obj.build_time_multiplier - 1.0).abs() < f32::EPSILON);
@@ -1867,6 +1878,32 @@ mod tests {
         assert!(obj.base_normal);
         assert!(!obj.eligibile_for_ally_building);
         assert!(!obj.crewed);
+    }
+
+    #[test]
+    fn gsi_13_06_walk_and_idle_rates_are_raw_rules_owned_signed_values() {
+        let ini = IniFile::from_str(
+            "[DLPH]\nWalkRate=4\nIdleRate=8\n\
+             [SQD]\nWalkRate=2\nIdleRate=4\n\
+             [DRON]\nFixtureOnly=1\n\
+             [RAW]\nWalkRate=-3\nIdleRate=-7\n",
+        );
+        let parse = |id| {
+            ObjectType::from_ini_section(
+                id,
+                ini.section(id).expect("section"),
+                ObjectCategory::Vehicle,
+            )
+        };
+
+        let dlph = parse("DLPH");
+        assert_eq!((dlph.walk_rate, dlph.idle_rate), (4, 8));
+        let sqd = parse("SQD");
+        assert_eq!((sqd.walk_rate, sqd.idle_rate), (2, 4));
+        let dron = parse("DRON");
+        assert_eq!((dron.walk_rate, dron.idle_rate), (1, 0));
+        let raw = parse("RAW");
+        assert_eq!((raw.walk_rate, raw.idle_rate), (-3, -7));
     }
 
     #[test]

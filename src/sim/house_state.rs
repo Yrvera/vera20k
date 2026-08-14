@@ -52,6 +52,26 @@ impl HouseDifficulty {
     }
 }
 
+/// Accepted native HouseClass match result whose SavourDelay still owns the
+/// scenario's deterministic frame lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum HouseOutcomeKind {
+    Victory,
+    Defeat,
+}
+
+/// Persistent HouseClass result transition.
+///
+/// The absolute target keeps the remaining SavourDelay frame count stable
+/// across save/load. The wall-clock Vox drain that follows `exit_ready` belongs
+/// to the app and is deliberately not represented here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct HouseOutcomeState {
+    pub kind: HouseOutcomeKind,
+    pub savour_until_tick: u64,
+    pub exit_ready: bool,
+}
+
 /// Per-player game state.
 ///
 /// Created once per player at game start, lives for the duration of the match.
@@ -108,6 +128,10 @@ pub struct HouseState {
     pub has_won: bool,
     /// Defeat flag. Note: Flag_To_Lose clears HasWon first.
     pub has_lost: bool,
+    /// Accepted win/loss transition plus the deterministic SavourDelay target.
+    /// App-owned wall waits and audio teardown are intentionally excluded.
+    #[serde(default)]
+    pub outcome_state: Option<HouseOutcomeState>,
     /// HouseClass map-clear byte folded by the retail multiplayer checksum.
     ///
     /// Defeat/reveal paths set this independently of the win/loss flags, and
@@ -179,6 +203,57 @@ impl HouseState {
         self.is_human || self.player_control
     }
 
+    /// Accept a victory and arm its deterministic grace interval.
+    ///
+    /// gamemd provenance: HouseClass::Flag_To_Win @ `0x004FC9E0` accepts only
+    /// while Win/Draw/Lose are clear, sets HasWon, announces victory, and sets
+    /// the house timer to `ftol(SavourDelay * 900)`.
+    pub(crate) fn flag_to_win(&mut self, current_tick: u64, savour_frames: u64) -> bool {
+        if self.has_won || self.has_lost {
+            return false;
+        }
+        self.has_won = true;
+        self.outcome_state = Some(HouseOutcomeState {
+            kind: HouseOutcomeKind::Victory,
+            savour_until_tick: current_tick.saturating_add(savour_frames),
+            exit_ready: false,
+        });
+        true
+    }
+
+    /// Accept a defeat, replacing an earlier pending victory when present.
+    ///
+    /// gamemd provenance: HouseClass::Flag_To_Lose @ `0x004FCBD0` clears
+    /// HasWon unconditionally, then (unless already Draw/Lost) sets HasLost,
+    /// announces defeat, and re-arms the full SavourDelay interval.
+    pub(crate) fn flag_to_lose(&mut self, current_tick: u64, savour_frames: u64) -> bool {
+        self.has_won = false;
+        if self.has_lost {
+            return false;
+        }
+        self.has_lost = true;
+        self.outcome_state = Some(HouseOutcomeState {
+            kind: HouseOutcomeKind::Defeat,
+            savour_until_tick: current_tick.saturating_add(savour_frames),
+            exit_ready: false,
+        });
+        true
+    }
+
+    /// Advance the HouseClass result timer at the late house-update boundary.
+    ///
+    /// gamemd provenance: HouseClass::Update @ `0x004F8440` keeps the scenario
+    /// running until this timer expires, then enters the bounded Vox wait.
+    pub(crate) fn advance_outcome_savour(&mut self, current_tick: u64) -> bool {
+        let Some(outcome) = self.outcome_state.as_mut() else {
+            return false;
+        };
+        if current_tick >= outcome.savour_until_tick {
+            outcome.exit_ready = true;
+        }
+        outcome.exit_ready
+    }
+
     pub fn new(
         name: InternedId,
         side_index: u8,
@@ -200,6 +275,7 @@ impl HouseState {
             is_defeated: false,
             has_won: false,
             has_lost: false,
+            outcome_state: None,
             map_is_clear: false,
             spy_sat_active: false,
             owned_building_count: 0,
@@ -442,6 +518,45 @@ pub(crate) fn determine_waypoint_edge(anchor: (u16, u16), bounds: PlayfieldBound
         }
     }
     best_edge
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::{HouseOutcomeKind, HouseState};
+
+    #[test]
+    fn gsi_01_04_savour_gates_exact_frame_and_defeat_restarts_pending_victory() {
+        let mut house = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(house.flag_to_win(100, 90));
+        assert!(!house.advance_outcome_savour(189));
+        assert!(house.advance_outcome_savour(190));
+
+        let mut replaced = HouseState::new(Default::default(), 0, None, true, 0, 10);
+        assert!(replaced.flag_to_win(100, 90));
+        assert!(replaced.flag_to_lose(150, 90));
+        assert!(!replaced.has_won);
+        assert!(replaced.has_lost);
+        assert_eq!(
+            replaced.outcome_state.expect("defeat outcome").kind,
+            HouseOutcomeKind::Defeat
+        );
+        assert_eq!(
+            replaced
+                .outcome_state
+                .expect("restarted defeat outcome")
+                .savour_until_tick,
+            240
+        );
+        assert!(!replaced.flag_to_win(160, 90));
+        assert!(!replaced.flag_to_lose(170, 90));
+        assert_eq!(
+            replaced
+                .outcome_state
+                .expect("unchanged defeat outcome")
+                .savour_until_tick,
+            240
+        );
+    }
 }
 
 #[cfg(test)]

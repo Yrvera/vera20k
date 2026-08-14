@@ -33,16 +33,6 @@ const SCREEN_X_PER_LEPTON: f32 = 60.0 / 256.0;
 /// = 30.0 / 256.0 = 0.1171875
 const SCREEN_Y_PER_LEPTON: f32 = 30.0 / 256.0;
 
-/// Screen-X step per cell along either isometric axis — half a tile width.
-///
-/// `map::terrain` names the same number `TILE_WIDTH / 2`; it is spelled out here
-/// rather than imported because `util/` takes no dependency on other game
-/// modules.
-const SCREEN_X_PER_CELL_STEP: f32 = 30.0;
-
-/// Screen-Y step per cell along either isometric axis — half a tile height.
-const SCREEN_Y_PER_CELL_STEP: f32 = 15.0;
-
 /// Screen-Y offset every VERA world layer carries relative to the original's
 /// absolute tactical pixel.
 ///
@@ -55,18 +45,10 @@ const SCREEN_Y_PER_CELL_STEP: f32 = 15.0;
 /// It is load-bearing that both helpers carry it: pulling the tile helper down
 /// to the original's absolute row without pulling this one down in the same
 /// edit re-opens the half-tile bug this constant was added to close.
-const WORLD_ROW_BIAS_PX: f32 = 15.0;
+const WORLD_ROW_BIAS_PX: i32 = 15;
 
-/// Distance from the top of a cell's tile bounding box down to the centre of
-/// its diamond — half a tile.
-///
-/// This is the entire difference between the tile frame and the entity frame.
-/// The original draws a unit, an infantryman, an aircraft and an animation on
-/// the diamond centre, and starts tile and overlay art on the box top.
-const CELL_DIAMOND_CENTRE_DROP_PX: f32 = 15.0;
-
-/// Screen-Y lift per whole terrain height level, for the entity projection.
-const SCREEN_Y_PER_HEIGHT_LEVEL: f32 = 15.0;
+/// Raw-bit scale of the I16F16 sub-cell representation.
+const SIM_FIXED_SCALE: i64 = 1 << 16;
 
 // ---------------------------------------------------------------------------
 // Infantry sub-cell lepton positions (RA2 canonical)
@@ -229,13 +211,47 @@ pub fn lepton_sub_to_screen_offset(sub_x: SimFixed, sub_y: SimFixed) -> (f32, f3
     (screen_dx, screen_dy)
 }
 
+/// Project a signed absolute world X/Y coordinate using active YR's integer
+/// operation order.
+///
+/// gamemd-derived: active YR `TacticalClass::CoordsToClient2` at `0x006D2140`
+/// forms each 60/30-pixel numerator in signed integer arithmetic and divides
+/// the complete result by 256, truncating toward zero.
+pub(crate) fn project_absolute_lepton_xy(world_x_leptons: i32, world_y_leptons: i32) -> (i32, i32) {
+    let world_x = i64::from(world_x_leptons);
+    let world_y = i64::from(world_y_leptons);
+    let screen_x_numerator = world_x * 60 / 2 + world_y * -60 / 2;
+    let screen_y_numerator = world_x * 30 / 2 + world_y * 30 / 2;
+    (
+        (screen_x_numerator / 256) as i32,
+        (screen_y_numerator / 256) as i32,
+    )
+}
+
+/// Project an exact signed XYZ world coordinate into VERA's world-pixel frame.
+pub(crate) fn absolute_leptons_to_screen(
+    world_x_leptons: i32,
+    world_y_leptons: i32,
+    world_z_leptons: i32,
+) -> (f32, f32) {
+    let (screen_x, screen_y) = project_absolute_lepton_xy(world_x_leptons, world_y_leptons);
+    let screen_y = screen_y + WORLD_ROW_BIAS_PX
+        - crate::util::native_x87::adjust_for_z_standard(world_z_leptons);
+    (screen_x as f32, screen_y as f32)
+}
+
+fn absolute_lepton_axis(cell: u16, sub_cell: SimFixed) -> i32 {
+    let absolute_fixed = i64::from(cell) * 256 * SIM_FIXED_SCALE + i64::from(sub_cell.to_bits());
+    (absolute_fixed / SIM_FIXED_SCALE) as i32
+}
+
 /// Where an entity standing at these lepton coordinates is drawn — **the entity
 /// frame**, the projection of the object's own coordinate.
 ///
-/// ```text
-///   screenX = 30*(rx - ry)                       (the cell-centre +128s cancel in X - Y)
-///   screenY = 15*(rx + ry) + 15 + 15 - z*15      (bias + half-tile drop)
-/// ```
+/// Cell and sub-cell inputs first become one signed absolute integer-lepton
+/// coordinate. The native 60/30-pixel numerators are then divided by 256 with
+/// signed truncation toward zero; only afterward is VERA's common +15 row bias
+/// applied and exact `AdjustForZ` subtracted.
 ///
 /// At the cell centre (`sub_x = sub_y = 128`) this lands on the **centre of the
 /// cell's diamond**, which is half a tile *below* the row
@@ -255,14 +271,13 @@ pub fn lepton_sub_to_screen_offset(sub_x: SimFixed, sub_y: SimFixed) -> (f32, f3
 /// `render::locomotor_visual::BUILDING_ART_LIFT_PX`, not by this function —
 /// every other consumer here wants the plain projection.
 pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u8) -> (f32, f32) {
-    let base_sx: f32 = (rx as f32 - ry as f32) * SCREEN_X_PER_CELL_STEP;
-    let base_sy: f32 = (rx as f32 + ry as f32) * SCREEN_Y_PER_CELL_STEP
-        + WORLD_ROW_BIAS_PX
-        + CELL_DIAMOND_CENTRE_DROP_PX
-        - f32::from(z as i8) * SCREEN_Y_PER_HEIGHT_LEVEL;
-    // Sub-cell offset from center
-    let (offset_x, offset_y) = lepton_sub_to_screen_offset(sub_x, sub_y);
-    (base_sx + offset_x, base_sy + offset_y)
+    // Chop only after cell and sub-cell state form the complete absolute
+    // coordinate. Chopping `sub_x`/`sub_y` first moves negative fractional
+    // offsets across a native pixel boundary.
+    let world_x = absolute_lepton_axis(rx, sub_x);
+    let world_y = absolute_lepton_axis(ry, sub_y);
+    let world_z = i32::from(z as i8) * GROUND_LEVEL_HEIGHT_LEPTONS;
+    absolute_leptons_to_screen(world_x, world_y, world_z)
 }
 
 /// Compute lepton direction vector and length for a cell-to-cell step.
@@ -299,6 +314,59 @@ mod tests {
     use crate::map::terrain;
 
     #[test]
+    fn gsi_13_02_signed_projection_truncates_toward_zero_at_pixel_boundaries() {
+        assert_eq!(project_absolute_lepton_xy(5, 0).0, 0);
+        assert_eq!(project_absolute_lepton_xy(-5, 0).0, 0);
+        assert_eq!(project_absolute_lepton_xy(9, 0).0, 1);
+        assert_eq!(project_absolute_lepton_xy(-9, 0).0, -1);
+    }
+
+    #[test]
+    fn gsi_13_02_absolute_subcell_projection_matches_retail_fixtures() {
+        assert_eq!(
+            lepton_to_screen(10, 10, SimFixed::from_num(133), SimFixed::from_num(128), 0,),
+            (0.0, 330.0),
+        );
+        assert_eq!(
+            lepton_to_screen(10, 10, SimFixed::from_num(123), SimFixed::from_num(128), 0,),
+            (0.0, 329.0),
+        );
+    }
+
+    #[test]
+    fn gsi_13_02_util_and_terrain_share_the_exact_absolute_projector() {
+        for (sub_x, sub_y) in [
+            (SUBCELL_CENTER_X, SUBCELL_CENTER_Y),
+            (SUBCELL_1_X, SUBCELL_1_Y),
+            (SUBCELL_2_X, SUBCELL_2_Y),
+            (SUBCELL_3_X, SUBCELL_3_Y),
+            (SUBCELL_4_X, SUBCELL_4_Y),
+        ] {
+            let util = lepton_to_screen(10, 4, sub_x, sub_y, 2);
+            let terrain = terrain::lepton_to_screen(glam::IVec3::new(
+                absolute_lepton_axis(10, sub_x),
+                absolute_lepton_axis(4, sub_y),
+                2 * GROUND_LEVEL_HEIGHT_LEPTONS,
+            ));
+            assert_eq!(util, terrain, "canonical subcell ({sub_x}, {sub_y})");
+        }
+
+        let negative = lepton_to_screen(0, 0, SimFixed::from_num(-9), SimFixed::from_num(5), 0);
+        assert_eq!(
+            negative,
+            terrain::lepton_to_screen(glam::IVec3::new(-9, 5, 0))
+        );
+
+        let crossing = lepton_to_screen(1, 0, SimFixed::lit("-0.5"), SIM_ZERO, 0);
+        assert_eq!(crossing, (29.0, 29.0));
+        assert_eq!(
+            crossing,
+            terrain::lepton_to_screen(glam::IVec3::new(255, 0, 0)),
+            "the complete 255.5-lepton absolute coordinate chops to 255",
+        );
+    }
+
+    #[test]
     fn gsi_04_03b_ground_height_matches_all_verified_slope_records() {
         let expected = [
             208, 234, 286, 286, 234, 208, 260, 208, 208, 312, 312, 312, 260, 312, 364, 312, 260,
@@ -323,20 +391,17 @@ mod tests {
         assert_eq!(ground_height_leptons(0xff, 1, 1, 0), Ok(-102));
     }
 
-    /// The property under test is the sign extension of the raw level byte:
-    /// `0xff` must read as level −1 and lift by one 15 px step, not as level
-    /// 255. That is the **15 px delta** between the two readings, and it is
-    /// unchanged by where the projection's base row sits. Both absolute values
-    /// moved down half a tile when the entity anchor was moved onto the cell's
-    /// diamond centre; the delta did not.
+    /// The raw level byte is sign-extended before its 104-lepton world Z goes
+    /// through `AdjustForZ`; negative Z therefore retains native's asymmetric
+    /// `+0.5` then truncate-toward-zero result.
     #[test]
     fn gsi_04_03b_lepton_projection_sign_extends_raw_level() {
         let (_, sy_zero) = lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0);
         let (_, sy_minus_one) =
             lepton_to_screen(0, 0, CELL_CENTER_LEPTON, CELL_CENTER_LEPTON, 0xff);
         assert_eq!(sy_zero, 30.0);
-        assert_eq!(sy_minus_one, 45.0);
-        assert_eq!(sy_minus_one - sy_zero, 15.0, "one level is one 15 px step");
+        assert_eq!(sy_minus_one, 44.0);
+        assert_eq!(sy_minus_one - sy_zero, 14.0);
     }
 
     /// An entity standing on a cell is drawn on that cell's **diamond centre**,
@@ -370,9 +435,9 @@ mod tests {
         }
     }
 
-    /// The two lepton projections are the same transform written twice — this
-    /// one takes cell + sub-cell, `map::terrain`'s takes absolute leptons — and
-    /// they must agree at every sub-cell value, not just at the centre.
+    /// The two public lepton projections accept different coordinate shapes —
+    /// this one takes cell + sub-cell, `map::terrain`'s takes absolute leptons —
+    /// and must reach the same shared integer transform at every sub-cell value.
     ///
     /// They disagreed by exactly half a tile before the entity anchor was fixed,
     /// which is why particles (on the terrain twin) and units (on this one) sat

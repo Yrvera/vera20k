@@ -23,7 +23,9 @@
 //! - Does NOT depend on sim/ game logic, render/, or any game module.
 
 use crate::rules::art_data::ArtEntry;
-use crate::sim::animation::{FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet};
+use crate::sim::animation::{
+    FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet, ShpVehicleCadence,
+};
 
 /// Frames per facing the unit type constructor installs before art.ini is read.
 /// An entry that declares `FiringFrames=` but no `WalkFrames=` still gets a walk
@@ -49,8 +51,9 @@ fn implicit_standing_frames(firing_frames: u16) -> u16 {
 /// (see [`implicit_standing_frames`]). The resulting layout is contiguous and
 /// fills the retail files exactly — for `DRON`, walk 0..=47, standing 48..=55,
 /// firing 56..=87, which is precisely the 88-frame body half of `DRON.SHP`.
-pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
+pub fn build_shp_vehicle_sequences(art: &ArtEntry, cadence: ShpVehicleCadence) -> SequenceSet {
     let mut set = SequenceSet::new();
+    set.set_shp_vehicle_cadence(cadence);
     let facings: u8 = art.shp_facings.max(1);
 
     let walk_frames: u16 = art.walk_frames.unwrap_or(DEFAULT_WALK_FRAMES);
@@ -81,8 +84,11 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                 frame_count: walk_frames,
                 facings,
                 facing_multiplier: walk_frames,
-                frame_delay: art.walk_rate.max(1),
+                // UnitClass SHP bodies do not use SequenceDef's relative
+                // elapsed-frame clock. Foot's absolute body counter owns it.
+                frame_delay: 1,
                 normalized: false,
+                completion_facing: None,
                 loop_mode: LoopMode::Loop,
                 facing_slots: FacingSlots::VehicleOctant,
             },
@@ -104,8 +110,9 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
             frame_count: stand_count,
             facings,
             facing_multiplier: stand_stride,
-            frame_delay: art.idle_rate.max(1),
+            frame_delay: 1,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::VehicleOctant,
         },
@@ -124,8 +131,9 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
                 // `FiringFrames * 2 - 1`. Reproducing that needs the fire-seeding
                 // path, which lives outside this module, so the walk rate stands
                 // in until then.
-                frame_delay: art.walk_rate.max(1),
+                frame_delay: 1,
                 normalized: false,
+                completion_facing: None,
                 loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
                 facing_slots: FacingSlots::VehicleOctant,
             },
@@ -138,6 +146,11 @@ pub fn build_shp_vehicle_sequences(art: &ArtEntry) -> SequenceSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CADENCE: ShpVehicleCadence = ShpVehicleCadence {
+        walk_rate: 3,
+        idle_rate: 1,
+    };
 
     fn make_art_entry(walk: Option<u16>, firing: Option<u16>) -> ArtEntry {
         ArtEntry {
@@ -169,12 +182,12 @@ mod tests {
             primary_fire_pixel_offset: None,
             secondary_fire_pixel_offset: None,
             primary_fire_dual_offset: false,
+            is_anim_delayed_fire: false,
+            delayed_fire_delay: 0,
             walk_frames: walk,
             firing_frames: firing,
             standing_frames: None,
             shp_facings: 8,
-            walk_rate: 3,
-            idle_rate: 1,
             fire_up: 0,
             fire_prone: 0,
             secondary_fire: 0,
@@ -219,14 +232,15 @@ mod tests {
         // frames = 116 body, leaving 104..=115 for the death block — which is
         // exactly the native StartDeathFrame of (6+6+1)*8 = 104.
         let art = make_art_entry(Some(6), Some(6));
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
+        assert_eq!(set.shp_vehicle_cadence(), Some(TEST_CADENCE));
 
         let walk = set.get(&SequenceKind::Walk).expect("Walk");
         assert_eq!(walk.start_frame, 0, "walk block must occupy frame 0");
         assert_eq!(walk.frame_count, 6);
         assert_eq!(walk.facing_multiplier, 6);
         assert_eq!(walk.facings, 8);
-        assert_eq!(walk.frame_delay, 3);
+        assert_eq!(walk.frame_delay, 1);
 
         let stand = set.get(&SequenceKind::Stand).expect("Stand");
         assert_eq!(stand.start_frame, 48, "WalkFrames * Facings");
@@ -252,7 +266,7 @@ mod tests {
         // which fills DRON.SHP's 88-frame body half exactly with nothing left
         // over. Dropping the standing block strands frames 80..=87.
         let art = make_art_entry(Some(6), Some(4));
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
 
         assert_eq!(set.get(&SequenceKind::Walk).expect("Walk").start_frame, 0);
         assert_eq!(
@@ -272,7 +286,7 @@ mod tests {
         // SQD: WalkFrames=20, FiringFrames=16 → stand at 160, firing at 21*8=168.
         // Layout runs 0..=295, and SQD.SHP is 296 frames with no shadow half.
         let art = make_art_entry(Some(20), Some(16));
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
 
         assert_eq!(set.get(&SequenceKind::Walk).expect("Walk").start_frame, 0);
         assert_eq!(
@@ -293,7 +307,7 @@ mod tests {
         // replaces the forced 1 and widens the block between walk and firing.
         let mut art = make_art_entry(Some(6), Some(4));
         art.standing_frames = Some(2);
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
 
         let stand = set.get(&SequenceKind::Stand).expect("Stand");
         assert_eq!(stand.start_frame, 48, "WalkFrames * Facings");
@@ -310,7 +324,7 @@ mod tests {
         // FiringFrames absent it stays 0, standing falls back to the walk block,
         // and no Attack sequence is emitted.
         let art = make_art_entry(Some(4), None);
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
 
         let stand = set.get(&SequenceKind::Stand).expect("Stand");
         assert_eq!(stand.start_frame, 0);
@@ -325,7 +339,7 @@ mod tests {
         // WalkFrames absent keeps the constructor's 12, so standing lands at
         // 12*8 and firing at (12+1)*8 rather than at 0.
         let art = make_art_entry(None, Some(4));
-        let set = build_shp_vehicle_sequences(&art);
+        let set = build_shp_vehicle_sequences(&art, TEST_CADENCE);
 
         let walk = set.get(&SequenceKind::Walk).expect("Walk");
         assert_eq!(walk.frame_count, 12);

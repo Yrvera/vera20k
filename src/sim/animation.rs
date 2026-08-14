@@ -230,6 +230,10 @@ pub struct SequenceDef {
     pub frame_delay: u16,
     /// Whether native game-speed normalization applies to this action delay.
     pub normalized: bool,
+    /// Facing byte snapped when this definition completes and dispatches its
+    /// transition. `None` is native record value -1 (no completion update).
+    #[serde(default)]
+    pub completion_facing: Option<u8>,
     /// Behavior when the sequence reaches its final frame.
     pub loop_mode: LoopMode,
     /// Which native facing-to-slot rule converts the facing byte into a frame
@@ -322,6 +326,33 @@ pub fn sequence_is_fire_action(sequence: SequenceKind) -> bool {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequenceSet {
     sequences: BTreeMap<SequenceKind, SequenceDef>,
+    /// Derived type configuration for UnitClass SHP bodies. This is not
+    /// per-entity animation state; the persistent native state is the Foot
+    /// body-frame counter on `GameEntity`.
+    #[serde(default)]
+    shp_vehicle_cadence: Option<ShpVehicleCadence>,
+}
+
+/// Rules-owned divisors consumed by the SHP Unit body-counter path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShpVehicleCadence {
+    pub walk_rate: i32,
+    pub idle_rate: i32,
+}
+
+impl ShpVehicleCadence {
+    pub const fn native_defaults() -> Self {
+        Self {
+            walk_rate: 1,
+            idle_rate: 0,
+        }
+    }
+}
+
+impl Default for ShpVehicleCadence {
+    fn default() -> Self {
+        Self::native_defaults()
+    }
 }
 
 impl SequenceSet {
@@ -329,7 +360,18 @@ impl SequenceSet {
     pub fn new() -> Self {
         Self {
             sequences: BTreeMap::new(),
+            shp_vehicle_cadence: None,
         }
+    }
+
+    /// Mark this as a UnitClass SHP frame layout and attach its rules-owned
+    /// cadence. The frame blocks themselves remain art-owned `SequenceDef`s.
+    pub fn set_shp_vehicle_cadence(&mut self, cadence: ShpVehicleCadence) {
+        self.shp_vehicle_cadence = Some(cadence);
+    }
+
+    pub fn shp_vehicle_cadence(&self) -> Option<ShpVehicleCadence> {
+        self.shp_vehicle_cadence
     }
 
     /// Add a sequence definition.
@@ -391,6 +433,79 @@ pub fn resolve_shp_frame(def: &SequenceDef, facing: u8, frame_index: u16) -> u16
     };
 
     def.start_frame + facing_slot * def.facing_multiplier + clamped
+}
+
+/// Advance the persistent Unit SHP body counter at FootClass's post-Process
+/// point for the current absolute binary frame.
+///
+/// The moving branch deliberately does not guard a zero `WalkRate`: retail
+/// feeds that raw signed value to IDIV, making zero invalid content. `IdleRate`
+/// is different â€” zero is its documented branch-off switch and performs no
+/// division. The counter itself is a native dword, so increment wraps.
+pub(crate) fn tick_shp_vehicle_body_frame_counter(
+    entity: &mut crate::sim::game_entity::GameEntity,
+    cadence: ShpVehicleCadence,
+    binary_frame: u32,
+) {
+    if entity.category != crate::map::entities::EntityCategory::Unit
+        || entity.is_voxel
+        || entity.dying
+        || !entity.lifecycle.object_alive
+        || entity.lifecycle.in_limbo
+        || entity.object_is_falling_down != 0
+    {
+        return;
+    }
+
+    let Some(locomotor) = entity.locomotor.as_ref() else {
+        return;
+    };
+    if locomotor.piggyback.is_some()
+        || entity.deploy_state.is_some()
+        || entity
+            .teleport_state
+            .as_ref()
+            .is_some_and(|state| state.warp_out_active() || state.warp_in_active())
+    {
+        return;
+    }
+
+    let rate = if crate::sim::movement::ready_producer::is_moving_now_for(entity, binary_frame) {
+        cadence.walk_rate
+    } else {
+        if cadence.idle_rate == 0 {
+            return;
+        }
+        cadence.idle_rate
+    };
+
+    if (binary_frame as i32) % rate == 0 {
+        entity.body_frame_counter = entity.body_frame_counter.wrapping_add(1);
+    }
+}
+
+/// Resolve the ordinary UnitClass SHP body frame from the persistent Foot
+/// counter. Firing and death counters intentionally stay on their existing
+/// paths; this helper covers only the standing/walking draw branch.
+pub fn resolve_shp_vehicle_body_frame(
+    set: &SequenceSet,
+    facing: u8,
+    body_frame_counter: u32,
+    locomotor_is_moving: bool,
+) -> Option<u16> {
+    let cadence = set.shp_vehicle_cadence()?;
+    let sequence = if locomotor_is_moving || cadence.idle_rate != 0 {
+        SequenceKind::Walk
+    } else {
+        SequenceKind::Stand
+    };
+    let def = set.get(&sequence)?;
+    let frame_index = if sequence == SequenceKind::Walk && def.frame_count != 0 {
+        (body_frame_counter % u32::from(def.frame_count)) as u16
+    } else {
+        0
+    };
+    Some(resolve_shp_frame(def, facing, frame_index))
 }
 
 /// Advance a single animation by one reached native gameplay frame.
@@ -457,6 +572,7 @@ fn tick_animations_impl(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
     tick_dying: bool,
 ) -> Vec<u64> {
     let mut dying_finished: Vec<u64> = Vec::new();
@@ -580,7 +696,27 @@ fn tick_animations_impl(
             continue;
         };
 
+        // UnitClass SHP Stand/Walk images are selected from Foot's persistent
+        // body counter at draw time. Do not advance a second relative clock or
+        // reset cadence when the generic visual sequence changes.
+        if entity.category == crate::map::entities::EntityCategory::Unit
+            && !entity.is_voxel
+            && set.shp_vehicle_cadence().is_some()
+            && matches!(anim.sequence, SequenceKind::Stand | SequenceKind::Walk)
+        {
+            continue;
+        }
+
         if let Some(next) = advance_animation(anim, def, game_options) {
+            // gamemd-derived: `InfantryClass::DoType_Sequencer` @ 0x00520AE0
+            // (0x00520CEB..0x00520D16) updates the completed action's facing
+            // before dispatching its next/default action.
+            if let Some(facing) = def.completion_facing {
+                entity.facing = facing;
+                if let Some(body_facing) = entity.body_facing.as_mut() {
+                    body_facing.snap(u16::from(facing) << 8, binary_frame);
+                }
+            }
             anim.switch_to(next);
         }
     }
@@ -593,8 +729,16 @@ pub fn tick_animations(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
 ) -> Vec<u64> {
-    tick_animations_impl(entities, sequences, game_options, interner, true)
+    tick_animations_impl(
+        entities,
+        sequences,
+        game_options,
+        interner,
+        binary_frame,
+        true,
+    )
 }
 
 /// Advance only living entity animations. Dying animation completion is owned
@@ -605,8 +749,16 @@ pub(crate) fn tick_non_dying_animations(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
+    binary_frame: u32,
 ) {
-    let _ = tick_animations_impl(entities, sequences, game_options, interner, false);
+    let _ = tick_animations_impl(
+        entities,
+        sequences,
+        game_options,
+        interner,
+        binary_frame,
+        false,
+    );
 }
 
 /// Advance one dying object's death sequence during its own scheduler turn.
@@ -617,6 +769,7 @@ pub(crate) fn tick_dying_animation(
     sequences: &BTreeMap<String, SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
     type_name: &str,
+    _binary_frame: u32,
 ) -> bool {
     debug_assert!(entity.dying);
     let Some(anim) = entity.animation.as_mut() else {
@@ -704,6 +857,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 1,
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -717,6 +871,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 6,
             frame_delay: DEFAULT_WALK_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -730,6 +885,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -743,6 +899,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_IDLE_FRAME_DELAY,
             normalized: true,
+            completion_facing: None,
             loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -756,6 +913,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::HoldLast,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -769,6 +927,7 @@ pub fn default_infantry_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_DIE_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::HoldLast,
             facing_slots: FacingSlots::InfantryTable,
         },
@@ -793,6 +952,7 @@ pub fn default_building_sequences() -> SequenceSet {
             facing_multiplier: 0,
             frame_delay: DEFAULT_STAND_FRAME_DELAY,
             normalized: false,
+            completion_facing: None,
             loop_mode: LoopMode::Loop,
             facing_slots: FacingSlots::InfantryTable,
         },

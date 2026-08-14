@@ -1,5 +1,92 @@
 use super::*;
 use crate::render::vxl_raster::VxlSprite;
+use crate::rules::ini_parser::IniFile;
+
+fn gsi_13_07_variant_rules() -> RuleSet {
+    RuleSet::from_ini(&IniFile::from_str(
+        "\
+[VehicleTypes]
+0=V3
+1=HORV
+2=VLAD
+
+[V3]
+NoSpawnAlt=yes
+UnloadingClass=HORV
+Turret=no
+
+[HORV]
+Turret=yes
+
+[VLAD]
+NoSpawnAlt=yes
+Turret=no
+",
+    ))
+    .expect("NoSpawnAlt atlas rules should parse")
+}
+
+#[test]
+fn gsi_13_07_atlas_variants_share_base_unloading_and_no_spawn_alt_derivation() {
+    let rules = gsi_13_07_variant_rules();
+    assert_eq!(
+        unit_atlas_variants("V3", Some(&rules)),
+        vec![
+            UnitAtlasVariant {
+                type_id: "V3".to_string(),
+                has_turret: false,
+            },
+            UnitAtlasVariant {
+                type_id: "HORV".to_string(),
+                has_turret: true,
+            },
+            UnitAtlasVariant {
+                type_id: "V3WO".to_string(),
+                has_turret: false,
+            },
+        ]
+    );
+    assert_eq!(
+        unit_atlas_variants("VLAD", Some(&rules)),
+        vec![
+            UnitAtlasVariant {
+                type_id: "VLAD".to_string(),
+                has_turret: false,
+            },
+            UnitAtlasVariant {
+                type_id: "VLADWO".to_string(),
+                has_turret: false,
+            },
+        ],
+        "the suffix is derived from the actual type id, not VLAD's stale DREDWO INI comment"
+    );
+}
+
+#[test]
+fn gsi_13_07_no_spawn_alt_composite_seeds_32_facings_by_17_slopes() {
+    let mut needed = HashSet::new();
+    insert_unit_layer_keys(&mut needed, "DREDWO", VxlLayer::Composite, 1, true);
+
+    assert_eq!(needed.len(), 32 * 17);
+    assert!(needed.iter().all(|key| {
+        key.type_id == "DREDWO"
+            && key.layer == VxlLayer::Composite
+            && key.frame == 0
+            && key.facing % 8 == 0
+            && key.slope_type <= 16
+    }));
+    for facing in (0..=248).step_by(8) {
+        for slope_type in 0..=16 {
+            assert!(needed.contains(&UnitSpriteKey {
+                type_id: "DREDWO".to_string(),
+                facing,
+                layer: VxlLayer::Composite,
+                frame: 0,
+                slope_type,
+            }));
+        }
+    }
+}
 
 #[test]
 fn test_unit_sprite_key_hash_equality() {

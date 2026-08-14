@@ -140,6 +140,7 @@ pub(crate) fn render_game(
         encoder,
         &composition_view,
         &draw_passes::DrawPassData {
+            ground: &world.ground,
             bridge_unit_instances: &world.bridge_unit,
             bridge_unit_pages: &world.bridge_unit_pages,
             bridge_unit_transition_paged: &world.bridge_unit_transition_paged,
@@ -150,6 +151,7 @@ pub(crate) fn render_game(
             shp_paged: &world.shp_paged,
             particle_paged: &world.particle_paged,
             top_unit_pages: &world.top_unit_pages,
+            top_shp_pages: &world.top_shp_pages,
             ghost_page: ui.ghost_page,
         },
     );
@@ -194,6 +196,7 @@ fn upload_to_gpu(
     // Terrain + overlays
     pool.upload(&state.gpu, "terrain", &world.terrain.normal);
     pool.upload(&state.gpu, "overlay", &world.overlay);
+    pool.upload(&state.gpu, "ground_objects", &world.ground.instances);
     pool.upload(&state.gpu, "overlay_bridge_body", &world.bridge_body);
     pool.upload(
         &state.gpu,
@@ -251,12 +254,7 @@ fn upload_to_gpu(
     // object. Voxel bodies and SHP bodies keep separate streams because they
     // sample different atlases; the band is unsorted either way.
     pool.upload(&state.gpu, "unit_top", &world.top_unit);
-    const SHP_TOP_KEYS: [&str; 4] = ["shp_top_p0", "shp_top_p1", "shp_top_p2", "shp_top_p3"];
-    for (i, page_inst) in world.top_shp_paged.iter().enumerate() {
-        if i < SHP_TOP_KEYS.len() {
-            pool.upload(&state.gpu, SHP_TOP_KEYS[i], page_inst);
-        }
-    }
+    pool.upload(&state.gpu, "shp_top", &world.top_shp);
     // Selected buildings' bodies for the depth-only stamp before the bracket
     // redraw. Same atlas pages as the bodies themselves, so it needs the same
     // per-page split.

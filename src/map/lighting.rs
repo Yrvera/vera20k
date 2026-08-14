@@ -346,12 +346,16 @@ impl CellLightGrid {
         self.tint_or_default(cell)
     }
 
-    pub fn unit_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
-        self.techno_tint_at(cell)
+    /// UnitClass body draw (`0x0073CEC0`) signed-adds ExtraUnitLight to the
+    /// cell's top scalar before dispatching either its SHP or VXL body draw.
+    pub fn unit_tint_at(&self, cell: (u16, u16), extra_light: i32) -> [f32; 3] {
+        self.tint_for_top_scalar_with_extra_or_default(cell, extra_light)
     }
 
-    pub fn infantry_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
-        self.techno_tint_at(cell)
+    /// InfantryClass body draw (`0x00518F90`) signed-adds ExtraInfantryLight
+    /// to the cell's top scalar before its SHP draw dispatch.
+    pub fn infantry_tint_at(&self, cell: (u16, u16), extra_light: i32) -> [f32; 3] {
+        self.tint_for_top_scalar_with_extra_or_default(cell, extra_light)
     }
 
     pub fn aircraft_tint_at(&self, cell: (u16, u16)) -> [f32; 3] {
@@ -430,6 +434,23 @@ impl CellLightGrid {
         self.tint_for_light_scalar(light, light.top_scalar)
     }
 
+    fn tint_for_top_scalar_with_extra_or_default(
+        &self,
+        cell: (u16, u16),
+        extra_light: i32,
+    ) -> [f32; 3] {
+        let Some(light) = self.cells.get(&cell) else {
+            return self.tint_for_profile_scalar(
+                self.profiles.default_profile_id(),
+                extra_light_scalar(LIGHT_UNIT, extra_light),
+            );
+        };
+        self.tint_for_profile_scalar(
+            light.profile_id,
+            extra_light_scalar(light.top_scalar, extra_light),
+        )
+    }
+
     fn tint_for_common_scalar_or_default(&self, cell: (u16, u16)) -> [f32; 3] {
         let Some(light) = self.cells.get(&cell) else {
             return DEFAULT_TINT;
@@ -438,9 +459,13 @@ impl CellLightGrid {
     }
 
     fn tint_for_light_scalar(&self, light: &CellLight, scalar: i32) -> [f32; 3] {
+        self.tint_for_profile_scalar(light.profile_id, scalar)
+    }
+
+    fn tint_for_profile_scalar(&self, profile_id: LightProfileId, scalar: i32) -> [f32; 3] {
         let profile = self
             .profiles
-            .get(light.profile_id)
+            .get(profile_id)
             .or_else(|| self.profiles.get(self.profiles.default_profile_id()))
             .expect("default light profile is always present");
         let scalar = scalar as f32 / LIGHT_UNIT as f32;
@@ -450,6 +475,10 @@ impl CellLightGrid {
             profile.rgb[2] * scalar,
         ]
     }
+}
+
+fn extra_light_scalar(top_scalar: i32, extra_light: i32) -> i32 {
+    top_scalar.wrapping_add(extra_light)
 }
 
 impl Default for CellLightGrid {
@@ -1511,13 +1540,60 @@ mod tests {
     }
 
     #[test]
+    fn gsi_13_10_unit_and_infantry_extra_light_precedes_colour_profile() {
+        let mut grid = CellLightGrid::new();
+        grid.insert_profiled_light((1, 2), [1.0, 0.88, 0.88], 1.0);
+
+        let unit = grid.unit_tint_at((1, 2), 200);
+        let infantry = grid.infantry_tint_at((1, 2), -125);
+        for (actual, expected) in unit.into_iter().zip([1.2, 1.056, 1.056]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in infantry.into_iter().zip([0.875, 0.77, 0.77]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        assert!(
+            (unit[1] - 1.08).abs() > 0.001,
+            "extra is not an RGB post-add"
+        );
+    }
+
+    #[test]
+    fn gsi_13_10_extra_light_is_signed_unclamped_wrapping_scalar_math() {
+        let mut grid = CellLightGrid::new();
+        grid.insert_profiled_light((1, 1), DEFAULT_TINT, 1.9);
+        grid.insert_profiled_light((2, 2), DEFAULT_TINT, 0.1);
+
+        let over = grid.unit_tint_at((1, 1), 200);
+        let negative = grid.infantry_tint_at((2, 2), -200);
+        for channel in over {
+            assert!((channel - 2.1).abs() < 0.0001);
+        }
+        for channel in negative {
+            assert!((channel + 0.1).abs() < 0.0001);
+        }
+        assert_eq!(extra_light_scalar(i32::MAX, 1), i32::MIN);
+        assert_eq!(extra_light_scalar(i32::MIN, -1), i32::MAX);
+    }
+
+    #[test]
+    fn gsi_13_10_missing_cell_uses_neutral_top_scalar_before_extra_light() {
+        let grid = CellLightGrid::new();
+        let tint = grid.unit_tint_at((99, 99), 200);
+        for channel in tint {
+            assert!((channel - 1.2).abs() < 0.0001);
+        }
+        assert_eq!(grid.infantry_tint_at((99, 99), 0), DEFAULT_TINT);
+    }
+
+    #[test]
     fn test_consumer_accessors_return_compatibility_tint() {
         let mut grid = CellLightGrid::new();
         grid.set_compat_tint((4, 5), [0.7, 0.8, 0.9]);
 
         assert_eq!(grid.techno_tint_at((4, 5)), [0.7, 0.8, 0.9]);
-        assert_eq!(grid.unit_tint_at((4, 5)), [0.7, 0.8, 0.9]);
-        assert_eq!(grid.infantry_tint_at((4, 5)), [0.7, 0.8, 0.9]);
+        assert_eq!(grid.unit_tint_at((4, 5), 0), [0.7, 0.8, 0.9]);
+        assert_eq!(grid.infantry_tint_at((4, 5), 0), [0.7, 0.8, 0.9]);
         assert_eq!(grid.aircraft_tint_at((4, 5)), [0.7, 0.8, 0.9]);
         assert_eq!(grid.overlay_tint_at((4, 5)), [0.7, 0.8, 0.9]);
         assert_eq!(grid.terrain_object_tint_at((4, 5)), [0.7, 0.8, 0.9]);

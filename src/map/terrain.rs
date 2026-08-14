@@ -252,35 +252,11 @@ pub fn iso_to_screen(rx: u16, ry: u16, z: u8) -> (f32, f32) {
 /// precision — **the entity frame**, the absolute-lepton twin of
 /// `util::lepton::lepton_to_screen`.
 ///
-/// 256 leptons = 1 cell. A coordinate on a cell centre (`cell*256 + 128`)
-/// projects to that cell's diamond centre, i.e. `iso_to_screen +
-/// (TILE_WIDTH/2, TILE_HEIGHT/2)` — half a tile below the tile art's own row,
-/// exactly as the original projects an object's coordinate.
-///
-///   X = (cell_x - cell_y) * TILE_WIDTH/2 + sub_offset_x
-///   Y = (cell_x + cell_y) * TILE_HEIGHT/2 + TILE_HEIGHT/2 + sub_offset_y - z_lift
-///
-/// The two projections agree at every sub-cell value;
-/// `matching_lepton_projections_agree` pins it so they cannot drift apart.
-///
-/// Negative coords use `div_euclid` / `rem_euclid` so a particle drifting
-/// just outside the map's NW corner stays on the correct cell.
+/// The shared projector preserves active YR's signed integer arithmetic and
+/// final `/ 256` truncation. The returned `f32`s therefore always represent
+/// whole native pixels; float conversion is only the render API boundary.
 pub fn lepton_to_screen(coords: glam::IVec3) -> (f32, f32) {
-    const LEPTONS_PER_CELL: i32 = 256;
-    let cell_x = coords.x.div_euclid(LEPTONS_PER_CELL);
-    let cell_y = coords.y.div_euclid(LEPTONS_PER_CELL);
-    let sub_x = coords.x.rem_euclid(LEPTONS_PER_CELL) as f32;
-    let sub_y = coords.y.rem_euclid(LEPTONS_PER_CELL) as f32;
-
-    let cell_sx = (cell_x as f32 - cell_y as f32) * TILE_WIDTH / 2.0;
-    let cell_sy = (cell_x as f32 + cell_y as f32) * TILE_HEIGHT / 2.0 + TILE_HEIGHT / 2.0;
-
-    let sub_sx = (sub_x - sub_y) * (TILE_WIDTH / 2.0) / LEPTONS_PER_CELL as f32;
-    let sub_sy = (sub_x + sub_y) * (TILE_HEIGHT / 2.0) / LEPTONS_PER_CELL as f32;
-
-    let z_lift = crate::util::native_x87::adjust_for_z_standard(coords.z) as f32;
-
-    (cell_sx + sub_sx, cell_sy + sub_sy - z_lift)
+    crate::util::lepton::absolute_leptons_to_screen(coords.x, coords.y, coords.z)
 }
 
 /// Convert screen-space pixel position back to isometric cell coordinates.
@@ -1571,19 +1547,16 @@ mod tests {
 
     #[test]
     fn lepton_to_screen_sub_cell_offset_is_iso_subdivided() {
-        // Sub-cell offset of (128, 0) — half a cell east in lepton coords.
+        // Sub-cell offset of (128, 0) — native truncates the complete Y
+        // numerator from 7.5 to 7 before VERA's common +15 row bias.
         let (sx, sy) = lepton_to_screen(glam::IVec3::new(128, 0, 0));
-        assert!((sx - (128.0 - 0.0) * (TILE_WIDTH / 2.0) / 256.0).abs() < 1e-3);
-        assert!((sy - (TILE_HEIGHT / 2.0 + (128.0) * (TILE_HEIGHT / 2.0) / 256.0)).abs() < 1e-3);
+        assert_eq!((sx, sy), (15.0, 22.0));
     }
 
     #[test]
-    fn lepton_to_screen_negative_coords_use_euclidean_rounding() {
-        // A particle at -50 leptons (west of origin) should land just west of cell 0.
-        // div_euclid(-50, 256) = -1, rem_euclid = 206. Screen X = -30 + 206*30/256 ≈ -5.86.
-        let (sx, _sy) = lepton_to_screen(glam::IVec3::new(-50, 0, 0));
-        assert!(sx < 0.0, "sx={sx}");
-        assert!(sx > -10.0, "sx={sx}");
+    fn lepton_to_screen_negative_coords_use_signed_truncation() {
+        let (sx, sy) = lepton_to_screen(glam::IVec3::new(-50, 0, 0));
+        assert_eq!((sx, sy), (-5.0, 13.0));
     }
 
     #[test]

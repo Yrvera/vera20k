@@ -33,6 +33,8 @@ use crate::sidebar::SidebarView;
 pub(super) struct WorldInstances {
     pub terrain: terrain::TerrainInstances,
     pub overlay: Vec<SpriteInstance>,
+    /// TerrainClass and Techno parents in exact signed Layer-2 order.
+    pub ground: super::draw_plan_lowering::GroundObjectPass,
     /// Static smudge decals (craters, scorches) — drawn between terrain and entities.
     pub smudge: Vec<SpriteInstance>,
     pub bridge_body: Vec<SpriteInstance>,
@@ -51,7 +53,9 @@ pub(super) struct WorldInstances {
     pub top_unit: Vec<SpriteInstance>,
     pub top_unit_pages: Vec<usize>,
     /// The SHP half of the same band — in stock YR, Rocketeers at hover height.
-    pub top_shp_paged: Vec<Vec<SpriteInstance>>,
+    /// Kept flat so atlas page changes cannot reorder Top-layer submissions.
+    pub top_shp: Vec<SpriteInstance>,
+    pub top_shp_pages: Vec<usize>,
     /// Selected buildings' bodies again, for the depth-only stamp that lets a
     /// building's own art clip its selection-bracket redraw. Empty whenever no
     /// structure is selected.
@@ -198,13 +202,26 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         terrain::TerrainInstances { normal: Vec::new() }
     };
 
-    // Map overlays and walls are lowered through the fixed per-cell draw plan.
-    // Terrain objects remain an explicit fallback until they carry LayerClass
-    // registration metadata. Low bridges (LOBRDG*) ride in `overlay`; high
-    // bridge bodies are emitted by `app_instances::bridges` instead.
+    // Map overlays and walls remain in the fixed per-cell draw plan. Terrain
+    // objects join live Ground registrations below; low bridges (LOBRDG*) ride
+    // in `overlay`, while high bridge bodies use app_instances::bridges.
+    let ground_order = super::draw_plan_lowering::NativeGroundOrder::new(
+        state
+            .simulation
+            .as_ref()
+            .map_or(&[], |sim| sim.tactical_registration_order()),
+    );
+    let mut ground_objects = Vec::new();
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    app_instances::build_overlay_instances(state, sw, sh, &mut overlay);
+    app_instances::build_overlay_instances(
+        state,
+        sw,
+        sh,
+        &mut overlay,
+        &mut ground_objects,
+        &ground_order,
+    );
     // Bridge body, shadow, and railing emission live in app_instances::bridges
     // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
     let mut bridge_body: Vec<SpriteInstance> = Vec::new();
@@ -230,7 +247,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         .map_or(1, |a| a.page_count().max(1));
     let mut shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut bridge_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
-    let mut top_shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
+    let mut top_shp: Vec<SpriteInstance> = Vec::new();
+    let mut top_shp_pages: Vec<usize> = Vec::new();
+    let mut top_shp_ids: Vec<u64> = Vec::new();
     let mut particle_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
     let mut selected_building_depth_paged: Vec<Vec<SpriteInstance>> =
         vec![Vec::new(); shp_page_count];
@@ -271,6 +290,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut unit_transition_paged,
         &mut bridge_unit_transition_paged,
         &mut shp_paged,
+        &mut ground_objects,
+        &ground_order,
     );
     sort_by_depth_desc_with_pages(&mut bridge_unit, &mut bridge_unit_pages);
     for page in &mut unit_transition_paged {
@@ -279,14 +300,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     for page in &mut bridge_unit_transition_paged {
         sort_by_depth_desc(page);
     }
-    // A building's voxel turret is drawn inside the building's own display
-    // call, in the sorted ground layer, immediately after its body — gamemd
-    // has no post-layer-2 turret pass. So the turrets join the same UnitAtlas
-    // stream as the vehicles and are sorted with it, at the building's own
-    // depth. That leaves the body and turret tied, and the merge resolves a tie
-    // in favour of the SHP group, so the body goes down first and the turret
-    // lands on top of it — the stacking the native single draw produces —
-    // while a vehicle standing at a nearer iso row still draws over both.
+    // A building's voxel turret remains owned by the building display call.
+    // The SHP builder therefore adds it to the same contiguous Ground parent
+    // instead of leaking it into an atlas-level tie.
     // Parachute canopies are composed into their body's draw, so they take the
     // body's key rather than deriving one. Collected here, consumed by
     // `build_parachute_instances` below — which is why it must run after this.
@@ -295,16 +311,36 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         state,
         &mut shp_paged,
         &mut bridge_shp_paged,
-        &mut top_shp_paged,
-        &mut unit,
-        &mut unit_pages,
+        &mut top_shp,
+        &mut top_shp_pages,
+        &mut top_shp_ids,
         &mut parachute_body_depths,
         &mut selected_building_depth_paged,
+        &mut ground_objects,
+        &ground_order,
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
     app_instances::build_world_effect_instances(state, &mut shp_paged);
-    // Scheduler-owned AnimClass objects Y-sort with buildings (Layer 2).
-    app_instances::build_anim_class_instances(state, &mut shp_paged);
+    // Scheduler-owned AnimClass objects use their parsed native layer: Ground
+    // joins the integer plan, Top appends to the flat page-tagged stream.
+    app_instances::build_anim_class_instances(
+        state,
+        &mut shp_paged,
+        &mut top_shp,
+        &mut top_shp_pages,
+        &mut top_shp_ids,
+        &mut ground_objects,
+        &ground_order,
+    );
+    order_top_shp_by_registration(
+        &mut top_shp,
+        &mut top_shp_pages,
+        &mut top_shp_ids,
+        state
+            .simulation
+            .as_ref()
+            .map_or(&[], |sim| sim.tactical_registration_order()),
+    );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
     // In-flight projectile sprites (e.g. Guardian GI DRAGON missile).
@@ -313,7 +349,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
     // with the GI body, at the body's own key).
-    app_instances::build_parachute_instances(state, &mut shp_paged, &parachute_body_depths);
+    app_instances::build_parachute_instances(state, &mut ground_objects, &parachute_body_depths);
     for page in &mut shp_paged {
         sort_by_depth_desc(page);
     }
@@ -328,13 +364,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         sort_by_depth_desc(page);
     }
 
-    // `LayerClass` needs integer ObjectClass::GetYSort and registration order.
-    // Existing atlas vectors retain neither, so publish the typed fallback once.
-    super::draw_plan_lowering::report_object_buffer_fallbacks(
-        !unit.is_empty(),
-        unit_transition_paged.iter().any(|page| !page.is_empty()),
-        shp_paged.iter().any(|page| !page.is_empty()),
-    );
+    let ground = super::draw_plan_lowering::lower_ground_object_instances(ground_objects);
 
     // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
     let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
@@ -344,11 +374,11 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let total_grid: usize = state.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
         log::info!(
-            "First frame: {} terrain (of {} cells) + {} overlay + {} vxl + {} shp",
+            "First frame: {} terrain tiles (of {} cells) + {} fixed overlays + {} Ground sprites + {} residual SHP",
             terrain.normal.len(),
             total_grid,
             overlay.len() + bridge_body.len(),
-            unit.len(),
+            ground.instances.len(),
             shp_paged.iter().map(|p| p.len()).sum::<usize>(),
         );
     }
@@ -364,6 +394,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     WorldInstances {
         terrain,
         overlay,
+        ground,
         smudge,
         bridge_body,
         bridge_body_shadow,
@@ -378,7 +409,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         bridge_shp_paged,
         top_unit,
         top_unit_pages,
-        top_shp_paged,
+        top_shp,
+        top_shp_pages,
         selected_building_depth_paged,
         particle_paged,
         cell_sparkles,
@@ -944,6 +976,52 @@ fn sort_by_depth_desc_with_pages(instances: &mut Vec<SpriteInstance>, pages: &mu
     }
 }
 
+/// Restore native Top-layer append order after the disjoint SHP builders have
+/// emitted into one flat, page-tagged stream. Atlas identity remains aligned
+/// payload and never becomes an ordering authority.
+fn order_top_shp_by_registration(
+    instances: &mut Vec<SpriteInstance>,
+    pages: &mut Vec<usize>,
+    ids: &mut Vec<u64>,
+    registrations: &[u64],
+) {
+    assert_eq!(
+        instances.len(),
+        pages.len(),
+        "every Top SHP instance must carry one page tag"
+    );
+    assert_eq!(
+        instances.len(),
+        ids.len(),
+        "every Top SHP instance must carry one stable object id"
+    );
+
+    let ranks: std::collections::BTreeMap<u64, usize> = registrations
+        .iter()
+        .enumerate()
+        .map(|(rank, &id)| (id, rank))
+        .collect();
+    let mut emitted: Vec<(usize, SpriteInstance, usize, u64)> = instances
+        .drain(..)
+        .zip(pages.drain(..))
+        .zip(ids.drain(..))
+        .enumerate()
+        .map(|(emission, ((instance, page), id))| (emission, instance, page, id))
+        .collect();
+    emitted.sort_by_key(|(emission, _, _, id)| {
+        (ranks.get(id).copied().unwrap_or(usize::MAX), *emission)
+    });
+
+    instances.reserve(emitted.len());
+    pages.reserve(emitted.len());
+    ids.reserve(emitted.len());
+    for (_, instance, page, id) in emitted {
+        instances.push(instance);
+        pages.push(page);
+        ids.push(id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,6 +1067,29 @@ mod tests {
             vec![20, 30, 10]
         );
         assert_eq!(pages, vec![0, 2, 1]);
+    }
+
+    #[test]
+    fn gsi_13_04_top_shp_stream_uses_registration_not_atlas_page_order() {
+        let mut instances = vec![
+            marker_instance(0.0, 20),
+            marker_instance(0.0, 10),
+            marker_instance(0.0, 30),
+        ];
+        let mut pages = vec![2usize, 0, 1];
+        let mut ids = vec![20u64, 10, 30];
+
+        order_top_shp_by_registration(&mut instances, &mut pages, &mut ids, &[10, 20, 30]);
+
+        assert_eq!(ids, vec![10, 20, 30]);
+        assert_eq!(pages, vec![0, 2, 1]);
+        assert_eq!(
+            instances
+                .iter()
+                .map(|instance| instance.draw_state.fx_flags)
+                .collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
     }
 
     /// Building turrets are appended to the voxel stream after every vehicle

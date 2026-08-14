@@ -84,6 +84,8 @@ pub use facing_class::FacingClass;
 // locomotor would process AFTER mission dispatch. Behavior-neutral re-export.
 // Gated to match its only consumer (the debug/test S1 shadow) so release builds
 // carry no unused re-export.
+#[cfg(test)]
+pub(crate) use drive_locomotion::owner_current_speed_from_fraction;
 #[cfg(any(test, debug_assertions))]
 pub(crate) use drive_locomotion::{
     DriveProcessOutcome, drive_locomotor_is_moving, process_drive_locomotion_shell,
@@ -156,6 +158,8 @@ pub(crate) fn install_forced_drive_track(
     drive.track_valid = true;
     drive.target_speed_fraction = SIM_ONE;
     drive.current_speed_fraction = SIM_ONE;
+    drive.owner_current_speed =
+        drive_locomotion::owner_current_speed_from_fraction(forced.speed, SIM_ONE);
     // Force_Track directly installs the new head mark. Its active retail callers
     // enter with no old head — but nothing in this function's signature enforces
     // that, and a caller that reached a mid-curve mover would otherwise strand

@@ -29,11 +29,10 @@ const ACTION_FRAME_DELAYS: [u8; 42] = [
 
 const NORMALIZED_ACTIONS: [u8; 6] = [0x09, 0x0A, 0x12, 0x13, 0x17, 0x20];
 
-/// Compass direction hint for non-directional animations.
-///
-/// When `facings=0` in the INI, the animation is non-directional (plays the same
-/// frames regardless of facing). The optional direction suffix tells the engine
-/// which facing to display during playback (e.g., idle fidgets face a fixed direction).
+/// Compass direction applied when this action completes. The constructor's
+/// native default is -1; the optional fourth INI token replaces it with 0..=7.
+/// Retail provenance: `InfantryTypeClass` constructor @ `0x005236A0` and
+/// `ReadSequenceData` @ `0x00523D00`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FacingHint {
     N,
@@ -108,6 +107,20 @@ fn parse_facing_hint(s: &str) -> Option<FacingHint> {
         "W" => Some(FacingHint::W),
         "NW" => Some(FacingHint::NW),
         _ => None,
+    }
+}
+
+fn completion_facing(hint: Option<FacingHint>) -> Option<u8> {
+    match hint {
+        Some(FacingHint::N) => Some(0),
+        Some(FacingHint::NE) => Some(32),
+        Some(FacingHint::E) => Some(64),
+        Some(FacingHint::SE) => Some(96),
+        Some(FacingHint::S) => Some(128),
+        Some(FacingHint::SW) => Some(160),
+        Some(FacingHint::W) => Some(192),
+        Some(FacingHint::NW) => Some(224),
+        None => None,
     }
 }
 
@@ -344,6 +357,7 @@ pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
                 facing_multiplier,
                 frame_delay,
                 normalized,
+                completion_facing: completion_facing(entry.facing_hint),
                 loop_mode: default_loop_mode(kind),
                 facing_slots: FacingSlots::InfantryTable,
             },

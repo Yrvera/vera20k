@@ -347,6 +347,7 @@ fn pack_bridge_sprites(
     }
 
     let mut rgba: Vec<u8> = vec![0u8; (atlas_width * atlas_height * 4) as usize];
+    let mut depth: Vec<u8> = vec![BRIDGE_DEPTH_NEUTRAL; (atlas_width * atlas_height) as usize];
     let mut entries: HashMap<BridgeAtlasKey, OverlaySpriteEntry> =
         HashMap::with_capacity(placements.len());
     let aw: f32 = atlas_width as f32;
@@ -365,6 +366,7 @@ fn pack_bridge_sprites(
                 rgba[dst_start..dst_end].copy_from_slice(&spr.rgba[src_start..src_end]);
             }
         }
+        write_bridge_depth_rows(&mut depth, atlas_width, atlas_height, spr, px, py);
         entries.insert(
             spr.key.clone(),
             OverlaySpriteEntry {
@@ -378,12 +380,7 @@ fn pack_bridge_sprites(
     }
 
     let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_width, atlas_height);
-    let depth_texture_view = create_r8_texture(
-        gpu,
-        &neutral_deck_depth_plane(atlas_width, atlas_height),
-        atlas_width,
-        atlas_height,
-    );
+    let depth_texture_view = create_r8_texture(gpu, &depth, atlas_width, atlas_height);
     let zdepth_bind_group = batch.create_zdepth_bind_group(gpu, &texture.view, &depth_texture_view);
 
     BridgeAtlas {
@@ -394,33 +391,41 @@ fn pack_bridge_sprites(
     }
 }
 
-/// R8 texel meaning "this deck pixel contributes no depth offset of its own".
+/// R8 texel meaning that this atlas pixel contributes no bridge-body row offset.
 ///
 /// The zdepth fragment shader computes `base_depth - z_sample * scale`, so a
 /// zero texel leaves the instance's own sort depth untouched.
-const DECK_DEPTH_NEUTRAL: u8 = 0;
+const BRIDGE_DEPTH_NEUTRAL: u8 = 0;
 
-/// Depth plane for the bridge-deck atlas: neutral everywhere, deliberately.
+/// Copy one bridge entry's full-canvas native row gradient into the shared atlas.
 ///
-/// This is not a placeholder. gamemd draws a bridge deck through the cell
-/// overlay-body draw, and **every** branch of that draw passes a zero
-/// Z argument. The shape drawer only sets its "has Z data" draw bit when that
-/// argument is non-zero, and the blitter-family selector tests that bit first —
-/// so no Z-tested blitter is ever selected for an overlay body. A deck pixel
-/// therefore neither tests nor writes the native Z-buffer; under-deck occlusion
-/// comes from draw order inside the terrain layer, not from depth.
-///
-/// Giving these texels real per-pixel depth would hand the deck Z participation
-/// the native draw does not have, so the faithful content is a neutral plane.
-/// Verified by decompiling the cell overlay-body draw and hand-counting the
-/// argument pushes at each of its call sites into the shape drawer, plus the
-/// shape drawer's own Z-bit gate and the blitter selector's bit ordering.
-///
-/// SHP frames carry no depth channel at all, so there is nothing to blit here
-/// even in principle — the only per-pixel depth source in the engine is the
-/// terrain tile format's own depth plane, which decks do not use.
-fn neutral_deck_depth_plane(width: u32, height: u32) -> Vec<u8> {
-    vec![DECK_DEPTH_NEUTRAL; (width as usize) * (height as usize)]
+/// `CellClass::DrawOverlay_Body @ 0x0047F6A0` selects the active extended SHP
+/// blitter for high-bridge format-3 bodies. Its `0x004990E0` leaf decrements the
+/// candidate by one native Z unit per full-canvas source/destination scanline.
+/// Body row `y` therefore stores `y`; shadow entries and atlas padding retain
+/// neutral zero. Retail BRIDGE/BRIDGB canvases top out at 242 rows and fit R8.
+fn write_bridge_depth_rows(
+    depth: &mut [u8],
+    atlas_width: u32,
+    atlas_height: u32,
+    sprite: &RenderedBridge,
+    px: u32,
+    py: u32,
+) {
+    if sprite.key.kind != BridgeFrameKind::Body {
+        return;
+    }
+
+    let copy_width = sprite.width.min(atlas_width.saturating_sub(px));
+    let copy_height = sprite.height.min(atlas_height.saturating_sub(py));
+    for y in 0..copy_height {
+        let row_depth = y.min(u32::from(u8::MAX)) as u8;
+        let dst_start = ((py + y) * atlas_width + px) as usize;
+        let dst_end = dst_start + copy_width as usize;
+        if let Some(row) = depth.get_mut(dst_start..dst_end) {
+            row.fill(row_depth);
+        }
+    }
 }
 
 fn create_r8_texture(gpu: &GpuContext, data: &[u8], width: u32, height: u32) -> wgpu::TextureView {
@@ -466,22 +471,43 @@ mod tests {
     }
 
     #[test]
-    fn gsi_13_09_deck_depth_plane_stays_neutral_so_the_deck_never_owns_a_z_pixel() {
-        // The native overlay-body draw passes a zero Z argument on every branch,
-        // which leaves the shape drawer's "has Z data" bit clear and keeps the
-        // blitter selector off its Z-tested families entirely. Any non-neutral
-        // texel here would give the deck per-pixel depth authority gamemd's
-        // overlay draw does not have, so this pins the plane rather than the
-        // absence of code.
-        let plane = neutral_deck_depth_plane(7, 5);
-        assert_eq!(plane.len(), 35);
-        assert!(
-            plane.iter().all(|&texel| texel == DECK_DEPTH_NEUTRAL),
-            "a bridge deck texel must not carry depth of its own"
-        );
-        // The shader reads this as `base_depth - z_sample * scale`; neutral must
-        // be the additive identity so the deck keeps exactly its instance depth.
-        assert_eq!(DECK_DEPTH_NEUTRAL, 0);
+    fn gsi_13_09_body_depth_plane_encodes_local_rows_and_keeps_shadow_padding_zero() {
+        fn rendered(kind: BridgeFrameKind, width: u32, height: u32) -> RenderedBridge {
+            RenderedBridge {
+                key: BridgeAtlasKey {
+                    name: "BRIDGE1".into(),
+                    frame: 0,
+                    kind,
+                },
+                // An all-transparent canvas still receives the full row plane;
+                // the shader's color discard decides which pixels participate.
+                rgba: vec![0; (width * height * 4) as usize],
+                width,
+                height,
+                offset_x: 0.0,
+                offset_y: 0.0,
+            }
+        }
+
+        let atlas_width = 9;
+        let atlas_height = 5;
+        let mut plane = vec![BRIDGE_DEPTH_NEUTRAL; (atlas_width * atlas_height) as usize];
+        let body = rendered(BridgeFrameKind::Body, 3, 3);
+        let shadow = rendered(BridgeFrameKind::Shadow, 2, 3);
+
+        write_bridge_depth_rows(&mut plane, atlas_width, atlas_height, &body, 1, 1);
+        write_bridge_depth_rows(&mut plane, atlas_width, atlas_height, &shadow, 6, 1);
+
+        for (atlas_y, expected) in [(1u32, 0u8), (2, 1), (3, 2)] {
+            let start = (atlas_y * atlas_width + 1) as usize;
+            assert_eq!(&plane[start..start + 3], &[expected; 3]);
+        }
+        for atlas_y in 1u32..=3 {
+            let shadow_start = (atlas_y * atlas_width + 6) as usize;
+            assert_eq!(&plane[shadow_start..shadow_start + 2], &[0; 2]);
+            assert_eq!(plane[(atlas_y * atlas_width) as usize], 0);
+            assert_eq!(plane[(atlas_y * atlas_width + 4) as usize], 0);
+        }
     }
 
     #[test]

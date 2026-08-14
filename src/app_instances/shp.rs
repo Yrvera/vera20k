@@ -14,15 +14,15 @@ use super::helpers::{
 };
 use crate::app::AppState;
 use crate::app_render::draw_plan_lowering::{
-    PlannedBuildingPieceInstance, lower_building_piece_instances,
+    GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedBuildingPieceInstance,
+    PlannedGroundObjectInstance,
 };
 use crate::map::entities::EntityCategory;
-use crate::map::lighting;
 use crate::render::batch::SpriteInstance;
 use crate::render::draw_state::{DrawState, ObserverDrawContext};
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::{
-    BlitPolicy, BuildingPieceKind, ObjectDraw, SpriteEncoding, TacticalCoord, TacticalLayer,
+    BlitPolicy, BuildingPieceKind, SpriteEncoding, TacticalCoord,
 };
 use crate::render::unit_atlas::{UnitSpriteKey, VxlLayer, canonical_turret_facing};
 use crate::rules::house_colors::HouseColorIndex;
@@ -41,16 +41,29 @@ use crate::sim::components::BuildingUp;
 /// Only ever read by key, never iterated, so the hash order is not observable.
 pub(crate) type ParachuteBodyDepths = std::collections::HashMap<u64, f32>;
 
+fn shp_body_tint(
+    grid: &crate::map::lighting::CellLightGrid,
+    cell: (u16, u16),
+    category: EntityCategory,
+    extra_unit_light: i32,
+    extra_infantry_light: i32,
+) -> [f32; 3] {
+    match category {
+        EntityCategory::Unit => grid.unit_tint_at(cell, extra_unit_light),
+        EntityCategory::Infantry => grid.infantry_tint_at(cell, extra_infantry_light),
+        EntityCategory::Structure => grid.building_body_tint_at(cell),
+        _ => grid.techno_tint_at(cell),
+    }
+}
+
 /// Iterate visible SHP sprite entities from EntityStore and build SpriteInstances.
 ///
 /// Build SpriteInstances for all SHP entities (buildings, infantry).
-/// Building bibs and anims are emitted into `paged` together with bodies,
-/// matching the original engine where bibs are drawn inside BuildingClass_DrawBody.
-/// `unit_instances` receives building turret VXLs. They go into the ordinary
-/// voxel stream, at the building's own sort depth and emitted right after the
-/// body, because gamemd draws them inside the building's own display call in
-/// the sorted ground layer rather than in a pass of their own.
-/// `top_paged` receives SHP bodies whose locomotor puts them above the Ground
+/// Ground bodies, building bibs/anims, and building turret VXLs are emitted as
+/// one parent-owned group so the native global order cannot split their display
+/// call at an atlas boundary.
+/// `top_instances` and aligned `top_pages` receive SHP bodies whose locomotor
+/// puts them above the Ground
 /// band — in stock YR that is the Rocketeer at hover height, the one infantry
 /// type on a Jumpjet locomotor.
 /// `parachute_body_depths` collects the sort key of every body currently under
@@ -65,11 +78,13 @@ pub(crate) fn build_shp_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
     bridge_paged: &mut [Vec<SpriteInstance>],
-    top_paged: &mut [Vec<SpriteInstance>],
-    unit_instances: &mut Vec<SpriteInstance>,
-    unit_instance_pages: &mut Vec<usize>,
+    top_instances: &mut Vec<SpriteInstance>,
+    top_pages: &mut Vec<usize>,
+    top_ids: &mut Vec<u64>,
     parachute_body_depths: &mut ParachuteBodyDepths,
     selected_building_depth_paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut Vec<PlannedGroundObjectInstance>,
+    ground_order: &NativeGroundOrder,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -87,7 +102,8 @@ pub(crate) fn build_shp_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    let encounter_order =
+        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -228,15 +244,7 @@ pub(crate) fn build_shp_instances(
                     };
                     (frame, None)
                 }
-                _ => (
-                    resolve_infantry_shp_frame(
-                        state,
-                        type_str,
-                        entity.facing,
-                        entity.animation.as_ref(),
-                    ),
-                    None,
-                ),
+                _ => (resolve_infantry_shp_frame(state, type_str, entity), None),
             }
         };
         let key: ShpSpriteKey = ShpSpriteKey {
@@ -300,35 +308,27 @@ pub(crate) fn build_shp_instances(
         if entity.parachute_state.is_some() {
             parachute_body_depths.insert(entity.stable_id, depth);
         }
-        let mut tint: [f32; 3] = match entity.category {
-            EntityCategory::Infantry => state.lighting_grid.infantry_tint_at((pos.rx, pos.ry)),
-            EntityCategory::Structure => {
-                state.lighting_grid.building_body_tint_at((pos.rx, pos.ry))
-            }
-            _ => state.lighting_grid.techno_tint_at((pos.rx, pos.ry)),
-        };
-        // Entity ambient glow so infantry are visible on dark maps.
-        // Buildings do NOT get entity glow; only non-building technos use the extra-light rules.
-        if entity.category == EntityCategory::Infantry {
-            if let Some(rules) = &state.rules {
-                let glow = rules.general.extra_infantry_light;
-                if glow > 0.0 {
-                    tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                    tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                    tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                }
-            }
-        }
+        let tint = shp_body_tint(
+            &state.lighting_grid,
+            (pos.rx, pos.ry),
+            entity.category,
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_unit_light),
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_infantry_light),
+        );
+        let under_bridge = is_under_bridge_render_state(state, entity)
+            && entity.category != EntityCategory::Structure;
+        let collect_ground = band == EntityDrawBand::Ground && !under_bridge;
         let target_pages = match band {
-            // Above the Ground band, so also above any bridge deck.
-            EntityDrawBand::Top => &mut *top_paged,
-            EntityDrawBand::Ground
-                if is_under_bridge_render_state(state, entity)
-                    && entity.category != EntityCategory::Structure =>
-            {
-                &mut *bridge_paged
-            }
-            EntityDrawBand::Ground => &mut *paged,
+            // Top stays flat; page identity is carried beside each instance.
+            EntityDrawBand::Top => None,
+            EntityDrawBand::Ground if under_bridge => Some(&mut *bridge_paged),
+            EntityDrawBand::Ground => Some(&mut *paged),
         };
         let body = SpriteInstance {
             position: [final_x, final_y],
@@ -371,11 +371,32 @@ pub(crate) fn build_shp_instances(
                 },
                 z_bias: 0,
                 policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-                page: entry.page as usize,
+                target: GroundTexture::ShpPage(entry.page as usize),
                 instance: body,
             });
+        } else if collect_ground {
+            let coord = TacticalCoord {
+                x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
+                y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
+                z: i32::from(pos.z),
+            };
+            if let Some(parent) =
+                ground_order.object_draw(entity.stable_id, coord, SpriteEncoding::Plain)
+            {
+                ground_objects.push(PlannedGroundObjectInstance::object(
+                    parent,
+                    vec![GroundPieceInstance {
+                        target: GroundTexture::ShpPage(entry.page as usize),
+                        instance: body,
+                    }],
+                ));
+            }
+        } else if band == EntityDrawBand::Top {
+            top_instances.push(body);
+            top_pages.push(entry.page as usize);
+            top_ids.push(entity.stable_id);
         } else {
-            target_pages[entry.page as usize].push(body);
+            target_pages.expect("Ground SHP target was selected")[entry.page as usize].push(body);
         }
 
         // Emit building animation overlays and bib — but NOT during build-up/down.
@@ -440,9 +461,7 @@ pub(crate) fn build_shp_instances(
             if let Some(rules_obj) = state.rules.as_ref().and_then(|r| r.object(type_str)) {
                 if rules_obj.turret_anim_is_voxel {
                     if let Some(turret_id) = &rules_obj.turret_anim {
-                        emit_building_turret_vxl(
-                            unit_instances,
-                            unit_instance_pages,
+                        if let Some((page, instance)) = emit_building_turret_vxl(
                             state,
                             turret_id,
                             entity
@@ -459,28 +478,42 @@ pub(crate) fn build_shp_instances(
                             draw_state,
                             rules_obj.turret_anim_x,
                             rules_obj.turret_anim_y,
-                        );
+                        ) {
+                            building_pieces.push(PlannedBuildingPieceInstance {
+                                kind: BuildingPieceKind::PoweredOrActiveOverlay,
+                                z_bias: 0,
+                                policy: BlitPolicy::opaque(SpriteEncoding::Voxel),
+                                target: GroundTexture::UnitAtlasPage(page),
+                                instance,
+                            });
+                        }
                     }
                 }
             }
         }
 
         if entity.category == EntityCategory::Structure {
-            let coord = TacticalCoord {
+            let location = TacticalCoord {
                 x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let parent = ObjectDraw {
-                id: entity.stable_id,
-                layer: TacticalLayer(2),
-                coord,
-                y_sort_adjust: 0,
-                registration_order: entity.stable_id,
-                policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-            };
-            for (page, instance) in lower_building_piece_instances(parent, building_pieces) {
-                paged[page].push(instance);
+            let actual_type = state
+                .rules
+                .as_ref()
+                .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
+            if let Some(parent) = actual_type.and_then(|object_type| {
+                ground_order.building_object_draw(
+                    entity.stable_id,
+                    location,
+                    object_type,
+                    SpriteEncoding::Plain,
+                )
+            }) {
+                ground_objects.push(PlannedGroundObjectInstance::building(
+                    parent,
+                    building_pieces,
+                ));
             }
         }
     }
@@ -499,12 +532,9 @@ pub(crate) fn build_shp_instances(
 /// toward the camera and put it over units standing in front of the building —
 /// by 1.3 to 4 iso rows on the defences a player actually fights around
 /// (SAM Site and Sentry Gun −20, Flak and Gattling Cannon −40, Slave Miner −50,
-/// Grand Cannon −60), more on a couple of civilian map props. The +32/−16 key
-/// terms are a separate gap. Note the set is small and does not include Prism
-/// Tower, whose turret is not a voxel.
+/// Grand Cannon −60), more on a couple of civilian map props. The set is small
+/// and does not include Prism Tower, whose turret is not a voxel.
 fn emit_building_turret_vxl(
-    instances: &mut Vec<SpriteInstance>,
-    instance_pages: &mut Vec<usize>,
     state: &AppState,
     turret_id: &str,
     turret_facing: u16,
@@ -517,10 +547,10 @@ fn emit_building_turret_vxl(
     draw_state: DrawState,
     anim_x: i32,
     anim_y: i32,
-) {
+) -> Option<(usize, SpriteInstance)> {
     let unit_atlas = match &state.unit_atlas {
         Some(a) => a,
-        None => return,
+        None => return None,
     };
     let key = UnitSpriteKey {
         type_id: turret_id.to_string(),
@@ -529,27 +559,27 @@ fn emit_building_turret_vxl(
         frame: 0,
         slope_type: 0, // building turrets don't tilt on slopes
     };
-    let Some(entry) = unit_atlas.get(&key) else {
-        return;
-    };
+    let entry = unit_atlas.get(&key)?;
     // Position turret at building cell origin + pixel offset from INI.
     // TurretAnimX/Y are screen pixel offsets added to the building's own draw
     // point, which is exactly what the native turret draw does with them.
     let center_x: f32 = building_sx;
     let tx: f32 = center_x + anim_x as f32 + entry.offset_x;
     let ty: f32 = building_sy + anim_y as f32 + entry.offset_y + 3.0;
-    instances.push(SpriteInstance {
-        position: [tx, ty],
-        size: entry.pixel_size,
-        uv_origin: entry.uv_origin,
-        uv_size: entry.uv_size,
-        depth: building_depth,
-        tint,
-        alpha: 1.0,
-        draw_state,
-        ..Default::default()
-    });
-    instance_pages.push(entry.page);
+    Some((
+        entry.page,
+        SpriteInstance {
+            position: [tx, ty],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth: building_depth,
+            tint,
+            alpha: 1.0,
+            draw_state,
+            ..Default::default()
+        },
+    ))
 }
 
 /// Emit the BibShape SpriteInstance for a building's ground-level pad.
@@ -603,7 +633,7 @@ fn emit_building_bib(
         kind: BuildingPieceKind::Bib,
         z_bias: 0,
         policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-        page: bib_entry.page as usize,
+        target: GroundTexture::ShpPage(bib_entry.page as usize),
         instance: SpriteInstance {
             position: [bx, by],
             size: bib_entry.pixel_size,
@@ -945,7 +975,7 @@ fn emit_building_anims(
             kind: BuildingPieceKind::PoweredOrActiveOverlay,
             z_bias: z_adjust_px,
             policy: BlitPolicy::opaque(SpriteEncoding::Plain),
-            page: anim_entry.page as usize,
+            target: GroundTexture::ShpPage(anim_entry.page as usize),
             instance: SpriteInstance {
                 position: [ax, ay],
                 size: anim_entry.pixel_size,
@@ -977,22 +1007,39 @@ fn resting_building_anim_frame_values(loop_start: u16, loop_end: u16, start_fram
 fn resolve_infantry_shp_frame(
     state: &AppState,
     type_id: &str,
-    facing: u8,
-    anim: Option<&animation::Animation>,
+    entity: &crate::sim::game_entity::GameEntity,
 ) -> u16 {
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
     let sequence_set = state.animation_sequences.get(type_id);
-    if let (Some(anim_state), Some(set)) = (anim, sequence_set) {
+    if entity.category == EntityCategory::Unit
+        && !entity.is_voxel
+        && entity.animation.as_ref().is_none_or(|anim_state| {
+            matches!(
+                anim_state.sequence,
+                animation::SequenceKind::Stand | animation::SequenceKind::Walk
+            )
+        })
+        && let Some(set) = sequence_set
+        && let Some(frame) = animation::resolve_shp_vehicle_body_frame(
+            set,
+            entity.facing,
+            entity.body_frame_counter,
+            crate::sim::movement::ready_producer::is_moving_for_unit_shp_draw(entity),
+        )
+    {
+        return frame;
+    }
+    if let (Some(anim_state), Some(set)) = (entity.animation.as_ref(), sequence_set) {
         if let Some(def) = set.get(&anim_state.sequence) {
-            return animation::resolve_shp_frame(def, facing, anim_state.frame_index);
+            return animation::resolve_shp_frame(def, entity.facing, anim_state.frame_index);
         }
     }
     // Fallback when no sequence data was built for this type: the standing
     // block is frames 0..7, so the facing slot is the frame index. Uses the
     // same native facing table as the real path so the two cannot disagree.
-    animation::infantry_facing_slot(facing)
+    animation::infantry_facing_slot(entity.facing)
 }
 
 /// Rendered body SHP frame index for a `CanBeOccupied=yes` building.
@@ -1064,7 +1111,10 @@ mod tests {
     use super::rendered_garrison_body_frame_index;
     use super::resting_building_anim_frame;
     use super::selected_building_anim_view;
+    use super::shp_body_tint;
     use crate::app_building_anim::building_anim_rate_logic_frames;
+    use crate::map::entities::EntityCategory;
+    use crate::map::lighting::CellLightGrid;
     use crate::rules::art_data::{
         ArtRegistry, BuildingAnimConfig, BuildingAnimKind, BuildingAnimVariantConfig,
     };
@@ -1077,6 +1127,29 @@ mod tests {
 
     fn stock_game_options() -> GameOptions {
         GameOptions::default()
+    }
+
+    #[test]
+    fn gsi_13_10_shp_selector_keeps_unit_and_infantry_extras_distinct() {
+        let mut grid = CellLightGrid::new();
+        grid.insert_profiled_light((4, 5), [1.0, 0.88, 0.88], 1.0);
+
+        let unit = shp_body_tint(&grid, (4, 5), EntityCategory::Unit, 200, 300);
+        let infantry = shp_body_tint(&grid, (4, 5), EntityCategory::Infantry, 200, 300);
+        let structure = shp_body_tint(&grid, (4, 5), EntityCategory::Structure, 200, 300);
+        for (actual, expected) in unit.into_iter().zip([1.2, 1.056, 1.056]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in infantry.into_iter().zip([1.3, 1.144, 1.144]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in structure.into_iter().zip([1.0, 0.88, 0.88]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        assert_ne!(
+            unit, infantry,
+            "Unit and Infantry extras must not cross-feed"
+        );
     }
 
     #[test]

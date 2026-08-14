@@ -247,7 +247,7 @@ pub(super) fn push_choose_map_modal_control_instances(
             atlas,
             button,
             modal.pressed_button == Some(id),
-            false,
+            !modal.button_enabled(id, modes),
             SHELL_DROPDOWN_DEPTH - 0.00011,
         );
     }

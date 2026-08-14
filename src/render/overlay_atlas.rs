@@ -25,6 +25,7 @@ use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};
 use crate::rules::ini_parser::IniFile;
+use crate::rules::tiberium_type::TiberiumTypeRegistry;
 
 /// Maximum atlas texture width for overlay sprites (pixels).
 
@@ -150,6 +151,36 @@ fn runtime_low_bridge_sprite_keys(
     keys
 }
 
+/// Atlas keys reachable through the flat-cell resource display selector.
+///
+/// Active YR `CellClass__DrawOverlay_Body @ 0x0047F6A0` may draw any of the
+/// parsed TiberiumClass's 12 primary flat images while retaining the Cell data
+/// byte as the density frame. Preload that complete parsed product instead of
+/// inferring image families from stock filename prefixes or current map use.
+fn runtime_flat_tiberium_sprite_keys(
+    overlay_registry: &OverlayTypeRegistry,
+    tiberium_types: &TiberiumTypeRegistry,
+) -> HashSet<OverlaySpriteKey> {
+    let mut keys = HashSet::new();
+    for ty in tiberium_types.types() {
+        let Some(variant_ids) = overlay_registry.flat_tiberium_variant_ids(ty) else {
+            continue;
+        };
+        for overlay_id in variant_ids {
+            let Some(name) = overlay_registry.name(overlay_id).map(str::to_owned) else {
+                continue;
+            };
+            for frame in 0..ty.max_density {
+                keys.insert(OverlaySpriteKey {
+                    name: name.clone(),
+                    frame,
+                });
+            }
+        }
+    }
+    keys
+}
+
 /// UV and offset data for one overlay sprite within the atlas.
 #[derive(Debug, Clone, Copy)]
 pub struct OverlaySpriteEntry {
@@ -220,6 +251,7 @@ pub fn build_overlay_atlas(
     theater_ext: &str,
     theater_name: &str,
     overlay_registry: &OverlayTypeRegistry,
+    tiberium_types: &TiberiumTypeRegistry,
     rules_ini: &IniFile,
     art_registry: &ArtRegistry,
     smudge_types: Option<&crate::rules::smudge_type::SmudgeTypeRegistry>,
@@ -250,6 +282,15 @@ pub fn build_overlay_atlas(
             low_bridge_keys.len()
         );
         needed.extend(low_bridge_keys);
+    }
+
+    let flat_tiberium_keys = runtime_flat_tiberium_sprite_keys(overlay_registry, tiberium_types);
+    if !flat_tiberium_keys.is_empty() {
+        log::info!(
+            "Pre-loading {} flat tiberium display frame(s)",
+            flat_tiberium_keys.len()
+        );
+        needed.extend(flat_tiberium_keys);
     }
 
     // Overlay types the sim can create or mutate after this atlas is built are
@@ -942,11 +983,13 @@ fn render_smudge_sprite(
 mod tests {
     use super::{
         MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
-        decrement_numeric_suffix, runtime_low_bridge_sprite_keys, wall_body_frame_count,
+        decrement_numeric_suffix, runtime_flat_tiberium_sprite_keys,
+        runtime_low_bridge_sprite_keys, wall_body_frame_count,
     };
     use crate::map::overlay::OverlayEntry;
     use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::tiberium_type::TiberiumTypeRegistry;
 
     #[test]
     fn test_decrement_numeric_suffix_is_local_fallback() {
@@ -1051,6 +1094,44 @@ mod tests {
             !keys.iter().any(|key| key.name == "BRIDGE1"),
             "high bridges remain in the dedicated bridge atlas"
         );
+    }
+
+    #[test]
+    fn gsi_13_05_overlay_atlas_preloads_every_parsed_flat_resource_density_key() {
+        let mut text = String::from(
+            "[Tiberiums]\n0=Riparius\n1=Cruentus\n\
+             [Riparius]\nImage=1\n\
+             [Cruentus]\nImage=2\n\
+             [OverlayTypes]\n",
+        );
+        let mut resource_names = Vec::new();
+        for overlay_id in 0..=113 {
+            let name = match overlay_id {
+                27..=38 => format!("GEM{:02}", overlay_id - 26),
+                102..=113 => format!("TIB{:02}", overlay_id - 101),
+                _ => format!("FILL{overlay_id:03}"),
+            };
+            text.push_str(&format!("{overlay_id}={name}\n"));
+            if matches!(overlay_id, 27..=38 | 102..=113) {
+                resource_names.push(name);
+            }
+        }
+        for name in resource_names {
+            text.push_str(&format!("[{name}]\nTiberium=yes\n"));
+        }
+        let ini = IniFile::from_str(&text);
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let tiberiums = TiberiumTypeRegistry::from_ini(&ini);
+
+        let keys = runtime_flat_tiberium_sprite_keys(&overlays, &tiberiums);
+
+        assert_eq!(keys.len(), 288, "2 types * 12 images * 12 densities");
+        for (name, frame) in [("TIB05", 8), ("GEM01", 11)] {
+            assert!(keys.contains(&OverlaySpriteKey {
+                name: name.to_string(),
+                frame,
+            }));
+        }
     }
 }
 

@@ -760,6 +760,10 @@ fn schedule_command_in_sim(
     let execute_tick = sim.session.tick;
     let owner_id = sim.interner.intern(owner);
     let envelope = match payload {
+        Command::ExitMatch => {
+            let record = sim.encode_exit_record(owner_id)?;
+            SynchronizedCommand::opaque(record).decode_for_simulation(sim, execute_tick)?
+        }
         Command::SellWallAtCell { x, y } => {
             let record = sim.encode_sell_wall_at_cell_record(owner_id, x, y)?;
             SynchronizedCommand::opaque(record).decode_for_simulation(sim, execute_tick)?
@@ -834,6 +838,8 @@ pub(crate) fn is_playable_house_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{schedule_command_in_sim, sell_wall_command_for_cell};
+    use std::collections::BTreeMap;
+
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
     use crate::sim::command::{Command, CommandEnvelope};
@@ -841,6 +847,101 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn gsi_01_04_abort_waits_for_one_due_exit_dispatch_before_terminal_edge() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, true, 0, 10));
+        sim.session.house_order = vec![local];
+        sim.session.tick = 41;
+        sim.session.binary_frame = 73;
+
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::ExitMatch),
+            Some(41)
+        );
+        assert_eq!(sim.pending_commands.len(), 1);
+        assert_eq!(sim.pending_commands[0].payload, Command::ExitMatch);
+        assert!(!sim.quit_requested, "confirmation only queues EXIT");
+        assert_eq!(
+            sim.take_executed_exit_owner(),
+            None,
+            "confirmation cannot trigger app teardown"
+        );
+
+        let due = sim.take_due_commands();
+        assert_eq!(due.len(), 1);
+        let result = sim.advance_tick(&due, None, &BTreeMap::new(), None, None, 33);
+        assert_eq!(result.executed_commands, 1);
+        assert!(
+            !result.frame_committed,
+            "EXIT terminates its dispatch frame"
+        );
+        assert!(sim.quit_requested);
+        assert_eq!(
+            sim.take_executed_exit_owner(),
+            Some(local),
+            "the app cascade receives exactly one executed edge"
+        );
+        assert_eq!(
+            crate::app_scenario_exit::arbitrate_executed_exit(false),
+            crate::app_scenario_exit::ExecutedExitDisposition::Abort,
+            "standalone EXIT keeps the abort route"
+        );
+        assert_eq!(
+            sim.take_executed_exit_owner(),
+            None,
+            "repeated drains cannot duplicate the cascade trigger"
+        );
+    }
+
+    #[test]
+    fn gsi_01_04_same_frame_outcome_expiry_preempts_due_exit_after_consuming_edge() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        let enemy = sim.interner.intern("Enemy");
+        let mut local_house = HouseState::new(local, 0, None, true, 0, 10);
+        let mut enemy_house = HouseState::new(enemy, 1, None, false, 0, 10);
+        local_house.owned_building_count = 1;
+        enemy_house.owned_building_count = 1;
+        sim.houses.insert(local, local_house);
+        sim.houses.insert(enemy, enemy_house);
+        sim.session.house_order = vec![local, enemy];
+        sim.session.game_options.short_game = false;
+        sim.session.tick = 41;
+        assert!(
+            sim.houses
+                .get_mut(&local)
+                .expect("local house")
+                .flag_to_win(41, 1)
+        );
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::ExitMatch),
+            Some(41)
+        );
+
+        let due = sim.take_due_commands();
+        let result = sim.advance_tick(&due, None, &BTreeMap::new(), None, None, 33);
+        let local_outcome_exit_ready = sim.houses[&local]
+            .outcome_state
+            .is_some_and(|outcome| outcome.exit_ready);
+
+        assert!(!result.frame_committed);
+        assert!(local_outcome_exit_ready, "House expiry happened this frame");
+        assert_eq!(sim.take_executed_exit_owner(), Some(local));
+        assert_eq!(
+            crate::app_scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app_scenario_exit::ExecutedExitDisposition::Outcome,
+            "Main_Game's victory/loss route has priority over simultaneous EXIT"
+        );
+        assert_eq!(
+            sim.take_executed_exit_owner(),
+            None,
+            "the suppressed abort edge is still consumed exactly once"
+        );
+    }
 
     #[test]
     fn gsi_16_01_local_scheduler_uses_move_bytes_and_fences_queued_move_metadata() {

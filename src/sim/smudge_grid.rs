@@ -292,8 +292,10 @@ impl SmudgeGrid {
     /// building-occupancy gate.
     ///
     /// Returns true if a smudge was placed, false otherwise.
-    /// Callers MUST destroy the underlying ore (reduce_tiberium(6)) BEFORE this
-    /// for the crater path — ore is destroyed even on placement failure.
+    /// Ore mutation is caller-specific: `AnimClass::Start @ 0x00424F00`
+    /// reduces tiberium before its crater attempt, even on placement failure;
+    /// direct `BuildingClass::DestructionEffects @ 0x004415F0` and
+    /// `BuildingClass::SpawnSurvivors @ 0x00442D90` callers do not.
     #[allow(clippy::too_many_arguments)]
     pub fn try_place(
         &mut self,

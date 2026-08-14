@@ -14,15 +14,16 @@ use anyhow::Result;
 use crate::app_init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
-    spawn_entities, theater_ext_for,
+    scheduler_anim_roots, spawn_entities, theater_ext_for,
 };
 use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
     PreloadedBattleStartPlan, apply_explicit_skirmish_launch_session,
-    apply_preloaded_battle_launch_session, build_overlay_atlas_from_map,
-    apply_skirmish_ai_opening_credits, house_color_map_for_launch_session,
+    apply_preloaded_battle_launch_session, apply_skirmish_ai_opening_credits,
+    apply_skirmish_launch_alliances, build_overlay_atlas_from_map,
+    house_color_map_for_launch_session, initialize_skirmish_launch_houses,
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
@@ -728,8 +729,8 @@ mod map_wall_owner_candidate_tests {
             "both centered sources accumulate over the selected scenario profile"
         );
         assert_ne!(
-            composed.unit_tint_at((4, 5)),
-            base.unit_tint_at((4, 5)),
+            composed.unit_tint_at((4, 5), 0),
+            base.unit_tint_at((4, 5), 0),
             "the world-instance unit tint consumer observes the composed grid"
         );
     }
@@ -865,6 +866,23 @@ impl MapLoadInitial {
 
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
+    }
+}
+
+/// Continue loading from the exact map produced by the accepted setup run.
+///
+/// gamemd provenance: FUN_00595BC0's accepted generated scenario reaches
+/// Scenario initialization 0x00684620 and Full_Init 0x00686B20; loading does
+/// not invoke a second generator solely to recover that scenario.
+pub(crate) fn retained_random_map_initial(
+    seed_name: String,
+    generated: crate::map::rmg::GeneratedMap,
+    progress: &mut dyn crate::app_loading::LoadingProgressSink,
+) -> MapLoadInitial {
+    progress.milestone(8);
+    MapLoadInitial {
+        map_data: generated.map_file,
+        map_source: LoadedMapSource::Generated { seed_name },
     }
 }
 
@@ -1315,6 +1333,56 @@ pub(crate) fn load_map_initial_with_assets(
     })
 }
 
+fn initialize_map_roster_houses(
+    sim: &mut Simulation,
+    house_roster: &HouseRoster,
+    rules: Option<&RuleSet>,
+) {
+    assert!(
+        sim.houses.is_empty()
+            && sim.session.house_order.is_empty()
+            && sim.entities().is_empty()
+            && sim.production.terrain_objects.is_empty(),
+        "scenario houses must be initialized before map objects"
+    );
+    for house in &house_roster.houses {
+        let fallback_side = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+        let side_idx = rules.map_or(fallback_side, |rules| {
+            crate::sim::house_state::resolve_house_side_index(
+                rules,
+                house.country.as_deref(),
+                house.side.as_deref(),
+                fallback_side,
+            )
+        });
+        let player_control = house.player_control == Some(true);
+        let name_id = sim.interner.intern(&house.name);
+        let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
+        let mut house_state = crate::sim::house_state::HouseState::new(
+            name_id,
+            side_idx,
+            country_id,
+            false,
+            sim.session.game_options.starting_credits,
+            sim.session.game_options.tech_level,
+        );
+        house_state.player_control = player_control;
+        // HouseClass::Read_Scenario_INI reads `IQ=` from this exact named
+        // house section, defaults it to zero, and changes a value above
+        // MaxIQLevels to literal one before storing CurrentIQ (+0x24C).
+        house_state.current_iq = rules.map_or_else(
+            || house.iq.unwrap_or(0),
+            |rules| house.scenario_current_iq(rules.general.max_iq_levels),
+        );
+        // MultiplayPassive lives on the country/house type. A roster section
+        // with no `Country=` resolves through `[Countries]` entry zero.
+        house_state.multiplay_passive =
+            crate::sim::house_state::resolve_multiplay_passive(rules, house.country.as_deref());
+        sim.houses.insert(name_id, house_state);
+        sim.session.house_order.push(name_id);
+    }
+}
+
 pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -1415,18 +1483,6 @@ pub(crate) fn load_map_from_initial(
     };
     if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
         r.merge_art_data(a);
-        let damage_fire_roots: Vec<String> = r
-            .general
-            .damage_fire_types
-            .iter()
-            .map(|anim| anim.name.clone())
-            .collect();
-        a.bind_scheduler_anim_assets(
-            &damage_fire_roots,
-            &asset_manager,
-            theater_ext,
-            &map_data.header.theater,
-        )?;
         // Eagerly populate per-anim SHP frame dimensions so the smudge
         // dispatcher can size-filter without falling back to the (30, 30)
         // default that always loses the threshold check.
@@ -1494,6 +1550,19 @@ pub(crate) fn load_map_from_initial(
         &mut scenario_fill_ranged,
         &mut variant_selector,
     );
+    // Bind the complete scheduler closure only after theater Tile##Anim rows
+    // have resolved, but before any atlas or AnimClass construction. Missing
+    // tile art is a load error rather than a silently invisible map feature.
+    if let (Some(r), Some(a)) = (rules.as_mut(), art.as_mut()) {
+        let roots = scheduler_anim_roots(r, resolved_terrain.tile_animations());
+        a.bind_scheduler_anim_assets(
+            &roots,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        )?;
+        r.art_registry = a.clone();
+    }
     let variant_table_generated = variant_selector.generated_table();
     let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
     let variant_table_draws = variant_selector.raw_draw_count();
@@ -1697,6 +1766,16 @@ pub(crate) fn load_map_from_initial(
     };
     log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
 
+    let initialize_houses_before_objects = |sim: &mut Simulation| {
+        if let Some(session) = skirmish_launch_session {
+            let ruleset = rules
+                .as_ref()
+                .expect("offline skirmish requires rules before House construction");
+            initialize_skirmish_launch_houses(sim, &house_roster, ruleset, session);
+        } else {
+            initialize_map_roster_houses(sim, &house_roster, rules.as_ref());
+        }
+    };
     let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
         &map_data,
         &resolved_terrain,
@@ -1710,12 +1789,14 @@ pub(crate) fn load_map_from_initial(
         &house_color_map,
         &height_map,
         unit_palette.as_ref(),
+        overlay_iso_palette.as_ref(),
         &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
         terrain_load_advanced_scenario_rng,
         variant_advanced_main_rng,
+        initialize_houses_before_objects,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
     // (gamemd terrain/units/objects/buildings milestones).
@@ -1724,59 +1805,6 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(76);
     progress.milestone(78);
     let mut simulation = simulation;
-    if let Some(sim) = &mut simulation {
-        if skirmish_launch_session.is_none() {
-            sim.house_alliances = house_roster.alliance_map();
-            sim.session.house_order.clear();
-            // Populate per-player HouseState from the map's house roster.
-            for house in &house_roster.houses {
-                let fallback_side =
-                    crate::sim::house_state::side_index_from_name(house.side.as_deref());
-                let side_idx = rules.as_ref().map_or(fallback_side, |rules| {
-                    crate::sim::house_state::resolve_house_side_index(
-                        rules,
-                        house.country.as_deref(),
-                        house.side.as_deref(),
-                        fallback_side,
-                    )
-                });
-                let player_control = house.player_control == Some(true);
-                let name_id = sim.interner.intern(&house.name);
-                let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-                let mut house_state = crate::sim::house_state::HouseState::new(
-                    name_id,
-                    side_idx,
-                    country_id,
-                    false,
-                    sim.session.game_options.starting_credits,
-                    sim.session.game_options.tech_level,
-                );
-                house_state.player_control = player_control;
-                // HouseClass::Read_Scenario_INI reads `IQ=` from this exact
-                // named house section, defaults it to zero, and changes an
-                // above-MaxIQLevels value to literal one before storing
-                // CurrentIQ (+0x24C).
-                house_state.current_iq = rules.as_ref().map_or_else(
-                    || house.iq.unwrap_or(0),
-                    |rules| house.scenario_current_iq(rules.general.max_iq_levels),
-                );
-                // MultiplayPassive lives on the country/house type; stamp it now,
-                // while a RuleSet is in hand, so the defeat check never has to
-                // resolve the country itself. A roster section with no `Country=`
-                // resolves through the first `[Countries]` entry, as the native
-                // reader does.
-                house_state.multiplay_passive = crate::sim::house_state::resolve_multiplay_passive(
-                    rules.as_ref(),
-                    house.country.as_deref(),
-                );
-                sim.houses.insert(name_id, house_state);
-                sim.session.house_order.push(name_id);
-            }
-            // Map objects were revealed before HouseClass array indices existed.
-            // Build CellClass base reservations once, from the final native-order roster.
-            sim.rebuild_base_reservations_for_new_game();
-        }
-    }
     // Pre-intern all rule type IDs so that build_option_for_owner can resolve
     // InternedIds for types that haven't been spawned yet (e.g. GAPOWR).
     // Without this, sidebar cameo lookups fail because unspawned types get
@@ -1857,6 +1885,7 @@ pub(crate) fn load_map_from_initial(
                     art.as_ref(),
                     &house_color_map,
                     unit_palette.as_ref(),
+                    overlay_iso_palette.as_ref(),
                     &infantry_sequences,
                     vxl_compute.as_deref_mut(),
                 );
@@ -2169,11 +2198,13 @@ pub(crate) fn load_map_from_initial(
         apply_skirmish_ai_opening_credits(sim);
     }
 
-    // gamemd `Post_Map_Init` step 3: with the lobby Crates option on (the stock
-    // default), scatter `min(max(CrateMinimum, players), CrateMaximum)` crates
-    // over the map. Native runs this after the starting force and after the
-    // cell-attribute rebuild, which is exactly this point.
-    if let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref()) {
+    // gamemd `ScenarioClass::Post_Map_Init @ 0x00686890`: an active session's
+    // Crates byte gates the initial scatter. The count uses human session seats
+    // only; AI houses are not players for this clamp. Campaign/editor loads do
+    // not own that lobby byte and must not inherit GameOptions' lobby default.
+    if skirmish_launch_session.is_some()
+        && let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref())
+    {
         let player_count = crate::sim::crates::human_player_count(sim);
         crate::sim::crates::place_scenario_start_crates(
             sim,
@@ -2182,6 +2213,18 @@ pub(crate) fn load_map_from_initial(
             path_grid.as_ref(),
             player_count,
         );
+    }
+
+    if let Some(sim) = &mut simulation {
+        // Active YR `ScenarioClass__Post_Map_Init @ 0x00686890` orders the
+        // starting force, scenario-start crates, credits/bookkeeping, and then
+        // the HouseClass MakeAlly pass. House identity exists before objects,
+        // but diplomacy is committed only at this shared post-crate boundary.
+        if let Some(session) = skirmish_launch_session {
+            apply_skirmish_launch_alliances(sim, &house_roster, session);
+        } else {
+            sim.house_alliances = house_roster.alliance_map();
+        }
     }
 
     // Anchor the opening view on the LOCAL player's start — retail opens a

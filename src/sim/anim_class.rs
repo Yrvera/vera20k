@@ -278,6 +278,12 @@ pub struct AnimObject {
     pub effective_loop_end: i32,
     pub runtime: AnimRuntime,
     pub draw_runtime: AnimDrawRuntime,
+    /// AnimClass `+0x196`: use the containing CellClass draw/palette authority.
+    #[serde(default)]
+    pub use_cell_drawer: bool,
+    /// AnimClass `+0x197`: created from a terrain tile animation descriptor.
+    #[serde(default)]
+    pub terrain_attached: bool,
     /// LogicClass membership is reconstructed from the serialized vector.
     /// ObjectClass::Save does not persist its local membership byte.
     #[serde(skip)]
@@ -525,6 +531,8 @@ impl Simulation {
                 inactive: false,
             },
             draw_runtime: descriptor.draw_runtime,
+            use_cell_drawer: descriptor.use_cell_drawer,
+            terrain_attached: descriptor.terrain_attached,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -596,6 +604,8 @@ impl Simulation {
                 inactive: false,
             },
             draw_runtime: AnimDrawRuntime::default(),
+            use_cell_drawer: false,
+            terrain_attached: false,
             in_logic_vector: false,
             owner_entity: None,
             start_sound_active: false,
@@ -671,6 +681,8 @@ impl Simulation {
                         draw_flags: TRAILER_DRAW_FLAGS,
                         z_adjust: 0,
                         reverse: false,
+                        use_cell_drawer: false,
+                        terrain_attached: false,
                         draw_runtime: AnimDrawRuntime::default(),
                     };
                     self.spawn_anim_at_world(rules, descriptor, world_coord)
@@ -832,6 +844,23 @@ impl Simulation {
         }
     }
 
+    /// Apply CellClass's producer-owned `AnimClass +0x100` write after the
+    /// delay-zero constructor has already run `Middle`.
+    pub(crate) fn set_terrain_anim_z_adjust_after_construction(
+        &mut self,
+        id: AnimId,
+        z_adjust: i32,
+    ) -> bool {
+        let Some(anim) = self.anim_mut_by_id(id) else {
+            return false;
+        };
+        if !anim.terrain_attached || anim.z_adjust != 0 {
+            return false;
+        }
+        anim.z_adjust = z_adjust;
+        true
+    }
+
     pub(crate) fn update_building_damage_fire(&mut self, building_id: u64, rules: &RuleSet) {
         let Some((current, maximum, type_ref, position, prior_state, category)) =
             self.substrate.entities.get(building_id).map(|entity| {
@@ -928,6 +957,8 @@ impl Simulation {
                 draw_flags: TRAILER_DRAW_FLAGS,
                 z_adjust: 0,
                 reverse: false,
+                use_cell_drawer: false,
+                terrain_attached: false,
                 draw_runtime: AnimDrawRuntime::default(),
             };
             let world = AnimWorldCoord {
@@ -1090,9 +1121,16 @@ fn effective_bounds(
     Ok((effective_end, effective_loop_end))
 }
 
-fn native_loop_remaining(loop_count: i32, constructor_loop: u8) -> u8 {
-    let raw = (loop_count as u8).wrapping_mul(constructor_loop.max(1));
-    if raw < 2 { 1 } else { raw }
+fn native_loop_remaining(loop_count: i32, constructor_loop: i32) -> u8 {
+    // gamemd-derived: `AnimClass::Constructor @ 0x00421EA0`, branch at
+    // 0x004226BF. The constructor argument is compared as signed before its
+    // low byte participates in the wrapping LoopCount multiplication.
+    let constructor_factor = if constructor_loop > 1 {
+        constructor_loop as u8
+    } else {
+        1
+    };
+    (loop_count as u8).wrapping_mul(constructor_factor).max(1)
 }
 
 fn trailer_cadence_matches(binary_frame: u64, separation: i32) -> bool {
@@ -1204,12 +1242,14 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
 
     #[test]
-    fn loop_byte_wraps_clamps_and_preserves_infinite() {
+    fn gsi_13_04_signed_constructor_loop_preserves_negative_one_distinction() {
         assert_eq!(native_loop_remaining(0, 1), 1);
         assert_eq!(native_loop_remaining(1, 1), 1);
         assert_eq!(native_loop_remaining(2, 1), 2);
         assert_eq!(native_loop_remaining(-1, 1), u8::MAX);
         assert_eq!(native_loop_remaining(128, 2), 1);
+        assert_eq!(native_loop_remaining(-1, -1), u8::MAX);
+        assert_eq!(native_loop_remaining(-1, 255), 1);
     }
 
     #[test]
@@ -1298,6 +1338,8 @@ mod tests {
             draw_flags: TRAILER_DRAW_FLAGS,
             z_adjust: 0,
             reverse: false,
+            use_cell_drawer: false,
+            terrain_attached: false,
             draw_runtime: AnimDrawRuntime::default(),
         }
     }
@@ -1328,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_runtime_round_trips_and_changes_the_authoritative_hash() {
+    fn gsi_13_04_draw_and_terrain_attachment_state_roundtrip_and_hash() {
         let rules = runtime_rules("[DRAW]\nRate=900\nEnd=1\n", &[("DRAW", 1)]);
         let mut sim = Simulation::new();
         let mut descriptor = runtime_descriptor(sim.interner.intern("DRAW"), 0);
@@ -1339,6 +1381,8 @@ mod tests {
             forced_translucent: true,
             forced_uses_75: true,
         };
+        descriptor.use_cell_drawer = true;
+        descriptor.terrain_attached = true;
         let draw_runtime = descriptor.draw_runtime;
         let id = sim.spawn_anim_object(&rules, descriptor).unwrap();
         assert_eq!(sim.anim(id).unwrap().draw_runtime, draw_runtime);
@@ -1346,9 +1390,11 @@ mod tests {
         let serialized = bincode::serialize(&sim.substrate.anims).unwrap();
         let restored: AnimStore = bincode::deserialize(&serialized).unwrap();
         assert_eq!(restored.get(id).unwrap().draw_runtime, draw_runtime);
+        assert!(restored.get(id).unwrap().use_cell_drawer);
+        assert!(restored.get(id).unwrap().terrain_attached);
 
         let before = sim.state_hash();
-        sim.anim_mut_by_id(id).unwrap().draw_runtime.hidden = true;
+        sim.anim_mut_by_id(id).unwrap().terrain_attached = false;
         assert_ne!(sim.state_hash(), before);
     }
 
@@ -1889,6 +1935,8 @@ mod tests {
                     draw_flags: TRAILER_DRAW_FLAGS,
                     z_adjust: 0,
                     reverse: false,
+                    use_cell_drawer: false,
+                    terrain_attached: false,
                     draw_runtime: AnimDrawRuntime::default(),
                 },
                 AnimWorldCoord { x: 0, y: 0, z: 0 },

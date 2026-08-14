@@ -702,7 +702,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             // STANDARD EVA cues are fire-and-forget: play only if voice is idle.
             GameSoundEvent::BuildingReady { .. }
             | GameSoundEvent::UnitReady { .. }
-            | GameSoundEvent::CannotDeployHere { .. } => {
+            | GameSoundEvent::CannotDeployHere { .. }
+            | GameSoundEvent::OutcomeEva { .. } => {
                 sfx.play_standard_eva_sound(
                     event.sound_id(),
                     &state.sound_registry,

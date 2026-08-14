@@ -1725,6 +1725,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         log::error!("Load: restoration validation failed: {error}");
         return;
     }
+    crate::app::reset_scenario_exit_runtime(state);
     state.simulation = Some(sim);
     state.combat_lights.clear();
 

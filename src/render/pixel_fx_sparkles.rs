@@ -23,9 +23,9 @@ use crate::sim::vision::FogState;
 
 /// Sparkle sprites draw through the passthrough sprite pipeline (depth-bypass +
 /// no blend). The depth value is required by SpriteInstance but does not affect
-/// visibility inside this pass; pass-ordering in draw_passes (Step 5.5, between
-/// Step 5 ground objects and Step 6 turrets) does the work. Matches the
-/// constant-depth pattern used by smudge::build_visible_instances.
+/// visibility inside this pass; pass-ordering at the tactical tail, after
+/// shroud and tactical overlays but before screen-fixed chrome, does the work.
+/// Matches the constant-depth pattern used by smudge::build_visible_instances.
 const SPARKLE_DEPTH: f32 = 0.5;
 
 /// Tile dimensions used by iso_to_screen — re-declared here so we can shift

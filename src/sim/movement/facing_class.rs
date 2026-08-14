@@ -71,6 +71,11 @@ impl FacingClass {
         self.rot_per_frame
     }
 
+    #[cfg(test)]
+    pub(crate) fn timer_start_frame(&self) -> Option<u32> {
+        self.start_frame
+    }
+
     /// Animated facing at the given binary frame. Pure function of state.
     ///
     /// Returns `current` when:
@@ -146,6 +151,7 @@ impl FacingClass {
     pub fn snap(&mut self, new_target: u16, binary_frame: u32) -> bool {
         let animated = self.current(binary_frame);
         if animated == new_target && self.current == new_target {
+            self.start_frame = Some(binary_frame);
             self.duration_frames = 0;
             return false;
         }
@@ -201,6 +207,19 @@ mod tests {
         let mut fc = FacingClass::new(100, 5);
         fc.set_rot(0);
         assert_eq!(fc.rot_per_frame(), 0);
+    }
+
+    #[test]
+    fn gsi_05_07_same_target_snap_restarts_timer_epoch() {
+        let mut fc = mid_rotation(0, 0x4000, 10, 16, 4);
+        assert_eq!(fc.current(26), 0x4000);
+
+        assert!(!fc.snap(0x4000, 77));
+
+        assert_eq!(fc.start_frame, Some(77));
+        assert_eq!(fc.duration_frames, 0);
+        assert!(!fc.is_rotating(77));
+        assert_eq!(fc.current(77), 0x4000);
     }
 
     /// Helper: construct a FacingClass mid-rotation (skips set() so we can

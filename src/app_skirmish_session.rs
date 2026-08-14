@@ -30,13 +30,56 @@ use crate::ui::skirmish_shell::{
 };
 
 const RA2MD_INI: &str = "RA2MD.INI";
+const CONCRETE_ITEM_DATA: i32 = -1;
 const RANDOM_ITEM_DATA: i32 = -2;
+const MULTIPLAYER_HANDLE_LIMIT_BYTES: usize = 19;
+const DEFAULT_MULTIPLAYER_HANDLE: &[u8] = b"[New Player]";
+const DEFAULT_MULTIPLAYER_GAME_MODE: i32 = 1;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalMultiplayerPreferences {
-    player_name: Option<String>,
-    country: Option<SkirmishCountry>,
-    color_index: Option<usize>,
+    handle_bytes: Vec<u8>,
+    country: SkirmishCountry,
+    side_ex: i32,
+    color_index: usize,
+    color_ex: i32,
+    game_mode: i32,
+}
+
+impl Default for LocalMultiplayerPreferences {
+    fn default() -> Self {
+        Self {
+            handle_bytes: DEFAULT_MULTIPLAYER_HANDLE.to_vec(),
+            country: SkirmishCountry::America,
+            side_ex: 0,
+            color_index: 0,
+            color_ex: 0,
+            game_mode: DEFAULT_MULTIPLAYER_GAME_MODE,
+        }
+    }
+}
+
+impl LocalMultiplayerPreferences {
+    /// Apply the six fields written by `SessionClass__WriteMultiPlayerSettings`
+    /// at 0x006990A0. The reader at 0x006980C0 first establishes a complete
+    /// Session cache from constructor/string-table defaults, so pump/dialog
+    /// exits still write all six fields when keys were absent from RA2MD.INI.
+    fn update_ini_bytes(&self, content: &[u8]) -> Vec<u8> {
+        let handle = encode_multiplayer_handle(&self.handle_bytes);
+        let color = self.color_index.to_string();
+        let color_ex = self.color_ex.to_string();
+        let side_ex = self.side_ex.to_string();
+        let game_mode = self.game_mode.to_string();
+        let updates = [
+            ("Handle", handle.as_str()),
+            ("Color", color.as_str()),
+            ("ColorEx", color_ex.as_str()),
+            ("Side", self.country.country_name()),
+            ("SideEx", side_ex.as_str()),
+            ("GameMode", game_mode.as_str()),
+        ];
+        crate::util::ini_writer::set_ini_values(content, "MultiPlayer", &updates)
+    }
 }
 
 /// App-owned state whose lifetime matches the front-end process, not one map.
@@ -107,7 +150,7 @@ impl OfflineSkirmishRuntime {
         maps: &[MapMenuEntry],
         modes: &[SkirmishGameMode],
     ) {
-        state.selected_mode_id = mode_by_id(modes, self.snapshot.game_mode)
+        state.selected_mode_id = mode_by_id(modes, self.local_preferences.game_mode)
             .or_else(|| modes.first())
             .map(|mode| mode.id)
             .unwrap_or(state.selected_mode_id);
@@ -134,15 +177,19 @@ impl OfflineSkirmishRuntime {
         state.mcv_redeploy = self.snapshot.mcv_repacks;
         state.crates = self.snapshot.crates_appear;
 
-        if let Some(player_name) = self.local_preferences.player_name.as_deref() {
-            state.player_name_edit = PlayerNameEditState::with_name(player_name);
-        }
-        if let Some(country) = self.local_preferences.country {
-            state.player_country = country;
+        state.player_name_edit = PlayerNameEditState::with_name(
+            &crate::util::native_string::acp_decode(&self.local_preferences.handle_bytes),
+        );
+        state.player_country = self.local_preferences.country;
+        if self.local_preferences.side_ex == RANDOM_ITEM_DATA {
+            state.player_country_random = true;
+        } else {
             state.player_country_random = false;
         }
-        if let Some(color_index) = self.local_preferences.color_index {
-            state.player_color_index = color_index;
+        state.player_color_index = self.local_preferences.color_index;
+        if self.local_preferences.color_ex == RANDOM_ITEM_DATA {
+            state.player_color_claimed = false;
+        } else {
             state.player_color_claimed = true;
         }
 
@@ -244,7 +291,31 @@ impl OfflineSkirmishRuntime {
         assignments.resolve_local_color(&mut self.scenario_rng);
         assignments.resolve_ai(&mut self.scenario_rng, &mut draw_country)?;
         pack_snapshot_options(&mut self.snapshot, state);
-        Ok(assignments.finish())
+        let resolved = assignments.finish();
+
+        // Native Start/Back refreshes these cached SessionClass fields before
+        // the unconditional writer at 0x006990A0. Keep the resolved concrete
+        // values behind the raw -1/-2 markers so reopening the shell can show
+        // Random without discarding the value selected for this launch.
+        let mut handle_bytes = crate::util::native_string::acp_encode(&state.player_name_edit.text);
+        handle_bytes.truncate(MULTIPLAYER_HANDLE_LIMIT_BYTES);
+        self.local_preferences = LocalMultiplayerPreferences {
+            handle_bytes,
+            country: menu_country_from_launch(resolved.local.country),
+            side_ex: if state.player_country_random {
+                RANDOM_ITEM_DATA
+            } else {
+                CONCRETE_ITEM_DATA
+            },
+            color_index: usize::from(resolved.local.color_index),
+            color_ex: if state.player_color_claimed {
+                CONCRETE_ITEM_DATA
+            } else {
+                RANDOM_ITEM_DATA
+            },
+            game_mode: self.snapshot.game_mode,
+        };
+        Ok(resolved)
     }
 
     /// Resolve a borrowed raw session on the process-continuity Scenario RNG.
@@ -377,13 +448,20 @@ impl OfflineSkirmishRuntime {
                 return;
             }
         };
-        let updated = self.snapshot.update_ini_bytes(&existing);
+        let updated = self.update_persistence_bytes(&existing);
         if let Err(err) = std::fs::write(path, updated) {
             log::warn!(
                 "Could not persist Skirmish settings to {}: {err}",
                 path.display()
             );
         }
+    }
+
+    /// Compose the active offline writer's two relevant sections in native
+    /// order, then let the owner perform one final filesystem write.
+    fn update_persistence_bytes(&self, existing: &[u8]) -> Vec<u8> {
+        let updated = self.local_preferences.update_ini_bytes(existing);
+        self.snapshot.update_ini_bytes(&updated)
     }
 
     pub(crate) fn mark_gameplay_rng_return_pending(&mut self) {
@@ -527,32 +605,72 @@ fn load_persistence(
 }
 
 fn read_local_multiplayer_preferences(bytes: &[u8]) -> LocalMultiplayerPreferences {
+    let mut preferences = LocalMultiplayerPreferences::default();
     let Ok(ini) = IniFile::from_bytes(bytes) else {
-        return LocalMultiplayerPreferences::default();
+        return preferences;
     };
     let Some(section) = ini.section("MultiPlayer") else {
-        return LocalMultiplayerPreferences::default();
+        return preferences;
     };
 
-    let player_name = section.get("Handle").and_then(decode_multiplayer_handle);
-    let country = section.get("Side").and_then(|side| {
+    if let Some(mut handle_bytes) = section
+        .get("Handle")
+        .and_then(decode_multiplayer_handle_bytes)
+    {
+        handle_bytes.truncate(MULTIPLAYER_HANDLE_LIMIT_BYTES);
+        preferences.handle_bytes = handle_bytes;
+    }
+    if let Some(country) = section.get("Side").and_then(|side| {
         SkirmishCountry::ALL
             .into_iter()
             .find(|country| country.country_name().eq_ignore_ascii_case(side.trim()))
-    });
-    let color_index = section
+    }) {
+        preferences.country = country;
+    }
+    if let Some(color_index) = section
         .get_i32("Color")
         .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value < crate::skirmish_launch::HOUSE_COLOR_COUNT);
+        .filter(|value| *value < crate::skirmish_launch::HOUSE_COLOR_COUNT)
+    {
+        preferences.color_index = color_index;
+    }
+    if let Some(side_ex) = section.get_i32("SideEx") {
+        preferences.side_ex = side_ex;
+    }
+    if let Some(color_ex) = section.get_i32("ColorEx") {
+        preferences.color_ex = color_ex;
+    }
+    if let Some(game_mode) = section.get_i32("GameMode") {
+        preferences.game_mode = game_mode;
+    }
 
-    LocalMultiplayerPreferences {
-        player_name,
-        country,
-        color_index,
+    preferences
+}
+
+fn encode_multiplayer_handle(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(3));
+    for byte in bytes {
+        encoded.push_str(&format!("{byte:x},"));
+    }
+    encoded
+}
+
+fn menu_country_from_launch(country: LaunchCountry) -> SkirmishCountry {
+    match country {
+        LaunchCountry::America => SkirmishCountry::America,
+        LaunchCountry::Korea => SkirmishCountry::Korea,
+        LaunchCountry::France => SkirmishCountry::France,
+        LaunchCountry::Germany => SkirmishCountry::Germany,
+        LaunchCountry::GreatBritain => SkirmishCountry::GreatBritain,
+        LaunchCountry::Libya => SkirmishCountry::Libya,
+        LaunchCountry::Iraq => SkirmishCountry::Iraq,
+        LaunchCountry::Cuba => SkirmishCountry::Cuba,
+        LaunchCountry::Russia => SkirmishCountry::Russia,
+        LaunchCountry::Yuri => SkirmishCountry::Yuri,
     }
 }
 
-fn decode_multiplayer_handle(value: &str) -> Option<String> {
+fn decode_multiplayer_handle_bytes(value: &str) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     for part in value.split(',') {
         let part = part.trim();
@@ -566,11 +684,16 @@ fn decode_multiplayer_handle(value: &str) -> Option<String> {
         }
         bytes.push(byte);
     }
+
     if bytes.is_empty() {
         return None;
     }
-    let decoded = crate::util::native_string::widen_bytes(&bytes);
-    (!decoded.is_empty()).then_some(decoded)
+    Some(bytes)
+}
+
+fn decode_multiplayer_handle(value: &str) -> Option<String> {
+    decode_multiplayer_handle_bytes(value)
+        .map(|bytes| crate::util::native_string::acp_decode(&bytes))
 }
 
 fn is_cooperative_mode(session: &SkirmishLaunchSession) -> bool {
@@ -808,9 +931,12 @@ mod tests {
         assert_eq!(
             preferences,
             LocalMultiplayerPreferences {
-                player_name: Some("[New Player]".to_string()),
-                country: Some(SkirmishCountry::America),
-                color_index: Some(2),
+                handle_bytes: b"[New Player]".to_vec(),
+                country: SkirmishCountry::America,
+                side_ex: CONCRETE_ITEM_DATA,
+                color_index: 2,
+                color_ex: CONCRETE_ITEM_DATA,
+                game_mode: DEFAULT_MULTIPLAYER_GAME_MODE,
             }
         );
 
@@ -830,6 +956,282 @@ mod tests {
     }
 
     #[test]
+    fn gsi_03_10_multiplayer_preferences_hydrate_respects_exact_ex_markers() {
+        let preferences = read_local_multiplayer_preferences(
+            b"[MultiPlayer]\n\
+              Handle=52,61,6e,64,6f,6d,\n\
+              Color=7\n\
+              ColorEx=-2\n\
+              Side=YuriCountry\n\
+              SideEx=-2\n\
+              GameMode=9\n",
+        );
+        let mut runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            7,
+        );
+        runtime.local_preferences = preferences;
+        let mut shell = SkirmishShellState::default();
+        runtime.hydrate_shell(&mut shell, &[map()], &[mode()]);
+
+        assert_eq!(shell.player_country, SkirmishCountry::Yuri);
+        assert!(shell.player_country_random);
+        assert_eq!(shell.player_color_index, 7);
+        assert!(!shell.player_color_claimed);
+
+        let concrete = read_local_multiplayer_preferences(
+            b"[MultiPlayer]\nColor=7\nColorEx=-1\nSide=YuriCountry\nSideEx=-3\n",
+        );
+        runtime.local_preferences = concrete;
+        runtime.hydrate_shell(&mut shell, &[map()], &[mode()]);
+        assert_eq!(shell.player_country, SkirmishCountry::Yuri);
+        assert!(
+            !shell.player_country_random,
+            "only exact -2 restores Random"
+        );
+        assert_eq!(shell.player_color_index, 7);
+        assert!(shell.player_color_claimed);
+    }
+
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_random_close_keeps_resolved_cache_and_markers() {
+        let mut active_runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            0x1234,
+        );
+        let mut shell = SkirmishShellState::default();
+        shell.player_name_edit = PlayerNameEditState::with_name("12345678901234567890");
+        shell.player_country_random = true;
+        shell.player_color_claimed = false;
+        let session = random_session();
+
+        let resolved = active_runtime
+            .close_shell_transaction(&shell, &[map()], &[mode()], &session)
+            .expect("random close");
+        assert_eq!(
+            active_runtime.local_preferences.handle_bytes.as_slice(),
+            b"1234567890123456789"
+        );
+        assert_eq!(
+            active_runtime.local_preferences.country,
+            menu_country_from_launch(resolved.local.country)
+        );
+        assert_eq!(active_runtime.local_preferences.side_ex, RANDOM_ITEM_DATA);
+        assert_eq!(
+            active_runtime.local_preferences.color_index,
+            usize::from(resolved.local.color_index)
+        );
+        assert_eq!(active_runtime.local_preferences.color_ex, RANDOM_ITEM_DATA);
+
+        let bytes = active_runtime.update_persistence_bytes(b"[Other]\nKeep=1\n");
+        let reloaded = read_local_multiplayer_preferences(&bytes);
+        let mut reopened = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            9,
+        );
+        reopened.local_preferences = reloaded;
+        let mut reopened_shell = SkirmishShellState::default();
+        reopened.hydrate_shell(&mut reopened_shell, &[map()], &[mode()]);
+        assert!(reopened_shell.player_country_random);
+        assert!(!reopened_shell.player_color_claimed);
+        assert_eq!(
+            reopened_shell.player_country,
+            menu_country_from_launch(resolved.local.country)
+        );
+        assert_eq!(
+            reopened_shell.player_color_index,
+            usize::from(resolved.local.color_index)
+        );
+    }
+
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_concrete_close_round_trips_minus_one() {
+        let mut active_runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            0x5678,
+        );
+        let mut shell = SkirmishShellState::default();
+        shell.player_country = SkirmishCountry::Yuri;
+        shell.player_country_random = false;
+        shell.player_color_index = 7;
+        shell.player_color_claimed = true;
+        let mut session = random_session();
+        session.local.country = LaunchCountry::Yuri;
+        session.local.country_random = false;
+        session.local.color_index = 7;
+        session.local.color_random = false;
+
+        let resolved = active_runtime
+            .close_shell_transaction(&shell, &[map()], &[mode()], &session)
+            .expect("concrete close");
+        assert_eq!(resolved.local.country, LaunchCountry::Yuri);
+        assert_eq!(resolved.local.color_index, 7);
+        assert_eq!(active_runtime.local_preferences.side_ex, CONCRETE_ITEM_DATA);
+        assert_eq!(
+            active_runtime.local_preferences.color_ex,
+            CONCRETE_ITEM_DATA
+        );
+
+        let bytes = active_runtime.update_persistence_bytes(&[]);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("Side=YuriCountry"));
+        assert!(text.contains("SideEx=-1"));
+        assert!(text.contains("Color=7"));
+        assert!(text.contains("ColorEx=-1"));
+
+        let mut reopened = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            9,
+        );
+        reopened.local_preferences = read_local_multiplayer_preferences(&bytes);
+        let mut reopened_shell = SkirmishShellState::default();
+        reopened.hydrate_shell(&mut reopened_shell, &[map()], &[mode()]);
+        assert_eq!(reopened_shell.player_country, SkirmishCountry::Yuri);
+        assert!(!reopened_shell.player_country_random);
+        assert_eq!(reopened_shell.player_color_index, 7);
+        assert!(reopened_shell.player_color_claimed);
+    }
+
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_codec_is_ordered_and_preserving() {
+        let mut runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            7,
+        );
+        runtime.local_preferences = LocalMultiplayerPreferences {
+            handle_bytes: vec![0x4a, 0x6f, 0x73, 0xe9],
+            country: SkirmishCountry::Yuri,
+            side_ex: CONCRETE_ITEM_DATA,
+            color_index: 7,
+            color_ex: CONCRETE_ITEM_DATA,
+            game_mode: 9,
+        };
+        let bytes = runtime.update_persistence_bytes(
+            b"; keep this comment\n[Other]\nKeep=1\n[MultiPlayer]\nLegacy=yes\n",
+        );
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("; keep this comment"));
+        assert!(text.contains("[Other]"));
+        assert!(text.contains("Keep=1"));
+        assert!(text.contains("Legacy=yes"));
+        assert!(text.contains("Handle=4a,6f,73,e9,"));
+        assert!(text.contains("[Skirmish]"));
+
+        let positions = [
+            "Handle=",
+            "Color=",
+            "ColorEx=",
+            "Side=",
+            "SideEx=",
+            "GameMode=",
+        ]
+        .map(|needle| text.find(needle).expect("persisted key"));
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_missing_keys_write_complete_session_defaults() {
+        let preferences =
+            read_local_multiplayer_preferences(b"[MultiPlayer]\nColor=7\n[Skirmish]\nGameMode=9\n");
+        assert_eq!(preferences.handle_bytes, b"[New Player]");
+        assert_eq!(preferences.country, SkirmishCountry::America);
+        assert_eq!(preferences.side_ex, 0);
+        assert_eq!(preferences.color_index, 7);
+        assert_eq!(preferences.color_ex, 0);
+        assert_eq!(preferences.game_mode, DEFAULT_MULTIPLAYER_GAME_MODE);
+
+        let mut snapshot = SkirmishPersistedSnapshot::from_global_defaults(defaults());
+        snapshot.game_mode = 9;
+        let mut runtime = runtime(snapshot, 0x6789);
+        runtime.local_preferences = preferences;
+        let mode_9 = SkirmishGameMode { id: 9, ..mode() };
+        let mut shell = SkirmishShellState::default();
+        runtime.hydrate_shell(&mut shell, &[map()], &[mode_9.clone(), mode()]);
+        assert_eq!(
+            shell.selected_mode_id, 1,
+            "MultiPlayer default, not conflicting Skirmish mode, owns restore"
+        );
+
+        let bytes =
+            runtime.update_persistence_bytes(b"[MultiPlayer]\nColor=7\n[Skirmish]\nGameMode=9\n");
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("Handle=5b,4e,65,77,20,50,6c,61,79,65,72,5d,"));
+        assert!(text.contains("Color=7"));
+        assert!(text.contains("ColorEx=0"));
+        assert!(text.contains("Side=Americans"));
+        assert!(text.contains("SideEx=0"));
+        assert!(text.contains("[MultiPlayer]\n"));
+        assert!(text.contains("GameMode=1"));
+        assert!(text.contains("[Skirmish]\nGameMode=9"));
+
+        runtime.local_preferences.game_mode = 999;
+        runtime.hydrate_shell(&mut shell, &[map()], &[mode_9, mode()]);
+        assert_eq!(shell.selected_mode_id, 9, "unknown mode falls to first row");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_non_identity_acp_byte_round_trips() {
+        let mut active_runtime = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            0x89ab,
+        );
+        let mut shell = SkirmishShellState::default();
+        shell.player_name_edit = PlayerNameEditState::with_name("\u{20ac}");
+
+        active_runtime
+            .close_shell_transaction(&shell, &[map()], &[mode()], &random_session())
+            .expect("close with ACP-only handle");
+        assert_eq!(active_runtime.local_preferences.handle_bytes, vec![0x80]);
+
+        let bytes = active_runtime.update_persistence_bytes(&[]);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("Handle=80,"));
+
+        let mut reopened = runtime(
+            SkirmishPersistedSnapshot::from_global_defaults(defaults()),
+            9,
+        );
+        reopened.local_preferences = read_local_multiplayer_preferences(&bytes);
+        assert_eq!(reopened.local_preferences.handle_bytes, vec![0x80]);
+
+        let mut reopened_shell = SkirmishShellState::default();
+        reopened.hydrate_shell(&mut reopened_shell, &[map()], &[mode()]);
+        assert_eq!(reopened_shell.player_name_edit.text, "\u{20ac}");
+    }
+
+    #[test]
+    fn gsi_03_10_multiplayer_preferences_failed_close_keeps_cached_fields() {
+        let mut runtime = cooperative_runtime(0x2345);
+        runtime.local_preferences = LocalMultiplayerPreferences {
+            handle_bytes: b"Cached".to_vec(),
+            country: SkirmishCountry::Russia,
+            side_ex: CONCRETE_ITEM_DATA,
+            color_index: 3,
+            color_ex: CONCRETE_ITEM_DATA,
+            game_mode: 1,
+        };
+        let cached = runtime.local_preferences.clone();
+        let mut session = random_session();
+        session.mode = SkirmishLaunchMode::from_game_mode(&cooperative_mode());
+        session.selected_map_file = Some("A2B".to_string());
+
+        assert!(
+            runtime
+                .close_shell_transaction(
+                    &SkirmishShellState::default(),
+                    &[map_named("A2B")],
+                    &[cooperative_mode()],
+                    &session,
+                )
+                .is_err()
+        );
+        assert_eq!(runtime.local_preferences, cached);
+    }
+
+    #[test]
     fn malformed_multiplayer_preferences_fall_back_independently() {
         let preferences = read_local_multiplayer_preferences(
             b"[MultiPlayer]\nHandle=not-hex,\nColor=99\nSide=UnknownCountry\n",
@@ -841,6 +1243,11 @@ mod tests {
             Some("A".to_string())
         );
         assert_eq!(decode_multiplayer_handle("e9,"), Some("\u{e9}".to_string()));
+        #[cfg(windows)]
+        assert_eq!(
+            decode_multiplayer_handle("80,"),
+            Some("\u{20ac}".to_string())
+        );
         assert_eq!(
             decode_multiplayer_handle("20ac,"),
             Some("\u{ac}".to_string())

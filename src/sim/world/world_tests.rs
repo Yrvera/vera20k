@@ -10,19 +10,22 @@ use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::terrain;
 use crate::map::tube_facts::{TubeFact, TubeId};
+use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, MovementTarget};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, MovementTarget, ShipLocomotionRuntime,
+};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
 use crate::sim::pathfinding::PathGrid;
-use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -42,6 +45,54 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+fn gsi_13_10_art_model_rules() -> RuleSet {
+    let ini = IniFile::from_str(
+        "[General]\nFixtureOnly=1\n\
+         [InfantryTypes]\n0=FALLBACKINF\n\
+         [VehicleTypes]\n0=DLPH\n1=DRON\n2=SQD\n3=VXLTEST\n4=ALIASED\n5=OMITTED\n6=FALLBACKVEH\n\
+         [AircraftTypes]\n0=FALLBACKAIR\n\
+         [BuildingTypes]\n0=FALLBACKBLD\n\
+         [DLPH]\nStrength=100\n\
+         [DRON]\nStrength=100\n\
+         [SQD]\nStrength=100\n\
+         [VXLTEST]\nStrength=100\n\
+         [ALIASED]\nStrength=100\nImage=ALT\n\
+         [OMITTED]\nStrength=100\n\
+         [FALLBACKVEH]\nStrength=100\n\
+         [FALLBACKAIR]\nStrength=100\n\
+         [FALLBACKINF]\nStrength=100\n\
+         [FALLBACKBLD]\nStrength=100\n",
+    );
+    let art = ArtRegistry::from_ini(&IniFile::from_str(
+        "[DLPH]\nVoxel=no\n\
+         [DRON]\nVoxel=no\n\
+         [SQD]\nVoxel=no\n\
+         [VXLTEST]\nVoxel=yes\n\
+         [ALT]\nVoxel=no\n\
+         [OMITTED]\nCameo=OMITTEDICON\n",
+    ));
+    let mut rules = RuleSet::from_ini(&ini).expect("art model rules");
+    rules.merge_art_data(&art);
+    rules
+}
+
+fn assert_gsi_13_10_shp_unit(entity: &GameEntity) {
+    assert_eq!(entity.category, EntityCategory::Unit);
+    assert!(
+        !entity.is_voxel,
+        "SHP Unit must enter the non-voxel cadence path"
+    );
+    assert!(entity.animation.is_some());
+    assert!(entity.voxel_animation.is_none());
+}
+
+fn assert_gsi_13_10_vxl_unit(entity: &GameEntity) {
+    assert_eq!(entity.category, EntityCategory::Unit);
+    assert!(entity.is_voxel);
+    assert!(entity.animation.is_none());
+    assert!(entity.voxel_animation.is_some());
 }
 
 fn move_sound_test_rules(configured: bool) -> RuleSet {
@@ -1122,6 +1173,33 @@ fn insert_test_entity_for_owner(
     sim.substrate.entities.insert(entity);
 }
 
+#[test]
+fn gsi_05_16_change_owner_moves_live_category_counts_once_and_noops() {
+    let mut sim = Simulation::new();
+    let old_owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let new_owner = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+    insert_test_entity_for_owner(&mut sim, 1, old_owner, "GAPOWR", EntityCategory::Structure);
+    insert_test_entity_for_owner(&mut sim, 2, old_owner, "GI", EntityCategory::Unit);
+
+    sim.change_owner(1, new_owner);
+    sim.change_owner(2, new_owner);
+
+    assert_eq!(sim.houses[&old_owner].owned_building_count, 0);
+    assert_eq!(sim.houses[&old_owner].owned_unit_count, 0);
+    assert_eq!(sim.houses[&new_owner].owned_building_count, 1);
+    assert_eq!(sim.houses[&new_owner].owned_unit_count, 1);
+    assert_eq!(sim.substrate.entities.get(1).unwrap().owner, new_owner);
+    assert_eq!(sim.substrate.entities.get(2).unwrap().owner, new_owner);
+
+    sim.change_owner(1, new_owner);
+    sim.change_owner(999, old_owner);
+
+    assert_eq!(sim.houses[&old_owner].owned_building_count, 0);
+    assert_eq!(sim.houses[&old_owner].owned_unit_count, 0);
+    assert_eq!(sim.houses[&new_owner].owned_building_count, 1);
+    assert_eq!(sim.houses[&new_owner].owned_unit_count, 1);
+}
+
 /// Create a CommandEnvelope with a string owner, interning it via the sim's interner.
 fn cmd_envelope(
     sim: &Simulation,
@@ -2079,6 +2157,48 @@ fn defeated_house_is_flagged_has_lost_and_stragglers_survive() {
 }
 
 #[test]
+fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
+    use crate::sim::house_state::HouseOutcomeKind;
+    use crate::sim::world::SimSoundEvent;
+
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = false;
+    sim.session.tick = 10;
+    let winner = insert_house_with_counts(&mut sim, "Americans", 1, 0);
+    let loser = insert_house_with_counts(&mut sim, "Russians", 0, 0);
+
+    sim.check_defeat(Some(&rules));
+
+    let winner_outcome = sim.houses[&winner].outcome_state.expect("victory accepted");
+    assert_eq!(winner_outcome.kind, HouseOutcomeKind::Victory);
+    assert_eq!(winner_outcome.savour_until_tick, 38);
+    assert!(!winner_outcome.exit_ready);
+    assert_eq!(
+        sim.sound_events
+            .iter()
+            .filter(|event| matches!(event, SimSoundEvent::MatchOutcome { .. }))
+            .count(),
+        2,
+        "one accepted loss and one accepted victory each emit one EVA edge"
+    );
+
+    sim.sound_events.clear();
+    sim.session.tick = 36;
+    sim.check_defeat(Some(&rules));
+    assert!(!sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    assert!(!sim.termination_frame_requested());
+    assert!(sim.sound_events.is_empty(), "accepted edges never replay");
+
+    sim.session.tick = 37;
+    sim.check_defeat(Some(&rules));
+    assert!(sim.houses[&winner].outcome_state.unwrap().exit_ready);
+    assert!(sim.houses[&loser].outcome_state.unwrap().exit_ready);
+    assert!(sim.termination_frame_requested());
+    assert!(sim.sound_events.is_empty(), "expiry does not replay EVA");
+}
+
+#[test]
 fn short_game_base_unit_survivor_prevents_enemy_victory() {
     let rules = short_game_defeat_test_rules();
     let mut sim = Simulation::new();
@@ -2090,6 +2210,27 @@ fn short_game_base_unit_survivor_prevents_enemy_victory() {
     sim.check_defeat(Some(&rules));
 
     assert!(!sim.houses[&mcv_owner].is_defeated);
+    assert!(!sim.houses[&enemy].has_won);
+}
+
+#[test]
+fn gsi_05_16_captured_garrison_building_prevents_short_game_defeat() {
+    let rules = short_game_defeat_test_rules();
+    let mut sim = Simulation::new();
+    sim.session.game_options.short_game = true;
+    let civilian = insert_passive_house_with_counts(&mut sim, "Neutral", 1, 0);
+    let player = insert_house_with_counts(&mut sim, "Americans", 0, 1);
+    let enemy = insert_house_with_counts(&mut sim, "Russians", 1, 0);
+    insert_test_entity_for_owner(&mut sim, 1, civilian, "CAGAS01", EntityCategory::Structure);
+
+    // The passenger reconciler uses this chokepoint when the first occupant
+    // captures a civilian CanBeOccupied building.
+    sim.change_owner(1, player);
+    sim.check_defeat(Some(&rules));
+
+    assert_eq!(sim.houses[&civilian].owned_building_count, 0);
+    assert_eq!(sim.houses[&player].owned_building_count, 1);
+    assert!(!sim.houses[&player].is_defeated);
     assert!(!sim.houses[&enemy].has_won);
 }
 
@@ -2183,13 +2324,15 @@ fn passive_houses_do_not_make_a_solo_board_look_contested() {
 #[test]
 fn passive_houses_do_not_arm_the_termination_frame_for_a_tick_zero_win() {
     // The sim-side consumer of the same guard. On a one-player dev map the
-    // human is flagged `has_won` immediately, and counting Neutral/Special as
-    // opponents would end the match on tick 1.
+    // human can accept a win immediately, and counting Neutral/Special as
+    // opponents would end the match as soon as its result timer expires.
     let mut sim = Simulation::new();
     let player = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     insert_passive_house_with_counts(&mut sim, "Neutral", 4, 0);
     insert_passive_house_with_counts(&mut sim, "Special", 2, 0);
-    sim.houses.get_mut(&player).expect("player house").has_won = true;
+    let player_house = sim.houses.get_mut(&player).expect("player house");
+    assert!(player_house.flag_to_win(0, 0));
+    assert!(player_house.advance_outcome_savour(0));
 
     assert!(
         !sim.termination_frame_requested(),
@@ -2257,6 +2400,73 @@ fn test_spawn_infantry_has_sprite_marker() {
         .filter(|e| !e.is_voxel)
         .count();
     assert_eq!(sprite_count, 1, "Infantry should have SpriteModel marker");
+}
+
+#[test]
+fn gsi_13_10_art_voxel_no_selects_shp_unit_in_all_three_spawn_constructors() {
+    let rules = gsi_13_10_art_model_rules();
+    let mut sim = Simulation::new();
+
+    assert_eq!(
+        sim.spawn_from_map(
+            &[make_test_entity("DLPH", EntityCategory::Unit)],
+            Some(&rules),
+            &empty_heights(),
+        ),
+        1
+    );
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(1).expect("map DLPH"));
+
+    let dron = sim
+        .spawn_object_at_height("DRON", "Americans", 31, 40, 64, 0, &rules)
+        .expect("placed DRON");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(dron).expect("DRON entity"));
+
+    let squid = sim
+        .spawn_object_limbo_at_height("SQD", "Americans", 32, 40, 64, 0, &rules)
+        .expect("limbo SQD");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(squid).expect("SQD entity"));
+}
+
+#[test]
+fn gsi_13_10_effective_art_metadata_precedes_complete_category_fallback() {
+    let rules = gsi_13_10_art_model_rules();
+    let mut sim = Simulation::new();
+
+    let vxl = sim
+        .spawn_object_limbo_at_height("VXLTEST", "Americans", 1, 1, 0, 0, &rules)
+        .expect("explicit VXL vehicle");
+    assert_gsi_13_10_vxl_unit(sim.substrate.entities.get(vxl).expect("VXL entity"));
+
+    let aliased = sim
+        .spawn_object_limbo_at_height("ALIASED", "Americans", 2, 1, 0, 0, &rules)
+        .expect("Image=ALT vehicle");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(aliased).expect("aliased entity"));
+
+    let omitted = sim
+        .spawn_object_limbo_at_height("OMITTED", "Americans", 3, 1, 0, 0, &rules)
+        .expect("art entry with omitted Voxel");
+    assert_gsi_13_10_shp_unit(sim.substrate.entities.get(omitted).expect("omitted entity"));
+
+    for (type_id, expected_voxel) in [
+        ("FALLBACKVEH", true),
+        ("FALLBACKAIR", true),
+        ("FALLBACKINF", false),
+        ("FALLBACKBLD", false),
+    ] {
+        let id = sim
+            .spawn_object_limbo_at_height(type_id, "Americans", 4, 1, 0, 0, &rules)
+            .unwrap_or_else(|| panic!("missing-metadata fallback spawn {type_id}"));
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(id)
+                .expect("fallback entity")
+                .is_voxel,
+            expected_voxel,
+            "category fallback for {type_id}"
+        );
+    }
 }
 
 #[test]
@@ -3601,7 +3811,10 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
         None,
         100,
     );
-    for _ in 0..80 {
+    // GSI-13.06: Ship Process_Drive_Track (0x6A05F0) spends the integer
+    // GetCurrentSpeed budget in strict 7-unit points; DEST's default ramp can
+    // reach the 0.3 brake floor while its final raw-track tail is still live.
+    for _ in 0..100 {
         let _ = sim.advance_tick(
             &[],
             Some(&rules),
@@ -3610,6 +3823,14 @@ fn test_real_ship_locomotor_move_command_crosses_water_cells() {
             None,
             100,
         );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
     }
 
     let ship = sim
@@ -3670,7 +3891,7 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
         None,
         100,
     );
-    for _ in 0..80 {
+    for _ in 0..100 {
         let _ = sim.advance_tick(
             &[],
             Some(&rules),
@@ -3679,6 +3900,14 @@ fn test_real_ship_locomotor_crosses_water_surface_cells_with_non_water_land_type
             None,
             100,
         );
+        if sim
+            .substrate
+            .entities
+            .get(ship_id)
+            .is_some_and(|ship| ship.movement_target.is_none())
+        {
+            break;
+        }
     }
 
     let ship = sim
@@ -4561,6 +4790,108 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             .cell_occupation
             .vehicle_bits(6, 4, MovementLayer::Ground),
         0
+    );
+}
+
+#[test]
+fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
+    let mut sim = Simulation::new();
+    sim.spawn_from_map(
+        &[MapEntity {
+            owner: "Americans".to_string(),
+            type_id: "DLPH".to_string(),
+            health: 256,
+            cell_x: 4,
+            cell_y: 4,
+            facing: 64,
+            category: EntityCategory::Unit,
+            sub_cell: 0,
+            veterancy: 0,
+            high: false,
+            mission: None,
+        }],
+        None,
+        &empty_heights(),
+    );
+    {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+        entity.ship_locomotion = Some(ShipLocomotionRuntime::default());
+        entity.facing = 64;
+    }
+
+    let grid = PathGrid::new(16, 16);
+    let issued = {
+        let (entities, cell_occupation) = (
+            &mut sim.substrate.entities,
+            &mut sim.substrate.cell_occupation,
+        );
+        crate::sim::movement::issue_move_command_with_layered(
+            entities,
+            &grid,
+            1,
+            (8, 4),
+            SimFixed::from_num(120),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(cell_occupation),
+        )
+    };
+    assert!(issued);
+    let committed_head = {
+        let entity = sim.substrate.entities.get_mut(1).unwrap();
+        assert!(entity.drive_track.is_some());
+        let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
+        ship.target_speed_fraction = SIM_ONE;
+        ship.current_speed_fraction = SIM_HALF;
+        ship.owner_current_speed = 10;
+        ship.head_to.expect("Ship curve has a committed head")
+    };
+    let committed_cell = (
+        u16::try_from(committed_head.x.div_euclid(256)).unwrap(),
+        u16::try_from(committed_head.y.div_euclid(256)).unwrap(),
+    );
+
+    assert!(sim.apply_command(
+        "Americans",
+        &Command::Stop { entity_id: 1 },
+        None,
+        Some(&grid),
+        &empty_heights(),
+    ));
+
+    let stopped = sim.substrate.entities.get(1).unwrap();
+    let target = stopped
+        .movement_target
+        .as_ref()
+        .expect("committed Ship segment survives Stop");
+    assert_eq!(target.path, vec![(4, 4), committed_cell]);
+    assert_eq!(target.final_goal, Some(committed_cell));
+    let ship = stopped.ship_locomotion.as_ref().expect("Ship runtime");
+    assert_eq!(ship.destination, None);
+    assert_eq!(ship.head_to, Some(committed_head));
+    assert_eq!(ship.target_speed_fraction, SimFixed::lit("0.3"));
+    assert_eq!(ship.current_speed_fraction, SIM_HALF);
+    assert_eq!(ship.owner_current_speed, 10);
+}
+
+#[test]
+fn gsi_13_06_shp_counter_admission_uses_only_tube_state_at_unit_ai_entry() {
+    assert!(shp_vehicle_counter_admitted(false));
+    assert!(!shp_vehicle_counter_admitted(true));
+
+    let tube_active_at_entry = false;
+    let tube_armed_during_ordinary_foot_visit = true;
+    assert!(tube_armed_during_ordinary_foot_visit);
+    assert!(
+        shp_vehicle_counter_admitted(tube_active_at_entry),
+        "post-Process tube state must not retroactively suppress this Foot visit"
     );
 }
 

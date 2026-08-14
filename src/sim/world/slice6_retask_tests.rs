@@ -163,8 +163,15 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // WaveStore, and ProductionState local next-ID sources with the shared global
 // `ObjectSubstrate::next_stable_object_id`. The shared source remains hashed;
 // removing the three obsolete local counter folds shifts all compositions.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xD19A_5923_2626_4D75;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9FC5_56E7_137A_3181;
+// Re-baselined 2026-08-14 for the v77 GSI-13.06 SHP body-cadence state.
+// `body_frame_counter` now contributes one persisted dword per entity, while
+// the derived Drive/Ship runtime hashes include the persisted signed owner-
+// speed carrier used by the native moving predicate. These folds sit outside
+// the v28/v29 gates, so both named legacy probes intentionally move with the
+// live composition; filtering them out would create an undocumented hybrid
+// schema rather than reproduce either probe's stated contract.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFA1F_9E65_F1BD_497D;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xAAC4_502B_90AF_E0A6;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -245,7 +252,9 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x9FC5_56E7_137A_3181;
 /// out at `SLICE6_PRE_LIFECYCLE_V28_HASH`.
 // Current-schema value from the same 2026-08-11 measurement above.
 // Re-baselined 2026-08-13 for the same global-ID hash-composition change above.
-const SLICE6_BASELINE_HASH: u64 = 0x4EE7_714E_D842_A621;
+// Re-baselined 2026-08-14 for the same v77 authoritative-state composition
+// described at the two legacy probes above.
+const SLICE6_BASELINE_HASH: u64 = 0xC469_B8C1_050F_D1A7;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

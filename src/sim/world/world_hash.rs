@@ -470,6 +470,7 @@ impl Simulation {
             house.is_defeated.hash(hasher);
             house.has_won.hash(hasher);
             house.has_lost.hash(hasher);
+            house.outcome_state.hash(hasher);
             house.map_is_clear.hash(hasher);
             house.spy_sat_active.hash(hasher);
             house.owned_building_count.hash(hasher);
@@ -860,6 +861,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            entity.body_frame_counter.hash(hasher);
             entity.owner.hash(hasher);
             entity.health.current.hash(hasher);
             entity.health.max.hash(hasher);
@@ -1024,6 +1026,7 @@ impl Simulation {
             } else {
                 0u8.hash(hasher);
             }
+            entity.pending_building_fire.hash(hasher);
             entity.current_weapon_index.hash(hasher);
             entity.current_weapon_ref.map(|id| id.index()).hash(hasher);
 

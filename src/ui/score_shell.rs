@@ -18,23 +18,19 @@
 //! DLU numbers are the retail numbers and the pixel rects fall out of the shared
 //! `shell::geom` conversion the other three shells already use.
 //!
-//! ## UNRESOLVED: the ten band statics
+//! ## Verified: the ten band statics are inert
 //!
 //! The template declares ten full-width band statics behind the rows —
 //! `WS_CHILD|WS_VISIBLE|SS_GRAYRECT`, `x=63 cx=293 cy=22`, on the same 22-DLU
-//! pitch as the rows (`y=72, 94, 116, ...`). They are NOT emitted here, and that
-//! choice is **UNCHECKED, not verified**.
+//! pitch as the rows (`y=72, 94, 116, ...`). They are intentionally not emitted.
 //!
-//! Plain USER32 fills an `SS_GRAYRECT` whether or not it has a caption, so the
-//! captionless-static argument that applies to an `SS_LEFT` control does not
-//! transfer to these. What makes the outcome genuinely open is that the shared
-//! dialog handler subclasses every child at init, and the subclass paints by an
-//! assigned kind rather than by the resource style — this dialog never assigns
-//! these ten a kind. Whether the subclass still honours the style was not read.
-//!
-//! Consequence if it does: ten dark bands are missing from the table on every
-//! score screen. Resolving it means reading the static subclass paint, not
-//! reasoning from a neighbouring control.
+//! Retail's shared static subclass routes them through
+//! `OwnerDraw_Static_006153E0`. For unassigned kind `0`, that procedure consumes
+//! `WM_PAINT`, ignores the original `SS_GRAYRECT` style, validates the control,
+//! and returns without a text or fill draw. `ScoreDialog__WndProc @ 0x005C9B10`
+//! does not send the custom `0x4B1` fill message that would change that result.
+//! Falling through to USER32 or painting ten synthetic bands would therefore be
+//! a visible divergence.
 
 use crate::ui::shell::geom::{
     RIGHT_PANEL_WIDTH, RectPx, RightPanelRects, SDBTNANM_CELL_H, SDBTNANM_CELL_W_NARROW,

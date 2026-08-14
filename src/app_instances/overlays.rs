@@ -16,11 +16,12 @@ use crate::render::batch::SpriteInstance;
 use crate::render::bridge_atlas::is_high_bridge_body_name;
 use crate::render::overlay_atlas::{CRATE_BODY_FRAME, OverlaySpriteKey};
 use crate::render::sprite_atlas::ShpSpriteKey;
-use crate::render::tactical_draw_plan::{BlitPolicy, RenderZPolicy, SpriteEncoding};
-use crate::rules::art_data::{AnimTypeRuntimeConfig, anim_translucency_source_alpha};
+use crate::render::tactical_draw_plan::{
+    BlitPolicy, ObjectDraw, RenderZPolicy, SpriteEncoding, TacticalCoord,
+};
+use crate::rules::art_data::{AnimLayer, AnimTypeRuntimeConfig, anim_translucency_source_alpha};
 use crate::rules::house_colors::HouseColorIndex;
 use crate::sim::components::WeaponMuzzleFlash;
-use crate::sim::miner::ResourceType;
 use crate::sim::projectile::ProjectileCoord;
 use crate::util::fixed_math::SimFixed;
 
@@ -33,6 +34,7 @@ use super::helpers::{
 /// simulation authority exists the live cell index decides whether an instance
 /// still exists. This keeps loading/fallback screens static without letting a
 /// destroyed runtime object remain visible forever.
+#[cfg(test)]
 fn terrain_object_is_render_visible(
     object: &crate::map::overlay::TerrainObject,
     rules: Option<&crate::rules::ruleset::RuleSet>,
@@ -101,6 +103,39 @@ fn overlay_render_identity(
     }
     (live_cell.overlay_id == Some(static_overlay_id))
         .then_some((static_overlay_id, live_cell.overlay_data))
+}
+
+/// Choose the display-only identity for a flat resource cell.
+///
+/// Active YR `CellClass__DrawOverlay_Body @ 0x0047F6A0` keeps the Cell's
+/// overlay identity/data as resource state but selects a coordinate-derived
+/// flat image when the resolved cell is not sloped. Missing render metadata,
+/// invalid signed indices, slopes, and non-resource overlays retain the live
+/// identity without approximation.
+fn overlay_display_identity(
+    live_overlay_id: u8,
+    overlay_data: u8,
+    rx: u16,
+    ry: u16,
+    slope_type: Option<u8>,
+    overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+    tiberium_types: Option<&crate::rules::tiberium_type::TiberiumTypeRegistry>,
+) -> (u8, u8) {
+    let (Some(overlay_registry), Some(tiberium_types)) = (overlay_registry, tiberium_types) else {
+        return (live_overlay_id, overlay_data);
+    };
+    if slope_type != Some(0)
+        || !overlay_registry
+            .flags(live_overlay_id)
+            .is_some_and(|flags| flags.tiberium)
+    {
+        return (live_overlay_id, overlay_data);
+    }
+
+    let display_overlay_id = overlay_registry
+        .flat_tiberium_display_overlay_id(tiberium_types, live_overlay_id, rx, ry)
+        .unwrap_or(live_overlay_id);
+    (display_overlay_id, overlay_data)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,8 +234,54 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnimRenderDestination {
+    Ground(ObjectDraw),
+    Top,
+    Existing,
+}
+
+fn anim_render_destination(
+    stable_id: u64,
+    owner_entity: Option<u64>,
+    world_coord: crate::sim::anim_class::AnimWorldCoord,
+    config: Option<&AnimTypeRuntimeConfig>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+) -> Option<AnimRenderDestination> {
+    // Owner-attached damage fire retains its established parent-adjacent path.
+    // gamemd-derived: no-owner `AnimClass::GetLayer @ 0x00424CB0` returns the
+    // AnimType layer; `GetYSort @ 0x00422BC0` adds AnimType YSortAdjust.
+    if owner_entity.is_some() {
+        return Some(AnimRenderDestination::Existing);
+    }
+    let config = config?;
+    match config.layer {
+        AnimLayer::Ground => ground_order
+            .anim_object_draw(
+                stable_id,
+                TacticalCoord {
+                    x: world_coord.x,
+                    y: world_coord.y,
+                    z: world_coord.z,
+                },
+                config.y_sort_adjust,
+            )
+            .map(AnimRenderDestination::Ground),
+        AnimLayer::Top => Some(AnimRenderDestination::Top),
+        AnimLayer::Other(_) => Some(AnimRenderDestination::Existing),
+    }
+}
+
 /// Build ordinary scheduler-owned `AnimClass` sprites.
-pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
+pub(crate) fn build_anim_class_instances(
+    state: &AppState,
+    paged: &mut [Vec<SpriteInstance>],
+    top_instances: &mut Vec<SpriteInstance>,
+    top_pages: &mut Vec<usize>,
+    top_ids: &mut Vec<u64>,
+    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+) {
     let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
@@ -212,7 +293,10 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
         state.render_width() as f32 / z2,
         state.render_height() as f32 / z2,
     );
-    for (_, anim) in sim.anims() {
+    for &stable_id in sim.tactical_registration_order() {
+        let Some(anim) = sim.anim(stable_id) else {
+            continue;
+        };
         if anim.runtime.inactive {
             continue;
         }
@@ -275,7 +359,8 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
             .map(|grid| (grid.origin_y, grid.world_height))
             .unwrap_or((0.0, 1.0));
         let fire_depth = compute_sprite_depth_params(origin_y, world_height, center_y, z);
-        paged[entry.page as usize].push(SpriteInstance {
+        debug_assert!(!anim.terrain_attached || anim.use_cell_drawer);
+        let instance = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
             size: entry.pixel_size,
             uv_origin: entry.uv_origin,
@@ -288,7 +373,35 @@ pub(crate) fn build_anim_class_instances(state: &AppState, paged: &mut [Vec<Spri
             tint,
             alpha,
             ..Default::default()
-        });
+        };
+        match anim_render_destination(
+            anim.stable_id,
+            anim.owner_entity,
+            anim.world_coord,
+            config,
+            ground_order,
+        ) {
+            Some(AnimRenderDestination::Ground(parent)) => ground_objects.push(
+                crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                    parent,
+                    vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                        target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+                            entry.page as usize,
+                        ),
+                        instance,
+                    }],
+                ),
+            ),
+            Some(AnimRenderDestination::Top) => {
+                top_instances.push(instance);
+                top_pages.push(entry.page as usize);
+                top_ids.push(anim.stable_id);
+            }
+            Some(AnimRenderDestination::Existing) => {
+                paged[entry.page as usize].push(instance);
+            }
+            None => {}
+        }
     }
 }
 
@@ -401,6 +514,8 @@ pub(crate) fn build_overlay_instances(
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
+    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
 ) {
     let atlas = match &state.overlay_atlas {
         Some(a) => a,
@@ -464,55 +579,45 @@ pub(crate) fn build_overlay_instances(
             .as_ref()
             .and_then(|sim| sim.overlay_grid.as_ref())
             .map(|grid| grid.cell(entry.rx, entry.ry));
-        let Some((render_overlay_id, live_overlay_data)) =
+        let Some((live_overlay_id, live_overlay_data)) =
             overlay_render_identity(entry.overlay_id, entry.frame, live_overlay_cell)
         else {
             continue;
         };
-        let Some(name) = state.overlay_names.get(&render_overlay_id) else {
+        let overlay_registry = state.overlay_registry.as_ref();
+        let overlay_flags = overlay_registry.and_then(|reg| reg.flags(live_overlay_id));
+        let slope_type = state
+            .resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
+            .map(|cell| cell.slope_type);
+        let (display_overlay_id, live_overlay_data) = overlay_display_identity(
+            live_overlay_id,
+            live_overlay_data,
+            entry.rx,
+            entry.ry,
+            slope_type,
+            overlay_registry,
+            state.rules.as_ref().map(|rules| &rules.tiberium_types),
+        );
+        let name = if display_overlay_id == live_overlay_id {
+            state.overlay_names.get(&live_overlay_id).cloned()
+        } else {
+            overlay_registry
+                .and_then(|registry| registry.name(display_overlay_id).map(str::to_owned))
+        };
+        let Some(name) = name else {
             continue;
         };
-        if is_high_bridge_body_name(name) {
+        if is_high_bridge_body_name(&name) {
             continue;
         }
 
-        // Derive the live render data for this overlay. If OverlayGrid is
-        // available, its mutable identity/data owns ore density, wall damage,
-        // and low-bridge variants. Otherwise retain the loading-screen fallback.
-        let upper = name.to_ascii_uppercase();
-        let overlay_flags = state
-            .overlay_registry
-            .as_ref()
-            .and_then(|reg| reg.flags(render_overlay_id));
+        // The live identity owns resource type, wall/crate flags, and bridge
+        // state even when a flat resource cell selects another display image.
         let is_wall: bool = overlay_flags.map(|f| f.wall).unwrap_or(false);
         let is_crate: bool = overlay_flags.map(|f| f.crate_type).unwrap_or(false);
-        let is_resource = upper.starts_with("TIB") || upper.starts_with("GEM");
-
-        let render_frame: u8 = if live_overlay_cell.is_some() {
-            live_overlay_data
-        } else {
-            // No OverlayGrid — fall back to old behavior.
-            if is_resource {
-                match state
-                    .simulation
-                    .as_ref()
-                    .and_then(|sim| sim.production.resource_nodes.get(&(entry.rx, entry.ry)))
-                {
-                    None => continue,
-                    Some(node) => {
-                        let base: u16 = match node.resource_type {
-                            ResourceType::Ore => 120,
-                            ResourceType::Gem => 180,
-                        };
-                        let richness = (node.remaining / base).max(1);
-                        (richness - 1).min(11) as u8
-                    }
-                }
-            } else {
-                entry.frame
-            }
-        };
-        let render_frame: u8 = overlay_body_frame(is_crate, render_frame);
+        let render_frame: u8 = overlay_body_frame(is_crate, live_overlay_data);
 
         // FA2 IsoView.cpp:5955-5956: track overlays render +CellHeight (15px) lower.
         let track_y_offset: f32 = if overlay_flags.map(|f| f.track).unwrap_or(false) {
@@ -590,11 +695,14 @@ pub(crate) fn build_overlay_instances(
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
 
-    let terrain_authority = state.simulation.as_ref().map(|sim| &sim.production);
-    for obj in &state.terrain_objects {
-        if !terrain_object_is_render_visible(obj, state.rules.as_ref(), terrain_authority) {
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    for obj in sim.production.terrain_objects.values() {
+        if !obj.is_live() || !obj.in_logic_vector {
             continue;
         }
+        let name = sim.interner.resolve(obj.type_ref);
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, obj.rx, obj.ry) {
                 continue;
@@ -620,7 +728,7 @@ pub(crate) fn build_overlay_instances(
 
         // Animated terrain objects (flags) cycle through all frames using the
         // global idle animation timer. Static terrain uses frame 0.
-        let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(&obj.name) {
+        let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(name) {
             // RA2 terrain animation rate: ~83ms per frame (12 fps).
             const TERRAIN_ANIM_RATE_MS: u32 = 83;
             let tick = state.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
@@ -629,7 +737,7 @@ pub(crate) fn build_overlay_instances(
             0
         };
         let key = OverlaySpriteKey {
-            name: obj.name.clone(),
+            name: name.to_string(),
             frame,
         };
         let Some(spr) = atlas.get(&key) else { continue };
@@ -638,26 +746,37 @@ pub(crate) fn build_overlay_instances(
         let spawns_tiberium = state
             .rules
             .as_ref()
-            .and_then(|rules| rules.terrain_object_type_case_insensitive(&obj.name))
+            .and_then(|rules| rules.terrain_object_type_case_insensitive(name))
             .map(|terrain_type| terrain_type.spawns_tiberium)
             .unwrap_or(false);
         let tint: [f32; 3] = state
             .lighting_grid
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
-        instances.push(SpriteInstance {
-            position: [
-                screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
-                screen_y + TILE_HEIGHT / 2.0 + spr.offset_y + TERRAIN_OBJECT_Y_FUDGE,
-            ],
-            size: spr.pixel_size,
-            uv_origin: spr.uv_origin,
-            uv_size: spr.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
-        });
+        let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
+            continue;
+        };
+        ground_objects.push(
+            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                parent,
+                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app_render::draw_plan_lowering::GroundTexture::OverlayAtlas,
+                    instance: SpriteInstance {
+                        position: [
+                            screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
+                            screen_y + TILE_HEIGHT / 2.0 + spr.offset_y + TERRAIN_OBJECT_Y_FUDGE,
+                        ],
+                        size: spr.pixel_size,
+                        uv_origin: spr.uv_origin,
+                        uv_size: spr.uv_size,
+                        depth,
+                        tint,
+                        alpha: 1.0,
+                        ..Default::default()
+                    },
+                }],
+            ),
+        );
     }
 }
 
@@ -1054,7 +1173,7 @@ pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstanc
 /// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
 pub(crate) fn build_parachute_instances(
     state: &AppState,
-    paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut [crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance],
     body_depths: &super::shp::ParachuteBodyDepths,
 ) {
     /// Depth epsilon — chute sorts slightly above the GI body. Half of the
@@ -1132,37 +1251,110 @@ pub(crate) fn build_parachute_instances(
         // to camera = on top.
         let depth = (body_depth - CHUTE_DEPTH_EPSILON).clamp(0.001, 0.999);
 
-        paged[entry.page as usize].push(SpriteInstance {
-            position: [cx, cy],
-            size: entry.pixel_size,
-            uv_origin: entry.uv_origin,
-            uv_size: entry.uv_size,
-            depth,
-            tint,
-            alpha: 1.0,
-            ..Default::default()
-        });
+        let Some(parent) = ground_objects
+            .iter_mut()
+            .find(|object| object.parent.id == anim.target_id)
+        else {
+            continue;
+        };
+        parent
+            .pieces
+            .push(crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+                    entry.page as usize,
+                ),
+                instance: SpriteInstance {
+                    position: [cx, cy],
+                    size: entry.pixel_size,
+                    uv_origin: entry.uv_origin,
+                    uv_size: entry.uv_size,
+                    depth,
+                    tint,
+                    alpha: 1.0,
+                    ..Default::default()
+                },
+            });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ANIM_DRAW_DEPTH_BIAS_PX, CRATE_BODY_FRAME, OverlayRenderBucket, anim_instance_alpha,
-        apply_shape_z_adjust, classify_overlay_render_bucket, garrison_flash_depth,
-        overlay_body_frame, overlay_render_identity, terrain_object_is_render_visible,
+        ANIM_DRAW_DEPTH_BIAS_PX, AnimRenderDestination, CRATE_BODY_FRAME, OverlayRenderBucket,
+        anim_instance_alpha, anim_render_destination, apply_shape_z_adjust,
+        classify_overlay_render_bucket, garrison_flash_depth, overlay_body_frame,
+        overlay_display_identity, overlay_render_identity, terrain_object_is_render_visible,
         weapon_muzzle_flash_key, world_effect_screen_position,
     };
     use crate::map::overlay::TerrainObject;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::rules::art_data::ArtRegistry;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
+    use crate::rules::tiberium_type::TiberiumTypeRegistry;
     use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash, WeaponMuzzleFlash};
     use crate::sim::intern::StringInterner;
     use crate::sim::overlay_grid::OverlayCell;
     use crate::sim::production::ProductionState;
     use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
     use crate::util::fixed_math::SimFixed;
+
+    #[test]
+    fn gsi_13_04_wa_top_and_tuntop_ground_use_native_layer_and_ysort_lowering() {
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[WA_CUSTOM]\nYSortAdjust=7\n\
+             [TUNTOP_CUSTOM]\nLayer=ground\nYSortAdjust=1000\n",
+        ));
+        let order = crate::app_render::draw_plan_lowering::NativeGroundOrder::new(&[5, 10, 20]);
+        let wa = art.anim_runtime_config("WA_CUSTOM");
+        let tuntop = art.anim_runtime_config("TUNTOP_CUSTOM");
+        let world = crate::sim::anim_class::AnimWorldCoord {
+            x: 400,
+            y: 600,
+            z: 208,
+        };
+
+        assert_eq!(
+            anim_render_destination(10, None, world, wa, &order),
+            Some(AnimRenderDestination::Top)
+        );
+        let Some(AnimRenderDestination::Ground(tunnel_draw)) =
+            anim_render_destination(20, None, world, tuntop, &order)
+        else {
+            panic!("ground tile animation must enter TacticalDrawPlan");
+        };
+        assert_eq!(tunnel_draw.coord.x, 400);
+        assert_eq!(tunnel_draw.coord.y, 600);
+        assert_eq!(tunnel_draw.coord.z, 208);
+        assert_eq!(tunnel_draw.y_sort_adjust, 1000);
+        assert_eq!(tunnel_draw.y_sort_key(), 2000);
+
+        let ordinary = order
+            .object_draw(
+                5,
+                crate::render::tactical_draw_plan::TacticalCoord {
+                    x: 900,
+                    y: 900,
+                    z: 0,
+                },
+                crate::render::tactical_draw_plan::SpriteEncoding::Plain,
+            )
+            .unwrap();
+        let pieces = |parent| {
+            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                parent,
+                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(0),
+                    instance: crate::render::batch::SpriteInstance::default(),
+                }],
+            )
+        };
+        let lowered = crate::app_render::draw_plan_lowering::lower_ground_object_instances(vec![
+            pieces(tunnel_draw),
+            pieces(ordinary),
+        ]);
+        assert_eq!(lowered.owners, [5, 20]);
+    }
 
     #[test]
     fn gsi_04_10_render_visibility_distinguishes_unregistered_live_and_destroyed() {
@@ -1311,6 +1503,80 @@ mod tests {
             overlay_render_identity(5, 3, Some(&live)),
             None,
             "ordinary overlays retain exact identity matching"
+        );
+    }
+
+    #[test]
+    fn gsi_13_05_flat_resource_changes_only_display_identity_on_known_flat_cells() {
+        let mut text = String::from(
+            "[Tiberiums]\n0=Riparius\n1=Cruentus\n\
+             [Riparius]\nImage=1\n\
+             [Cruentus]\nImage=2\n\
+             [OverlayTypes]\n",
+        );
+        let mut resource_names = Vec::new();
+        for overlay_id in 0..=113 {
+            let name = match overlay_id {
+                27..=38 => format!("GEM{:02}", overlay_id - 26),
+                102..=113 => format!("TIB{:02}", overlay_id - 101),
+                _ => format!("FILL{overlay_id:03}"),
+            };
+            text.push_str(&format!("{overlay_id}={name}\n"));
+            if matches!(overlay_id, 27..=38 | 102..=113) {
+                resource_names.push(name);
+            }
+        }
+        for name in resource_names {
+            text.push_str(&format!("[{name}]\nTiberium=yes\n"));
+        }
+        let ini = IniFile::from_str(&text);
+        let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+        let tiberiums = TiberiumTypeRegistry::from_ini(&ini);
+        let tib12 = overlays.id_for_name("TIB12").expect("TIB12");
+        let tib01 = overlays.id_for_name("TIB01").expect("TIB01");
+        let tib05 = overlays.id_for_name("TIB05").expect("TIB05");
+        let gem12 = overlays.id_for_name("GEM12").expect("GEM12");
+        let gem01 = overlays.id_for_name("GEM01").expect("GEM01");
+        let non_tiberium = overlays.id_for_name("FILL000").expect("FILL000");
+
+        assert_eq!(
+            overlay_display_identity(tib12, 8, 4, 7, Some(0), Some(&overlays), Some(&tiberiums),),
+            (tib05, 8)
+        );
+        assert_eq!(
+            overlay_display_identity(gem12, 11, 0, 7, Some(0), Some(&overlays), Some(&tiberiums),),
+            (gem01, 11)
+        );
+        assert_eq!(
+            overlay_display_identity(tib12, 8, 4, 7, Some(2), Some(&overlays), Some(&tiberiums),),
+            (tib12, 8),
+            "sloped resource cells retain their stored display identity"
+        );
+        assert_eq!(
+            overlay_display_identity(
+                non_tiberium,
+                9,
+                4,
+                7,
+                Some(0),
+                Some(&overlays),
+                Some(&tiberiums),
+            ),
+            (non_tiberium, 9),
+            "non-resource overlays remain unchanged"
+        );
+        assert_eq!(
+            overlay_display_identity(
+                tib12,
+                8,
+                u16::MAX,
+                1,
+                Some(0),
+                Some(&overlays),
+                Some(&tiberiums),
+            ),
+            (tib01.checked_sub(1).expect("registered base - 1"), 8),
+            "signed base-relative display selection must not change live density state"
         );
     }
 

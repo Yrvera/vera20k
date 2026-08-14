@@ -55,16 +55,9 @@
 //! - Part of render/ — reads sim/ state read-only and writes none of it.
 //! - sim/ NEVER depends on render/, so nothing here may be called from sim/.
 
-use crate::map::entities::EntityCategory;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::movement::locomotor::MovementLayer;
-
-/// Infantry walking bob amplitude, in screen pixels.
-///
-/// ~1 px is barely perceptible — just enough to feel alive. The phase it reads
-/// still accumulates in `sim/` (see [`infantry_bob_px`]).
-pub const INFANTRY_WOBBLE_AMPLITUDE: f32 = 1.0;
 
 /// What is carrying this entity's visual height, if anything.
 ///
@@ -80,7 +73,7 @@ enum HeightSource {
     Rocket,
     /// An air-layer locomotor holding the unit up.
     AirLocomotor,
-    /// On the ground. Only the infantry walking bob applies.
+    /// On the ground, with no additional visual height.
     Ground,
 }
 
@@ -100,26 +93,6 @@ fn height_source(entity: &GameEntity) -> HeightSource {
     } else {
         HeightSource::Ground
     }
-}
-
-/// The infantry walking bob, in screen pixels (positive = lift).
-///
-/// The phase this reads is still owned and accumulated by the movement tick.
-/// Moving it here would mean render keeping per-entity state and advancing it
-/// per *frame* instead of per *tick*, which changes the bob's cadence — a
-/// visible change, and not one this slice is buying. The phase is a pure
-/// render input in the meantime: it feeds this offset and nothing else.
-fn infantry_bob_px(entity: &GameEntity) -> f32 {
-    if entity.category != EntityCategory::Infantry {
-        return 0.0;
-    }
-    let Some(loco) = entity.locomotor.as_ref() else {
-        return 0.0;
-    };
-    if loco.infantry_wobble_phase == 0.0 {
-        return 0.0;
-    }
-    loco.infantry_wobble_phase.cos() * INFANTRY_WOBBLE_AMPLITUDE
 }
 
 /// This entity's height above the ground, in leptons.
@@ -162,15 +135,15 @@ fn adjust_for_z_lift_px(leptons: i32) -> f32 {
 /// included: the startup scale, the 728-lepton correction, and the `+ 0.5`
 /// truncate that rounds it to a whole pixel. The engine's own
 /// blitter is integer-pixel, so a climbing aircraft steps a pixel at a time
-/// there too. The infantry bob is *not* quantised — it is a VERA-internal
-/// flourish with no gamemd equivalent, and rounding a ±1px sine to whole pixels
-/// would turn it into a square wave.
+/// there too.
+///
+/// gamemd-derived: active YR `ObjectClass__GetRenderCoords` at `0x0041BE00`
+/// delegates to virtual `GetCoords`; the InfantryClass receiver reaches
+/// `ObjectClass__GetCoords` at `0x005F65A0`, which copies exact XYZ and adds no
+/// walking sine bob. Grounded objects therefore have zero additional lift.
 pub fn height_lift_px(entity: &GameEntity) -> f32 {
     if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
         return adjust_for_z_lift_px(exact_z_leptons);
-    }
-    if height_source(entity) == HeightSource::Ground {
-        return infantry_bob_px(entity);
     }
     adjust_for_z_lift_px(height_leptons(entity))
 }
@@ -259,6 +232,7 @@ fn z_free_screen_position(position: &crate::sim::components::Position) -> (f32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::entities::EntityCategory;
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::movement::locomotor::LocomotorState;
     use crate::util::fixed_math::SimFixed;
@@ -400,6 +374,21 @@ mod tests {
     }
 
     #[test]
+    fn gsi_13_02_building_lift_and_adjust_for_z_remain_separate_exact_steps() {
+        let mut entity = GameEntity::test_default(1, "GAPOWR", "Americans", 5, 5);
+        entity.category = EntityCategory::Structure;
+        entity.position.exact_z_leptons = Some(728);
+
+        let z_free = z_free_screen_position(&entity.position);
+        let drawn = screen_position(&entity);
+        assert_eq!(drawn, (z_free.0, z_free.1 - 105.0));
+        assert_eq!(
+            building_art_anchor(drawn.0, drawn.1),
+            (drawn.0, drawn.1 - 15.0),
+        );
+    }
+
+    #[test]
     fn height_does_not_move_an_entity_sideways() {
         let entity = air_unit(LocomotorKind::Jumpjet, 900);
         assert_eq!(
@@ -454,21 +443,23 @@ mod tests {
     }
 
     #[test]
-    fn the_infantry_bob_only_applies_on_the_ground() {
+    fn gsi_13_02_grounded_infantry_anchor_is_independent_of_wobble_phase() {
         let mut entity = GameEntity::test_default(1, "E1", "Americans", 5, 5);
         entity.category = EntityCategory::Infantry;
         let mut loco = LocomotorState::for_test_kind(LocomotorKind::Walk);
         loco.infantry_wobble_phase = 0.0;
         entity.locomotor = Some(loco);
-        assert_eq!(height_lift_px(&entity), 0.0, "phase 0 is the resting state");
+        let resting = screen_position(&entity);
 
         if let Some(loco) = entity.locomotor.as_mut() {
             loco.infantry_wobble_phase = std::f32::consts::PI;
         }
-        assert!(
-            (height_lift_px(&entity) + INFANTRY_WOBBLE_AMPLITUDE).abs() < 0.001,
-            "cos(pi) = -1, so the bob is at the bottom of its travel"
+        assert_eq!(
+            screen_position(&entity),
+            resting,
+            "ObjectClass::GetCoords returns exact XYZ; phase cannot move the anchor",
         );
+        assert_eq!(resting, ground_screen_position(&entity.position));
     }
 
     /// The slice's exit criterion, and the thing that keeps it from growing
@@ -476,11 +467,9 @@ mod tests {
     /// placement is derived here, so a write over there is by definition a
     /// second owner — which is how the height lift came to be applied twice.
     ///
-    /// Deliberately NOT asserted: that `sim/` holds no `f32` at all.
-    /// `LocomotorState::infantry_wobble_phase` is still there and still `f32`.
-    /// It is a pure render input — it feeds [`infantry_bob_px`] and nothing
-    /// else — but moving it would change the bob from per-tick to per-frame
-    /// cadence, which is a visible change this slice did not buy.
+    /// Deliberately NOT asserted: that `sim/` holds no `f32` at all. Legacy
+    /// locomotor phase state may remain without becoming a render-coordinate
+    /// offset; removing that state is outside this projection slice.
     #[test]
     fn sim_writes_no_screen_coordinates() {
         fn walk(dir: &std::path::Path, out: &mut Vec<(String, usize, String)>) {

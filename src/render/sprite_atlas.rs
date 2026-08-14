@@ -35,6 +35,60 @@ const SPRITE_PADDING: u32 = 1;
 const INFANTRY_FACING_STEP: u8 = 32;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
 
+/// Number of SHP frames available to an animation consumer.
+///
+/// gamemd.exe's AnimType INI load at 0x00427D00 calls the loader at 0x00427B50,
+/// which replaces a zero `End` with the signed SHP header count and halves it
+/// only when `Shadow=yes`; a zero `LoopEnd` then copies `End`. Scheduler-owned
+/// types still need their complete raw range resident because their bound runtime
+/// metadata owns body/shadow bounds.
+fn available_effect_anim_frame_count(raw_count: u16, scheduler_owned: bool, shadow: bool) -> u16 {
+    if scheduler_owned || !shadow {
+        return raw_count;
+    }
+
+    let body_count = raw_count / 2;
+    if body_count > 0 {
+        body_count
+    } else {
+        raw_count
+    }
+}
+
+fn register_effect_anim_frames(
+    needed: &mut HashSet<ShpSpriteKey>,
+    frame_counts: &mut HashMap<String, u16>,
+    anim_type: &str,
+    raw_count: u16,
+    scheduler_owned: bool,
+    shadow: bool,
+) -> u16 {
+    let count = available_effect_anim_frame_count(raw_count, scheduler_owned, shadow);
+    for frame in 0..count {
+        needed.insert(ShpSpriteKey {
+            type_id: anim_type.to_string(),
+            facing: 0,
+            frame,
+            house_color: HouseColorIndex(0),
+        });
+    }
+    frame_counts.insert(anim_type.to_ascii_uppercase(), count);
+    count
+}
+
+fn effect_anim_shp_candidates(
+    anim_type: &str,
+    art: Option<&ArtRegistry>,
+    theater_ext: &str,
+    theater_name: &str,
+) -> Vec<String> {
+    let image_id = art.map_or_else(
+        || anim_type.to_ascii_uppercase(),
+        |registry| registry.resolve_effective_image_id(anim_type, anim_type),
+    );
+    art_data::anim_shp_candidates(art, anim_type, &image_id, theater_ext, theater_name)
+}
+
 fn scan_building_anim_frame_count(
     asset_manager: &AssetManager,
     art_reg: &ArtRegistry,
@@ -184,6 +238,9 @@ fn collect_effect_names(rules: &RuleSet) -> Vec<String> {
     for fire_ref in &rules.general.damage_fire_types {
         push_effect_name(&mut effect_names, &fire_ref.name);
     }
+    for anim_name in rules.art_registry.scheduler_anim_types() {
+        push_effect_name(&mut effect_names, anim_name);
+    }
     for wh in rules.warheads_iter() {
         for anim_name in &wh.anim_list {
             push_effect_name(&mut effect_names, anim_name);
@@ -319,7 +376,7 @@ pub fn atlas_covers_base_keys(
     true
 }
 
-/// Which of the two palettes a sprite's frames are baked against.
+/// Which palette a sprite's frames are baked against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpritePaletteChoice {
     /// The theater unit palette — the atlas's default and the target of
@@ -327,6 +384,8 @@ pub(crate) enum SpritePaletteChoice {
     Unit,
     /// `anim.pal`, used for animation art that does not set `AltPalette=`.
     Anim,
+    /// Active theater ISO palette, used by AnimClass +0x196 cell-drawer rows.
+    CellIso,
 }
 
 /// Pick the palette a sprite key's frames are baked against.
@@ -346,7 +405,11 @@ pub(crate) fn sprite_palette_choice(
     type_id: &str,
     art: Option<&ArtRegistry>,
     effect_type_ids: &HashSet<String>,
+    cell_drawer_type_ids: &HashSet<String>,
 ) -> SpritePaletteChoice {
+    if cell_drawer_type_ids.contains(&type_id.to_ascii_uppercase()) {
+        return SpritePaletteChoice::CellIso;
+    }
     let alt_palette = art
         .and_then(|registry| registry.anim_runtime_config(type_id))
         .map(art_data::anim_draw_palette)
@@ -390,6 +453,8 @@ pub fn build_sprite_atlas(
     house_colors: &HouseColorMap,
     extra_building_types: &[&str],
     infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
+    cell_drawer_type_ids: &HashSet<String>,
+    cell_palette: Option<&Palette>,
     existing: Option<SpriteAtlas>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<SpriteAtlas> {
@@ -461,7 +526,18 @@ pub fn build_sprite_atlas(
                         }
                         art_entry
                             .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
-                            .map(crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences)
+                            .map(|entry| {
+                                let cadence = rules
+                                    .and_then(|registry| registry.object(type_str))
+                                    .map(|object| crate::sim::animation::ShpVehicleCadence {
+                                        walk_rate: object.walk_rate,
+                                        idle_rate: object.idle_rate,
+                                    })
+                                    .unwrap_or_default();
+                                crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
+                                    entry, cadence,
+                                )
+                            })
                     });
 
                 if let Some(ref set) = seq_set {
@@ -822,38 +898,44 @@ pub fn build_sprite_atlas(
             }
         }
         for name in &effect_names {
-            let lower: String = name.to_ascii_lowercase();
-            let candidates: Vec<String> = vec![format!("{}.shp", lower), format!("{}.SHP", name)];
-            if let Some(data) = candidates.iter().find_map(|c| asset_manager.get_ref(c)) {
-                if let Ok(shp) = ShpFile::from_bytes(data) {
-                    let raw_count = shp.frames.len() as u16;
-                    let scheduler_owned = art.is_some_and(|registry| {
-                        registry
-                            .scheduler_anim_types()
-                            .contains(&name.to_ascii_uppercase())
-                    });
-                    let real = raw_count / 2;
-                    let count: u16 = if scheduler_owned {
-                        raw_count
-                    } else if real > 0 {
-                        real
-                    } else {
-                        raw_count
-                    };
-                    for f in 0..count {
-                        needed.insert(ShpSpriteKey {
-                            type_id: name.clone(),
-                            facing: 0,
-                            frame: f,
-                            house_color: HouseColorIndex(0),
+            // Use the same resolved Image= and Theater=/NewTheater= filename
+            // authority as scheduler binding. Stock cell-drawer rows such as
+            // WA01X and TUNTOP01 are theater SHPs (`.TEM` on Temperate maps).
+            let candidates = effect_anim_shp_candidates(name, art, theater_ext, theater_name);
+            let required_cell_drawer = cell_drawer_type_ids.contains(&name.to_ascii_uppercase());
+            match candidates.iter().find_map(|c| asset_manager.get_ref(c)) {
+                Some(data) => match ShpFile::from_bytes(data) {
+                    Ok(shp) => {
+                        let raw_count = shp.frames.len() as u16;
+                        let name_upper = name.to_ascii_uppercase();
+                        let scheduler_owned = art.is_some_and(|registry| {
+                            registry.scheduler_anim_types().contains(&name_upper)
                         });
+                        let shadow = art
+                            .and_then(|registry| registry.anim_runtime_config(name))
+                            .is_some_and(|config| config.shadow);
+                        // Keep the atlas keys and the sim-facing count in one registration
+                        // so consumers cannot observe a frame that was not preloaded.
+                        let count = register_effect_anim_frames(
+                            &mut needed,
+                            &mut active_anim_frame_counts,
+                            name,
+                            raw_count,
+                            scheduler_owned,
+                            shadow,
+                        );
+                        effect_type_ids.insert(name.clone());
+                        log::info!("WorldEffect SHP {}: {} frames loaded", name, count);
                     }
-                    // Store frame count so sim systems (miner chrono-teleport) can
-                    // look up real frame counts instead of hardcoding them.
-                    active_anim_frame_counts.insert(name.to_uppercase(), count);
-                    effect_type_ids.insert(name.clone());
-                    log::info!("WorldEffect SHP {}: {} frames loaded", name, count);
+                    Err(error) if required_cell_drawer => {
+                        panic!("bound cell-drawer animation [{name}] failed SHP decode: {error}")
+                    }
+                    Err(_) => {}
+                },
+                None if required_cell_drawer => {
+                    panic!("bound cell-drawer animation [{name}] has no SHP asset")
                 }
+                None => {}
             }
         }
     }
@@ -928,14 +1010,26 @@ pub fn build_sprite_atlas(
         log::warn!("anim.pal not found — world effect SHPs will use unit.pal (wrong colors)");
     }
 
+    if !cell_drawer_type_ids.is_empty() && cell_palette.is_none() {
+        panic!("terrain-attached animations require the active theater ISO palette");
+    }
+
     // Step 2: Render only new sprites (skip cached ones).
     for key in &needed {
         if cached_keys.contains(key) {
             continue;
         }
-        let pal: &Palette = match sprite_palette_choice(&key.type_id, art, &effect_type_ids) {
+        let pal: &Palette = match sprite_palette_choice(
+            &key.type_id,
+            art,
+            &effect_type_ids,
+            cell_drawer_type_ids,
+        ) {
             SpritePaletteChoice::Anim => effect_palette.as_ref().unwrap_or(palette),
             SpritePaletteChoice::Unit => palette,
+            SpritePaletteChoice::CellIso => {
+                cell_palette.expect("cell-drawer palette was validated before atlas rendering")
+            }
         };
         match render_shp_sprite(
             asset_manager,
@@ -947,6 +1041,12 @@ pub fn build_sprite_atlas(
             art,
         ) {
             Some(sprite) => cached.push(sprite),
+            None if cell_drawer_type_ids.contains(&key.type_id.to_ascii_uppercase()) => {
+                panic!(
+                    "bound cell-drawer animation [{}] frame {} failed SHP rendering",
+                    key.type_id, key.frame
+                )
+            }
             None => log::debug!(
                 "No SHP for {} (facing {}, frame {})",
                 key.type_id,

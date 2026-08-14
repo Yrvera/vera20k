@@ -11,6 +11,9 @@ use super::helpers::{
     ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
+use crate::app_render::draw_plan_lowering::{
+    GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedGroundObjectInstance,
+};
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
@@ -25,6 +28,7 @@ use crate::render::unit_slope_transition_cache::{
 };
 use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::components::HarvestOverlay;
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One-shot tripwire: fires the first time a `slope_type >= 17` byte is
@@ -37,6 +41,51 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// this log surfaces them at runtime so the deferred TMP scan can be
 /// scheduled if it ever fires.
 static WARNED_SLOPE_GE_17: AtomicBool = AtomicBool::new(false);
+
+const NO_SPAWN_ALT_SUFFIX: &str = "WO";
+
+fn vxl_body_tint(
+    grid: &lighting::CellLightGrid,
+    cell: (u16, u16),
+    category: EntityCategory,
+    extra_unit_light: i32,
+    extra_aircraft_light: i32,
+) -> [f32; 3] {
+    match category {
+        EntityCategory::Unit => grid.unit_tint_at(cell, extra_unit_light),
+        EntityCategory::Aircraft => {
+            // AircraftClass adds a separate altitude/Scenario-Level term in
+            // gamemd. Until that term is represented, preserve this existing
+            // compatibility RGB path while consuming the native i32 parser
+            // value at its normalized scale.
+            let mut tint = grid.aircraft_tint_at(cell);
+            let glow = extra_aircraft_light as f32 / lighting::LIGHT_UNIT as f32;
+            if glow > 0.0 {
+                tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+                tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+                tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
+            }
+            tint
+        }
+        _ => grid.techno_tint_at(cell),
+    }
+}
+
+/// The active `NoSpawnAlt` art id for one Unit draw, if any.
+///
+/// `UnitClass` reads `NoSpawnAlt`, calls
+/// `SpawnManagerClass::CountDockedSpawns` (`0x006B7D50`), and selects the
+/// preloaded `%sWO` auxiliary voxel only when that count is zero. This is a
+/// presentation-time query: live but non-docked children still select the
+/// alternate model, and no spawn-manager AI cadence participates.
+fn no_spawn_alt_type_id(
+    base_type: &str,
+    no_spawn_alt: bool,
+    manager: Option<&crate::sim::spawn_manager::SpawnManagerState>,
+) -> Option<String> {
+    (no_spawn_alt && manager.is_some_and(|manager| manager.count_docked_spawns() == 0))
+        .then(|| format!("{base_type}{NO_SPAWN_ALT_SUFFIX}"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnitRenderSlopeState {
@@ -184,6 +233,8 @@ pub(crate) fn build_unit_instances(
     transition_instances: &mut Vec<Vec<SpriteInstance>>,
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     shp_paged: &mut [Vec<SpriteInstance>],
+    ground_objects: &mut Vec<PlannedGroundObjectInstance>,
+    ground_order: &NativeGroundOrder,
 ) {
     let (sim, atlas) = match (&state.simulation, &state.unit_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -201,7 +252,8 @@ pub(crate) fn build_unit_instances(
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
 
-    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
+    let encounter_order =
+        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -212,19 +264,36 @@ pub(crate) fn build_unit_instances(
         // Common visibility, passenger, limbo, and DrawState admission is shared below.
         let pos = &entity.position;
         let owner_str = sim.interner.resolve(entity.owner);
-        // Honor display_type_override (set by the dock sub-FSM during Unloading)
-        // so the miner renders as its UnloadingClass model (HORV/CMON) while
-        // depositing ore. Mirrors gamemd's TypeClass+0x6B8 swap at draw time.
+        // Disguise remains the outer display-type choice. For an ordinary
+        // undisguised Unit, `NoSpawnAlt` is selected from the current docked
+        // slot count at draw time; the serialized override remains solely the
+        // miner dock sub-FSM's UnloadingClass (HORV/CMON) hint.
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
-        let type_str: &str = active_disguise
-            .and_then(|state| state.disguise_type)
+        let base_type = sim.interner.resolve(entity.type_ref);
+        let no_spawn_alt = state
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.object(base_type))
+            .is_some_and(|object| object.no_spawn_alt);
+        let no_spawn_alt_type =
+            no_spawn_alt_type_id(base_type, no_spawn_alt, entity.spawn_manager.as_ref());
+        let type_name: Cow<'_, str> = if let Some(disguise_type) = active_disguise
+            .and_then(|disguise| disguise.disguise_type)
             .map(|id| sim.interner.resolve(id))
-            .or_else(|| {
-                entity
-                    .display_type_override
-                    .map(|id| sim.interner.resolve(id))
-            })
-            .unwrap_or_else(|| sim.interner.resolve(entity.type_ref));
+        {
+            Cow::Borrowed(disguise_type)
+        } else if let Some(no_spawn_alt_type) = no_spawn_alt_type {
+            Cow::Owned(no_spawn_alt_type)
+        } else if let Some(display_override) = (!no_spawn_alt)
+            .then_some(entity.display_type_override)
+            .flatten()
+            .map(|id| sim.interner.resolve(id))
+        {
+            Cow::Borrowed(display_override)
+        } else {
+            Cow::Borrowed(base_type)
+        };
+        let type_str = type_name.as_ref();
         let remap_owner = active_disguise
             .and_then(|state| state.disguised_as_house)
             .map(|id| sim.interner.resolve(id))
@@ -263,25 +332,19 @@ pub(crate) fn build_unit_instances(
             continue;
         }
         let draw_state = draw_decision.state;
-        let mut tint: [f32; 3] = match entity.category {
-            crate::map::entities::EntityCategory::Aircraft => {
-                state.lighting_grid.aircraft_tint_at((pos.rx, pos.ry))
-            }
-            _ => state.lighting_grid.unit_tint_at((pos.rx, pos.ry)),
-        };
-        // Entity ambient glow so VXL units/aircraft are visible on dark maps.
-        if let Some(rules) = &state.rules {
-            use crate::map::entities::EntityCategory;
-            let glow = match entity.category {
-                EntityCategory::Aircraft => rules.general.extra_aircraft_light,
-                _ => rules.general.extra_unit_light,
-            };
-            if glow > 0.0 {
-                tint[0] = (tint[0] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                tint[1] = (tint[1] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-                tint[2] = (tint[2] + glow).min(lighting::TOTAL_AMBIENT_CAP);
-            }
-        }
+        let tint = vxl_body_tint(
+            &state.lighting_grid,
+            (pos.rx, pos.ry),
+            entity.category,
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_unit_light),
+            state
+                .rules
+                .as_ref()
+                .map_or(0, |rules| rules.general.extra_aircraft_light),
+        );
         let center_x: f32 = sx;
         let center_y: f32 = sy;
 
@@ -311,6 +374,8 @@ pub(crate) fn build_unit_instances(
         // beneath, which cannot apply to something in a layer above it.
         let is_bridge_unit =
             band == EntityDrawBand::Ground && is_under_bridge_render_state(state, entity);
+        let collect_ground = band == EntityDrawBand::Ground && !is_bridge_unit;
+        let mut ground_pieces = Vec::new();
         let (target_instances, target_instance_pages) = match band {
             EntityDrawBand::Top => (&mut *top_instances, &mut *top_instance_pages),
             EntityDrawBand::Ground if is_bridge_unit => {
@@ -349,6 +414,8 @@ pub(crate) fn build_unit_instances(
                 bridge_transition_instances,
                 is_bridge_unit,
                 band,
+                collect_ground,
+                &mut ground_pieces,
             );
         } else {
             // Non-turret unit: single composite sprite.
@@ -383,17 +450,18 @@ pub(crate) fn build_unit_instances(
                     is_bridge_unit,
                     texture_source,
                     sprite,
+                    collect_ground,
+                    &mut ground_pieces,
                 );
             }
         }
 
         // Emit harvest overlay (oregath.shp) if the miner is actively harvesting.
-        // OREGATH is an SHP sprite from sprite_atlas — it must go into shp_paged
-        // (not the voxel unit instance list) so it draws with the correct texture.
+        // OREGATH is an SHP sprite from sprite_atlas, but remains an owned piece
+        // of its harvester's Ground slot so atlas identity cannot re-sort it.
         if let Some(ref ho) = entity.harvest_overlay {
             if ho.visible {
-                emit_harvest_overlay(
-                    shp_paged,
+                if let Some((page, instance)) = emit_harvest_overlay(
                     state,
                     entity,
                     entity.facing,
@@ -403,7 +471,47 @@ pub(crate) fn build_unit_instances(
                     pos.z,
                     tint,
                     draw_state,
-                );
+                ) {
+                    if collect_ground {
+                        ground_pieces.push(GroundPieceInstance {
+                            target: GroundTexture::ShpPage(page),
+                            instance,
+                        });
+                    } else if let Some(bucket) = shp_paged.get_mut(page) {
+                        bucket.push(instance);
+                    }
+                }
+            }
+        }
+
+        if collect_ground && !ground_pieces.is_empty() {
+            let location = crate::render::tactical_draw_plan::TacticalCoord {
+                x: i32::from(pos.rx) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_x),
+                y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
+                z: i32::from(pos.z),
+            };
+            let parent = if entity.category == EntityCategory::Structure {
+                state
+                    .rules
+                    .as_ref()
+                    .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)))
+                    .and_then(|object_type| {
+                        ground_order.building_object_draw(
+                            entity.stable_id,
+                            location,
+                            object_type,
+                            crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
+                        )
+                    })
+            } else {
+                ground_order.object_draw(
+                    entity.stable_id,
+                    location,
+                    crate::render::tactical_draw_plan::SpriteEncoding::Voxel,
+                )
+            };
+            if let Some(parent) = parent {
+                ground_objects.push(PlannedGroundObjectInstance::object(parent, ground_pieces));
             }
         }
     }
@@ -544,7 +652,20 @@ fn push_unit_sprite(
     is_bridge_unit: bool,
     texture_source: UnitTextureSource,
     sprite: SpriteInstance,
+    collect_ground: bool,
+    ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
+    if collect_ground {
+        let target = match texture_source {
+            UnitTextureSource::Transition(page) => GroundTexture::UnitTransitionPage(page),
+            UnitTextureSource::Stable(page) => GroundTexture::UnitAtlasPage(page),
+        };
+        ground_pieces.push(GroundPieceInstance {
+            target,
+            instance: sprite,
+        });
+        return;
+    }
     match texture_source {
         UnitTextureSource::Transition(page) if is_bridge_unit => {
             push_transition_sprite(bridge_transition_instances, page, sprite);
@@ -588,6 +709,8 @@ fn emit_turret_unit_sprites(
     bridge_transition_instances: &mut Vec<Vec<SpriteInstance>>,
     is_bridge_unit: bool,
     band: EntityDrawBand,
+    collect_ground: bool,
+    ground_pieces: &mut Vec<GroundPieceInstance>,
 ) {
     let slope_type = stable_slope_for_key(slope_state);
     let body_key = UnitSpriteKey {
@@ -653,6 +776,8 @@ fn emit_turret_unit_sprites(
             is_bridge_unit,
             texture_source,
             sprite,
+            collect_ground,
+            ground_pieces,
         );
     }
 
@@ -694,6 +819,8 @@ fn emit_turret_unit_sprites(
                 is_bridge_unit,
                 texture_source,
                 sprite,
+                collect_ground,
+                ground_pieces,
             );
         }
     }
@@ -713,7 +840,6 @@ const OREGATH_ARM_OFFSET_LEPTONS: f32 = 30.0;
 /// facing (verified from binary at 0x0073D12F–0x0073D1D6). This places the overlay
 /// at the harvest arm position rather than dead center on the unit.
 fn emit_harvest_overlay(
-    shp_paged: &mut [Vec<SpriteInstance>],
     state: &AppState,
     entity: &crate::sim::game_entity::GameEntity,
     body_facing: u8,
@@ -723,10 +849,10 @@ fn emit_harvest_overlay(
     z: u8,
     tint: [f32; 3],
     draw_state: DrawState,
-) {
+) -> Option<(usize, SpriteInstance)> {
     let sprite_atlas = match &state.sprite_atlas {
         Some(a) => a,
-        None => return,
+        None => return None,
     };
     // Map body facing (0-255) to counter-clockwise SHP frame index (0..7).
     // +32 offset for isometric rotation (SHP frame 0 = screen-N, not cell-N).
@@ -738,13 +864,8 @@ fn emit_harvest_overlay(
         frame: shp_frame,
         house_color: HouseColorIndex::default(),
     };
-    let Some(entry) = sprite_atlas.get(&key) else {
-        return;
-    };
+    let entry = sprite_atlas.get(&key)?;
     let page = entry.page as usize;
-    if page >= shp_paged.len() {
-        return;
-    }
     // Compute arm offset: rotate 30 leptons by body facing, then convert to screen.
     // Same sin/cos + isometric transform used by turret_screen_offset.
     let (arm_sx, arm_sy) = harvest_arm_screen_offset(body_facing);
@@ -753,17 +874,20 @@ fn emit_harvest_overlay(
     let depth_y: f32 = draw_y + entry.offset_y + entry.pixel_size[1];
     let depth: f32 =
         apply_bridge_depth_bias(state, entity, compute_sprite_depth(state, depth_y, z));
-    shp_paged[page].push(SpriteInstance {
-        position: [draw_x + entry.offset_x, draw_y + entry.offset_y],
-        size: entry.pixel_size,
-        uv_origin: entry.uv_origin,
-        uv_size: entry.uv_size,
-        depth,
-        tint,
-        alpha: 1.0,
-        draw_state,
-        ..Default::default()
-    });
+    Some((
+        page,
+        SpriteInstance {
+            position: [draw_x + entry.offset_x, draw_y + entry.offset_y],
+            size: entry.pixel_size,
+            uv_origin: entry.uv_origin,
+            uv_size: entry.uv_size,
+            depth,
+            tint,
+            alpha: 1.0,
+            draw_state,
+            ..Default::default()
+        },
+    ))
 }
 
 /// Convert the oregath arm offset (30 leptons) into isometric screen pixels.
@@ -802,6 +926,125 @@ pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::intern::InternedId;
+    use crate::sim::spawn_manager::{
+        SpawnManagerMode, SpawnManagerState, SpawnSlot, SpawnSlotState, SpawnTimer,
+    };
+
+    fn spawn_manager(states: &[SpawnSlotState]) -> SpawnManagerState {
+        SpawnManagerState {
+            spawn_type: InternedId::default(),
+            missile_family: None,
+            regen_rate: 400,
+            reload_rate: 0,
+            kamikaze_wait_frames: 0,
+            slots: states
+                .iter()
+                .enumerate()
+                .map(|(index, &state)| SpawnSlot {
+                    spawn: (state != SpawnSlotState::Regenerating).then_some(index as u64 + 1),
+                    state,
+                    timer: SpawnTimer::ready(),
+                    is_missile_spawn: true,
+                })
+                .collect(),
+            update_timer: SpawnTimer::armed(10, 20),
+            reload_timer: SpawnTimer::ready(),
+            current_target: None,
+            queued_target: None,
+            mode: SpawnManagerMode::Idle,
+        }
+    }
+
+    #[test]
+    fn gsi_13_07_no_spawn_alt_uses_zero_docked_not_zero_alive() {
+        for (state, expects_alt) in [
+            (SpawnSlotState::ReadyDocked, false),
+            (SpawnSlotState::KamikazeWait, true),
+            (SpawnSlotState::InFlight, true),
+            (SpawnSlotState::ReturningToDock, true),
+            (SpawnSlotState::LandingAtDock, true),
+            (SpawnSlotState::Reloading, false),
+            (SpawnSlotState::Regenerating, true),
+        ] {
+            let manager = spawn_manager(&[state]);
+            assert_eq!(
+                no_spawn_alt_type_id("V3", true, Some(&manager)).as_deref(),
+                expects_alt.then_some("V3WO"),
+                "state {state:?}"
+            );
+        }
+
+        let in_flight = spawn_manager(&[SpawnSlotState::InFlight]);
+        assert_eq!(in_flight.count_alive_spawns(), 1);
+        assert_eq!(
+            no_spawn_alt_type_id("V3", true, Some(&in_flight)).as_deref(),
+            Some("V3WO"),
+            "a live child away from its dock still selects the empty rack"
+        );
+        assert_eq!(no_spawn_alt_type_id("V3", false, Some(&in_flight)), None);
+        assert_eq!(no_spawn_alt_type_id("V3", true, None), None);
+    }
+
+    #[test]
+    fn gsi_13_07_dreadnought_stays_loaded_while_any_slot_is_docked() {
+        for (states, expected) in [
+            (
+                [SpawnSlotState::ReadyDocked, SpawnSlotState::InFlight],
+                None,
+            ),
+            (
+                [SpawnSlotState::Reloading, SpawnSlotState::Regenerating],
+                None,
+            ),
+            (
+                [SpawnSlotState::InFlight, SpawnSlotState::Regenerating],
+                Some("DREDWO"),
+            ),
+        ] {
+            let manager = spawn_manager(&states);
+            assert_eq!(
+                no_spawn_alt_type_id("DRED", true, Some(&manager)).as_deref(),
+                expected,
+                "states {states:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_13_07_no_spawn_alt_selection_is_not_manager_timer_gated() {
+        let mut manager = spawn_manager(&[SpawnSlotState::ReadyDocked]);
+        assert!(!manager.update_timer.due(10));
+        assert_eq!(no_spawn_alt_type_id("V3", true, Some(&manager)), None);
+
+        manager.slots[0].state = SpawnSlotState::InFlight;
+        assert_eq!(
+            no_spawn_alt_type_id("V3", true, Some(&manager)).as_deref(),
+            Some("V3WO"),
+            "the next presentation query sees the slot transition without an AI pass"
+        );
+    }
+
+    #[test]
+    fn gsi_13_10_vxl_selector_uses_unit_scalar_and_keeps_aircraft_compatibility_path() {
+        let mut grid = lighting::CellLightGrid::new();
+        grid.insert_profiled_light((4, 5), [1.0, 0.88, 0.88], 1.0);
+
+        let unit = vxl_body_tint(&grid, (4, 5), EntityCategory::Unit, 200, 200);
+        let aircraft = vxl_body_tint(&grid, (4, 5), EntityCategory::Aircraft, 200, 200);
+        let structure = vxl_body_tint(&grid, (4, 5), EntityCategory::Structure, 200, 200);
+
+        for (actual, expected) in unit.into_iter().zip([1.2, 1.056, 1.056]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in aircraft.into_iter().zip([1.2, 1.08, 1.08]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        for (actual, expected) in structure.into_iter().zip([1.0, 0.88, 0.88]) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        assert_ne!(unit, aircraft);
+    }
 
     #[test]
     fn drive_vxl_slope_transition_phase_counts_three_visible_frames() {
@@ -830,6 +1073,7 @@ mod tests {
         let mut stable_pages = Vec::new();
         let mut transition = Vec::new();
         let mut bridge_transition = Vec::new();
+        let mut ground_pieces = Vec::new();
 
         push_unit_sprite(
             &mut stable,
@@ -839,6 +1083,8 @@ mod tests {
             false,
             UnitTextureSource::Stable(3),
             sprite,
+            false,
+            &mut ground_pieces,
         );
         push_unit_sprite(
             &mut stable,
@@ -848,6 +1094,8 @@ mod tests {
             false,
             UnitTextureSource::Transition(2),
             sprite,
+            false,
+            &mut ground_pieces,
         );
 
         assert_eq!(stable.len(), 1);
@@ -866,6 +1114,8 @@ mod tests {
             true,
             UnitTextureSource::Stable(5),
             sprite,
+            false,
+            &mut ground_pieces,
         );
         push_unit_sprite(
             &mut bridge_stable,
@@ -875,6 +1125,8 @@ mod tests {
             true,
             UnitTextureSource::Transition(1),
             sprite,
+            false,
+            &mut ground_pieces,
         );
 
         assert_eq!(bridge_stable.len(), 1);

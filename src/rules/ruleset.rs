@@ -245,12 +245,23 @@ pub struct DamageFireHealthRatio {
     pub denominator: i32,
 }
 
+/// Convert RulesClass `[AudioVisual] SavourDelay` minutes to the signed timer's
+/// ordinary non-negative frame domain. Native multiplies by 900.0 and calls
+/// `Math__ftol`, whose active x87 control word truncates toward zero.
+pub(crate) fn savour_delay_frames(minutes: f64) -> u64 {
+    (minutes * 900.0).clamp(0.0, u64::MAX as f64).trunc() as u64
+}
+
 /// Global gameplay constants from `[General]` that affect vision, gap generators, etc.
 #[derive(Debug, Clone)]
 pub struct GeneralRules {
     /// Edge-scroll speed scale from `[AudioVisual] ScrollMultiplier=`.
     /// Stock YR uses `.07`; this is app-facing presentation state.
     pub scroll_multiplier: f64,
+    /// Outcome-announcement grace period in minutes from `[AudioVisual]
+    /// SavourDelay=`. HouseClass converts this to frames with `ftol(value*900)`
+    /// before routing victory/defeat into scenario teardown.
+    pub savour_delay_minutes: f64,
     /// Per-tick Spark gravity AND hover-bob amplitude, from `[AudioVisual]
     /// Gravity=` (NOT `[General]` — stock rulesmd.ini defines it under
     /// [AudioVisual], value 6; the engine's code default is 3). Native stores a
@@ -349,6 +360,9 @@ pub struct GeneralRules {
     /// `SeparateAircraft=`. False means the first pad building's value includes
     /// the average cost of the first two `PadAircraft` entries.
     pub separate_aircraft: bool,
+    /// BuildingType identity handled by the Prism support/cascade mission path.
+    /// The generic art-delayed fire path must not consume this type.
+    pub prism_type: Option<String>,
     /// Whether ore cells grow denser over time (TiberiumGrows= in [General]).
     /// Default true. Can be overridden per-map in [SpecialFlags].
     pub tiberium_grows: bool,
@@ -629,14 +643,13 @@ pub struct GeneralRules {
     /// Non-tracked vehicle downhill coefficient (`WheeledDownhill=`; vanilla 1.2).
     pub wheeled_downhill: SimFixed,
 
-    // -- Entity ambient glow on dark maps --
-    /// Additive brightness boost for unit sprites (ExtraUnitLight= in [General]).
-    /// Makes vehicles visible on dark maps. Default 0.2.
-    pub extra_unit_light: f32,
-    /// Additive brightness boost for infantry sprites (ExtraInfantryLight= in [General]).
-    pub extra_infantry_light: f32,
-    /// Additive brightness boost for aircraft sprites (ExtraAircraftLight= in [General]).
-    pub extra_aircraft_light: f32,
+    // -- Per-object draw-light offsets --
+    /// Signed `[AudioVisual] ExtraUnitLight=` body-light offset (`1000 == 1.0`).
+    pub extra_unit_light: i32,
+    /// Signed `[AudioVisual] ExtraInfantryLight=` body-light offset (`1000 == 1.0`).
+    pub extra_infantry_light: i32,
+    /// Signed `[AudioVisual] ExtraAircraftLight=` draw offset (`1000 == 1.0`).
+    pub extra_aircraft_light: i32,
 
     // -- Movement arrival --
     /// Distance in leptons below which a blocked unit stops instead of repathing.
@@ -864,6 +877,9 @@ impl Default for GeneralRules {
     fn default() -> Self {
         Self {
             scroll_multiplier: 0.07,
+            // RulesClass__Constructor @ 0x00665650 writes the double
+            // 0x3F9EB851EB851EB8 to +0x14C8.
+            savour_delay_minutes: 0.03,
             gravity: 3,
             veteran_sight: 0,
             veteran_armor: 1.0,
@@ -892,6 +908,7 @@ impl Default for GeneralRules {
             base_unit_types: vec!["AMCV".to_string(), "SMCV".to_string(), "PCV".to_string()],
             pad_aircraft_types: Vec::new(),
             separate_aircraft: false,
+            prism_type: None,
             tiberium_grows: true,
             tiberium_spreads: true,
             growth_rate_minutes: 2.0,
@@ -1012,9 +1029,9 @@ impl Default for GeneralRules {
             tracked_downhill: SimFixed::lit("1.2"),
             wheeled_uphill: SimFixed::lit("1.0"),
             wheeled_downhill: SimFixed::lit("1.2"),
-            extra_unit_light: 0.2,
-            extra_infantry_light: 0.2,
-            extra_aircraft_light: 0.2,
+            extra_unit_light: 0,
+            extra_infantry_light: 0,
+            extra_aircraft_light: 0,
             // CloseEnough=2.25 cells in vanilla rulesmd.ini → 576 leptons.
             close_enough: SimFixed::from_num(576),
             // URepairRate=.016 min = 0.96 sec ≈ 14 ticks at 15 Hz.
@@ -1215,6 +1232,8 @@ pub struct CrateRules {
     pub maximum: u32,
     /// `CrateImg=` — overlay type used for the ordinary land crate (stock CRATE).
     pub crate_img: String,
+    /// `WoodCrateImg=` — overlay type used for random land crates (stock CRATE).
+    pub wood_crate_img: String,
     /// `WaterCrateImg=` — overlay type used over water (stock WCRATE).
     pub water_crate_img: String,
 }
@@ -1225,6 +1244,7 @@ impl Default for CrateRules {
             minimum: 1,
             maximum: 255,
             crate_img: "CRATE".to_string(),
+            wood_crate_img: "CRATE".to_string(),
             water_crate_img: "WCRATE".to_string(),
         }
     }
@@ -1253,6 +1273,7 @@ impl CrateRules {
                 .unwrap_or(defaults.maximum as i32)
                 .max(0) as u32,
             crate_img: name("CrateImg", defaults.crate_img),
+            wood_crate_img: name("WoodCrateImg", defaults.wood_crate_img),
             water_crate_img: name("WaterCrateImg", defaults.water_crate_img),
         }
     }
@@ -1439,6 +1460,9 @@ impl GeneralRules {
             scroll_multiplier: audio_visual
                 .and_then(|s| s.get_f64("ScrollMultiplier"))
                 .unwrap_or(defaults.scroll_multiplier),
+            savour_delay_minutes: audio_visual
+                .map(|s| s.read_double("SavourDelay", defaults.savour_delay_minutes))
+                .unwrap_or(defaults.savour_delay_minutes),
             condition_red_sparking_probability: condition_red_spark_prob,
             condition_yellow_sparking_probability: condition_yellow_spark_prob,
             condition_red_spark_threshold: damage_spark_spawn_threshold(condition_red_spark_prob),
@@ -1580,6 +1604,13 @@ impl GeneralRules {
             separate_aircraft: general
                 .get_bool("SeparateAircraft")
                 .unwrap_or(defaults.separate_aircraft),
+            // RulesClass reads this BuildingType identity from [General].
+            // BuildingClass::Mission_Attack @ 0x0044ACF0 dispatches it to the
+            // Prism-specific path before considering generic delayed fire.
+            prism_type: general
+                .get("PrismType")
+                .map(|value| value.trim().to_ascii_uppercase())
+                .filter(|value| !value.is_empty()),
             tiberium_grows: general.get_bool("TiberiumGrows").unwrap_or(true),
             tiberium_spreads: general.get_bool("TiberiumSpreads").unwrap_or(true),
             growth_rate_minutes: general.get_f32("GrowthRate").unwrap_or(2.0),
@@ -1823,9 +1854,32 @@ impl GeneralRules {
                 .get_f32("WheeledDownhill")
                 .map(sim_from_f32)
                 .unwrap_or(defaults.wheeled_downhill),
-            extra_unit_light: general.get_f32("ExtraUnitLight").unwrap_or(0.2),
-            extra_infantry_light: general.get_f32("ExtraInfantryLight").unwrap_or(0.2),
-            extra_aircraft_light: general.get_f32("ExtraAircraftLight").unwrap_or(0.2),
+            // RulesClass's AudioVisual pass stores these ReadDouble values as
+            // signed milliunits after the active x87 chop-toward-zero conversion.
+            extra_unit_light: (audio_visual
+                .map(|section| {
+                    section.read_double("ExtraUnitLight", defaults.extra_unit_light as f64 / 1000.0)
+                })
+                .unwrap_or(defaults.extra_unit_light as f64 / 1000.0)
+                * 1000.0) as i32,
+            extra_infantry_light: (audio_visual
+                .map(|section| {
+                    section.read_double(
+                        "ExtraInfantryLight",
+                        defaults.extra_infantry_light as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(defaults.extra_infantry_light as f64 / 1000.0)
+                * 1000.0) as i32,
+            extra_aircraft_light: (audio_visual
+                .map(|section| {
+                    section.read_double(
+                        "ExtraAircraftLight",
+                        defaults.extra_aircraft_light as f64 / 1000.0,
+                    )
+                })
+                .unwrap_or(defaults.extra_aircraft_light as f64 / 1000.0)
+                * 1000.0) as i32,
             close_enough: general
                 .get_f32("CloseEnough")
                 .map(|cells| sim_from_f32(cells * 256.0))
@@ -3779,6 +3833,35 @@ CellSpread=0
     }
 
     #[test]
+    fn gsi_13_10_extra_object_lights_default_zero_and_parse_signed_truncated_milliunits() {
+        let defaults = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             FixtureOnly=1\n\
+             ExtraUnitLight=9.0\n\
+             ExtraInfantryLight=8.0\n\
+             ExtraAircraftLight=7.0\n",
+        ));
+        assert_eq!(defaults.extra_unit_light, 0);
+        assert_eq!(defaults.extra_infantry_light, 0);
+        assert_eq!(defaults.extra_aircraft_light, 0);
+
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\n\
+             FixtureOnly=1\n\
+             ExtraUnitLight=9.0\n\
+             ExtraInfantryLight=8.0\n\
+             ExtraAircraftLight=7.0\n\
+             [AudioVisual]\n\
+             ExtraUnitLight=.2\n\
+             ExtraInfantryLight=-.1259\n\
+             ExtraAircraftLight=.3339\n",
+        ));
+        assert_eq!(parsed.extra_unit_light, 200);
+        assert_eq!(parsed.extra_infantry_light, -125);
+        assert_eq!(parsed.extra_aircraft_light, 333);
+    }
+
+    #[test]
     fn gsi_04_04_cliff_back_rule_stores_the_ini_integer_low_byte() {
         for (raw, expected) in [(2, 2), (258, 2), (-1, 255), (256, 0)] {
             let ini = IniFile::from_str(&format!("[General]\nCliffBackImpassability={raw}\n"));
@@ -3850,9 +3933,7 @@ MutateWarhead=MyMutate\n\
     fn parse_rules_rocking_coefficients_defaults() {
         // [General] must be present, otherwise GeneralRules::from_ini bails to
         // Self::default(). Missing AudioVisual keys then fall back to defaults.
-        let ini = IniFile::from_str(
-            "[General]\nFixtureOnly=1\n[AudioVisual]\nFixtureOnly=1\n",
-        );
+        let ini = IniFile::from_str("[General]\nFixtureOnly=1\n[AudioVisual]\nFixtureOnly=1\n");
         let r = GeneralRules::from_ini(&ini);
         assert_eq!(r.direct_rocking_coefficient, SimFixed::lit("1.5"));
         assert_eq!(r.fallback_coefficient, SimFixed::lit("0.1"));
@@ -3886,6 +3967,35 @@ MutateWarhead=MyMutate\n\
             "[General]\nFlightLevel=500\n[AudioVisual]\n",
         ));
         assert_eq!(absent.scroll_multiplier, 0.07);
+    }
+
+    #[test]
+    fn gsi_01_04_savour_delay_parses_from_audio_visual_with_native_default() {
+        let ctor_default = GeneralRules::default().savour_delay_minutes;
+        assert_eq!(ctor_default, 0.03);
+        assert_eq!(savour_delay_frames(ctor_default), 27);
+        let stock = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nSavourDelay=.1\n",
+        ));
+        assert_eq!(stock.savour_delay_minutes, 0.1_f32 as f64);
+        assert_eq!(savour_delay_frames(stock.savour_delay_minutes), 90);
+        let explicit_point_zero_three = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\nSavourDelay=.03\n",
+        ));
+        assert_eq!(
+            explicit_point_zero_three.savour_delay_minutes,
+            0.03_f32 as f64
+        );
+        assert_eq!(
+            savour_delay_frames(explicit_point_zero_three.savour_delay_minutes),
+            26,
+            "explicit ReadDouble is parsed through f32 before ftol"
+        );
+        let absent = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nFlightLevel=500\n[AudioVisual]\n",
+        ));
+        assert_eq!(absent.savour_delay_minutes, 0.03);
+        assert_eq!(savour_delay_frames(absent.savour_delay_minutes), 27);
     }
 
     #[test]
@@ -4436,6 +4546,16 @@ BarrelParticle=SmallGreySSys
         let ini = IniFile::from_str(ini_str);
         let general = GeneralRules::from_ini(&ini);
         assert!(general.barrel_particle.is_none());
+    }
+
+    #[test]
+    fn gsi_05_10_prism_type_is_parsed_as_a_building_identity() {
+        let ini = IniFile::from_str("[General]\nPrismType= atesla \n");
+        let general = GeneralRules::from_ini(&ini);
+        assert_eq!(general.prism_type.as_deref(), Some("ATESLA"));
+
+        let absent = GeneralRules::from_ini(&IniFile::from_str("[General]\nFixtureOnly=1\n"));
+        assert!(absent.prism_type.is_none());
     }
 
     #[test]

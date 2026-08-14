@@ -445,6 +445,9 @@ fn finalize_tube_object(
                 entity.position.exact_z_leptons = None;
             }
         } else {
+            let owner_current_speed = entity.movement_target.as_ref().map_or(0, |target| {
+                super::drive_locomotion::owner_current_speed_from_fraction(target.speed, SIM_ONE)
+            });
             entity.position.rx = tube.exit.0;
             entity.position.ry = tube.exit.1;
             entity.position.sub_x = CELL_CENTER_LEPTON;
@@ -457,6 +460,7 @@ fn finalize_tube_object(
                 drive.turn.first_movement_allowed = true;
                 drive.target_speed_fraction = SIM_ONE;
                 drive.current_speed_fraction = SIM_ONE;
+                drive.owner_current_speed = owner_current_speed;
             }
         }
         entity.low_bridge_tube_state = None;
@@ -588,6 +592,7 @@ fn stop_blocked_mover(entities: &mut EntityStore, entity_id: u64) {
         if let Some(drive) = entity.drive_locomotion.as_mut() {
             drive.current_speed_fraction = SIM_ZERO;
             drive.target_speed_fraction = SIM_ZERO;
+            drive.owner_current_speed = 0;
         }
     }
 }

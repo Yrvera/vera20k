@@ -19,6 +19,7 @@ use crate::map::entities::EntityCategory;
 use crate::sim::aircraft::AircraftMission;
 use crate::sim::animation::Animation;
 use crate::sim::cloak_disguise::{CloakRuntime, DisguiseRuntime};
+use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::combat::{AttackTarget, TargetKind};
 use crate::sim::components::{
     BridgeOccupancy, BuildingAnimOverlays, BuildingDown, BuildingUp, C4PlantState,
@@ -235,6 +236,19 @@ pub struct BerserkState {
     pub timer: i32,
 }
 
+/// Building shot held behind its art-authored firing animation delay.
+///
+/// The target is deliberately not captured: expiry reads the building's live
+/// `attack_target`, while the selected weapon slot remains the one saved when
+/// `BuildingClass::Mission_Attack` armed the shot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PendingBuildingFire {
+    /// Signed native timer value, clamped to zero by ProcessDelayedFire after
+    /// its pre-decrement.
+    pub remaining_ticks: i32,
+    pub weapon_slot: WeaponSlot,
+}
+
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
@@ -262,6 +276,12 @@ pub struct GameEntity {
     /// cleared to `None` whenever no in-place rotation is in progress.
     #[serde(default)]
     pub body_facing: Option<crate::sim::movement::FacingClass>,
+    /// Persistent FootClass body-animation counter (`FootClass+0x538`).
+    /// Unit SHP drawing takes the walk-frame remainder from this counter; it
+    /// advances on absolute binary-frame cadence and never resets on a visual
+    /// Stand/Walk transition.
+    #[serde(default)]
+    pub body_frame_counter: u32,
     /// Owning player/faction name (e.g., "Americans", "Soviet") — interned for zero-cost clones.
     pub owner: InternedId,
     /// Current and maximum hit points.
@@ -328,7 +348,7 @@ pub struct GameEntity {
     pub vision_range: u16,
 
     // --- Render model (mutually exclusive) ---
-    /// true = VXL voxel model (vehicles/aircraft), false = SHP sprite (infantry/buildings).
+    /// True = VXL/HVA model, false = SHP sprite; effective art metadata is authoritative.
     pub is_voxel: bool,
 
     // --- Bool markers (were zero-size ECS components) ---
@@ -388,6 +408,9 @@ pub struct GameEntity {
     pub navigation: NavigationState,
     /// Active attack target — present when entity is firing at something.
     pub attack_target: Option<AttackTarget>,
+    /// Generic non-Prism Building delayed-fire latch.
+    #[serde(default)]
+    pub pending_building_fire: Option<PendingBuildingFire>,
     /// TechnoClass `CurrentWeaponNumber`: the last live weapon slot selected
     /// for this object. Slot zero is the constructor state. Fatal receiver
     /// logic reuses this exact slot for the Suicide gate and death fallback.
@@ -537,7 +560,7 @@ pub struct GameEntity {
     /// DriveLocomotion destination/head-to state separate from curve stepping.
     #[serde(default)]
     pub drive_locomotion: Option<DriveLocomotionRuntime>,
-    /// ShipLocomotion committed ordinary-track head and Pathfinder replay.
+    /// ShipLocomotion destination/head-to, speed state, and path replay.
     #[serde(default)]
     pub ship_locomotion: Option<ShipLocomotionRuntime>,
     /// One-shot forced drive track, independent of normal path movement.
@@ -574,7 +597,7 @@ pub struct GameEntity {
     /// Drive PerCellProcess path so legacy cell-based crush does not drift.
     #[serde(default)]
     pub regular_crusher: bool,
-    /// Whether DriveLocomotion should ramp toward the computed target speed fraction.
+    /// Whether Drive/Ship locomotion should ramp toward its target speed fraction.
     /// Parsed from `Accelerates=` and kept separate from raw `Speed=`.
     #[serde(default = "default_true")]
     pub drive_accelerates: bool,
@@ -928,6 +951,7 @@ impl GameEntity {
             facing,
             facing_target: None,
             body_facing: None,
+            body_frame_counter: 0,
             owner,
             health,
             type_ref,
@@ -955,6 +979,7 @@ impl GameEntity {
             movement_target: None,
             navigation: NavigationState::default(),
             attack_target: None,
+            pending_building_fire: None,
             current_weapon_index: 0,
             current_weapon_ref: None,
             radio_contacts: Contacts::default(),
@@ -1395,6 +1420,32 @@ mod tests {
     fn new_entity_has_no_rally_target() {
         let e = GameEntity::test_default(1, "GAWEAP", "Americans", 30, 40);
         assert_eq!(e.rally_target, None);
+    }
+
+    #[test]
+    fn gsi_05_10_pending_building_fire_serde_default_is_none() {
+        let entity = GameEntity::test_default(1, "NATSLA", "Soviet", 30, 40);
+        let mut value = serde_json::to_value(entity).expect("serialize entity");
+        value
+            .as_object_mut()
+            .expect("entity object")
+            .remove("pending_building_fire");
+
+        let restored: GameEntity = serde_json::from_value(value).expect("deserialize entity");
+        assert!(restored.pending_building_fire.is_none());
+    }
+
+    #[test]
+    fn gsi_13_06_body_frame_counter_serde_default_is_zero() {
+        let entity = GameEntity::test_default(1, "DRON", "Soviet", 30, 40);
+        let mut value = serde_json::to_value(entity).expect("serialize entity");
+        value
+            .as_object_mut()
+            .expect("entity object")
+            .remove("body_frame_counter");
+
+        let restored: GameEntity = serde_json::from_value(value).expect("deserialize entity");
+        assert_eq!(restored.body_frame_counter, 0);
     }
 
     #[test]

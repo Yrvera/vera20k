@@ -192,6 +192,22 @@ impl SpawnManagerState {
             .count()
     }
 
+    /// Slots physically docked on the parent. Native
+    /// `SpawnManagerClass::CountDockedSpawns` (`0x006B7D50`) counts only
+    /// states 0 (`ReadyDocked`) and 6 (`Reloading`). `NoSpawnAlt` queries this
+    /// at draw time; [`Self::count_alive_spawns`] belongs to the fire gate.
+    pub fn count_docked_spawns(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| {
+                matches!(
+                    slot.state,
+                    SpawnSlotState::ReadyDocked | SpawnSlotState::Reloading
+                )
+            })
+            .count()
+    }
+
     /// `SpawnManagerClass::SetTarget` (`0x006B7B90`): a target that differs
     /// from the live one is queued, never written straight through. The next AI
     /// pass promotes it.
@@ -347,49 +363,6 @@ fn tick_one_manager(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame:
     }
 
     step_manager_mode(sim, rules, owner_id, frame);
-    refresh_no_spawn_alt(sim, rules, owner_id);
-}
-
-/// Suffix of the empty-launcher art named by `NoSpawnAlt=yes`.
-///
-/// `ini/rulesmd.ini` spells the convention out at each use site — `[V3]` L7744
-/// "alternate voxel for out of spawns: xxxxWO (V3WO)", and the same comment on
-/// `[DRED]` L8129 and `[CDEST]` L10458. The suffix is a hardcoded art-side
-/// convention, not an INI key.
-const NO_SPAWN_ALT_SUFFIX: &str = "WO";
-
-/// Swap the launcher to its empty-rack art while the pool has nothing left.
-///
-/// `NoSpawnAlt=yes` is the player's only cue that a V3 or Dreadnought has
-/// already fired and is inside its regen wait — which, at `SpawnRegenRate=400`
-/// plus the tilt window, is most of the unit's visible life. Written as
-/// `display_type_override`, the same sim-side render hint the miner uses for
-/// `UnloadingClass=`; it is serialized but not hashed, so it cannot affect
-/// lockstep.
-fn refresh_no_spawn_alt(sim: &mut Simulation, rules: &RuleSet, owner_id: u64) {
-    let Some(type_name) = sim
-        .substrate
-        .entities
-        .get(owner_id)
-        .map(|e| sim.interner.resolve(e.type_ref).to_string())
-    else {
-        return;
-    };
-    if !rules.object(&type_name).is_some_and(|obj| obj.no_spawn_alt) {
-        return;
-    }
-    let empty = manager_field(sim, owner_id, |m| m.count_alive_spawns() == 0).unwrap_or(false);
-    let alt = if empty {
-        Some(
-            sim.interner
-                .intern(&format!("{type_name}{NO_SPAWN_ALT_SUFFIX}")),
-        )
-    } else {
-        None
-    };
-    if let Some(entity) = sim.substrate.entities.get_mut(owner_id) {
-        entity.display_type_override = alt;
-    }
 }
 
 /// `SpawnManagerClass::PointerExpired` for the child-death case: a slot whose
@@ -786,54 +759,29 @@ fn step_manager_mode(sim: &mut Simulation, rules: &RuleSet, owner_id: u64, frame
     };
     match mode {
         SpawnManagerMode::Idle => {
-            // DRIFT — missing target-still-legal predicate.
-            //
-            // Native mode 0, once a target is present, calls
-            // `owner->vtable+0x3AC(CurrentTarget)` and on false runs
-            // `ClearAllTargets(); return` instead of entering Launching.
-            //
-            // The slot is now identified. `vtable__UnitClass` is 0x7F5C70
-            // (`UnitClass::Constructor` writes it at `0x0073543A`); reading
-            // +0x3AC gives `TechnoClass::CanFireAtTarget` (`0x006F7780`), a
-            // two-call thunk: `vtable+0x2E4` (SelectWeaponAgainst) to pick the
-            // weapon for that target, then `vtable+0x3A8`
-            // (`TechnoClass::CanFireAt`, `0x006F77B0`). `CanFireAt` returns
-            // true for a null target, otherwise resolves the weapon via
-            // `GetWeapon(target)` and bottoms out in `TechnoClass::InRange`.
-            // So it is a target-still-in-range test, not an owner-state one.
-            //
-            // NOT implemented, deliberately. The top-level composition is
-            // clean, but `CanFireAt` reaches `InRange` through two branches
-            // that decide which coordinates the range test uses: a source snap
-            // to the owner's cell centre when the weapon sets `weapon+0x134`
-            // (`CellRangefinding`), and a target-coord fetch gated on
-            // `vtable+0x54`, whose identity is UNCHECKED. A null weapon does
-            // not short-circuit either — it still reaches `InRange`. Range
-            // gates here are lepton-exact, so reproducing this with a guessed
-            // coordinate frame would be a VERA-invented gate, which is worse
-            // than the gap.
-            //
-            // Trigger: every Idle→Launching transition, i.e. the start of every
-            // salvo. Player effect: the wing relaunches at a target that is no
-            // longer legal for the launcher's weapon. Frequency: missile pools
-            // are largely insulated, because the Launching block drops the
-            // target after every salvo and re-acquisition then goes back
-            // through the range-gated fire path; aircraft pools keep their
-            // target across salvos, so a Carrier whose target survives and then
-            // stops being legal — drives out of range, boards a transport,
-            // garrisons a building — relaunches its whole wing at it
-            // indefinitely. Once per Carrier engagement where the target
-            // survives and becomes illegal. Carriers are uncommon, but when it
-            // fires the wing is stuck. Downstream risk: this is the same
-            // symptom class as the dead-target case handled by
-            // `notify_pointer_expired`; closing it is a single early return
-            // here once the range coordinate frame is settled.
-            with_manager(sim, owner_id, |m| {
-                m.promote_queued_target();
-                if m.current_target.is_some() {
-                    m.mode = SpawnManagerMode::Launching;
-                }
+            with_manager(sim, owner_id, SpawnManagerState::promote_queued_target);
+            let Some(target) = manager_field(sim, owner_id, |m| m.current_target).flatten() else {
+                return;
+            };
+            // gamemd-derived: `SpawnManagerClass::AI` @ 0x006B7230 mode 0
+            // promotes +0x6C to +0x68, then Unit's vslot +0x3AC reaches
+            // `TechnoClass::CanFireAtTarget` @ 0x006F7780. A false result calls
+            // `ClearAllTargets` @ 0x006B7BB0 and returns before Launching.
+            let target_is_legal = sim.resolved_terrain.as_ref().is_some_and(|terrain| {
+                crate::sim::combat::can_fire_at_target(
+                    &sim.substrate.entities,
+                    rules,
+                    &sim.interner,
+                    owner_id,
+                    &target,
+                    terrain,
+                )
             });
+            if !target_is_legal {
+                with_manager(sim, owner_id, SpawnManagerState::clear_all_targets);
+                return;
+            }
+            with_manager(sim, owner_id, |m| m.mode = SpawnManagerMode::Launching);
         }
         SpawnManagerMode::Launching => {
             let Some(states) = manager_field(sim, owner_id, |m| {

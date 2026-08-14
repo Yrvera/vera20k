@@ -13,7 +13,7 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::object_type::{FactoryType, ObjectCategory};
+use crate::rules::object_type::{FactoryType, ObjectCategory, ObjectType};
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{Animation, SequenceKind};
 use crate::sim::components::{
@@ -24,6 +24,17 @@ use crate::sim::miner::{Miner, MinerConfig, miner_kind_for_object};
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::production::{ProductionCategory, foundation_dimensions};
 use crate::sim::vision::MAX_SIGHT_RANGE;
+
+fn object_uses_voxel(type_id: &str, object: &ObjectType, rules: &RuleSet) -> bool {
+    rules
+        .art_registry
+        .resolve_metadata_entry(type_id, &object.image)
+        .map(|entry| entry.voxel)
+        .unwrap_or(matches!(
+            object.category,
+            ObjectCategory::Vehicle | ObjectCategory::Aircraft
+        ))
+}
 
 impl Simulation {
     /// Spawn entities from parsed map placements into EntityStore.
@@ -94,12 +105,10 @@ impl Simulation {
                 EntityCategory::Infantry | EntityCategory::Structure => false,
             };
             let uses_voxel: bool = rules
-                .and_then(|r| r.object(&map_ent.type_id))
-                .map(|obj| {
-                    matches!(
-                        obj.category,
-                        ObjectCategory::Vehicle | ObjectCategory::Aircraft
-                    )
+                .and_then(|rules| {
+                    rules
+                        .object(&map_ent.type_id)
+                        .map(|object| object_uses_voxel(&map_ent.type_id, object, rules))
                 })
                 .unwrap_or(uses_voxel_default);
 
@@ -142,7 +151,8 @@ impl Simulation {
                 let rot_byte = obj.map(|o| o.turret_rot.clamp(0, 0xFF) as u8).unwrap_or(5);
                 ge.barrel_facing = Some(crate::sim::movement::FacingClass::new(initial, rot_byte));
             }
-            // VoxelAnimation default for voxel entities.
+            // The effective art metadata, not the rules category, selects the
+            // mutually exclusive VXL or SHP animation carrier when available.
             if uses_voxel {
                 ge.voxel_animation = Some(VoxelAnimation::new(1, 1));
             }
@@ -359,10 +369,7 @@ impl Simulation {
             ObjectCategory::Aircraft => EntityCategory::Aircraft,
             ObjectCategory::Building => EntityCategory::Structure,
         };
-        let uses_voxel = matches!(
-            obj.category,
-            ObjectCategory::Vehicle | ObjectCategory::Aircraft
-        );
+        let uses_voxel = object_uses_voxel(type_id, obj, rules);
         let sight_range = (obj.sight.max(0) as u16).min(MAX_SIGHT_RANGE);
         let stable_id = self.allocate_stable_id();
         let owner_iid = self.interner.intern(owner);
@@ -516,10 +523,7 @@ impl Simulation {
             ObjectCategory::Aircraft => EntityCategory::Aircraft,
             ObjectCategory::Building => EntityCategory::Structure,
         };
-        let uses_voxel = matches!(
-            obj.category,
-            ObjectCategory::Vehicle | ObjectCategory::Aircraft
-        );
+        let uses_voxel = object_uses_voxel(type_id, obj, rules);
         let sight_range = (obj.sight.max(0) as u16).min(MAX_SIGHT_RANGE);
         let stable_id = self.allocate_stable_id();
         let owner_iid = self.interner.intern(owner);

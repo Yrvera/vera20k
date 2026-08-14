@@ -5,17 +5,28 @@
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::LocomotorKind;
-use crate::sim::components::{DriveCoord, DriveLocomotionRuntime, NavTargetRef};
+use crate::sim::components::{
+    DriveCoord, DriveLocomotionRuntime, NavTargetRef, ShipLocomotionRuntime,
+};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
-use crate::util::fixed_math::SIM_ZERO;
+use crate::util::fixed_math::{SIM_ZERO, SimFixed};
+
+const SHIP_STOP_TARGET_FRACTION: SimFixed = SimFixed::lit("0.3");
 
 fn is_drive_locomotor(entity: &GameEntity) -> bool {
     entity
         .locomotor
         .as_ref()
         .is_some_and(|loco| matches!(loco.kind, LocomotorKind::Drive))
+}
+
+fn is_ship_locomotor(entity: &GameEntity) -> bool {
+    entity
+        .locomotor
+        .as_ref()
+        .is_some_and(|loco| matches!(loco.kind, LocomotorKind::Ship))
 }
 
 fn target_cell_coord(
@@ -70,10 +81,15 @@ pub(super) fn set_destination_internal_cell(
             entity,
             target_cell_coord(target.0, target.1, resolved_terrain),
         );
+    } else if is_ship_locomotor(entity) {
+        ship_set_destination(
+            entity,
+            target_cell_coord(target.0, target.1, resolved_terrain),
+        );
     }
 }
 
-/// Owner null destination path. Clears owner destination before Drive clear-navigation.
+/// Owner null destination path. Clears the owner and active Drive/Ship destination.
 pub(super) fn set_destination_internal_null(entity: &mut GameEntity) {
     entity.navigation.nav_com_aux = None;
     entity.navigation.nav_com = None;
@@ -81,6 +97,8 @@ pub(super) fn set_destination_internal_null(entity: &mut GameEntity) {
 
     if is_drive_locomotor(entity) {
         drive_stop_moving(entity);
+    } else if is_ship_locomotor(entity) {
+        ship_stop_moving(entity);
     }
 }
 
@@ -137,6 +155,19 @@ pub(super) fn finish_drive_navigation(
         } else {
             defer_drive_arrival_clear(entity);
         }
+        return;
+    }
+    if is_ship_locomotor(entity) {
+        // Ship's terminal Process_Movement retires the committed +0x3C head
+        // before its no-destination/no-path Process tail calls owner
+        // SetSpeedFraction(0). Mark the replay queue exhausted first so the
+        // ordinary Ship null-destination path observes that same rest state.
+        if let Some(ship) = entity.ship_locomotion.as_mut() {
+            ship.head_to = None;
+            ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
+        }
+        set_destination_internal_null(entity);
+        entity.navigation.nav_queue.clear();
         return;
     }
     // A soft Stop can clear the owner destination while an already-committed
@@ -238,8 +269,44 @@ fn drive_stop_moving(entity: &mut GameEntity) {
     // inside `Process_Drive_Track`. Every `Accelerates=true` departure therefore
     // ramps up from zero; in stock YR that set is the Ore Miner and both MCVs,
     // which omit `Accelerates=` and take the constructor default.
-    if drive.head_to.is_none() && drive.current_speed_fraction > SIM_ZERO {
-        drive.current_speed_fraction = SIM_ZERO;
+    if drive.head_to.is_none() {
+        if drive.current_speed_fraction > SIM_ZERO {
+            drive.current_speed_fraction = SIM_ZERO;
+        }
+        drive.owner_current_speed = 0;
+    }
+}
+
+fn ship_set_destination(entity: &mut GameEntity, destination: DriveCoord) {
+    let ship = entity
+        .ship_locomotion
+        .get_or_insert_with(ShipLocomotionRuntime::default);
+    // Ship's Move_To slot writes only +0x30. The committed +0x3C head is
+    // selected later by Process_Movement from the owner's path.
+    ship.destination = Some(destination);
+}
+
+fn ship_stop_moving(entity: &mut GameEntity) {
+    let ship = entity
+        .ship_locomotion
+        .get_or_insert_with(ShipLocomotionRuntime::default);
+    // Ship Stop_Moving clamps the class-owned target fraction, then clears
+    // only +0x30. A committed head may continue to its track endpoint.
+    if ship.target_speed_fraction > SHIP_STOP_TARGET_FRACTION {
+        ship.target_speed_fraction = SHIP_STOP_TARGET_FRACTION;
+    }
+    ship.destination = None;
+
+    // FootClass::Stop_Moving clears the owner path sentinel. With no committed
+    // Ship head there is therefore no segment left to consume: retire Rust's
+    // path-replay adapter and reproduce the Process-tail SetSpeedFraction(0).
+    // A non-null head is the sole case that preserves the committed segment.
+    if ship.head_to.is_none() {
+        ship.path.cursor = ship.path.directions.len().min(u16::MAX as usize) as u16;
+        if ship.current_speed_fraction > SIM_ZERO {
+            ship.current_speed_fraction = SIM_ZERO;
+        }
+        ship.owner_current_speed = 0;
     }
 }
 
@@ -249,6 +316,103 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::movement::locomotor::LocomotorState;
     use crate::util::fixed_math::{SIM_HALF, SIM_ONE};
+
+    #[test]
+    fn gsi_13_06_ship_destination_and_stop_stay_on_locomotor_runtime() {
+        let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 3, 3);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+
+        set_destination_internal_cell(&mut entity, (4, 3), None);
+        let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
+        assert_eq!(ship.destination, Some(DriveCoord::cell(4, 3, 0)));
+        assert_eq!(
+            ship.head_to, None,
+            "Move_To does not invent a committed head"
+        );
+        ship.target_speed_fraction = SIM_ONE;
+        ship.current_speed_fraction = SIM_HALF;
+        ship.owner_current_speed = 10;
+        ship.path.directions = vec![64, 64];
+        ship.path.cursor = 0;
+
+        set_destination_internal_null(&mut entity);
+        let ship = entity.ship_locomotion.as_ref().expect("Ship runtime");
+        assert_eq!(ship.destination, None);
+        assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
+        assert_eq!(ship.path.cursor, 2);
+        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
+        assert_eq!(ship.owner_current_speed, 0);
+    }
+
+    #[test]
+    fn gsi_13_06_ship_stop_preserves_committed_head_and_owner_speed() {
+        let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 3, 3);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+        entity.navigation.nav_com = Some(NavTargetRef::cell(5, 3));
+        entity.ship_locomotion = Some(ShipLocomotionRuntime {
+            destination: Some(DriveCoord::cell(5, 3, 0)),
+            head_to: Some(DriveCoord::cell(4, 3, 0)),
+            path: crate::sim::components::DrivePathQueue {
+                directions: vec![64, 64],
+                cursor: 1,
+                ..Default::default()
+            },
+            target_speed_fraction: SIM_ONE,
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+        });
+
+        set_destination_internal_null(&mut entity);
+
+        let ship = entity.ship_locomotion.as_ref().expect("Ship runtime");
+        assert_eq!(ship.destination, None);
+        assert_eq!(ship.head_to, Some(DriveCoord::cell(4, 3, 0)));
+        assert_eq!(ship.target_speed_fraction, SHIP_STOP_TARGET_FRACTION);
+        assert_eq!(ship.current_speed_fraction, SIM_HALF);
+        assert_eq!(ship.owner_current_speed, 10);
+
+        let ship = entity.ship_locomotion.as_mut().expect("Ship runtime");
+        ship.destination = Some(DriveCoord::cell(5, 3, 0));
+        ship.target_speed_fraction = SimFixed::lit("0.2");
+        set_destination_internal_null(&mut entity);
+        assert_eq!(
+            entity
+                .ship_locomotion
+                .as_ref()
+                .expect("Ship runtime")
+                .target_speed_fraction,
+            SimFixed::lit("0.2"),
+            "Stop stores min(previous target, 0.3)"
+        );
+    }
+
+    #[test]
+    fn gsi_13_06_ship_final_arrival_retires_head_and_owner_speed() {
+        let mut entity = GameEntity::test_default(1, "DLPH", "Americans", 4, 3);
+        entity.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Ship));
+        entity.navigation.nav_com = Some(NavTargetRef::cell(4, 3));
+        entity.ship_locomotion = Some(ShipLocomotionRuntime {
+            destination: Some(DriveCoord::cell(4, 3, 0)),
+            head_to: Some(DriveCoord::cell(4, 3, 0)),
+            path: crate::sim::components::DrivePathQueue {
+                directions: vec![64],
+                cursor: 0,
+                ..Default::default()
+            },
+            target_speed_fraction: SIM_ONE,
+            current_speed_fraction: SIM_HALF,
+            owner_current_speed: 10,
+        });
+
+        finish_drive_navigation(&mut entity, None);
+
+        let ship = entity.ship_locomotion.as_ref().expect("Ship runtime");
+        assert_eq!(ship.destination, None);
+        assert_eq!(ship.head_to, None);
+        assert_eq!(ship.path.cursor, 1);
+        assert_eq!(ship.current_speed_fraction, SIM_ZERO);
+        assert_eq!(ship.owner_current_speed, 0);
+    }
 
     fn resting_drive_miner() -> GameEntity {
         let mut entity = GameEntity::test_default(1, "HARV", "Americans", 3, 3);
