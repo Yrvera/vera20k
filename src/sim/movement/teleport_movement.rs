@@ -18,8 +18,6 @@
 //! - Part of sim/ — depends on sim/game_entity, sim/entity_store, sim/locomotor.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
 
-use std::collections::BTreeMap;
-
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::GeneralRules;
 use crate::sim::components::{AnimClassSpawnDescriptor, WorldEffect};
@@ -36,23 +34,18 @@ const TELEPORT_WARP_DELAY: u16 = 0;
 const TELEPORT_WARP_LOOP_COUNT: i32 = 1;
 const TELEPORT_WARP_Z_ADJUST: i32 = 0;
 const TELEPORT_WARP_REVERSE: bool = false;
-const FALLBACK_WARP_FRAME_COUNT: u16 = 20;
+pub(crate) const FALLBACK_WARP_FRAME_COUNT: u16 = 20;
 
 /// World-effect bridge for verified teleport `AnimClass` constructor rows.
 pub struct TeleportVisuals<'a> {
     pub world_effects: &'a mut Vec<WorldEffect>,
-    pub effect_frame_counts: &'a BTreeMap<InternedId, u16>,
     pub warp_out_type: InternedId,
+    pub warp_out_total_frames: u16,
     pub warp_out_frame_delay: u16,
 }
 
 impl TeleportVisuals<'_> {
     fn spawn_warp_out(&mut self, rx: u16, ry: u16, z: u8) {
-        let total_frames = self
-            .effect_frame_counts
-            .get(&self.warp_out_type)
-            .copied()
-            .unwrap_or(FALLBACK_WARP_FRAME_COUNT);
         let mut anim_spawn = AnimClassSpawnDescriptor::new(
             self.warp_out_type,
             rx,
@@ -69,7 +62,7 @@ impl TeleportVisuals<'_> {
 
         self.world_effects.push(WorldEffect::from_anim_spawn(
             anim_spawn,
-            total_frames,
+            self.warp_out_total_frames,
             self.warp_out_frame_delay,
             true,
             None,
@@ -467,7 +460,6 @@ pub fn tick_teleport_movement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
     use crate::rules::object_type::{ObjectCategory, ObjectType, PipScale};
@@ -812,14 +804,12 @@ mod tests {
         ));
 
         let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
-        let mut effect_frame_counts = BTreeMap::new();
-        effect_frame_counts.insert(warp_out_type, 13);
         let mut world_effects = Vec::new();
         {
             let mut visuals = TeleportVisuals {
                 world_effects: &mut world_effects,
-                effect_frame_counts: &effect_frame_counts,
                 warp_out_type,
+                warp_out_total_frames: 13,
                 warp_out_frame_delay: 1,
             };
             tick_teleport_movement(
@@ -864,13 +854,12 @@ mod tests {
         ));
 
         let warp_out_type = crate::sim::intern::test_intern("WARPOUT");
-        let effect_frame_counts = BTreeMap::new();
         let mut world_effects = Vec::new();
         {
             let mut visuals = TeleportVisuals {
                 world_effects: &mut world_effects,
-                effect_frame_counts: &effect_frame_counts,
                 warp_out_type,
+                warp_out_total_frames: FALLBACK_WARP_FRAME_COUNT,
                 warp_out_frame_delay: 2,
             };
             tick_teleport_movement(

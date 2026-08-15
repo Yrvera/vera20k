@@ -1597,7 +1597,6 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     let bridge_explosions = current_sim.bridge_explosions.clone();
     let metallic_debris = current_sim.metallic_debris.clone();
     let bridge_anim_sounds = current_sim.bridge_anim_sounds.clone();
-    let effect_frame_counts = current_sim.effect_frame_counts.clone();
 
     let resolved_terrain = match state.resolved_terrain.clone() {
         Some(rt) => rt,
@@ -1624,7 +1623,6 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
         bridge_explosions,
         metallic_debris,
         bridge_anim_sounds,
-        effect_frame_counts,
     );
     let Some(overlay_registry) = state.overlay_registry.as_ref() else {
         log::error!("Load: restoration validation failed: active overlay registry is unavailable");

@@ -25,6 +25,7 @@ use crate::map::houses::HouseColorMap;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};
+use crate::rules::effect_asset_catalog::available_effect_anim_frame_count;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::rules::ruleset::RuleSet;
 
@@ -34,26 +35,6 @@ use crate::rules::ruleset::RuleSet;
 const SPRITE_PADDING: u32 = 1;
 const INFANTRY_FACING_STEP: u8 = 32;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
-
-/// Number of SHP frames available to an animation consumer.
-///
-/// gamemd.exe's AnimType INI load at 0x00427D00 calls the loader at 0x00427B50,
-/// which replaces a zero `End` with the signed SHP header count and halves it
-/// only when `Shadow=yes`; a zero `LoopEnd` then copies `End`. Scheduler-owned
-/// types still need their complete raw range resident because their bound runtime
-/// metadata owns body/shadow bounds.
-fn available_effect_anim_frame_count(raw_count: u16, scheduler_owned: bool, shadow: bool) -> u16 {
-    if scheduler_owned || !shadow {
-        return raw_count;
-    }
-
-    let body_count = raw_count / 2;
-    if body_count > 0 {
-        body_count
-    } else {
-        raw_count
-    }
-}
 
 fn register_effect_anim_frames(
     needed: &mut HashSet<ShpSpriteKey>,
@@ -877,8 +858,8 @@ pub fn build_sprite_atlas(
                         let shadow = art
                             .and_then(|registry| registry.anim_runtime_config(name))
                             .is_some_and(|config| config.shadow);
-                        // Keep the atlas keys and the sim-facing count in one registration
-                        // so consumers cannot observe a frame that was not preloaded.
+                        // Keep atlas keys and the presentation-facing count in one
+                        // registration so rendering cannot select an unloaded frame.
                         let count = register_effect_anim_frames(
                             &mut needed,
                             &mut active_anim_frame_counts,

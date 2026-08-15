@@ -1559,6 +1559,11 @@ pub(crate) fn load_map_from_initial(
             &map_data.header.theater,
         )?;
         r.art_registry = a.clone();
+        r.bind_effect_assets(
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
         r.bind_animation_sequences(&infantry_sequences);
     }
     let variant_table_generated = variant_selector.generated_table();
@@ -1886,15 +1891,6 @@ pub(crate) fn load_map_from_initial(
                 sprite_atlas = new_sprite_atlas;
                 palette_set = new_palette_set;
             }
-        }
-    }
-
-    // Copy world-effect SHP frame counts from the sprite atlas into the simulation
-    // so sim systems (chrono-teleport) can spawn effects with the correct frame count.
-    if let (Some(sim), Some(atlas)) = (&mut simulation, &sprite_atlas) {
-        for (name, &count) in &atlas.active_anim_frame_counts {
-            let name_id = sim.interner.intern(name);
-            sim.effect_frame_counts.insert(name_id, count);
         }
     }
 

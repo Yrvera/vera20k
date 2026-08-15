@@ -34,7 +34,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // Phase 1 — tick existing particles.
     for p in &mut sys.particles {
         let pt = rules.particle_type(p.type_id);
-        let frame_count = super::system_ai::resolve_image_frame_count(sim, pt);
+        let frame_count = super::system_ai::resolve_image_frame_count(rules, pt);
         tick_particle(p, pt, frame_count);
     }
 

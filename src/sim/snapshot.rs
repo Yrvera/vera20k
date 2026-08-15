@@ -1907,7 +1907,6 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
                 BTreeMap::new(),
-                BTreeMap::new(),
             );
             restored
         }
@@ -2110,7 +2109,6 @@ mod tests {
             Vec::new(),
             Vec::new(),
             BTreeMap::new(),
-            BTreeMap::new(),
         );
     }
 
@@ -2184,7 +2182,6 @@ mod tests {
             crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
             Vec::new(),
             Vec::new(),
-            BTreeMap::new(),
             BTreeMap::new(),
         );
 
@@ -4887,7 +4884,6 @@ mod tests {
             crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
             Vec::new(),
             Vec::new(),
-            BTreeMap::new(),
             BTreeMap::new(),
         );
 

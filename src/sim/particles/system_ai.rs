@@ -37,22 +37,17 @@ pub(crate) enum SparkSystemTickError {
     World(#[from] SparkWorldError),
 }
 
-/// Resolve the SHP frame count for a particle's `Image=` field via the
-/// existing `Simulation::effect_frame_counts` map. Returns 0 when the
-/// type has no image set or the SHP is not registered (matches the
-/// fallback `advance_state` handles via the odd-parity denominator).
+/// Resolve the SHP frame count for a particle's `Image=` field from the
+/// immutable rules-side asset catalog. Returns 0 when the type has no image
+/// or the optional SHP was not bound.
 pub(super) fn resolve_image_frame_count(
-    sim: &Simulation,
+    rules: &RuleSet,
     pt: &crate::rules::particle_type::ParticleType,
 ) -> u16 {
     let Some(image) = pt.image.as_deref() else {
         return 0;
     };
-    let key = image.to_ascii_uppercase();
-    let Some(id) = sim.interner.get(&key) else {
-        return 0;
-    };
-    sim.effect_frame_counts.get(&id).copied().unwrap_or(0)
+    rules.effect_frame_count(image).unwrap_or(0)
 }
 
 /// Advance one Tier-2 particle's animation-state machine by one tick.
@@ -66,9 +61,8 @@ pub(super) fn resolve_image_frame_count(
 /// translucency byte the renderer reads.
 ///
 /// `image_frame_count` is the SHP frame count from
-/// `Simulation::effect_frame_counts`. When it's 0 (image not registered or
-/// missing SHP), the denominator falls through to `1 + StateAIAdvance` —
-/// the same as if the SHP had an odd frame count.
+/// the rules-side asset catalog. When it's 0 (image not registered or missing
+/// SHP), the denominator falls through to `1 + StateAIAdvance`.
 pub(super) fn advance_state(
     p: &mut crate::sim::particles::Particle,
     pt: &crate::rules::particle_type::ParticleType,
@@ -399,6 +393,26 @@ mod tests {
     }
 
     #[test]
+    fn particle_frame_lookup_uses_rules_without_mutating_sim_interner() {
+        let mut rules = RuleSet::from_ini(&IniFile::from_str(
+            "[Particles]\n0=SmokeP\n\
+             [SmokeP]\nBehavesLike=Smoke\nImage=SMOKEIMG\n",
+        ))
+        .expect("particle rules");
+        rules.set_effect_frame_count_for_test("SMOKEIMG", 5, 5);
+        let mut sim = Simulation::new();
+        let before = sim.interner.len();
+
+        let count = resolve_image_frame_count(&rules, rules.particle_type(ParticleTypeId(0)));
+
+        assert_eq!(count, 5);
+        assert_eq!(sim.interner.len(), before);
+        assert!(sim.interner.get("SMOKEIMG").is_none());
+        let marker = sim.interner.intern("AFTER_EFFECT_LOOKUP");
+        assert_eq!(marker.index() as usize, before);
+    }
+
+    #[test]
     fn spark_and_railgun_dispatch_is_a_no_op() {
         for behaves in ["Spark", "Railgun"] {
             let rules = build_rules(behaves, 100);
@@ -588,7 +602,7 @@ mod tests {
         }
 
         #[test]
-        fn frame_count_zero_falls_through_to_odd_denom() {
+        fn frame_count_zero_uses_even_denominator() {
             // image_frame_count=0 → parity_bit = 0 → denom = (0+1)+0 = 1.
             let rules = pt_rules("StateAIAdvance=0\nEndStateAI=99");
             let pt = rules.particle_type(ParticleTypeId(0));

@@ -13,6 +13,8 @@ use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
+use crate::rules::particle_system_type::ParticleSystemTypeId;
+use crate::rules::particle_type::ParticleTypeId;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::{
     Animation, FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet,
@@ -28,8 +30,10 @@ use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::movement::FacingClass;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+use crate::sim::particles::{Particle, ParticleSystem};
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use glam::IVec3;
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -106,6 +110,67 @@ fn animation_boundary_fixture() -> (Simulation, RuleSet) {
     ))
     .expect("animation fixture rules");
     rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".to_string(), set)]));
+    (sim, rules)
+}
+
+fn particle_frame_boundary_fixture(frame_count: u16) -> (Simulation, RuleSet) {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[Particles]\n0=SmokeP\n\
+         [SmokeP]\nBehavesLike=Smoke\nImage=SMOKEIMG\nStateAIAdvance=0\n\
+         EndStateAI=2\nDeleteOnStateLimit=yes\nMaxEC=100\n\
+         [ParticleSystems]\n0=SmokeSys\n\
+         [SmokeSys]\nBehavesLike=Smoke\nHoldsWhat=SmokeP\nSpawns=no\n\
+         Lifetime=100\nParticleCap=10\n",
+    ))
+    .expect("particle boundary rules");
+    rules.set_effect_frame_count_for_test("SMOKEIMG", frame_count, frame_count);
+
+    let mut sim = Simulation::with_seed(0xEFFE_C705);
+    let stable_id = sim.allocate_stable_id();
+    let particle = Particle {
+        type_id: ParticleTypeId(0),
+        coords: IVec3::ZERO,
+        previous_coords: IVec3::ZERO,
+        origin: IVec3::ZERO,
+        direction: [SIM_ZERO; 3],
+        velocity: SIM_ZERO,
+        lifetime_remaining: 100,
+        damage_counter: 0,
+        state_ai_advance: 0,
+        animation_state: 0,
+        translucency: 0,
+        hit_ground: false,
+        marked_for_deletion: false,
+        drift_x: 0,
+        drift_y: 0,
+        drift_z: 0,
+        current_color: [0; 3],
+        color_index: 0,
+        color_accumulator: SIM_ZERO,
+        spark: None,
+        prev_delta: [SIM_ZERO; 3],
+        state_advance_counter: 0,
+    };
+    sim.particle_systems_mut().insert(ParticleSystem {
+        stable_id,
+        in_logic_vector: false,
+        type_id: ParticleSystemTypeId(0),
+        coords: IVec3::ZERO,
+        offset: IVec3::ZERO,
+        particles: vec![particle],
+        spawn_timer: SIM_ZERO,
+        lifetime: 100,
+        spark_spawn_frames: 0,
+        facing: 0,
+        marked_for_deletion: false,
+        directionless: false,
+        attached_entity: None,
+        owner_entity: None,
+        target_coords: IVec3::ZERO,
+        owner_house: None,
+        done_spawning: true,
+    });
+    assert!(sim.reveal_particle_system(stable_id));
     (sim, rules)
 }
 
@@ -193,6 +258,89 @@ fn app_and_headless_frames_hash_identically_for_animation_progress() {
                 )
             }),
     );
+}
+
+#[test]
+fn app_and_headless_frames_hash_identically_for_particle_frame_timing() {
+    let (mut app_sim, rules) = particle_frame_boundary_fixture(5);
+    let (mut headless_sim, _) = particle_frame_boundary_fixture(5);
+
+    for frame in 1..=4 {
+        let app = app_sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        let headless =
+            headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+
+        assert!(app.tick.frame_committed && headless.frame_committed);
+        assert_eq!(app.tick.state_hash, headless.state_hash, "frame {frame}");
+        assert_eq!(
+            app_sim.state_hash(),
+            headless_sim.state_hash(),
+            "frame {frame}"
+        );
+        let app_particles = app_sim
+            .particle_systems()
+            .iter()
+            .next()
+            .map(|(_, system)| system.particles.len())
+            .unwrap_or(0);
+        let headless_particles = headless_sim
+            .particle_systems()
+            .iter()
+            .next()
+            .map(|(_, system)| system.particles.len())
+            .unwrap_or(0);
+        assert_eq!(app_particles, headless_particles, "frame {frame}");
+        assert_eq!(app_particles, usize::from(frame < 4), "frame {frame}");
+    }
+}
+
+#[test]
+fn moving_water_unit_spawns_rules_bound_wake_without_preinterned_effect_name() {
+    let mut rules = naval_bridge_test_rules();
+    rules.set_effect_frame_count_for_test("WAKE1", 5, 5);
+    let mut sim = Simulation::new();
+    let boat_id = sim
+        .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &empty_heights())
+        .expect("spawn boat");
+    assert!(sim.interner.get("WAKE1").is_none());
+    let boat = sim
+        .substrate
+        .entities
+        .get_mut(boat_id)
+        .expect("boat entity");
+    boat.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
+        next_index: 1,
+        speed: SimFixed::from_num(1),
+        current_speed: SimFixed::from_num(1),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+
+    let result = sim.advance_tick(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&PathGrid::new(2, 1)),
+        None,
+        67,
+    );
+
+    assert!(result.frame_committed);
+    let wake = sim.world_effects.first().expect("wake effect");
+    assert_eq!(sim.interner.resolve(wake.shp_name), "WAKE1");
+    assert_eq!(wake.total_frames, 5);
 }
 
 #[test]

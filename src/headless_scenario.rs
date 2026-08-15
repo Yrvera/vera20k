@@ -65,12 +65,12 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::app_init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
             .ok_or_else(|| "load merged rules".to_string())?
             .into_parts();
-    let (art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
+    let (mut art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
+    rules.general.resolve_art_rates(&art_ini);
     let infantry_sequences =
         crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
-    rules.bind_animation_sequences(&infantry_sequences);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 
     let resolved = ResolvedTerrainGrid::build(
@@ -82,6 +82,18 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         false,
         rules.general.cliff_back_impassability,
     );
+    let scheduler_roots =
+        crate::app_init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
+    art.bind_scheduler_anim_assets(
+        &scheduler_roots,
+        &assets,
+        theater.extension,
+        &map.header.theater,
+    )
+    .map_err(|error| format!("bind authoritative animation assets: {error}"))?;
+    rules.art_registry = art;
+    rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
+    rules.bind_animation_sequences(&infantry_sequences);
     let height_map = resolved.build_height_map();
     let path_grid = PathGrid::from_resolved_terrain(&resolved);
     let overlay_grid =

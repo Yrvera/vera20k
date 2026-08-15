@@ -796,11 +796,6 @@ pub struct Simulation {
     /// Ticked each frame, auto-removed when finished.
     #[serde(skip)]
     pub world_effects: Vec<crate::sim::components::WorldEffect>,
-    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 21).
-    /// Populated from the sprite atlas at init time so sim code can spawn effects
-    /// with the correct frame count without hardcoding it.
-    #[serde(skip)]
-    pub effect_frame_counts: BTreeMap<InternedId, u16>,
     /// When true, newly spawned entities get a `DebugEventLog` allocated.
     /// Toggled by the debug inspector hotkey (X). Debug-only — not included in state hashing.
     #[serde(skip)]
@@ -1744,10 +1739,8 @@ impl Simulation {
         }
 
         for fx in &effects.explosion_effects {
-            let frames = self
-                .effect_frame_counts
-                .get(&fx.shp_name)
-                .copied()
+            let frames = rules
+                .effect_frame_count(self.interner.resolve(fx.shp_name))
                 .unwrap_or(20);
             self.world_effects.push(WorldEffect {
                 anim_spawn: None,
@@ -1971,7 +1964,6 @@ impl Simulation {
             path_delay_ticks: 9,
             blockage_path_delay_ticks: 60,
             world_effects: Vec::new(),
-            effect_frame_counts: BTreeMap::new(),
             debug_event_logging: false,
             replay_log: None,
             input_delay_ticks: 2,
@@ -3228,7 +3220,6 @@ impl Simulation {
         bridge_explosions: Vec<InternedId>,
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
-        effect_frame_counts: BTreeMap<InternedId, u16>,
     ) {
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.
@@ -3260,7 +3251,6 @@ impl Simulation {
         self.bridge_explosions = bridge_explosions;
         self.metallic_debris = metallic_debris;
         self.bridge_anim_sounds = bridge_anim_sounds;
-        self.effect_frame_counts = effect_frame_counts;
         self.terrain_costs = terrain_costs;
     }
 
@@ -4955,10 +4945,13 @@ impl Simulation {
             sim.tick_air_movement_with_cell_lists_one(stable_id);
             if let Some(rules) = rules {
                 let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
+                let warp_out_total_frames = rules
+                    .effect_frame_count(&rules.general.warp_out.name)
+                    .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
                 let mut teleport_visuals = teleport_movement::TeleportVisuals {
                     world_effects: &mut sim.world_effects,
-                    effect_frame_counts: &sim.effect_frame_counts,
                     warp_out_type,
+                    warp_out_total_frames,
                     warp_out_frame_delay: rules.general.warp_out.frame_delay,
                 };
                 teleport_movement::tick_teleport_movement(
@@ -5080,10 +5073,7 @@ impl Simulation {
             if let Some(rules) = rules {
                 let wake_name_str = &rules.general.wake.name;
                 let wake_rate = rules.general.wake.frame_delay;
-                let wake_name_id = self.interner.get(&wake_name_str.to_uppercase());
-                let wake_frames = wake_name_id
-                    .and_then(|id| self.effect_frame_counts.get(&id).copied())
-                    .unwrap_or(8);
+                let wake_frames = rules.effect_frame_count(wake_name_str).unwrap_or(8);
                 // Collect positions to avoid borrow conflict (read entities, write world_effects).
                 let wake_positions: Vec<(u16, u16, u8)> = self
                     .substrate
@@ -5103,7 +5093,8 @@ impl Simulation {
                         Some((e.position.rx, e.position.ry, e.position.z))
                     })
                     .collect();
-                if let Some(wake_id) = wake_name_id {
+                if !wake_positions.is_empty() {
+                    let wake_id = self.interner.intern(wake_name_str);
                     for (rx, ry, z) in wake_positions {
                         self.world_effects.push(WorldEffect {
                             anim_spawn: None,
@@ -5402,10 +5393,8 @@ impl Simulation {
             }
             // Spawn explosion animations from combat deaths.
             for fx in &combat_result.explosion_effects {
-                let frames = self
-                    .effect_frame_counts
-                    .get(&fx.shp_name)
-                    .copied()
+                let frames = rules
+                    .effect_frame_count(self.interner.resolve(fx.shp_name))
                     .unwrap_or(20);
                 self.world_effects.push(WorldEffect {
                     anim_spawn: None,

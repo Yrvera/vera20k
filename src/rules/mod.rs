@@ -21,6 +21,7 @@ pub mod color_add;
 pub mod color_scheme;
 pub mod combat_damage;
 pub mod error;
+pub mod effect_asset_catalog;
 pub mod flh;
 pub mod foundation;
 pub mod house_colors;

@@ -2252,6 +2252,9 @@ pub struct RuleSet {
     /// Retained art.ini registry. Populated by app_init after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
+    /// GPU-independent SHP frame counts used by authoritative world-effect
+    /// and particle timing. Bound once from the active assets and ART data.
+    effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog,
     /// Complete immutable per-object animation timing catalog. Gameplay reads
     /// this rules-owned resource directly; presentation cannot replace timing
     /// on an individual frame.
@@ -2738,6 +2741,7 @@ impl RuleSet {
             particle_system_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
+            effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog::default(),
             animation_sequences: BTreeMap::new(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
@@ -2923,14 +2927,16 @@ impl RuleSet {
         self.source_ini_hash
     }
 
-    /// Compatibility identity for processed rules plus resolved entity
-    /// animation timing. Other asset-derived simulation inputs are bound by
-    /// later ownership slices and are not claimed by this hash yet.
+    /// Compatibility identity for processed rules plus the resolved animation
+    /// and authoritative effect-frame inputs currently bound to this ruleset.
+    /// Other asset-derived simulation inputs are added by later ownership
+    /// slices and are not claimed by this hash yet.
     pub fn simulation_config_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        b"rules-simulation-config-v1".hash(&mut hasher);
+        b"rules-simulation-config-v2".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
         self.animation_sequences.hash(&mut hasher);
+        self.effect_assets.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -3248,16 +3254,40 @@ impl RuleSet {
         self.rebuild_animation_sequences(Some(infantry_sequences));
     }
 
+    /// Resolve authoritative world-effect and particle SHP frame counts from
+    /// the active theater assets without constructing a renderer atlas.
+    pub fn bind_effect_assets(
+        &mut self,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) {
+        self.effect_assets = crate::rules::effect_asset_catalog::EffectAssetCatalog::bind(
+            self,
+            asset_manager,
+            theater_ext,
+            theater_name,
+        );
+    }
+
+    /// Authoritative consumer-visible SHP frame count for a world effect or
+    /// particle image. Lookup is case-insensitive and does not intern names.
+    pub fn effect_frame_count(&self, name: &str) -> Option<u16> {
+        self.effect_assets.effect_frame_count(name)
+    }
+
+    /// Literal SHP header frame count retained for parity investigation where
+    /// the native particle body/shadow policy is still UNCHECKED.
+    pub fn raw_effect_frame_count(&self, name: &str) -> Option<u16> {
+        self.effect_assets.raw_frame_count(name)
+    }
+
     fn rebuild_animation_sequences(
         &mut self,
-        infantry_sequences: Option<
-            &crate::rules::infantry_sequence::InfantrySequenceRegistry,
-        >,
+        infantry_sequences: Option<&crate::rules::infantry_sequence::InfantrySequenceRegistry>,
     ) {
-        self.animation_sequences = crate::sim::animation::build_animation_sequence_catalog(
-            self,
-            infantry_sequences,
-        );
+        self.animation_sequences =
+            crate::sim::animation::build_animation_sequence_catalog(self, infantry_sequences);
     }
 
     pub(crate) fn animation_sequences(
@@ -3280,6 +3310,11 @@ impl RuleSet {
         animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
     ) {
         self.animation_sequences = animation_sequences;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_effect_frame_count_for_test(&mut self, name: &str, raw: u16, available: u16) {
+        self.effect_assets.set_for_test(name, raw, available);
     }
 
     /// Total number of game objects across all categories.
@@ -5597,5 +5632,21 @@ ZAdjust=-10
         assert_eq!(defaults.infantry_death_anim(3), Some("S_BANG34"));
         assert_eq!(defaults.infantry_death_anim(5), Some("ELECTRO"));
         assert_eq!(defaults.infantry_death_anim(10), Some("BRUTDIE"));
+    }
+
+    #[test]
+    fn simulation_config_hash_changes_with_resolved_effect_frame_count() {
+        let ini = IniFile::from_str("[General]\nWarpOut=WARPOUT\n");
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut second = RuleSet::from_ini(&ini).expect("second rules");
+
+        first.set_effect_frame_count_for_test("WARPOUT", 5, 5);
+        second.set_effect_frame_count_for_test("WARPOUT", 6, 6);
+
+        assert_eq!(first.source_ini_hash(), second.source_ini_hash());
+        assert_ne!(
+            first.simulation_config_hash(),
+            second.simulation_config_hash()
+        );
     }
 }

@@ -7,6 +7,8 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
+use std::collections::HashMap;
+
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
 use crate::app_types::SIM_TICK_MS;
@@ -386,6 +388,10 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                 return;
             }
         };
+        let frame_counts = state
+            .sprite_atlas
+            .as_ref()
+            .map(|atlas| &atlas.active_anim_frame_counts);
         state
             .pending_fire_effects
             .iter()
@@ -396,7 +402,8 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                     crate::app_fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
                         .ok()?;
                 let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
-                let total_frames = sim.effect_frame_counts.get(anim_name).copied().unwrap_or(1);
+                let total_frames =
+                    presentation_anim_frame_count(frame_counts, &anim_section).unwrap_or(1);
                 Some(GarrisonMuzzleFlash {
                     building_id: ev.attacker_id,
                     runtime: garrison_occupant_anim_runtime(
@@ -424,9 +431,15 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
         state.garrison_muzzle_flashes.clear();
         return;
     };
-    state
-        .garrison_muzzle_flashes
-        .retain_mut(|flash| advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg));
+    let empty_frame_counts = HashMap::new();
+    let frame_counts = state
+        .sprite_atlas
+        .as_ref()
+        .map(|atlas| &atlas.active_anim_frame_counts)
+        .unwrap_or(&empty_frame_counts);
+    state.garrison_muzzle_flashes.retain_mut(|flash| {
+        advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
+    });
 }
 
 fn advance_garrison_muzzle_flash(
@@ -434,11 +447,12 @@ fn advance_garrison_muzzle_flash(
     dt_ms: u32,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
 ) -> bool {
     flash.runtime.elapsed_logic_ms = flash.runtime.elapsed_logic_ms.saturating_add(dt_ms);
     while flash.runtime.elapsed_logic_ms >= SIM_TICK_MS && !flash.runtime.expired {
         flash.runtime.elapsed_logic_ms -= SIM_TICK_MS;
-        advance_anim_runtime_visit(&mut flash.runtime, sim, art_reg);
+        advance_anim_runtime_visit(&mut flash.runtime, sim, art_reg, frame_counts);
     }
     !flash.runtime.expired
 }
@@ -482,8 +496,9 @@ fn advance_anim_runtime_visit(
     runtime: &mut AnimRuntime,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
 ) {
-    advance_anim_runtime_visit_with_events(runtime, sim, art_reg, None);
+    advance_anim_runtime_visit_with_events(runtime, sim, art_reg, frame_counts, None);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,6 +520,7 @@ fn advance_anim_runtime_visit_with_events(
     runtime: &mut AnimRuntime,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
     mut events: Option<&mut Vec<AnimRuntimeVisitEvent>>,
 ) {
     if runtime.expired {
@@ -535,22 +551,22 @@ fn advance_anim_runtime_visit_with_events(
         runtime.expired = true;
         return;
     };
-    if config.ping_pong && anim_runtime_at_boundary(runtime, config, sim) {
+    if config.ping_pong && anim_runtime_at_boundary(runtime, config, frame_counts) {
         runtime.frame_step = -runtime.frame_step;
         return;
     }
-    if !anim_runtime_at_boundary(runtime, config, sim) {
+    if !anim_runtime_at_boundary(runtime, config, frame_counts) {
         return;
     }
     if runtime.loop_remaining != 0 && runtime.loop_remaining != u8::MAX {
         runtime.loop_remaining = runtime.loop_remaining.saturating_sub(1);
     }
     if runtime.loop_remaining != 0 {
-        reset_anim_runtime_to_loop_start(runtime, config, sim);
+        reset_anim_runtime_to_loop_start(runtime, config, frame_counts);
         return;
     }
     if let Some(next) = &config.next {
-        switch_anim_runtime_type(runtime, next, sim, art_reg, &mut events);
+        switch_anim_runtime_type(runtime, next, art_reg, frame_counts, &mut events);
     } else {
         if let Some(events) = events.as_deref_mut() {
             events.push(AnimRuntimeVisitEvent::NormalDestroy {
@@ -588,9 +604,9 @@ fn anim_trailer_cadence_matches(global_frame: u64, separation: i32) -> bool {
 fn anim_runtime_at_boundary(
     runtime: &AnimRuntime,
     config: &crate::rules::art_data::AnimTypeRuntimeConfig,
-    sim: &Simulation,
+    frame_counts: &HashMap<String, u16>,
 ) -> bool {
-    let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+    let end = effective_anim_end(config, anim_total_frames(frame_counts, &runtime.type_name));
     let loop_end = effective_anim_loop_end(config, end);
     if runtime.frame_step >= 0 {
         let limit = if runtime.loop_remaining < 2 {
@@ -612,12 +628,12 @@ fn anim_runtime_at_boundary(
 fn reset_anim_runtime_to_loop_start(
     runtime: &mut AnimRuntime,
     config: &crate::rules::art_data::AnimTypeRuntimeConfig,
-    sim: &Simulation,
+    frame_counts: &HashMap<String, u16>,
 ) {
     if runtime.frame_step >= 0 && !runtime.constructor_reverse && !config.reverse {
         runtime.current_frame = config.loop_start - config.start;
     } else {
-        let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+        let end = effective_anim_end(config, anim_total_frames(frame_counts, &runtime.type_name));
         runtime.current_frame = effective_anim_loop_end(config, end);
     }
 }
@@ -625,8 +641,8 @@ fn reset_anim_runtime_to_loop_start(
 fn switch_anim_runtime_type(
     runtime: &mut AnimRuntime,
     next: &str,
-    sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
     events: &mut Option<&mut Vec<AnimRuntimeVisitEvent>>,
 ) {
     let Some(next_config) = art_reg.anim_runtime_config(next) else {
@@ -634,7 +650,7 @@ fn switch_anim_runtime_type(
         return;
     };
     let previous_type = runtime.type_name.clone();
-    let total_frames = anim_total_frames(sim, next);
+    let total_frames = anim_total_frames(frame_counts, next);
     let end = effective_anim_end(next_config, total_frames);
     let loop_end = effective_anim_loop_end(next_config, end);
     let reverse = next_config.reverse || runtime.constructor_reverse;
@@ -683,11 +699,19 @@ fn effective_anim_loop_end(
     }
 }
 
-fn anim_total_frames(sim: &Simulation, type_name: &str) -> u16 {
-    sim.interner
-        .get(type_name)
-        .and_then(|id| sim.effect_frame_counts.get(&id).copied())
-        .unwrap_or(1)
+fn presentation_anim_frame_count(
+    frame_counts: Option<&HashMap<String, u16>>,
+    type_name: &str,
+) -> Option<u16> {
+    let frame_counts = frame_counts?;
+    frame_counts.get(type_name).copied().or_else(|| {
+        let canonical = type_name.to_ascii_uppercase();
+        frame_counts.get(&canonical).copied()
+    })
+}
+
+fn anim_total_frames(frame_counts: &HashMap<String, u16>, type_name: &str) -> u16 {
+    presentation_anim_frame_count(Some(frame_counts), type_name).unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -738,8 +762,7 @@ mod tests {
     fn garrison_occupant_anim_rate_uses_animtype_default_logic_tick_when_rate_missing() {
         let mut sim = Simulation::new();
         let ucflash = sim.interner.intern("UCFLASH");
-        let art =
-            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
 
         assert_eq!(
             garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
@@ -761,9 +784,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_first_ai_guard_does_not_advance_on_first_fixed_tick() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
@@ -783,7 +805,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.current_frame, 0);
         assert!(!flash.runtime.first_ai_guard);
@@ -792,11 +815,9 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_omitted_end_does_not_play_to_shp_frame_count() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
-        let art =
-            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
             building_id: 1,
@@ -815,13 +836,15 @@ mod tests {
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert!(!advance_garrison_muzzle_flash(
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert!(flash.runtime.expired);
         assert_eq!(flash.runtime.current_frame, 1);
@@ -829,9 +852,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_rate_zero_never_advances() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\nRate=0\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
@@ -851,7 +873,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 4,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.current_frame, 0);
         assert!(!flash.runtime.expired);
@@ -859,9 +882,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_loopcount_ff_is_infinite_sentinel() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[UCFLASH]\nEnd=2\nLoopStart=0\nLoopEnd=2\nLoopCount=-1\n",
         ));
@@ -883,7 +905,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 3,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.loop_remaining, u8::MAX);
         assert_eq!(flash.runtime.current_frame, 0);
@@ -892,11 +915,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_next_switches_same_runtime() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        let mynext = sim.interner.intern("MYNEXT");
-        sim.effect_frame_counts.insert(ucflash, 2);
-        sim.effect_frame_counts.insert(mynext, 2);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 2), ("MYNEXT".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[UCFLASH]\nEnd=1\nNext=MYNEXT\n[MYNEXT]\nEnd=-1\n",
         ));
@@ -918,7 +938,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 2,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.type_name, "MYNEXT");
         assert_eq!(flash.runtime.current_frame, 0);
@@ -929,8 +950,7 @@ mod tests {
     fn anim_runtime_trailer_emits_before_first_ai_guard_and_frame_advance() {
         let mut sim = Simulation::new();
         sim.session.tick = 6;
-        let parent = sim.interner.intern("PARENT");
-        sim.effect_frame_counts.insert(parent, 3);
+        let frame_counts = HashMap::from([("PARENT".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[PARENT]\nEnd=2\nRate=100\nTrailerAnim=SMOKEY2\nTrailerSeperation=2\n",
         ));
@@ -938,7 +958,13 @@ mod tests {
         let mut runtime = garrison_occupant_anim_runtime("PARENT", config, 3);
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,
@@ -963,10 +989,7 @@ mod tests {
     fn anim_runtime_trailer_uses_old_type_before_next_and_not_new_type_same_visit() {
         let mut sim = Simulation::new();
         sim.session.tick = 8;
-        let old = sim.interner.intern("OLDANIM");
-        let next = sim.interner.intern("NEXTANIM");
-        sim.effect_frame_counts.insert(old, 2);
-        sim.effect_frame_counts.insert(next, 2);
+        let frame_counts = HashMap::from([("OLDANIM".to_string(), 2), ("NEXTANIM".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[OLDANIM]\nEnd=1\nRate=900\nNext=NEXTANIM\nTrailerAnim=OLDTRAIL\nTrailerSeperation=1\n\
              [NEXTANIM]\nEnd=1\nRate=900\nTrailerAnim=NEWTRAIL\nTrailerSeperation=1\n",
@@ -976,7 +999,13 @@ mod tests {
         runtime.first_ai_guard = false;
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,
@@ -1001,8 +1030,7 @@ mod tests {
     fn anim_runtime_normal_destroy_does_not_emit_bounce_or_expire_anim_outputs() {
         let mut sim = Simulation::new();
         sim.session.tick = 9;
-        let boom = sim.interner.intern("BOOM");
-        sim.effect_frame_counts.insert(boom, 2);
+        let frame_counts = HashMap::from([("BOOM".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[BOOM]\nEnd=1\nRate=900\nBounceAnim=BOUNCEFX\nExpireAnim=EXPIREFX\n",
         ));
@@ -1011,7 +1039,13 @@ mod tests {
         runtime.first_ai_guard = false;
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,
