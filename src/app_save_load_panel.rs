@@ -1,19 +1,18 @@
 //! Save/load panel — egui overlay for managing save files.
 //!
-//! Scans the `saves/` directory, reads snapshot headers (without deserializing
-//! the full Simulation), and displays a scrollable list. The player can load
-//! or delete saves from here.
+//! Displays the persistence domain's cached snapshot-header list. The player
+//! can load or delete saves from here.
 //!
-//! The directory scan is cached — it only runs when the panel first opens or
-//! after a save/delete invalidates the cache, not every frame.
+//! The repository listing is cached — it only refreshes when the panel first
+//! opens or after a save/delete invalidates the cache, not every frame.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on sim/snapshot for header parsing.
 
-use crate::sim::snapshot::{GameSnapshot, GameSnapshotHeader};
+use crate::app::persistence::SaveEntry;
+use crate::sim::snapshot::GameSnapshotHeader;
 use crate::ui::client_theme;
 
-const SAVES_DIR: &str = "saves";
 const SAVE_ROW_MAIN_X: f32 = 2.0;
 const SAVE_ROW_MAIN_WIDTH: f32 = 249.0;
 const SAVE_ROW_DATE_X: f32 = 255.0;
@@ -22,44 +21,6 @@ const SAVE_ROW_TIME_X: f32 = 315.0;
 const SAVE_ROW_HEIGHT: f32 = 20.0;
 const SAVE_ROW_LOAD_WIDTH: f32 = 50.0;
 const SAVE_ROW_DELETE_WIDTH: f32 = 20.0;
-
-/// One row in the save file list.
-pub(crate) struct SaveEntry {
-    /// Absolute path to the .bin file.
-    pub path: std::path::PathBuf,
-    /// Parsed header metadata.
-    pub header: GameSnapshotHeader,
-}
-
-/// Cached save-file listing. Stored in `AppState` so the directory is only
-/// scanned when explicitly invalidated (panel open, save, delete).
-pub(crate) struct SaveListCache {
-    pub entries: Vec<SaveEntry>,
-    /// When true, the next `draw_save_load_panel` call will rescan before rendering.
-    pub dirty: bool,
-}
-
-impl SaveListCache {
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            dirty: true,
-        }
-    }
-
-    /// Mark the cache as needing a rescan on next render.
-    pub fn invalidate(&mut self) {
-        self.dirty = true;
-    }
-
-    /// Rescan if dirty, then clear the flag.
-    pub fn refresh_if_dirty(&mut self) {
-        if self.dirty {
-            self.entries = scan_saves();
-            self.dirty = false;
-        }
-    }
-}
 
 /// Action produced by the save/load panel each frame.
 pub(crate) enum SaveLoadAction {
@@ -73,38 +34,10 @@ pub(crate) enum SaveLoadAction {
     None,
 }
 
-/// Scan the saves directory and collect entries with valid headers.
-fn scan_saves() -> Vec<SaveEntry> {
-    scan_saves_in(std::path::Path::new(SAVES_DIR))
-}
-
-fn scan_saves_in(saves_dir: &std::path::Path) -> Vec<SaveEntry> {
-    let Ok(dir) = std::fs::read_dir(saves_dir) else {
-        return Vec::new();
-    };
-    let mut entries: Vec<SaveEntry> = Vec::new();
-    for item in dir {
-        let Ok(item) = item else { continue };
-        let path = item.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        let Ok(header) = GameSnapshot::read_header(&bytes) else {
-            continue;
-        };
-        entries.push(SaveEntry { path, header });
-    }
-    // Most recent first.
-    entries.sort_by(|a, b| b.header.save_timestamp.cmp(&a.header.save_timestamp));
-    entries
-}
-
 #[cfg(test)]
 mod gsi_17_02_tests {
-    use super::{save_row_main_text, scan_saves_in};
+    use super::save_row_main_text;
+    use crate::app::persistence::SaveRepository;
     use crate::sim::snapshot::GameSnapshot;
     use crate::sim::world::Simulation;
 
@@ -118,17 +51,15 @@ mod gsi_17_02_tests {
                 .expect("system time after Unix epoch")
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&test_dir).expect("create isolated save-list fixture");
-
         let mut sim = Simulation::new();
         sim.session.map_name = "OFFICIAL.MAP".to_string();
         let bytes = GameSnapshot::save_validated(&sim, 1, 2, "Northern ridge", 3);
-        let original_path = test_dir.join("save_original.bin");
-        let renamed_path = test_dir.join("completely_different_name.bin");
-        std::fs::write(&original_path, bytes).expect("write save fixture");
-        std::fs::rename(&original_path, &renamed_path).expect("rename save fixture");
+        let repository = SaveRepository::at(&test_dir);
+        let renamed_path = repository
+            .write_named("completely_different_name.bin", &bytes)
+            .expect("write save fixture");
 
-        let entries = scan_saves_in(&test_dir);
+        let entries = repository.panel_entries_by_embedded_time();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, renamed_path);
         assert_eq!(entries[0].header.description, "Northern ridge");
@@ -313,14 +244,11 @@ pub(crate) fn format_timestamp_parts(_unix_secs: u64) -> Option<(String, String)
 
 /// Draw the save/load panel. Returns an action for the caller to execute.
 ///
-/// The caller must pass `&mut SaveListCache` so the panel can refresh once
-/// on open rather than scanning the filesystem every frame.
+/// The caller passes the persistence domain's current save-list view.
 pub(crate) fn draw_save_load_panel(
     ctx: &egui::Context,
-    cache: &mut SaveListCache,
+    entries: &[SaveEntry],
 ) -> SaveLoadAction {
-    cache.refresh_if_dirty();
-
     let palette = client_theme::apply_client_theme(ctx);
     let mut action = SaveLoadAction::None;
 
@@ -364,7 +292,7 @@ pub(crate) fn draw_save_load_panel(
 
                 ui.add_space(12.0);
 
-                if cache.entries.is_empty() {
+                if entries.is_empty() {
                     ui.add_space(20.0);
                     ui.label(
                         egui::RichText::new("No saves found. Press M to create one.")
@@ -430,7 +358,7 @@ pub(crate) fn draw_save_load_panel(
                     egui::ScrollArea::vertical()
                         .max_height(350.0)
                         .show(ui, |ui| {
-                            for entry in &cache.entries {
+                            for entry in entries {
                                 let row_id = egui::Id::new(&entry.path);
                                 let resp = ui
                                     .push_id(row_id, |ui| {

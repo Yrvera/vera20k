@@ -23,7 +23,7 @@ const SPEED_MIN_TPS: u32 = 1;
 const SPEED_MAX_TPS: u32 = 200;
 
 /// One row in the inline recent-saves list. Caller builds these from
-/// `save_list_cache.entries`. Owned strings so the panel doesn't borrow
+/// `persistence.save_list_cache.entries()`. Owned strings so the panel doesn't borrow
 /// the cache across the draw call.
 pub(crate) struct RecentSaveRow {
     pub path: PathBuf,

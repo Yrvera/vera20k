@@ -74,9 +74,9 @@ impl App {
     }
 
     fn refresh_single_player_load_state(state: &mut AppState) {
-        state.save_list_cache.refresh_if_dirty();
+        state.persistence.refresh_save_list_if_dirty();
         state.single_player_shell_state.load_saved_game_enabled =
-            !state.save_list_cache.entries.is_empty();
+            !state.persistence.save_list_cache.entries().is_empty();
     }
 
     fn open_single_player_shell(state: &mut AppState) {
@@ -547,7 +547,7 @@ impl App {
             SinglePlayerShellAction::LoadSavedGame => {
                 if state.single_player_shell_state.load_saved_game_enabled {
                     state.show_save_load_panel = true;
-                    state.save_list_cache.invalidate();
+                    state.persistence.invalidate_save_list();
                 }
             }
             SinglePlayerShellAction::NewCampaign => {

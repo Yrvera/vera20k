@@ -500,17 +500,11 @@ pub(crate) struct AppState {
     /// Campaign selector dialog (Single Player -> New Campaign; launch mapping
     /// not decoded).
     pub(crate) campaign_select: Option<crate::ui::main_menu_dialogs::CampaignSelectState>,
-    /// Cached save-file listing for the save/load panel (avoids per-frame disk I/O).
-    pub(crate) save_list_cache: crate::app_save_load_panel::SaveListCache,
     /// Text-field buffer for the dev overlay's "Save As" name input.
     /// Lives in AppState so the field persists across frames while open.
     pub(crate) dev_overlay_save_name: String,
-    /// Tick number recorded by the most recent save this session.
-    pub(crate) last_save_tick: Option<u64>,
-    /// Wall-clock instant of the most recent save this session.
-    pub(crate) last_save_instant: Option<std::time::Instant>,
-    /// Path of the most recently loaded save (for "Reload last load").
-    pub(crate) last_loaded_save_path: Option<std::path::PathBuf>,
+    /// Save repository, cached listing, and last save/load metadata.
+    pub(crate) persistence: crate::app::persistence::PersistenceState,
     /// Rolling FPS / frame-time tracker for the dev overlay readout.
     pub(crate) frame_timer: crate::app_dev_overlay::FrameTimer,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --

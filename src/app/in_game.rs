@@ -336,9 +336,10 @@ impl App {
     pub(super) fn handle_save_load_panel(state: &mut AppState) {
         use crate::app_save_load_panel::SaveLoadAction;
 
+        state.persistence.refresh_save_list_if_dirty();
         let action = crate::app_save_load_panel::draw_save_load_panel(
             &state.egui.ctx,
-            &mut state.save_list_cache,
+            state.persistence.save_list_cache.entries(),
         );
 
         match action {
@@ -347,12 +348,12 @@ impl App {
                 app_input::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
-                if let Err(e) = std::fs::remove_file(&path) {
+                if let Err(e) = state.persistence.repository.delete(&path) {
                     log::error!("Failed to delete save {}: {e}", path.display());
                 } else {
                     log::info!("Deleted save: {}", path.display());
                 }
-                state.save_list_cache.invalidate();
+                state.persistence.invalidate_save_list();
             }
             SaveLoadAction::Close => {
                 state.show_save_load_panel = false;
@@ -368,10 +369,11 @@ impl App {
         use crate::app_dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
 
         // Build the recent-saves snapshot from the existing cache.
-        state.save_list_cache.refresh_if_dirty();
+        state.persistence.refresh_save_list_if_dirty();
         let recent_saves: Vec<RecentSaveRow> = state
+            .persistence
             .save_list_cache
-            .entries
+            .entries()
             .iter()
             .take(5)
             .map(|e| RecentSaveRow {
@@ -387,7 +389,7 @@ impl App {
             })
             .collect();
 
-        let last_save_age: Option<String> = state.last_save_instant.map(|t| {
+        let last_save_age: Option<String> = state.persistence.last_save_instant.map(|t| {
             let secs = t.elapsed().as_secs();
             if secs < 60 {
                 format!("{secs}s ago")
@@ -399,11 +401,13 @@ impl App {
         });
 
         let last_load_available = state
+            .persistence
             .last_loaded_save_path
             .as_ref()
-            .map(|p| p.exists())
+            .map(|path| state.persistence.repository.exists(path))
             .unwrap_or(false);
         let last_load_display = state
+            .persistence
             .last_loaded_save_path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -433,7 +437,7 @@ impl App {
             },
             entity_count: state.simulation.as_ref().map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
-            last_save_tick: state.last_save_tick,
+            last_save_tick: state.persistence.last_save_tick,
             last_save_age,
             last_load_available,
             last_load_display,
@@ -509,8 +513,8 @@ impl App {
                 app_input::save_with_name(state, &name);
             }
             DevOverlayAction::ReloadLastLoad => {
-                if let Some(path) = state.last_loaded_save_path.clone() {
-                    if path.exists() {
+                if let Some(path) = state.persistence.last_loaded_save_path.clone() {
+                    if state.persistence.repository.exists(&path) {
                         crate::app_loading::clear_match_startup_state(state);
                         app_input::load_save_file(state, &path);
                     } else {

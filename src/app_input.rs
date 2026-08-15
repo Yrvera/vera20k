@@ -1226,7 +1226,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         KeyCode::F5 => {
             state.show_save_load_panel = !state.show_save_load_panel;
             if state.show_save_load_panel {
-                state.save_list_cache.invalidate();
+                state.persistence.invalidate_save_list();
                 // Show OS cursor for egui interaction.
                 if state.software_cursor.is_some() {
                     state.platform.window.set_cursor_visible(true);
@@ -1319,8 +1319,6 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
 // Quick-save / quick-load
 // ---------------------------------------------------------------------------
 
-const SAVES_DIR: &str = "saves";
-
 fn quicksave(state: &mut AppState) {
     let Some(sim) = &state.simulation else {
         log::warn!("Quicksave: no active simulation");
@@ -1346,20 +1344,31 @@ fn quicksave(state: &mut AppState) {
         &sim.session.map_name,
         now,
     );
-    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
-        log::error!("Quicksave: failed to create saves dir: {e}");
-        return;
-    }
-    let filename = format!("save_tick{}_{}.bin", sim.session.tick, now);
-    let path = format!("{SAVES_DIR}/{filename}");
-    match std::fs::write(&path, &bytes) {
-        Ok(()) => {
-            log::info!("Quicksave: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.session.tick);
-            state.last_save_instant = Some(std::time::Instant::now());
-            state.save_list_cache.invalidate();
+    let tick = sim.session.tick;
+    let filename = format!("save_tick{tick}_{now}.bin");
+    match state
+        .persistence
+        .repository
+        .write_named(&filename, &bytes)
+    {
+        Ok(path) => {
+            log::info!(
+                "Quicksave: saved {} bytes to {}",
+                bytes.len(),
+                path.display()
+            );
+            state.persistence.last_save_tick = Some(tick);
+            state.persistence.last_save_instant = Some(std::time::Instant::now());
+            state.persistence.invalidate_save_list();
         }
-        Err(e) => log::error!("Quicksave: write failed: {e}"),
+        Err(error) => match error.stage() {
+            crate::app::persistence::SaveWriteStage::CreateDirectory => {
+                log::error!("Quicksave: failed to create saves dir: {error}")
+            }
+            crate::app::persistence::SaveWriteStage::WriteFile => {
+                log::error!("Quicksave: write failed: {error}")
+            }
+        }
     }
 }
 
@@ -1395,20 +1404,31 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         .unwrap_or(0);
     let bytes =
         crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, raw_name, now);
-    if let Err(e) = std::fs::create_dir_all(SAVES_DIR) {
-        log::error!("Save As: failed to create saves dir: {e}");
-        return;
-    }
-    let filename = format!("save_{sanitized}_tick{}_{}.bin", sim.session.tick, now);
-    let path = format!("{SAVES_DIR}/{filename}");
-    match std::fs::write(&path, &bytes) {
-        Ok(()) => {
-            log::info!("Save As: saved {} bytes to {}", bytes.len(), path);
-            state.last_save_tick = Some(sim.session.tick);
-            state.last_save_instant = Some(std::time::Instant::now());
-            state.save_list_cache.invalidate();
+    let tick = sim.session.tick;
+    let filename = format!("save_{sanitized}_tick{tick}_{now}.bin");
+    match state
+        .persistence
+        .repository
+        .write_named(&filename, &bytes)
+    {
+        Ok(path) => {
+            log::info!(
+                "Save As: saved {} bytes to {}",
+                bytes.len(),
+                path.display()
+            );
+            state.persistence.last_save_tick = Some(tick);
+            state.persistence.last_save_instant = Some(std::time::Instant::now());
+            state.persistence.invalidate_save_list();
         }
-        Err(e) => log::error!("Save As: write failed: {e}"),
+        Err(error) => match error.stage() {
+            crate::app::persistence::SaveWriteStage::CreateDirectory => {
+                log::error!("Save As: failed to create saves dir: {error}")
+            }
+            crate::app::persistence::SaveWriteStage::WriteFile => {
+                log::error!("Save As: write failed: {error}")
+            }
+        }
     }
 }
 
@@ -1527,28 +1547,18 @@ mod save_name_tests {
     }
 }
 
-/// Find the most recent `.bin` save file in the saves directory.
-fn most_recent_save_path() -> Option<std::path::PathBuf> {
-    let dir = std::fs::read_dir(SAVES_DIR).ok()?;
-    dir.filter_map(|entry| {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("bin") {
-            let meta = entry.metadata().ok()?;
-            Some((path, meta.modified().ok()?))
-        } else {
-            None
-        }
-    })
-    .max_by_key(|(_, modified)| *modified)
-    .map(|(path, _)| path)
-}
-
 fn quickload(state: &mut AppState) {
-    let path = match most_recent_save_path() {
+    let path = match state
+        .persistence
+        .repository
+        .quickload_path_by_modified_time()
+    {
         Some(p) => p,
         None => {
-            log::warn!("Quickload: no save files found in {SAVES_DIR}/");
+            log::warn!(
+                "Quickload: no save files found in {}/",
+                state.persistence.repository.directory().display()
+            );
             return;
         }
     };
@@ -1557,7 +1567,7 @@ fn quickload(state: &mut AppState) {
 
 /// Load a save file by path. Used by both quickload and the save/load panel.
 pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
-    let bytes = match std::fs::read(path) {
+    let bytes = match state.persistence.repository.read(path) {
         Ok(b) => b,
         Err(e) => {
             log::warn!("Load: could not read {}: {e}", path.display());
@@ -1682,7 +1692,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;
 
-    state.last_loaded_save_path = Some(path.to_path_buf());
+    state.persistence.last_loaded_save_path = Some(path.to_path_buf());
     log::info!("Load: restored simulation from {}", path.display());
 }
 
