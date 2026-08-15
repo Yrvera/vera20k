@@ -8,7 +8,8 @@ use super::{
     RefCell, Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
     SidebarTab, SoundEventQueue, StartupAudioDisposition, TriggerGraph, Window, WindowAttributes,
-    app_list_maps, app_render, app_startup_splash, auto_detect_ui_scale, should_load_audio_indices,
+    app_list_maps, app_render, auto_detect_ui_scale, frontend::startup_splash,
+    should_load_audio_indices,
 };
 
 impl App {
@@ -131,7 +132,7 @@ impl App {
                 .as_ref()
                 .zip(startup_fnt.as_ref())
                 .and_then(|(assets, fnt)| {
-                    app_startup_splash::StartupSplashPresentation::build(
+                    startup_splash::StartupSplashPresentation::build(
                         &gpu,
                         &batch_renderer,
                         assets,
@@ -147,7 +148,7 @@ impl App {
             None
         };
         if let Some(splash) = startup_splash.as_mut() {
-            match app_startup_splash::render_and_present(
+            match startup_splash::render_and_present(
                 &gpu,
                 &batch_renderer,
                 &shell_surface_presenter,

@@ -1,7 +1,7 @@
 //! Developer overlay panel — runtime knobs and diagnostic readouts.
 //!
 //! Toggled with backtick (`). Pure egui rendering: data-in / action-out.
-//! Caller (app.rs) snapshots state into DevOverlayInfo, draws, and
+//! The app facade snapshots state into DevOverlayInfo, draws, and
 //! dispatches the returned DevOverlayAction.
 //!
 //! ## Dependency rules

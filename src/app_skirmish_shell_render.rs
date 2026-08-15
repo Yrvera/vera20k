@@ -1,7 +1,7 @@
 //! Skirmish shell sprite construction and render pass.
 //!
 //! Part of the app layer: may depend on ui and render modules. Keeps the
-//! `GameScreen::MainMenu` branch in `app.rs` small.
+//! `GameScreen::MainMenu` branch in the app facade small.
 
 mod chrome;
 mod controls;

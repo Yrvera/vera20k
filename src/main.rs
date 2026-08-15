@@ -1,7 +1,7 @@
 //! RA2 Engine — entry point.
 //!
 //! Creates the winit event loop and delegates everything to App.
-//! This file should stay minimal (~50 lines). All logic lives in app.rs and modules.
+//! This file should stay minimal (~50 lines). All application logic lives in the app facade and its modules.
 //!
 //! Module declarations live in lib.rs so integration tests can import them.
 
