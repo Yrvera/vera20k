@@ -169,28 +169,132 @@ mod tests {
         assert_eq!(clamped.displayed_credits_for_test("Soviets"), Some(11));
     }
 
+    /// Compose the production seam: credits step only when the runtime
+    /// decision admits the simulation AND that pass commits an Ordinary frame.
+    /// This mirrors the only advance site, which sits inside the
+    /// `decision.run_sim` block of `advance_in_game_runtime_mode`.
+    fn credits_step(
+        inputs: crate::app_sim_tick::RuntimePassInputs,
+        frame_committed: bool,
+    ) -> bool {
+        let decision = crate::app_sim_tick::decide_runtime_pass(inputs);
+        decision.run_sim && credits_advance_for_frame(frame_committed, decision.tick_lane)
+    }
+
     #[test]
     fn sidebar_credit_gate_matrix() {
-        for (case, frame_committed, lane) in [
-            ("no-admit redraw", false, TickLane::Ordinary),
-            ("paused redraw", false, TickLane::Ordinary),
-            ("menu redraw", false, TickLane::Ordinary),
-            ("inactive redraw", false, TickLane::Ordinary),
-            ("missing startup receipt", false, TickLane::Ordinary),
-            ("committed network modal", true, TickLane::NetworkModal),
+        use crate::app_sim_tick::{RuntimePassInputs, SessionMode, decide_runtime_pass};
+
+        // Baseline wall-clock pass: active window, accepted startup receipt,
+        // elapsed pacer window, nothing paused, no menu. Every freeze case
+        // below flips exactly one real predicate off this baseline.
+        let admitting = RuntimePassInputs {
+            exact_step: false,
+            window_active: true,
+            startup_admitted: true,
+            frame_stepping: false,
+            paused: false,
+            menu_open: false,
+            session_mode: SessionMode::Skirmish,
+            pacer_timing_admits: true,
+        };
+        let baseline = decide_runtime_pass(admitting);
+        assert!(baseline.run_sim);
+        assert_eq!(baseline.tick_lane, TickLane::Ordinary);
+        assert!(baseline.admitted_by_pacer);
+        assert!(credits_step(admitting, true));
+        assert!(
+            !credits_step(admitting, false),
+            "an uncommitted frame must freeze displayed credits"
+        );
+
+        for (case, inputs) in [
+            (
+                "no-admit redraw",
+                RuntimePassInputs {
+                    pacer_timing_admits: false,
+                    ..admitting
+                },
+            ),
+            (
+                "paused redraw",
+                RuntimePassInputs {
+                    paused: true,
+                    ..admitting
+                },
+            ),
+            (
+                "menu redraw",
+                RuntimePassInputs {
+                    menu_open: true,
+                    ..admitting
+                },
+            ),
+            (
+                "inactive redraw",
+                RuntimePassInputs {
+                    window_active: false,
+                    ..admitting
+                },
+            ),
+            (
+                "missing startup receipt",
+                RuntimePassInputs {
+                    startup_admitted: false,
+                    ..admitting
+                },
+            ),
         ] {
+            let decision = decide_runtime_pass(inputs);
+            assert!(!decision.run_sim, "{case} must not run the simulation");
             assert!(
-                !credits_advance_for_frame(frame_committed, lane),
+                !credits_step(inputs, true),
                 "{case} must freeze displayed credits"
             );
         }
-        assert!(credits_advance_for_frame(true, TickLane::Ordinary));
-        for case in ["exact-step commit", "debug single-step commit"] {
-            assert!(
-                credits_advance_for_frame(true, TickLane::Ordinary),
-                "{case} must advance exactly at its committed Ordinary seam"
-            );
-        }
-        assert!(!credits_advance_for_frame(false, TickLane::Ordinary));
+
+        // A committed network-modal frame keeps the world advancing but must
+        // not step displayed credits.
+        let network_modal = RuntimePassInputs {
+            paused: true,
+            menu_open: true,
+            session_mode: SessionMode::Lan,
+            ..admitting
+        };
+        let decision = decide_runtime_pass(network_modal);
+        assert!(
+            decision.run_sim,
+            "the network modal pump keeps the world advancing"
+        );
+        assert_eq!(decision.tick_lane, TickLane::NetworkModal);
+        assert!(
+            !credits_step(network_modal, true),
+            "a committed network-modal frame must freeze displayed credits"
+        );
+
+        // Explicit single steps advance credits iff their one frame commits,
+        // even while paused.
+        let exact = RuntimePassInputs {
+            exact_step: true,
+            paused: true,
+            ..admitting
+        };
+        assert!(
+            credits_step(exact, true),
+            "exact-step commit must advance exactly at its committed Ordinary seam"
+        );
+        assert!(!credits_step(exact, false));
+        let debug_step = RuntimePassInputs {
+            frame_stepping: true,
+            paused: true,
+            pacer_timing_admits: false,
+            ..admitting
+        };
+        let debug_decision = decide_runtime_pass(debug_step);
+        assert!(!debug_decision.admitted_by_pacer);
+        assert!(
+            credits_step(debug_step, true),
+            "debug single-step commit must advance exactly at its committed Ordinary seam"
+        );
     }
 }

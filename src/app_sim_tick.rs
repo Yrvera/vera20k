@@ -593,9 +593,9 @@ impl SessionMode {
 /// when no fixed tick is already in progress. Offline campaign/skirmish freeze
 /// the world; message, input, and repaint still run in the surrounding loop.
 /// Pure and total, so it is unit-tested without an `AppState`. The live
-/// app-layer consumer is `current_wall_clock_service_admission`, which reads the
-/// running session mode and gates the one-frame admission inside
-/// `advance_in_game_runtime`.
+/// app-layer consumer is `decide_runtime_pass`, which composes it with the
+/// pacer timing answer and the remaining freeze predicates to gate the
+/// one-frame admission inside `advance_in_game_runtime`.
 pub fn modal_pump_should_advance_sim(
     mode: SessionMode,
     service_only_blocked: bool,
@@ -644,32 +644,92 @@ pub(crate) fn current_session_mode(_state: &AppState) -> SessionMode {
     SessionMode::Skirmish
 }
 
-/// Current app-layer service decision. Actual in-scenario modals follow the
-/// native pump; the app-only debug pause suppresses simulation without claiming
-/// ownership of tactical-view updates.
-fn current_wall_clock_service_admission(state: &AppState) -> WallClockServiceAdmission {
+/// Raw per-pass predicates for one in-game runtime advance. The wall-clock and
+/// exact-step entries fill every field from live state, so the freeze matrix
+/// can be exercised from the same predicates production consults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimePassInputs {
+    pub(crate) exact_step: bool,
+    pub(crate) window_active: bool,
+    pub(crate) startup_admitted: bool,
+    pub(crate) frame_stepping: bool,
+    pub(crate) paused: bool,
+    pub(crate) menu_open: bool,
+    pub(crate) session_mode: SessionMode,
+    /// The frame pacer's pure timing answer (`should_admit` with no pause
+    /// block). Pause/menu service blocking is applied by the decision, not by
+    /// the pacer consult.
+    pub(crate) pacer_timing_admits: bool,
+}
+
+/// The admission outcome of one runtime pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimePassDecision {
+    pub(crate) run_sim: bool,
+    pub(crate) tick_lane: TickLane,
+    pub(crate) admitted_by_pacer: bool,
+    pub(crate) tactical_mutation: bool,
+}
+
+/// Decide one in-game runtime pass from raw predicates. This is the single
+/// freeze contract for simulation admission and therefore displayed-credit
+/// cadence: paused/menu redraws, inactive windows, missing startup receipts,
+/// and closed pacer windows all resolve to `run_sim: false`, and a committed
+/// network-modal frame keeps its non-`Ordinary` lane. `sidebar_credit_gate_matrix`
+/// pins the matrix through this function.
+pub(crate) fn decide_runtime_pass(inputs: RuntimePassInputs) -> RuntimePassDecision {
+    if inputs.exact_step {
+        // Exact diagnostic stepping is an explicit request, not a wall-clock
+        // modal pump: it advances exactly one Ordinary frame even while the
+        // app is paused, and never records pacer admission.
+        return RuntimePassDecision {
+            run_sim: true,
+            tick_lane: TickLane::Ordinary,
+            admitted_by_pacer: false,
+            tactical_mutation: true,
+        };
+    }
     // The current build has no network-session owner, so neither native
     // service-only blocker can be active here. Networking must supply their
     // combined state when `current_session_mode` becomes live.
-    wall_clock_service_admission(
-        state.paused,
-        state.in_game_menu.is_open(),
-        current_session_mode(state),
+    let service = wall_clock_service_admission(
+        inputs.paused,
+        inputs.menu_open,
+        inputs.session_mode,
         false,
         false,
-    )
+    );
+    let pacer_admitted = service.simulation && inputs.pacer_timing_admits;
+    let run_sim = inputs.window_active
+        && inputs.startup_admitted
+        && (inputs.frame_stepping || pacer_admitted);
+    let tick_lane = if inputs.paused && inputs.session_mode.is_network() {
+        TickLane::NetworkModal
+    } else {
+        TickLane::Ordinary
+    };
+    RuntimePassDecision {
+        run_sim,
+        tick_lane,
+        admitted_by_pacer: run_sim && !inputs.frame_stepping && pacer_admitted,
+        tactical_mutation: service.tactical_mutation,
+    }
 }
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
-    if !crate::match_bootstrap::accepted_tick_is_admitted(
+    let startup_admitted = crate::match_bootstrap::accepted_tick_is_admitted(
         state.loaded_startup.as_ref(),
         state.rust_l0_receipt.as_ref(),
-    ) {
+    );
+    if !startup_admitted {
         log::error!("Accepted match tick blocked: matching Rust L0 receipt is absent");
+        // The whole pass is skipped: nothing below may run un-receipted. The
+        // runtime decision re-checks the same predicate so the freeze contract
+        // stays complete even without this call-site return.
         return;
     }
 
-    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { now_ms });
+    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::WallClock { now_ms }, startup_admitted);
 }
 
 /// Advance exactly one production simulation step for the hidden tactical
@@ -700,7 +760,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
         .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
 
-    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
+    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep, admitted);
     let now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     state.platform.frame_pacer.reanchor(now_ms);
 
@@ -735,54 +795,46 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
     Ok(())
 }
 
-fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) {
-    // Exact diagnostic stepping is an explicit request, not a wall-clock modal
-    // pump. Preserve its pre-existing one-step behavior even if the app happens
-    // to be paused; only ordinary wall-clock advancement follows the service
-    // decision below.
-    let service_admission = match mode {
-        RuntimeAdvanceMode::WallClock { .. } => current_wall_clock_service_admission(state),
-        RuntimeAdvanceMode::ExactOneStep => WallClockServiceAdmission {
-            simulation: true,
-            tactical_mutation: true,
-        },
-    };
-    let mut admitted_by_pacer = false;
-    let run_sim = match mode {
+fn advance_in_game_runtime_mode(
+    state: &mut AppState,
+    mode: RuntimeAdvanceMode,
+    startup_admitted: bool,
+) {
+    let frame_stepping =
+        matches!(mode, RuntimeAdvanceMode::WallClock { .. }) && state.debug_frame_step_requested;
+    let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
-            let frame_stepping = state.debug_frame_step_requested;
-            if frame_stepping {
-                state.debug_frame_step_requested = false;
-                state.platform.frame_pacer.reanchor(now_ms);
-                true
-            } else {
-                let game_speed = state.simulation.as_ref().map_or_else(
-                    || state.in_game_options.game_speed.min(6) as u8,
-                    |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
-                );
-                let admit = state.platform.frame_pacer.should_admit(
-                    now_ms,
-                    game_speed,
-                    !service_admission.simulation,
-                );
-                admitted_by_pacer = admit;
-                admit
-            }
+            let game_speed = state.simulation.as_ref().map_or_else(
+                || state.in_game_options.game_speed.min(6) as u8,
+                |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
+            );
+            // Pure timing consult; pause/menu blocking belongs to the decision.
+            state
+                .platform
+                .frame_pacer
+                .should_admit(now_ms, game_speed, false)
         }
-        RuntimeAdvanceMode::ExactOneStep => true,
+        RuntimeAdvanceMode::ExactOneStep => false,
     };
+    let decision = decide_runtime_pass(RuntimePassInputs {
+        exact_step: matches!(mode, RuntimeAdvanceMode::ExactOneStep),
+        window_active: state.platform.window_active,
+        startup_admitted,
+        frame_stepping,
+        paused: state.paused,
+        menu_open: state.in_game_menu.is_open(),
+        session_mode: current_session_mode(state),
+        pacer_timing_admits,
+    });
+    if frame_stepping {
+        state.debug_frame_step_requested = false;
+        if let RuntimeAdvanceMode::WallClock { now_ms } = mode {
+            state.platform.frame_pacer.reanchor(now_ms);
+        }
+    }
 
-    if run_sim {
-        let tick_lane = match mode {
-            RuntimeAdvanceMode::WallClock { .. }
-                if state.paused && current_session_mode(state).is_network() =>
-            {
-                TickLane::NetworkModal
-            }
-            RuntimeAdvanceMode::WallClock { .. } | RuntimeAdvanceMode::ExactOneStep => {
-                TickLane::Ordinary
-            }
-        };
+    if decision.run_sim {
+        let tick_lane = decision.tick_lane;
         let garrison_flash_start_tick = state
             .simulation
             .as_ref()
@@ -794,7 +846,7 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             frame_committed,
             tick_lane,
         );
-        if frame_committed && admitted_by_pacer {
+        if frame_committed && decision.admitted_by_pacer {
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");
             };
@@ -839,7 +891,7 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
     if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
         player.update(assets, music_now_ms);
     }
-    if service_admission.tactical_mutation {
+    if decision.tactical_mutation {
         crate::app_camera::update_camera(state);
         update_building_placement_preview(state);
     }
