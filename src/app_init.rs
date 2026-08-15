@@ -853,6 +853,8 @@ pub struct MapLoadResult {
 pub(crate) struct MapLoadInitial {
     map_data: MapFile,
     map_source: LoadedMapSource,
+    /// Move-only generated-map authority; fixed maps never synthesize one.
+    mapgen_rng_continuation: Option<crate::map::rmg::MapGenRngContinuation>,
 }
 
 impl MapLoadInitial {
@@ -862,6 +864,11 @@ impl MapLoadInitial {
 
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_mapgen_rng_continuation(&self) -> bool {
+        self.mapgen_rng_continuation.is_some()
     }
 }
 
@@ -876,9 +883,11 @@ pub(crate) fn retained_random_map_initial(
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> MapLoadInitial {
     progress.milestone(8);
+    let mapgen_rng_continuation = generated.mapgen_continuation;
     MapLoadInitial {
         map_data: generated.map_file,
         map_source: LoadedMapSource::Generated { seed_name },
+        mapgen_rng_continuation: Some(mapgen_rng_continuation),
     }
 }
 
@@ -1218,11 +1227,13 @@ pub(crate) fn load_map_initial_with_assets(
         }
 
         progress.milestone(8);
+        let mapgen_rng_continuation = generated.mapgen_continuation;
         return Ok(MapLoadInitial {
             map_data: generated.map_file,
             map_source: LoadedMapSource::Generated {
                 seed_name: seed_name.to_string(),
             },
+            mapgen_rng_continuation: Some(mapgen_rng_continuation),
         });
     }
 
@@ -1281,6 +1292,7 @@ pub(crate) fn load_map_initial_with_assets(
     Ok(MapLoadInitial {
         map_data,
         map_source,
+        mapgen_rng_continuation: None,
     })
 }
 
@@ -1351,6 +1363,7 @@ pub(crate) fn load_map_from_initial(
     let MapLoadInitial {
         map_data,
         map_source,
+        mapgen_rng_continuation,
     } = initial;
     let map_hash = match &map_source {
         LoadedMapSource::Loose { .. }
@@ -1477,6 +1490,9 @@ pub(crate) fn load_map_from_initial(
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
     let mut bootstrap_rng = ScenarioBootstrapRng::new(match_seed);
+    if let Some(continuation) = mapgen_rng_continuation {
+        bootstrap_rng.install_generated_mapgen_continuation(continuation);
+    }
     if let Some(plan) = preloaded_battle_start_plan.as_ref() {
         // Native constructs houses and resolves Battle starts before the first
         // loading composition; terrain Fill continues that same Scenario

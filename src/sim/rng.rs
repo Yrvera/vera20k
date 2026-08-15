@@ -54,6 +54,23 @@ impl SimRng {
         rng
     }
 
+    /// Adopt the exact post-RMG `g_MapGenRng` cursor without replaying draws.
+    ///
+    /// The two implementations intentionally keep separate draw code, but the
+    /// native 250-word state and lag cursors are the same logical object at the
+    /// accepted generated-map -> live-scenario boundary.
+    pub(crate) fn from_mapgen_continuation(
+        continuation: crate::map::rmg::MapGenRngContinuation,
+    ) -> Self {
+        let (words, index_a, index_b) = continuation.into_native_parts();
+        Self {
+            disabled: 0,
+            index_a: i32::try_from(index_a).expect("MapGen cursor A fits native i32"),
+            index_b: i32::try_from(index_b).expect("MapGen cursor B fits native i32"),
+            state: Vec::from(words),
+        }
+    }
+
     /// Compact deterministic fingerprint of the full internal state.
     ///
     /// This is for tests and debug comparisons. Use `hash_state` when feeding
@@ -282,6 +299,31 @@ impl SimRng {
 #[cfg(test)]
 mod tests {
     use super::SimRng;
+
+    use crate::map::rmg::{MapGenRngContinuation, RmgRng};
+
+    #[test]
+    fn mapgen_continuation_transfers_full_state_across_cursor_wraps() {
+        for seed in [0, u16::MAX] {
+            for prefix_draws in [0, 249, 250, 353] {
+                let mut generated = RmgRng::new(seed);
+                for _ in 0..prefix_draws {
+                    let _ = generated.next_u32();
+                }
+                let mut expected = generated.clone();
+                let continuation = MapGenRngContinuation::capture(generated);
+                let mut live = SimRng::from_mapgen_continuation(continuation);
+
+                for draw in 0..500 {
+                    assert_eq!(
+                        live.next_u32(),
+                        expected.next_u32(),
+                        "seed {seed}, prefix {prefix_draws}, continuation draw {draw}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn sim_rng_logical_view_and_state_expose_all_250_words_without_mutation() {

@@ -1494,14 +1494,16 @@ fn launch_country_can_own_object(
         .any(|forbidden| forbidden == country_name)
 }
 
-/// Opaque owner for the two gameplay cursors used while a map becomes a world.
+/// Opaque owner for the RNG cursors used while a map becomes a world.
 ///
 /// The app may drive content-loading algorithms through the two narrow draw
-/// wrappers, but it cannot replace or extract either cursor. Consuming this
-/// owner is the only production handoff into a freshly constructed Simulation.
+/// wrappers and may transport an accepted generated-map continuation, but it
+/// cannot replace, extract, or draw from those cursors. Consuming this owner is
+/// the only production handoff into a freshly constructed Simulation.
 pub(crate) struct ScenarioBootstrapRng {
     scenario: SimRng,
     main: SimRng,
+    mapgen: Option<SimRng>,
 }
 
 /// Scenario-stream access granted only to the terrain Fill callback.
@@ -1532,7 +1534,20 @@ impl ScenarioBootstrapRng {
         Self {
             scenario: SimRng::new(seed),
             main: SimRng::new(seed),
+            mapgen: None,
         }
+    }
+
+    /// Install the accepted random map's process-global cursor exactly once.
+    pub(crate) fn install_generated_mapgen_continuation(
+        &mut self,
+        continuation: crate::map::rmg::MapGenRngContinuation,
+    ) {
+        assert!(
+            self.mapgen.is_none(),
+            "generated MapGen continuation may only be installed once"
+        );
+        self.mapgen = Some(SimRng::from_mapgen_continuation(continuation));
     }
 
     /// Install the already-resolved pre-render Battle prefix exactly once.
@@ -1556,11 +1571,14 @@ impl ScenarioBootstrapRng {
         )
     }
 
-    /// Finish the app-to-sim construction handoff with both exact cursors.
+    /// Finish the app-to-sim construction handoff with every bound cursor.
     pub(crate) fn into_simulation(self, descriptor: &ScenarioDescriptor) -> Simulation {
         let mut sim = Simulation::from_descriptor(descriptor);
         sim.install_terrain_load_advanced_scenario_rng(self.scenario);
         sim.install_variant_advanced_main_rng(self.main);
+        if let Some(mapgen) = self.mapgen {
+            sim.install_generated_mapgen_rng(mapgen);
+        }
         sim
     }
 }
@@ -1609,6 +1627,8 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::map::rmg::{MapGenRngContinuation, RmgRng};
 
     fn descriptor(seed: u32) -> ScenarioDescriptor {
         ScenarioDescriptor {
@@ -1663,6 +1683,33 @@ mod tests {
 
         assert_eq!(actual.scenario, expected_scenario.logical_state());
         assert_eq!(actual.main, SimRng::new(u64::from(seed)).logical_state());
+    }
+
+    #[test]
+    fn generated_mapgen_continuation_replaces_only_mapgen_cursor() {
+        let match_seed = 0x51C0_1005;
+        let map_seed = 0xBEEF;
+        let mut generated = RmgRng::new(map_seed);
+        let mut expected_mapgen = SimRng::new(u64::from(map_seed));
+        for _ in 0..353 {
+            assert_eq!(generated.next_u32(), expected_mapgen.next_u32());
+        }
+
+        let mut owner = ScenarioBootstrapRng::new(match_seed);
+        owner.install_generated_mapgen_continuation(MapGenRngContinuation::capture(generated));
+        let actual = owner
+            .into_simulation(&descriptor(match_seed))
+            .rng_state();
+
+        assert_eq!(
+            actual.scenario,
+            SimRng::new(u64::from(match_seed)).logical_state()
+        );
+        assert_eq!(
+            actual.main,
+            SimRng::new(u64::from(match_seed)).logical_state()
+        );
+        assert_eq!(actual.mapgen, expected_mapgen.logical_state());
     }
 
     #[test]

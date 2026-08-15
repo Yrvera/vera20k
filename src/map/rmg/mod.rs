@@ -26,6 +26,7 @@ pub mod x87;
 pub use grid::{DIRECTION_OFFSETS, DiamondScan, GridCell, RmgGrid};
 pub use options::RmgOptions;
 pub use rng::RmgRng;
+pub(crate) use rng::MapGenRngContinuation;
 pub use scratch::RmgScratch;
 pub use settings::RmgSettings;
 pub use tiles::TileIds;
@@ -193,6 +194,9 @@ pub fn is_seed_selection(map_name: &str) -> bool {
 #[derive(Debug)]
 pub struct GeneratedMap {
     pub map_file: MapFile,
+    /// Exact `g_MapGenRng` continuation after this accepted generation run.
+    /// Kept crate-private so app code can transport but never draw from it.
+    pub(crate) mapgen_continuation: MapGenRngContinuation,
     /// `(slot, x, y)` per generated start position.
     pub start_waypoints: Vec<(u8, u16, u16)>,
     /// Stages actually executed, in order.

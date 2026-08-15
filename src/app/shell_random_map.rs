@@ -993,6 +993,8 @@ mod tests {
         options.seed = seed;
         crate::map::rmg::GeneratedMap {
             map_file: crate::map::rmg::emit::empty_map_file(&options, 32, 32),
+            mapgen_continuation:
+                crate::map::rmg::MapGenRngContinuation::seeded_for_test(seed as u16),
             start_waypoints: vec![(0, start_x, 20)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,

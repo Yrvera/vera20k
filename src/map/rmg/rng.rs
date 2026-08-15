@@ -43,6 +43,30 @@ pub struct RmgRng {
     idx_b: usize,
 }
 
+/// Move-only post-generation cursor handed to the live simulation.
+///
+/// Active YR seeds and advances `g_MapGenRng @ 0x00ABE890` while building a
+/// random map (`FUN_00598960`), then bridge repair later draws from that same
+/// object in `FUN_00598030`. The app may transport this value but cannot draw
+/// from it or inspect its native state.
+#[derive(Debug)]
+pub(crate) struct MapGenRngContinuation(RmgRng);
+
+impl MapGenRngContinuation {
+    pub(crate) fn capture(rng: RmgRng) -> Self {
+        Self(rng)
+    }
+
+    pub(crate) fn into_native_parts(self) -> ([u32; STATE_LEN], usize, usize) {
+        (self.0.state, self.0.idx_a, self.0.idx_b)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seeded_for_test(seed: u16) -> Self {
+        Self(RmgRng::new(seed))
+    }
+}
+
 impl RmgRng {
     /// Seed the generator. Each of the 250 state words is produced by four
     /// hash rounds that carry the previous round's pre-mangle value forward.

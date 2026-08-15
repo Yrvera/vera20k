@@ -610,10 +610,13 @@ pub struct Simulation {
     /// multiplayer checksums, and the live cursor continues across a load.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) main_rng: SimRng,
-    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). Fresh construction
-    /// uses the verified native `Random__Seed(0)` logical state. Bridge repair
-    /// consumes this stream; destruction remains Scenario-owned. Like Main,
-    /// this process-global cursor is not saved or checksummed and survives load.
+    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). VERA's fresh
+    /// fixed-map construction uses `Random__Seed(0)`, matching the verified
+    /// native fresh-process state; an accepted generated map installs its exact
+    /// post-RMG continuation. Bridge repair consumes this stream; destruction
+    /// remains Scenario-owned. This cursor is not saved or checksummed; Rust
+    /// retains it across in-scenario restore, while native cross-match process
+    /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
     /// Deterministic fog/shroud visibility state.
@@ -1849,6 +1852,13 @@ impl Simulation {
     /// remains independently owned by the Fill pass.
     pub(super) fn install_variant_advanced_main_rng(&mut self, main_rng: SimRng) {
         self.main_rng = main_rng;
+    }
+
+    /// Install the exact cursor left by the accepted random-map generation.
+    /// VERA fixed-map construction currently keeps `Random__Seed(0)`; native
+    /// fresh-process state is verified, while cross-match retention is UNCHECKED.
+    pub(super) fn install_generated_mapgen_rng(&mut self, mapgen_rng: SimRng) {
+        self.mapgen_rng = mapgen_rng;
     }
 
     /// Create a new empty simulation with the default deterministic seed.
