@@ -23,7 +23,7 @@
 //! - Does NOT depend on sim/ game logic, render/, or any game module.
 
 use crate::rules::art_data::ArtEntry;
-use crate::sim::animation::{
+use crate::rules::animation_sequence::{
     FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet, ShpVehicleCadence,
 };
 

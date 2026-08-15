@@ -2262,7 +2262,7 @@ pub struct RuleSet {
     /// Complete immutable per-object animation timing catalog. Gameplay reads
     /// this rules-owned resource directly; presentation cannot replace timing
     /// on an individual frame.
-    animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
+    animation_sequences: BTreeMap<String, crate::rules::animation_sequence::SequenceSet>,
     /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
     /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
     /// `None` until resolved.
@@ -3338,19 +3338,19 @@ impl RuleSet {
         infantry_sequences: Option<&crate::rules::infantry_sequence::InfantrySequenceRegistry>,
     ) {
         self.animation_sequences =
-            crate::sim::animation::build_animation_sequence_catalog(self, infantry_sequences);
+            crate::rules::animation_sequence::build_animation_sequence_catalog(self, infantry_sequences);
     }
 
     pub(crate) fn animation_sequences(
         &self,
-    ) -> &BTreeMap<String, crate::sim::animation::SequenceSet> {
+    ) -> &BTreeMap<String, crate::rules::animation_sequence::SequenceSet> {
         &self.animation_sequences
     }
 
     pub(crate) fn animation_sequence(
         &self,
         type_id: &str,
-    ) -> Option<&crate::sim::animation::SequenceSet> {
+    ) -> Option<&crate::rules::animation_sequence::SequenceSet> {
         let canonical = self.object(type_id)?.id.as_str();
         self.animation_sequences.get(canonical)
     }
@@ -3358,7 +3358,7 @@ impl RuleSet {
     #[cfg(test)]
     pub(crate) fn replace_animation_sequences_for_test(
         &mut self,
-        animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
+        animation_sequences: BTreeMap<String, crate::rules::animation_sequence::SequenceSet>,
     ) {
         self.animation_sequences = animation_sequences;
     }

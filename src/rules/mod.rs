@@ -15,6 +15,7 @@
 //! - rules/ is depended on by: sim/, map/, render/, sidebar/
 //! - rules/ does NOT depend on: sim/, render/, ui/, sidebar/, audio/, net/
 
+pub mod animation_sequence;
 pub mod art_data;
 pub mod bridge_warheads;
 pub mod color_add;

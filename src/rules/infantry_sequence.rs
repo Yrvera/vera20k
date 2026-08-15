@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use crate::rules::ini_parser::IniFile;
-use crate::sim::animation::{FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet};
+use crate::rules::animation_sequence::{FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet};
 
 /// Native action-record delay byte for all 42 infantry actions.
 const ACTION_FRAME_DELAYS: [u8; 42] = [
