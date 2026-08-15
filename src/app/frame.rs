@@ -5,7 +5,7 @@
 
 use super::{
     ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, app_sim_tick,
-    app_startup_splash, app_transitions, main_menu,
+    app_transitions, frontend::startup_splash, main_menu,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +59,7 @@ impl App {
                 .startup_splash
                 .as_ref()
                 .expect("active startup splash exists");
-            app_startup_splash::render_and_present(
+            startup_splash::render_and_present(
                 &state.gpu,
                 &state.batch_renderer,
                 &state.shell_surface_presenter,

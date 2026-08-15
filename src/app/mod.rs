@@ -65,8 +65,7 @@ use crate::ui::shell::controller::ShellKey;
 use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
-#[path = "app_startup_splash.rs"]
-mod app_startup_splash;
+pub mod frontend;
 mod frame;
 mod handler;
 mod initialize;

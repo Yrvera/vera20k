@@ -115,7 +115,7 @@ memmap2 = "0.9"
 # --- Error handling ---
 # thiserror for structured library errors (AssetError, RulesError, etc.)
 thiserror = "2"
-# anyhow for application-level error propagation (main.rs, app.rs)
+# anyhow for application-level error propagation (main.rs, app facade)
 anyhow = "1"
 
 # --- Logging ---

@@ -14,7 +14,7 @@ use super::{
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, Simulation, SkirmishSettings,
     SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
-    TriggerGraph, TriggerMap, UnitAtlas, Waypoint, app_render, app_startup_splash,
+    TriggerGraph, TriggerMap, UnitAtlas, Waypoint, app_render, frontend::startup_splash,
 };
 
 mod platform;
@@ -456,7 +456,7 @@ pub(crate) struct AppState {
     /// overlay first renders.
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Retail process-start splash, held until its post-present deadline.
-    pub(crate) startup_splash: Option<app_startup_splash::StartupSplashPresentation>,
+    pub(crate) startup_splash: Option<startup_splash::StartupSplashPresentation>,
     /// Global elapsed time for looping terrain overlay animations.
     pub(crate) idle_anim_elapsed_ms: u32,
     /// Logic frame on which each building's slot animations were created, by

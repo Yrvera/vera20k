@@ -317,11 +317,11 @@ production_bindings! {
     Name("glssmd.shp"), AnyArchive
         => "glsmd.pal", GAMEMD_UI,
            "Startup splash, 640-wide client",
-           "app_startup_splash.rs:181";
+           "app/frontend/startup_splash.rs:219";
     Name("glslmd.shp"), AnyArchive
         => "glsmd.pal", GAMEMD_UI,
            "Startup splash, wider than 640",
-           "app_startup_splash.rs:181";
+           "app/frontend/startup_splash.rs:219";
 
     // ---------------------------------------------------------- shell chrome
     // SHELL.PAL / SHELL2.PAL / the dedicated dialog palettes. The main-menu and
@@ -792,11 +792,11 @@ mod tests {
 //   :999/:1001  pips2.shp tiberium cargo pips
 //   :1095/:1097  pipbrd.shp health bar backing
 //
-// STARTUP SPLASH — src/app_startup_splash.rs
-//   :24-26  SMALL_SPLASH_SHP = GLSS.SHP, LARGE_SPLASH_SHP = GLSL.SHP,
+// STARTUP SPLASH — src/app/frontend/startup_splash.rs
+//   :32-34  SMALL_SPLASH_SHP = GLSS.SHP, LARGE_SPLASH_SHP = GLSL.SHP,
 //           SPLASH_PALETTE = GLS.PAL — the Red Alert 2 art, chosen deliberately
 //           over the Yuri's Revenge `*MD` variants
-//   :181  Palette::from_bytes_gamemd_ui
+//   :219  Palette::from_bytes_gamemd_ui
 //
 // SHELL CHROME
 //   src/render/main_menu_shell_chrome.rs:76   SDBTNANM.SHP → SDBTNANM.PAL
