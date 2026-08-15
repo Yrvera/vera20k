@@ -886,18 +886,17 @@ impl Simulation {
             // reimplementing the pathfind call; 1-tick delay is below the
             // human-observable threshold.
             if let Some(owner) = self.substrate.entities.get(sid).map(|e| e.owner) {
-                self.pending_commands
-                    .push(crate::sim::command::CommandEnvelope::new(
-                        owner,
-                        self.session.tick + 1,
-                        crate::sim::command::Command::Move {
-                            entity_id: sid,
-                            target_rx,
-                            target_ry,
-                            queue: false,
-                            group_id: None,
-                        },
-                    ));
+                self.queue_command(crate::sim::command::CommandEnvelope::new(
+                    owner,
+                    self.session.tick + 1,
+                    crate::sim::command::Command::Move {
+                        entity_id: sid,
+                        target_rx,
+                        target_ry,
+                        queue: false,
+                        group_id: None,
+                    },
+                ));
             }
         }
     }

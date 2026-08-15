@@ -234,7 +234,7 @@ fn finish_order(
     let current_tick = state.simulation.as_ref().map_or(0, |s| s.session.tick);
     crate::app_target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
     if let Some(sim) = &mut state.simulation {
-        sim.pending_commands.extend(queued);
+        sim.queue_commands(queued);
     }
     true
 }

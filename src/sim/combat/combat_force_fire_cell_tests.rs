@@ -137,7 +137,7 @@ fn force_fire_cell_pursuit_then_fire_integration() {
     let grid = PathGrid::test_all_passable(64, 64);
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
-    sim.pending_commands.push(CommandEnvelope::new(
+    sim.queue_command(CommandEnvelope::new(
         owner_id,
         sim.session.tick + 1,
         Command::ForceAttackCell {
@@ -149,7 +149,7 @@ fn force_fire_cell_pursuit_then_fire_integration() {
 
     // Tick 1: EventClass applies the command at the native Main_Tick tail,
     // after this frame's pursuit/object walk has already completed.
-    let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+    let pending = sim.take_due_commands();
     sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
 
     let entity = sim.substrate.entities.get(1).unwrap();
@@ -175,7 +175,7 @@ fn force_fire_cell_pursuit_then_fire_integration() {
     // Tick many times until the unit walks into range and fires.
     let mut fired = false;
     for _ in 0..400 {
-        let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+        let pending = sim.take_due_commands();
         sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
         if !sim.fire_events.is_empty() {
             fired = true;

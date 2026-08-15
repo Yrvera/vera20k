@@ -311,7 +311,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
                 crate::app_commands::roundtrip_ordinary_local_move(sim, envelope)
             })
             .collect::<Vec<_>>();
-        sim.pending_commands.extend(queued);
+        sim.queue_commands(queued);
     }
     true
 }

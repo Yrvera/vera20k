@@ -659,7 +659,7 @@ mod game_speed_tests {
         sim.houses
             .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
         sim.session.house_order.push(owner);
-        sim.pending_commands.push(CommandEnvelope::new(
+        sim.queue_command(CommandEnvelope::new(
             owner,
             1,
             Command::SetGameSpeed { speed: 4 },
