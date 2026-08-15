@@ -60,6 +60,8 @@ pub struct BuildingPlacementPreview {
     pub reason: Option<BuildingPlacementError>,
     /// Per-cell validity (row-major, width*height). True = cell is placeable.
     pub cell_valid: Vec<bool>,
+    /// Sim-owned regular-wall filler cells in native N/E/S/W, nearest-first order.
+    pub wall_autofill_cells: Vec<(u16, u16)>,
 }
 
 /// Why an item cannot currently be built.

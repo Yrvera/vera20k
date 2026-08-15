@@ -6,7 +6,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -21,18 +21,15 @@ use crate::app_types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::audio::events::GameSoundEvent;
-use crate::map::entities::EntityCategory;
 use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
-use crate::sim::animation::{self, SequenceSet};
-use crate::sim::overlay_grid::recalc_overlay_passability;
-use crate::sim::pathfinding::PathGrid;
-use crate::sim::pathfinding::terrain_cost::build_canonical_terrain_cost_grids;
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{LifecycleOutput, SimFireEvent, SimSoundEvent, TickLane, TriggerInputs};
+use crate::sim::world::{
+    LifecycleOutput, SimFireEvent, SimFrameOutput, SimSoundEvent, TickLane, TriggerInputs,
+};
 use crate::ui::game_screen::GameScreen;
 
 /// Directory for Rust-only deterministic diagnostic logs.
@@ -407,140 +404,75 @@ fn score_row_display_name(
     country_name.unwrap_or(owner_name).to_string()
 }
 
-/// Collect the end-of-match score screen's contents off the live houses.
+/// Resolve the end-of-match score presentation from a sim-owned raw snapshot.
 ///
-/// gamemd builds the same table when the score dialog initialises: one row per
-/// house that is neither passive nor the scenario's special/neutral house, then
-/// sorts the rows by score, highest first.
-///
-/// Column sources, all read straight off the house the way gamemd's builder
-/// does: Kills and Losses from the destroyed-object counters, Built from the
-/// finished-production counter, and Score from the harvested-credits statistic
-/// (the same accumulator the ore deposit path feeds). A house that survived the
-/// match then has its displayed score raised by a randomised victory bonus, drawn
-/// from the scenario stream exactly as gamemd draws it at this moment.
+/// Simulation owns contender admission, raw statistics, displayed-score bonus
+/// calculation, and its Scenario RNG draws. This app helper only resolves names,
+/// colours, elapsed wall time, and display order. The existing Rust bonus formula
+/// and contender admission rules are preserved, while sim now uses its canonical
+/// house registration order. Exact native score-dialog traversal remains UNCHECKED.
 fn build_score_screen_model(
-    state: &mut AppState,
+    state: &AppState,
     elapsed_seconds: i32,
 ) -> crate::ui::score_shell::ScoreScreenModel {
     use crate::ui::score_shell::{ScoreRow, ScoreScreenModel};
 
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
-    // The launch handle the player typed in the skirmish shell; the same string
-    // the loading screen's progress row shows. Absent outside a skirmish launch,
-    // in which case the house's own name is displayed.
+    // Use the launch handle while it is still available. Current map handoff
+    // clears LoadingSession instead of pinning the handle for the match, so the
+    // ordinary fallback remains a recorded presentation residual.
     let local_handle = crate::app_loading::launch_player_name(state);
-    // Native fills each house's stored display name from its country's `UIName=`
-    // through the string table, falling back to the country's plain `Name=`, and
-    // the score screen copies that name into every row. Two computer opponents of
-    // different countries therefore read differently.
-    let country_names: std::collections::BTreeMap<String, String> = {
-        let rules = state.rules.as_ref();
-        let csf = state.csf.as_ref();
-        state
-            .simulation
-            .as_ref()
-            .map(|sim| {
-                sim.houses
-                    .iter()
-                    .filter_map(|(id, house)| {
-                        let owner = sim.interner.resolve(*id).to_string();
-                        let country = sim.interner.resolve(house.country?).to_string();
-                        let (ui_key, plain) = rules
-                            .map(|r| r.country_display_name_sources(&country))
-                            .unwrap_or((None, None));
-                        let localized = ui_key
-                            .zip(csf)
-                            .map(|(key, csf)| csf.text(key).into_owned())
-                            // An unresolved key comes back as the key itself; that
-                            // is not a name, so fall through to `Name=`.
-                            .filter(|text| Some(text.as_str()) != ui_key);
-                        let name = localized.or_else(|| plain.map(str::to_string))?;
-                        Some((owner, name))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    // Resolve each contender's row colour up front: the ramps live on the rules
-    // and the loop below needs the simulation mutably (the victory bonus draws
-    // from the scenario stream), so the two borrows cannot overlap.
-    let row_colors: std::collections::BTreeMap<String, [u8; 3]> = {
-        let ramps = state.rules.as_ref().map(|rules| &rules.house_color_ramps);
-        state
-            .simulation
-            .as_ref()
-            .map(|sim| {
-                sim.houses
-                    .iter()
-                    .map(|(id, _)| {
-                        let owner = sim.interner.resolve(*id).to_string();
-                        let index = state
-                            .house_color_map
-                            .get(&owner)
-                            .copied()
-                            .unwrap_or(crate::rules::house_colors::NO_REMAP);
-                        // Shade 0 is the brightest band of the scheme ramp — the
-                        // same colour the radar draws this house's dots with.
-                        let rgb = ramps
-                            .map(|r| {
-                                let c = r.ramp(index)[0];
-                                [c.r, c.g, c.b]
-                            })
-                            .unwrap_or([0xFF, 0xFF, 0xFF]);
-                        (owner, rgb)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let mut rows: Vec<ScoreRow> = Vec::new();
-    let Some(sim) = state.simulation.as_mut() else {
+    let Some(sim) = state.simulation.as_ref() else {
         return ScoreScreenModel::default();
     };
-    // House iteration order is the BTreeMap's, which is the deterministic order
-    // every peer shares — the same requirement gamemd's array walk satisfies, and
-    // it fixes the order in which the victory bonus consumes the scenario stream.
-    let contenders: Vec<crate::sim::intern::InternedId> = sim
-        .houses
-        .iter()
-        .filter(|(_, house)| !house.multiplay_passive)
-        .map(|(id, _)| *id)
-        .collect();
-    for owner_id in contenders {
-        let Some(house) = sim.houses.get(&owner_id) else {
-            continue;
-        };
-        let owner_name = sim.interner.resolve(owner_id).to_string();
-        let survived = !house.is_defeated;
-        let stats = house.stats;
-        // The native score field has two feeders — harvested ore and kill points.
-        let raw_score = stats.score(house.economy.harvested_credits);
-        let score = if survived && raw_score > 0 {
-            let half = raw_score / 2;
-            let bonus = sim
-                .score_bonus_rng()
-                .next_range_u32_inclusive(half.max(0) as u32, raw_score.max(0) as u32);
-            raw_score.saturating_add(half).saturating_add(bonus as i32)
-        } else {
-            raw_score
-        };
+    let Some(raw_snapshot) = sim.terminal_score_snapshot().cloned() else {
+        log::error!("Natural match exit reached the score screen without a sim snapshot");
+        return ScoreScreenModel::default();
+    };
+    let mut rows: Vec<ScoreRow> = Vec::with_capacity(raw_snapshot.rows.len());
+    for raw in raw_snapshot.rows {
+        let owner_name = sim.interner.resolve(raw.owner).to_string();
+        let country_name = raw.country.and_then(|country| {
+            let country = sim.interner.resolve(country);
+            let (ui_key, plain) = state
+                .rules
+                .as_ref()
+                .map(|rules| rules.country_display_name_sources(country))
+                .unwrap_or((None, None));
+            let localized = ui_key
+                .zip(state.csf.as_ref())
+                .map(|(key, csf)| csf.text(key).into_owned())
+                .filter(|text| Some(text.as_str()) != ui_key);
+            localized.or_else(|| plain.map(str::to_string))
+        });
         let display_name = score_row_display_name(
             &owner_name,
             &local_owner,
             &local_handle,
-            country_names.get(&owner_name).map(String::as_str),
+            country_name.as_deref(),
         );
+        let color_index = state
+            .house_color_map
+            .get(&owner_name)
+            .copied()
+            .unwrap_or(crate::rules::house_colors::NO_REMAP);
+        // Shade 0 is the brightest band of the scheme ramp — the same colour
+        // the radar draws this house's dots with.
+        let rgb = state
+            .rules
+            .as_ref()
+            .map(|rules| {
+                let color = rules.house_color_ramps.ramp(color_index)[0];
+                [color.r, color.g, color.b]
+            })
+            .unwrap_or([0xFF, 0xFF, 0xFF]);
         rows.push(ScoreRow {
             name: display_name,
-            rgb: row_colors
-                .get(&owner_name)
-                .copied()
-                .unwrap_or([0xFF, 0xFF, 0xFF]),
-            kills: stats.kills(),
-            losses: stats.losses(),
-            built: stats.built,
-            score,
+            rgb,
+            kills: raw.kills,
+            losses: raw.losses,
+            built: raw.built,
+            score: raw.score,
         });
     }
     // Highest score first. A stable sort keeps ties in house order, so the table
@@ -610,118 +542,8 @@ pub(crate) enum ExactStepError {
     FrameDelta { actual: u32 },
 }
 
-/// Build animation sequences for entity types in the ECS world.
-///
-/// For infantry, looks up the `Sequence=` key from art.ini to find the per-type
-/// sequence definition (e.g., `[ConSequence]`). Falls back to the hardcoded default
-/// layout if no sequence is found. Buildings always use the default single-frame set.
-pub(crate) fn build_animation_sequences(
-    simulation: Option<&crate::sim::world::Simulation>,
-    rules: Option<&crate::rules::ruleset::RuleSet>,
-    art_registry: Option<&crate::rules::art_data::ArtRegistry>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
-) -> BTreeMap<String, SequenceSet> {
-    let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
-    let Some(sim) = simulation else {
-        return sequences;
-    };
-
-    let mut data_driven_count: usize = 0;
-
-    for entity in sim.entities().values() {
-        let type_str = sim.interner.resolve(entity.type_ref);
-        if sequences.contains_key(type_str) {
-            continue;
-        }
-        // Resolve the art-registry key. Type IDs (e.g. "E1") differ from image
-        // IDs (e.g. "GI") — rules.ini's `Image=` is the bridge. Fall back to
-        // the type ID when rules can't resolve the image (e.g. preview
-        // contexts), since for many types the image defaults to the ID.
-        let image_id: String = rules
-            .and_then(|r| r.object(type_str))
-            .map(|obj| obj.image.clone())
-            .unwrap_or_else(|| type_str.to_string());
-        let seq: SequenceSet = match entity.category {
-            EntityCategory::Infantry => {
-                // Look up Sequence= from art.ini for this type's image.
-                let seq_name: Option<&str> = art_registry
-                    .and_then(|a| a.get(&image_id))
-                    .and_then(|e| e.sequence.as_deref());
-
-                if let Some(name) = seq_name {
-                    let key: String = name.to_uppercase();
-                    if let Some(seq_def) = infantry_sequences.get(&key) {
-                        let built: SequenceSet =
-                            crate::rules::infantry_sequence::build_sequence_set(seq_def);
-                        if !built.is_empty() {
-                            data_driven_count += 1;
-                            built
-                        } else {
-                            log::warn!(
-                                "Sequence '{}' for type '{}' (image '{}') parsed to 0 entries — using defaults",
-                                name,
-                                type_str,
-                                image_id
-                            );
-                            animation::default_infantry_sequences()
-                        }
-                    } else {
-                        log::warn!(
-                            "Sequence '{}' not found in art.ini for type '{}' (image '{}')",
-                            name,
-                            type_str,
-                            image_id
-                        );
-                        animation::default_infantry_sequences()
-                    }
-                } else {
-                    log::warn!(
-                        "No Sequence= in art.ini for infantry type '{}' (image '{}') — falling back to defaults",
-                        type_str,
-                        image_id
-                    );
-                    animation::default_infantry_sequences()
-                }
-            }
-            EntityCategory::Structure => animation::default_building_sequences(),
-            // SHP vehicles (Voxel=no): build sequences from WalkFrames/FiringFrames tags.
-            EntityCategory::Unit | EntityCategory::Aircraft if !entity.is_voxel => {
-                let art_entry = art_registry.and_then(|a| a.get(&image_id));
-                if let Some(art) = art_entry {
-                    if art.walk_frames.is_some() || art.firing_frames.is_some() {
-                        data_driven_count += 1;
-                        let cadence = rules
-                            .and_then(|registry| registry.object(type_str))
-                            .map(|object| animation::ShpVehicleCadence {
-                                walk_rate: object.walk_rate,
-                                idle_rate: object.idle_rate,
-                            })
-                            .unwrap_or_default();
-                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
-                            art, cadence,
-                        )
-                    } else {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
-            _ => continue,
-        };
-        sequences.insert(type_str.to_string(), seq);
-    }
-
-    log::info!(
-        "Built animation sequences for {} entity types ({} data-driven from art.ini)",
-        sequences.len(),
-        data_driven_count
-    );
-    sequences
-}
-
 pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
-    crate::app_frame_pacer::wall_clock_ms(state.frame_pacer_epoch, now)
+    crate::app_frame_pacer::wall_clock_ms(state.platform.frame_pacer_epoch, now)
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the
@@ -880,7 +702,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
 
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
     let now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    state.frame_pacer.reanchor(now_ms);
+    state.platform.frame_pacer.reanchor(now_ms);
 
     let (tick_after, binary_frame_after) = state
         .simulation
@@ -931,14 +753,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             let frame_stepping = state.debug_frame_step_requested;
             if frame_stepping {
                 state.debug_frame_step_requested = false;
-                state.frame_pacer.reanchor(now_ms);
+                state.platform.frame_pacer.reanchor(now_ms);
                 true
             } else {
                 let game_speed = state.simulation.as_ref().map_or_else(
                     || state.in_game_options.game_speed.min(6) as u8,
                     |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
                 );
-                let admit = state.frame_pacer.should_admit(
+                let admit = state.platform.frame_pacer.should_admit(
                     now_ms,
                     game_speed,
                     !service_admission.simulation,
@@ -971,7 +793,7 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");
             };
-            state.frame_pacer.record_admitted_frame(now_ms);
+            state.platform.frame_pacer.record_admitted_frame(now_ms);
         }
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.
@@ -982,20 +804,10 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
         crate::app_building_anim::drain_sound_events(state);
-        // Drain bale events into building anim overlays + particle bursts before
-        // the per-frame anim tick so the SpecialAnim is visible this same frame.
-        crate::app_building_anim::consume_bale_events(state);
-        // Drain tank-bunker wall-anim events into SpecialAnim overlays the same
-        // frame so the walls rise/fall in step with the install/teardown.
-        crate::app_building_anim::consume_bunker_wall_events(state);
-        // Two clocks. The 16ms is wall time for the terrain-overlay animations,
-        // which are not part of the building animation model. Building animation
-        // frame delays are counted in logic frames, so they take the number of
-        // sim frames actually committed this iteration — zero when the lockstep
-        // lane declined to advance, so they never step on a frame that did not
-        // happen.
-        let sim_frames_advanced: u32 = garrison_flash_elapsed_ticks as u32;
-        crate::app_building_anim::tick_crane_animations(state, 16, sim_frames_advanced);
+        // Building one-shots, refinery particles, and their logic-frame clocks
+        // were finalized inside the authoritative sim transaction. Only the
+        // independent wall-clock terrain-overlay timer remains app-owned.
+        crate::app_building_anim::tick_terrain_overlay_animations(state, 16);
         // Looping slot animations are phased off the logic frame their building
         // was placed, so the base has to be recorded on a sim frame boundary
         // rather than on a render frame.
@@ -1039,9 +851,17 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
 }
 
 /// Tick simulation: advance movement and animation systems.
+fn should_record_replay_tick(
+    tick_result: &crate::sim::world::TickResult,
+    due_commands: &[crate::sim::command::CommandEnvelope],
+) -> bool {
+    tick_result.frame_committed
+        || !due_commands.is_empty()
+        || tick_result.terminal_score_finalized
+}
+
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
-    let mut refresh_after_tick = false;
-    let mut crane_owners: Vec<String> = Vec::new();
+    let mut refresh_atlases_after_tick = false;
     let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
         return false;
@@ -1079,15 +899,11 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
+        let mut frame_overlay_updates = Vec::new();
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(sim) = &mut state.simulation {
-            // Clear AI players when disabled — prevents computer houses from acting.
-            if state.disable_ai && !sim.ai_players.is_empty() {
-                log::info!("AI disabled — clearing {} AI players", sim.ai_players.len());
-                sim.ai_players.clear();
-            }
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.
@@ -1096,26 +912,36 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             } else {
                 Vec::new()
             };
-            let tick_result = sim.advance_master_frame(
+            let SimFrameOutput {
+                tick: tick_result,
+                trigger_effects: frame_trigger_effects,
+                lifecycle_outputs: frame_lifecycle_outputs,
+                overlay_updates,
+                sound_events: frame_sound_events,
+                fire_events: frame_fire_events,
+                invulnerability_impacts,
+            } = sim.advance_app_frame(
                 &due_commands,
                 state.rules.as_ref(),
                 &state.height_map,
-                state.path_grid.as_ref(),
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
                 tick_lane,
-                Some(&state.animation_sequences),
                 Some(trigger_inputs),
             );
-            trigger_effects = sim.drain_trigger_effects();
+            trigger_effects = frame_trigger_effects;
+            frame_overlay_updates = overlay_updates;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
-                drained_combat_lights =
-                    crate::app_combat_lights::drain_simulation_impacts(sim, state.rules.as_ref());
+                drained_combat_lights = crate::app_combat_lights::materialize_simulation_impacts(
+                    invulnerability_impacts,
+                    state.rules.as_ref(),
+                    &sim.interner,
+                );
             }
-            // Parity capture, if requested. Placed directly after the committed tick so
-            // it observes the same state the tick hash covers, and before any app-layer
-            // animation work that the original engine accounts for elsewhere.
+            // Parity capture, if requested. The sim has already finalized all
+            // authoritative animation and particle work, so this observes the
+            // exact state covered by the returned frame hash.
             if tick_result.frame_committed {
                 if let Some(sink) = state.parity_digest_sink.as_mut() {
                     let digest = sim.parity_digest();
@@ -1127,19 +953,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
             census_tick = tick_result.frame_committed.then_some(tick_result.tick);
-            let game_options = sim.session.game_options.clone();
-            let binary_frame = sim.session.binary_frame;
-            let (ents, interner) = sim.entities_mut_and_interner();
-            animation::tick_non_dying_animations(
-                ents,
-                &state.animation_sequences,
-                &game_options,
-                interner,
-                binary_frame,
-            );
-            drained_lifecycle_outputs.extend(sim.lifecycle_outputs.drain(..));
-            animation::tick_voxel_animations(sim.entities_mut());
-            animation::tick_harvest_overlays(sim.entities_mut());
+            drained_lifecycle_outputs = frame_lifecycle_outputs;
             // Pre-merge fog visibility for local owner so render queries are O(1).
             if let Some(owner) = &local_owner_for_fog {
                 if sim.session.tick == 1 {
@@ -1150,10 +964,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 }
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
-            drained_fire_events.extend(sim.fire_events.drain(..));
+            drained_fire_events = frame_fire_events;
             append_fire_effect_batch(&mut state.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
-            for sim_event in drain_sim_sound_events(sim) {
+            for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
                     SimSoundEvent::AnimationStarted {
                         anim_id,
@@ -1586,47 +1400,21 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 state.sound_events.push(app_event);
             }
             if tick_result.destroyed_structure {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.bridge_state_changed {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.ownership_changed {
-                refresh_after_tick = true;
+                refresh_atlases_after_tick = true;
             }
             if tick_result.spawned_entities {
-                refresh_after_tick = true;
-                log::debug!(
-                    "spawned_entities=true, checking {} due_commands for PlaceReadyBuilding",
-                    due_commands.len()
-                );
-                for cmd in &due_commands {
-                    if let crate::sim::command::Command::PlaceReadyBuilding {
-                        owner, type_id, ..
-                    } = &cmd.payload
-                    {
-                        // Trigger one-shot crane animation on ConYard for each owner that placed a building.
-                        let owner_str = sim.interner.resolve(*owner).to_string();
-                        let type_str = sim.interner.resolve(*type_id).to_string();
-                        // Walls are overlays — inject OverlayEntry so the overlay renderer
-                        // draws them with auto-tiled connectivity frames.
-                        let is_wall = state
-                            .rules
-                            .as_ref()
-                            .and_then(|r| r.object(&type_str))
-                            .map(|o| o.wall)
-                            .unwrap_or(false);
-                        if !is_wall {
-                            crane_owners.push(owner_str);
-                        }
-                    }
-                }
+                refresh_atlases_after_tick = true;
             }
-            // A terminal EventClass command still belongs to the deterministic
-            // command stream even though Main_Tick skips its frame commit.
-            // Recording a non-empty terminal batch lets diagnostic playback
-            // reproduce the same EXIT dispatch and one-shot terminal edge.
-            if tick_result.frame_committed || !due_commands.is_empty() {
+            // Both terminal routes belong to the deterministic stream even
+            // though Main_Tick skips its frame commit. EventClass EXIT carries
+            // a command; natural win/loss carries the one-shot score/RNG latch.
+            if should_record_replay_tick(&tick_result, &due_commands) {
                 if let Some(log) = &mut sim.replay_log {
                     log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
                 }
@@ -1655,7 +1443,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                 }
                 LifecycleOutput::DisplayRemove { .. } => {
-                    refresh_after_tick = true;
+                    refresh_atlases_after_tick = true;
                 }
                 LifecycleOutput::RevealDisplay { .. }
                 | LifecycleOutput::DirtyTacticalRect { .. }
@@ -1679,78 +1467,18 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
 
         apply_trigger_effects(state, &trigger_effects);
 
-        // Drain overlay dirty cells and recompute passability. If any cell's
-        // passability flipped, trigger zone rebuild via `refresh_after_tick`.
-        // Uses the existing `rebuild_dynamic_path_grid` → `rebuild_zone_grid`
-        // path; no new zone-rebuild plumbing.
-        //
-        // Also collect the authoritative live identity for occupied cells that
-        // changed this tick (e.g. TIBTRE-spawned ore or ore-growth spread). The
-        // renderer iterates `state.overlays` (the static map list), so the render
-        // handoff must both insert new coordinates and replace a stale identity
-        // when a cleared cell is later populated with a different variant.
-        let new_render_overlays: Vec<crate::map::overlay::OverlayEntry> = {
-            let mut collected: Vec<crate::map::overlay::OverlayEntry> = Vec::new();
-            if let (Some(sim), Some(registry)) =
-                (state.simulation.as_mut(), state.overlay_registry.as_ref())
-            {
-                if let (Some(overlay_grid), Some(terrain)) =
-                    (sim.overlay_grid.as_mut(), sim.resolved_terrain.as_mut())
-                {
-                    let (dirty, mut passability_changed) =
-                        overlay_grid.take_dirty_cells_with_passability_signal();
-                    if !dirty.is_empty() {
-                        for &(rx, ry) in &dirty {
-                            if recalc_overlay_passability(overlay_grid, terrain, registry, rx, ry) {
-                                passability_changed = true;
-                            }
-                        }
-                        for &(rx, ry) in &dirty {
-                            let cell = overlay_grid.cell(rx, ry);
-                            if let Some(overlay_id) = cell.overlay_id {
-                                collected.push(crate::map::overlay::OverlayEntry {
-                                    rx,
-                                    ry,
-                                    overlay_id,
-                                    frame: cell.overlay_data,
-                                });
-                            }
-                        }
-                    }
-                    if passability_changed {
-                        refresh_after_tick = true;
-                    }
-                }
-            }
-            collected
-        };
-        if !new_render_overlays.is_empty() {
-            sync_new_overlay_cells_to_render_list(state, new_render_overlays);
+        // Simulation has already finalized identity, passability, navigation,
+        // and the returned hash. The app only updates its render-side list.
+        if !frame_overlay_updates.is_empty() {
+            upsert_occupied_overlay_render_entries(state, frame_overlay_updates);
         }
     }
 
-    // Trigger one-shot crane animations for owners that placed buildings this frame.
-    if !crane_owners.is_empty() {
-        log::info!(
-            "Triggering crane anims for {} owners: {:?}",
-            crane_owners.len(),
-            crane_owners
-        );
-    }
-    for owner in &crane_owners {
-        crate::app_building_anim::trigger_crane_anim(state, owner);
-    }
-
-    // Inject overlay entries for walls placed this frame, then recompute connectivity.
-    if refresh_after_tick {
-        rebuild_dynamic_path_grid(state);
+    // Entity identity or ownership changes require presentation atlas refresh.
+    if refresh_atlases_after_tick {
         refresh_entity_atlases(state);
     }
     frame_committed
-}
-
-fn drain_sim_sound_events(sim: &mut crate::sim::world::Simulation) -> Vec<SimSoundEvent> {
-    sim.sound_events.drain(..).collect()
 }
 
 /// Samples pending light records backward and swaps the completed grid forward,
@@ -1897,66 +1625,6 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     crate::app_camera::center_camera_on_cell(state, rx, ry);
 }
 
-/// Rebuild both terrain-derived navigation caches from one resolved-terrain
-/// snapshot. Runtime terrain removal mutates that snapshot, so refreshing only
-/// PathGrid would leave movement's per-SpeedType costs permanently blocked.
-fn rebuild_dynamic_terrain_navigation(sim: &mut crate::sim::world::Simulation) -> Option<PathGrid> {
-    let terrain = sim.resolved_terrain.as_ref()?;
-    let grid = PathGrid::from_resolved_terrain_with_bridges(terrain, sim.bridge_state.as_ref());
-    sim.terrain_costs = build_canonical_terrain_cost_grids(terrain);
-    Some(grid)
-}
-
-pub(crate) fn rebuild_dynamic_path_grid(state: &mut AppState) {
-    // Build fresh from terrain + current bridge_state every time. Bridge
-    // runtime walkability mutates during gameplay (collapse/repair), so a
-    // cached "terrain-only" base would silently go stale.
-    let Some(rules) = state.rules.as_ref() else {
-        return;
-    };
-    let Some(ref mut sim) = state.simulation else {
-        return;
-    };
-    let Some(mut grid) = rebuild_dynamic_terrain_navigation(sim) else {
-        return;
-    };
-
-    let mut structures: Vec<(u16, u16, String)> = sim
-        .entities()
-        .values()
-        .filter_map(|entity| {
-            (entity.category == EntityCategory::Structure).then_some((
-                entity.position.rx,
-                entity.position.ry,
-                sim.interner.resolve(entity.type_ref).to_string(),
-            ))
-        })
-        .collect();
-    structures.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-
-    for (rx, ry, type_id) in &structures {
-        let obj = rules.object(type_id);
-        let foundation = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-        let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
-        grid.block_building_movement_cells(*rx, *ry, foundation, has_bib);
-    }
-
-    state.path_grid = Some(grid);
-
-    // Rebuild zone connectivity map for instant unreachability detection.
-    // The unified PathGrid already contains building/wall/bridge data from
-    // resolved terrain, so no separate sync step is needed.
-    if let Some(ref mut sim) = state.simulation {
-        if let Some(ref grid) = state.path_grid {
-            sim.rebuild_zone_grid(grid);
-        }
-    }
-}
-
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     let Some(type_id) = state.armed_building_type() else {
         state.building_placement_preview = None;
@@ -2003,7 +1671,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         type_id,
         rx,
         ry,
-        state.path_grid.as_ref(),
+        sim.path_grid(),
         &state.height_map,
         state.overlay_registry.as_ref(),
     );
@@ -2017,12 +1685,6 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Reuses `state.asset_manager` instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
-    state.animation_sequences = build_animation_sequences(
-        state.simulation.as_ref(),
-        state.rules.as_ref(),
-        state.art_registry.as_ref(),
-        &state.infantry_sequences,
-    );
     let Some(sim) = &state.simulation else { return };
     let Some(asset_manager) = &state.asset_manager else {
         log::warn!("Atlas refresh skipped: no asset manager available");
@@ -2112,7 +1774,6 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             state.art_registry.as_ref(),
             &state.house_color_map,
             &extra_buildings,
-            &state.infantry_sequences,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
             existing,
@@ -2123,8 +1784,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     }
 }
 
-/// Sync occupied dirty overlay cells (TIBTRE, ore-spread, walls) into
-/// `state.overlays`.
+/// Upsert authoritative occupied-overlay entries into `state.overlays`.
 ///
 /// Background: the overlay renderer iterates `state.overlays`, the static list
 /// loaded from the map's `[OverlayPack]`. Sim-side mutations that create new
@@ -2134,19 +1794,21 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 /// be cleared and later receive a different overlay variant; the renderer only
 /// accepts live data when the cached identity matches. This sync therefore
 /// inserts absent coordinates and updates identity plus frame in place for
-/// existing coordinates.
+/// existing coordinates. Candidates may be one frame's delta or the full live
+/// occupied set returned after snapshot restoration.
 ///
 /// Cleared cached entries are render-inert because the renderer treats live
-/// `OverlayGrid` state as authoritative; a later occupied dirty update replaces
-/// their stale identity. Unrelated entries retain their order and fields.
-fn sync_new_overlay_cells_to_render_list(
+/// `OverlayGrid` state as authoritative; a later occupied update or post-load
+/// snapshot replaces their stale identity. Unrelated entries retain their order
+/// and fields.
+pub(crate) fn upsert_occupied_overlay_render_entries(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
     let synced = upsert_overlay_entries(&mut state.overlays, candidates);
     if synced != 0 {
         log::trace!(
-            "Synced {} occupied dirty cells from OverlayGrid to state.overlays",
+            "Synced {} occupied cells from OverlayGrid to state.overlays",
             synced
         );
     }
@@ -2306,21 +1968,20 @@ pub(crate) fn clamp_cell_to_grid(
 }
 
 pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
-    // The source-INI hash covers the whole merged rules set — type-registry
-    // lists AND every scalar value, including a map's value overrides. The
-    // former registry-only hash missed those, so a map that overrode e.g.
-    // [General]/[CombatDamage] values produced an identical hash and a replay
-    // recorded under it could play back against base rules undetected.
-    rules.source_ini_hash()
+    // Compatibility covers the processed rules layers plus resolved entity
+    // animation, effect/particle timing, terrain-spawner raw frame timing, and
+    // smudge-selection frame dimensions.
+    // Compatibility must distinguish static inputs that can advance the same
+    // entity differently.
+    rules.simulation_config_hash()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         ExactStepError, ExactStepReceipt, append_fire_effect_batch, begin_fire_effect_batch,
-        drain_sim_sound_events, finish_fire_effect_batch, outcome_eva_entry,
-        rebuild_dynamic_terrain_navigation, upsert_overlay_entries, validate_exact_step_receipt,
-        wall_sell_sound_for_local, world_point_to_cell,
+        finish_fire_effect_batch, outcome_eva_entry, upsert_overlay_entries,
+        validate_exact_step_receipt, wall_sell_sound_for_local, world_point_to_cell,
     };
     use crate::map::entities::EntityCategory;
     use crate::map::overlay::OverlayEntry;
@@ -2330,7 +1991,6 @@ mod tests {
     use crate::sim::combat::TargetKind;
     use crate::sim::combat::combat_weapon::WeaponSlot;
     use crate::sim::intern::{InternedId, StringInterner, test_intern};
-    use crate::sim::overlay_grid::OverlayGrid;
     use crate::sim::terrain_object::{
         TerrainObjectLifecycle, TerrainObjectState, mark_terrain_occupation,
         unmark_terrain_occupation,
@@ -2399,29 +2059,13 @@ mod tests {
     }
 
     #[test]
-    fn gsi_13_04_pre_tick_animation_started_event_drains_exactly_once() {
-        let mut sim = crate::sim::world::Simulation::new();
-        let sound_id = sim.interner.intern("WaterfallLoop");
-        sim.sound_events
-            .push(crate::sim::world::SimSoundEvent::AnimationStarted {
-                anim_id: 9,
-                sound_id,
-                world: crate::sim::anim_class::AnimWorldCoord {
-                    x: 128,
-                    y: 128,
-                    z: 0,
-                },
-            });
-
-        assert!(matches!(
-            drain_sim_sound_events(&mut sim).as_slice(),
-            [crate::sim::world::SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
-        ));
-        assert!(drain_sim_sound_events(&mut sim).is_empty());
-    }
-
-    #[test]
     fn gsi_04_10_dynamic_navigation_rebuild_refreshes_path_and_track_costs() {
+        let rules = crate::rules::ruleset::RuleSet::from_ini(
+            &crate::rules::ini_parser::IniFile::from_str(
+                "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+            ),
+        )
+        .unwrap();
         let speed_costs = SpeedCostProfile {
             foot: Some(100),
             track: Some(100),
@@ -2509,8 +2153,8 @@ mod tests {
             mark_terrain_occupation(production, &tree, resolved.as_mut());
         }
 
-        let blocked_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
-        assert!(!blocked_path.is_walkable(0, 0));
+        assert!(sim.rebuild_dynamic_navigation(&rules));
+        assert!(!sim.path_grid().expect("terrain").is_walkable(0, 0));
         assert_eq!(
             sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
             0,
@@ -2521,9 +2165,9 @@ mod tests {
             let (production, resolved) = (&mut sim.production, &mut sim.resolved_terrain);
             unmark_terrain_occupation(production, &tree, resolved.as_mut());
         }
-        let rebuilt_path = rebuild_dynamic_terrain_navigation(&mut sim).expect("terrain");
+        assert!(sim.rebuild_dynamic_navigation(&rules));
 
-        assert!(rebuilt_path.is_walkable(0, 0));
+        assert!(sim.path_grid().expect("terrain").is_walkable(0, 0));
         assert_eq!(
             sim.terrain_costs[&SpeedType::Track].cost_at(0, 0),
             100,
@@ -2622,27 +2266,7 @@ mod tests {
         let old_variant = entry(4, 4, 2, 7);
         let untouched = entry(5, 4, 99, 3);
         let mut render_entries = vec![old_variant.clone(), untouched.clone()];
-        let mut live = OverlayGrid::from_overlay_entries(&[old_variant], 8, 8);
-
-        live.clear_overlay(4, 4);
-        let cleared = live.take_dirty_cells();
-        assert_eq!(cleared, vec![(4, 4)]);
-        assert_eq!(live.cell(4, 4).overlay_id, None);
-
-        live.place_overlay(4, 4, 3, 1);
-        let repopulated = live.take_dirty_cells();
-        let authoritative = repopulated
-            .into_iter()
-            .filter_map(|(rx, ry)| {
-                let cell = live.cell(rx, ry);
-                cell.overlay_id.map(|overlay_id| OverlayEntry {
-                    rx,
-                    ry,
-                    overlay_id,
-                    frame: cell.overlay_data,
-                })
-            })
-            .collect();
+        let authoritative = vec![entry(4, 4, 3, 1)];
 
         assert_eq!(
             upsert_overlay_entries(&mut render_entries, authoritative),
@@ -2757,8 +2381,34 @@ mod tests {
 mod modal_pump_tests {
     use super::{
         SessionMode, modal_pump_should_advance_sim, score_row_display_name,
+        should_record_replay_tick,
         wall_clock_service_admission,
     };
+
+    #[test]
+    fn empty_natural_terminal_score_frame_is_recorded() {
+        let tick = crate::sim::world::TickResult {
+            tick: 10,
+            frame_committed: false,
+            executed_commands: 0,
+            state_hash: 123,
+            terminal_score_finalized: true,
+            spawned_entities: false,
+            destroyed_structure: false,
+            ownership_changed: false,
+            bridge_state_changed: false,
+            movement: Default::default(),
+        };
+
+        assert!(should_record_replay_tick(&tick, &[]));
+        assert!(!should_record_replay_tick(
+            &crate::sim::world::TickResult {
+                terminal_score_finalized: false,
+                ..tick
+            },
+            &[]
+        ));
+    }
 
     #[test]
     fn gsi_01_03_debug_pause_does_not_impersonate_an_offline_modal() {

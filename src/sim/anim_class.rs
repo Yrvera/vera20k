@@ -675,27 +675,30 @@ impl Simulation {
             if trailer_cadence_matches(
                 u64::from(self.session.binary_frame),
                 config.trailer_seperation,
-            ) {
-                if let Some(trailer_type) = self.interner.get(trailer_name) {
-                    let descriptor = AnimClassSpawnDescriptor {
-                        type_name: trailer_type,
-                        rx: 0,
-                        ry: 0,
-                        sub_x: crate::util::fixed_math::SIM_ZERO,
-                        sub_y: crate::util::fixed_math::SIM_ZERO,
-                        z: 0,
-                        delay: 1,
-                        loop_count: 1,
-                        draw_flags: TRAILER_DRAW_FLAGS,
-                        z_adjust: 0,
-                        reverse: false,
-                        use_cell_drawer: false,
-                        terrain_attached: false,
-                        draw_runtime: AnimDrawRuntime::default(),
-                    };
-                    self.spawn_anim_at_world(rules, descriptor, world_coord)
-                        .expect("validated trailer closure must remain spawnable");
-                }
+            ) && rules
+                .art_registry
+                .anim_runtime_config(trailer_name)
+                .is_some()
+            {
+                let trailer_type = self.interner.intern(trailer_name);
+                let descriptor = AnimClassSpawnDescriptor {
+                    type_name: trailer_type,
+                    rx: 0,
+                    ry: 0,
+                    sub_x: crate::util::fixed_math::SIM_ZERO,
+                    sub_y: crate::util::fixed_math::SIM_ZERO,
+                    z: 0,
+                    delay: 1,
+                    loop_count: 1,
+                    draw_flags: TRAILER_DRAW_FLAGS,
+                    z_adjust: 0,
+                    reverse: false,
+                    use_cell_drawer: false,
+                    terrain_attached: false,
+                    draw_runtime: AnimDrawRuntime::default(),
+                };
+                self.spawn_anim_at_world(rules, descriptor, world_coord)
+                    .expect("validated trailer closure must remain spawnable");
             }
         }
 
@@ -1072,10 +1075,7 @@ impl Simulation {
             self.destroy_anim(id);
             return;
         };
-        let Some(type_id) = self.interner.get(next) else {
-            self.destroy_anim(id);
-            return;
-        };
+        let type_id = self.interner.intern(next);
         let rate_reload = self.choose_anim_rate(&config);
         let frame_timer =
             CdTimer::started(self.session.binary_frame as i32, i32::from(rate_reload));
@@ -1603,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn next_reuses_identity_runs_middle_and_destroy_is_idempotent() {
+    fn next_without_preintern_reuses_identity_runs_middle_and_destroy_is_idempotent() {
         let rules = runtime_rules(
             "[FIRST]\nRate=900\nEnd=2\nLoopCount=1\nNext=SECOND\nStartSound=FirstStart\n\n\
              [SECOND]\nRate=900\nEnd=2\nLoopCount=1\nReport=SecondReport\nStopSound=SecondStop\n",
@@ -1611,7 +1611,7 @@ mod tests {
         );
         let mut sim = Simulation::new();
         let first = sim.interner.intern("FIRST");
-        sim.interner.intern("SECOND");
+        assert!(sim.interner.get("SECOND").is_none());
         let id = sim
             .spawn_anim_object(&rules, runtime_descriptor(first, 0))
             .unwrap();
@@ -1653,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn trailer_tail_append_is_visited_and_guarded_in_same_live_walk() {
+    fn trailer_without_preintern_is_visited_and_guarded_in_same_live_walk() {
         let rules = runtime_rules(
             "[PARENT]\nRate=0\nEnd=2\nTrailerAnim=CHILD\nTrailerSeperation=1\n\n\
              [CHILD]\nRate=900\nEnd=2\nLoopCount=1\n",
@@ -1661,7 +1661,7 @@ mod tests {
         );
         let mut sim = Simulation::new();
         let parent_type = sim.interner.intern("PARENT");
-        sim.interner.intern("CHILD");
+        assert!(sim.interner.get("CHILD").is_none());
         let parent = sim
             .spawn_anim_object(&rules, runtime_descriptor(parent_type, 0))
             .unwrap();

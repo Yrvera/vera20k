@@ -6,6 +6,8 @@
 
 use std::hash::{Hash, Hasher};
 
+use crate::rng_continuation::MapGenRngContinuation;
+
 const RNG_TABLE_LEN: usize = 250;
 const RNG_INDEX_B_SEED: i32 = 0x67;
 const INIT_TABLE_1: [u32; 4] = [0xBAA9_6887, 0x1E17_D32C, 0x03BC_DC3C, 0x0F33_D1B2];
@@ -52,6 +54,21 @@ impl SimRng {
         };
         rng.reseed(seed as u32);
         rng
+    }
+
+    /// Adopt the exact post-RMG `g_MapGenRng` cursor without replaying draws.
+    ///
+    /// The two implementations intentionally keep separate draw code, but the
+    /// native 250-word state and lag cursors are the same logical object at the
+    /// accepted generated-map -> live-scenario boundary.
+    pub(crate) fn from_mapgen_continuation(continuation: MapGenRngContinuation) -> Self {
+        let (words, index_a, index_b) = continuation.into_native_parts();
+        Self {
+            disabled: 0,
+            index_a: i32::try_from(index_a).expect("MapGen cursor A fits native i32"),
+            index_b: i32::try_from(index_b).expect("MapGen cursor B fits native i32"),
+            state: Vec::from(words),
+        }
     }
 
     /// Compact deterministic fingerprint of the full internal state.

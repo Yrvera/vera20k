@@ -416,8 +416,10 @@ impl BridgeRuntimeState {
     /// Pick the healthy-tile variant for a repaired bridge strip. gamemd draws
     /// `RandomRanged(0, 3)` from the map-gen RNG using the multiply-high (scaled)
     /// shape — the HIGH two bits of one draw, not the low bits — so the variant
-    /// comes from `next_range_u32_inclusive_scaled`. Fresh MapGen is the
-    /// verified `Seed(0)` object; later same-process lifecycle is unverified.
+    /// comes from `next_range_u32_inclusive_scaled`. VERA fixed-map construction
+    /// currently retains `Seed(0)`; the native fresh-process state is verified,
+    /// while cross-match process retention remains UNCHECKED. Accepted generated
+    /// maps retain their post-RMG cursor for the current match.
     fn repair_variant_offset(rng: &mut SimRng) -> u8 {
         rng.next_range_u32_inclusive_scaled(0, u32::from(REPAIR_VARIANT_LIMIT_INCLUSIVE)) as u8
     }

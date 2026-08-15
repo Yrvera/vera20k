@@ -427,7 +427,7 @@ mod tests {
         assert!(cursor < pass_end);
         assert!(pass_end < present);
 
-        let app_source = include_str!("app.rs");
+        let app_source = include_str!("app/frame.rs");
         let dispatch = &app_source[app_source
             .find("else if Self::single_player_shell_active(state)")
             .expect("single-player steady dispatch")..];

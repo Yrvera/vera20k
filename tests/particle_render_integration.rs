@@ -37,11 +37,6 @@ fn smoke_animation_state_advances_over_ticks() {
     let rules = build_smoke_rules();
     let mut sim = Simulation::new();
 
-    // Pre-populate effect_frame_counts as if the atlas had registered
-    // LGRYSMK1 with 21 frames (matches stock YR).
-    let id = sim.intern("LGRYSMK1");
-    sim.effect_frame_counts.insert(id, 21);
-
     let _sys_id = sim
         .spawn_particle_system(
             ParticleSystemTypeId(0),
@@ -57,7 +52,9 @@ fn smoke_animation_state_advances_over_ticks() {
     // Advance enough ticks to spawn at least one particle and let
     // animation_state advance from 0.
     // SpawnFrames=10 → first particle at tick 10.
-    // image_frame_count=21 (odd) → denom = (1+1) + 4 = 6.
+    // This lightweight fixture has no retail asset binder, so the missing-SHP
+    // fallback yields denom = (0+1) + 4 = 5. Rules/asset binding and the odd
+    // stock LGRYSMK1 count are covered by the library boundary tests.
     for _ in 0..30 {
         tick_particle_systems(&mut sim, &rules);
         sim.session.tick += 1;

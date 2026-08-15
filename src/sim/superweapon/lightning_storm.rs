@@ -270,12 +270,8 @@ fn spawn_bolt(
         .superweapon_rng()
         .next_range_u32(BOLT_ANIMS.len() as u32) as usize;
     let anim_name = BOLT_ANIMS[anim_idx];
+    let frames = rules.effect_frame_count(anim_name).unwrap_or(20);
     let anim_iid = sim.interner.intern(anim_name);
-    let frames = sim
-        .effect_frame_counts
-        .get(&anim_iid)
-        .copied()
-        .unwrap_or(20);
 
     sim.world_effects.push(WorldEffect {
         anim_spawn: None,
@@ -336,10 +332,8 @@ fn spawn_bolt(
             sim.commit_smudge_request_inline(rules, overlay_registry, request);
         }
         for fx in &explosions {
-            let frames = sim
-                .effect_frame_counts
-                .get(&fx.shp_name)
-                .copied()
+            let frames = rules
+                .effect_frame_count(sim.interner.resolve(fx.shp_name))
                 .unwrap_or(20);
             sim.world_effects.push(WorldEffect {
                 anim_spawn: None,

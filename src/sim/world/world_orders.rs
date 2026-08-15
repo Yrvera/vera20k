@@ -437,8 +437,10 @@ impl Simulation {
             {
                 // bridge repair walker-variant pick — gamemd draws g_MapGenRng, not the
                 // scenario stream. Direct field (NOT bridge_rng(); `bs`/`terrain` hold live
-                // disjoint borrows). Fresh MapGen is native Seed(0), and the
-                // scenario/main cursors are left untouched.
+                // disjoint borrows). VERA fixed-map construction currently keeps
+                // Seed(0); native fresh-process state is verified, while cross-match
+                // retention is UNCHECKED. Accepted generated maps continue their
+                // post-RMG cursor. The scenario/main cursors are left untouched.
                 bs.repair_bridge_from_engineer_scan(&scan, &mut self.mapgen_rng, terrain)
             } else {
                 crate::sim::bridge_state::RepairOutcome::default()

@@ -15,12 +15,12 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::components::BuildingUp;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::movement::locomotor::MovementLayer;
-use crate::sim::overlay_grid::refresh_wall_connectivity_after_placement;
 use crate::sim::pathfinding;
 use crate::sim::world::Simulation;
 
 use super::production_tech::{foundation_dimensions, producer_candidates_for_owner_category};
 use super::production_types::*;
+use super::wall_placement;
 
 /// Placement preview for object types that do not require overlay metadata.
 ///
@@ -71,15 +71,19 @@ pub fn placement_preview_for_owner_with_overlays(
     let in_build_area = reason.as_ref().map_or(true, |r| {
         !matches!(r, BuildingPlacementError::OutOfBuildArea)
     });
+    let owner_id = sim.interner.get(owner);
+    let wall_overlay_id = overlay_registry.and_then(|registry| {
+        obj.wall
+            .then(|| wall_placement::linked_overlay_id(obj, registry))
+            .flatten()
+    });
     let mut cell_valid: Vec<bool> = Vec::with_capacity((width as usize) * (height as usize));
     for dy in 0..height {
         for dx in 0..width {
             let cx: u16 = rx.saturating_add(dx);
             let cy: u16 = ry.saturating_add(dy);
             let ok = if obj.wall {
-                let owner_id = sim.interner.get(owner);
-                let overlay_id = overlay_registry.and_then(|reg| reg.id_for_name(type_id));
-                match (owner_id, overlay_id, overlay_registry) {
+                match (owner_id, wall_overlay_id, overlay_registry) {
                     (Some(owner_id), Some(overlay_id), Some(registry)) => wall_cell_placeable(
                         sim, rules, obj, path_grid, cx, cy, owner_id, overlay_id, registry,
                     ),
@@ -91,6 +95,18 @@ pub fn placement_preview_for_owner_with_overlays(
             cell_valid.push(in_build_area && ok);
         }
     }
+    let wall_autofill_cells = match (owner_id, wall_overlay_id, overlay_registry) {
+        (Some(owner_id), Some(overlay_id), Some(_)) if obj.wall => wall_placement::autofill_cells(
+            sim,
+            rules,
+            obj,
+            path_grid,
+            (rx, ry),
+            owner_id,
+            overlay_id,
+        ),
+        _ => Vec::new(),
+    };
     let type_interned = sim.interner.get(type_id).unwrap_or_default();
     Some(BuildingPlacementPreview {
         type_id: type_interned,
@@ -101,6 +117,7 @@ pub fn placement_preview_for_owner_with_overlays(
         valid: reason.is_none(),
         reason,
         cell_valid,
+        wall_autofill_cells,
     })
 }
 
@@ -261,17 +278,31 @@ pub fn place_ready_building_with_overlays(
         let Some(registry) = overlay_registry else {
             return false;
         };
-        let Some(overlay_id) = registry.id_for_name(type_id) else {
+        let Some(overlay_id) = wall_placement::linked_overlay_id(obj, registry) else {
             return false;
         };
-        if !registry.flags(overlay_id).is_some_and(|flags| flags.wall) {
+        if !wall_placement::stamp_wall(sim, registry, rx, ry, overlay_id, owner_id) {
             return false;
         }
-        let Some(grid) = sim.overlay_grid.as_mut() else {
-            return false;
-        };
-        grid.place_owned_wall(rx, ry, overlay_id, 0, owner_id);
-        refresh_wall_connectivity_after_placement(grid, registry, rx, ry);
+        for direction in wall_placement::CARDINAL_DIRECTIONS {
+            let gap = wall_placement::scan_autofill_direction(
+                sim,
+                rules,
+                obj,
+                path_grid,
+                (rx, ry),
+                owner_id,
+                overlay_id,
+                direction,
+            );
+            for (fill_rx, fill_ry) in gap {
+                let stamped = wall_placement::stamp_wall(
+                    sim, registry, fill_rx, fill_ry, overlay_id, owner_id,
+                );
+                debug_assert!(stamped, "scanned wall filler must remain stampable");
+            }
+        }
+        sim.finalize_wall_placement_navigation(path_grid);
         return consume_ready_building(sim, owner_id, type_interned);
     }
     let foundation_str: String = rules
@@ -383,12 +414,9 @@ fn evaluate_building_placement(
         let Some(registry) = overlay_registry else {
             return Err(BuildingPlacementError::BlockedTerrain);
         };
-        let Some(overlay_id) = registry.id_for_name(type_id) else {
+        let Some(overlay_id) = wall_placement::linked_overlay_id(obj, registry) else {
             return Err(BuildingPlacementError::BlockedTerrain);
         };
-        if !registry.flags(overlay_id).is_some_and(|flags| flags.wall) {
-            return Err(BuildingPlacementError::BlockedTerrain);
-        }
         Some(overlay_id)
     } else {
         None
@@ -537,7 +565,7 @@ fn wall_cell_placeable(
 // bridge/ramp/slope rejection, and the type SpeedType/WaterBound projection.
 // The executable's editor/global bypass and unparsed +0xE58 exception remain
 // explicit residuals; neither has a represented live input in this runtime.
-fn can_this_exist_here(
+pub(super) fn can_this_exist_here(
     sim: &Simulation,
     entities: &EntityStore,
     rules: &RuleSet,
@@ -617,7 +645,7 @@ fn ground_non_structure_occupies_cell(sim: &Simulation, rx: u16, ry: u16) -> boo
     })
 }
 
-pub(crate) fn structure_occupies_cell(
+pub(super) fn structure_occupies_cell(
     entities: &EntityStore,
     rules: &RuleSet,
     rx: u16,

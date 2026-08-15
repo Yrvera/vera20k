@@ -12,6 +12,7 @@ use crate::map::bridge_facts::{
 };
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::rng_continuation::MapGenRngContinuation;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
@@ -1939,6 +1940,58 @@ fn seeded_mapgen_drives_repaired_variant() {
         before.1, after.1,
         "seed {seed}: main stream must not move during repair"
     );
+}
+
+/// An installed post-generation cursor feeds the first repair draw.
+#[test]
+fn generated_map_bridge_repair_continues_post_rmg_mapgen_stream() {
+    let mut generated = crate::sim::rng::SimRng::new(0xBEEF);
+    for _ in 0..353 {
+        let _ = generated.next_u32();
+    }
+    let generated = generated.logical_state();
+    let continuation = || {
+        MapGenRngContinuation::from_native_parts(
+            generated.words,
+            usize::try_from(generated.index_a).expect("test MapGen cursor A is non-negative"),
+            usize::try_from(generated.index_b).expect("test MapGen cursor B is non-negative"),
+        )
+    };
+    let mut expected =
+        crate::sim::rng::SimRng::from_mapgen_continuation(continuation());
+    let expected_variant = expected.next_range_u32_inclusive_scaled(0, 3) as u8;
+
+    let (mut sim, _rules, _heights) = build_sim();
+    seed_destroyed_bridge(&mut sim);
+    sim.mapgen_rng = crate::sim::rng::SimRng::from_mapgen_continuation(continuation());
+    let scenario_before = sim.scenario_rng.state();
+    let main_before = sim.main_rng.state();
+    let scan: Vec<(u16, u16)> =
+        crate::sim::bridge_state::cells_in_5x5_scan((9, 10)).collect();
+    let outcome = if let (Some(bridges), Some(terrain)) =
+        (sim.bridge_state.as_mut(), sim.resolved_terrain.as_ref())
+    {
+        bridges.repair_bridge_from_engineer_scan(&scan, &mut sim.mapgen_rng, terrain)
+    } else {
+        crate::sim::bridge_state::RepairOutcome::default()
+    };
+
+    assert!(outcome.repaired_cells > 0);
+    assert_eq!(sim.scenario_rng.state(), scenario_before);
+    assert_eq!(sim.main_rng.state(), main_before);
+    assert_eq!(sim.mapgen_rng.logical_state(), expected.logical_state());
+    for &(rx, ry) in ENGINEER_REPAIR_STRIP_CELLS {
+        assert_eq!(
+            sim.bridge_state
+                .as_ref()
+                .unwrap()
+                .cell(rx, ry)
+                .unwrap()
+                .overlay_byte,
+            0xCD + expected_variant,
+            "repair must consume the next post-generation MapGen draw"
+        );
+    }
 }
 
 /// TEST C — lockstep determinism: two fresh identical sims repair identically,

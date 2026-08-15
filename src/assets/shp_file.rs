@@ -85,12 +85,13 @@ pub struct ShpFrame {
 }
 
 impl ShpFile {
-    /// Parse an SHP file from raw bytes.
+    /// Read the declared frame count without decoding any frame pixels.
     ///
-    /// Reads the file header, all frame headers, then decodes each frame's
-    /// pixel data (handling both raw and RLE-compressed formats).
-    pub fn from_bytes(data: &[u8]) -> Result<Self, AssetError> {
-        // --- File header: 8 bytes ---
+    /// This validates the SHP(TS) file marker and verifies that the complete
+    /// declared frame-header table is present, matching the header validation
+    /// performed by [`Self::from_bytes`]. Frame data offsets and payloads are
+    /// deliberately left to the full parser.
+    pub fn frame_count_from_bytes(data: &[u8]) -> Result<u16, AssetError> {
         if data.len() < 8 {
             return Err(AssetError::InvalidShpHeader {
                 reason: format!(
@@ -101,7 +102,7 @@ impl ShpFile {
         }
 
         // Bytes 0-1: should be zero (distinguishes SHP(TS) from older SHP format).
-        let zero: u16 = read_u16_le(data, 0);
+        let zero = read_u16_le(data, 0);
         if zero != 0 {
             return Err(AssetError::InvalidShpHeader {
                 reason: format!(
@@ -111,12 +112,8 @@ impl ShpFile {
             });
         }
 
-        let width: u16 = read_u16_le(data, 2);
-        let height: u16 = read_u16_le(data, 4);
-        let frame_count: u16 = read_u16_le(data, 6);
-
-        // --- Frame headers: 24 bytes each ---
-        let headers_end: usize = 8 + (frame_count as usize) * 24;
+        let frame_count = read_u16_le(data, 6);
+        let headers_end = 8 + usize::from(frame_count) * 24;
         if data.len() < headers_end {
             return Err(AssetError::InvalidShpHeader {
                 reason: format!(
@@ -127,6 +124,18 @@ impl ShpFile {
                 ),
             });
         }
+
+        Ok(frame_count)
+    }
+
+    /// Parse an SHP file from raw bytes.
+    ///
+    /// Reads the file header, all frame headers, then decodes each frame's
+    /// pixel data (handling both raw and RLE-compressed formats).
+    pub fn from_bytes(data: &[u8]) -> Result<Self, AssetError> {
+        let frame_count = Self::frame_count_from_bytes(data)?;
+        let width: u16 = read_u16_le(data, 2);
+        let height: u16 = read_u16_le(data, 4);
 
         let mut frames: Vec<ShpFrame> = Vec::with_capacity(frame_count as usize);
 
@@ -379,6 +388,32 @@ mod tests {
         assert_eq!(shp.frames.len(), 1);
         assert_eq!(shp.frames[0].format, 0);
         assert_eq!(shp.frames[0].pixels, vec![1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn frame_count_reader_validates_headers_without_decoding_pixels() {
+        let mut data = make_test_shp_raw();
+        data.truncate(8 + 24);
+
+        assert_eq!(ShpFile::frame_count_from_bytes(&data).unwrap(), 1);
+        assert!(
+            ShpFile::from_bytes(&data).is_err(),
+            "the full parser must still validate the missing pixel payload"
+        );
+    }
+
+    #[test]
+    fn frame_count_reader_rejects_a_truncated_declared_header_table() {
+        let mut data = make_test_shp_raw();
+        data[6..8].copy_from_slice(&2u16.to_le_bytes());
+
+        let error = ShpFile::frame_count_from_bytes(&data).unwrap_err();
+        assert!(matches!(&error, AssetError::InvalidShpHeader { .. }));
+        assert_eq!(
+            error.to_string(),
+            ShpFile::from_bytes(&data).unwrap_err().to_string(),
+            "the cheap reader and full parser must preserve header error semantics"
+        );
     }
 
     #[test]

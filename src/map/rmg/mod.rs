@@ -32,6 +32,7 @@ pub use tiles::TileIds;
 pub use x87::{Gaussian, TruncF64};
 
 use crate::map::map_file::MapFile;
+use crate::rng_continuation::MapGenRngContinuation;
 
 /// One stage of the generation pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +194,9 @@ pub fn is_seed_selection(map_name: &str) -> bool {
 #[derive(Debug)]
 pub struct GeneratedMap {
     pub map_file: MapFile,
+    /// Exact `g_MapGenRng` continuation after this accepted generation run.
+    /// Kept crate-private so app code can transport but never draw from it.
+    pub(crate) mapgen_continuation: MapGenRngContinuation,
     /// `(slot, x, y)` per generated start position.
     pub start_waypoints: Vec<(u8, u16, u16)>,
     /// Stages actually executed, in order.

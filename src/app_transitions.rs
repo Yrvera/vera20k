@@ -27,6 +27,21 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Mirror the authoritative speed whenever a complete Simulation replaces the
+/// app's live match, including both fresh-map handoff and in-scenario load.
+pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
+    let Some(game_speed) = state
+        .simulation
+        .as_ref()
+        .and_then(crate::sim::world::Simulation::projected_in_game_options_speed)
+        .map(u32::from)
+    else {
+        return;
+    };
+    state.in_game_options.game_speed = game_speed;
+    state.sim_speed_tps = crate::app_types::tps_for_game_speed(game_speed);
+}
+
 pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
     app_init::MapLoadResult {
         startup: crate::match_bootstrap::LoadingStartup::Generic {
@@ -70,7 +85,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         tactical_bridge_inverse_map: BTreeMap::new(),
         lighting_grid: crate::map::lighting::CellLightGrid::new(),
         map_lighting_config: crate::map::lighting::LightingConfig::default(),
-        path_grid: None,
         rules: None,
         art_registry: None,
         csf: None,
@@ -83,7 +97,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         initial_local_owner: None,
         sandbox_full_visibility: false,
         spawn_pick_pending: false,
-        infantry_sequences: HashMap::new(),
     }
 }
 
@@ -103,6 +116,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.resolved_terrain = result.resolved_terrain;
     state.simulation = result.simulation;
     state.combat_lights.clear();
+    sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = &mut state.simulation {
         sim.input_delay_ticks = state.configured_input_delay_ticks;
     }
@@ -179,10 +193,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
-    state.path_grid = result.path_grid;
     state.rules = result.rules;
     state.art_registry = result.art_registry;
-    state.infantry_sequences = result.infantry_sequences;
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;
@@ -251,8 +263,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     );
     state.message_clock = crate::ui::messages::PauseAwareClock::default();
     let map_title: &str = state.map_basic.name.as_deref().unwrap_or("Unknown Map");
-    state.window.set_title(&format!("RA2 - {}", map_title));
+    state.platform.window.set_title(&format!("RA2 - {}", map_title));
     state
+        .platform
         .window
         .set_cursor_visible(state.software_cursor.is_none());
 
@@ -298,7 +311,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Create GPU ABuffer for per-pixel shroud darkening.
     // Loads SHROUD.SHP brightness data and the 256-byte edge LUT.
     if let Some(ref am) = state.asset_manager {
-        if let Some(ref grid) = state.path_grid {
+        if let Some(grid) = state
+            .simulation
+            .as_ref()
+            .and_then(crate::sim::world::Simulation::path_grid)
+        {
             if let Some(shp_data) = am.get_ref("shroud.shp") {
                 if let Ok(shp) = crate::assets::shp_file::ShpFile::from_bytes(shp_data) {
                     let (frame_pixels, cw, ch) =
@@ -319,15 +336,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         }
     }
 
-    // Build animation sequences for known entity types (data-driven from art.ini).
-    state.animation_sequences = app_sim_tick::build_animation_sequences(
-        state.simulation.as_ref(),
-        state.rules.as_ref(),
-        state.art_registry.as_ref(),
-        &state.infantry_sequences,
-    );
-
-    state.frame_pacer.reset_for_immediate_frame();
+    state.platform.frame_pacer.reset_for_immediate_frame();
     state.queued_order_mode = app_render::OrderMode::Move;
     for group in &mut state.control_groups {
         group.clear();
@@ -635,4 +644,27 @@ pub(crate) fn clear_screen(encoder: &mut wgpu::CommandEncoder, view: &wgpu::Text
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+}
+
+#[cfg(test)]
+mod game_speed_tests {
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::house_state::HouseState;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn loaded_lobby_speed_projection_includes_due_transition() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Local");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+        sim.session.house_order.push(owner);
+        sim.pending_commands.push(CommandEnvelope::new(
+            owner,
+            1,
+            Command::SetGameSpeed { speed: 4 },
+        ));
+
+        assert_eq!(sim.projected_in_game_options_speed(), Some(4));
+    }
 }

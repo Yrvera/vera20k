@@ -120,13 +120,12 @@ pub struct OverlayGrid {
     width: u16,
     height: u16,
     cells: Vec<OverlayCell>,
-    /// Cells mutated this tick — drained by the app layer to trigger
-    /// `recalc_overlay_passability`. Not part of game state; never serialized.
-    /// Always empty at tick boundaries (drained every tick after `advance_tick`).
+    /// Cells mutated this tick — drained by Simulation's end-of-frame finalizer
+    /// before the authoritative hash. Not part of game state; never serialized.
     #[serde(skip, default)]
     dirty_cells: Vec<(u16, u16)>,
     /// A synchronous sim-side recalc already observed a passability change for
-    /// one of the dirty cells. The app drain must preserve that first result
+    /// one of the dirty cells. The frame finalizer must preserve that first result
     /// even though recalculating the now-current terrain returns `false`.
     #[serde(skip, default)]
     synchronous_passability_changed: bool,
@@ -502,16 +501,24 @@ impl OverlayGrid {
         self.height
     }
 
-    /// Drain the list of cells mutated since last call. Consumer (app layer)
-    /// calls `recalc_overlay_passability` for each and may trigger a zone rebuild.
+    /// Serialized cell storage must remain exactly width × height. Snapshot
+    /// restoration validates this before any coordinate-indexed sweep.
+    pub(crate) fn cell_storage_len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Drain the list of cells mutated since last call. Simulation's frame
+    /// finalizer recalculates passability and may trigger a navigation rebuild.
     ///
-    /// MUST be called every tick to keep the list empty at snapshot boundaries.
+    /// Drained at the first frame boundary with rules, resolved terrain, and an
+    /// overlay registry. Partial-input frames retain it so derived terrain and
+    /// navigation cannot miss the mutation.
     pub fn take_dirty_cells(&mut self) -> Vec<(u16, u16)> {
         self.take_dirty_cells_with_passability_signal().0
     }
 
     /// Preserve a passability-change result from a required synchronous recalc
-    /// until the normal app-side dirty drain can rebuild paths and zones.
+    /// until the end-of-frame finalizer can rebuild paths and zones.
     pub(crate) fn record_synchronous_passability_change_at(
         &mut self,
         rx: u16,
@@ -524,9 +531,8 @@ impl OverlayGrid {
         }
     }
 
-    /// Legacy signal-only recorder for non-wall overlay owners. They retain
-    /// their existing app-side rebuild timing; Batch B records coordinates only
-    /// for wall damage/removal.
+    /// Legacy signal-only recorder for non-wall overlay owners. Batch B records
+    /// coordinates only for wall damage/removal.
     pub(crate) fn record_synchronous_passability_change(&mut self, changed: bool) {
         self.synchronous_passability_changed |= changed;
     }

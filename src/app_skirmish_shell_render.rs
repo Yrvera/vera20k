@@ -647,9 +647,9 @@ fn render_skirmish_shell_with_atlas(
     // is driving redraws, and without this the dialog would freeze on the first
     // "working" frame until the player moved the mouse.
     if crate::app::App::poll_random_map_generation(state) {
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
     } else if state.random_map_generation.is_some() {
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
     }
     let layout = compute_layout(state.render_width(), state.render_height());
     let choose_map_layout = state

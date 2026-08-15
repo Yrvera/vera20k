@@ -37,8 +37,6 @@ pub(crate) struct ObjectAiCtx<'a> {
     pub(crate) overlay_registry: Option<&'a OverlayTypeRegistry>,
     pub(crate) terrain_spawner_cells: Option<&'a std::collections::BTreeSet<(u16, u16)>>,
     pub(crate) miner_config: Option<&'a MinerConfig>,
-    pub(crate) animation_sequences:
-        Option<&'a std::collections::BTreeMap<String, crate::sim::animation::SequenceSet>>,
 }
 
 // P3 oracle probe import — used only by the `#[cfg(test)]` factory_oracle_step_trace.
@@ -247,19 +245,19 @@ impl Simulation {
             return false;
         };
         if entity.dying {
-            let Some(sequences) = ctx.animation_sequences else {
+            let Some(rules) = rules else {
                 return true;
             };
             let type_ref = entity.type_ref;
             let type_name = self.interner.resolve(type_ref);
+            let sequence_set = rules.animation_sequence(type_name);
             let finished = crate::sim::animation::tick_dying_animation(
                 self.substrate
                     .entities
                     .get_mut(id)
                     .expect("dying object remained present"),
-                sequences,
+                sequence_set,
                 &self.session.game_options,
-                type_name,
                 self.session.binary_frame,
             );
             if finished {

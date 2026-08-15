@@ -20,6 +20,10 @@ pub mod render;
 // Defines every unit type, building, weapon, warhead.
 pub mod rules;
 
+// Opaque process-RNG cursor receipt shared by map generation and simulation.
+// Neither owner depends on the other's implementation through this DTO.
+pub(crate) mod rng_continuation;
+
 // Game simulation — EntityStore, fixed-point math, deterministic logic.
 // NEVER depends on render/, ui/, sidebar/, audio/, net/.
 pub mod sim;

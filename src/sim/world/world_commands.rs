@@ -405,7 +405,9 @@ impl Simulation {
         }
         let _discarded_actual_cost = rules.building_actual_cost(wall_type);
 
-        let mut tail_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
+        let mut tail_grid = path_grid
+            .cloned()
+            .or_else(|| self.path_grid.as_deref().cloned());
         let sold_navigation_changed = if let Some(grid) = self.overlay_grid.as_mut() {
             grid.clear_overlay(rx, ry);
             if let Some(terrain) = self.resolved_terrain.as_mut() {
@@ -470,7 +472,7 @@ impl Simulation {
             } else {
                 self.rebuild_zone_grid_full(&tail_grid);
             }
-            self.prev_path_grid = Some(tail_grid);
+            self.path_grid = Some(std::sync::Arc::new(tail_grid));
         }
         true
     }
@@ -1223,6 +1225,9 @@ impl Simulation {
                 ry,
             } => {
                 let Some(rules) = rules else { return false };
+                if self.interner.get(command_owner) != Some(*owner) {
+                    return false;
+                }
                 let owner_s = self.interner.resolve(*owner).to_string();
                 let type_s = self.interner.resolve(*type_id).to_string();
                 production::place_ready_building_with_overlays(
@@ -1261,6 +1266,10 @@ impl Simulation {
                 };
                 self.sell_wall_at_cell(command_owner, *x, *y, rules, path_grid, overlays)
             }
+            // Offline game-speed transitions are consumed at master-frame
+            // ingress so early authoritative animation work sees the new rate.
+            // Reaching the ordinary EventClass-shaped tail must not apply one.
+            Command::SetGameSpeed { .. } => false,
             Command::ExitMatch => {
                 let Some(owner) = self.interner.get(command_owner) else {
                     return false;

@@ -13,7 +13,12 @@ use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
+use crate::rules::particle_system_type::ParticleSystemTypeId;
+use crate::rules::particle_type::ParticleTypeId;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::animation::{
+    Animation, FacingSlots, LoopMode, SequenceDef, SequenceKind, SequenceSet,
+};
 use crate::sim::bridge_state::{BridgeDamageEvent, BridgeRuntimeState};
 use crate::sim::combat::AttackTarget;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -22,10 +27,13 @@ use crate::sim::components::{
 };
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::{MissionId, MissionType};
+use crate::sim::movement::FacingClass;
 use crate::sim::movement::locomotor::{LocomotorState, MovementLayer};
 use crate::sim::movement::tube_movement::LowBridgeTubeMovementState;
+use crate::sim::particles::{Particle, ParticleSystem};
 use crate::sim::pathfinding::PathGrid;
 use crate::util::fixed_math::{SIM_HALF, SIM_ONE, SIM_ZERO, SimFixed};
+use glam::IVec3;
 
 fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
     MapEntity {
@@ -45,6 +53,694 @@ fn make_test_entity(type_id: &str, category: EntityCategory) -> MapEntity {
 
 fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
+}
+
+fn game_speed_command_sim() -> (Simulation, crate::sim::intern::InternedId) {
+    let mut sim = Simulation::with_seed(0x5EED_0001);
+    let owner = sim.interner.intern("Local");
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+    );
+    sim.session.house_order.push(owner);
+    (sim, owner)
+}
+
+#[test]
+fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
+    let (mut sim, owner) = game_speed_command_sim();
+    let (mut control, _) = game_speed_command_sim();
+    let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
+
+    let result = sim.advance_master_frame(
+        &[command],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    let control_result = control.advance_master_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+
+    assert!(result.frame_committed);
+    assert_eq!(result.executed_commands, 1);
+    assert_eq!(result.tick, control_result.tick);
+    assert_eq!(sim.session.binary_frame, control.session.binary_frame);
+    assert_eq!(sim.session.game_options.game_speed, 4);
+    assert_eq!(control.session.game_options.game_speed, 1);
+    assert_ne!(result.state_hash, control_result.state_hash);
+    assert_eq!(result.state_hash, sim.state_hash());
+    assert!(sim.take_master_frame_test_trace().starts_with(&[
+        MasterFrameTestRung::SessionCommands,
+        MasterFrameTestRung::Triggers,
+        MasterFrameTestRung::LogicVector,
+    ]));
+}
+
+#[test]
+fn invalid_or_unknown_game_speed_transition_is_consumed_without_state_effect() {
+    let (mut invalid, owner) = game_speed_command_sim();
+    let (mut invalid_control, _) = game_speed_command_sim();
+    let invalid_result = invalid.advance_tick(
+        &[CommandEnvelope::new(
+            owner,
+            1,
+            Command::SetGameSpeed { speed: 7 },
+        )],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+    let invalid_control_result =
+        invalid_control.advance_tick(&[], None, &empty_heights(), None, None, 67);
+    assert_eq!(invalid_result.executed_commands, 1);
+    assert_eq!(invalid.session.game_options.game_speed, 1);
+    assert_eq!(invalid_result.state_hash, invalid_control_result.state_hash);
+
+    let (mut unknown, _) = game_speed_command_sim();
+    let (mut unknown_control, _) = game_speed_command_sim();
+    let unknown_owner = unknown.interner.intern("Unknown");
+    let unknown_control_owner = unknown_control.interner.intern("Unknown");
+    assert_eq!(unknown_owner, unknown_control_owner);
+    let unknown_result = unknown.advance_tick(
+        &[CommandEnvelope::new(
+            unknown_owner,
+            1,
+            Command::SetGameSpeed { speed: 4 },
+        )],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+    let unknown_control_result =
+        unknown_control.advance_tick(&[], None, &empty_heights(), None, None, 67);
+    assert_eq!(unknown_result.executed_commands, 1);
+    assert_eq!(unknown.session.game_options.game_speed, 1);
+    assert_eq!(unknown_result.state_hash, unknown_control_result.state_hash);
+}
+
+#[test]
+fn game_speed_ingress_uses_house_order_and_survives_same_frame_exit() {
+    let (mut sim, local) = game_speed_command_sim();
+    let remote = sim.interner.intern("Remote");
+    sim.houses.insert(
+        remote,
+        crate::sim::house_state::HouseState::new(remote, 1, None, false, 0, 10),
+    );
+    sim.session.house_order.push(remote);
+    let commands = [
+        CommandEnvelope::new(remote, 1, Command::SetGameSpeed { speed: 2 }),
+        CommandEnvelope::new(local, 1, Command::SetGameSpeed { speed: 4 }),
+        CommandEnvelope::new(local, 1, Command::ExitMatch),
+    ];
+
+    let result = sim.advance_tick(&commands, None, &empty_heights(), None, None, 67);
+
+    assert!(!result.frame_committed);
+    assert_eq!(result.executed_commands, 3);
+    assert_eq!(sim.session.game_options.game_speed, 2);
+    assert!(sim.quit_requested);
+    assert_eq!(result.state_hash, sim.state_hash());
+}
+
+#[test]
+fn network_modal_does_not_execute_game_speed_ingress() {
+    let (mut sim, owner) = game_speed_command_sim();
+    let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
+
+    let result = sim.advance_master_frame(
+        &[command],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::NetworkModal,
+        None,
+    );
+
+    assert_eq!(result.executed_commands, 0);
+    assert_eq!(sim.session.game_options.game_speed, 1);
+}
+
+fn animation_boundary_fixture() -> (Simulation, RuleSet) {
+    let mut sim = Simulation::with_seed(0xA11A_7100);
+    let owner = sim.interner.intern("Americans");
+    let type_ref = sim.interner.intern("E1");
+    let mut entity = GameEntity::new_at_frame_zero_for_test(
+        1,
+        4,
+        4,
+        0,
+        0,
+        owner,
+        crate::sim::components::Health {
+            current: 100,
+            max: 100,
+        },
+        type_ref,
+        EntityCategory::Infantry,
+        0,
+        0,
+        false,
+    );
+    entity.animation = Some(Animation::new(SequenceKind::Idle1));
+    entity.body_facing = Some(FacingClass::new(0, 4));
+    sim.substrate.entities.insert(entity);
+
+    let idle = SequenceDef {
+        start_frame: 0,
+        frame_count: 1,
+        facings: 8,
+        facing_multiplier: 1,
+        frame_delay: 1,
+        normalized: false,
+        completion_facing: Some(128),
+        loop_mode: LoopMode::TransitionTo(SequenceKind::Stand),
+        facing_slots: FacingSlots::InfantryTable,
+    };
+    let stand = SequenceDef {
+        start_frame: 1,
+        frame_count: 1,
+        facings: 8,
+        facing_multiplier: 1,
+        frame_delay: 1,
+        normalized: false,
+        completion_facing: None,
+        loop_mode: LoopMode::Loop,
+        facing_slots: FacingSlots::InfantryTable,
+    };
+    let mut set = SequenceSet::new();
+    set.insert(SequenceKind::Idle1, idle);
+    set.insert(SequenceKind::Stand, stand);
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n[E1]\nStrength=100\n",
+    ))
+    .expect("animation fixture rules");
+    rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".to_string(), set)]));
+    (sim, rules)
+}
+
+fn particle_frame_boundary_fixture(frame_count: u16) -> (Simulation, RuleSet) {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[Particles]\n0=SmokeP\n\
+         [SmokeP]\nBehavesLike=Smoke\nImage=SMOKEIMG\nStateAIAdvance=0\n\
+         EndStateAI=2\nDeleteOnStateLimit=yes\nMaxEC=100\n\
+         [ParticleSystems]\n0=SmokeSys\n\
+         [SmokeSys]\nBehavesLike=Smoke\nHoldsWhat=SmokeP\nSpawns=no\n\
+         Lifetime=100\nParticleCap=10\n",
+    ))
+    .expect("particle boundary rules");
+    rules.set_effect_frame_count_for_test("SMOKEIMG", frame_count, frame_count);
+
+    let mut sim = Simulation::with_seed(0xEFFE_C705);
+    let stable_id = sim.allocate_stable_id();
+    let particle = Particle {
+        type_id: ParticleTypeId(0),
+        coords: IVec3::ZERO,
+        previous_coords: IVec3::ZERO,
+        origin: IVec3::ZERO,
+        direction: [SIM_ZERO; 3],
+        velocity: SIM_ZERO,
+        lifetime_remaining: 100,
+        damage_counter: 0,
+        state_ai_advance: 0,
+        animation_state: 0,
+        translucency: 0,
+        hit_ground: false,
+        marked_for_deletion: false,
+        drift_x: 0,
+        drift_y: 0,
+        drift_z: 0,
+        current_color: [0; 3],
+        color_index: 0,
+        color_accumulator: SIM_ZERO,
+        spark: None,
+        prev_delta: [SIM_ZERO; 3],
+        state_advance_counter: 0,
+    };
+    sim.particle_systems_mut().insert(ParticleSystem {
+        stable_id,
+        in_logic_vector: false,
+        type_id: ParticleSystemTypeId(0),
+        coords: IVec3::ZERO,
+        offset: IVec3::ZERO,
+        particles: vec![particle],
+        spawn_timer: SIM_ZERO,
+        lifetime: 100,
+        spark_spawn_frames: 0,
+        facing: 0,
+        marked_for_deletion: false,
+        directionless: false,
+        attached_entity: None,
+        owner_entity: None,
+        target_coords: IVec3::ZERO,
+        owner_house: None,
+        done_spawning: true,
+    });
+    assert!(sim.reveal_particle_system(stable_id));
+    (sim, rules)
+}
+
+#[test]
+fn master_frame_hash_observes_living_animation_completion_facing() {
+    let (mut sim, rules) = animation_boundary_fixture();
+
+    let result = sim.advance_master_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+
+    let entity = sim.substrate.entities.get(1).expect("living infantry");
+    assert_eq!(entity.facing, 128);
+    assert_eq!(
+        entity.animation.as_ref().expect("animation").sequence,
+        SequenceKind::Stand
+    );
+    assert_eq!(result.state_hash, sim.state_hash());
+}
+
+#[test]
+fn app_and_headless_frames_hash_identically_for_animation_progress() {
+    let (mut app_sim, rules) = animation_boundary_fixture();
+    let (mut headless_sim, _) = animation_boundary_fixture();
+
+    let app = app_sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    let headless = headless_sim.advance_tick(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+
+    assert!(app.tick.frame_committed && headless.frame_committed);
+    assert_eq!(app.tick.state_hash, headless.state_hash);
+    assert_eq!(app_sim.state_hash(), headless_sim.state_hash());
+    let app_entity = app_sim.substrate.entities.get(1).expect("app infantry");
+    assert_eq!(app_entity.facing, 128);
+    assert_eq!(
+        app_entity.animation.as_ref().expect("app animation").sequence,
+        SequenceKind::Stand,
+    );
+    assert_eq!(
+        app_sim
+            .substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.animation.as_ref())
+            .map(|anim| {
+                (
+                    anim.sequence,
+                    anim.frame_index,
+                    anim.elapsed_frames,
+                    anim.finished,
+                )
+            }),
+        headless_sim
+            .substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.animation.as_ref())
+            .map(|anim| {
+                (
+                    anim.sequence,
+                    anim.frame_index,
+                    anim.elapsed_frames,
+                    anim.finished,
+                )
+            }),
+    );
+}
+
+#[test]
+fn app_and_headless_frames_hash_identically_for_particle_frame_timing() {
+    let (mut app_sim, rules) = particle_frame_boundary_fixture(5);
+    let (mut headless_sim, _) = particle_frame_boundary_fixture(5);
+
+    for frame in 1..=4 {
+        let app = app_sim.advance_app_frame(
+            &[],
+            Some(&rules),
+            &empty_heights(),
+            None,
+            67,
+            TickLane::Ordinary,
+            None,
+        );
+        let headless =
+            headless_sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+
+        assert!(app.tick.frame_committed && headless.frame_committed);
+        assert_eq!(app.tick.state_hash, headless.state_hash, "frame {frame}");
+        assert_eq!(
+            app_sim.state_hash(),
+            headless_sim.state_hash(),
+            "frame {frame}"
+        );
+        let app_particles = app_sim
+            .particle_systems()
+            .iter()
+            .next()
+            .map(|(_, system)| system.particles.len())
+            .unwrap_or(0);
+        let headless_particles = headless_sim
+            .particle_systems()
+            .iter()
+            .next()
+            .map(|(_, system)| system.particles.len())
+            .unwrap_or(0);
+        assert_eq!(app_particles, headless_particles, "frame {frame}");
+        assert_eq!(app_particles, usize::from(frame < 4), "frame {frame}");
+    }
+}
+
+#[test]
+fn moving_water_unit_spawns_rules_bound_wake_without_preinterned_effect_name() {
+    let mut rules = naval_bridge_test_rules();
+    rules.set_effect_frame_count_for_test("WAKE1", 5, 5);
+    let mut sim = Simulation::new();
+    let boat_id = sim
+        .spawn_object("BOAT", "Americans", 0, 0, 64, &rules, &empty_heights())
+        .expect("spawn boat");
+    assert!(sim.interner.get("WAKE1").is_none());
+    let boat = sim
+        .substrate
+        .entities
+        .get_mut(boat_id)
+        .expect("boat entity");
+    boat.movement_target = Some(MovementTarget {
+        path: vec![(0, 0), (1, 0)],
+        path_layers: vec![MovementLayer::Ground, MovementLayer::Ground],
+        next_index: 1,
+        speed: SimFixed::from_num(1),
+        current_speed: SimFixed::from_num(1),
+        move_dir_x: SimFixed::from_num(256),
+        move_dir_y: SIM_ZERO,
+        move_dir_len: SimFixed::from_num(256),
+        ..Default::default()
+    });
+
+    let result = sim.advance_tick(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&PathGrid::new(2, 1)),
+        None,
+        67,
+    );
+
+    assert!(result.frame_committed);
+    let wake = sim.world_effects.first().expect("wake effect");
+    assert_eq!(sim.interner.resolve(wake.shp_name), "WAKE1");
+    assert_eq!(wake.total_frames, 5);
+}
+
+#[test]
+fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [E1]\nStrength=100\n",
+    ))
+    .expect("dying infantry rules");
+    let art_ini = IniFile::from_str(
+        "[E1]\nSequence=TestSequence\n\
+         [TestSequence]\nReady=0,1,1\nDie1=8,2,0\n",
+    );
+    rules.merge_art_data(&ArtRegistry::from_ini(&art_ini));
+    rules.bind_animation_sequences(
+        &crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini),
+    );
+    let mut sim = Simulation::new();
+    let id = sim
+        .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
+        .expect("spawn infantry");
+    let entity = sim.substrate.entities.get_mut(id).expect("spawned infantry");
+    entity.dying = true;
+    entity.animation = Some(Animation {
+        sequence: SequenceKind::Die1,
+        frame_index: 0,
+        elapsed_frames: 0,
+        finished: false,
+    });
+
+    let first = sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+    let after_first = sim
+        .substrate
+        .entities
+        .get(id)
+        .and_then(|entity| entity.animation.as_ref())
+        .expect("two-frame death survives its first visit");
+    assert_eq!(after_first.frame_index, 1);
+    assert!(!after_first.finished);
+
+    let second = sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+
+    assert!(first.frame_committed && second.frame_committed);
+    assert!(
+        sim.substrate.entities.get(id).is_none(),
+        "the headless adapter must use RuleSet timing and drain the finished death",
+    );
+    assert_eq!(second.state_hash, sim.state_hash());
+}
+
+#[test]
+fn terminal_master_frame_does_not_advance_living_animation() {
+    let (mut sim, rules) = animation_boundary_fixture();
+    let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
+
+    let result = sim.advance_master_frame(
+        &[exit],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+
+    assert!(!result.frame_committed);
+    assert_eq!(sim.session.tick, 0);
+    assert_eq!(sim.session.binary_frame, 0);
+    let entity = sim.substrate.entities.get(1).expect("living infantry");
+    let animation = entity.animation.as_ref().expect("animation");
+    assert_eq!(animation.sequence, SequenceKind::Idle1);
+    assert_eq!(animation.frame_index, 0);
+    assert_eq!(animation.elapsed_frames, 0);
+    assert!(!animation.finished);
+    assert_eq!(entity.facing, 0);
+}
+
+#[test]
+fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() {
+    let mut sim = Simulation::new();
+    let sound_id = sim.interner.intern("WaterfallLoop");
+    sim.sound_events.push(SimSoundEvent::AnimationStarted {
+        anim_id: 9,
+        sound_id,
+        world: crate::sim::anim_class::AnimWorldCoord {
+            x: 128,
+            y: 128,
+            z: 0,
+        },
+    });
+
+    let first = sim.advance_app_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(matches!(
+        first.sound_events.as_slice(),
+        [SimSoundEvent::AnimationStarted { anim_id: 9, .. }]
+    ));
+    assert_eq!(first.tick.state_hash, sim.state_hash());
+
+    let second = sim.advance_app_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(second.sound_events.is_empty());
+    assert_eq!(second.tick.state_hash, sim.state_hash());
+}
+
+#[test]
+fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
+    let (rules, overlays) = gsi_04_07_wall_sell_rules(false, false);
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(4, 4));
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(4, 4));
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let owner = sim.interner.intern("WallOwner");
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_owned_wall(2, 2, 2, 0x23, owner);
+
+    let deferred = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(deferred.overlay_updates.is_empty());
+    assert!(
+        sim.path_grid()
+            .expect("pre-finalization navigation")
+            .is_walkable(2, 2),
+        "a partial-input frame must retain dirty overlay work for later finalization"
+    );
+
+    let first = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert_eq!(first.overlay_updates.len(), 1);
+    let update = &first.overlay_updates[0];
+    assert_eq!((update.rx, update.ry), (2, 2));
+    assert_eq!((update.overlay_id, update.frame), (2, 0x23));
+    assert!(
+        !sim.path_grid()
+            .expect("finalized navigation")
+            .is_walkable(2, 2)
+    );
+    assert_eq!(first.tick.state_hash, sim.state_hash());
+
+    let second = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(second.overlay_updates.is_empty());
+    assert_eq!(second.tick.state_hash, sim.state_hash());
+}
+
+#[test]
+fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
+    let ini = IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [OverlayTypes]\n0=ORE\n1=WALL\n\
+         [ORE]\nTiberium=yes\n[WALL]\nWall=yes\nStrength=100\n",
+    );
+    let rules = RuleSet::from_ini(&ini).expect("terminal overlay rules");
+    let overlays = crate::map::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+    let mut terrain = gsi_04_10_clear_terrain(2, 1);
+    terrain.cell_mut(0, 0).expect("terrain cell").slope_type = 5;
+
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(terrain);
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(2, 1));
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    {
+        let grid = sim.overlay_grid.as_mut().expect("overlay grid");
+        grid.place_overlay(0, 0, 0, 3);
+        grid.place_overlay(1, 0, 1, 7);
+    }
+    let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
+    let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
+
+    let output = sim.advance_app_frame(
+        &[exit],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(!output.tick.frame_committed);
+    assert_eq!(output.overlay_updates.len(), 1);
+    assert_eq!(
+        (
+            output.overlay_updates[0].rx,
+            output.overlay_updates[0].ry,
+            output.overlay_updates[0].overlay_id,
+            output.overlay_updates[0].frame,
+        ),
+        (1, 0, 1, 7)
+    );
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(0, 0)
+            .overlay_id,
+        None
+    );
+    assert!(
+        !sim.path_grid()
+            .expect("terminal navigation")
+            .is_walkable(1, 0)
+    );
+    assert_eq!(output.tick.state_hash, sim.state_hash());
+
+    let next = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        Some(&overlays),
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(!next.tick.frame_committed);
+    assert!(next.overlay_updates.is_empty());
 }
 
 fn gsi_13_10_art_model_rules() -> RuleSet {
@@ -282,7 +978,7 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
         expected_ground_zone,
         crate::sim::pathfinding::zone_map::ZONE_INVALID
     );
-    sim.prev_path_grid = Some(path.clone());
+    sim.path_grid = Some(std::sync::Arc::new(path.clone()));
 
     for (id, target) in [(10, (4, 4)), (20, (4, 3))] {
         let mut listener = GameEntity::test_default(id, "E1", "Receiver", 2, 2);
@@ -337,14 +1033,52 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
             .map(|t| t.target),
         Some(crate::sim::combat::TargetKind::Cell(4, 3))
     ));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 4));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(4, 3));
-    assert!(sim.prev_path_grid.as_ref().unwrap().is_walkable(5, 4));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 4));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(4, 3));
+    assert!(sim.path_grid.as_deref().unwrap().is_walkable(5, 4));
+    let projected = PathGrid::from_resolved_terrain_with_bridges(
+        sim.resolved_terrain.as_ref().expect("terrain"),
+        sim.bridge_state.as_ref(),
+    );
+    assert_eq!(
+        sim.path_grid.as_deref().unwrap().diff_cells(&projected),
+        Some(Vec::new()),
+        "wall-sale tail must already publish the final path cells"
+    );
+    assert!(
+        sim.zone_grid
+            .as_ref()
+            .expect("zone grid")
+            .movement_classes_match(sim.resolved_terrain.as_ref().expect("terrain")),
+        "ordered wall-sale repair must publish every reduced movement class"
+    );
+    let (zone_ids_ptr, repaired_zone_ids) = {
+        let map = sim
+            .zone_grid
+            .as_ref()
+            .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+            .expect("normal zone map before frame finalization");
+        (
+            map.zone_ids_slice().as_ptr() as usize,
+            map.zone_ids_slice().to_vec(),
+        )
+    };
+    assert!(
+        sim.finalize_frame_overlays_and_navigation(Some(&rules), Some(&overlays), false)
+            .is_empty(),
+        "the sold and cleanup cells are cleared, so no occupied render update remains"
+    );
     let ground_zone_after = sim
         .zone_grid
         .as_ref()
         .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
         .expect("normal zone map");
+    assert_eq!(
+        ground_zone_after.zone_ids_slice().as_ptr() as usize,
+        zone_ids_ptr,
+        "diff-empty finalization must retain the ordered wall-sale zone repair"
+    );
+    assert_eq!(ground_zone_after.zone_ids_slice(), repaired_zone_ids);
     assert_eq!(
         ground_zone_after.zone_at(4, 3, MovementLayer::Ground),
         expected_ground_zone,
@@ -406,6 +1140,128 @@ fn gsi_04_07_wall_sell_ordered_cleanup_detach_navigation_and_zero_refund_rng() {
         sim.sound_events.as_slice(),
         [SimSoundEvent::WallSold { receiver: event_receiver }] if *event_receiver == receiver
     ));
+}
+
+#[test]
+fn canonical_path_grid_snapshot_remains_pinned_after_publication() {
+    let mut sim = Simulation::new();
+    sim.resolved_terrain = Some(gsi_04_10_clear_terrain(2, 1));
+    let first = PathGrid::new(2, 1);
+    sim.rebuild_zone_grid(&first);
+    let pinned = sim.path_grid_snapshot().expect("first navigation snapshot");
+
+    let mut second = first.clone();
+    second.set_blocked(0, 0, true);
+    sim.rebuild_zone_grid(&second);
+
+    assert!(pinned.is_walkable(0, 0));
+    assert!(
+        !sim
+            .path_grid()
+            .expect("published navigation")
+            .is_walkable(0, 0)
+    );
+    assert!(!std::sync::Arc::ptr_eq(
+        &pinned,
+        &sim.path_grid_snapshot().expect("second navigation snapshot")
+    ));
+}
+
+#[test]
+fn dynamic_navigation_publication_composes_structures_bibs_and_bridges() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n\
+         [BuildingTypes]\n0=GAREFN\n\
+         [GAREFN]\nStrength=100\nFoundation=4x3\nBib=yes\n",
+    ))
+    .expect("dynamic navigation rules");
+    let mut terrain = gsi_04_10_clear_terrain(16, 16);
+    for rx in [1, 3] {
+        let cell = terrain.cell_mut(rx, 1).expect("bridgehead cell");
+        cell.bridge_walkable = true;
+        cell.bridge_transition = true;
+        cell.bridge_deck_level = 4;
+    }
+    {
+        let cell = terrain.cell_mut(2, 1).expect("bridge body cell");
+        cell.ground_walk_blocked = true;
+        cell.build_blocked = true;
+        cell.base_build_blocked = true;
+        cell.is_water = true;
+        cell.bridge_walkable = true;
+        cell.has_bridge_deck = true;
+        cell.bridge_deck_level = 4;
+    }
+
+    let mut sim = Simulation::new();
+    sim.bridge_state = Some(BridgeRuntimeState::from_resolved_terrain(
+        &terrain, true, 10,
+    ));
+    sim.resolved_terrain = Some(terrain);
+    let owner = sim.interner.intern("Americans");
+    let type_ref = sim.interner.intern("GAREFN");
+    sim.substrate.entities.insert(
+        GameEntity::new_at_frame_zero_for_test(
+            1,
+            8,
+            8,
+            0,
+            0,
+            owner,
+            crate::sim::components::Health {
+                current: 100,
+                max: 100,
+            },
+            type_ref,
+            EntityCategory::Structure,
+            0,
+            0,
+            false,
+        ),
+    );
+
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let grid = sim.path_grid().expect("published navigation");
+    assert!(!grid.is_walkable(8, 9));
+    assert!(!grid.is_walkable(10, 9));
+    assert!(grid.is_walkable(11, 9), "Bib must relax the east edge");
+    assert!(grid.cell(1, 1).expect("west bridgehead").transition);
+    assert!(grid.cell(2, 1).expect("bridge body").bridge_walkable);
+    assert!(grid.cell(3, 1).expect("east bridgehead").transition);
+    assert_eq!(
+        sim.terrain_costs.len(),
+        crate::rules::locomotor_type::SpeedType::ALL_WITH_COSTS.len(),
+        "canonical publication must install every terrain-cost row"
+    );
+    for speed_type in crate::rules::locomotor_type::SpeedType::ALL_WITH_COSTS {
+        assert!(sim.terrain_costs.contains_key(speed_type));
+    }
+    let normal_zones = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(crate::rules::locomotor_type::MovementZone::Normal))
+        .expect("normal movement zones");
+    assert_ne!(
+        normal_zones.zone_at(0, 0, MovementLayer::Ground),
+        crate::sim::pathfinding::zone_map::ZONE_INVALID,
+        "canonical publication must assign a reachable ground cell"
+    );
+
+    let bridge_state = sim.bridge_state.as_mut().expect("bridge runtime state");
+    let _ = bridge_state.write_overlay_byte(2, 1, 0xE8);
+    bridge_state
+        .cell_mut(2, 1)
+        .expect("bridge body runtime cell")
+        .damage_state = crate::sim::bridge_state::DamageState::Destroyed;
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    let collapsed_grid = sim.path_grid().expect("collapsed navigation publication");
+    assert!(
+        !collapsed_grid
+            .cell(2, 1)
+            .expect("collapsed bridge body")
+            .bridge_walkable,
+        "canonical publication must project the live bridge runtime state"
+    );
 }
 
 #[test]
@@ -1531,6 +2387,8 @@ fn gsi_04_10_in_tick_refresh_updates_tail_path_and_cost_before_consumers() {
     let phase_six_consumer_grid = phase_six_consumer_grid.expect("tail grid");
 
     assert!(phase_six_consumer_grid.is_walkable(0, 0));
+    assert_eq!(phase_six_consumer_grid.terrain_object_cell_bits_at(0, 0), 0);
+    assert!(phase_six_consumer_grid.is_walkable_for_infantry(0, 0));
     assert!(
         !phase_six_consumer_grid.is_walkable(1, 0),
         "unrelated dynamic blockers from the input grid must survive"
@@ -5699,11 +6557,10 @@ fn bridgehead_base_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::Resol
 
 #[test]
 fn test_bridgehead_walkability_invariant_across_non_bridge_rebuild_triggers() {
-    // In production app_sim_tick fires `rebuild_dynamic_path_grid` on each of
-    // `destroyed_structure | ownership_changed | spawned_entities` events.
-    // The rebuild is just `PathGrid::from_resolved_terrain_with_bridges(...)`.
-    // Calling it N times models N rebuild triggers; bridgehead walkability
-    // must hold across every rebuild.
+    // Simulation's frame finalizer republishes canonical navigation after
+    // structure, bridge, or overlay passability changes. Calling the shared
+    // bridge-aware projection N times models those rebuilds; bridgehead
+    // walkability must hold across every publication.
     let mut sim = Simulation::new();
     let terrain = make_realistic_bridgehead_terrain();
     sim.resolved_terrain = Some(terrain.clone());
@@ -5770,8 +6627,8 @@ fn test_layered_astar_can_traverse_bridge_after_unrelated_rebuild() {
         "intact bridge must allow Ground→Bridge→Ground A* path"
     );
 
-    // Simulate the rebuild_dynamic_path_grid path that fires on every
-    // unrelated structure death / unit spawn / ownership change.
+    // Simulate canonical navigation publication after an unrelated structure
+    // or overlay-authority change.
     let grid_after_rebuild = PathGrid::from_resolved_terrain_with_bridges(
         sim.resolved_terrain.as_ref().unwrap(),
         sim.bridge_state.as_ref(),

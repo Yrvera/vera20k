@@ -9,9 +9,10 @@
 //! which were produced by running the original routines under emulation.
 
 use super::x87::TruncF64;
+use crate::rng_continuation::{MAPGEN_RNG_STATE_WORDS, MapGenRngContinuation};
 
 /// Number of state words in the generator buffer.
-const STATE_LEN: usize = 250;
+const STATE_LEN: usize = MAPGEN_RNG_STATE_WORDS;
 /// Distance between the two cursors; also the second cursor's start position.
 const LAG: usize = 0x67;
 /// Seed-hash table 1, consumed at indices 0..3 (one per hash round).
@@ -87,6 +88,11 @@ impl RmgRng {
             idx_a: 0,
             idx_b: LAG,
         }
+    }
+
+    /// Seal the exact current native cursor into the move-only handoff DTO.
+    pub(crate) fn into_continuation(self) -> MapGenRngContinuation {
+        MapGenRngContinuation::from_native_parts(self.state, self.idx_a, self.idx_b)
     }
 
     /// Draw one raw word: XOR the lagged pair into the leading slot, return it,

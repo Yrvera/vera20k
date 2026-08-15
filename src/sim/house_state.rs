@@ -183,10 +183,11 @@ pub struct HouseState {
     /// its `Record_Last_Built` step increments once per finished factory item.
     /// Only the totals are player-visible, so the Rust model keeps totals.
     ///
-    /// Deliberately NOT serialized and NOT folded into the state hash: they feed
-    /// one post-match screen and never a sim decision, and adding them to either
-    /// would move a shared schema this slice is not allowed to touch. The
-    /// consequence is that a save/load resets them (recorded DRIFT).
+    /// The live counters remain unserialized and unhashed. At the natural
+    /// terminal edge, sim copies their totals into the serialized/hash-covered
+    /// `TerminalScoreSnapshot`; the raw score also bounds its Scenario RNG bonus
+    /// draw. Saving and loading before that edge still resets these counters, so
+    /// a post-load score can differ (recorded DRIFT).
     #[serde(skip)]
     pub stats: MatchStatistics,
     /// Per-house wallet/storage/statistics (the authority flip). The wallet stays

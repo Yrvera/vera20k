@@ -282,6 +282,7 @@ pub fn generate_map_observed(
 
     GeneratedMap {
         map_file,
+        mapgen_continuation: rng.into_continuation(),
         start_waypoints: output.waypoints,
         stages_run: executed_stages(&options),
         unfilled_start_slots: output.unfilled_start_slots,
@@ -441,8 +442,9 @@ mod tests {
         let resolved = resolved();
         let blocks = one_by_one();
         let settings = RmgSettings::default();
+        let options = options(1, 0);
         let snapshot = || {
-            let g = generate_map(&options(1, 0), &settings, &resolved, &blocks, &[]);
+            let g = generate_map(&options, &settings, &resolved, &blocks, &[]);
             let tiles: Vec<i32> = g.map_file.cells.iter().map(|c| c.tile_index).collect();
             let overlays: Vec<(u16, u16, u8)> = g
                 .map_file
@@ -450,9 +452,19 @@ mod tests {
                 .iter()
                 .map(|o| (o.rx, o.ry, o.overlay_id))
                 .collect();
-            (tiles, overlays, g.start_waypoints)
+            let mapgen = g.mapgen_continuation.into_native_parts();
+            (tiles, overlays, g.start_waypoints, mapgen)
         };
-        assert_eq!(snapshot(), snapshot());
+        let first = snapshot();
+        let second = snapshot();
+        assert_eq!(first, second);
+        assert_ne!(
+            first.3,
+            RmgRng::new(options.seed_u16())
+                .into_continuation()
+                .into_native_parts(),
+            "generation must carry an advanced MapGen cursor into the map receipt"
+        );
     }
 
     /// The comparable content of a generated map: what the emitter projected

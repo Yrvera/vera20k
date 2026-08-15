@@ -145,6 +145,10 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
     // Convert cursor screen position to world coordinates, then to iso cell.
     let (cursor_rx, cursor_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+    let path_grid = state
+        .simulation
+        .as_ref()
+        .and_then(crate::sim::world::Simulation::path_grid);
 
     egui::Window::new("Terrain Debug")
         .default_pos([4.0, 4.0])
@@ -155,7 +159,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
         .show(ctx, |ui| {
             apply_light_text(ui);
             // --- Grid dimensions ---
-            if let Some(grid) = &state.path_grid {
+            if let Some(grid) = path_grid {
                 ui.label(format!("Grid: {}x{}", grid.width(), grid.height()));
             } else {
                 ui.label("Grid: (none)");
@@ -198,7 +202,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                 .unwrap_or(0);
             ui.label(format!("Elevation: {}", z));
 
-            if let Some(grid) = &state.path_grid {
+            if let Some(grid) = path_grid {
                 let walkable: bool = grid.is_walkable(cursor_rx, cursor_ry);
                 let label = if walkable { "WALKABLE" } else { "BLOCKED" };
                 ui.colored_label(
@@ -348,7 +352,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                                 // Show first few path steps with walkability.
                                 let start = mt.next_index.saturating_sub(1);
                                 let end = (start + 8).min(mt.path.len());
-                                let grid = state.path_grid.as_ref();
+                                let grid = path_grid;
                                 for i in start..end {
                                     let (px, py) = mt.path[i];
                                     let w = grid.map_or(true, |g| g.is_walkable(px, py));

@@ -26,7 +26,7 @@ use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::components::{BuildingUp, Health};
 use crate::sim::game_entity::GameEntity;
 use crate::sim::mission::MissionType;
-use crate::sim::overlay_grid::OverlayGrid;
+use crate::sim::overlay_grid::{recalc_overlay_passability, OverlayGrid};
 use crate::sim::pathfinding::PathGrid;
 use crate::sim::power_system::has_active_radar;
 use crate::sim::world::Simulation;
@@ -423,6 +423,7 @@ fn gsi_04_07_wall_placement_contract() -> (RuleSet, OverlayTypeRegistry) {
          [BuildingTypes]\n\
          0=GACNST\n\
          1=GAWALL\n\
+         2=WALLKIT\n\
          [OverlayTypes]\n\
          0=GASAND\n\
          1=CYCL\n\
@@ -442,12 +443,23 @@ fn gsi_04_07_wall_placement_contract() -> (RuleSet, OverlayTypeRegistry) {
          Armor=concrete\n\
          Strength=300\n\
          Foundation=1x1\n\
-         Adjacent=0\n",
+         Adjacent=8\n\
+         GuardRange=5\n\
+         [WALLKIT]\n\
+         Wall=yes\n\
+         Armor=concrete\n\
+         Strength=300\n\
+         Foundation=1x1\n\
+         Adjacent=8\n\
+         GuardRange=5\n",
     );
-    (
-        RuleSet::from_ini(&ini).expect("wall placement rules"),
-        OverlayTypeRegistry::from_ini(&ini, None),
-    )
+    let mut rules = RuleSet::from_ini(&ini).expect("wall placement rules");
+    let art = ArtRegistry::from_ini(&IniFile::from_str(
+        "[GAWALL]\nToOverlay=GAWALL\n\
+         [WALLKIT]\nToOverlay=GAWALL\n",
+    ));
+    rules.merge_art_data(&art);
+    (rules, OverlayTypeRegistry::from_ini(&ini, None))
 }
 
 fn mark_allied(sim: &mut Simulation, a: &str, b: &str) {
@@ -1717,6 +1729,7 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
     let mut sim = Simulation::new();
     spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
     sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
     ready_building(&mut sim, "Americans", "GAWALL");
     let owner = sim.interner.get("Americans").expect("owner");
     let type_id = sim.interner.get("GAWALL").expect("wall type");
@@ -1754,6 +1767,388 @@ fn gsi_04_07_command_places_authoritative_owned_wall_without_entity() {
     assert!(!sim.substrate.entities.values().any(|entity| {
         entity.type_ref == type_id && (entity.position.rx, entity.position.ry) == (12, 10)
     }));
+    assert_eq!(tick.state_hash, sim.state_hash());
+}
+
+#[test]
+fn gsi_04_07_regular_wall_autofill_is_cardinal_ordered_bounded_and_consumes_once() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
+    ready_building(&mut sim, "Americans", "GAWALL");
+    let owner = sim.interner.get("Americans").expect("owner");
+    let wall_type = sim.interner.get("GAWALL").expect("wall type");
+    sim.production
+        .ready_by_owner
+        .get_mut(&owner)
+        .expect("ready queue")
+        .push_back(wall_type);
+    let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
+    let origin = (18, 18);
+    let endpoints = [(18, 13), (23, 18), (18, 23), (13, 18)];
+    for (rx, ry) in endpoints {
+        sim.overlay_grid
+            .as_mut()
+            .expect("overlay grid")
+            .place_owned_wall(rx, ry, overlay_id, 0x20, owner);
+    }
+
+    let expected = vec![
+        (18, 17),
+        (18, 16),
+        (18, 15),
+        (18, 14),
+        (19, 18),
+        (20, 18),
+        (21, 18),
+        (22, 18),
+        (18, 19),
+        (18, 20),
+        (18, 21),
+        (18, 22),
+        (17, 18),
+        (16, 18),
+        (15, 18),
+        (14, 18),
+    ];
+    let preview = placement_preview_for_owner_with_overlays(
+        &sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        origin.0,
+        origin.1,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    )
+    .expect("ready wall preview");
+    assert!(preview.valid, "primary wall cell should be legal");
+    assert_eq!(preview.wall_autofill_cells, expected);
+
+    assert!(place_ready_building_with_overlays(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        origin.0,
+        origin.1,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+    assert_eq!(
+        ready_buildings_for_owner(&sim, &rules, "Americans").len(),
+        1,
+        "the primary plus all fillers consume exactly one ready product"
+    );
+    let grid = sim.overlay_grid.as_ref().expect("overlay grid");
+    for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
+        let cell = grid.cell(rx, ry);
+        assert_eq!(
+            cell.overlay_id,
+            Some(overlay_id),
+            "missing wall at ({rx},{ry})"
+        );
+        assert_eq!(
+            cell.wall_owner,
+            Some(owner),
+            "wrong wall owner at ({rx},{ry})"
+        );
+    }
+    for (rx, ry) in endpoints {
+        assert_ne!(
+            grid.cell(rx, ry).overlay_data & 0x0F,
+            0,
+            "endpoint connectivity should refresh at ({rx},{ry})"
+        );
+    }
+    assert!(sim.zone_grid.is_some(), "wall placement must publish navigation");
+    for (rx, ry) in std::iter::once(origin).chain(expected.iter().copied()) {
+        assert!(
+            sim.resolved_terrain
+                .as_ref()
+                .and_then(|terrain| terrain.cell(rx, ry))
+                .is_some_and(|cell| cell.overlay_blocks),
+            "resolved passability must include wall at ({rx},{ry})"
+        );
+    }
+}
+
+#[test]
+fn gsi_04_07_regular_wall_autofill_rejects_out_of_range_and_foreign_endpoints() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
+
+    let mut out_of_range = Simulation::new();
+    spawn_structure(&mut out_of_range, 1, "Americans", "GACNST", 10, 10);
+    out_of_range.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut out_of_range, "Americans", "GAWALL");
+    let owner = out_of_range.interner.get("Americans").expect("owner");
+    out_of_range
+        .overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_owned_wall(24, 18, overlay_id, 0x20, owner);
+    let preview = placement_preview_for_owner_with_overlays(
+        &out_of_range,
+        &rules,
+        "Americans",
+        "GAWALL",
+        18,
+        18,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    )
+    .expect("ready wall preview");
+    assert!(
+        preview.wall_autofill_cells.is_empty(),
+        "GuardRange=5 must not close an endpoint six cells away"
+    );
+
+    let mut foreign_blocker = Simulation::new();
+    spawn_structure(&mut foreign_blocker, 1, "Americans", "GACNST", 10, 10);
+    foreign_blocker.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut foreign_blocker, "Americans", "GAWALL");
+    let owner = foreign_blocker.interner.get("Americans").expect("owner");
+    let enemy = foreign_blocker.interner.intern("Russians");
+    let grid = foreign_blocker.overlay_grid.as_mut().expect("overlay grid");
+    grid.place_owned_wall(20, 18, overlay_id, 0x20, enemy);
+    grid.place_owned_wall(23, 18, overlay_id, 0x20, owner);
+    let preview = placement_preview_for_owner_with_overlays(
+        &foreign_blocker,
+        &rules,
+        "Americans",
+        "GAWALL",
+        18,
+        18,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    )
+    .expect("ready wall preview");
+    assert!(
+        preview.wall_autofill_cells.is_empty(),
+        "a foreign wall must block, not terminate, the direction"
+    );
+    assert!(place_ready_building_with_overlays(
+        &mut foreign_blocker,
+        &rules,
+        "Americans",
+        "GAWALL",
+        18,
+        18,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+    assert_eq!(
+        foreign_blocker
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(19, 18)
+            .overlay_id,
+        None,
+        "a blocked direction must not leave a partial filler"
+    );
+}
+
+#[test]
+fn gsi_04_07_wall_placement_resolves_art_tooverlay_not_building_id() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut sim, "Americans", "WALLKIT");
+    assert!(registry.id_for_name("WALLKIT").is_none());
+
+    assert!(place_ready_building_with_overlays(
+        &mut sim,
+        &rules,
+        "Americans",
+        "WALLKIT",
+        12,
+        10,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+    let wall = sim
+        .overlay_grid
+        .as_ref()
+        .expect("overlay grid")
+        .cell(12, 10);
+    assert_eq!(wall.overlay_id, registry.id_for_name("GAWALL"));
+    assert_eq!(wall.wall_owner, sim.interner.get("Americans"));
+}
+
+#[test]
+fn gsi_04_07_wall_execution_recomputes_preview_gap_after_a_blocker_appears() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut sim, "Americans", "GAWALL");
+    let owner = sim.interner.get("Americans").expect("owner");
+    let overlay_id = registry.id_for_name("GAWALL").expect("wall overlay");
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_owned_wall(23, 18, overlay_id, 0x20, owner);
+    let preview = placement_preview_for_owner_with_overlays(
+        &sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        18,
+        18,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    )
+    .expect("ready wall preview");
+    assert_eq!(
+        preview.wall_autofill_cells,
+        vec![(19, 18), (20, 18), (21, 18), (22, 18)]
+    );
+
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_overlay(20, 18, 7, 4);
+    assert!(place_ready_building_with_overlays(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        18,
+        18,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(19, 18)
+            .overlay_id,
+        None,
+        "execution must rescan instead of trusting the earlier preview cells"
+    );
+}
+
+#[test]
+fn gsi_04_07_wall_placement_publishes_connectivity_neighbor_auto_destruction() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Americans", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    sim.resolved_terrain = Some(resolved_clear_grid_with_override(64, 64, |_| {}));
+    ready_building(&mut sim, "Americans", "GAWALL");
+    let owner = sim.interner.get("Americans").expect("owner");
+    sim.overlay_grid
+        .as_mut()
+        .expect("overlay grid")
+        .place_owned_wall(13, 10, 0, 0x20, owner);
+    assert!(recalc_overlay_passability(
+        sim.overlay_grid.as_mut().expect("overlay grid"),
+        sim.resolved_terrain.as_mut().expect("resolved terrain"),
+        &registry,
+        13,
+        10,
+    ));
+
+    assert!(place_ready_building_with_overlays(
+        &mut sim,
+        &rules,
+        "Americans",
+        "GAWALL",
+        12,
+        10,
+        Some(&path_grid),
+        &height_map,
+        Some(&registry),
+    ));
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(13, 10)
+            .overlay_id,
+        None,
+        "placement connectivity refresh should auto-destroy the damaged isolated neighbor"
+    );
+    assert!(
+        sim.resolved_terrain
+            .as_ref()
+            .and_then(|terrain| terrain.cell(13, 10))
+            .is_some_and(|cell| !cell.overlay_blocks),
+        "neighbor removal must be published to resolved passability immediately"
+    );
+    assert!(sim.zone_grid.is_some(), "neighbor removal must publish zones");
+}
+
+#[test]
+fn gsi_04_07_placement_command_rejects_payload_owner_mismatch() {
+    let (rules, registry) = gsi_04_07_wall_placement_contract();
+    let height_map = BTreeMap::new();
+    let path_grid = PathGrid::new(64, 64);
+    let mut sim = Simulation::new();
+    spawn_structure(&mut sim, 1, "Russians", "GACNST", 10, 10);
+    sim.overlay_grid = Some(OverlayGrid::new(64, 64));
+    ready_building(&mut sim, "Russians", "GAWALL");
+    let event_owner = sim.interner.intern("Americans");
+    let payload_owner = sim.interner.get("Russians").expect("payload owner");
+    let wall_type = sim.interner.get("GAWALL").expect("wall type");
+
+    let tick = sim.advance_tick(
+        &[CommandEnvelope::new(
+            event_owner,
+            sim.session.tick + 1,
+            Command::PlaceReadyBuilding {
+                owner: payload_owner,
+                type_id: wall_type,
+                rx: 12,
+                ry: 10,
+            },
+        )],
+        Some(&rules),
+        &height_map,
+        Some(&path_grid),
+        Some(&registry),
+        67,
+    );
+
+    assert_eq!(tick.executed_commands, 1, "the due event was dispatched");
+    assert_eq!(
+        sim.overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .cell(12, 10)
+            .overlay_id,
+        None
+    );
+    assert_eq!(
+        ready_buildings_for_owner(&sim, &rules, "Russians").len(),
+        1,
+        "a rejected forged owner must not consume production"
+    );
+    assert_eq!(tick.state_hash, sim.state_hash());
 }
 
 #[test]

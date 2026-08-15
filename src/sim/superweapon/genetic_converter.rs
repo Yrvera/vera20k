@@ -40,7 +40,7 @@ pub fn launch(
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> bool {
     // 1. Spawn invoke anim (IonBlast equivalent).
-    spawn_invoke_anim(sim, "IONBLAST", target_rx, target_ry);
+    spawn_invoke_anim(sim, rules, "IONBLAST", target_rx, target_ry);
 
     // 2. Collect infantry IDs + their positions BEFORE damage (for Brute spawn).
     let (killed_infantry_cells, kill_count) = if rules.general.mutate_explosion {
@@ -227,9 +227,9 @@ fn spawn_brute(sim: &mut Simulation, rules: &RuleSet, owner_name: &str, rx: u16,
     }
 }
 
-fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
+fn spawn_invoke_anim(sim: &mut Simulation, rules: &RuleSet, anim_name: &str, rx: u16, ry: u16) {
+    let frames = rules.effect_frame_count(anim_name).unwrap_or(20);
     let iid = sim.interner.intern(anim_name);
-    let frames = sim.effect_frame_counts.get(&iid).copied().unwrap_or(20);
     sim.world_effects.push(WorldEffect {
         anim_spawn: None,
         shp_name: iid,

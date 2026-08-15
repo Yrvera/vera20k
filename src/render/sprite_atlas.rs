@@ -25,6 +25,7 @@ use crate::map::houses::HouseColorMap;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};
+use crate::rules::effect_asset_catalog::available_effect_anim_frame_count;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::rules::ruleset::RuleSet;
 
@@ -34,26 +35,6 @@ use crate::rules::ruleset::RuleSet;
 const SPRITE_PADDING: u32 = 1;
 const INFANTRY_FACING_STEP: u8 = 32;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
-
-/// Number of SHP frames available to an animation consumer.
-///
-/// gamemd.exe's AnimType INI load at 0x00427D00 calls the loader at 0x00427B50,
-/// which replaces a zero `End` with the signed SHP header count and halves it
-/// only when `Shadow=yes`; a zero `LoopEnd` then copies `End`. Scheduler-owned
-/// types still need their complete raw range resident because their bound runtime
-/// metadata owns body/shadow bounds.
-fn available_effect_anim_frame_count(raw_count: u16, scheduler_owned: bool, shadow: bool) -> u16 {
-    if scheduler_owned || !shadow {
-        return raw_count;
-    }
-
-    let body_count = raw_count / 2;
-    if body_count > 0 {
-        body_count
-    } else {
-        raw_count
-    }
-}
 
 fn register_effect_anim_frames(
     needed: &mut HashSet<ShpSpriteKey>,
@@ -452,7 +433,6 @@ pub fn build_sprite_atlas(
     art: Option<&ArtRegistry>,
     house_colors: &HouseColorMap,
     extra_building_types: &[&str],
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     cell_drawer_type_ids: &HashSet<String>,
     cell_palette: Option<&Palette>,
     existing: Option<SpriteAtlas>,
@@ -499,48 +479,12 @@ pub fn build_sprite_atlas(
                 }
             }
             _ => {
-                // Resolve type ID → image ID via rules. Type IDs (e.g. "E1")
-                // differ from image IDs (e.g. "GI"); art.ini is keyed by the
-                // latter. Falls back to type_str when rules can't resolve,
-                // since for many types the image defaults to the ID.
-                let image_id: String = rules
-                    .and_then(|r| r.object(type_str))
-                    .map(|obj| obj.image.clone())
-                    .unwrap_or_else(|| type_str.to_string());
-                // Look up per-type sequence definition from art.ini.
-                // Use it to collect exactly the SHP frames needed for each animation.
-                let art_entry = art.and_then(|a| a.get(&image_id));
-                let seq_set: Option<crate::sim::animation::SequenceSet> = art_entry
-                    .and_then(|e| e.sequence.as_deref())
-                    .and_then(|name| infantry_sequences.get(&name.to_uppercase()))
-                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def))
-                    // SHP vehicles (DLPH/DRON/SQD) carry no `Sequence=` — their
-                    // frame blocks come from the WalkFrames/FiringFrames tags.
-                    // Same gate as build_animation_sequences, so the atlas holds
-                    // exactly the frames the sim can ask for. Without this the
-                    // firing block falls outside the hardcoded fallback range and
-                    // the sprite is dropped for every frame of an attack.
-                    .or_else(|| {
-                        if entity.category == EntityCategory::Infantry {
-                            return None;
-                        }
-                        art_entry
-                            .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
-                            .map(|entry| {
-                                let cadence = rules
-                                    .and_then(|registry| registry.object(type_str))
-                                    .map(|object| crate::sim::animation::ShpVehicleCadence {
-                                        walk_rate: object.walk_rate,
-                                        idle_rate: object.idle_rate,
-                                    })
-                                    .unwrap_or_default();
-                                crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
-                                    entry, cadence,
-                                )
-                            })
-                    });
+                // Presentation consumes the same immutable per-type catalog as
+                // simulation. Image aliases, metadata fallback, voxel gating,
+                // and frame timing are resolved once when RuleSet is bound.
+                let seq_set = rules.and_then(|registry| registry.animation_sequence(type_str));
 
-                if let Some(ref set) = seq_set {
+                if let Some(set) = seq_set {
                     // Data-driven: iterate Stand + Walk sequences (and others)
                     // to collect exactly the right frames.
                     use crate::sim::animation::SequenceKind;
@@ -914,8 +858,8 @@ pub fn build_sprite_atlas(
                         let shadow = art
                             .and_then(|registry| registry.anim_runtime_config(name))
                             .is_some_and(|config| config.shadow);
-                        // Keep the atlas keys and the sim-facing count in one registration
-                        // so consumers cannot observe a frame that was not preloaded.
+                        // Keep atlas keys and the presentation-facing count in one
+                        // registration so rendering cannot select an unloaded frame.
                         let count = register_effect_anim_frames(
                             &mut needed,
                             &mut active_anim_frame_counts,

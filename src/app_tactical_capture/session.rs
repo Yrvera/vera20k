@@ -125,11 +125,11 @@ impl TacticalCaptureSession {
         self.failure_stage = "preflight".to_owned();
         self.request.validate_runtime_environment()?;
         ensure!(
-            state.window.is_visible() == Some(false),
+            state.platform.window.is_visible() == Some(false),
             "tactical capture window is not observably hidden"
         );
         ensure!(
-            !state.window.has_focus(),
+            !state.platform.window.has_focus(),
             "tactical capture window unexpectedly owns focus"
         );
 
@@ -238,7 +238,7 @@ impl TacticalCaptureSession {
         state.cursor_y = capture.post_load_cursor.y as f32;
         let now_ms =
             crate::app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
-        state.frame_pacer.reanchor(now_ms);
+        state.platform.frame_pacer.reanchor(now_ms);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
         Ok(())
@@ -309,7 +309,7 @@ impl TacticalCaptureSession {
             "tactical session drove after terminal outcome"
         );
         self.check_process_timeout()?;
-        if state.window.has_focus() {
+        if state.platform.window.has_focus() {
             self.record_focus_violation();
             bail!("hidden tactical capture window gained focus");
         }
@@ -670,7 +670,7 @@ impl TacticalCaptureSession {
                 && state.minimap.is_some()
                 && state.sidebar_chrome.is_some()
                 && state.software_cursor.is_some()
-                && state.path_grid.is_some()
+                && sim.path_grid().is_some()
                 && state.asset_manager.is_some(),
             "Rust L0 is missing one or more production render/simulation resources"
         );
@@ -804,9 +804,8 @@ impl TacticalCaptureSession {
             .and_then(|script| script.structure_bindings().yard.as_ref())
             .and_then(|yard| {
                 ready_buildings.first().map(|ready| {
-                    let path_grid = state
-                        .path_grid
-                        .as_ref()
+                    let path_grid = sim
+                        .path_grid()
                         .context("ready building lacks production PathGrid")?;
                     first_valid_placement(
                         sim,
@@ -1286,8 +1285,8 @@ impl TacticalCaptureSession {
             },
             "map_source": self.map_source_evidence,
             "lifecycle": {
-                "window_hidden": state.window.is_visible() == Some(false),
-                "window_focused": state.window.has_focus(),
+                "window_hidden": state.platform.window.is_visible() == Some(false),
+                "window_focused": state.platform.window.has_focus(),
                 "focus_violations": self.focus_violations,
                 "input_violations": self.input_violations,
             },

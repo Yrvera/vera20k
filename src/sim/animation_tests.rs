@@ -5,7 +5,11 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::rules::art_data::ArtRegistry;
+use crate::rules::ini_parser::IniFile;
+use crate::rules::infantry_sequence::parse_infantry_sequence_registry;
 use crate::rules::locomotor_type::LocomotorKind;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::*;
 use crate::sim::combat::{AttackTarget, PendingInfantryFire};
 use crate::sim::components::{
@@ -1257,4 +1261,74 @@ fn test_sequence_is_prone_helper() {
     assert!(sequence_is_prone(SequenceKind::Down));
     assert!(!sequence_is_prone(SequenceKind::Stand));
     assert!(!sequence_is_prone(SequenceKind::Up));
+}
+
+fn animation_catalog_rules(ready_start: u16) -> RuleSet {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n0=DRON\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n0=GAPOWR\n\
+         [E1]\nImage=GI\nStrength=100\n\
+         [DRON]\nStrength=100\nWalkRate=3\nIdleRate=2\n\
+         [GAPOWR]\nStrength=100\n",
+    ))
+    .expect("animation catalog rules");
+    let art_ini = IniFile::from_str(&format!(
+        "[GI]\nSequence=GISequence\n\
+         [GISequence]\nReady={ready_start},1,8\nWalk=8,6,8\nDie1=56,2,1\n\
+         [DRON]\nVoxel=no\nWalkFrames=6\nFiringFrames=4\n",
+    ));
+    rules.merge_art_data(&ArtRegistry::from_ini(&art_ini));
+    rules.bind_animation_sequences(&parse_infantry_sequence_registry(&art_ini));
+    rules
+}
+
+#[test]
+fn animation_catalog_covers_unspawned_registered_shp_types() {
+    let rules = animation_catalog_rules(3);
+
+    let infantry = rules.animation_sequence("e1").expect("registered infantry");
+    assert_eq!(
+        infantry.get(&SequenceKind::Stand).expect("infantry stand").start_frame,
+        3,
+    );
+    assert_eq!(
+        infantry.get(&SequenceKind::Die1).expect("infantry death").frame_count,
+        2,
+    );
+
+    let vehicle = rules.animation_sequence("dron").expect("registered SHP vehicle");
+    assert_eq!(
+        vehicle.get(&SequenceKind::Walk).expect("vehicle walk").frame_count,
+        6,
+    );
+    assert_eq!(
+        vehicle.get(&SequenceKind::Attack).expect("vehicle attack").frame_count,
+        4,
+    );
+    assert_eq!(
+        vehicle.shp_vehicle_cadence(),
+        Some(ShpVehicleCadence {
+            walk_rate: 3,
+            idle_rate: 2,
+        }),
+    );
+
+    assert!(
+        rules
+            .animation_sequence("gapowr")
+            .and_then(|set| set.get(&SequenceKind::Stand))
+            .is_some(),
+        "registered buildings receive their authoritative default set before any spawn",
+    );
+}
+
+#[test]
+fn simulation_config_hash_changes_with_resolved_sequence_layout() {
+    let first = animation_catalog_rules(3);
+    let second = animation_catalog_rules(11);
+
+    assert_eq!(first.source_ini_hash(), second.source_ini_hash());
+    assert_ne!(first.simulation_config_hash(), second.simulation_config_hash());
 }

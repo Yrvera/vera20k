@@ -14,7 +14,9 @@ use crate::app_loading_composition::{
 use crate::app_loading_progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
-use crate::app_skirmish::PreloadedBattleStartPlan;
+use crate::sim::scenario_bootstrap::{
+    PreloadedBattleStartPlan, preload_standard_battle_start_plan,
+};
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Color;
 use crate::assets::pcx_file::PcxFile;
@@ -323,7 +325,7 @@ impl LoadingRequest {
             let seed = self
                 .startup()
                 .seed_or_else(|| unreachable!("a launch session always owns a launch seed"));
-            crate::app_skirmish::preload_standard_battle_start_plan(session, map, seed)
+            preload_standard_battle_start_plan(session, map, seed)
         });
         self.preloaded_battle_start_plan = plan.map_or(
             PreloadedBattleStartPlanState::Unavailable,
@@ -2337,6 +2339,8 @@ mod tests {
         );
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
+            mapgen_continuation:
+                crate::map::rmg::RmgRng::new(0x1234).into_continuation(),
             start_waypoints: vec![(0, 10, 20), (1, 30, 40)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
@@ -2452,6 +2456,8 @@ mod tests {
         );
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
+            mapgen_continuation:
+                crate::map::rmg::RmgRng::new(0x4567).into_continuation(),
             start_waypoints: vec![(0, 20, 20), (1, 40, 20), (2, 20, 40)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
@@ -2531,6 +2537,10 @@ mod tests {
         assert_eq!(initial.map_data().waypoints.len(), 3);
         assert_eq!(initial.map_data().waypoints[&2].rx, 20);
         assert_eq!(initial.map_data().waypoints[&2].ry, 40);
+        assert!(
+            initial.has_mapgen_rng_continuation(),
+            "the accepted map's post-generation RNG cursor reaches MapLoadInitial"
+        );
         assert!(request.take_retained_random_map().is_none());
     }
 

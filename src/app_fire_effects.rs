@@ -4,6 +4,8 @@
 //! The sim emits deterministic fire facts. This module resolves rules/art
 //! metadata into screen-space visuals and audio cues above the sim boundary.
 
+use std::collections::HashMap;
+
 use crate::app::AppState;
 use crate::audio::events::GameSoundEvent;
 use crate::map::entities::EntityCategory;
@@ -287,6 +289,7 @@ fn build_non_garrison_fire_effects(
     sim: &Simulation,
     rules: &RuleSet,
     art_reg: &ArtRegistry,
+    frame_counts: Option<&HashMap<String, u16>>,
     events: &[SimFireEvent],
 ) -> (Vec<WeaponMuzzleFlash>, Vec<GameSoundEvent>) {
     let mut flashes = Vec::new();
@@ -311,11 +314,7 @@ fn build_non_garrison_fire_effects(
         let Some(anim_name) = select_weapon_muzzle_anim(&weapon.anim, ev.facing) else {
             continue;
         };
-        let total_frames = sim
-            .interner
-            .get(anim_name)
-            .and_then(|anim_id| sim.effect_frame_counts.get(&anim_id).copied())
-            .unwrap_or(1);
+        let total_frames = presentation_effect_frame_count(frame_counts, anim_name).unwrap_or(1);
         flashes.push(WeaponMuzzleFlash {
             attacker_id: ev.attacker_id,
             shp_name: anim_name.to_string(),
@@ -430,6 +429,7 @@ fn build_projectile_visuals(
     sim: &Simulation,
     rules: &RuleSet,
     art_reg: &ArtRegistry,
+    frame_counts: Option<&HashMap<String, u16>>,
     events: &[SimFireEvent],
 ) -> Vec<ProjectileVisual> {
     let mut visuals = Vec::new();
@@ -461,11 +461,7 @@ fn build_projectile_visuals(
         let Some(dest) = target_fire_destination(sim, ev.target) else {
             continue;
         };
-        let frame_count = sim
-            .interner
-            .get(image)
-            .and_then(|image_id| sim.effect_frame_counts.get(&image_id).copied())
-            .unwrap_or(32);
+        let frame_count = presentation_effect_frame_count(frame_counts, image).unwrap_or(32);
         let duration_ms = projectile_duration_ms(&origin, &dest, weapon.speed)
             .clamp(MIN_PROJECTILE_VISUAL_MS, MAX_PROJECTILE_VISUAL_MS);
         visuals.push(ProjectileVisual {
@@ -554,8 +550,13 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
         let Some(art_reg) = state.art_registry.as_ref() else {
             return;
         };
-        let (flashes, sounds) = build_non_garrison_fire_effects(sim, rules, art_reg, events);
-        let projectiles = build_projectile_visuals(sim, rules, art_reg, events);
+        let frame_counts = state
+            .sprite_atlas
+            .as_ref()
+            .map(|atlas| &atlas.active_anim_frame_counts);
+        let (flashes, sounds) =
+            build_non_garrison_fire_effects(sim, rules, art_reg, frame_counts, events);
+        let projectiles = build_projectile_visuals(sim, rules, art_reg, frame_counts, events);
         (flashes, sounds, projectiles)
     };
 
@@ -564,6 +565,17 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
     for sound in sounds {
         state.sound_events.push(sound);
     }
+}
+
+fn presentation_effect_frame_count(
+    frame_counts: Option<&HashMap<String, u16>>,
+    type_name: &str,
+) -> Option<u16> {
+    let frame_counts = frame_counts?;
+    frame_counts.get(type_name).copied().or_else(|| {
+        let canonical = type_name.to_ascii_uppercase();
+        frame_counts.get(&canonical).copied()
+    })
 }
 
 pub(crate) fn tick_weapon_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
@@ -672,8 +684,6 @@ mod tests {
         let e1 = sim.interner.intern("E1");
         let weapon = sim.interner.intern("M60");
         let report = sim.interner.intern("GIAttack");
-        let anim = sim.interner.intern("MGUN-NE");
-        sim.effect_frame_counts.insert(anim, 4);
         sim.entities_mut()
             .insert(GameEntity::new_at_frame_zero_for_test(
                 1,
@@ -720,9 +730,11 @@ mod tests {
     #[test]
     fn builds_non_garrison_flash_and_flh_report_sound() {
         let (sim, rules, art, events) = fire_effect_fixture();
+        let frame_counts = HashMap::from([("MGUN-NE".to_string(), 4)]);
         let expected_origin =
             resolve_non_garrison_fire_origin_from_sim(&sim, &rules, &art, &events[0]).unwrap();
-        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, &events);
+        let (flashes, sounds) =
+            build_non_garrison_fire_effects(&sim, &rules, &art, Some(&frame_counts), &events);
 
         assert_eq!(flashes.len(), 1);
         assert_eq!(flashes[0].shp_name, "MGUN-NE");
@@ -774,7 +786,7 @@ mod tests {
     fn garrison_fire_event_does_not_spawn_non_garrison_effects() {
         let (sim, rules, art, mut events) = fire_effect_fixture();
         events[0].garrison_muzzle_index = Some(0);
-        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, &events);
+        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, None, &events);
         assert!(flashes.is_empty());
         assert!(sounds.is_empty());
     }
@@ -853,7 +865,7 @@ mod tests {
         let (sim, rules, _art, mut events) = fire_effect_fixture();
         let art = ArtRegistry::from_ini(&IniFile::from_str("[GI]\nMuzzleFlash0=30,15\n"));
         events[0].garrison_muzzle_index = Some(0);
-        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, &events);
+        let (flashes, sounds) = build_non_garrison_fire_effects(&sim, &rules, &art, None, &events);
 
         assert!(flashes.is_empty());
         assert_eq!(sounds.len(), 1);

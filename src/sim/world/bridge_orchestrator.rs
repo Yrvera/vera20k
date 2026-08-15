@@ -26,7 +26,10 @@ use crate::sim::bridge_state::{
     BridgeRuntimeCell, BridgeRuntimeState, DamageState, DispatchPath, StateOutcome,
 };
 use crate::sim::world::Simulation;
-use crate::sim::{intern::InternedId, rng::SimRng};
+use crate::sim::{
+    intern::{InternedId, StringInterner},
+    rng::SimRng,
+};
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::CELL_CENTER_LEPTON;
 
@@ -217,8 +220,9 @@ pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
             rng: &mut sim.scenario_rng,
             world_effects: &mut sim.world_effects,
             bridge_explosions: &sim.bridge_explosions,
-            effect_frame_counts: &sim.effect_frame_counts,
             bridge_anim_sounds: &sim.bridge_anim_sounds,
+            rules,
+            interner: &sim.interner,
         };
 
         // Look for a seed cell whose overlay is already in the destroy-band.
@@ -395,8 +399,9 @@ struct BridgePresentationContext<'a> {
     rng: &'a mut SimRng,
     world_effects: &'a mut Vec<crate::sim::components::WorldEffect>,
     bridge_explosions: &'a [InternedId],
-    effect_frame_counts: &'a BTreeMap<InternedId, u16>,
     bridge_anim_sounds: &'a BTreeMap<InternedId, InternedId>,
+    rules: &'a RuleSet,
+    interner: &'a StringInterner,
 }
 
 const HUT_FALLBACK_DIRS: [(i16, i16); 8] = [
@@ -1337,7 +1342,7 @@ pub(crate) fn refresh_bridge_zones_if_dirty(sim: &mut Simulation, any_zones_dirt
 /// Replaces the wrong-shape legacy `Simulation::spawn_bridge_explosions`,
 /// which drew 1 immediate BridgeExplosion + a 50% delayed BridgeExplosion
 /// — visible every collapse.
-fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<(u16, u16)>) {
+fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(u16, u16)>) {
     use crate::sim::components::WorldEffect;
 
     let explosion_count = sim.bridge_explosions.len() as u32;
@@ -1377,7 +1382,9 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
         if metallic_pass && metallic_count > 0 {
             let idx = sim.bridge_rng().next_range_u32(metallic_count) as usize;
             let anim_id = sim.metallic_debris[idx];
-            let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
+            let frames = rules
+                .effect_frame_count(sim.interner.resolve(anim_id))
+                .unwrap_or(20);
             sim.world_effects.push(WorldEffect {
                 anim_spawn: None,
                 shp_name: anim_id,
@@ -1402,7 +1409,9 @@ fn spawn_bridge_debris(sim: &mut Simulation, _rules: &RuleSet, cells: &BTreeSet<
             let delay_frames = sim.bridge_rng().next_range_u32_inclusive(1, 5);
             let idx = sim.bridge_rng().next_range_u32(explosion_count) as usize;
             let anim_id = sim.bridge_explosions[idx];
-            let frames = sim.effect_frame_counts.get(&anim_id).copied().unwrap_or(20);
+            let frames = rules
+                .effect_frame_count(sim.interner.resolve(anim_id))
+                .unwrap_or(20);
             sim.world_effects.push(WorldEffect {
                 anim_spawn: None,
                 shp_name: anim_id,
@@ -1440,9 +1449,8 @@ fn spawn_bridge_explosion_effect(
         .next_range_u32(presentation.bridge_explosions.len() as u32) as usize;
     let anim_id = presentation.bridge_explosions[idx];
     let frames = presentation
-        .effect_frame_counts
-        .get(&anim_id)
-        .copied()
+        .rules
+        .effect_frame_count(presentation.interner.resolve(anim_id))
         .unwrap_or(20);
     presentation
         .world_effects
@@ -2356,9 +2364,11 @@ mod tests {
         let main_before = sim.main_rng.logical_state();
         let mapgen_before = sim.mapgen_rng.logical_state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        sim.bridge_explosions
-            .extend([test_intern("BRIDGEEXP1"), test_intern("BRIDGEEXP2")]);
-        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let bridge_exp_1 = sim.interner.intern("BRIDGEEXP1");
+        let bridge_exp_2 = sim.interner.intern("BRIDGEEXP2");
+        let metallic_debris = sim.interner.intern("METALDEB1");
+        sim.bridge_explosions.extend([bridge_exp_1, bridge_exp_2]);
+        sim.metallic_debris.push(metallic_debris);
         let rules = rules_with_voxel_max(3);
 
         let mut cells = BTreeSet::new();
@@ -2410,7 +2420,8 @@ mod tests {
         let seed = 0x48A7_51DE_u64;
         sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
+        let bridge_explosion = sim.interner.intern("BRIDGEEXP1");
+        sim.bridge_explosions.push(bridge_explosion);
 
         // The X-major hut scan first sees (4,3), then canonicalizes to (4,4).
         // 0xE0 is a non-terminal presentation overlay whose destruction
@@ -2519,8 +2530,10 @@ mod tests {
         let seed = 0xDEAD_BEEF_u64;
         sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
-        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let bridge_explosion = sim.interner.intern("BRIDGEEXP1");
+        let metallic_id = sim.interner.intern("METALDEB1");
+        sim.bridge_explosions.push(bridge_explosion);
+        sim.metallic_debris.push(metallic_id);
         let rules = rules_with_voxel_max(0);
 
         let mut cells = BTreeSet::new();
@@ -2528,7 +2541,6 @@ mod tests {
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
         // No MetallicDebris effect must spawn when the verified 50% gate fails.
-        let metallic_id = test_intern("METALDEB1");
         assert!(
             !sim.world_effects
                 .iter()
@@ -2556,15 +2568,16 @@ mod tests {
         let mut sim = Simulation::new();
         sim.reseed_scenario_and_main(seed);
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        sim.bridge_explosions.push(test_intern("BRIDGEEXP1"));
-        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let bridge_explosion = sim.interner.intern("BRIDGEEXP1");
+        let metallic_id = sim.interner.intern("METALDEB1");
+        sim.bridge_explosions.push(bridge_explosion);
+        sim.metallic_debris.push(metallic_id);
         let rules = rules_with_voxel_max(0);
 
         let mut cells = BTreeSet::new();
         cells.insert((5, 5));
         spawn_bridge_debris(&mut sim, &rules, &cells);
 
-        let metallic_id = test_intern("METALDEB1");
         assert!(
             sim.world_effects
                 .iter()
@@ -2581,7 +2594,8 @@ mod tests {
         sim.reseed_scenario_and_main(7);
         let baseline_state = sim.scenario_rng.state();
         sim.resolved_terrain = Some(water_below_bridge_terrain(3));
-        sim.metallic_debris.push(test_intern("METALDEB1"));
+        let metallic_debris = sim.interner.intern("METALDEB1");
+        sim.metallic_debris.push(metallic_debris);
         let rules = rules_with_voxel_max(3);
 
         let mut cells = BTreeSet::new();

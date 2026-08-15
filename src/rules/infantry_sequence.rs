@@ -325,15 +325,23 @@ const INFANTRY_FACINGS: u8 = 8;
 /// (standard infantry). For non-directional sequences (multiplier=0), facings=1.
 pub fn build_sequence_set(def: &InfantrySequenceDef) -> SequenceSet {
     let mut set: SequenceSet = SequenceSet::new();
+    let mut entries: Vec<(&String, &InfantrySequenceEntry)> = def.entries.iter().collect();
+    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
-    for (key, entry) in &def.entries {
+    for (key, entry) in entries {
+        // READY and GUARD are aliases for action slot 0. Stock ART gives them
+        // identical values. For differing mod values, prefer READY explicitly
+        // instead of letting HashMap iteration choose authoritative timing.
+        // Exact native precedence for that non-stock conflict remains UNCHECKED.
+        if key == "GUARD" && def.entries.contains_key("READY") {
+            continue;
+        }
         let kind: SequenceKind = match sequence_kind_from_ini_key(key) {
             Some(k) => k,
             None => continue,
         };
 
-        // If this SequenceKind was already inserted (e.g., Ready and Guard both map
-        // to Stand), skip duplicates — the first one wins.
+        // Any future aliases use stable lexical precedence.
         if set.get(&kind).is_some() {
             continue;
         }

@@ -20,13 +20,14 @@ use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
-    PreloadedBattleStartPlan, apply_explicit_skirmish_launch_session,
-    apply_preloaded_battle_launch_session, apply_skirmish_ai_opening_credits,
-    apply_skirmish_launch_alliances, build_overlay_atlas_from_map,
-    house_color_map_for_launch_session, initialize_skirmish_launch_houses,
+    build_overlay_atlas_from_map, house_color_map_for_launch_session,
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
+use crate::sim::scenario_bootstrap::{
+    PreloadedBattleStartPlan, ScenarioBootstrapRng, apply_explicit_skirmish_launch_session,
+    apply_preloaded_battle_launch_session, initialize_skirmish_launch_houses,
+};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
@@ -61,8 +62,7 @@ use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
-use crate::rules::ruleset::{GeneralRules, RuleSet};
-use crate::sim::pathfinding::PathGrid;
+use crate::rules::ruleset::RuleSet;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
 
@@ -489,7 +489,7 @@ mod map_wall_owner_candidate_tests {
             },
         ];
 
-        let cleared = clear_tiberium_source_cells_for_terrain(
+        let cleared = crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
             &mut overlays,
             &mut terrain,
             &terrain_objects,
@@ -818,14 +818,10 @@ pub struct MapLoadResult {
     /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
     pub bridge_height_map: BTreeMap<(u16, u16), u8>,
     pub tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
-    /// Pre-built pathfinding grid with water/cliff/building walkability.
-    pub path_grid: Option<PathGrid>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
     pub rules: Option<RuleSet>,
     /// Art.ini registry — kept for building animation overlay lookups at render time.
     pub art_registry: Option<ArtRegistry>,
-    /// Parsed infantry animation sequence definitions from art.ini [*Sequence] sections.
-    pub infantry_sequences: crate::rules::infantry_sequence::InfantrySequenceRegistry,
     /// CSF string table — localized display names loaded from language MIX.
     pub csf: Option<crate::assets::csf_file::CsfFile>,
     /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
@@ -857,6 +853,8 @@ pub struct MapLoadResult {
 pub(crate) struct MapLoadInitial {
     map_data: MapFile,
     map_source: LoadedMapSource,
+    /// Move-only generated-map authority; fixed maps never synthesize one.
+    mapgen_rng_continuation: Option<crate::rng_continuation::MapGenRngContinuation>,
 }
 
 impl MapLoadInitial {
@@ -866,6 +864,11 @@ impl MapLoadInitial {
 
     pub(crate) fn map_data(&self) -> &MapFile {
         &self.map_data
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_mapgen_rng_continuation(&self) -> bool {
+        self.mapgen_rng_continuation.is_some()
     }
 }
 
@@ -880,9 +883,11 @@ pub(crate) fn retained_random_map_initial(
     progress: &mut dyn crate::app_loading::LoadingProgressSink,
 ) -> MapLoadInitial {
     progress.milestone(8);
+    let mapgen_rng_continuation = generated.mapgen_continuation;
     MapLoadInitial {
         map_data: generated.map_file,
         map_source: LoadedMapSource::Generated { seed_name },
+        mapgen_rng_continuation: Some(mapgen_rng_continuation),
     }
 }
 
@@ -1096,51 +1101,6 @@ impl LightingFingerprint {
     }
 }
 
-fn clear_tiberium_source_cells_for_terrain(
-    overlay_grid: &mut crate::sim::overlay_grid::OverlayGrid,
-    resolved_terrain: &mut ResolvedTerrainGrid,
-    terrain_objects: &[TerrainObject],
-    rules: &RuleSet,
-    overlay_registry: &OverlayTypeRegistry,
-) -> BTreeSet<(u16, u16)> {
-    let mut cleared_cells = BTreeSet::new();
-    for terrain_object in terrain_objects {
-        if rules
-            .terrain_object_type_case_insensitive(&terrain_object.name)
-            .is_none()
-        {
-            continue;
-        }
-        let Some(overlay_id) = overlay_grid
-            .cell(terrain_object.rx, terrain_object.ry)
-            .overlay_id
-        else {
-            continue;
-        };
-        if !overlay_registry
-            .flags(overlay_id)
-            .is_some_and(|flags| flags.tiberium)
-        {
-            continue;
-        }
-
-        // TerrainClass::Unlimbo clears the cell's Tiberium during map load.
-        // Write the initialization grid directly so this does not become a
-        // runtime dirty-cell mutation after Simulation construction.
-        *overlay_grid.cell_mut(terrain_object.rx, terrain_object.ry) = Default::default();
-        crate::sim::overlay_grid::recalc_overlay_passability(
-            overlay_grid,
-            resolved_terrain,
-            overlay_registry,
-            terrain_object.rx,
-            terrain_object.ry,
-        );
-        cleared_cells.insert((terrain_object.rx, terrain_object.ry));
-    }
-
-    cleared_cells
-}
-
 /// Lightweight metadata used by the main-menu map selector.
 #[derive(Debug, Clone)]
 pub struct MapMenuEntry {
@@ -1267,11 +1227,13 @@ pub(crate) fn load_map_initial_with_assets(
         }
 
         progress.milestone(8);
+        let mapgen_rng_continuation = generated.mapgen_continuation;
         return Ok(MapLoadInitial {
             map_data: generated.map_file,
             map_source: LoadedMapSource::Generated {
                 seed_name: seed_name.to_string(),
             },
+            mapgen_rng_continuation: Some(mapgen_rng_continuation),
         });
     }
 
@@ -1330,6 +1292,7 @@ pub(crate) fn load_map_initial_with_assets(
     Ok(MapLoadInitial {
         map_data,
         map_source,
+        mapgen_rng_continuation: None,
     })
 }
 
@@ -1400,6 +1363,7 @@ pub(crate) fn load_map_from_initial(
     let MapLoadInitial {
         map_data,
         map_source,
+        mapgen_rng_continuation,
     } = initial;
     let map_hash = match &map_source {
         LoadedMapSource::Loose { .. }
@@ -1525,17 +1489,20 @@ pub(crate) fn load_map_from_initial(
         .as_ref()
         .map(|r| r.general.cliff_back_impassability)
         .unwrap_or(2);
-    let mut terrain_scenario_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let mut bootstrap_rng = ScenarioBootstrapRng::new(match_seed);
+    if let Some(continuation) = mapgen_rng_continuation {
+        bootstrap_rng.install_generated_mapgen_continuation(continuation);
+    }
     if let Some(plan) = preloaded_battle_start_plan.as_ref() {
         // Native constructs houses and resolves Battle starts before the first
         // loading composition; terrain Fill continues that same Scenario
         // stream afterwards. Validate the launch cursor before installing the
         // immutable pre-render prefix so it can never be consumed twice.
-        plan.install_before_terrain(&mut terrain_scenario_rng)?;
+        bootstrap_rng.install_preloaded_battle_plan(plan)?;
     }
-    let mut variant_main_rng = crate::sim::rng::SimRng::new(u64::from(match_seed));
+    let (mut scenario_fill_rng, mut variant_main_rng) = bootstrap_rng.terrain_draws();
     let mut scenario_fill_ranged =
-        |low, high| terrain_scenario_rng.next_range_u32_inclusive(low, high);
+        |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = || variant_main_rng.next_u32();
     let mut variant_selector = tile_variant_selector_cache.begin_load(&mut variant_draw);
     let mut resolved_terrain = ResolvedTerrainGrid::build_with_variant_selector(
@@ -1562,6 +1529,18 @@ pub(crate) fn load_map_from_initial(
             &map_data.header.theater,
         )?;
         r.art_registry = a.clone();
+        r.bind_effect_assets(
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        r.bind_terrain_spawner_assets(
+            &rules_ini,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
+        r.bind_animation_sequences(&infantry_sequences);
     }
     let variant_table_generated = variant_selector.generated_table();
     let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
@@ -1569,6 +1548,8 @@ pub(crate) fn load_map_from_initial(
     drop(variant_selector);
     drop(variant_draw);
     drop(scenario_fill_ranged);
+    drop(variant_main_rng);
+    drop(scenario_fill_rng);
     // Native Fill snapshots prior process-global ClearTile/WaterSet values
     // before the current theater registry reload. Rust loads assets earlier,
     // so defer publishing current results until materialization is complete.
@@ -1578,10 +1559,6 @@ pub(crate) fn load_map_from_initial(
             theater.rmg_tiles.water_set,
         );
     }
-    let terrain_load_advanced_scenario_rng = (preloaded_battle_start_plan.is_some()
-        || map_fill_scenario_advances != 0)
-        .then_some(terrain_scenario_rng);
-    let variant_advanced_main_rng = variant_table_generated.then_some(variant_main_rng);
     log::info!(
         "Map terrain load: {} Scenario Fill cursor advances; TMP variant table {} this load, {} raw Main draws",
         map_fill_scenario_advances,
@@ -1648,7 +1625,7 @@ pub(crate) fn load_map_from_initial(
         skirmish_launch_session.is_some(),
     );
     let cleared_terrain_overlay_cells = rules.as_ref().map_or_else(BTreeSet::new, |rules| {
-        clear_tiberium_source_cells_for_terrain(
+        crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
             &mut overlay_grid,
             &mut resolved_terrain,
             &map_data.terrain_objects,
@@ -1790,12 +1767,10 @@ pub(crate) fn load_map_from_initial(
         &height_map,
         unit_palette.as_ref(),
         overlay_iso_palette.as_ref(),
-        &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
-        terrain_load_advanced_scenario_rng,
-        variant_advanced_main_rng,
+        bootstrap_rng,
         initialize_houses_before_objects,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
@@ -1886,22 +1861,12 @@ pub(crate) fn load_map_from_initial(
                     &house_color_map,
                     unit_palette.as_ref(),
                     overlay_iso_palette.as_ref(),
-                    &infantry_sequences,
                     vxl_compute.as_deref_mut(),
                 );
                 unit_atlas = new_unit_atlas;
                 sprite_atlas = new_sprite_atlas;
                 palette_set = new_palette_set;
             }
-        }
-    }
-
-    // Copy world-effect SHP frame counts from the sprite atlas into the simulation
-    // so sim systems (chrono-teleport) can spawn effects with the correct frame count.
-    if let (Some(sim), Some(atlas)) = (&mut simulation, &sprite_atlas) {
-        for (name, &count) in &atlas.active_anim_frame_counts {
-            let name_id = sim.interner.intern(name);
-            sim.effect_frame_counts.insert(name_id, count);
         }
     }
 
@@ -1995,26 +1960,16 @@ pub(crate) fn load_map_from_initial(
         bridge_railing_tile_bases,
     );
 
-    let mut terrain_frame_counts = BTreeMap::new();
-    if let Some(atlas) = overlay_atlas.as_ref() {
-        for obj in &map_data.terrain_objects {
-            if let Some(frame_count) = atlas.terrain_anim_frame_count(&obj.name) {
-                terrain_frame_counts.insert(obj.name.clone(), u16::from(frame_count));
-                terrain_frame_counts.insert(obj.name.to_ascii_uppercase(), u16::from(frame_count));
-            }
-        }
-    }
-
     if let Some(sim) = &mut simulation {
         // Attach the TIBTRE ore-spawner animation index to the terrain objects
-        // constructed ahead of the map entities. Skip gracefully if rules failed
-        // to load (matches the ore_growth_config pattern below).
+        // constructed ahead of the map entities. Its authoritative raw SHP
+        // count is rules-owned; the overlay atlas retains only presentation's
+        // body-frame range.
         if let Some(rules_for_terrain) = rules.as_ref() {
             let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawner_animation(
                 sim,
                 rules_for_terrain,
-                &overlay_names,
-                &terrain_frame_counts,
+                &overlay_registry,
             );
             if seeded_terrain > 0 {
                 log::info!(
@@ -2089,141 +2044,35 @@ pub(crate) fn load_map_from_initial(
                 map_data.smudges.len(),
             );
         }
-        // Initialize ore growth/spread config from merged INI sources.
-        let general_default = GeneralRules::default();
-        let general_rules = rules.as_ref().map_or(&general_default, |r| &r.general);
-        let ore_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
-            general_rules,
-            &map_data.basic,
-            &map_data.special_flags,
+    }
+
+    // The app submits one immutable initialization command; Simulation owns
+    // every match-affecting write and Scenario RNG draw in the post-map tail.
+    let rules_for_post_map = rules
+        .as_ref()
+        .expect("merged rules were installed before post-map finalization");
+    if let Some(sim) = &mut simulation {
+        let output = sim.finalize_scenario_post_map(
+            crate::sim::scenario_post_map::ScenarioPostMapInput {
+                map_width: map_data.header.width as u16,
+                map_height: map_data.header.height as u16,
+                basic: &map_data.basic,
+                special_flags: &map_data.special_flags,
+                rules: rules_for_post_map,
+                overlay_registry: &overlay_registry,
+                house_roster: &house_roster,
+                skirmish_session: skirmish_launch_session,
+            },
         );
-        let map_w = map_data.header.width as u16;
-        let map_h = map_data.header.height as u16;
-        sim.production.ore_growth_config = ore_config;
-        sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(map_w, map_h);
-        if let (Some(rules_for_tiberium), Some(overlay_grid)) =
-            (rules.as_ref(), sim.overlay_grid.as_ref())
-        {
-            let source_object_cells: BTreeSet<(u16, u16)> = sim
-                .production
-                .terrain_object_cells
-                .keys()
-                .copied()
-                .collect();
-            let stats = sim
-                .production
-                .ore_growth_state
-                .rebuild_native_tiberium_queues_from_overlays(
-                    overlay_grid,
-                    &overlay_registry,
-                    &rules_for_tiberium.tiberium_types,
-                    sim.resolved_terrain.as_ref(),
-                    &source_object_cells,
-                    map_data.basic.tiberium_growth_enabled.unwrap_or(true),
-                    general_rules.tiberium_spreads
-                        && map_data.special_flags.tiberium_spreads.unwrap_or(true),
-                    sim.session.binary_frame,
-                );
+        if let Some(stats) = output.tiberium_queues {
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
                 stats.growth_entries,
                 stats.spread_entries,
             );
-        } else {
-            sim.production
-                .ore_growth_state
-                .reset_native_tiberium_classes(0, sim.session.binary_frame);
         }
-    }
-
-    // Build PathGrid with terrain walkability derived from resolved terrain:
-    // terrain/object/overlay blocking plus dynamic structure occupancy.
-    let path_grid: Option<PathGrid> = {
-        let mut grid: PathGrid = PathGrid::from_resolved_terrain(&resolved_terrain);
-
-        // Block building footprints using foundation sizes from rules.ini.
-        for ent in &map_data.entities {
-            if ent.category == crate::map::entities::EntityCategory::Structure {
-                let obj = rules.as_ref().and_then(|r| r.object(&ent.type_id));
-                let foundation: &str = obj.map(|o| o.foundation.as_str()).unwrap_or("1x1");
-                let has_bib: bool = obj.map(|o| o.bib).unwrap_or(false);
-                grid.block_building_movement_cells(ent.cell_x, ent.cell_y, foundation, has_bib);
-            }
-        }
-
-        // Build per-SpeedType terrain cost grids for cost-aware pathfinding.
-        // Units look up their SpeedType to pick the right grid at move time.
-        {
-            use crate::rules::locomotor_type::SpeedType;
-            use crate::sim::pathfinding::terrain_cost::TerrainCostGrid;
-            let speed_types = [
-                SpeedType::Foot,
-                SpeedType::Track,
-                SpeedType::Wheel,
-                SpeedType::Float,
-                SpeedType::Amphibious,
-                SpeedType::Hover,
-                SpeedType::FloatBeach,
-            ];
-            let mut terrain_costs: BTreeMap<SpeedType, TerrainCostGrid> = BTreeMap::new();
-            for &st in &speed_types {
-                let cost_grid = TerrainCostGrid::from_resolved_terrain(&resolved_terrain, st);
-                terrain_costs.insert(st, cost_grid);
-            }
-            if let Some(sim) = &mut simulation {
-                sim.terrain_costs = terrain_costs;
-            }
-            // Winged units ignore terrain — no need for a Winged cost grid
-            // (find_path_with_costs falls back to find_path when no grid found).
-            log::info!(
-                "Built {} terrain cost grids for cost-aware pathfinding",
-                speed_types.len()
-            );
-        }
-
-        Some(grid)
-    };
-
-    if let (Some(sim), Some(grid)) = (&mut simulation, path_grid.as_ref()) {
-        sim.rebuild_zone_grid(grid);
-    }
-
-    // Active YR applies the AI-only opening grant from
-    // `ScenarioClass__Post_Map_Init @ 0x00686890` after starting-force setup and
-    // before tick 0. Only an explicit launch session owns generated participants;
-    // campaign/scenario HouseState must not pass through this stock-Battle rule.
-    if skirmish_launch_session.is_some()
-        && let Some(sim) = &mut simulation
-    {
-        apply_skirmish_ai_opening_credits(sim);
-    }
-
-    // gamemd `ScenarioClass::Post_Map_Init @ 0x00686890`: an active session's
-    // Crates byte gates the initial scatter. The count uses human session seats
-    // only; AI houses are not players for this clamp. Campaign/editor loads do
-    // not own that lobby byte and must not inherit GameOptions' lobby default.
-    if skirmish_launch_session.is_some()
-        && let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref())
-    {
-        let player_count = crate::sim::crates::human_player_count(sim);
-        crate::sim::crates::place_scenario_start_crates(
-            sim,
-            rules_for_crates,
-            &overlay_registry,
-            path_grid.as_ref(),
-            player_count,
-        );
-    }
-
-    if let Some(sim) = &mut simulation {
-        // Active YR `ScenarioClass__Post_Map_Init @ 0x00686890` orders the
-        // starting force, scenario-start crates, credits/bookkeeping, and then
-        // the HouseClass MakeAlly pass. House identity exists before objects,
-        // but diplomacy is committed only at this shared post-crate boundary.
-        if let Some(session) = skirmish_launch_session {
-            apply_skirmish_launch_alliances(sim, &house_roster, session);
-        } else {
-            sim.house_alliances = house_roster.alliance_map();
+        if !output.navigation_published {
+            log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
         }
     }
 
@@ -2355,10 +2204,8 @@ pub(crate) fn load_map_from_initial(
         height_map,
         bridge_height_map,
         tactical_bridge_inverse_map,
-        path_grid,
         rules,
         art_registry: art,
-        infantry_sequences,
         csf,
         fnt_file,
         lighting_grid,

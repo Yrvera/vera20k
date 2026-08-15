@@ -684,3 +684,75 @@ fn gsi_05_10_delayed_building_fire_art_fields_keep_defaults_and_signed_delay() {
     assert!(signed.is_anim_delayed_fire);
     assert_eq!(signed.delayed_fire_delay, -7);
 }
+
+#[test]
+fn populate_anim_frame_dims_binds_smudge_inputs_without_a_renderer() {
+    let root = AnimDimTestRoot::new();
+    std::fs::write(
+        root.path().join("BIGIMAGE.SHP"),
+        single_frame_shp(61, 51),
+    )
+        .expect("write big smudge anim SHP");
+    let assets = crate::assets::asset_manager::AssetManager::from_loose_root_for_test(root.path());
+    let mut registry = ArtRegistry::from_ini(&IniFile::from_str(
+        "[BIG]\nImage=BIGIMAGE\nCrater=yes\n\
+         [MISSING]\nScorch=yes\n\
+         [UNFLAGGED]\nImage=BIGIMAGE\n",
+    ));
+
+    let (populated, fallback) =
+        registry.populate_anim_frame_dims(&assets, "TEM", "TEMPERATE");
+
+    assert_eq!((populated, fallback), (1, 1));
+    let big = registry.get("BIG").expect("bound big anim");
+    assert_eq!((big.frame_width, big.frame_height), (61, 51));
+    let missing = registry.get("MISSING").expect("fallback anim");
+    assert_eq!((missing.frame_width, missing.frame_height), (30, 30));
+    let unflagged = registry.get("UNFLAGGED").expect("unflagged anim");
+    assert_eq!((unflagged.frame_width, unflagged.frame_height), (30, 30));
+}
+
+fn single_frame_shp(width: u16, height: u16) -> Vec<u8> {
+    let headers_end = 8 + 24;
+    let pixel_count = usize::from(width) * usize::from(height);
+    let mut data = Vec::with_capacity(headers_end + pixel_count);
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&width.to_le_bytes());
+    data.extend_from_slice(&height.to_le_bytes());
+    data.extend_from_slice(&1_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&width.to_le_bytes());
+    data.extend_from_slice(&height.to_le_bytes());
+    data.extend_from_slice(&[0_u8; 12]);
+    data.extend_from_slice(&(headers_end as u32).to_le_bytes());
+    data.resize(headers_end + pixel_count, 1);
+    data
+}
+
+static NEXT_ANIM_DIM_TEST_ROOT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+struct AnimDimTestRoot(std::path::PathBuf);
+
+impl AnimDimTestRoot {
+    fn new() -> Self {
+        let serial = NEXT_ANIM_DIM_TEST_ROOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "vera20k-anim-dim-bind-{}-{serial}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).expect("create anim-dim test root");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for AnimDimTestRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

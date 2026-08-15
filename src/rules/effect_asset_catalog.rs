@@ -1,0 +1,345 @@
+//! GPU-independent SHP frame counts used by authoritative match systems.
+//!
+//! The renderer may consume this catalog when deciding which effect frames to
+//! make resident, but it is not the source of the counts. Binding happens from
+//! merged rules/ART plus the active theater's asset search path, so graphical
+//! and headless matches receive the same immutable inputs.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::assets::asset_manager::AssetManager;
+use crate::assets::shp_file::ShpFile;
+use crate::rules::art_data;
+use crate::rules::ruleset::RuleSet;
+
+/// Current Rust producers whose animation names have not yet been lifted into
+/// parsed rules fields. Keep the producer and this binding root list together
+/// until that follow-up is complete.
+const GENETIC_CONVERTER_INVOKE_ANIM: &str = "IONBLAST";
+const LIGHTNING_BOLT_ANIMS: [&str; 3] = ["WCLBOLT1", "WCLBOLT2", "WCLBOLT3"];
+
+/// Raw and consumer-visible frame counts for one authoritative effect asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EffectAssetFrameCounts {
+    raw: u16,
+    available: u16,
+}
+
+impl EffectAssetFrameCounts {
+    /// Literal unsigned frame count declared at SHP header offset `+6`.
+    pub fn raw(self) -> u16 {
+        self.raw
+    }
+
+    /// Existing effect-visible count after the AnimType body/shadow split.
+    pub fn available(self) -> u16 {
+        self.available
+    }
+}
+
+/// Deterministic match input derived from authoritative world-effect and
+/// particle SHPs.
+///
+/// Keys are trimmed, uppercase asset IDs. A `BTreeMap` is deliberate: binding
+/// and hashing must not inherit `HashMap`'s process-random iteration order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct EffectAssetCatalog {
+    entries: BTreeMap<String, EffectAssetFrameCounts>,
+}
+
+impl EffectAssetCatalog {
+    /// Bind every currently authoritative world-effect and particle root.
+    ///
+    /// Missing or malformed assets are optional at this layer: the entry is
+    /// omitted after a warning and each simulation consumer retains its
+    /// established local fallback. Scheduler-owned terrain/damage-fire
+    /// animations remain the responsibility of `bind_scheduler_anim_assets`,
+    /// whose required-asset failure semantics are intentionally stricter.
+    pub fn bind(
+        rules: &RuleSet,
+        asset_manager: &AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) -> Self {
+        let mut catalog = Self::default();
+
+        for name in authoritative_effect_roots(rules) {
+            let image_id = rules.art_registry.resolve_effective_image_id(&name, &name);
+            let candidates = art_data::anim_shp_candidates(
+                Some(&rules.art_registry),
+                &name,
+                &image_id,
+                theater_ext,
+                theater_name,
+            );
+            let Some((file_name, data)) = candidates.iter().find_map(|candidate| {
+                asset_manager
+                    .get_ref(candidate)
+                    .map(|data| (candidate, data))
+            }) else {
+                log::warn!(
+                    "Authoritative effect asset [{name}] is missing; consumers will use their fallback"
+                );
+                continue;
+            };
+
+            let raw = match ShpFile::frame_count_from_bytes(data) {
+                Ok(count) => count,
+                Err(error) => {
+                    log::warn!(
+                        "Authoritative effect asset [{name}] ({file_name}) has an invalid SHP header: {error}; consumers will use their fallback"
+                    );
+                    continue;
+                }
+            };
+            let scheduler_owned = rules.art_registry.scheduler_anim_types().contains(&name);
+            let shadow = rules
+                .art_registry
+                .anim_runtime_config(&name)
+                .is_some_and(|config| config.shadow);
+            let available = available_effect_anim_frame_count(raw, scheduler_owned, shadow);
+            catalog.insert(name, raw, available);
+        }
+
+        catalog
+    }
+
+    /// Consumer-visible frame count used for authoritative world-effect timing.
+    pub fn effect_frame_count(&self, name: &str) -> Option<u16> {
+        self.entry(name).map(|counts| counts.available)
+    }
+
+    /// Alias spelling for callers that need to distinguish this value from the
+    /// literal SHP header count.
+    pub fn available_frame_count(&self, name: &str) -> Option<u16> {
+        self.effect_frame_count(name)
+    }
+
+    /// Literal unsigned SHP header frame count.
+    ///
+    /// Particle animation-state parity can consume this independently of the
+    /// AnimType body/shadow split. Native behavior for a modded particle image
+    /// carrying `Shadow=yes` remains UNCHECKED; retaining both values prevents
+    /// the catalog from baking that policy decision into asset binding.
+    pub fn raw_frame_count(&self, name: &str) -> Option<u16> {
+        self.entry(name).map(|counts| counts.raw)
+    }
+
+    /// Iterate entries in canonical asset-name order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, EffectAssetFrameCounts)> {
+        self.entries
+            .iter()
+            .map(|(name, counts)| (name.as_str(), *counts))
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn entry(&self, name: &str) -> Option<&EffectAssetFrameCounts> {
+        canonical_asset_id(name).and_then(|name| self.entries.get(&name))
+    }
+
+    fn insert(&mut self, name: String, raw: u16, available: u16) {
+        let Some(name) = canonical_asset_id(&name) else {
+            return;
+        };
+        self.entries
+            .insert(name, EffectAssetFrameCounts { raw, available });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_for_test(&mut self, name: &str, raw: u16, available: u16) {
+        self.insert(name.to_string(), raw, available);
+    }
+}
+
+/// Number of SHP frames visible to the existing world-effect consumer.
+///
+/// gamemd's `AnimTypeClass` INI load at `0x00427D00` calls the SHP loader at
+/// `0x00427B50`, which seeds `End` from the signed SHP header count and halves
+/// it for `Shadow=yes`. Scheduler-owned types retain the raw range here because
+/// their already-bound runtime metadata owns the exact body/shadow bounds. This
+/// is the behavior previously embedded in `SpriteAtlas`.
+pub fn available_effect_anim_frame_count(
+    raw_count: u16,
+    scheduler_owned: bool,
+    shadow: bool,
+) -> u16 {
+    if scheduler_owned || !shadow {
+        return raw_count;
+    }
+
+    let body_count = raw_count / 2;
+    if body_count > 0 {
+        body_count
+    } else {
+        raw_count
+    }
+}
+
+fn authoritative_effect_roots(rules: &RuleSet) -> BTreeSet<String> {
+    let mut roots = BTreeSet::new();
+    let mut insert = |name: &str| {
+        if let Some(name) = canonical_asset_id(name) {
+            roots.insert(name);
+        }
+    };
+
+    insert(&rules.general.warp_out.name);
+    insert(&rules.general.wake.name);
+    for name in rules.general.infantry_death_anims.iter().flatten() {
+        insert(name);
+    }
+    for warhead in rules.warheads_iter() {
+        for name in &warhead.anim_list {
+            insert(name);
+        }
+    }
+    for name in &rules.bridge_rules.explosions {
+        insert(name);
+    }
+    for name in &rules.general.metallic_debris {
+        insert(name);
+    }
+    insert(&rules.general.iron_curtain_invoke_anim);
+    insert(&rules.general.force_shield_invoke_anim);
+    insert(GENETIC_CONVERTER_INVOKE_ANIM);
+    for name in LIGHTNING_BOLT_ANIMS {
+        insert(name);
+    }
+    for particle in rules.particle_types_iter() {
+        if let Some(name) = particle.image.as_deref() {
+            insert(name);
+        }
+    }
+
+    roots
+}
+
+fn canonical_asset_id(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_ascii_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{Hash, Hasher};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::rules::art_data::ArtRegistry;
+    use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn available_count_preserves_existing_shadow_and_scheduler_semantics() {
+        assert_eq!(available_effect_anim_frame_count(21, false, false), 21);
+        assert_eq!(available_effect_anim_frame_count(20, false, true), 10);
+        assert_eq!(available_effect_anim_frame_count(21, false, true), 10);
+        assert_eq!(available_effect_anim_frame_count(20, true, true), 20);
+        assert_eq!(available_effect_anim_frame_count(1, false, true), 1);
+        assert_eq!(available_effect_anim_frame_count(0, false, true), 0);
+    }
+
+    #[test]
+    fn catalog_keys_are_canonical_and_hash_independent_of_insertion_order() {
+        let mut first = EffectAssetCatalog::default();
+        first.set_for_test(" wake1 ", 21, 10);
+        first.set_for_test("warPout", 16, 16);
+
+        let mut second = EffectAssetCatalog::default();
+        second.set_for_test("WARPOUT", 16, 16);
+        second.set_for_test("WAKE1", 21, 10);
+
+        assert_eq!(first, second);
+        assert_eq!(first.raw_frame_count("Wake1"), Some(21));
+        assert_eq!(first.effect_frame_count(" wake1 "), Some(10));
+        assert_eq!(catalog_hash(&first), catalog_hash(&second));
+        assert_eq!(
+            first.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec!["WAKE1", "WARPOUT"]
+        );
+    }
+
+    #[test]
+    fn loose_binding_covers_unspawned_particle_and_omits_malformed_optional_assets() {
+        let root = TestRoot::new();
+        std::fs::write(root.path().join("FX.SHP"), shp_with_undecodable_pixels(6))
+            .expect("write header-valid effect SHP");
+        std::fs::write(root.path().join("BROKEN.SHP"), shp_with_truncated_table(4))
+            .expect("write malformed effect SHP");
+        let assets = AssetManager::from_loose_root_for_test(root.path());
+
+        let ini = IniFile::from_str(
+            "[General]\n\
+             WarpOut=missing\n\
+             Wake=broken\n\
+             [Particles]\n\
+             0=Cloud\n\
+             [Cloud]\n\
+             Image=FX\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("effect catalog rules");
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[FX]\nShadow=yes\n"));
+        rules.merge_art_data(&art);
+
+        let catalog = EffectAssetCatalog::bind(&rules, &assets, "TEM", "TEMPERATE");
+
+        assert_eq!(catalog.raw_frame_count("FX"), Some(6));
+        assert_eq!(catalog.effect_frame_count("FX"), Some(3));
+        assert_eq!(catalog.raw_frame_count("BROKEN"), None);
+    }
+
+    fn catalog_hash(catalog: &EffectAssetCatalog) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        catalog.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn shp_with_undecodable_pixels(frame_count: u16) -> Vec<u8> {
+        let mut data = vec![0_u8; 8 + usize::from(frame_count) * 24];
+        data[6..8].copy_from_slice(&frame_count.to_le_bytes());
+        // A nonempty first frame with data_offset=0 makes full pixel decoding
+        // fail, proving this binder intentionally requires only header metadata.
+        data[12..14].copy_from_slice(&1_u16.to_le_bytes());
+        data[14..16].copy_from_slice(&1_u16.to_le_bytes());
+        data
+    }
+
+    fn shp_with_truncated_table(frame_count: u16) -> Vec<u8> {
+        let mut data = vec![0_u8; 8];
+        data[6..8].copy_from_slice(&frame_count.to_le_bytes());
+        data
+    }
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new() -> Self {
+            let serial = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-effect-catalog-{}-{serial}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create unique effect catalog test root");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

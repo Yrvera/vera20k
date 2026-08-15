@@ -772,6 +772,7 @@ fn test_invalid_armed_building_clears_when_not_ready() {
         valid: false,
         reason: None,
         cell_valid: vec![false; 4],
+        wall_autofill_cells: Vec::new(),
     });
 
     sync_targeting_mode(&mut armed, &mut preview, &[], &[], None);

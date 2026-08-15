@@ -17,7 +17,8 @@
 //!   rules/weapon_type, rules/warhead_type.
 //! - No dependencies on sim/, render/, ui/, etc.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
@@ -2251,6 +2252,16 @@ pub struct RuleSet {
     /// Retained art.ini registry. Populated by app_init after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
+    /// GPU-independent SHP frame counts used by authoritative world-effect
+    /// and particle timing. Bound once from the active assets and ART data.
+    effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog,
+    /// Raw terrain SHP counts used by authoritative TIBTRE animation timing.
+    /// Presentation keeps its separate body-frame projection.
+    terrain_spawner_assets: crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog,
+    /// Complete immutable per-object animation timing catalog. Gameplay reads
+    /// this rules-owned resource directly; presentation cannot replace timing
+    /// on an individual frame.
+    animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
     /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
     /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
     /// `None` until resolved.
@@ -2689,7 +2700,7 @@ impl RuleSet {
             check_unique_ci("super_weapons", super_weapons.keys().collect());
         }
 
-        Ok(RuleSet {
+        let mut rules = RuleSet {
             object_list,
             object_index,
             weapons,
@@ -2733,6 +2744,10 @@ impl RuleSet {
             particle_system_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
+            effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog::default(),
+            terrain_spawner_assets:
+                crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::default(),
+            animation_sequences: BTreeMap::new(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             crush_warhead_id: None,
@@ -2741,7 +2756,9 @@ impl RuleSet {
             // ordered-stack callers replace this with the boundary-sensitive
             // RulesLayerStack hash in `from_processed_rules`.
             source_ini_hash: ini.content_hash(),
-        })
+        };
+        rules.rebuild_animation_sequences(None);
+        Ok(rules)
     }
 
     /// Look up a game object by ID.
@@ -2913,6 +2930,40 @@ impl RuleSet {
     /// sensitive to scalar value overrides, not just the type-registry lists.
     pub fn source_ini_hash(&self) -> u64 {
         self.source_ini_hash
+    }
+
+    /// Compatibility identity for processed rules plus the resolved animation,
+    /// effect-frame, terrain-spawner frame, and smudge-selection inputs bound
+    /// to this ruleset.
+    /// Other asset-derived simulation inputs are added by later ownership
+    /// slices and are not claimed by this hash yet.
+    pub fn simulation_config_hash(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        b"rules-simulation-config-v4".hash(&mut hasher);
+        self.source_ini_hash.hash(&mut hasher);
+        self.animation_sequences.hash(&mut hasher);
+        self.effect_assets.hash(&mut hasher);
+        self.terrain_spawner_assets.hash(&mut hasher);
+        b"art-smudge-config-v1".hash(&mut hasher);
+        let smudge_anim_inputs = self
+            .art_registry
+            .iter_entries()
+            .filter(|(_, entry)| entry.scorch || entry.crater || entry.force_big_craters)
+            .map(|(name, entry)| {
+                (
+                    name.to_string(),
+                    (
+                        entry.scorch,
+                        entry.crater,
+                        entry.force_big_craters,
+                        entry.frame_width,
+                        entry.frame_height,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        smudge_anim_inputs.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.
@@ -3217,6 +3268,112 @@ impl RuleSet {
             "Merged terrain art metadata: {} Foundation values",
             terrain_foundations_patched,
         );
+        self.rebuild_animation_sequences(None);
+    }
+
+    /// Resolve every registered object type's authoritative animation timing
+    /// after ART's `[*Sequence]` sections have been parsed.
+    pub fn bind_animation_sequences(
+        &mut self,
+        infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
+    ) {
+        self.rebuild_animation_sequences(Some(infantry_sequences));
+    }
+
+    /// Resolve authoritative world-effect and particle SHP frame counts from
+    /// the active theater assets without constructing a renderer atlas.
+    pub fn bind_effect_assets(
+        &mut self,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) {
+        self.effect_assets = crate::rules::effect_asset_catalog::EffectAssetCatalog::bind(
+            self,
+            asset_manager,
+            theater_ext,
+            theater_name,
+        );
+    }
+
+    /// Resolve raw terrain SHP frame counts for authoritative TIBTRE midpoint
+    /// timing without consulting a renderer atlas.
+    pub fn bind_terrain_spawner_assets(
+        &mut self,
+        rules_ini: &crate::rules::ini_parser::IniFile,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) {
+        self.terrain_spawner_assets =
+            crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::bind(
+                self,
+                rules_ini,
+                asset_manager,
+                theater_ext,
+                theater_name,
+            );
+    }
+
+    /// Authoritative consumer-visible SHP frame count for a world effect or
+    /// particle image. Lookup is case-insensitive and does not intern names.
+    pub fn effect_frame_count(&self, name: &str) -> Option<u16> {
+        self.effect_assets.effect_frame_count(name)
+    }
+
+    /// Literal SHP header frame count retained for parity investigation where
+    /// the native particle body/shadow policy is still UNCHECKED.
+    pub fn raw_effect_frame_count(&self, name: &str) -> Option<u16> {
+        self.effect_assets.raw_frame_count(name)
+    }
+
+    /// Raw SHP header count used by `TerrainClass::AI` midpoint timing.
+    pub fn terrain_spawner_frame_count(&self, name: &str) -> Option<u16> {
+        self.terrain_spawner_assets.frame_count(name)
+    }
+
+    fn rebuild_animation_sequences(
+        &mut self,
+        infantry_sequences: Option<&crate::rules::infantry_sequence::InfantrySequenceRegistry>,
+    ) {
+        self.animation_sequences =
+            crate::sim::animation::build_animation_sequence_catalog(self, infantry_sequences);
+    }
+
+    pub(crate) fn animation_sequences(
+        &self,
+    ) -> &BTreeMap<String, crate::sim::animation::SequenceSet> {
+        &self.animation_sequences
+    }
+
+    pub(crate) fn animation_sequence(
+        &self,
+        type_id: &str,
+    ) -> Option<&crate::sim::animation::SequenceSet> {
+        let canonical = self.object(type_id)?.id.as_str();
+        self.animation_sequences.get(canonical)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_animation_sequences_for_test(
+        &mut self,
+        animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
+    ) {
+        self.animation_sequences = animation_sequences;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_effect_frame_count_for_test(&mut self, name: &str, raw: u16, available: u16) {
+        self.effect_assets.set_for_test(name, raw, available);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_terrain_spawner_frame_count_for_test(
+        &mut self,
+        name: &str,
+        frame_count: u16,
+    ) {
+        self.terrain_spawner_assets.set_for_test(name, frame_count);
     }
 
     /// Total number of game objects across all categories.
@@ -5534,5 +5691,78 @@ ZAdjust=-10
         assert_eq!(defaults.infantry_death_anim(3), Some("S_BANG34"));
         assert_eq!(defaults.infantry_death_anim(5), Some("ELECTRO"));
         assert_eq!(defaults.infantry_death_anim(10), Some("BRUTDIE"));
+    }
+
+    #[test]
+    fn simulation_config_hash_changes_with_resolved_effect_frame_count() {
+        let ini = IniFile::from_str("[General]\nWarpOut=WARPOUT\n");
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut second = RuleSet::from_ini(&ini).expect("second rules");
+
+        first.set_effect_frame_count_for_test("WARPOUT", 5, 5);
+        second.set_effect_frame_count_for_test("WARPOUT", 6, 6);
+
+        assert_eq!(first.source_ini_hash(), second.source_ini_hash());
+        assert_ne!(
+            first.simulation_config_hash(),
+            second.simulation_config_hash()
+        );
+    }
+
+    #[test]
+    fn simulation_config_hash_changes_with_terrain_spawner_frame_count() {
+        let ini = IniFile::from_str(
+            "[TerrainTypes]\n0=TIBTRE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n",
+        );
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut second = RuleSet::from_ini(&ini).expect("second rules");
+
+        first.set_terrain_spawner_frame_count_for_test("TIBTRE01", 22);
+        second.set_terrain_spawner_frame_count_for_test("TIBTRE01", 24);
+
+        assert_eq!(first.source_ini_hash(), second.source_ini_hash());
+        assert_ne!(
+            first.simulation_config_hash(),
+            second.simulation_config_hash()
+        );
+    }
+
+    #[test]
+    fn simulation_config_hash_covers_canonical_smudge_anim_dimensions() {
+        let ini = IniFile::from_str("[InfantryTypes]\n[VehicleTypes]\n");
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut reordered = RuleSet::from_ini(&ini).expect("reordered rules");
+        let mut changed = RuleSet::from_ini(&ini).expect("changed rules");
+
+        let mut first_art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[BIGCRATER]\nCrater=yes\n[SCORCH]\nScorch=yes\n",
+        ));
+        let mut reordered_art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[SCORCH]\nScorch=yes\n[BIGCRATER]\nCrater=yes\n",
+        ));
+        for art in [&mut first_art, &mut reordered_art] {
+            let big = art.get_mut("BIGCRATER").expect("big crater art");
+            big.frame_width = 61;
+            big.frame_height = 51;
+        }
+        let mut changed_art = first_art.clone();
+        let changed_big = changed_art
+            .get_mut("BIGCRATER")
+            .expect("changed crater art");
+        changed_big.frame_width = 60;
+        changed_big.frame_height = 50;
+
+        first.merge_art_data(&first_art);
+        reordered.merge_art_data(&reordered_art);
+        changed.merge_art_data(&changed_art);
+
+        assert_eq!(first.source_ini_hash(), reordered.source_ini_hash());
+        assert_eq!(
+            first.simulation_config_hash(),
+            reordered.simulation_config_hash(),
+            "art section insertion order must not affect compatibility"
+        );
+        assert_ne!(first.simulation_config_hash(), changed.simulation_config_hash());
     }
 }

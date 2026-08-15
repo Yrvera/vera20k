@@ -451,10 +451,14 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let sh: f32 = state.render_height() as f32;
     let (mut base_rx, mut base_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
+    let path_grid = state
+        .simulation
+        .as_ref()
+        .and_then(crate::sim::world::Simulation::path_grid_snapshot);
     let (Some(sim), Some(rules)) = (&mut state.simulation, &state.rules) else {
         return;
     };
-    if let Some(grid) = &state.path_grid {
+    if let Some(grid) = path_grid.as_deref() {
         (base_rx, base_ry) = crate::app_sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
     }
 
@@ -493,12 +497,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
             base_rx.saturating_add(2 + i as u16 * 2),
             base_ry.saturating_add(2),
         );
-        if let Some(grid) = &state.path_grid {
+        if let Some(grid) = path_grid.as_deref() {
             desired = crate::app_sim_tick::clamp_cell_to_grid(grid, desired);
         }
-        let spawn_cell = state
-            .path_grid
-            .as_ref()
+        let spawn_cell = path_grid
+            .as_deref()
             .and_then(|g| crate::app_sim_tick::nearest_walkable_cell(g, desired, 16))
             .unwrap_or(desired);
         if sim
@@ -692,7 +695,26 @@ fn schedule_command_in_sim(
     payload: Command,
 ) -> Option<u64> {
     let execute_tick = sim.session.tick;
-    let owner_id = sim.interner.intern(owner);
+    let owner_id = match &payload {
+        Command::SetGameSpeed { speed } => {
+            if *speed > crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED {
+                return None;
+            }
+            let owner_id = sim.interner.get(owner)?;
+            if !sim.houses.contains_key(&owner_id) {
+                return None;
+            }
+            let requested_speed = sim
+                .projected_in_game_options_speed()
+                .map(i32::from)
+                .unwrap_or(sim.session.game_options.game_speed);
+            if requested_speed == i32::from(*speed) {
+                return Some(execute_tick);
+            }
+            owner_id
+        }
+        _ => sim.interner.intern(owner),
+    };
     let envelope = match payload {
         Command::ExitMatch => {
             let record = sim.encode_exit_record(owner_id)?;
@@ -781,6 +803,43 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn options_game_speed_queues_once_without_immediate_sim_mutation() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, true, 0, 10));
+        sim.session.house_order.push(local);
+        let before_hash = sim.state_hash();
+
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 4 }),
+            Some(0)
+        );
+        assert_eq!(sim.session.game_options.game_speed, 1);
+        assert_eq!(sim.state_hash(), before_hash);
+        assert_eq!(sim.pending_commands.len(), 1);
+
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 4 }),
+            Some(0),
+            "reopening Options before admission accepts the existing request"
+        );
+        assert_eq!(sim.pending_commands.len(), 1, "duplicate request is elided");
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 7 }),
+            None,
+            "the in-game trackbar cannot emit stored speed 7"
+        );
+
+        let interned_before_unknown = sim.interner.len();
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Unknown", Command::SetGameSpeed { speed: 3 }),
+            None
+        );
+        assert_eq!(sim.interner.len(), interned_before_unknown);
+    }
 
     #[test]
     fn gsi_01_04_abort_waits_for_one_due_exit_dispatch_before_terminal_edge() {

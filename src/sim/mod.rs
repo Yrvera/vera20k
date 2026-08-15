@@ -34,6 +34,9 @@ pub mod intern;
 pub(crate) mod lifecycle_request;
 pub mod multiplayer_checksum;
 pub mod rng;
+pub(crate) mod score;
+pub(crate) mod scenario_bootstrap;
+pub(crate) mod scenario_post_map;
 pub mod scenario_session; // app->sim launch descriptor (per-match seed pipeline)
 pub mod timer; // signed frame-anchored countdown primitive
 pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type resolution

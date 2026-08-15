@@ -7,98 +7,26 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
+use std::collections::HashMap;
+
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner_name;
 use crate::app_types::SIM_TICK_MS;
-use crate::sim::components::{
-    AnimOverlayState, AnimRuntime, BuildingAnimOverlays, GarrisonMuzzleFlash,
-};
-use crate::sim::intern::InternedId;
+use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash};
 use crate::sim::production;
 use crate::sim::world::Simulation;
 
 const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
 
-/// Advance one-shot building animation overlays stored as ECS components,
-/// and the global terrain-overlay animation timer.
+/// Advance the app-owned wall-clock terrain-overlay animation timer.
 ///
-/// ActiveAnim plays once (one-shot) when triggered by building placement.
-/// When all frames have played, the component is removed and the
-/// renderer falls back to frame 0 (idle pose).
-///
-/// `dt_logic_frames` is how many simulation frames actually committed since the
-/// previous call. gamemd's animation frame delay is counted in logic frames, and
-/// a logic frame's wall-clock duration is a function of the match game speed, so
-/// counting milliseconds here would make one-shot playback speed drift with the
-/// speed setting. `dt_ms` still drives the separate terrain-overlay clock.
-pub(crate) fn tick_crane_animations(state: &mut AppState, dt_ms: u32, dt_logic_frames: u32) {
-    if let Some(sim) = &mut state.simulation {
-        // Advance all active building overlay animations using per-anim Rate.
-        let keys: Vec<u64> = sim.entities().keys_sorted();
-        for &id in &keys {
-            let Some(entity) = sim.entities_mut().get_mut(id) else {
-                continue;
-            };
-            let Some(overlays) = entity.building_anim_overlays.as_mut() else {
-                continue;
-            };
-            for anim in overlays.anims.iter_mut() {
-                if anim.finished {
-                    continue;
-                }
-                // A zero reload never advances natively — the frame-timer branch
-                // exits before touching the frame counter.
-                if anim.rate_logic_frames == 0 {
-                    continue;
-                }
-                anim.elapsed_logic_frames += dt_logic_frames;
-                while anim.elapsed_logic_frames >= anim.rate_logic_frames {
-                    anim.elapsed_logic_frames -= anim.rate_logic_frames;
-                    anim.frame += 1;
-                    if anim.frame >= anim.loop_end {
-                        // One-shot: clamp to last frame and mark finished.
-                        anim.frame = anim.loop_end.saturating_sub(1);
-                        anim.finished = true;
-                        break;
-                    }
-                }
-            }
-            // Remove finished anims from the vec.
-            overlays.anims.retain(|a| !a.finished);
-            if overlays.anims.is_empty() {
-                entity.building_anim_overlays = None;
-            }
-        }
-    }
-
-    // Advance the global terrain-overlay animation timer, which is a wall-clock
-    // clock and not part of the building animation model.
+/// Building one-shot overlays now advance inside the authoritative simulation
+/// frame; this independent timer only drives looping terrain presentation.
+pub(crate) fn tick_terrain_overlay_animations(state: &mut AppState, dt_ms: u32) {
     state.idle_anim_elapsed_ms += dt_ms;
 }
 
-/// Per-frame delay, in logic frames, that a building slot animation advances at.
-///
-/// gamemd stores `900 / Rate=` on the animation type and, when the type is
-/// `Normalized=yes`, rescales that delay through the match game speed as the
-/// animation object is constructed. Both steps are needed: `GAPOWR_A` is
-/// `Rate=220` (delay 4) and `Normalized=yes`, which at the stock game speed
-/// becomes 6 logic frames per animation frame, not 4.
-pub(crate) fn building_anim_rate_logic_frames(
-    art_reg: &crate::rules::art_data::ArtRegistry,
-    anim_type: &str,
-    game_options: Option<&crate::sim::game_options::GameOptions>,
-) -> u16 {
-    let Some(config) = art_reg.anim_runtime_config(anim_type) else {
-        return crate::rules::art_data::DEFAULT_ART_RATE_LOGIC_FRAMES;
-    };
-    // `RandomRate=` would draw a per-instance delay from the scenario RNG; no
-    // stock building animation section declares it, so the deterministic
-    // presentation path never needs the draw.
-    match (config.normalized, game_options) {
-        (true, Some(options)) => options.normalized_anim_delay(config.rate_logic_frames),
-        _ => config.rate_logic_frames,
-    }
-}
+pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames;
 
 /// Record the logic frame each structure's slot animations were created on, and
 /// drop the record for structures that no longer exist.
@@ -157,434 +85,6 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
         .get(&stable_id)
         .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
         .unwrap_or(0)
-}
-
-/// Trigger a one-shot crane animation on the active producer (ConYard) for an owner.
-/// Called when a building is placed on the map. Creates/updates a BuildingAnimOverlays
-/// ECS component on the producer entity.
-pub(crate) fn trigger_crane_anim(state: &mut AppState, owner: &str) {
-    // Gather data from immutable borrows first to avoid borrow conflicts.
-    let (stable_id, type_id, rules_image) = {
-        let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
-            return;
-        };
-        let structure_cat = production::ProductionCategory::Building;
-        let producer =
-            production::active_producer_for_owner_category(sim, rules, owner, structure_cat);
-        let Some(view) = producer else {
-            log::info!(
-                "trigger_crane_anim: no active Building producer for '{}'",
-                owner
-            );
-            return;
-        };
-        // Use EntityStore O(1) lookup to find the type_id.
-        let Some(ge) = sim.entities().get(view.stable_id) else {
-            return;
-        };
-        let type_str = sim.interner.resolve(ge.type_ref);
-        let rules_image: String = rules
-            .object(type_str)
-            .map(|o| o.image.clone())
-            .unwrap_or_else(|| type_str.to_string());
-        (view.stable_id, type_str.to_string(), rules_image)
-    };
-
-    // Copied out before the art borrow so the frame delay can be normalized
-    // through the match game speed without holding a second borrow of `state`.
-    let game_options: Option<crate::sim::game_options::GameOptions> = state
-        .simulation
-        .as_ref()
-        .map(|sim| sim.session.game_options.clone());
-
-    let Some(art_reg) = &state.art_registry else {
-        return;
-    };
-    let Some(entry) = art_reg.resolve_metadata_entry(&type_id, &rules_image) else {
-        return;
-    };
-
-    // Collect one-shot anim overlay states to attach.
-    let mut new_anims: Vec<AnimOverlayState> = Vec::new();
-    for anim in &entry.building_anims {
-        if !matches!(
-            anim.kind,
-            crate::rules::art_data::BuildingAnimKind::Active
-                | crate::rules::art_data::BuildingAnimKind::Production
-        ) {
-            continue;
-        }
-        // Skip infinite-loop anims (LoopCount=-1) — those loop via idle timer.
-        if anim.loop_count < 0 {
-            continue;
-        }
-        // Skip anims with no loop range.
-        if anim.loop_end <= anim.loop_start {
-            continue;
-        }
-        let anim_upper: String = anim.anim_type.to_uppercase();
-        let loop_end: u16 = anim.loop_end;
-        let loop_start: u16 = anim.loop_start;
-        let rate: u16 =
-            building_anim_rate_logic_frames(art_reg, &anim.anim_type, game_options.as_ref());
-        let frame_count: u16 = loop_end - loop_start;
-
-        log::info!(
-            "Crane anim triggered: owner='{}' anim='{}' frames={}-{} ({} frames) rate={} logic frames",
-            owner,
-            anim_upper,
-            loop_start,
-            loop_end,
-            frame_count,
-            rate,
-        );
-        let anim_type_id = state
-            .simulation
-            .as_mut()
-            .map(|s| s.interner.intern(&anim_upper))
-            .unwrap_or_default();
-        new_anims.push(AnimOverlayState {
-            anim_type: anim_type_id,
-            frame: anim.start_frame.max(loop_start),
-            loop_start,
-            loop_end,
-            rate_logic_frames: u32::from(rate),
-            elapsed_logic_frames: 0,
-            finished: false,
-        });
-    }
-
-    if new_anims.is_empty() {
-        return;
-    }
-
-    // Attach or update the BuildingAnimOverlays on the producer entity.
-    let Some(sim) = &mut state.simulation else {
-        return;
-    };
-    let Some(ge) = sim.entities_mut().get_mut(stable_id) else {
-        return;
-    };
-    if let Some(overlays) = ge.building_anim_overlays.as_mut() {
-        // Merge: add new anims that aren't already playing.
-        for new_anim in new_anims {
-            let already_playing = overlays
-                .anims
-                .iter()
-                .any(|a| a.anim_type == new_anim.anim_type);
-            if !already_playing {
-                overlays.anims.push(new_anim);
-            }
-        }
-    } else {
-        ge.building_anim_overlays = Some(BuildingAnimOverlays { anims: new_anims });
-    }
-}
-
-/// Drain `Simulation::bale_events` and apply two visible side-effects:
-/// - Trigger the refinery's SpecialAnim (slot 10) one-shot per bale.
-/// - Spawn one particle system per non-zero RefinerySmokeOffsetN (up to 4).
-pub(crate) fn consume_bale_events(state: &mut AppState) {
-    // Collect events + lookups under shared borrows first, then mutate.
-    struct PerEvent {
-        building_id: u64,
-        special_anim: Option<(crate::sim::intern::InternedId, u16, u16, u16, u16)>,
-        particle_spawns: Vec<(
-            crate::rules::particle_system_type::ParticleSystemTypeId,
-            glam::IVec3,
-        )>,
-    }
-
-    let prepared: Vec<PerEvent> = {
-        let (Some(sim), Some(rules), Some(art_reg)) = (
-            state.simulation.as_ref(),
-            state.rules.as_ref(),
-            state.art_registry.as_ref(),
-        ) else {
-            return;
-        };
-        if sim.bale_events.is_empty() {
-            return;
-        }
-        let mut out: Vec<PerEvent> = Vec::with_capacity(sim.bale_events.len());
-        for ev in &sim.bale_events {
-            let Some(building) = sim.entities().get(ev.building_id) else {
-                continue;
-            };
-            let type_str = sim.interner.resolve(building.type_ref);
-            let Some(obj) = rules.object(type_str) else {
-                continue;
-            };
-            let rules_image: &str = &obj.image;
-            let art_entry = match art_reg.resolve_metadata_entry(type_str, rules_image) {
-                Some(e) => e,
-                None => continue,
-            };
-
-            // Find the SpecialAnim entry — slot 10 in gamemd's anim slot table.
-            let special_anim = art_entry.building_anims.iter().find_map(|a| {
-                if !matches!(a.kind, crate::rules::art_data::BuildingAnimKind::Special) {
-                    return None;
-                }
-                if a.loop_end <= a.loop_start {
-                    return None;
-                }
-                let upper = a.anim_type.to_uppercase();
-                let id = sim.interner.get(&upper)?;
-                Some((
-                    id,
-                    a.loop_start,
-                    a.loop_end,
-                    a.start_frame.max(a.loop_start),
-                    building_anim_rate_logic_frames(
-                        art_reg,
-                        &a.anim_type,
-                        Some(&sim.session.game_options),
-                    ),
-                ))
-            });
-
-            // Resolve the particle system type id once. Skip if not configured.
-            let mut particle_spawns: Vec<(
-                crate::rules::particle_system_type::ParticleSystemTypeId,
-                glam::IVec3,
-            )> = Vec::new();
-            if let Some(name) = obj.refinery_smoke_particle_system.as_deref() {
-                if let Some(ps_id) = rules.ps_type_id_by_name(name) {
-                    // BuildingClass::GetCoords returns cell CENTER per the
-                    // original UndockUnit's (-0x80, +0x80) baseline. The +128
-                    // is the lepton offset from cell NW corner to center.
-                    let origin_x = building.position.rx as i32 * 256 + 128;
-                    let origin_y = building.position.ry as i32 * 256 + 128;
-                    for offset in obj.refinery_smoke_offsets.iter() {
-                        if *offset == glam::IVec3::ZERO {
-                            continue;
-                        }
-                        particle_spawns.push((
-                            ps_id,
-                            glam::IVec3::new(origin_x + offset.x, origin_y + offset.y, offset.z),
-                        ));
-                    }
-                }
-            }
-
-            out.push(PerEvent {
-                building_id: ev.building_id,
-                special_anim,
-                particle_spawns,
-            });
-        }
-        out
-    };
-
-    // Apply side-effects.
-    let Some(sim) = state.simulation.as_mut() else {
-        return;
-    };
-    let Some(rules) = state.rules.as_ref() else {
-        sim.bale_events.clear();
-        return;
-    };
-
-    for ev in prepared {
-        // 1) Push (or reset) the SpecialAnim in BuildingAnimOverlays.
-        if let Some((anim_type, loop_start, loop_end, start_frame, rate)) = ev.special_anim {
-            if let Some(building) = sim.entities_mut().get_mut(ev.building_id) {
-                let new_state = AnimOverlayState {
-                    anim_type,
-                    frame: start_frame,
-                    loop_start,
-                    loop_end,
-                    rate_logic_frames: u32::from(rate),
-                    elapsed_logic_frames: 0,
-                    finished: false,
-                };
-                if let Some(overlays) = building.building_anim_overlays.as_mut() {
-                    if let Some(existing) =
-                        overlays.anims.iter_mut().find(|a| a.anim_type == anim_type)
-                    {
-                        *existing = new_state;
-                    } else {
-                        overlays.anims.push(new_state);
-                    }
-                } else {
-                    building.building_anim_overlays = Some(BuildingAnimOverlays {
-                        anims: vec![new_state],
-                    });
-                }
-            }
-        }
-
-        // 2) Spawn particle systems at each non-zero offset.
-        for (ps_id, coords) in ev.particle_spawns {
-            sim.spawn_particle_system(
-                ps_id,
-                coords,
-                None,
-                Some(ev.building_id),
-                coords,
-                None,
-                rules,
-            );
-        }
-    }
-
-    sim.bale_events.clear();
-}
-
-/// Build a SpecialAnim overlay state for a tank-bunker wall config, using the
-/// `…Damaged` variant when `damaged` is set and one exists. Returns `None` when
-/// the anim has no loop range or its section was never interned.
-fn bunker_special_overlay(
-    sim: &Simulation,
-    art_reg: &crate::rules::art_data::ArtRegistry,
-    config: &crate::rules::art_data::BuildingAnimConfig,
-    damaged: bool,
-) -> Option<AnimOverlayState> {
-    let (anim_type, loop_start, loop_end, start_frame) = match (damaged, &config.damaged_variant) {
-        (true, Some(v)) => (
-            v.anim_type.as_str(),
-            v.loop_start,
-            v.loop_end,
-            v.start_frame.max(v.loop_start),
-        ),
-        _ => (
-            config.anim_type.as_str(),
-            config.loop_start,
-            config.loop_end,
-            config.start_frame.max(config.loop_start),
-        ),
-    };
-    if loop_end <= loop_start {
-        return None;
-    }
-    // The frame delay belongs to the selected variant's own art section — a
-    // `…Damaged` replacement routinely carries a different `Rate=`.
-    let rate = building_anim_rate_logic_frames(art_reg, anim_type, Some(&sim.session.game_options));
-    let id = sim.interner.get(&anim_type.to_uppercase())?;
-    Some(AnimOverlayState {
-        anim_type: id,
-        frame: start_frame,
-        loop_start,
-        loop_end,
-        rate_logic_frames: u32::from(rate),
-        elapsed_logic_frames: 0,
-        finished: false,
-    })
-}
-
-/// Drain `Simulation::bunker_wall_events` and create the tank-bunker wall
-/// SpecialAnim overlays. Document order within `kind == Special` decides the
-/// pair: indices 0/1 = walls-up (install), 2/3 = walls-down (teardown). Each
-/// config's `…Damaged` variant is used when the event's `damaged` flag is set.
-/// A walls-down event clears the up-pair overlays first (exit helper's
-/// anim-clear-then-set order).
-pub(crate) fn consume_bunker_wall_events(state: &mut AppState) {
-    struct PerEvent {
-        building_id: u64,
-        clear_anim_types: Vec<InternedId>,
-        new_states: Vec<AnimOverlayState>,
-    }
-
-    let prepared: Vec<PerEvent> = {
-        let (Some(sim), Some(rules), Some(art_reg)) = (
-            state.simulation.as_ref(),
-            state.rules.as_ref(),
-            state.art_registry.as_ref(),
-        ) else {
-            return;
-        };
-        if sim.bunker_wall_events.is_empty() {
-            return;
-        }
-        let mut out: Vec<PerEvent> = Vec::with_capacity(sim.bunker_wall_events.len());
-        for ev in &sim.bunker_wall_events {
-            let Some(building) = sim.entities().get(ev.building_id) else {
-                continue;
-            };
-            let type_str = sim.interner.resolve(building.type_ref);
-            let Some(obj) = rules.object(type_str) else {
-                continue;
-            };
-            let Some(art_entry) = art_reg.resolve_metadata_entry(type_str, &obj.image) else {
-                continue;
-            };
-            // Special anims in document order: [0,1] = up pair, [2,3] = down pair.
-            let specials: Vec<&crate::rules::art_data::BuildingAnimConfig> = art_entry
-                .building_anims
-                .iter()
-                .filter(|a| matches!(a.kind, crate::rules::art_data::BuildingAnimKind::Special))
-                .collect();
-            let (pick, clear): (&[usize], &[usize]) = if ev.up {
-                (&[0, 1], &[])
-            } else {
-                (&[2, 3], &[0, 1])
-            };
-            let new_states: Vec<AnimOverlayState> = pick
-                .iter()
-                .filter_map(|&i| specials.get(i))
-                .filter_map(|cfg| bunker_special_overlay(sim, art_reg, cfg, ev.damaged))
-                .collect();
-            // Collect every interned anim id (base + damaged) for the up pair so
-            // the down event removes whichever variant is currently playing.
-            let clear_anim_types: Vec<InternedId> = clear
-                .iter()
-                .filter_map(|&i| specials.get(i))
-                .flat_map(|cfg| {
-                    let mut ids: Vec<InternedId> = Vec::new();
-                    if let Some(id) = sim.interner.get(&cfg.anim_type.to_uppercase()) {
-                        ids.push(id);
-                    }
-                    if let Some(v) = &cfg.damaged_variant {
-                        if let Some(id) = sim.interner.get(&v.anim_type.to_uppercase()) {
-                            ids.push(id);
-                        }
-                    }
-                    ids
-                })
-                .collect();
-            out.push(PerEvent {
-                building_id: ev.building_id,
-                clear_anim_types,
-                new_states,
-            });
-        }
-        out
-    };
-
-    let Some(sim) = state.simulation.as_mut() else {
-        return;
-    };
-    for ev in prepared {
-        let Some(building) = sim.entities_mut().get_mut(ev.building_id) else {
-            continue;
-        };
-        if !ev.clear_anim_types.is_empty() {
-            if let Some(overlays) = building.building_anim_overlays.as_mut() {
-                overlays
-                    .anims
-                    .retain(|a| !ev.clear_anim_types.contains(&a.anim_type));
-            }
-        }
-        for new_state in ev.new_states {
-            if let Some(overlays) = building.building_anim_overlays.as_mut() {
-                if let Some(existing) = overlays
-                    .anims
-                    .iter_mut()
-                    .find(|a| a.anim_type == new_state.anim_type)
-                {
-                    *existing = new_state;
-                } else {
-                    overlays.anims.push(new_state);
-                }
-            } else {
-                building.building_anim_overlays = Some(BuildingAnimOverlays {
-                    anims: vec![new_state],
-                });
-            }
-        }
-    }
-    sim.bunker_wall_events.clear();
 }
 
 /// Tick the sidebar power bar animation (segment-by-segment transition).
@@ -888,6 +388,10 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                 return;
             }
         };
+        let frame_counts = state
+            .sprite_atlas
+            .as_ref()
+            .map(|atlas| &atlas.active_anim_frame_counts);
         state
             .pending_fire_effects
             .iter()
@@ -898,7 +402,8 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                     crate::app_fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
                         .ok()?;
                 let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
-                let total_frames = sim.effect_frame_counts.get(anim_name).copied().unwrap_or(1);
+                let total_frames =
+                    presentation_anim_frame_count(frame_counts, &anim_section).unwrap_or(1);
                 Some(GarrisonMuzzleFlash {
                     building_id: ev.attacker_id,
                     runtime: garrison_occupant_anim_runtime(
@@ -926,9 +431,15 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
         state.garrison_muzzle_flashes.clear();
         return;
     };
-    state
-        .garrison_muzzle_flashes
-        .retain_mut(|flash| advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg));
+    let empty_frame_counts = HashMap::new();
+    let frame_counts = state
+        .sprite_atlas
+        .as_ref()
+        .map(|atlas| &atlas.active_anim_frame_counts)
+        .unwrap_or(&empty_frame_counts);
+    state.garrison_muzzle_flashes.retain_mut(|flash| {
+        advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
+    });
 }
 
 fn advance_garrison_muzzle_flash(
@@ -936,11 +447,12 @@ fn advance_garrison_muzzle_flash(
     dt_ms: u32,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
 ) -> bool {
     flash.runtime.elapsed_logic_ms = flash.runtime.elapsed_logic_ms.saturating_add(dt_ms);
     while flash.runtime.elapsed_logic_ms >= SIM_TICK_MS && !flash.runtime.expired {
         flash.runtime.elapsed_logic_ms -= SIM_TICK_MS;
-        advance_anim_runtime_visit(&mut flash.runtime, sim, art_reg);
+        advance_anim_runtime_visit(&mut flash.runtime, sim, art_reg, frame_counts);
     }
     !flash.runtime.expired
 }
@@ -984,8 +496,9 @@ fn advance_anim_runtime_visit(
     runtime: &mut AnimRuntime,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
 ) {
-    advance_anim_runtime_visit_with_events(runtime, sim, art_reg, None);
+    advance_anim_runtime_visit_with_events(runtime, sim, art_reg, frame_counts, None);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1007,6 +520,7 @@ fn advance_anim_runtime_visit_with_events(
     runtime: &mut AnimRuntime,
     sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
     mut events: Option<&mut Vec<AnimRuntimeVisitEvent>>,
 ) {
     if runtime.expired {
@@ -1037,22 +551,22 @@ fn advance_anim_runtime_visit_with_events(
         runtime.expired = true;
         return;
     };
-    if config.ping_pong && anim_runtime_at_boundary(runtime, config, sim) {
+    if config.ping_pong && anim_runtime_at_boundary(runtime, config, frame_counts) {
         runtime.frame_step = -runtime.frame_step;
         return;
     }
-    if !anim_runtime_at_boundary(runtime, config, sim) {
+    if !anim_runtime_at_boundary(runtime, config, frame_counts) {
         return;
     }
     if runtime.loop_remaining != 0 && runtime.loop_remaining != u8::MAX {
         runtime.loop_remaining = runtime.loop_remaining.saturating_sub(1);
     }
     if runtime.loop_remaining != 0 {
-        reset_anim_runtime_to_loop_start(runtime, config, sim);
+        reset_anim_runtime_to_loop_start(runtime, config, frame_counts);
         return;
     }
     if let Some(next) = &config.next {
-        switch_anim_runtime_type(runtime, next, sim, art_reg, &mut events);
+        switch_anim_runtime_type(runtime, next, art_reg, frame_counts, &mut events);
     } else {
         if let Some(events) = events.as_deref_mut() {
             events.push(AnimRuntimeVisitEvent::NormalDestroy {
@@ -1090,9 +604,9 @@ fn anim_trailer_cadence_matches(global_frame: u64, separation: i32) -> bool {
 fn anim_runtime_at_boundary(
     runtime: &AnimRuntime,
     config: &crate::rules::art_data::AnimTypeRuntimeConfig,
-    sim: &Simulation,
+    frame_counts: &HashMap<String, u16>,
 ) -> bool {
-    let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+    let end = effective_anim_end(config, anim_total_frames(frame_counts, &runtime.type_name));
     let loop_end = effective_anim_loop_end(config, end);
     if runtime.frame_step >= 0 {
         let limit = if runtime.loop_remaining < 2 {
@@ -1114,12 +628,12 @@ fn anim_runtime_at_boundary(
 fn reset_anim_runtime_to_loop_start(
     runtime: &mut AnimRuntime,
     config: &crate::rules::art_data::AnimTypeRuntimeConfig,
-    sim: &Simulation,
+    frame_counts: &HashMap<String, u16>,
 ) {
     if runtime.frame_step >= 0 && !runtime.constructor_reverse && !config.reverse {
         runtime.current_frame = config.loop_start - config.start;
     } else {
-        let end = effective_anim_end(config, anim_total_frames(sim, &runtime.type_name));
+        let end = effective_anim_end(config, anim_total_frames(frame_counts, &runtime.type_name));
         runtime.current_frame = effective_anim_loop_end(config, end);
     }
 }
@@ -1127,8 +641,8 @@ fn reset_anim_runtime_to_loop_start(
 fn switch_anim_runtime_type(
     runtime: &mut AnimRuntime,
     next: &str,
-    sim: &Simulation,
     art_reg: &crate::rules::art_data::ArtRegistry,
+    frame_counts: &HashMap<String, u16>,
     events: &mut Option<&mut Vec<AnimRuntimeVisitEvent>>,
 ) {
     let Some(next_config) = art_reg.anim_runtime_config(next) else {
@@ -1136,7 +650,7 @@ fn switch_anim_runtime_type(
         return;
     };
     let previous_type = runtime.type_name.clone();
-    let total_frames = anim_total_frames(sim, next);
+    let total_frames = anim_total_frames(frame_counts, next);
     let end = effective_anim_end(next_config, total_frames);
     let loop_end = effective_anim_loop_end(next_config, end);
     let reverse = next_config.reverse || runtime.constructor_reverse;
@@ -1185,11 +699,19 @@ fn effective_anim_loop_end(
     }
 }
 
-fn anim_total_frames(sim: &Simulation, type_name: &str) -> u16 {
-    sim.interner
-        .get(type_name)
-        .and_then(|id| sim.effect_frame_counts.get(&id).copied())
-        .unwrap_or(1)
+fn presentation_anim_frame_count(
+    frame_counts: Option<&HashMap<String, u16>>,
+    type_name: &str,
+) -> Option<u16> {
+    let frame_counts = frame_counts?;
+    frame_counts.get(type_name).copied().or_else(|| {
+        let canonical = type_name.to_ascii_uppercase();
+        frame_counts.get(&canonical).copied()
+    })
+}
+
+fn anim_total_frames(frame_counts: &HashMap<String, u16>, type_name: &str) -> u16 {
+    presentation_anim_frame_count(Some(frame_counts), type_name).unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -1240,8 +762,7 @@ mod tests {
     fn garrison_occupant_anim_rate_uses_animtype_default_logic_tick_when_rate_missing() {
         let mut sim = Simulation::new();
         let ucflash = sim.interner.intern("UCFLASH");
-        let art =
-            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
 
         assert_eq!(
             garrison_occupant_anim_rate_logic_frames(&sim, &art, ucflash),
@@ -1263,9 +784,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_first_ai_guard_does_not_advance_on_first_fixed_tick() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
@@ -1285,7 +805,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.current_frame, 0);
         assert!(!flash.runtime.first_ai_guard);
@@ -1294,11 +815,9 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_omitted_end_does_not_play_to_shp_frame_count() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
-        let art =
-            ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nFixtureOnly=1\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
             building_id: 1,
@@ -1317,13 +836,15 @@ mod tests {
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert!(!advance_garrison_muzzle_flash(
             &mut flash,
             SIM_TICK_MS,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert!(flash.runtime.expired);
         assert_eq!(flash.runtime.current_frame, 1);
@@ -1331,9 +852,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_rate_zero_never_advances() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str("[UCFLASH]\nEnd=-1\nRate=0\n"));
         let config = art.anim_runtime_config("UCFLASH").unwrap();
         let mut flash = GarrisonMuzzleFlash {
@@ -1353,7 +873,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 4,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.current_frame, 0);
         assert!(!flash.runtime.expired);
@@ -1361,9 +882,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_loopcount_ff_is_infinite_sentinel() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        sim.effect_frame_counts.insert(ucflash, 3);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[UCFLASH]\nEnd=2\nLoopStart=0\nLoopEnd=2\nLoopCount=-1\n",
         ));
@@ -1385,7 +905,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 3,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.loop_remaining, u8::MAX);
         assert_eq!(flash.runtime.current_frame, 0);
@@ -1394,11 +915,8 @@ mod tests {
 
     #[test]
     fn garrison_muzzle_flash_next_switches_same_runtime() {
-        let mut sim = Simulation::new();
-        let ucflash = sim.interner.intern("UCFLASH");
-        let mynext = sim.interner.intern("MYNEXT");
-        sim.effect_frame_counts.insert(ucflash, 2);
-        sim.effect_frame_counts.insert(mynext, 2);
+        let sim = Simulation::new();
+        let frame_counts = HashMap::from([("UCFLASH".to_string(), 2), ("MYNEXT".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[UCFLASH]\nEnd=1\nNext=MYNEXT\n[MYNEXT]\nEnd=-1\n",
         ));
@@ -1420,7 +938,8 @@ mod tests {
             &mut flash,
             SIM_TICK_MS * 2,
             &sim,
-            &art
+            &art,
+            &frame_counts,
         ));
         assert_eq!(flash.runtime.type_name, "MYNEXT");
         assert_eq!(flash.runtime.current_frame, 0);
@@ -1431,8 +950,7 @@ mod tests {
     fn anim_runtime_trailer_emits_before_first_ai_guard_and_frame_advance() {
         let mut sim = Simulation::new();
         sim.session.tick = 6;
-        let parent = sim.interner.intern("PARENT");
-        sim.effect_frame_counts.insert(parent, 3);
+        let frame_counts = HashMap::from([("PARENT".to_string(), 3)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[PARENT]\nEnd=2\nRate=100\nTrailerAnim=SMOKEY2\nTrailerSeperation=2\n",
         ));
@@ -1440,7 +958,13 @@ mod tests {
         let mut runtime = garrison_occupant_anim_runtime("PARENT", config, 3);
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,
@@ -1465,10 +989,7 @@ mod tests {
     fn anim_runtime_trailer_uses_old_type_before_next_and_not_new_type_same_visit() {
         let mut sim = Simulation::new();
         sim.session.tick = 8;
-        let old = sim.interner.intern("OLDANIM");
-        let next = sim.interner.intern("NEXTANIM");
-        sim.effect_frame_counts.insert(old, 2);
-        sim.effect_frame_counts.insert(next, 2);
+        let frame_counts = HashMap::from([("OLDANIM".to_string(), 2), ("NEXTANIM".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[OLDANIM]\nEnd=1\nRate=900\nNext=NEXTANIM\nTrailerAnim=OLDTRAIL\nTrailerSeperation=1\n\
              [NEXTANIM]\nEnd=1\nRate=900\nTrailerAnim=NEWTRAIL\nTrailerSeperation=1\n",
@@ -1478,7 +999,13 @@ mod tests {
         runtime.first_ai_guard = false;
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,
@@ -1503,8 +1030,7 @@ mod tests {
     fn anim_runtime_normal_destroy_does_not_emit_bounce_or_expire_anim_outputs() {
         let mut sim = Simulation::new();
         sim.session.tick = 9;
-        let boom = sim.interner.intern("BOOM");
-        sim.effect_frame_counts.insert(boom, 2);
+        let frame_counts = HashMap::from([("BOOM".to_string(), 2)]);
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[BOOM]\nEnd=1\nRate=900\nBounceAnim=BOUNCEFX\nExpireAnim=EXPIREFX\n",
         ));
@@ -1513,7 +1039,13 @@ mod tests {
         runtime.first_ai_guard = false;
         let mut events = Vec::new();
 
-        advance_anim_runtime_visit_with_events(&mut runtime, &sim, &art, Some(&mut events));
+        advance_anim_runtime_visit_with_events(
+            &mut runtime,
+            &sim,
+            &art,
+            &frame_counts,
+            Some(&mut events),
+        );
 
         assert_eq!(
             events,

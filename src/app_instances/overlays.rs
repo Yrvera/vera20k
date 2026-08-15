@@ -7,6 +7,8 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
+use std::collections::HashMap;
+
 use crate::app::AppState;
 use crate::app_fire_effects::ProjectileVisual;
 use crate::map::lighting::DEFAULT_TINT;
@@ -329,9 +331,7 @@ pub(crate) fn build_anim_class_instances(
             anim.draw_flags,
             anim.runtime.current_frame,
             i32::from(
-                sim.effect_frame_counts
-                    .get(&anim.type_id)
-                    .copied()
+                presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name)
                     .unwrap_or(0),
             ),
             state.in_game_options.detail_level as i32,
@@ -449,22 +449,26 @@ fn anim_instance_alpha_with_flags(
 ///
 /// `anim_frame_source_alpha` only consults this on the `Translucent=yes`
 /// progressive path, and only for a type that never went through asset binding
-/// (no `raw_shp_frame_count`, no explicit `End=`). The sim's effect frame-count
-/// map is the same source the spawn paths read, so it keeps the draw-time `End`
-/// consistent with the one the runtime animates against. Zero when the type is
-/// unknown there — which is also what an unbound, `End=`-less type would resolve
-/// to anyway.
+/// (no `raw_shp_frame_count`, no explicit `End=`). This is presentation-only:
+/// simulation timing reads the immutable rules-side asset catalog. Zero when
+/// the atlas has no matching shape.
 fn anim_shp_frame_count(state: &AppState, type_name: &str) -> i32 {
     state
-        .simulation
+        .sprite_atlas
         .as_ref()
-        .and_then(|sim| {
-            sim.interner
-                .get(type_name)
-                .and_then(|id| sim.effect_frame_counts.get(&id).copied())
-        })
+        .and_then(|atlas| presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name))
         .map(i32::from)
         .unwrap_or(0)
+}
+
+fn presentation_anim_frame_count(
+    frame_counts: &HashMap<String, u16>,
+    type_name: &str,
+) -> Option<u16> {
+    frame_counts.get(type_name).copied().or_else(|| {
+        let canonical = type_name.to_ascii_uppercase();
+        frame_counts.get(&canonical).copied()
+    })
 }
 
 fn anim_world_render_coords(
@@ -1014,11 +1018,8 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         if !in_view(screen_x, screen_y, 96.0, 96.0, cam_x, cam_y, sw, sh, 96.0) {
             continue;
         }
-        let frame_count = sim
-            .interner
-            .get(image)
-            .and_then(|image_id| sim.effect_frame_counts.get(&image_id).copied())
-            .unwrap_or(32);
+        let frame_count =
+            presentation_anim_frame_count(&atlas.active_anim_frame_counts, image).unwrap_or(32);
         let key = ShpSpriteKey {
             type_id: image.to_string(),
             facing: 0,

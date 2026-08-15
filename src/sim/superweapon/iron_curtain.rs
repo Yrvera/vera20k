@@ -31,7 +31,7 @@ pub fn launch(
     let current_frame = sim.session.binary_frame;
 
     // 1. Spawn invoke animation at target.
-    spawn_invoke_anim(sim, &anim_name, target_rx, target_ry);
+    spawn_invoke_anim(sim, rules, &anim_name, target_rx, target_ry);
 
     // 2. Collect entity IDs in the 3×3 grid (snapshot to avoid borrow conflict).
     let cells: Vec<(u16, u16)> = iter_cells_3x3(target_rx, target_ry).collect();
@@ -201,9 +201,9 @@ mod tests {
     }
 }
 
-fn spawn_invoke_anim(sim: &mut Simulation, anim_name: &str, rx: u16, ry: u16) {
+fn spawn_invoke_anim(sim: &mut Simulation, rules: &RuleSet, anim_name: &str, rx: u16, ry: u16) {
+    let frames = rules.effect_frame_count(anim_name).unwrap_or(20);
     let iid = sim.interner.intern(anim_name);
-    let frames = sim.effect_frame_counts.get(&iid).copied().unwrap_or(20);
     sim.world_effects.push(WorldEffect {
         anim_spawn: None,
         shp_name: iid,

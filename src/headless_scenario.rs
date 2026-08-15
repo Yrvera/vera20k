@@ -26,7 +26,6 @@ use crate::map::theater;
 use crate::map::waypoints;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::overlay_grid::OverlayGrid;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::Simulation;
 
@@ -36,7 +35,6 @@ pub struct HeadlessScenario {
     pub rules: RuleSet,
     pub map: MapFile,
     pub height_map: BTreeMap<(u16, u16), u8>,
-    pub path_grid: PathGrid,
     pub overlay_registry: OverlayTypeRegistry,
 }
 
@@ -65,12 +63,15 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::app_init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
             .ok_or_else(|| "load merged rules".to_string())?
             .into_parts();
-    let (art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
+    let (mut art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
+    rules.general.resolve_art_rates(&art_ini);
+    let infantry_sequences =
+        crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 
-    let resolved = ResolvedTerrainGrid::build(
+    let mut resolved = ResolvedTerrainGrid::build(
         &map,
         Some(&theater),
         Some(&assets),
@@ -79,10 +80,45 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         false,
         rules.general.cliff_back_impassability,
     );
-    let height_map = resolved.build_height_map();
-    let path_grid = PathGrid::from_resolved_terrain(&resolved);
-    let overlay_grid =
+    let scheduler_roots =
+        crate::app_init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
+    art.bind_scheduler_anim_assets(
+        &scheduler_roots,
+        &assets,
+        theater.extension,
+        &map.header.theater,
+    )
+    .map_err(|error| format!("bind authoritative animation assets: {error}"))?;
+    let (populated_smudge_dims, fallback_smudge_dims) =
+        art.populate_anim_frame_dims(&assets, theater.extension, &map.header.theater);
+    log::info!(
+        "Anim frame dims: {} populated, {} fallback (defaults to 30x30)",
+        populated_smudge_dims,
+        fallback_smudge_dims,
+    );
+    rules.art_registry = art;
+    rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
+    rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
+    rules.bind_animation_sequences(&infantry_sequences);
+    let house_roster =
+        crate::map::houses::parse_house_roster(&map.ini, rules.color_schemes.as_slice());
+    let mut overlay_grid =
         OverlayGrid::from_overlay_entries(&map.overlays, resolved.width(), resolved.height());
+    let cleared_terrain_overlay_cells =
+        crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
+            &mut overlay_grid,
+            &mut resolved,
+            &map.terrain_objects,
+            &rules,
+            &overlay_registry,
+        );
+    if !cleared_terrain_overlay_cells.is_empty() {
+        log::info!(
+            "Cleared {} same-cell tiberium overlay cell(s) for recognized terrain",
+            cleared_terrain_overlay_cells.len(),
+        );
+    }
+    let height_map = resolved.build_height_map();
     let lighting_profiles = crate::map::lighting::parse_lighting_profiles(&map.ini);
 
     let descriptor = ScenarioDescriptor {
@@ -141,6 +177,35 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 
     sim.resolved_terrain = Some(resolved);
     sim.overlay_grid = Some(overlay_grid);
+    crate::sim::terrain_spawn::construct_terrain_objects(
+        &mut sim,
+        &map.terrain_objects,
+        &rules,
+        map.header.theater.eq_ignore_ascii_case("SNOW"),
+    );
+    crate::sim::terrain_spawn::seed_terrain_spawner_animation(
+        &mut sim,
+        &rules,
+        &overlay_registry,
+    );
+    let post_map = sim.finalize_scenario_post_map(
+        crate::sim::scenario_post_map::ScenarioPostMapInput {
+            map_width: map.header.width as u16,
+            map_height: map.header.height as u16,
+            basic: &map.basic,
+            special_flags: &map.special_flags,
+            rules: &rules,
+            overlay_registry: &overlay_registry,
+            house_roster: &house_roster,
+            skirmish_session: None,
+        },
+    );
+    if !post_map.navigation_published {
+        return Err("publish headless post-map navigation".to_string());
+    }
+    if sim.path_grid().is_none() {
+        return Err("headless post-map navigation is unavailable".to_string());
+    }
     // The production-side resource-node index is deliberately not seeded: its helper is
     // `#[cfg(test)]`-gated, and nothing reads that index without miners, which this
     // scenario has none of. Ore is still present as map overlays. Seed it here when unit
@@ -151,7 +216,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules,
         map,
         height_map,
-        path_grid,
         overlay_registry,
     })
 }
@@ -159,12 +223,13 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 impl HeadlessScenario {
     /// Advance one committed simulation frame with no player commands.
     pub fn tick(&mut self) {
+        let path_grid = self.sim.path_grid_snapshot();
         self.sim.advance_tick(
             &[],
             Some(&self.rules),
             &self.height_map,
-            Some(&self.path_grid),
-            None,
+            path_grid.as_deref(),
+            Some(&self.overlay_registry),
             SIM_TICK_MS,
         );
     }

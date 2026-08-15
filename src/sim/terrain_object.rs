@@ -598,6 +598,7 @@ fn set_resolved_terrain_object_occupation(
 mod tests {
     use super::*;
     use crate::map::overlay::TerrainObject;
+    use crate::map::overlay_types::OverlayTypeRegistry;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::locomotor_type::MovementZone;
@@ -613,7 +614,6 @@ mod tests {
     };
     use crate::sim::terrain_spawn::seed_terrain_spawners;
     use crate::sim::world::Simulation;
-    use std::collections::BTreeMap;
 
     fn terrain_rules(type_name: &str, wood: bool, type_section: &str) -> RuleSet {
         let wood = if wood { "yes" } else { "no" };
@@ -652,14 +652,16 @@ mod tests {
     }
 
     fn rules(tib_section: &str) -> RuleSet {
-        terrain_rules(
+        let mut rules = terrain_rules(
             "TIBTRE01",
             true,
             &format!(
                 "SpawnsTiberium=yes\nIsAnimated=yes\nAnimationRate=3\nAnimationProbability=1\n{}",
                 tib_section
             ),
-        )
+        );
+        rules.set_terrain_spawner_frame_count_for_test("TIBTRE01", 22);
+        rules
     }
 
     fn seed_one(sim: &mut Simulation, rules: &RuleSet) {
@@ -675,8 +677,7 @@ mod tests {
                 name: type_name.to_string(),
             }],
             rules,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            &OverlayTypeRegistry::empty(),
             false,
         );
     }

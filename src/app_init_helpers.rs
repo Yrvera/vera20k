@@ -560,12 +560,10 @@ pub(crate) fn spawn_entities<F>(
     height_map: &BTreeMap<(u16, u16), u8>,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
-    terrain_load_advanced_scenario_rng: Option<crate::sim::rng::SimRng>,
-    variant_advanced_main_rng: Option<crate::sim::rng::SimRng>,
+    bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
     initialize_houses_before_objects: F,
 ) -> (
     Option<Simulation>,
@@ -576,13 +574,7 @@ pub(crate) fn spawn_entities<F>(
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim: Simulation = Simulation::from_descriptor(descriptor);
-    if let Some(scenario_rng) = terrain_load_advanced_scenario_rng {
-        sim.install_terrain_load_advanced_scenario_rng(scenario_rng);
-    }
-    if let Some(main_rng) = variant_advanced_main_rng {
-        sim.install_variant_advanced_main_rng(main_rng);
-    }
+    let mut sim: Simulation = bootstrap_rng.into_simulation(descriptor);
     // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
     // `ScenarioClass__Create_Houses @ 0x00687F10` before
     // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
@@ -732,7 +724,6 @@ where
         house_colors,
         theater_unit_palette,
         theater_iso_palette,
-        infantry_sequences,
         vxl_compute,
     );
     // Update VoxelAnimation frame counts from atlas HVA data.
@@ -754,7 +745,6 @@ pub(crate) fn build_entity_atlases(
     house_colors: &HouseColorMap,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
 ) -> (
     Option<UnitAtlas>,
@@ -819,7 +809,6 @@ pub(crate) fn build_entity_atlases(
             art,
             house_colors,
             &extra_buildings,
-            infantry_sequences,
             &cell_drawer_type_ids,
             cell_palette,
             None, // initial build — no existing cache
@@ -1327,8 +1316,8 @@ mod tests {
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
     }
 
-    /// The rules hash (RuleSet::source_ini_hash, stamped into diagnostic/snapshot
-    /// headers) is sensitive to a map's *value* overrides — closing the gap
+    /// The processed-rules component of the diagnostic/snapshot compatibility
+    /// hash is sensitive to a map's *value* overrides — closing the gap
     /// where a registry-only hash let a map override [General]/[CombatDamage]
     /// values without changing the hash, so a diagnostic/snapshot recorded under
     /// the map could play back against base rules undetected.

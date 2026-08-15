@@ -11,6 +11,7 @@
 //! - `world_orders.rs` — order-intent tick systems (attack-move, guard, area-guard)
 
 pub(crate) mod bridge_orchestrator;
+pub(crate) mod building_anim;
 pub mod edge_cell;
 mod lifecycle;
 mod logic_vector;
@@ -40,12 +41,14 @@ pub use substrate::EnterOrderCounter;
 pub(crate) use substrate::ObjectSubstrate;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::map::actions::ActionMap;
 use crate::map::bridge_facts::{BRIDGE_FLAG_DESTROYED_OR_RAMP, BRIDGE_FLAG_STRUCTURAL};
 use crate::map::entities::EntityCategory;
 use crate::map::events::EventMap;
 use crate::map::houses::HouseAllianceMap;
+use crate::map::overlay::OverlayEntry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::trigger_graph::TriggerGraph;
 use crate::map::triggers::TriggerMap;
@@ -54,6 +57,7 @@ use crate::rules::locomotor_type::SpeedType;
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::{self, AiPlayerState};
+use crate::sim::animation;
 use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
@@ -259,18 +263,36 @@ pub struct TickResult {
     pub frame_committed: bool,
     pub executed_commands: usize,
     pub state_hash: u64,
+    /// This call latched the natural win/loss score snapshot before hashing.
+    pub terminal_score_finalized: bool,
     pub spawned_entities: bool,
-    /// A structure was destroyed (combat, sell, crush) — PathGrid needs rebuild
-    /// to unblock the footprint.
+    /// A structure was destroyed (combat, sell, crush); the frame finalizer
+    /// rebuilds navigation to unblock the footprint.
     pub destroyed_structure: bool,
     /// An entity's owner changed (garrison reconciliation, engineer capture) — sprite
     /// atlas needs rebuild for the new house color.
     pub ownership_changed: bool,
-    /// A bridge cell transitioned to `DamageState::Destroyed` this tick —
-    /// PathGrid needs rebuild so A* sees collapsed cells as non-traversable
-    /// starting next tick. Matches gamemd's one-tick-delayed visibility.
+    /// A bridge cell transitioned to `DamageState::Destroyed` this tick; the
+    /// frame finalizer publishes the collapsed navigation snapshot for the next
+    /// tick. Matches gamemd's one-tick-delayed visibility.
     pub bridge_state_changed: bool,
     pub movement: movement::MovementTickStats,
+}
+
+/// One authoritative frame plus the transient facts emitted while producing it.
+///
+/// Channel order is preserved within each vector. The app owns cross-channel
+/// presentation order; collecting this value only transfers ownership and does
+/// not invent a single mixed event timeline.
+#[derive(Debug)]
+pub(crate) struct SimFrameOutput {
+    pub tick: TickResult,
+    pub trigger_effects: Vec<TriggerEffect>,
+    pub lifecycle_outputs: Vec<LifecycleOutput>,
+    pub overlay_updates: Vec<OverlayEntry>,
+    pub sound_events: Vec<SimSoundEvent>,
+    pub fire_events: Vec<SimFireEvent>,
+    pub invulnerability_impacts: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
 }
 
 /// Front-end admission lane for one Main_Tick call.
@@ -298,6 +320,7 @@ pub(crate) struct TriggerInputs<'a> {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MasterFrameTestRung {
+    SessionCommands,
     Triggers,
     LogicVector,
     Houses,
@@ -577,9 +600,10 @@ pub struct Simulation {
     /// Scenario RNG — gamemd `Scenario->Random` (Scen+0x218). Drives in-object-tick
     /// sim draws: scatter, sub-cell placement, smudge/destruction, particles,
     /// wall/overlay damage, bridge collapse/destruction presentation, ore growth/spread, TIBTRE,
-    /// anim scorch/50-50, miner-dock jitter. Saved in the Scenario-shaped snapshot
-    /// and hashed while live. Native load reads those bytes but immediately calls
-    /// `Random__Seed(0)`, so deserialization deliberately discards the saved cursor.
+    /// anim scorch/50-50, miner-dock jitter, and the terminal score projection.
+    /// Saved in the Scenario-shaped snapshot and hashed while live. Native load
+    /// reads those bytes but immediately calls `Random__Seed(0)`, so deserialization
+    /// deliberately discards the saved cursor.
     #[serde(deserialize_with = "deserialize_scenario_rng_reset")]
     pub(crate) scenario_rng: SimRng,
     /// Main/global RNG — gamemd `g_MainRng` (0x00886B88). This is a
@@ -587,10 +611,13 @@ pub struct Simulation {
     /// multiplayer checksums, and the live cursor continues across a load.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) main_rng: SimRng,
-    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). Fresh construction
-    /// uses the verified native `Random__Seed(0)` logical state. Bridge repair
-    /// consumes this stream; destruction remains Scenario-owned. Like Main,
-    /// this process-global cursor is not saved or checksummed and survives load.
+    /// Map-generator RNG — gamemd `g_MapGenRng` (0x00ABE890). VERA's fresh
+    /// fixed-map construction uses `Random__Seed(0)`, matching the verified
+    /// native fresh-process state; an accepted generated map installs its exact
+    /// post-RMG continuation. Bridge repair consumes this stream; destruction
+    /// remains Scenario-owned. This cursor is not saved or checksummed; Rust
+    /// retains it across in-scenario restore, while native cross-match process
+    /// retention remains UNCHECKED.
     #[serde(skip, default = "deserialized_process_rng_placeholder")]
     pub(crate) mapgen_rng: SimRng,
     /// Deterministic fog/shroud visibility state.
@@ -606,6 +633,13 @@ pub struct Simulation {
     /// The app drains these without feeding them back into simulation.
     #[serde(skip)]
     pub(crate) lifecycle_outputs: Vec<LifecycleOutput>,
+    /// Ordered occupied-cell identities finalized at the authoritative frame
+    /// boundary. The app drains these into its render-only overlay list.
+    #[serde(skip)]
+    frame_overlay_updates: Vec<OverlayEntry>,
+    /// One-shot raw post-match score result. Serialized and hashed so a save at
+    /// the outcome wait cannot repeat its Scenario RNG draws after load.
+    pub(super) terminal_score_snapshot: Option<crate::sim::score::TerminalScoreSnapshot>,
     /// Reusable movement-to-world lifecycle request buffer. Requests are applied
     /// immediately after the movement call returns.
     #[serde(skip)]
@@ -635,17 +669,18 @@ pub struct Simulation {
     lifecycle_test_events: Vec<LifecycleTestEvent>,
     /// App-visible outcomes produced by the authoritative trigger rung.
     /// Trigger actions mutate `trigger_runtime` during the frame; only their
-    /// presentation outcomes are drained by the app after the tick.
+    /// presentation outcomes are moved into `SimFrameOutput` after the tick.
     #[serde(skip)]
     trigger_effects: Vec<TriggerEffect>,
     #[cfg(test)]
     #[serde(skip)]
     master_frame_test_trace: Vec<MasterFrameTestRung>,
-    /// Sound events produced during the current tick — drained by the app layer.
+    /// Sound events produced during the current tick and moved into the owned
+    /// app-frame output batch.
     #[serde(skip)]
     pub sound_events: Vec<SimSoundEvent>,
-    /// Fire events produced during combat — drained by the app layer for
-    /// muzzle flash rendering and future projectile origin computation.
+    /// Fire events produced during combat and moved into the app-frame output
+    /// for muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
     pub fire_events: Vec<SimFireEvent>,
     /// Native IC/ForceShield impact combat-light requests emitted in receiver
@@ -666,15 +701,14 @@ pub struct Simulation {
     /// never persists across ticks.
     #[serde(skip)]
     pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
-    /// Bale deposit events emitted during refinery dock unloading — drained
-    /// by the app layer for SpecialAnim trigger and particle bursts.
+    /// Bale deposit events emitted during refinery dock unloading and consumed
+    /// by the authoritative frame tail for SpecialAnim and particle creation.
     #[serde(skip)]
-    pub bale_events: Vec<crate::sim::components::BaleDepositEvent>,
+    pub(crate) bale_events: Vec<crate::sim::components::BaleDepositEvent>,
     /// Tank-bunker wall-anim events — walls rising on install / falling on
-    /// teardown. Drained by the app layer to create SpecialAnim overlays.
-    /// Render-only; never persisted or hashed.
+    /// teardown. Consumed by the authoritative frame tail before hashing.
     #[serde(skip)]
-    pub bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
+    pub(crate) bunker_wall_events: Vec<crate::sim::components::BunkerWallAnimEvent>,
     /// Per-AI-owner state for computer-controlled players.
     pub ai_players: Vec<AiPlayerState>,
     /// Resolved TeamClass/ScriptType runtime; scenario INI parsing remains a
@@ -691,9 +725,10 @@ pub struct Simulation {
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
     pub zone_grid: Option<ZoneGrid>,
-    /// Previous PathGrid snapshot for incremental zone diffing.
+    /// Canonical dynamic navigation projection. Arc snapshots let one master
+    /// frame pin its entry view while the sim publishes the next projection.
     #[serde(skip)]
-    prev_path_grid: Option<PathGrid>,
+    path_grid: Option<Arc<PathGrid>>,
     #[serde(skip)]
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
     pub bridge_state: Option<BridgeRuntimeState>,
@@ -765,11 +800,6 @@ pub struct Simulation {
     /// Ticked each frame, auto-removed when finished.
     #[serde(skip)]
     pub world_effects: Vec<crate::sim::components::WorldEffect>,
-    /// Frame counts for world-effect SHPs, keyed by interned ID (e.g., "WARPOUT" → 21).
-    /// Populated from the sprite atlas at init time so sim code can spawn effects
-    /// with the correct frame count without hardcoding it.
-    #[serde(skip)]
-    pub effect_frame_counts: BTreeMap<InternedId, u16>,
     /// When true, newly spawned entities get a `DebugEventLog` allocated.
     /// Toggled by the debug inspector hotkey (X). Debug-only — not included in state hashing.
     #[serde(skip)]
@@ -1684,7 +1714,7 @@ impl Simulation {
             }
         }
         if !navigation_changed_cells.is_empty() {
-            let prior_path_grid = self.prev_path_grid.clone();
+            let prior_path_grid = self.path_grid.as_deref().cloned();
             let _ = self.refresh_navigation_after_terrain_changes(
                 prior_path_grid.as_ref(),
                 &navigation_changed_cells,
@@ -1713,10 +1743,8 @@ impl Simulation {
         }
 
         for fx in &effects.explosion_effects {
-            let frames = self
-                .effect_frame_counts
-                .get(&fx.shp_name)
-                .copied()
+            let frames = rules
+                .effect_frame_count(self.interner.resolve(fx.shp_name))
                 .unwrap_or(20);
             self.world_effects.push(WorldEffect {
                 anim_spawn: None,
@@ -1814,17 +1842,24 @@ impl Simulation {
     }
 
     /// Install the Scenario cursor advanced by the pre-IsoMapPack Fill pass.
-    /// Called only at the app/simulation construction boundary; Main remains
-    /// independently owned by the terrain variant selector.
-    pub(crate) fn install_terrain_load_advanced_scenario_rng(&mut self, scenario_rng: SimRng) {
+    /// Called only by sim's opaque bootstrap owner; Main remains independently
+    /// owned by the terrain variant selector.
+    pub(super) fn install_terrain_load_advanced_scenario_rng(&mut self, scenario_rng: SimRng) {
         self.scenario_rng = scenario_rng;
     }
 
     /// Install the Main cursor advanced by one-time terrain variant-table
-    /// generation. Called only at the app/simulation construction boundary;
-    /// Scenario remains independently owned by the Fill pass.
-    pub(crate) fn install_variant_advanced_main_rng(&mut self, main_rng: SimRng) {
+    /// generation. Called only by sim's opaque bootstrap owner; Scenario
+    /// remains independently owned by the Fill pass.
+    pub(super) fn install_variant_advanced_main_rng(&mut self, main_rng: SimRng) {
         self.main_rng = main_rng;
+    }
+
+    /// Install the exact cursor left by the accepted random-map generation.
+    /// VERA fixed-map construction currently keeps `Random__Seed(0)`; native
+    /// fresh-process state is verified, while cross-match retention is UNCHECKED.
+    pub(super) fn install_generated_mapgen_rng(&mut self, mapgen_rng: SimRng) {
+        self.mapgen_rng = mapgen_rng;
     }
 
     /// Create a new empty simulation with the default deterministic seed.
@@ -1892,6 +1927,8 @@ impl Simulation {
             house_alliances: HouseAllianceMap::default(),
             substrate: ObjectSubstrate::new(),
             lifecycle_outputs: Vec::new(),
+            frame_overlay_updates: Vec::new(),
+            terminal_score_snapshot: None,
             pending_lifecycle_requests: Vec::new(),
             pending_rocket_detonations: Vec::new(),
             pending_missile_detonations: Vec::new(),
@@ -1915,7 +1952,7 @@ impl Simulation {
             houses: BTreeMap::new(),
             terrain_costs: BTreeMap::new(),
             zone_grid: None,
-            prev_path_grid: None,
+            path_grid: None,
             resolved_terrain: None,
             bridge_state: None,
             overlay_grid: None,
@@ -1938,7 +1975,6 @@ impl Simulation {
             path_delay_ticks: 9,
             blockage_path_delay_ticks: 60,
             world_effects: Vec::new(),
-            effect_frame_counts: BTreeMap::new(),
             debug_event_logging: false,
             replay_log: None,
             input_delay_ticks: 2,
@@ -1961,9 +1997,6 @@ impl Simulation {
     // --- Scenario stream (gamemd Scenario->Random @ Scen+0x218) ---
     // Keep accessors distinct even though several return the same stream today:
     // the intent name is the per-consumer routing record and the grep/audit anchor.
-    pub(crate) fn score_bonus_rng(&mut self) -> &mut SimRng {
-        &mut self.scenario_rng
-    } // end-of-match score screen: surviving houses' displayed-score bonus
     pub(crate) fn scatter_rng(&mut self) -> &mut SimRng {
         &mut self.scenario_rng
     } // bump displacement, idle/forced scatter, passenger unload exit, sell-eject
@@ -2200,6 +2233,34 @@ impl Simulation {
         self.pending_commands.push(cmd);
     }
 
+    /// Speed the next ordinary frame will observe after all due offline
+    /// Options transitions execute in canonical house/insertion order.
+    ///
+    /// This read-only projection lets fresh-map and snapshot replacement sync
+    /// client UI without consuming or applying a pending authoritative command.
+    pub(crate) fn projected_in_game_options_speed(&self) -> Option<u8> {
+        let mut projected = u8::try_from(self.session.game_options.game_speed)
+            .ok()
+            .filter(|speed| *speed <= crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED);
+        let execute_tick = self.session.tick.saturating_add(1);
+        for owner in self.due_command_house_order(&self.pending_commands, execute_tick) {
+            for command in self.pending_commands.iter().filter(|command| {
+                command.execute_tick <= execute_tick && command.owner == owner
+            }) {
+                if !self.houses.contains_key(&owner) {
+                    continue;
+                }
+                let Command::SetGameSpeed { speed } = &command.payload else {
+                    continue;
+                };
+                if *speed <= crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED {
+                    projected = Some(*speed);
+                }
+            }
+        }
+        projected
+    }
+
     /// Consume the terminal edge raised by one executed EXIT command.
     pub(crate) fn take_executed_exit_owner(&mut self) -> Option<InternedId> {
         self.executed_exit_owner.take()
@@ -2352,20 +2413,22 @@ impl Simulation {
         }
     }
 
-    fn termination_frame_requested(&self) -> bool {
+    fn natural_outcome_exit_ready(&self) -> bool {
         let contending_houses = self.contending_house_count();
-        self.quit_requested
-            || self.connection_lost
-            || self.houses.values().any(|house| {
-                house.is_human
-                    && house.outcome_state.is_some_and(|outcome| {
-                        outcome.exit_ready
+        self.houses.values().any(|house| {
+            house.is_human
+                && house.outcome_state.is_some_and(|outcome| {
+                    outcome.exit_ready
                         && (outcome.kind == crate::sim::house_state::HouseOutcomeKind::Defeat
                             // VERA-internal opponent precondition; gamemd equivalent
                             // UNCHECKED. See `contending_house_count`.
                             || contending_houses > 1)
-                    })
-            })
+                })
+        })
+    }
+
+    fn termination_frame_requested(&self) -> bool {
+        self.quit_requested || self.connection_lost || self.natural_outcome_exit_ready()
     }
 
     /// Advance the global ambient scalar before ore and active superweapons.
@@ -3186,11 +3249,9 @@ impl Simulation {
     /// `restore_after_snapshot_load`, which resolves stable-ID references and
     /// rebuilds registry, LogicVector-membership, and CellClass-list caches.
     ///
-    /// Note: `zone_grid` is NOT rebuilt here — it requires the app layer's
-    /// `PathGrid` (built from resolved terrain + bridge state + building
-    /// footprints). The caller
-    /// should call `rebuild_dynamic_path_grid()` after this method, which triggers
-    /// `rebuild_zone_grid()` as part of the normal tick flow.
+    /// Overlay, bridge, and navigation authority are restored separately by
+    /// `restore_map_authority_after_snapshot_load` once rules and the overlay
+    /// registry are bound.
     pub fn rebuild_caches_after_load(
         &mut self,
         mut resolved_terrain: ResolvedTerrainGrid,
@@ -3198,8 +3259,6 @@ impl Simulation {
         bridge_explosions: Vec<InternedId>,
         metallic_debris: Vec<InternedId>,
         bridge_anim_sounds: BTreeMap<InternedId, InternedId>,
-        effect_frame_counts: BTreeMap<InternedId, u16>,
-        _terrain_costs: BTreeMap<SpeedType, TerrainCostGrid>,
     ) {
         // Restore externally-derived data only. Substrate caches are rebuilt
         // transactionally by `restore_after_snapshot_load` before this call.
@@ -3231,7 +3290,6 @@ impl Simulation {
         self.bridge_explosions = bridge_explosions;
         self.metallic_debris = metallic_debris;
         self.bridge_anim_sounds = bridge_anim_sounds;
-        self.effect_frame_counts = effect_frame_counts;
         self.terrain_costs = terrain_costs;
     }
 
@@ -3278,6 +3336,100 @@ impl Simulation {
         // serialized facts. Load repair must never derive them from this vector.
     }
 
+    /// Borrow the current canonical dynamic navigation projection.
+    pub fn path_grid(&self) -> Option<&PathGrid> {
+        self.path_grid.as_deref()
+    }
+
+    /// Pin the current navigation projection across a mutable simulation frame.
+    pub fn path_grid_snapshot(&self) -> Option<Arc<PathGrid>> {
+        self.path_grid.clone()
+    }
+
+    /// Rebuild terrain costs, dynamic structure blockers, zones, and the
+    /// canonical PathGrid as one simulation-owned projection.
+    pub fn rebuild_dynamic_navigation(&mut self, rules: &RuleSet) -> bool {
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return false;
+        };
+        let mut grid =
+            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
+        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+
+        let mut structures: Vec<(u16, u16, String)> = self
+            .substrate
+            .entities
+            .values()
+            .filter_map(|entity| {
+                (entity.category == EntityCategory::Structure).then_some((
+                    entity.position.rx,
+                    entity.position.ry,
+                    self.interner.resolve(entity.type_ref).to_string(),
+                ))
+            })
+            .collect();
+        structures.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        for (rx, ry, type_id) in structures {
+            let object_type = rules.object(&type_id);
+            let foundation = object_type
+                .map(|object| object.foundation.as_str())
+                .unwrap_or("1x1");
+            let has_bib = object_type.is_some_and(|object| object.bib);
+            grid.block_building_movement_cells(rx, ry, foundation, has_bib);
+        }
+
+        self.rebuild_zone_grid(&grid);
+        true
+    }
+
+    /// Finalize mutable overlay identity, passability, and canonical navigation
+    /// before the frame hash is latched. Only occupied cells cross the app
+    /// boundary; cleared cells remain render-inert through OverlayGrid authority.
+    fn finalize_frame_overlays_and_navigation(
+        &mut self,
+        rules: Option<&RuleSet>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        mut navigation_rebuild_requested: bool,
+    ) -> Vec<OverlayEntry> {
+        let mut overlay_updates = Vec::new();
+        let overlay_ready =
+            rules.is_some() && self.resolved_terrain.is_some() && overlay_registry.is_some();
+        if overlay_ready && let Some(grid) = self.overlay_grid.as_mut() {
+            let (dirty_cells, synchronous_passability_changed) =
+                grid.take_dirty_cells_with_passability_signal();
+            let synchronous_navigation_cells = grid.take_synchronous_navigation_cells();
+            navigation_rebuild_requested |= synchronous_passability_changed
+                || !synchronous_navigation_cells.is_empty();
+
+            let terrain = self.resolved_terrain.as_mut().expect("overlay-ready terrain");
+            let registry = overlay_registry.expect("overlay-ready registry");
+            for &(rx, ry) in &dirty_cells {
+                navigation_rebuild_requested |=
+                    recalc_overlay_passability(grid, terrain, registry, rx, ry);
+            }
+            for (rx, ry) in dirty_cells {
+                let cell = grid.cell(rx, ry);
+                if let Some(overlay_id) = cell.overlay_id {
+                    overlay_updates.push(OverlayEntry {
+                        rx,
+                        ry,
+                        overlay_id,
+                        frame: cell.overlay_data,
+                    });
+                }
+            }
+        }
+
+        if navigation_rebuild_requested && let Some(rules) = rules {
+            let _ = self.rebuild_dynamic_navigation(rules);
+        }
+        overlay_updates
+    }
+
     /// Rebuild the zone connectivity map from the current PathGrid and terrain costs.
     /// Call after the PathGrid has been rebuilt so that zones reflect the latest
     /// walkability state.
@@ -3290,7 +3442,7 @@ impl Simulation {
         }
 
         // Try incremental update if we have previous state.
-        if let (Some(prev), Some(zones)) = (&self.prev_path_grid, &mut self.zone_grid) {
+        if let (Some(prev), Some(zones)) = (self.path_grid.as_deref(), &mut self.zone_grid) {
             if let Some(changed) = prev.diff_cells(path_grid) {
                 if changed.is_empty()
                     && self
@@ -3301,7 +3453,7 @@ impl Simulation {
                     // PathGrid does not carry CellClass reduced zone type.
                     // Boolean path state and retained base classes must both
                     // match before connectivity can be reused.
-                    self.prev_path_grid = Some(path_grid.clone());
+                    self.path_grid = Some(Arc::new(path_grid.clone()));
                     return;
                 }
                 if !changed.is_empty()
@@ -3318,7 +3470,7 @@ impl Simulation {
                     )
                 {
                     log::trace!("zone: incremental update ({} cells changed)", changed.len(),);
-                    self.prev_path_grid = Some(path_grid.clone());
+                    self.path_grid = Some(Arc::new(path_grid.clone()));
                     return;
                 }
             }
@@ -3348,7 +3500,7 @@ impl Simulation {
             width,
             height,
         ));
-        self.prev_path_grid = Some(path_grid.clone());
+        self.path_grid = Some(Arc::new(path_grid.clone()));
     }
 
     /// Refresh navigation authority after inline overlay mutation or terrain
@@ -3381,6 +3533,45 @@ impl Simulation {
         }
         self.rebuild_zone_grid_full(&tail_path_grid);
         Some(tail_path_grid)
+    }
+
+    /// Publish wall-placement passability before a later command executes and
+    /// before the frame hash is latched.
+    pub(crate) fn finalize_wall_placement_navigation(
+        &mut self,
+        input_path_grid: Option<&PathGrid>,
+    ) {
+        let input_path_grid = input_path_grid
+            .cloned()
+            .or_else(|| self.path_grid.as_deref().cloned());
+        let Some(input_path_grid) = input_path_grid else {
+            return;
+        };
+        let Some(terrain) = self.resolved_terrain.as_ref() else {
+            return;
+        };
+        let resolved_path_grid =
+            PathGrid::from_resolved_terrain_with_bridges(terrain, self.bridge_state.as_ref());
+        if input_path_grid.width() != resolved_path_grid.width()
+            || input_path_grid.height() != resolved_path_grid.height()
+        {
+            return;
+        }
+        let changed_cells = self
+            .overlay_grid
+            .as_mut()
+            .map(|grid| grid.take_synchronous_navigation_cells())
+            .unwrap_or_default();
+        if changed_cells.is_empty() {
+            return;
+        }
+        self.terrain_costs = build_canonical_terrain_cost_grids(terrain);
+        let mut tail_path_grid = input_path_grid;
+        for (rx, ry) in changed_cells {
+            let replaced = tail_path_grid.replace_cell_from(&resolved_path_grid, rx, ry);
+            debug_assert!(replaced, "changed wall cell must be inside the map");
+        }
+        self.rebuild_zone_grid(&tail_path_grid);
     }
 
     pub(crate) fn effective_build_blocked(&self, rx: u16, ry: u16) -> Option<bool> {
@@ -3825,7 +4016,7 @@ impl Simulation {
         path_grid: Option<&PathGrid>,
         height_map: &BTreeMap<(u16, u16), u8>,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> (bool, bool) {
+    ) -> (bool, bool, bool, Option<InternedId>) {
         let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
         let applied = self.apply_command_with_overlays(
             &cmd_owner_str,
@@ -3835,22 +4026,52 @@ impl Simulation {
             height_map,
             overlay_registry,
         );
-        let spawned_entity = applied
-            && match cmd.payload {
-                Command::PlaceReadyBuilding { type_id, .. } => rules
-                    .and_then(|rules| rules.object(self.interner.resolve(type_id)))
-                    .is_some_and(|object| !object.wall),
-                Command::DeployMcv { .. }
-                | Command::UndeployBuilding { .. }
-                | Command::LaunchSuperWeapon { .. } => true,
-                _ => false,
-            };
+        let placed_building_owner =
+            self.successful_non_wall_placement_owner(cmd, applied, rules);
+        let spawned_entity = placed_building_owner.is_some()
+            || applied
+                && matches!(
+                    cmd.payload,
+                    Command::DeployMcv { .. }
+                        | Command::UndeployBuilding { .. }
+                        | Command::LaunchSuperWeapon { .. }
+                );
         let destroyed_structure = applied
             && matches!(
                 cmd.payload,
                 Command::SellBuilding { .. } | Command::UndeployBuilding { .. }
             );
-        (spawned_entity, destroyed_structure)
+        (
+            applied,
+            spawned_entity,
+            destroyed_structure,
+            placed_building_owner,
+        )
+    }
+
+    fn successful_non_wall_placement_owner(
+        &self,
+        command: &CommandEnvelope,
+        applied: bool,
+        rules: Option<&RuleSet>,
+    ) -> Option<InternedId> {
+        let Command::PlaceReadyBuilding { type_id, .. } = command.payload else {
+            return None;
+        };
+        (applied
+            && rules
+                .and_then(|rules| rules.object(self.interner.resolve(type_id)))
+                .is_some_and(|object| !object.wall))
+        .then_some(command.owner)
+    }
+
+    fn is_wall_placement_command(&self, command: &Command, rules: Option<&RuleSet>) -> bool {
+        let Command::PlaceReadyBuilding { type_id, .. } = command else {
+            return false;
+        };
+        rules
+            .and_then(|rules| rules.object(self.interner.resolve(*type_id)))
+            .is_some_and(|object| object.wall)
     }
 
     pub(crate) fn command_uses_megamission(command: &Command) -> bool {
@@ -4170,11 +4391,66 @@ impl Simulation {
         }
     }
 
+    /// Canonical receiver order for every due command in one master frame.
+    /// Registered HouseClass order wins; standalone-fixture owners are appended
+    /// in their first issue order, matching the established tail dispatcher.
+    fn due_command_house_order(
+        &self,
+        commands: &[CommandEnvelope],
+        execute_tick: u64,
+    ) -> Vec<InternedId> {
+        let mut house_order = self.session.house_order.clone();
+        for command in commands
+            .iter()
+            .filter(|command| command.execute_tick <= execute_tick)
+        {
+            if !house_order.contains(&command.owner) {
+                house_order.push(command.owner);
+            }
+        }
+        house_order
+    }
+
+    fn command_uses_frame_ingress(command: &Command) -> bool {
+        matches!(command, Command::SetGameSpeed { .. })
+    }
+
+    /// Apply offline session transitions before triggers and the live-object
+    /// walk. Native offline Options stores GameSpeed before the next Main_Tick;
+    /// VERA transports the transition as a replayable command, then admits it
+    /// at this dedicated ingress instead of the ordinary EventClass tail.
+    fn apply_due_frame_ingress_commands(
+        &mut self,
+        commands: &[CommandEnvelope],
+        execute_tick: u64,
+    ) -> usize {
+        let mut executed_commands = 0usize;
+        for owner in self.due_command_house_order(commands, execute_tick) {
+            for command in commands.iter().filter(|command| {
+                command.execute_tick <= execute_tick
+                    && command.owner == owner
+                    && Self::command_uses_frame_ingress(&command.payload)
+            }) {
+                let Command::SetGameSpeed { speed } = &command.payload else {
+                    unreachable!("frame-ingress predicate admitted a non-session command");
+                };
+                if self.houses.contains_key(&owner) {
+                    let _ = self.session.game_options.apply_in_game_speed(*speed);
+                }
+                // Preserve the established dispatcher convention: every due
+                // envelope is consumed/counts even when validation rejects it.
+                executed_commands += 1;
+            }
+        }
+        executed_commands
+    }
+
     /// Advance one deterministic simulation tick.
     /// Apply all due commands in HouseClass registration
     /// order. Each house preserves insertion order within the normal and
     /// staged-megamission streams. Returns
-    /// `(executed_commands, spawned_entities, destroyed_structure)`.
+    /// `(executed_commands, spawned_entities, destroyed_structure,
+    /// successful_non_wall_placement_owners)`.
     fn apply_due_commands(
         &mut self,
         commands: &[CommandEnvelope],
@@ -4183,31 +4459,23 @@ impl Simulation {
         height_map: &BTreeMap<(u16, u16), u8>,
         execute_tick: u64,
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
-    ) -> (usize, bool, bool) {
+    ) -> (usize, bool, bool, Vec<InternedId>) {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
-        let mut tail_path_grid = path_grid.cloned().or_else(|| self.prev_path_grid.clone());
+        let mut placed_building_owners = Vec::new();
+        let mut tail_path_grid = path_grid
+            .cloned()
+            .or_else(|| self.path_grid.as_deref().cloned());
 
-        let mut house_order = self.session.house_order.clone();
-        for command in commands
-            .iter()
-            .filter(|command| command.execute_tick <= execute_tick)
-        {
-            if !house_order.contains(&command.owner) {
-                // Standalone simulations have no launch descriptor to register
-                // houses. First issue order is their deterministic substitute.
-                house_order.push(command.owner);
-            }
-        }
-
-        for owner in house_order {
+        for owner in self.due_command_house_order(commands, execute_tick) {
             for command in commands.iter().filter(|command| {
                 command.execute_tick <= execute_tick
                     && command.owner == owner
+                    && !Self::command_uses_frame_ingress(&command.payload)
                     && !Self::command_uses_megamission(&command.payload)
             }) {
-                let (spawned, destroyed) = self.apply_one_due_command(
+                let (applied, spawned, destroyed, placed_owner) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4215,10 +4483,13 @@ impl Simulation {
                     overlay_registry,
                 );
                 if matches!(command.payload, Command::SellWallAtCell { .. }) {
-                    tail_path_grid = self.prev_path_grid.clone();
+                    tail_path_grid = self.path_grid.as_deref().cloned();
+                } else if applied && self.is_wall_placement_command(&command.payload, rules) {
+                    tail_path_grid = self.path_grid.as_deref().cloned().or(tail_path_grid);
                 }
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
+                placed_building_owners.extend(placed_owner);
                 executed_commands += 1;
             }
 
@@ -4233,7 +4504,7 @@ impl Simulation {
                 .collect::<Vec<_>>();
             self.adjust_staged_megamission_destinations(&mut staged, tail_path_grid.as_ref());
             for command in &staged {
-                let (spawned, destroyed) = self.apply_one_due_command(
+                let (_, spawned, destroyed, placed_owner) = self.apply_one_due_command(
                     command,
                     rules,
                     tail_path_grid.as_ref(),
@@ -4242,11 +4513,17 @@ impl Simulation {
                 );
                 spawned_entities |= spawned;
                 destroyed_structure |= destroyed;
+                placed_building_owners.extend(placed_owner);
                 executed_commands += 1;
             }
         }
 
-        (executed_commands, spawned_entities, destroyed_structure)
+        (
+            executed_commands,
+            spawned_entities,
+            destroyed_structure,
+            placed_building_owners,
+        )
     }
 
     /// Spine region (LATE): AI commands, defeat detection, building animations,
@@ -4265,6 +4542,7 @@ impl Simulation {
         executed_commands: &mut usize,
         spawned_entities: &mut bool,
         destroyed_structure: &mut bool,
+        placed_building_owners: &mut Vec<InternedId>,
     ) -> bool {
         #[cfg(test)]
         self.trace_master_frame_rung(MasterFrameTestRung::Houses);
@@ -4331,26 +4609,32 @@ impl Simulation {
                 overlay_registry,
             );
             self.ai_players = ai_state;
+            let mut ai_tail_path_grid = path_grid
+                .cloned()
+                .or_else(|| self.path_grid.as_deref().cloned());
             for cmd in &ai_commands {
                 let cmd_owner_str = self.interner.resolve(cmd.owner).to_string();
                 let applied = self.apply_command_with_overlays(
                     &cmd_owner_str,
                     &cmd.payload,
                     rules,
-                    path_grid,
+                    ai_tail_path_grid.as_ref(),
                     height_map,
                     overlay_registry,
                 );
-                if applied
-                    && match cmd.payload {
-                        Command::PlaceReadyBuilding { type_id, .. } => rules
-                            .and_then(|rules| rules.object(self.interner.resolve(type_id)))
-                            .is_some_and(|object| !object.wall),
-                        Command::DeployMcv { .. }
-                        | Command::UndeployBuilding { .. }
-                        | Command::LaunchSuperWeapon { .. } => true,
-                        _ => false,
-                    }
+                if applied && self.is_wall_placement_command(&cmd.payload, rules) {
+                    ai_tail_path_grid = self.path_grid.as_deref().cloned().or(ai_tail_path_grid);
+                }
+                let placed_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
+                placed_building_owners.extend(placed_owner);
+                if placed_owner.is_some()
+                    || applied
+                        && matches!(
+                            cmd.payload,
+                            Command::DeployMcv { .. }
+                                | Command::UndeployBuilding { .. }
+                                | Command::LaunchSuperWeapon { .. }
+                        )
                 {
                     *spawned_entities = true;
                 }
@@ -4396,7 +4680,7 @@ impl Simulation {
         // EventClass dispatch is a Main_Tick tail rung: the complete live
         // Logic walk observes frame N's pre-command state, so an accepted
         // command first changes that object's AI behavior on frame N+1.
-        let (executed, spawned, destroyed) = self.apply_due_commands(
+        let (executed, spawned, destroyed, placed_owners) = self.apply_due_commands(
             commands,
             rules,
             path_grid,
@@ -4407,6 +4691,7 @@ impl Simulation {
         *executed_commands += executed;
         *spawned_entities |= spawned;
         *destroyed_structure |= destroyed;
+        placed_building_owners.extend(placed_owners);
 
         // Main_Tick returns immediately on a terminal result. The wrapping
         // frame commit, pacing tail, and pending-delete drain are all skipped
@@ -4467,8 +4752,63 @@ impl Simulation {
             tick_ms,
             TickLane::Ordinary,
             None,
-            None,
         )
+    }
+
+    /// App-facing authoritative frame transaction.
+    ///
+    /// The app submits commands and immutable map/rules inputs, then consumes
+    /// the returned facts instead of reaching back into Simulation-owned
+    /// transient queues. Headless/replay callers retain `advance_tick` and the
+    /// lower-level master-frame adapter.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_app_frame(
+        &mut self,
+        commands: &[CommandEnvelope],
+        rules: Option<&RuleSet>,
+        height_map: &BTreeMap<(u16, u16), u8>,
+        overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
+        tick_ms: u32,
+        lane: TickLane,
+        trigger_inputs: Option<TriggerInputs<'_>>,
+    ) -> SimFrameOutput {
+        let path_grid = self.path_grid_snapshot();
+        let tick = self.advance_master_frame(
+            commands,
+            rules,
+            height_map,
+            path_grid.as_deref(),
+            overlay_registry,
+            tick_ms,
+            lane,
+            trigger_inputs,
+        );
+        self.collect_frame_output(tick)
+    }
+
+    fn collect_frame_output(&mut self, tick: TickResult) -> SimFrameOutput {
+        let trigger_effects = std::mem::take(&mut self.trigger_effects);
+        // Preserve the established terminal-frame gate: these are committed
+        // light-vector facts and the next admitted frame clears the producer
+        // buffer before combat runs.
+        let invulnerability_impacts = if tick.frame_committed {
+            std::mem::take(&mut self.invulnerability_impact_effects)
+        } else {
+            Vec::new()
+        };
+        let lifecycle_outputs = std::mem::take(&mut self.lifecycle_outputs);
+        let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
+        let fire_events = std::mem::take(&mut self.fire_events);
+        let sound_events = std::mem::take(&mut self.sound_events);
+        SimFrameOutput {
+            tick,
+            trigger_effects,
+            lifecycle_outputs,
+            overlay_updates,
+            sound_events,
+            fire_events,
+            invulnerability_impacts,
+        }
     }
 
     /// Advance exactly one authoritative simulation frame.
@@ -4486,12 +4826,12 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         lane: TickLane,
-        animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> TickResult {
         self.invulnerability_impact_effects.clear();
         self.pending_projectile_detonations.clear();
         self.pending_wave_damage_requests.clear();
+        let animation_sequences = rules.map(RuleSet::animation_sequences);
         // The wrapping native frame counter is committed LATE (end of this fn,
         // beside self.session.tick) so every phase sees the same pre-increment
         // frame N. execute_tick stays here: command scheduling below filters on
@@ -4500,6 +4840,7 @@ impl Simulation {
         let mut executed_commands = 0usize;
         let mut spawned_entities = false;
         let mut destroyed_structure = false;
+        let mut placed_building_owners = Vec::new();
         let mut tail_path_grid: Option<PathGrid> = None;
         // No command-boundary drain: command-applied deaths (sell, MCV/slave
         // deploy-undeploy, engineer capture) now stay in the Dying window like
@@ -4509,6 +4850,12 @@ impl Simulation {
         // aircraft, …) are dying-gated, so a corpse is excluded until that drain.
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
+
+        if lane == TickLane::Ordinary {
+            executed_commands += self.apply_due_frame_ingress_commands(commands, execute_tick);
+        }
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::SessionCommands);
 
         // YR LogicClass::Update establishes trigger state before visiting the
         // live LogicVector, so object work in this frame observes its actions.
@@ -4562,7 +4909,6 @@ impl Simulation {
             overlay_registry,
             terrain_spawner_cells: Some(&terrain_spawner_cells),
             miner_config: miner_config.as_ref(),
-            animation_sequences,
         };
 
         // --- Phase 1: Ground movement ---
@@ -4687,10 +5033,13 @@ impl Simulation {
             sim.tick_air_movement_with_cell_lists_one(stable_id);
             if let Some(rules) = rules {
                 let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
+                let warp_out_total_frames = rules
+                    .effect_frame_count(&rules.general.warp_out.name)
+                    .unwrap_or(teleport_movement::FALLBACK_WARP_FRAME_COUNT);
                 let mut teleport_visuals = teleport_movement::TeleportVisuals {
                     world_effects: &mut sim.world_effects,
-                    effect_frame_counts: &sim.effect_frame_counts,
                     warp_out_type,
+                    warp_out_total_frames,
                     warp_out_frame_delay: rules.general.warp_out.frame_delay,
                 };
                 teleport_movement::tick_teleport_movement(
@@ -4812,10 +5161,7 @@ impl Simulation {
             if let Some(rules) = rules {
                 let wake_name_str = &rules.general.wake.name;
                 let wake_rate = rules.general.wake.frame_delay;
-                let wake_name_id = self.interner.get(&wake_name_str.to_uppercase());
-                let wake_frames = wake_name_id
-                    .and_then(|id| self.effect_frame_counts.get(&id).copied())
-                    .unwrap_or(8);
+                let wake_frames = rules.effect_frame_count(wake_name_str).unwrap_or(8);
                 // Collect positions to avoid borrow conflict (read entities, write world_effects).
                 let wake_positions: Vec<(u16, u16, u8)> = self
                     .substrate
@@ -4835,7 +5181,8 @@ impl Simulation {
                         Some((e.position.rx, e.position.ry, e.position.z))
                     })
                     .collect();
-                if let Some(wake_id) = wake_name_id {
+                if !wake_positions.is_empty() {
+                    let wake_id = self.interner.intern(wake_name_str);
                     for (rx, ry, z) in wake_positions {
                         self.world_effects.push(WorldEffect {
                             anim_spawn: None,
@@ -5134,10 +5481,8 @@ impl Simulation {
             }
             // Spawn explosion animations from combat deaths.
             for fx in &combat_result.explosion_effects {
-                let frames = self
-                    .effect_frame_counts
-                    .get(&fx.shp_name)
-                    .copied()
+                let frames = rules
+                    .effect_frame_count(self.interner.resolve(fx.shp_name))
                     .unwrap_or(20);
                 self.world_effects.push(WorldEffect {
                     anim_spawn: None,
@@ -5351,6 +5696,12 @@ impl Simulation {
             &mut executed_commands,
             &mut spawned_entities,
             &mut destroyed_structure,
+            &mut placed_building_owners,
+        );
+        self.frame_overlay_updates = self.finalize_frame_overlays_and_navigation(
+            rules,
+            overlay_registry,
+            destroyed_structure || bridge_state_changed || spawned_entities,
         );
         #[cfg(debug_assertions)]
         self.debug_assert_logic_membership_consistent();
@@ -5364,12 +5715,43 @@ impl Simulation {
         self.refresh_production_shadow(rules);
         #[cfg(debug_assertions)]
         self.debug_assert_production_shadow();
+
+        // Living sprite/voxel/harvest animation state belongs to the committed
+        // simulation frame. Keep it inside the authoritative frame transaction
+        // so hashed side effects and every snapshot observe the same state.
+        // Dying animation advancement remains in the live-object scheduler,
+        // which owns the single pending-delete drain above.
+        if frame_committed && let Some(animation_sequences) = animation_sequences {
+            let game_options = self.session.game_options.clone();
+            let binary_frame = self.session.binary_frame;
+            {
+                let (entities, interner) = self.entities_mut_and_interner();
+                animation::tick_non_dying_animations(
+                    entities,
+                    animation_sequences,
+                    rules,
+                    &game_options,
+                    interner,
+                    binary_frame,
+                );
+            }
+            animation::tick_voxel_animations(self.entities_mut());
+            animation::tick_harvest_overlays(self.entities_mut());
+        }
+        building_anim::finalize(self, &placed_building_owners, frame_committed, rules);
+        #[cfg(debug_assertions)]
+        self.debug_assert_logic_membership_consistent();
+        #[cfg(debug_assertions)]
+        self.debug_assert_lifecycle_consistent();
+        let terminal_score_finalized = self.natural_outcome_exit_ready()
+            && self.finalize_terminal_score_snapshot();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,
             frame_committed,
             executed_commands,
             state_hash,
+            terminal_score_finalized,
             spawned_entities,
             destroyed_structure,
             ownership_changed: passenger_ownership_changed,

@@ -123,7 +123,7 @@ pub enum SequenceKind {
 }
 
 /// How a sequence behaves when it reaches its last frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LoopMode {
     /// Restart from frame 0 when reaching the end (walk, stand).
     Loop,
@@ -140,7 +140,7 @@ pub enum LoopMode {
 /// differ on *both* axes at once: which way the frame blocks rotate, and where
 /// the quantizer puts its slot boundaries. Frame block 0 is screen-north
 /// (cell NW) in both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub enum FacingSlots {
     /// Infantry bodies: a 32-entry lookup table indexed by the facing
     /// quantized to 32 steps. Slots run **counter-clockwise** from
@@ -214,7 +214,7 @@ pub fn infantry_facing_slot(facing: u8) -> u16 {
 /// RA2's DirStruct byte (0–255) is clockwise in *cell* space (0=N, 64=E,
 /// 128=S, 192=W), but SHP frame blocks start at screen-north, which is cell
 /// NW. `facing_slots` selects which of the two native conversions applies.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SequenceDef {
     /// First SHP frame index for this sequence.
     pub start_frame: u16,
@@ -323,7 +323,7 @@ pub fn sequence_is_fire_action(sequence: SequenceKind) -> bool {
 ///
 /// Maps `SequenceKind` → `SequenceDef`. Not all kinds need to be present;
 /// entities hold their current frame if the active sequence is missing.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SequenceSet {
     sequences: BTreeMap<SequenceKind, SequenceDef>,
     /// Derived type configuration for UnitClass SHP bodies. This is not
@@ -334,7 +334,7 @@ pub struct SequenceSet {
 }
 
 /// Rules-owned divisors consumed by the SHP Unit body-counter path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShpVehicleCadence {
     pub walk_rate: i32,
     pub idle_rate: i32,
@@ -393,6 +393,79 @@ impl SequenceSet {
     pub fn is_empty(&self) -> bool {
         self.sequences.is_empty()
     }
+}
+
+/// Build the immutable per-type animation catalog used by authoritative world ticks.
+///
+/// The catalog is built from every registered rules type, not the currently
+/// spawned entity set. Production and scripted spawns therefore cannot depend
+/// on an app-side atlas refresh before their animation or death timing advances.
+pub(crate) fn build_animation_sequence_catalog(
+    rules: &crate::rules::ruleset::RuleSet,
+    infantry_sequences: Option<
+        &crate::rules::infantry_sequence::InfantrySequenceRegistry,
+    >,
+) -> BTreeMap<String, SequenceSet> {
+    let mut catalog = BTreeMap::new();
+
+    for type_id in &rules.infantry_ids {
+        let Some(object) = rules.object(type_id) else {
+            continue;
+        };
+        let sequence_name = rules
+            .art_registry
+            .resolve_metadata_entry(&object.id, &object.image)
+            .and_then(|entry| entry.sequence.as_deref());
+        let sequence_set = sequence_name
+            .and_then(|name| infantry_sequences?.get(&name.to_ascii_uppercase()))
+            .map(crate::rules::infantry_sequence::build_sequence_set)
+            .filter(|set| !set.is_empty())
+            .unwrap_or_else(default_infantry_sequences);
+        catalog.insert(object.id.clone(), sequence_set);
+    }
+
+    for type_id in &rules.building_ids {
+        let Some(object) = rules.object(type_id) else {
+            continue;
+        };
+        catalog.insert(object.id.clone(), default_building_sequences());
+    }
+
+    for type_id in rules.vehicle_ids.iter().chain(&rules.aircraft_ids) {
+        let Some(object) = rules.object(type_id) else {
+            continue;
+        };
+        let Some(art) = rules
+            .art_registry
+            .resolve_metadata_entry(&object.id, &object.image)
+        else {
+            continue;
+        };
+        if art.voxel || (art.walk_frames.is_none() && art.firing_frames.is_none()) {
+            continue;
+        }
+        let cadence = ShpVehicleCadence {
+            walk_rate: object.walk_rate,
+            idle_rate: object.idle_rate,
+        };
+        catalog.insert(
+            object.id.clone(),
+            crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(art, cadence),
+        );
+    }
+
+    catalog
+}
+
+fn sequence_set_for_type<'a>(
+    sequences: &'a BTreeMap<String, SequenceSet>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
+    type_name: &str,
+) -> Option<&'a SequenceSet> {
+    sequences.get(type_name).or_else(|| {
+        let canonical = rules?.object(type_name)?.id.as_str();
+        sequences.get(canonical)
+    })
 }
 
 /// Compute the SHP frame index for a given sequence, facing, and animation frame.
@@ -570,6 +643,7 @@ pub fn advance_animation(
 fn tick_animations_impl(
     entities: &mut crate::sim::entity_store::EntityStore,
     sequences: &BTreeMap<String, SequenceSet>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
     binary_frame: u32,
@@ -599,7 +673,11 @@ fn tick_animations_impl(
                 dying_finished.push(id);
                 continue;
             }
-            let Some(seq_set) = sequences.get(interner.resolve(entity.type_ref)) else {
+            let Some(seq_set) = sequence_set_for_type(
+                sequences,
+                rules,
+                interner.resolve(entity.type_ref),
+            ) else {
                 dying_finished.push(id);
                 continue;
             };
@@ -623,7 +701,11 @@ fn tick_animations_impl(
         let preserving_fire_action = sequence_is_fire_action(anim.sequence) && !has_fire_action;
 
         // Look up this type's sequence definitions for transition checks.
-        let seq_set: Option<&SequenceSet> = sequences.get(interner.resolve(entity.type_ref));
+        let seq_set = sequence_set_for_type(
+            sequences,
+            rules,
+            interner.resolve(entity.type_ref),
+        );
 
         // Deploy state takes priority over the standard Stand/Walk/Attack cascade.
         // The visual reflects the sim phase; DeployedFire is the auto-transition
@@ -734,6 +816,7 @@ pub fn tick_animations(
     tick_animations_impl(
         entities,
         sequences,
+        None,
         game_options,
         interner,
         binary_frame,
@@ -747,6 +830,7 @@ pub fn tick_animations(
 pub(crate) fn tick_non_dying_animations(
     entities: &mut crate::sim::entity_store::EntityStore,
     sequences: &BTreeMap<String, SequenceSet>,
+    rules: Option<&crate::rules::ruleset::RuleSet>,
     game_options: &crate::sim::game_options::GameOptions,
     interner: &crate::sim::intern::StringInterner,
     binary_frame: u32,
@@ -754,6 +838,7 @@ pub(crate) fn tick_non_dying_animations(
     let _ = tick_animations_impl(
         entities,
         sequences,
+        rules,
         game_options,
         interner,
         binary_frame,
@@ -766,9 +851,8 @@ pub(crate) fn tick_non_dying_animations(
 /// by the prior app-owned completion fallback.
 pub(crate) fn tick_dying_animation(
     entity: &mut crate::sim::game_entity::GameEntity,
-    sequences: &BTreeMap<String, SequenceSet>,
+    sequence_set: Option<&SequenceSet>,
     game_options: &crate::sim::game_options::GameOptions,
-    type_name: &str,
     _binary_frame: u32,
 ) -> bool {
     debug_assert!(entity.dying);
@@ -778,7 +862,7 @@ pub(crate) fn tick_dying_animation(
     if anim.finished {
         return true;
     }
-    let Some(seq_set) = sequences.get(type_name) else {
+    let Some(seq_set) = sequence_set else {
         return true;
     };
     let Some(def) = seq_set.get(&anim.sequence) else {

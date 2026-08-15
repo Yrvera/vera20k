@@ -974,9 +974,10 @@ pub struct ParachuteAnim {
     pub elapsed_frames: u16,
 }
 
-/// Emitted by the refinery dock state machine each time a harvester deposits
-/// one bale. Renderer consumes it to fire SpecialAnim (slot 10) and spawn
-/// particle bursts at the building's RefinerySmokeOffset positions.
+/// Emitted by the refinery dock state machine for one successful dump-gate
+/// whole-slot drain. The authoritative master-frame tail consumes it to arm
+/// SpecialAnim slot 10 and spawn particle systems at the refinery smoke offsets
+/// before the returned state hash. The queue itself is transient and serde-skipped.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BaleDepositEvent {
     /// Refinery stable_id where the bale was deposited.
@@ -986,11 +987,11 @@ pub struct BaleDepositEvent {
 }
 
 /// Emitted by the tank-bunker lifecycle when the walls rise (install) or fall
-/// (teardown). The app layer consumes it to create the bunker's SpecialAnim
+/// (teardown). The authoritative frame tail creates the bunker's SpecialAnim
 /// overlays — document order within `kind == Special` decides the pair: 0/1 =
 /// walls-up, 2/3 = walls-down. `damaged` selects the `…Damaged` art variant when
-/// the building was at/below ConditionRed health at emit time. Render-only event
-/// (`#[serde(skip)]` on the queue) — never part of the deterministic hash.
+/// the building was at/below ConditionRed health at emit time. The queue is
+/// transient; its resulting overlay component participates in the frame hash.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct BunkerWallAnimEvent {
     /// Bunker building stable_id whose walls are animating.

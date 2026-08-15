@@ -632,6 +632,10 @@ pub enum Command {
     SellWallAtCell { x: i16, y: i16 },
     /// Execute the local player's native EXIT event and end the active scenario.
     ExitMatch,
+    /// Apply an offline in-game Options speed transition before the next logic
+    /// frame. The dialog emits only the stored range 0..=6; live network opcode
+    /// 0x0D keeps its separate EventClass-tail timing when networking is added.
+    SetGameSpeed { speed: u8 },
 }
 
 /// Command with deterministic execution metadata.
