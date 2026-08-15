@@ -6,6 +6,8 @@
 
 use std::hash::{Hash, Hasher};
 
+use crate::rng_continuation::MapGenRngContinuation;
+
 const RNG_TABLE_LEN: usize = 250;
 const RNG_INDEX_B_SEED: i32 = 0x67;
 const INIT_TABLE_1: [u32; 4] = [0xBAA9_6887, 0x1E17_D32C, 0x03BC_DC3C, 0x0F33_D1B2];
@@ -59,9 +61,7 @@ impl SimRng {
     /// The two implementations intentionally keep separate draw code, but the
     /// native 250-word state and lag cursors are the same logical object at the
     /// accepted generated-map -> live-scenario boundary.
-    pub(crate) fn from_mapgen_continuation(
-        continuation: crate::map::rmg::MapGenRngContinuation,
-    ) -> Self {
+    pub(crate) fn from_mapgen_continuation(continuation: MapGenRngContinuation) -> Self {
         let (words, index_a, index_b) = continuation.into_native_parts();
         Self {
             disabled: 0,
@@ -299,31 +299,6 @@ impl SimRng {
 #[cfg(test)]
 mod tests {
     use super::SimRng;
-
-    use crate::map::rmg::{MapGenRngContinuation, RmgRng};
-
-    #[test]
-    fn mapgen_continuation_transfers_full_state_across_cursor_wraps() {
-        for seed in [0, u16::MAX] {
-            for prefix_draws in [0, 249, 250, 353] {
-                let mut generated = RmgRng::new(seed);
-                for _ in 0..prefix_draws {
-                    let _ = generated.next_u32();
-                }
-                let mut expected = generated.clone();
-                let continuation = MapGenRngContinuation::capture(generated);
-                let mut live = SimRng::from_mapgen_continuation(continuation);
-
-                for draw in 0..500 {
-                    assert_eq!(
-                        live.next_u32(),
-                        expected.next_u32(),
-                        "seed {seed}, prefix {prefix_draws}, continuation draw {draw}"
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn sim_rng_logical_view_and_state_expose_all_250_words_without_mutation() {

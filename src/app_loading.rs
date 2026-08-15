@@ -2340,7 +2340,7 @@ mod tests {
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
             mapgen_continuation:
-                crate::map::rmg::MapGenRngContinuation::seeded_for_test(0x1234),
+                crate::map::rmg::RmgRng::new(0x1234).into_continuation(),
             start_waypoints: vec![(0, 10, 20), (1, 30, 40)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
@@ -2457,7 +2457,7 @@ mod tests {
         let generated = crate::map::rmg::GeneratedMap {
             map_file: map,
             mapgen_continuation:
-                crate::map::rmg::MapGenRngContinuation::seeded_for_test(0x4567),
+                crate::map::rmg::RmgRng::new(0x4567).into_continuation(),
             start_waypoints: vec![(0, 20, 20), (1, 40, 20), (2, 20, 40)],
             stages_run: Vec::new(),
             unfilled_start_slots: 0,

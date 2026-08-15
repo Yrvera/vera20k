@@ -854,7 +854,7 @@ pub(crate) struct MapLoadInitial {
     map_data: MapFile,
     map_source: LoadedMapSource,
     /// Move-only generated-map authority; fixed maps never synthesize one.
-    mapgen_rng_continuation: Option<crate::map::rmg::MapGenRngContinuation>,
+    mapgen_rng_continuation: Option<crate::rng_continuation::MapGenRngContinuation>,
 }
 
 impl MapLoadInitial {

@@ -26,13 +26,13 @@ pub mod x87;
 pub use grid::{DIRECTION_OFFSETS, DiamondScan, GridCell, RmgGrid};
 pub use options::RmgOptions;
 pub use rng::RmgRng;
-pub(crate) use rng::MapGenRngContinuation;
 pub use scratch::RmgScratch;
 pub use settings::RmgSettings;
 pub use tiles::TileIds;
 pub use x87::{Gaussian, TruncF64};
 
 use crate::map::map_file::MapFile;
+use crate::rng_continuation::MapGenRngContinuation;
 
 /// One stage of the generation pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

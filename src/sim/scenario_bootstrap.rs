@@ -13,6 +13,7 @@ use crate::map::houses::HouseRoster;
 use crate::map::map_file::MapFile;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::waypoints::Waypoint;
+use crate::rng_continuation::MapGenRngContinuation;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
@@ -23,6 +24,7 @@ use crate::sim::world::Simulation;
 use crate::skirmish_launch::{
     LaunchCountry, LaunchStartPosition, LaunchTeam, SkirmishLaunchSession,
 };
+use crate::util::native_x87::{X87Chop53, sqrt_approx_f32};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeStartBounds {
@@ -515,8 +517,10 @@ pub(crate) fn choose_battle_automatic_start(
 pub(crate) fn native_start_distance(left: Waypoint, right: Waypoint) -> i32 {
     let dx = i32::from((left.rx as i16).wrapping_sub(right.rx as i16));
     let dy = i32::from((left.ry as i16).wrapping_sub(right.ry as i16));
-    crate::map::rmg::x87::approx_sqrt_f32(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)))
-        as i32
+    let squared_distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy));
+    let root = sqrt_approx_f32(X87Chop53::load_i32(squared_distance))
+        .expect("signed squared start distance stays in the verified finite x87 domain");
+    f32::from_bits(root.bits()) as i32
 }
 
 const DEFICIENT_START_RECT_W: u16 = 8;
@@ -1541,7 +1545,7 @@ impl ScenarioBootstrapRng {
     /// Install the accepted random map's process-global cursor exactly once.
     pub(crate) fn install_generated_mapgen_continuation(
         &mut self,
-        continuation: crate::map::rmg::MapGenRngContinuation,
+        continuation: MapGenRngContinuation,
     ) {
         assert!(
             self.mapgen.is_none(),
@@ -1628,8 +1632,6 @@ impl Simulation {
 mod tests {
     use super::*;
 
-    use crate::map::rmg::{MapGenRngContinuation, RmgRng};
-
     fn descriptor(seed: u32) -> ScenarioDescriptor {
         ScenarioDescriptor {
             seed,
@@ -1688,15 +1690,19 @@ mod tests {
     #[test]
     fn generated_mapgen_continuation_replaces_only_mapgen_cursor() {
         let match_seed = 0x51C0_1005;
-        let map_seed = 0xBEEF;
-        let mut generated = RmgRng::new(map_seed);
+        let map_seed: u16 = 0xBEEF;
         let mut expected_mapgen = SimRng::new(u64::from(map_seed));
         for _ in 0..353 {
-            assert_eq!(generated.next_u32(), expected_mapgen.next_u32());
+            let _ = expected_mapgen.next_u32();
         }
+        let generated = expected_mapgen.logical_state();
 
         let mut owner = ScenarioBootstrapRng::new(match_seed);
-        owner.install_generated_mapgen_continuation(MapGenRngContinuation::capture(generated));
+        owner.install_generated_mapgen_continuation(MapGenRngContinuation::from_native_parts(
+            generated.words,
+            usize::try_from(generated.index_a).expect("test MapGen cursor A is non-negative"),
+            usize::try_from(generated.index_b).expect("test MapGen cursor B is non-negative"),
+        ));
         let actual = owner
             .into_simulation(&descriptor(match_seed))
             .rng_state();

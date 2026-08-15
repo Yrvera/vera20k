@@ -9,9 +9,10 @@
 //! which were produced by running the original routines under emulation.
 
 use super::x87::TruncF64;
+use crate::rng_continuation::{MAPGEN_RNG_STATE_WORDS, MapGenRngContinuation};
 
 /// Number of state words in the generator buffer.
-const STATE_LEN: usize = 250;
+const STATE_LEN: usize = MAPGEN_RNG_STATE_WORDS;
 /// Distance between the two cursors; also the second cursor's start position.
 const LAG: usize = 0x67;
 /// Seed-hash table 1, consumed at indices 0..3 (one per hash round).
@@ -41,30 +42,6 @@ pub struct RmgRng {
     state: [u32; STATE_LEN],
     idx_a: usize,
     idx_b: usize,
-}
-
-/// Move-only post-generation cursor handed to the live simulation.
-///
-/// Active YR seeds and advances `g_MapGenRng @ 0x00ABE890` while building a
-/// random map (`FUN_00598960`), then bridge repair later draws from that same
-/// object in `FUN_00598030`. The app may transport this value but cannot draw
-/// from it or inspect its native state.
-#[derive(Debug)]
-pub(crate) struct MapGenRngContinuation(RmgRng);
-
-impl MapGenRngContinuation {
-    pub(crate) fn capture(rng: RmgRng) -> Self {
-        Self(rng)
-    }
-
-    pub(crate) fn into_native_parts(self) -> ([u32; STATE_LEN], usize, usize) {
-        (self.0.state, self.0.idx_a, self.0.idx_b)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn seeded_for_test(seed: u16) -> Self {
-        Self(RmgRng::new(seed))
-    }
 }
 
 impl RmgRng {
@@ -111,6 +88,11 @@ impl RmgRng {
             idx_a: 0,
             idx_b: LAG,
         }
+    }
+
+    /// Seal the exact current native cursor into the move-only handoff DTO.
+    pub(crate) fn into_continuation(self) -> MapGenRngContinuation {
+        MapGenRngContinuation::from_native_parts(self.state, self.idx_a, self.idx_b)
     }
 
     /// Draw one raw word: XOR the lagged pair into the leading slot, return it,

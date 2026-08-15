@@ -282,7 +282,7 @@ pub fn generate_map_observed(
 
     GeneratedMap {
         map_file,
-        mapgen_continuation: crate::map::rmg::MapGenRngContinuation::capture(rng),
+        mapgen_continuation: rng.into_continuation(),
         start_waypoints: output.waypoints,
         stages_run: executed_stages(&options),
         unfilled_start_slots: output.unfilled_start_slots,
@@ -460,7 +460,8 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(
             first.3,
-            crate::map::rmg::MapGenRngContinuation::seeded_for_test(options.seed_u16())
+            RmgRng::new(options.seed_u16())
+                .into_continuation()
                 .into_native_parts(),
             "generation must carry an advanced MapGen cursor into the map receipt"
         );
