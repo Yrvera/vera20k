@@ -256,7 +256,13 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xAAC4_502B_90AF_E0A6;
 // described at the two legacy probes above.
 // Re-baselined 2026-08-14 for v44 entity-animation hash authority. Both legacy
 // probes remain exact, isolating this to the current-schema composition change.
-const SLICE6_BASELINE_HASH: u64 = 0x315B_AED2_F4AD_52E6;
+// Re-baselined 2026-08-15 for `14e096ff`: authoritative animation timing now
+// comes from the RuleSet in headless/replay frames, so this fixture's E1 advances
+// the already-hashed v44 entity-animation cursor. Both legacy probes remain
+// exact, isolating the change from the retask behavior under test. This is a
+// Rust regression ratchet; the native sequence-timing sources are documented
+// by that commit, while non-stock READY/GUARD precedence remains UNCHECKED.
+const SLICE6_BASELINE_HASH: u64 = 0xB3F2_F453_2BAE_3FE7;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

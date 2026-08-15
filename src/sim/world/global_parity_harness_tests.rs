@@ -132,12 +132,17 @@ const STREAM_CHECKPOINT_TICKS: &[u64] = &[149, 299, 449, 599];
 /// native overlay authority and consumes the Scenario draws owned by that
 /// path. Main and MapGen remain byte-identical, and record/replay equality
 /// remains exact, localizing the intended change to Scenario.
+/// Re-baselined 2026-08-15 for `167527ac`: this fixture reaches a natural
+/// terminal edge, where sim now latches the preserved Rust score projection
+/// before the returned hash and consumes its victory-bonus draw from Scenario.
+/// Main and MapGen remain byte-identical and record/replay equality remains
+/// exact. The native bonus formula and score traversal remain UNCHECKED.
 const FINAL_STREAM_STATES: (u64, u64, u64) = (
     // MERGE 2026-08-03: both branches re-baselined these independently (dev:
     // passive acquire + spawner; foundations: Move cadence + hashed runtime
     // state). Neither side's values describe the merged tree; re-derived below
     // from the merged tree's own output in the same merge commit.
-    0x78D4_8215_F590_AB97,
+    0x4EF3_9A94_9C6A_C7F3,
     0x39F3_258B_A550_EB7C,
     0x1CE8_1848_7043_6163,
 );
@@ -322,8 +327,13 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // are folded outside the old v28/v29 blocks, so both named probes must include
 // them. Record/replay remained equal at every tick and FINAL_STREAM_STATES is
 // byte-identical, ruling out nondeterminism or an RNG-stream routing change.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x842F_D9AE_7080_8B89;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4C5B_B09C_D7B8_61ED;
+// Re-baselined 2026-08-15 for the terminal-score Scenario draw documented at
+// `FINAL_STREAM_STATES`. These probes exclude the v44 animation and v46 score-
+// snapshot blocks but deliberately retain Scenario RNG, so both move with that
+// one-stream behavior change. Record/replay remained exact; Main and MapGen did
+// not move. The native bonus formula and score traversal remain UNCHECKED.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xD0AD_C1E8_B07B_08DE;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA58C_C0F0_6F32_5DFF;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -446,7 +456,13 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0x4C5B_B09C_D7B8_61ED;
 /// Re-baselined 2026-08-14 for v44 entity-animation hash authority. The legacy
 /// probes and absolute RNG tuple remain unchanged; record/replay equality proves
 /// the measured delta is the intentional hash-schema addition.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xE6E7_B06A_F993_DC6D;
+/// Re-baselined 2026-08-15 for the combined committed authority changes:
+/// `14e096ff` supplies RuleSet-owned animation timing to headless/replay frames,
+/// advancing v44 entity-animation state, and `167527ac` latches the terminal
+/// score plus its Scenario draw before hashing. The exact stream tuple and
+/// record/replay comparisons distinguish the RNG movement from nondeterminism.
+/// This remains a Rust regression ratchet, not new gamemd parity evidence.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCFC6_4FA3_7423_E77D;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a
