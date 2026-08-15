@@ -30,11 +30,13 @@ Thumbs.db
 !/docs/system-map/
 !/docs/system-map/**
 
-CLAUDE.md
-AGENTS.md
 .mcp.json
-/.claude/
-/.agents/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/ghidra-up/
+/.agents/*
+!/.agents/skills/
+/.agents/skills/ghidra-up/
 /todo/
 /logs/
 /saves/
@@ -45,6 +47,9 @@ tools/research_index/
 
 /*.md
 !/README.md
+!/CLAUDE.md
+!/ENGINE.md
+!/AGENTS.md
 
 /*.js
 /*.py
