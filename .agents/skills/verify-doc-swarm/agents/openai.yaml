@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Doc Swarm"
+  short_description: "Run parallel research-doc audits."
+  default_prompt: "/verify-doc-swarm"
