@@ -131,7 +131,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     state.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
 
     // Reset timing for clean InGame start.
-    state.frame_pacer.reset_for_immediate_frame();
+    state.platform.frame_pacer.reset_for_immediate_frame();
     let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
     state.scenario_elapsed_clock.start(now_ms);
 

@@ -44,7 +44,7 @@ impl App {
         Self::enter_shell_window_mode(state);
         state.zoom_level = 1.0;
         state.zoom_target = 1.0;
-        state.window.set_cursor_visible(true);
+        state.platform.window.set_cursor_visible(true);
         log::info!("Returned to main menu");
     }
 
@@ -58,10 +58,10 @@ impl App {
     /// window, so it would otherwise stay latched and suppress force-fire and
     /// the ordinary cursor for the rest of the match.
     pub(super) fn set_window_active(state: &mut AppState, active: bool) {
-        if state.window_active == active {
+        if state.platform.window_active == active {
             return;
         }
-        state.window_active = active;
+        state.platform.window_active = active;
         state.keys_held.clear();
         state.hotkey_modifiers = ModifiersState::empty();
         state.type_select.clear_held();
@@ -79,8 +79,8 @@ impl App {
             // The deactivated span must not buy a catch-up frame: forget the
             // pacing window so exactly one frame runs immediately, then normal
             // pacing resumes.
-            state.frame_pacer.reset_for_immediate_frame();
-            state.window.request_redraw();
+            state.platform.frame_pacer.reset_for_immediate_frame();
+            state.platform.window.request_redraw();
         }
         log::info!(
             "Window {}",
@@ -91,12 +91,12 @@ impl App {
     /// Apply one window-visibility edge. Waking on the un-hide edge is what
     /// gets the parked redraw loop turning again.
     pub(super) fn set_window_hidden(state: &mut AppState, hidden: bool) {
-        if state.window_hidden == hidden {
+        if state.platform.window_hidden == hidden {
             return;
         }
-        state.window_hidden = hidden;
+        state.platform.window_hidden = hidden;
         if !hidden {
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
     }
 
@@ -180,16 +180,16 @@ impl App {
         if next.is_open() {
             // Show the OS cursor so the modal is clickable.
             if state.software_cursor.is_some() {
-                state.window.set_cursor_visible(true);
+                state.platform.window.set_cursor_visible(true);
             }
         } else {
             // Elapsed modal time must not cause a catch-up frame.
-            state.frame_pacer.reset_for_immediate_frame();
+            state.platform.frame_pacer.reset_for_immediate_frame();
             if state.software_cursor.is_some() {
-                state.window.set_cursor_visible(false);
+                state.platform.window.set_cursor_visible(false);
             }
         }
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
     }
 
     /// Draw whichever in-scenario modal card is open and commit its route.

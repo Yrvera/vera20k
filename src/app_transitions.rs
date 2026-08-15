@@ -263,8 +263,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     );
     state.message_clock = crate::ui::messages::PauseAwareClock::default();
     let map_title: &str = state.map_basic.name.as_deref().unwrap_or("Unknown Map");
-    state.window.set_title(&format!("RA2 - {}", map_title));
+    state.platform.window.set_title(&format!("RA2 - {}", map_title));
     state
+        .platform
         .window
         .set_cursor_visible(state.software_cursor.is_none());
 
@@ -335,7 +336,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         }
     }
 
-    state.frame_pacer.reset_for_immediate_frame();
+    state.platform.frame_pacer.reset_for_immediate_frame();
     state.queued_order_mode = app_render::OrderMode::Move;
     for group in &mut state.control_groups {
         group.clear();

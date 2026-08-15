@@ -820,7 +820,7 @@ impl App {
             SETUP_PLAYERS_MAX,
             SETUP_PLAYERS_STEP,
         ));
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
     }
 
     pub(super) fn handle_random_map_setup_mouse_up(state: &mut AppState) -> bool {

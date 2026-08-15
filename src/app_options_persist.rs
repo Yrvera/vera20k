@@ -139,9 +139,9 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
     apply_in_game_options(state);
     persist_in_game_options(state, IN_GAME_OPTIONS_RESULT_BACK);
     state.paused = false;
-    state.frame_pacer.reset_for_immediate_frame();
+    state.platform.frame_pacer.reset_for_immediate_frame();
     if state.software_cursor.is_some() {
-        state.window.set_cursor_visible(false);
+        state.platform.window.set_cursor_visible(false);
     }
     log::info!(
         "In-game Options closed; resumed at {} tps",

@@ -79,7 +79,7 @@ mod state;
 pub(crate) use shell_random_map::{
     RandomMapGenerationJob, RandomMapGenerationRetention,
 };
-pub(crate) use state::{AppState, reset_scenario_exit_runtime};
+pub(crate) use state::{AppState, PlatformState, reset_scenario_exit_runtime};
 
 const DEV_SKIRMISH_SHELL_ENV: &str = "RA2_DEV_SKIRMISH_SHELL";
 const SHELL_WINDOW_WIDTH: u32 = 800;

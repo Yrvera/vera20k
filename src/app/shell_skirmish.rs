@@ -344,7 +344,7 @@ impl App {
                                 log::error!(
                                     "Could not resolve Cooperative shell assignments: {err}"
                                 );
-                                state.window.request_redraw();
+                                state.platform.window.request_redraw();
                             }
                         }
                     }
@@ -352,7 +352,7 @@ impl App {
                         if let Some(modal) = Self::skirmish_validation_modal_for_error(state, &err)
                         {
                             Self::show_skirmish_validation_modal(state, modal);
-                            state.window.request_redraw();
+                            state.platform.window.request_redraw();
                         } else {
                             log::warn!("Could not start skirmish shell session: {err:?}");
                         }
@@ -697,7 +697,7 @@ impl App {
         .unwrap_or_default();
 
         if crate::ui::skirmish_shell::set_status_help_text(&mut state.skirmish_shell_state, text) {
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
     }
 
@@ -746,7 +746,7 @@ impl App {
             .unwrap_or_default();
 
         if crate::ui::skirmish_shell::set_status_help_text(&mut state.skirmish_shell_state, text) {
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
     }
 
@@ -791,7 +791,7 @@ impl App {
 
         if changed {
             Self::sync_player_name_edit_scroll(state);
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
         true
     }
@@ -814,7 +814,7 @@ impl App {
             return false;
         }
         Self::close_validation_modal_from_controller(state);
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
         true
     }
 
@@ -829,7 +829,7 @@ impl App {
             .shell_controller
             .ensure_active(Self::validation_modal_dialog_id(), true);
         state.shell_controller.on_pointer_down(x, y, &feed);
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
         true
     }
 
@@ -847,7 +847,7 @@ impl App {
         if activated == Some(crate::ui::shell::modal::control::OK) {
             Self::close_validation_modal_from_controller(state);
         }
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
         true
     }
 
@@ -874,12 +874,12 @@ impl App {
         if crate::ui::skirmish_shell::player_name_edit_rect_hit(&layout, x, y) {
             crate::ui::skirmish_shell::focus_player_name_edit(&mut state.skirmish_shell_state);
             Self::sync_player_name_edit_scroll(state);
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
             return;
         }
         if state.skirmish_shell_state.player_name_edit.focused {
             crate::ui::skirmish_shell::blur_player_name_edit(&mut state.skirmish_shell_state);
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
         if crate::ui::skirmish_shell::combo_dropdown_open(&state.skirmish_shell_state) {
             crate::ui::skirmish_shell::handle_option_mouse_down(
@@ -974,7 +974,7 @@ impl App {
         }
         if state.skirmish_shell_state.validation_modal.is_some() {
             if crate::ui::skirmish_shell::clear_status_help_text(&mut state.skirmish_shell_state) {
-                state.window.request_redraw();
+                state.platform.window.request_redraw();
             }
             return;
         }

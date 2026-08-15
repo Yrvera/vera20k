@@ -173,7 +173,7 @@ impl App {
         event_loop: &ActiveEventLoop,
     ) -> Result<()> {
         app_transitions::clear_screen(encoder, view);
-        state.egui.begin_frame(&state.window);
+        state.egui.begin_frame(&state.platform.window);
         let action = main_menu::draw_main_menu_with_maps(
             &state.egui.ctx,
             &state.available_maps,
@@ -207,7 +207,7 @@ impl App {
         // leaving the egui menu with no pointer at all.
         state
             .egui
-            .end_frame_and_render(&state.gpu, encoder, view, &state.window, false);
+            .end_frame_and_render(&state.gpu, encoder, view, &state.platform.window, false);
         if confirm {
             event_loop.exit();
             return Ok(());
@@ -411,7 +411,7 @@ impl App {
             // pop (D-B3) so mouse and Esc converge on the same teardown.
             Some(id) if id == crate::ui::shell::modal::control::CANCEL => {
                 Self::close_exit_confirm_modal_from_controller(state);
-                state.window.request_redraw();
+                state.platform.window.request_redraw();
             }
             _ => {}
         }
@@ -649,7 +649,7 @@ impl App {
             return false;
         }
         Self::close_exit_confirm_modal_from_controller(state);
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
         true
     }
 

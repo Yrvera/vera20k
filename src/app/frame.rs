@@ -44,7 +44,7 @@ impl App {
         // expire against wall time while the world is stopped. Park the clock
         // and skip the expiry pass; `app_messages::update` closes the span and
         // resumes ownership on the first foreground frame.
-        if state.screen == GameScreen::InGame && !state.window_active {
+        if state.screen == GameScreen::InGame && !state.platform.window_active {
             let wall = crate::app_tooltips::now_ms(state);
             state.message_clock.set_paused(true, wall);
         } else {
@@ -124,7 +124,7 @@ impl App {
         // never re-anchors the frame pacer on its own.
         if tactical_capture.is_none()
             && matches!(state.screen, GameScreen::InGame)
-            && state.window_active
+            && state.platform.window_active
             && state.scenario_exit.is_none()
             && state.scenario_outcome.is_none()
         {
@@ -222,7 +222,7 @@ impl App {
                         &output.texture,
                     )? {
                         crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
-                            state.egui.begin_frame(&state.window);
+                            state.egui.begin_frame(&state.platform.window);
                             if state.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
                             }
@@ -234,7 +234,7 @@ impl App {
                                 &state.gpu,
                                 &mut encoder,
                                 &view,
-                                &state.window,
+                                &state.platform.window,
                                 state.use_software_cursor(),
                             );
                         }
@@ -257,7 +257,7 @@ impl App {
                             title_receipt,
                         } => {
                             pending_main_menu_title_receipt = title_receipt;
-                            state.egui.begin_frame(&state.window);
+                            state.egui.begin_frame(&state.platform.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
                             // exit-confirm is suppressed here; campaign/options/
@@ -267,7 +267,7 @@ impl App {
                                 &state.gpu,
                                 &mut encoder,
                                 &view,
-                                &state.window,
+                                &state.platform.window,
                                 state.use_software_cursor(),
                             );
                             if confirm_quit {
@@ -320,13 +320,13 @@ impl App {
                             .unwrap_or("auto")
                             .to_string();
                         app_transitions::clear_screen(&mut encoder, &view);
-                        state.egui.begin_frame(&state.window);
+                        state.egui.begin_frame(&state.platform.window);
                         main_menu::draw_loading_screen(&state.egui.ctx, &map_name_display);
                         state.egui.end_frame_and_render(
                             &state.gpu,
                             &mut encoder,
                             &view,
-                            &state.window,
+                            &state.platform.window,
                             state.use_software_cursor(),
                         );
                     }
@@ -386,7 +386,7 @@ impl App {
                 // All sidebar text (credits, Ready labels, queue counts) is now
                 // GAME.FNT sprite geometry built in app_render; egui in-game
                 // carries only the dev/debug overlays.
-                state.egui.begin_frame(&state.window);
+                state.egui.begin_frame(&state.platform.window);
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.debug_show_pathgrid
@@ -428,7 +428,7 @@ impl App {
                     &state.gpu,
                     &mut encoder,
                     &view,
-                    &state.window,
+                    &state.platform.window,
                     state.use_software_cursor(),
                 );
                 game_render_output = Some(game_output);
@@ -455,7 +455,7 @@ impl App {
                 };
                 if !score_rendered {
                     app_transitions::clear_screen(&mut encoder, &view);
-                    state.egui.begin_frame(&state.window);
+                    state.egui.begin_frame(&state.platform.window);
                     if crate::ui::mission_status::draw_mission_result_screen(
                         &state.egui.ctx,
                         &title,
@@ -469,7 +469,7 @@ impl App {
                         &state.gpu,
                         &mut encoder,
                         &view,
-                        &state.window,
+                        &state.platform.window,
                         state.use_software_cursor(),
                     );
                 }
@@ -481,13 +481,13 @@ impl App {
                     &output.texture,
                     &view,
                 )?;
-                state.egui.begin_frame(&state.window);
+                state.egui.begin_frame(&state.platform.window);
                 crate::app_spawn_pick::draw_spawn_pick_overlay(&state.egui.ctx.clone(), state);
                 state.egui.end_frame_and_render(
                     &state.gpu,
                     &mut encoder,
                     &view,
-                    &state.window,
+                    &state.platform.window,
                     state.use_software_cursor(),
                 );
             }
@@ -631,7 +631,7 @@ impl App {
             let native_loading = crate::app_loading::is_native_loading_session(state);
             match crate::app_loading::pump_loading_after_present(state) {
                 crate::app_loading::LoadingPump::Pending => {
-                    state.window.request_redraw();
+                    state.platform.window.request_redraw();
                 }
                 crate::app_loading::LoadingPump::Finished(result) => {
                     app_transitions::apply_map_load_result(state, result);

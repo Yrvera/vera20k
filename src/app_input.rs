@@ -1011,7 +1011,7 @@ pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
 pub(crate) fn toggle_debug_pause(state: &mut AppState) {
     state.paused = !state.paused;
     if !state.paused {
-        state.frame_pacer.reset_for_immediate_frame();
+        state.platform.frame_pacer.reset_for_immediate_frame();
     }
     log::info!("Debug pause: {}", if state.paused { "ON" } else { "OFF" });
 }
@@ -1148,7 +1148,7 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         }
         HotkeyCommand::ScreenCapture => {
             state.retail_screenshot_requested = true;
-            state.window.request_redraw();
+            state.platform.window.request_redraw();
         }
         HotkeyCommand::View(slot) => crate::app_camera::recall_view_bookmark(state, slot),
         HotkeyCommand::SetView(slot) => crate::app_camera::set_view_bookmark(state, slot),
@@ -1187,9 +1187,9 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
 fn handle_options_hotkey(state: &mut AppState) {
     if state.paused {
         state.paused = false;
-        state.frame_pacer.reset_for_immediate_frame();
+        state.platform.frame_pacer.reset_for_immediate_frame();
         if state.software_cursor.is_some() {
-            state.window.set_cursor_visible(false);
+            state.platform.window.set_cursor_visible(false);
         }
         log::info!("Game resumed");
     } else if state.targeting_mode.is_some() {
@@ -1202,7 +1202,7 @@ fn handle_options_hotkey(state: &mut AppState) {
         state.paused = true;
         state.in_game_options.on_open();
         if state.software_cursor.is_some() {
-            state.window.set_cursor_visible(true);
+            state.platform.window.set_cursor_visible(true);
         }
         log::info!("Game paused");
     }
@@ -1229,11 +1229,11 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
                 state.save_list_cache.invalidate();
                 // Show OS cursor for egui interaction.
                 if state.software_cursor.is_some() {
-                    state.window.set_cursor_visible(true);
+                    state.platform.window.set_cursor_visible(true);
                 }
             } else if state.software_cursor.is_some() && !state.paused {
                 // Re-hide OS cursor so the software cursor takes over.
-                state.window.set_cursor_visible(false);
+                state.platform.window.set_cursor_visible(false);
             }
         }
         // Interim order-mode arms until the stock click modifiers
@@ -1677,7 +1677,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     }
 
     // Reset timing to prevent a burst of ticks after the load.
-    state.frame_pacer.reset_for_immediate_frame();
+    state.platform.frame_pacer.reset_for_immediate_frame();
 
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;

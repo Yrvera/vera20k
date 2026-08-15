@@ -543,7 +543,7 @@ pub(crate) enum ExactStepError {
 }
 
 pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
-    crate::app_frame_pacer::wall_clock_ms(state.frame_pacer_epoch, now)
+    crate::app_frame_pacer::wall_clock_ms(state.platform.frame_pacer_epoch, now)
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the
@@ -702,7 +702,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
 
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep);
     let now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    state.frame_pacer.reanchor(now_ms);
+    state.platform.frame_pacer.reanchor(now_ms);
 
     let (tick_after, binary_frame_after) = state
         .simulation
@@ -753,14 +753,14 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             let frame_stepping = state.debug_frame_step_requested;
             if frame_stepping {
                 state.debug_frame_step_requested = false;
-                state.frame_pacer.reanchor(now_ms);
+                state.platform.frame_pacer.reanchor(now_ms);
                 true
             } else {
                 let game_speed = state.simulation.as_ref().map_or_else(
                     || state.in_game_options.game_speed.min(6) as u8,
                     |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
                 );
-                let admit = state.frame_pacer.should_admit(
+                let admit = state.platform.frame_pacer.should_admit(
                     now_ms,
                     game_speed,
                     !service_admission.simulation,
@@ -793,7 +793,7 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");
             };
-            state.frame_pacer.record_admitted_frame(now_ms);
+            state.platform.frame_pacer.record_admitted_frame(now_ms);
         }
         // High-frequency EVA state cues (low power / insufficient funds /
         // unit lost) — app-side edge detection over sim state.

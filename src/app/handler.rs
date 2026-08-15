@@ -27,19 +27,19 @@ impl App {
     }
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
-        state.window.set_resizable(false);
+        state.platform.window.set_resizable(false);
         let target = PhysicalSize::new(SHELL_WINDOW_WIDTH, SHELL_WINDOW_HEIGHT);
-        if state.window.inner_size() == target {
+        if state.platform.window.inner_size() == target {
             return;
         }
-        if let Some(applied_size) = state.window.request_inner_size(target) {
+        if let Some(applied_size) = state.platform.window.request_inner_size(target) {
             Self::resize_surface_for_window_size(state, applied_size);
         }
-        state.window.request_redraw();
+        state.platform.window.request_redraw();
     }
 
     pub(super) fn enter_game_window_mode(state: &AppState) {
-        state.window.set_resizable(true);
+        state.platform.window.set_resizable(true);
     }
 }
 
@@ -233,7 +233,7 @@ impl ApplicationHandler for App {
 
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
-            state.egui.on_window_event(&state.window, &event);
+            state.egui.on_window_event(&state.platform.window, &event);
 
         // In InGame mode, egui only renders non-interactive overlays
         // (mission banner). The custom sidebar handles its own hit-testing.
@@ -261,7 +261,7 @@ impl ApplicationHandler for App {
                 // derived here as well as from the occlusion event below.
                 let hidden = size.width == 0
                     || size.height == 0
-                    || state.window.is_minimized().unwrap_or(false);
+                    || state.platform.window.is_minimized().unwrap_or(false);
                 Self::set_window_hidden(state, hidden);
                 // A minimise carries no usable client size: the surface cannot
                 // be configured to 0x0 and the UI-scale heuristic would read a
@@ -322,11 +322,11 @@ impl ApplicationHandler for App {
                                     // Defensive: on_key only fails with an
                                     // empty route — still close consistently.
                                     Self::close_exit_confirm_modal_from_controller(state);
-                                    state.window.request_redraw();
+                                    state.platform.window.request_redraw();
                                 }
                             } else {
                                 Self::close_main_menu_dialogs(state);
-                                state.window.request_redraw();
+                                state.platform.window.request_redraw();
                             }
                         }
                         return;
@@ -346,7 +346,7 @@ impl ApplicationHandler for App {
                             // Native chooser `0x6B` has no verified Escape
                             // dismissal. Consume the key without applying the
                             // Cancel transaction or changing its selection.
-                            state.window.request_redraw();
+                            state.platform.window.request_redraw();
                             return;
                         }
                         Self::handle_skirmish_shell_action(
@@ -354,13 +354,13 @@ impl ApplicationHandler for App {
                             crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit,
                             event_loop,
                         );
-                        state.window.request_redraw();
+                        state.platform.window.request_redraw();
                         return;
                     }
 
                     if Self::single_player_shell_active(state) && is_escape {
                         Self::close_single_player_shell(state);
-                        state.window.request_redraw();
+                        state.platform.window.request_redraw();
                         return;
                     }
 
@@ -386,7 +386,7 @@ impl ApplicationHandler for App {
                     // run first — see `in_game_menu_owns_escape`.
                     if in_game && is_escape && Self::in_game_menu_owns_escape(state) {
                         Self::route_in_game_menu_escape(state);
-                        state.window.request_redraw();
+                        state.platform.window.request_redraw();
                         return;
                     }
 
@@ -456,7 +456,7 @@ impl ApplicationHandler for App {
                 state.cursor_y = position.y as f32 * sy;
                 // Keep OS cursor hidden whenever the software cursor is active.
                 if state.use_software_cursor() {
-                    state.window.set_cursor_visible(false);
+                    state.platform.window.set_cursor_visible(false);
                 }
                 // Shared tooltip service: every move restarts the show delay
                 // and hides a visible tip (study S1).
@@ -500,7 +500,7 @@ impl ApplicationHandler for App {
                 // Without this, rapid clicks without mouse movement let the OS
                 // cursor flash visible between WM_SETCURSOR and the next render.
                 if state.use_software_cursor() {
-                    state.window.set_cursor_visible(false);
+                    state.platform.window.set_cursor_visible(false);
                 }
                 // Any button press/release kills a visible tooltip + pending
                 // timer (all buttons incl. middle — study S1).
@@ -584,7 +584,7 @@ impl ApplicationHandler for App {
                     && Self::native_skirmish_shell_active(state)
                     && Self::handle_skirmish_shell_mouse_wheel(state, lines)
                 {
-                    state.window.request_redraw();
+                    state.platform.window.request_redraw();
                     return;
                 }
                 if !egui_consumed
@@ -644,17 +644,17 @@ impl ApplicationHandler for App {
                 crate::app_shell_transition::main_menu_presented_wake_deadline(state)
             {
                 if Instant::now() >= deadline {
-                    state.window.request_redraw();
+                    state.platform.window.request_redraw();
                 } else {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
                 }
-            } else if state.window_hidden {
+            } else if state.platform.window_hidden {
                 // Nothing on screen to keep fresh. Park the redraw loop until a
                 // window event (including the un-occlude edge) wakes it, rather
                 // than rendering frames no one can see.
                 event_loop.set_control_flow(ControlFlow::Wait);
             } else {
-                state.window.request_redraw();
+                state.platform.window.request_redraw();
             }
         }
     }

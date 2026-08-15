@@ -1,11 +1,11 @@
 //! Process-wide application state owned by the app orchestrator.
 //!
-//! This module preserves the existing flat state contract while keeping the
-//! public `crate::app::AppState` path stable. Ownership regrouping is a
-//! separate refactor.
+//! The top-level `AppState` path remains stable while focused ownership groups
+//! are introduced incrementally. Platform lifecycle and pacing are the first
+//! extracted group; unrelated presentation, input, and match state stay flat.
 
 use super::{
-    ActionMap, Arc, ArtRegistry, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
+    ActionMap, ArtRegistry, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
     EguiIntegration, EventMap, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
@@ -14,29 +14,17 @@ use super::{
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, Simulation, SkirmishSettings,
     SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
-    TriggerGraph, TriggerMap, UnitAtlas, Waypoint, Window, app_render, app_startup_splash,
+    TriggerGraph, TriggerMap, UnitAtlas, Waypoint, app_render, app_startup_splash,
 };
+
+mod platform;
+
+pub(crate) use platform::PlatformState;
 
 /// All initialized state. Created in `resumed()` when the window is available.
 /// pub(crate) so app_render.rs can access fields.
 pub(crate) struct AppState {
-    pub(crate) window: Arc<Window>,
-    /// Whether this application currently owns the foreground.
-    ///
-    /// gamemd tracks the same edge-triggered byte from `WM_ACTIVATEAPP` and
-    /// parks its main tick in a sleep-and-network-only loop while it is clear:
-    /// the frame counter, input, AI, map logic and per-tick update all stop.
-    /// Only the message pump keeps running. Starts true — a window that never
-    /// reports an activation edge must keep running.
-    pub(crate) window_active: bool,
-    /// Whether the window has no visible surface — minimised, or occluded on
-    /// the platforms that report occlusion.
-    ///
-    /// Windows never emits `WindowEvent::Occluded` (winit only raises it from
-    /// the iOS, X11, macOS and Web backends); a minimise arrives there as a
-    /// zero-sized `Resized` instead. Both signals feed this flag, so the redraw
-    /// loop parks on every platform. Presentation-only.
-    pub(crate) window_hidden: bool,
+    pub(crate) platform: PlatformState,
     pub(crate) gpu: GpuContext,
     pub(crate) batch_renderer: BatchRenderer,
     pub(crate) combat_light_renderer: crate::render::combat_light::CombatLightRenderer,
@@ -341,10 +329,6 @@ pub(crate) struct AppState {
     pub(crate) theater_name: String,
     /// Active map theater extension (e.g., des).
     pub(crate) theater_ext: String,
-    /// Monotonic epoch used only by the app-local gameplay-frame pacer.
-    pub(crate) frame_pacer_epoch: Instant,
-    /// Local wall-clock admission state. Never serialized or read by the sim.
-    pub(crate) frame_pacer: crate::app_frame_pacer::LocalFramePacer,
     /// Match elapsed wall time for the retail score screen. App-local and never
     /// serialized, hashed, or read by deterministic simulation.
     pub(crate) scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock,
@@ -582,7 +566,7 @@ impl AppState {
     pub(crate) fn capture_egui_observation(
         &self,
     ) -> crate::render::egui_integration::EguiCaptureObservation<'_> {
-        self.egui.capture_observation(&self.window)
+        self.egui.capture_observation(&self.platform.window)
     }
 
     /// Whether any main-menu modal dialog (exit confirm, options, movies,
