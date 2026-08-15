@@ -82,7 +82,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         initial_local_owner: None,
         sandbox_full_visibility: false,
         spawn_pick_pending: false,
-        infantry_sequences: HashMap::new(),
     }
 }
 
@@ -180,7 +179,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.last_lighting_view_fingerprint = None;
     state.rules = result.rules;
     state.art_registry = result.art_registry;
-    state.infantry_sequences = result.infantry_sequences;
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;
@@ -320,14 +318,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             }
         }
     }
-
-    // Build animation sequences for known entity types (data-driven from art.ini).
-    state.animation_sequences = app_sim_tick::build_animation_sequences(
-        state.simulation.as_ref(),
-        state.rules.as_ref(),
-        state.art_registry.as_ref(),
-        &state.infantry_sequences,
-    );
 
     state.frame_pacer.reset_for_immediate_frame();
     state.queued_order_mode = app_render::OrderMode::Move;

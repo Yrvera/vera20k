@@ -4680,7 +4680,6 @@ impl Simulation {
             tick_ms,
             TickLane::Ordinary,
             None,
-            None,
         )
     }
 
@@ -4699,7 +4698,6 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         lane: TickLane,
-        animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> SimFrameOutput {
         let path_grid = self.path_grid_snapshot();
@@ -4711,7 +4709,6 @@ impl Simulation {
             overlay_registry,
             tick_ms,
             lane,
-            animation_sequences,
             trigger_inputs,
         );
         self.collect_frame_output(tick)
@@ -4757,12 +4754,12 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
         lane: TickLane,
-        animation_sequences: Option<&BTreeMap<String, crate::sim::animation::SequenceSet>>,
         trigger_inputs: Option<TriggerInputs<'_>>,
     ) -> TickResult {
         self.invulnerability_impact_effects.clear();
         self.pending_projectile_detonations.clear();
         self.pending_wave_damage_requests.clear();
+        let animation_sequences = rules.map(RuleSet::animation_sequences);
         // The wrapping native frame counter is committed LATE (end of this fn,
         // beside self.session.tick) so every phase sees the same pre-increment
         // frame N. execute_tick stays here: command scheduling below filters on
@@ -4834,7 +4831,6 @@ impl Simulation {
             overlay_registry,
             terrain_spawner_cells: Some(&terrain_spawner_cells),
             miner_config: miner_config.as_ref(),
-            animation_sequences,
         };
 
         // --- Phase 1: Ground movement ---
@@ -5656,6 +5652,7 @@ impl Simulation {
                 animation::tick_non_dying_animations(
                     entities,
                     animation_sequences,
+                    rules,
                     &game_options,
                     interner,
                     binary_frame,

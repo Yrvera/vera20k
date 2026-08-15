@@ -484,7 +484,6 @@ impl App {
             selection_voice_enabled: true,
             loaded_map_source: None,
             loaded_map_hash: None,
-            animation_sequences: BTreeMap::new(),
             parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
                 Ok(sink) => {
                     if let Some(sink) = sink.as_ref() {
@@ -499,7 +498,6 @@ impl App {
             },
             rules: startup_rules,
             art_registry: None,
-            infantry_sequences: HashMap::new(),
             csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),

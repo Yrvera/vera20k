@@ -6,7 +6,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -21,11 +21,9 @@ use crate::app_types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::audio::events::GameSoundEvent;
-use crate::map::entities::EntityCategory;
 use crate::map::terrain;
 use crate::render::sprite_atlas;
 use crate::render::unit_atlas;
-use crate::sim::animation::{self, SequenceSet};
 use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
@@ -544,116 +542,6 @@ pub(crate) enum ExactStepError {
     FrameDelta { actual: u32 },
 }
 
-/// Build animation sequences for entity types in the ECS world.
-///
-/// For infantry, looks up the `Sequence=` key from art.ini to find the per-type
-/// sequence definition (e.g., `[ConSequence]`). Falls back to the hardcoded default
-/// layout if no sequence is found. Buildings always use the default single-frame set.
-pub(crate) fn build_animation_sequences(
-    simulation: Option<&crate::sim::world::Simulation>,
-    rules: Option<&crate::rules::ruleset::RuleSet>,
-    art_registry: Option<&crate::rules::art_data::ArtRegistry>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
-) -> BTreeMap<String, SequenceSet> {
-    let mut sequences: BTreeMap<String, SequenceSet> = BTreeMap::new();
-    let Some(sim) = simulation else {
-        return sequences;
-    };
-
-    let mut data_driven_count: usize = 0;
-
-    for entity in sim.entities().values() {
-        let type_str = sim.interner.resolve(entity.type_ref);
-        if sequences.contains_key(type_str) {
-            continue;
-        }
-        // Resolve the art-registry key. Type IDs (e.g. "E1") differ from image
-        // IDs (e.g. "GI") — rules.ini's `Image=` is the bridge. Fall back to
-        // the type ID when rules can't resolve the image (e.g. preview
-        // contexts), since for many types the image defaults to the ID.
-        let image_id: String = rules
-            .and_then(|r| r.object(type_str))
-            .map(|obj| obj.image.clone())
-            .unwrap_or_else(|| type_str.to_string());
-        let seq: SequenceSet = match entity.category {
-            EntityCategory::Infantry => {
-                // Look up Sequence= from art.ini for this type's image.
-                let seq_name: Option<&str> = art_registry
-                    .and_then(|a| a.get(&image_id))
-                    .and_then(|e| e.sequence.as_deref());
-
-                if let Some(name) = seq_name {
-                    let key: String = name.to_uppercase();
-                    if let Some(seq_def) = infantry_sequences.get(&key) {
-                        let built: SequenceSet =
-                            crate::rules::infantry_sequence::build_sequence_set(seq_def);
-                        if !built.is_empty() {
-                            data_driven_count += 1;
-                            built
-                        } else {
-                            log::warn!(
-                                "Sequence '{}' for type '{}' (image '{}') parsed to 0 entries — using defaults",
-                                name,
-                                type_str,
-                                image_id
-                            );
-                            animation::default_infantry_sequences()
-                        }
-                    } else {
-                        log::warn!(
-                            "Sequence '{}' not found in art.ini for type '{}' (image '{}')",
-                            name,
-                            type_str,
-                            image_id
-                        );
-                        animation::default_infantry_sequences()
-                    }
-                } else {
-                    log::warn!(
-                        "No Sequence= in art.ini for infantry type '{}' (image '{}') — falling back to defaults",
-                        type_str,
-                        image_id
-                    );
-                    animation::default_infantry_sequences()
-                }
-            }
-            EntityCategory::Structure => animation::default_building_sequences(),
-            // SHP vehicles (Voxel=no): build sequences from WalkFrames/FiringFrames tags.
-            EntityCategory::Unit | EntityCategory::Aircraft if !entity.is_voxel => {
-                let art_entry = art_registry.and_then(|a| a.get(&image_id));
-                if let Some(art) = art_entry {
-                    if art.walk_frames.is_some() || art.firing_frames.is_some() {
-                        data_driven_count += 1;
-                        let cadence = rules
-                            .and_then(|registry| registry.object(type_str))
-                            .map(|object| animation::ShpVehicleCadence {
-                                walk_rate: object.walk_rate,
-                                idle_rate: object.idle_rate,
-                            })
-                            .unwrap_or_default();
-                        crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
-                            art, cadence,
-                        )
-                    } else {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-            }
-            _ => continue,
-        };
-        sequences.insert(type_str.to_string(), seq);
-    }
-
-    log::info!(
-        "Built animation sequences for {} entity types ({} data-driven from art.ini)",
-        sequences.len(),
-        data_driven_count
-    );
-    sequences
-}
-
 pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
     crate::app_frame_pacer::wall_clock_ms(state.frame_pacer_epoch, now)
 }
@@ -1039,7 +927,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
                 tick_lane,
-                Some(&state.animation_sequences),
                 Some(trigger_inputs),
             );
             trigger_effects = frame_trigger_effects;
@@ -1798,12 +1685,6 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Reuses `state.asset_manager` instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
-    state.animation_sequences = build_animation_sequences(
-        state.simulation.as_ref(),
-        state.rules.as_ref(),
-        state.art_registry.as_ref(),
-        &state.infantry_sequences,
-    );
     let Some(sim) = &state.simulation else { return };
     let Some(asset_manager) = &state.asset_manager else {
         log::warn!("Atlas refresh skipped: no asset manager available");
@@ -1893,7 +1774,6 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             state.art_registry.as_ref(),
             &state.house_color_map,
             &extra_buildings,
-            &state.infantry_sequences,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
             existing,
@@ -2088,12 +1968,10 @@ pub(crate) fn clamp_cell_to_grid(
 }
 
 pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
-    // The source-INI hash covers the whole merged rules set — type-registry
-    // lists AND every scalar value, including a map's value overrides. The
-    // former registry-only hash missed those, so a map that overrode e.g.
-    // [General]/[CombatDamage] values produced an identical hash and a replay
-    // recorded under it could play back against base rules undetected.
-    rules.source_ini_hash()
+    // Compatibility covers the processed rules layers and resolved ART timing.
+    // Compatibility must distinguish static inputs that can advance the same
+    // entity differently.
+    rules.simulation_config_hash()
 }
 
 #[cfg(test)]

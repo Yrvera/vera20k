@@ -219,7 +219,6 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
         None,
         67,
         TickLane::Ordinary,
-        None,
         Some(TriggerInputs {
             graph: &graph,
             triggers: &triggers,
@@ -308,7 +307,6 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         None,
         67,
         TickLane::Ordinary,
-        None,
         Some(trigger_inputs),
     );
     assert!(original.trigger_runtime.globals_set.contains(&13));
@@ -367,7 +365,6 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         None,
         67,
         TickLane::Ordinary,
-        None,
         Some(trigger_inputs),
     );
     let mut replay_log = ReplayLog::new(ReplayHeader {
@@ -386,7 +383,6 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         None,
         67,
         TickLane::Ordinary,
-        None,
         Some(trigger_inputs),
     );
 

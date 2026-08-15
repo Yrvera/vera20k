@@ -560,7 +560,6 @@ pub(crate) fn spawn_entities<F>(
     height_map: &BTreeMap<(u16, u16), u8>,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
@@ -725,7 +724,6 @@ where
         house_colors,
         theater_unit_palette,
         theater_iso_palette,
-        infantry_sequences,
         vxl_compute,
     );
     // Update VoxelAnimation frame counts from atlas HVA data.
@@ -747,7 +745,6 @@ pub(crate) fn build_entity_atlases(
     house_colors: &HouseColorMap,
     theater_unit_palette: Option<&Palette>,
     theater_iso_palette: Option<&Palette>,
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
 ) -> (
     Option<UnitAtlas>,
@@ -812,7 +809,6 @@ pub(crate) fn build_entity_atlases(
             art,
             house_colors,
             &extra_buildings,
-            infantry_sequences,
             &cell_drawer_type_ids,
             cell_palette,
             None, // initial build — no existing cache
@@ -1320,8 +1316,8 @@ mod tests {
         assert_eq!(rules.c4_delay_ticks, 27, "C4Delay .03 min -> 27 ticks");
     }
 
-    /// The rules hash (RuleSet::source_ini_hash, stamped into diagnostic/snapshot
-    /// headers) is sensitive to a map's *value* overrides — closing the gap
+    /// The processed-rules component of the diagnostic/snapshot compatibility
+    /// hash is sensitive to a map's *value* overrides — closing the gap
     /// where a registry-only hash let a map override [General]/[CombatDamage]
     /// values without changing the hash, so a diagnostic/snapshot recorded under
     /// the map could play back against base rules undetected.

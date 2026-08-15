@@ -823,8 +823,6 @@ pub struct MapLoadResult {
     pub rules: Option<RuleSet>,
     /// Art.ini registry — kept for building animation overlay lookups at render time.
     pub art_registry: Option<ArtRegistry>,
-    /// Parsed infantry animation sequence definitions from art.ini [*Sequence] sections.
-    pub infantry_sequences: crate::rules::infantry_sequence::InfantrySequenceRegistry,
     /// CSF string table — localized display names loaded from language MIX.
     pub csf: Option<crate::assets::csf_file::CsfFile>,
     /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
@@ -1561,6 +1559,7 @@ pub(crate) fn load_map_from_initial(
             &map_data.header.theater,
         )?;
         r.art_registry = a.clone();
+        r.bind_animation_sequences(&infantry_sequences);
     }
     let variant_table_generated = variant_selector.generated_table();
     let map_fill_scenario_advances = variant_selector.map_fill_scenario_advance_count();
@@ -1787,7 +1786,6 @@ pub(crate) fn load_map_from_initial(
         &height_map,
         unit_palette.as_ref(),
         overlay_iso_palette.as_ref(),
-        &infantry_sequences,
         vxl_compute.as_deref_mut(),
         bridge_destroyability_mode,
         &scenario_descriptor,
@@ -1882,7 +1880,6 @@ pub(crate) fn load_map_from_initial(
                     &house_color_map,
                     unit_palette.as_ref(),
                     overlay_iso_palette.as_ref(),
-                    &infantry_sequences,
                     vxl_compute.as_deref_mut(),
                 );
                 unit_atlas = new_unit_atlas;
@@ -2310,7 +2307,6 @@ pub(crate) fn load_map_from_initial(
         tactical_bridge_inverse_map,
         rules,
         art_registry: art,
-        infantry_sequences,
         csf,
         fnt_file,
         lighting_grid,

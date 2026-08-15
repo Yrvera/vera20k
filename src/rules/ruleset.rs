@@ -17,7 +17,8 @@
 //!   rules/weapon_type, rules/warhead_type.
 //! - No dependencies on sim/, render/, ui/, etc.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
@@ -2251,6 +2252,10 @@ pub struct RuleSet {
     /// Retained art.ini registry. Populated by app_init after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
+    /// Complete immutable per-object animation timing catalog. Gameplay reads
+    /// this rules-owned resource directly; presentation cannot replace timing
+    /// on an individual frame.
+    animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
     /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
     /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
     /// `None` until resolved.
@@ -2689,7 +2694,7 @@ impl RuleSet {
             check_unique_ci("super_weapons", super_weapons.keys().collect());
         }
 
-        Ok(RuleSet {
+        let mut rules = RuleSet {
             object_list,
             object_index,
             weapons,
@@ -2733,6 +2738,7 @@ impl RuleSet {
             particle_system_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
+            animation_sequences: BTreeMap::new(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
             crush_warhead_id: None,
@@ -2741,7 +2747,9 @@ impl RuleSet {
             // ordered-stack callers replace this with the boundary-sensitive
             // RulesLayerStack hash in `from_processed_rules`.
             source_ini_hash: ini.content_hash(),
-        })
+        };
+        rules.rebuild_animation_sequences(None);
+        Ok(rules)
     }
 
     /// Look up a game object by ID.
@@ -2913,6 +2921,17 @@ impl RuleSet {
     /// sensitive to scalar value overrides, not just the type-registry lists.
     pub fn source_ini_hash(&self) -> u64 {
         self.source_ini_hash
+    }
+
+    /// Compatibility identity for processed rules plus resolved entity
+    /// animation timing. Other asset-derived simulation inputs are bound by
+    /// later ownership slices and are not claimed by this hash yet.
+    pub fn simulation_config_hash(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        b"rules-simulation-config-v1".hash(&mut hasher);
+        self.source_ini_hash.hash(&mut hasher);
+        self.animation_sequences.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Whether a country/house type has `MultiplayPassive=true`.
@@ -3217,6 +3236,50 @@ impl RuleSet {
             "Merged terrain art metadata: {} Foundation values",
             terrain_foundations_patched,
         );
+        self.rebuild_animation_sequences(None);
+    }
+
+    /// Resolve every registered object type's authoritative animation timing
+    /// after ART's `[*Sequence]` sections have been parsed.
+    pub fn bind_animation_sequences(
+        &mut self,
+        infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
+    ) {
+        self.rebuild_animation_sequences(Some(infantry_sequences));
+    }
+
+    fn rebuild_animation_sequences(
+        &mut self,
+        infantry_sequences: Option<
+            &crate::rules::infantry_sequence::InfantrySequenceRegistry,
+        >,
+    ) {
+        self.animation_sequences = crate::sim::animation::build_animation_sequence_catalog(
+            self,
+            infantry_sequences,
+        );
+    }
+
+    pub(crate) fn animation_sequences(
+        &self,
+    ) -> &BTreeMap<String, crate::sim::animation::SequenceSet> {
+        &self.animation_sequences
+    }
+
+    pub(crate) fn animation_sequence(
+        &self,
+        type_id: &str,
+    ) -> Option<&crate::sim::animation::SequenceSet> {
+        let canonical = self.object(type_id)?.id.as_str();
+        self.animation_sequences.get(canonical)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_animation_sequences_for_test(
+        &mut self,
+        animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
+    ) {
+        self.animation_sequences = animation_sequences;
     }
 
     /// Total number of game objects across all categories.

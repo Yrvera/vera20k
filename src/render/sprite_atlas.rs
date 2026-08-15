@@ -452,7 +452,6 @@ pub fn build_sprite_atlas(
     art: Option<&ArtRegistry>,
     house_colors: &HouseColorMap,
     extra_building_types: &[&str],
-    infantry_sequences: &crate::rules::infantry_sequence::InfantrySequenceRegistry,
     cell_drawer_type_ids: &HashSet<String>,
     cell_palette: Option<&Palette>,
     existing: Option<SpriteAtlas>,
@@ -499,48 +498,12 @@ pub fn build_sprite_atlas(
                 }
             }
             _ => {
-                // Resolve type ID → image ID via rules. Type IDs (e.g. "E1")
-                // differ from image IDs (e.g. "GI"); art.ini is keyed by the
-                // latter. Falls back to type_str when rules can't resolve,
-                // since for many types the image defaults to the ID.
-                let image_id: String = rules
-                    .and_then(|r| r.object(type_str))
-                    .map(|obj| obj.image.clone())
-                    .unwrap_or_else(|| type_str.to_string());
-                // Look up per-type sequence definition from art.ini.
-                // Use it to collect exactly the SHP frames needed for each animation.
-                let art_entry = art.and_then(|a| a.get(&image_id));
-                let seq_set: Option<crate::sim::animation::SequenceSet> = art_entry
-                    .and_then(|e| e.sequence.as_deref())
-                    .and_then(|name| infantry_sequences.get(&name.to_uppercase()))
-                    .map(|def| crate::rules::infantry_sequence::build_sequence_set(def))
-                    // SHP vehicles (DLPH/DRON/SQD) carry no `Sequence=` — their
-                    // frame blocks come from the WalkFrames/FiringFrames tags.
-                    // Same gate as build_animation_sequences, so the atlas holds
-                    // exactly the frames the sim can ask for. Without this the
-                    // firing block falls outside the hardcoded fallback range and
-                    // the sprite is dropped for every frame of an attack.
-                    .or_else(|| {
-                        if entity.category == EntityCategory::Infantry {
-                            return None;
-                        }
-                        art_entry
-                            .filter(|e| e.walk_frames.is_some() || e.firing_frames.is_some())
-                            .map(|entry| {
-                                let cadence = rules
-                                    .and_then(|registry| registry.object(type_str))
-                                    .map(|object| crate::sim::animation::ShpVehicleCadence {
-                                        walk_rate: object.walk_rate,
-                                        idle_rate: object.idle_rate,
-                                    })
-                                    .unwrap_or_default();
-                                crate::rules::shp_vehicle_sequence::build_shp_vehicle_sequences(
-                                    entry, cadence,
-                                )
-                            })
-                    });
+                // Presentation consumes the same immutable per-type catalog as
+                // simulation. Image aliases, metadata fallback, voxel gating,
+                // and frame timing are resolved once when RuleSet is bound.
+                let seq_set = rules.and_then(|registry| registry.animation_sequence(type_str));
 
-                if let Some(ref set) = seq_set {
+                if let Some(set) = seq_set {
                     // Data-driven: iterate Stand + Walk sequences (and others)
                     // to collect exactly the right frames.
                     use crate::sim::animation::SequenceKind;

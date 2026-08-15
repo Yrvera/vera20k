@@ -51,7 +51,7 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
-fn animation_boundary_fixture() -> (Simulation, BTreeMap<String, SequenceSet>) {
+fn animation_boundary_fixture() -> (Simulation, RuleSet) {
     let mut sim = Simulation::with_seed(0xA11A_7100);
     let owner = sim.interner.intern("Americans");
     let type_ref = sim.interner.intern("E1");
@@ -101,23 +101,26 @@ fn animation_boundary_fixture() -> (Simulation, BTreeMap<String, SequenceSet>) {
     let mut set = SequenceSet::new();
     set.insert(SequenceKind::Idle1, idle);
     set.insert(SequenceKind::Stand, stand);
-    let sequences = BTreeMap::from([("E1".to_string(), set)]);
-    (sim, sequences)
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\n[E1]\nStrength=100\n",
+    ))
+    .expect("animation fixture rules");
+    rules.replace_animation_sequences_for_test(BTreeMap::from([("E1".to_string(), set)]));
+    (sim, rules)
 }
 
 #[test]
 fn master_frame_hash_observes_living_animation_completion_facing() {
-    let (mut sim, sequences) = animation_boundary_fixture();
+    let (mut sim, rules) = animation_boundary_fixture();
 
     let result = sim.advance_master_frame(
         &[],
-        None,
+        Some(&rules),
         &empty_heights(),
         None,
         None,
         67,
         TickLane::Ordinary,
-        Some(&sequences),
         None,
     );
 
@@ -131,20 +134,132 @@ fn master_frame_hash_observes_living_animation_completion_facing() {
 }
 
 #[test]
+fn app_and_headless_frames_hash_identically_for_animation_progress() {
+    let (mut app_sim, rules) = animation_boundary_fixture();
+    let (mut headless_sim, _) = animation_boundary_fixture();
+
+    let app = app_sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    let headless = headless_sim.advance_tick(
+        &[],
+        Some(&rules),
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+
+    assert!(app.tick.frame_committed && headless.frame_committed);
+    assert_eq!(app.tick.state_hash, headless.state_hash);
+    assert_eq!(app_sim.state_hash(), headless_sim.state_hash());
+    let app_entity = app_sim.substrate.entities.get(1).expect("app infantry");
+    assert_eq!(app_entity.facing, 128);
+    assert_eq!(
+        app_entity.animation.as_ref().expect("app animation").sequence,
+        SequenceKind::Stand,
+    );
+    assert_eq!(
+        app_sim
+            .substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.animation.as_ref())
+            .map(|anim| {
+                (
+                    anim.sequence,
+                    anim.frame_index,
+                    anim.elapsed_frames,
+                    anim.finished,
+                )
+            }),
+        headless_sim
+            .substrate
+            .entities
+            .get(1)
+            .and_then(|entity| entity.animation.as_ref())
+            .map(|anim| {
+                (
+                    anim.sequence,
+                    anim.frame_index,
+                    anim.elapsed_frames,
+                    anim.finished,
+                )
+            }),
+    );
+}
+
+#[test]
+fn advance_tick_finishes_dying_infantry_from_rules_catalog() {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n\
+         [VehicleTypes]\n\
+         [AircraftTypes]\n\
+         [BuildingTypes]\n\
+         [E1]\nStrength=100\n",
+    ))
+    .expect("dying infantry rules");
+    let art_ini = IniFile::from_str(
+        "[E1]\nSequence=TestSequence\n\
+         [TestSequence]\nReady=0,1,1\nDie1=8,2,0\n",
+    );
+    rules.merge_art_data(&ArtRegistry::from_ini(&art_ini));
+    rules.bind_animation_sequences(
+        &crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini),
+    );
+    let mut sim = Simulation::new();
+    let id = sim
+        .spawn_object("E1", "Americans", 4, 4, 0, &rules, &empty_heights())
+        .expect("spawn infantry");
+    let entity = sim.substrate.entities.get_mut(id).expect("spawned infantry");
+    entity.dying = true;
+    entity.animation = Some(Animation {
+        sequence: SequenceKind::Die1,
+        frame_index: 0,
+        elapsed_frames: 0,
+        finished: false,
+    });
+
+    let first = sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+    let after_first = sim
+        .substrate
+        .entities
+        .get(id)
+        .and_then(|entity| entity.animation.as_ref())
+        .expect("two-frame death survives its first visit");
+    assert_eq!(after_first.frame_index, 1);
+    assert!(!after_first.finished);
+
+    let second = sim.advance_tick(&[], Some(&rules), &empty_heights(), None, None, 67);
+
+    assert!(first.frame_committed && second.frame_committed);
+    assert!(
+        sim.substrate.entities.get(id).is_none(),
+        "the headless adapter must use RuleSet timing and drain the finished death",
+    );
+    assert_eq!(second.state_hash, sim.state_hash());
+}
+
+#[test]
 fn terminal_master_frame_does_not_advance_living_animation() {
-    let (mut sim, sequences) = animation_boundary_fixture();
+    let (mut sim, rules) = animation_boundary_fixture();
     let owner = insert_house_with_counts(&mut sim, "Americans", 1, 1);
     let exit = CommandEnvelope::new(owner, 1, Command::ExitMatch);
 
     let result = sim.advance_master_frame(
         &[exit],
-        None,
+        Some(&rules),
         &empty_heights(),
         None,
         None,
         67,
         TickLane::Ordinary,
-        Some(&sequences),
         None,
     );
 
@@ -182,7 +297,6 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
         67,
         TickLane::Ordinary,
         None,
-        None,
     );
     assert!(matches!(
         first.sound_events.as_slice(),
@@ -197,7 +311,6 @@ fn app_frame_output_transfers_pre_tick_sound_exactly_once_without_hash_change() 
         None,
         67,
         TickLane::Ordinary,
-        None,
         None,
     );
     assert!(second.sound_events.is_empty());
@@ -225,7 +338,6 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
         67,
         TickLane::Ordinary,
         None,
-        None,
     );
     assert!(deferred.overlay_updates.is_empty());
     assert!(
@@ -242,7 +354,6 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
         Some(&overlays),
         67,
         TickLane::Ordinary,
-        None,
         None,
     );
     assert_eq!(first.overlay_updates.len(), 1);
@@ -263,7 +374,6 @@ fn app_frame_output_finalizes_overlay_navigation_and_delivers_updates_once() {
         Some(&overlays),
         67,
         TickLane::Ordinary,
-        None,
         None,
     );
     assert!(second.overlay_updates.is_empty());
@@ -302,7 +412,6 @@ fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
         67,
         TickLane::Ordinary,
         None,
-        None,
     );
     assert!(!output.tick.frame_committed);
     assert_eq!(output.overlay_updates.len(), 1);
@@ -337,7 +446,6 @@ fn terminal_app_frame_finalizes_overlay_updates_before_hash() {
         Some(&overlays),
         67,
         TickLane::Ordinary,
-        None,
         None,
     );
     assert!(!next.tick.frame_committed);

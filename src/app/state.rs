@@ -8,10 +8,10 @@ use super::{
     ActionMap, Arc, ArtRegistry, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
     EguiIntegration, EventMap, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
-    HouseRoster, InfantrySequenceRegistry, Instant, KeyCode, LightingConfig, MapMenuEntry,
+    HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
     MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayEntry, OverlayTypeRegistry,
     RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
-    SelectionOverlay, SelectionState, SequenceSet, SfxPlayer, SidebarCameoAtlas,
+    SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, Simulation, SkirmishSettings,
     SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
     TriggerGraph, TriggerMap, UnitAtlas, Waypoint, Window, app_render, app_startup_splash,
@@ -289,8 +289,6 @@ pub(crate) struct AppState {
     /// Existing selection paths speak by default; held TypeSelect batches
     /// temporarily suppress and restore this latch.
     pub(crate) selection_voice_enabled: bool,
-    /// Sequence definitions per entity type for animation ticking.
-    pub(crate) animation_sequences: BTreeMap<String, SequenceSet>,
     /// Optional per-tick parity digest stream, opened only when the environment asks.
     ///
     /// Lives here rather than on `Simulation` so the sim tick performs no file I/O and a
@@ -300,8 +298,6 @@ pub(crate) struct AppState {
     pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
     /// Art.ini registry — needed for building animation overlay lookups at render time.
     pub(crate) art_registry: Option<ArtRegistry>,
-    /// Parsed infantry animation sequence definitions from art.ini [*Sequence] sections.
-    pub(crate) infantry_sequences: InfantrySequenceRegistry,
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Owner name → house color index mapping for atlas key lookups.

@@ -1013,7 +1013,10 @@ fn resolve_infantry_shp_frame(
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
-    let sequence_set = state.animation_sequences.get(type_id);
+    let sequence_set = state
+        .rules
+        .as_ref()
+        .and_then(|rules| rules.animation_sequence(type_id));
     if entity.category == EntityCategory::Unit
         && !entity.is_voxel
         && entity.animation.as_ref().is_none_or(|anim_state| {

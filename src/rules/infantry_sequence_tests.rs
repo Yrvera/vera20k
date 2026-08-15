@@ -329,6 +329,44 @@ Idle1=56,15,0,S
 }
 
 #[test]
+fn ready_guard_precedence_is_stable_across_insertion_order() {
+    let ready = InfantrySequenceEntry {
+        start_frame: 7,
+        frames_per_facing: 1,
+        facings: 1,
+        facing_hint: None,
+    };
+    let guard = InfantrySequenceEntry {
+        start_frame: 91,
+        frames_per_facing: 2,
+        facings: 2,
+        facing_hint: None,
+    };
+
+    let forward = InfantrySequenceDef {
+        entries: std::collections::HashMap::from([
+            ("READY".to_string(), ready.clone()),
+            ("GUARD".to_string(), guard.clone()),
+        ]),
+    };
+    let reverse = InfantrySequenceDef {
+        entries: std::collections::HashMap::from([
+            ("GUARD".to_string(), guard),
+            ("READY".to_string(), ready),
+        ]),
+    };
+
+    let first = build_sequence_set(&forward);
+    let second = build_sequence_set(&reverse);
+    assert_eq!(first, second);
+    assert_eq!(
+        first.get(&SequenceKind::Stand).expect("stand").start_frame,
+        7,
+        "READY has explicit precedence over its GUARD alias",
+    );
+}
+
+#[test]
 fn gsi_05_07_sequence_build_preserves_completion_facing_and_native_none() {
     let ini = IniFile::from_str("[TestSequence]\nIdle1=56,15,0,S\nIdle2=71,15,0,E\nReady=0,1,1\n");
     let registry = parse_infantry_sequence_registry(&ini);

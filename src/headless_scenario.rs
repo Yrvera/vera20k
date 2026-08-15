@@ -68,6 +68,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     let (art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
+    let infantry_sequences =
+        crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
+    rules.bind_animation_sequences(&infantry_sequences);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 
     let resolved = ResolvedTerrainGrid::build(

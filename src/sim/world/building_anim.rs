@@ -740,7 +740,6 @@ mod tests {
             67,
             crate::sim::world::TickLane::Ordinary,
             None,
-            None,
         );
         let headless_tick =
             headless_sim.advance_tick(&[], Some(&rules), &height_map, None, None, 67);
@@ -786,7 +785,6 @@ mod tests {
             None,
             67,
             crate::sim::world::TickLane::Ordinary,
-            None,
             None,
         );
 
