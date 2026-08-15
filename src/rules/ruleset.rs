@@ -23,6 +23,7 @@ use std::hash::{Hash, Hasher};
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
+use crate::rules::mission_data::MissionControl;
 use crate::rules::object_type::{BuildCategory, FactoryType, ObjectCategory, ObjectType};
 use crate::rules::particle_system_type::{
     ParticleSystemType, ParticleSystemTypeId, PendingParticleSystemType,
@@ -2272,7 +2273,7 @@ pub struct RuleSet {
     crush_warhead_id: Option<crate::sim::intern::InternedId>,
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
-    pub mission_control: crate::sim::mission::MissionControl,
+    pub mission_control: MissionControl,
     /// Deterministic hash of the processed source INI (RULESMD, optional
     /// LANGRULE, selected mode, then the map's rules-shaped pass) this RuleSet
     /// was built from. Unlike a
@@ -2619,7 +2620,7 @@ impl RuleSet {
             .unwrap_or(27); // 0.03 × 60 × 15 = 27
 
         // Per-mission behaviour table from the [<MissionName>] sections.
-        let mission_control = crate::sim::mission::MissionControl::from_ini(ini);
+        let mission_control = MissionControl::from_ini(ini);
 
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();

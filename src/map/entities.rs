@@ -10,11 +10,11 @@
 //!
 //! ## Dependency rules
 //! - Part of map/ — depends on rules/ (IniFile/IniSection for parsing) and on
-//!   the mission selector vocabulary in sim/mission (the `MISSION=` column is
+//!   the mission selector vocabulary in rules/mission_data (the `MISSION=` column is
 //!   the same 32-name table the scenario reader resolves through).
 
 use crate::rules::ini_parser::IniFile;
-use crate::sim::mission::MissionType;
+use crate::rules::mission_data::MissionType;
 
 /// Which category of game object this entity represents.
 /// Determines rendering approach and available behaviors.
