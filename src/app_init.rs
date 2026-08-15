@@ -26,8 +26,7 @@ use crate::app_skirmish::{
 use crate::match_bootstrap::LoadingStartup;
 use crate::sim::scenario_bootstrap::{
     PreloadedBattleStartPlan, ScenarioBootstrapRng, apply_explicit_skirmish_launch_session,
-    apply_preloaded_battle_launch_session, apply_skirmish_ai_opening_credits,
-    apply_skirmish_launch_alliances, initialize_skirmish_launch_houses,
+    apply_preloaded_battle_launch_session, initialize_skirmish_launch_houses,
 };
 
 use crate::assets::asset_manager::AssetManager;
@@ -63,7 +62,7 @@ use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::IniFile;
-use crate::rules::ruleset::{GeneralRules, RuleSet};
+use crate::rules::ruleset::RuleSet;
 use crate::sim::trigger_runtime::TriggerRuntime;
 use crate::sim::world::Simulation;
 
@@ -2029,98 +2028,35 @@ pub(crate) fn load_map_from_initial(
                 map_data.smudges.len(),
             );
         }
-        // Initialize ore growth/spread config from merged INI sources.
-        let general_default = GeneralRules::default();
-        let general_rules = rules.as_ref().map_or(&general_default, |r| &r.general);
-        let ore_config = crate::sim::ore_growth::OreGrowthConfig::from_ini(
-            general_rules,
-            &map_data.basic,
-            &map_data.special_flags,
+    }
+
+    // The app submits one immutable initialization command; Simulation owns
+    // every match-affecting write and Scenario RNG draw in the post-map tail.
+    let rules_for_post_map = rules
+        .as_ref()
+        .expect("merged rules were installed before post-map finalization");
+    if let Some(sim) = &mut simulation {
+        let output = sim.finalize_scenario_post_map(
+            crate::sim::scenario_post_map::ScenarioPostMapInput {
+                map_width: map_data.header.width as u16,
+                map_height: map_data.header.height as u16,
+                basic: &map_data.basic,
+                special_flags: &map_data.special_flags,
+                rules: rules_for_post_map,
+                overlay_registry: &overlay_registry,
+                house_roster: &house_roster,
+                skirmish_session: skirmish_launch_session,
+            },
         );
-        let map_w = map_data.header.width as u16;
-        let map_h = map_data.header.height as u16;
-        sim.production.ore_growth_config = ore_config;
-        sim.production.ore_growth_state = crate::sim::ore_growth::OreGrowthState::new(map_w, map_h);
-        if let (Some(rules_for_tiberium), Some(overlay_grid)) =
-            (rules.as_ref(), sim.overlay_grid.as_ref())
-        {
-            let source_object_cells: BTreeSet<(u16, u16)> = sim
-                .production
-                .terrain_object_cells
-                .keys()
-                .copied()
-                .collect();
-            let stats = sim
-                .production
-                .ore_growth_state
-                .rebuild_native_tiberium_queues_from_overlays(
-                    overlay_grid,
-                    &overlay_registry,
-                    &rules_for_tiberium.tiberium_types,
-                    sim.resolved_terrain.as_ref(),
-                    &source_object_cells,
-                    map_data.basic.tiberium_growth_enabled.unwrap_or(true),
-                    general_rules.tiberium_spreads
-                        && map_data.special_flags.tiberium_spreads.unwrap_or(true),
-                    sim.session.binary_frame,
-                );
+        if let Some(stats) = output.tiberium_queues {
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
                 stats.growth_entries,
                 stats.spread_entries,
             );
-        } else {
-            sim.production
-                .ore_growth_state
-                .reset_native_tiberium_classes(0, sim.session.binary_frame);
         }
-    }
-
-    // Publish the initial terrain, bridge, live-structure, cost, and zone
-    // projection through the same simulation-owned seam used at runtime.
-    if let (Some(sim), Some(rules_for_navigation)) = (&mut simulation, rules.as_ref())
-        && !sim.rebuild_dynamic_navigation(rules_for_navigation)
-    {
-        log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
-    }
-
-    // Active YR applies the AI-only opening grant from
-    // `ScenarioClass__Post_Map_Init @ 0x00686890` after starting-force setup and
-    // before tick 0. Only an explicit launch session owns generated participants;
-    // campaign/scenario HouseState must not pass through this stock-Battle rule.
-    if skirmish_launch_session.is_some()
-        && let Some(sim) = &mut simulation
-    {
-        apply_skirmish_ai_opening_credits(sim);
-    }
-
-    // gamemd `ScenarioClass::Post_Map_Init @ 0x00686890`: an active session's
-    // Crates byte gates the initial scatter. The count uses human session seats
-    // only; AI houses are not players for this clamp. Campaign/editor loads do
-    // not own that lobby byte and must not inherit GameOptions' lobby default.
-    if skirmish_launch_session.is_some()
-        && let (Some(sim), Some(rules_for_crates)) = (&mut simulation, rules.as_ref())
-    {
-        let player_count = crate::sim::crates::human_player_count(sim);
-        let initial_path = sim.path_grid_snapshot();
-        crate::sim::crates::place_scenario_start_crates(
-            sim,
-            rules_for_crates,
-            &overlay_registry,
-            initial_path.as_deref(),
-            player_count,
-        );
-    }
-
-    if let Some(sim) = &mut simulation {
-        // Active YR `ScenarioClass__Post_Map_Init @ 0x00686890` orders the
-        // starting force, scenario-start crates, credits/bookkeeping, and then
-        // the HouseClass MakeAlly pass. House identity exists before objects,
-        // but diplomacy is committed only at this shared post-crate boundary.
-        if let Some(session) = skirmish_launch_session {
-            apply_skirmish_launch_alliances(sim, &house_roster, session);
-        } else {
-            sim.house_alliances = house_roster.alliance_map();
+        if !output.navigation_published {
+            log::error!("Initial navigation rebuild failed: resolved terrain is unavailable");
         }
     }
 

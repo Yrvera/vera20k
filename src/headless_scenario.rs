@@ -26,7 +26,6 @@ use crate::map::theater;
 use crate::map::waypoints;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::overlay_grid::OverlayGrid;
-use crate::sim::pathfinding::PathGrid;
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::Simulation;
 
@@ -36,7 +35,6 @@ pub struct HeadlessScenario {
     pub rules: RuleSet,
     pub map: MapFile,
     pub height_map: BTreeMap<(u16, u16), u8>,
-    pub path_grid: PathGrid,
     pub overlay_registry: OverlayTypeRegistry,
 }
 
@@ -102,6 +100,8 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
     rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
     rules.bind_animation_sequences(&infantry_sequences);
+    let house_roster =
+        crate::map::houses::parse_house_roster(&map.ini, rules.color_schemes.as_slice());
     let mut overlay_grid =
         OverlayGrid::from_overlay_entries(&map.overlays, resolved.width(), resolved.height());
     let cleared_terrain_overlay_cells =
@@ -119,7 +119,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         );
     }
     let height_map = resolved.build_height_map();
-    let path_grid = PathGrid::from_resolved_terrain(&resolved);
     let lighting_profiles = crate::map::lighting::parse_lighting_profiles(&map.ini);
 
     let descriptor = ScenarioDescriptor {
@@ -189,6 +188,24 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         &rules,
         &overlay_registry,
     );
+    let post_map = sim.finalize_scenario_post_map(
+        crate::sim::scenario_post_map::ScenarioPostMapInput {
+            map_width: map.header.width as u16,
+            map_height: map.header.height as u16,
+            basic: &map.basic,
+            special_flags: &map.special_flags,
+            rules: &rules,
+            overlay_registry: &overlay_registry,
+            house_roster: &house_roster,
+            skirmish_session: None,
+        },
+    );
+    if !post_map.navigation_published {
+        return Err("publish headless post-map navigation".to_string());
+    }
+    if sim.path_grid().is_none() {
+        return Err("headless post-map navigation is unavailable".to_string());
+    }
     // The production-side resource-node index is deliberately not seeded: its helper is
     // `#[cfg(test)]`-gated, and nothing reads that index without miners, which this
     // scenario has none of. Ore is still present as map overlays. Seed it here when unit
@@ -199,7 +216,6 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules,
         map,
         height_map,
-        path_grid,
         overlay_registry,
     })
 }
@@ -207,11 +223,12 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 impl HeadlessScenario {
     /// Advance one committed simulation frame with no player commands.
     pub fn tick(&mut self) {
+        let path_grid = self.sim.path_grid_snapshot();
         self.sim.advance_tick(
             &[],
             Some(&self.rules),
             &self.height_map,
-            Some(&self.path_grid),
+            path_grid.as_deref(),
             Some(&self.overlay_registry),
             SIM_TICK_MS,
         );
