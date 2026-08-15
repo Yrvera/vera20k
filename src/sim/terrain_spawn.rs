@@ -122,8 +122,8 @@ pub struct TerrainSpawnerState {
     pub animation_probability: TerrainSpawnProbability,
     /// `AnimationRate=` in logic ticks per animation frame.
     pub animation_rate_ticks: u16,
-    /// Loaded terrain SHP frame count. App integration must supply this; tests
-    /// may use stock 22, but production logic must not assume it.
+    /// Raw loaded terrain SHP frame count from the immutable rules asset
+    /// catalog. Stock TIBTRE uses 22; production logic never hardcodes it.
     pub frame_count: u16,
     /// Frame at which the binary resets active state and calls SpreadTiberium.
     pub midpoint_frame: u16,
@@ -728,6 +728,54 @@ fn tiberium_overlay_id_for_new_cell(
     default_ore_overlay_id
 }
 
+/// Apply `TerrainClass::Unlimbo @ 0x0071D000` source-cell tiberium clearing
+/// before map-derived navigation and simulation state are published.
+///
+/// This is a map-load projection, not a runtime overlay mutation, so cleared
+/// cells do not enter the dirty-cell output queue. Both graphical and headless
+/// loading must run the same projection before deriving height/path state.
+pub fn clear_tiberium_source_cells_for_terrain(
+    overlay_grid: &mut OverlayGrid,
+    resolved_terrain: &mut ResolvedTerrainGrid,
+    terrain_objects: &[crate::map::overlay::TerrainObject],
+    rules: &RuleSet,
+    overlay_registry: &OverlayTypeRegistry,
+) -> BTreeSet<(u16, u16)> {
+    let mut cleared_cells = BTreeSet::new();
+    for terrain_object in terrain_objects {
+        if rules
+            .terrain_object_type_case_insensitive(&terrain_object.name)
+            .is_none()
+        {
+            continue;
+        }
+        let Some(overlay_id) = overlay_grid
+            .cell(terrain_object.rx, terrain_object.ry)
+            .overlay_id
+        else {
+            continue;
+        };
+        if !overlay_registry
+            .flags(overlay_id)
+            .is_some_and(|flags| flags.tiberium)
+        {
+            continue;
+        }
+
+        *overlay_grid.cell_mut(terrain_object.rx, terrain_object.ry) = Default::default();
+        crate::sim::overlay_grid::recalc_overlay_passability(
+            overlay_grid,
+            resolved_terrain,
+            overlay_registry,
+            terrain_object.rx,
+            terrain_object.ry,
+        );
+        cleared_cells.insert((terrain_object.rx, terrain_object.ry));
+    }
+
+    cleared_cells
+}
+
 /// `TerrainClass::Read_Map_Section` — construct one live terrain object per
 /// map `[Terrain]` entry.
 ///
@@ -801,25 +849,24 @@ pub fn construct_terrain_objects(
 
 /// Attach the ore-spawner animation index to already-constructed terrain objects.
 ///
-/// Split out of construction because the animation frame count comes from the
-/// loaded terrain SHP, which app/render-side asset loading only knows after the
-/// overlay atlas is built. gamemd has the theater art resident from
-/// `Init_Theater`, so it needs no second pass; the split is VERA-internal and
-/// changes no ordering the sim can observe (the index is only read by the
-/// per-tick spawner walk). Sim stores only the numeric count, preserving the
-/// layering boundary.
+/// Split out of construction because the overlay registry that selects the
+/// default ore identity is installed later in the current map-load pipeline.
+/// The authoritative raw SHP count is already bound on `RuleSet`; the renderer
+/// neither supplies nor mutates this state.
 ///
 /// Returns the number of spawners seeded.
 pub fn seed_terrain_spawner_animation(
     sim: &mut crate::sim::world::Simulation,
     rules: &crate::rules::ruleset::RuleSet,
-    overlay_names: &BTreeMap<u8, String>,
-    terrain_frame_counts: &BTreeMap<String, u16>,
+    overlay_registry: &OverlayTypeRegistry,
 ) -> usize {
-    sim.production.default_ore_overlay_id = overlay_names
-        .iter()
-        .find(|(_id, name)| name.to_ascii_uppercase().starts_with("TIB"))
-        .map(|(id, _)| *id);
+    sim.production.default_ore_overlay_id = (0..overlay_registry.len()).find_map(|index| {
+        let id = u8::try_from(index).ok()?;
+        overlay_registry
+            .name(id)
+            .is_some_and(|name| name.to_ascii_uppercase().starts_with("TIB"))
+            .then_some(id)
+    });
     sim.production.terrain_spawners.clear();
 
     let candidates: Vec<(u64, (u16, u16), InternedId)> = sim
@@ -844,11 +891,7 @@ pub fn seed_terrain_spawner_animation(
         if !t.spawns_tiberium || !t.is_animated {
             continue;
         }
-        let frame_count = terrain_frame_counts
-            .get(&name)
-            .or_else(|| terrain_frame_counts.get(&name.to_ascii_uppercase()))
-            .copied()
-            .unwrap_or(0);
+        let frame_count = rules.terrain_spawner_frame_count(&name).unwrap_or(0);
         sim.production.terrain_spawners.insert(
             cell,
             TerrainSpawnerState::new(
@@ -865,24 +908,27 @@ pub fn seed_terrain_spawner_animation(
 
 /// Construct terrain objects and seed their spawner index in one call.
 ///
-/// Convenience for callers that have the frame counts already (tests, the
-/// preview/spawn-pick path). The production load path calls the two halves
-/// separately so construction keeps its native position ahead of `[Units]`.
+/// Convenience for tests and preview/spawn-pick callers. The production load
+/// path calls the two halves separately so construction keeps its native
+/// position ahead of `[Units]`.
 pub fn seed_terrain_spawners(
     sim: &mut crate::sim::world::Simulation,
     terrain_objects: &[crate::map::overlay::TerrainObject],
     rules: &crate::rules::ruleset::RuleSet,
-    overlay_names: &BTreeMap<u8, String>,
-    terrain_frame_counts: &BTreeMap<String, u16>,
+    overlay_registry: &OverlayTypeRegistry,
     snow_theater: bool,
 ) -> usize {
     construct_terrain_objects(sim, terrain_objects, rules, snow_theater);
-    seed_terrain_spawner_animation(sim, rules, overlay_names, terrain_frame_counts)
+    seed_terrain_spawner_animation(sim, rules, overlay_registry)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+    use crate::assets::asset_manager::AssetManager;
     use crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
     use crate::map::entities::EntityCategory;
     use crate::map::overlay_types::OverlayTypeRegistry;
@@ -1106,6 +1152,132 @@ SpreadPercentage=.06
         assert_eq!(
             spawners.get(&(10, 10)).unwrap().phase,
             TerrainSpawnerPhase::Idle
+        );
+    }
+
+    #[test]
+    fn rules_bound_raw_asset_seeds_live_midpoint_and_spawns_after_33_ticks() {
+        use crate::map::overlay::TerrainObject;
+        use crate::rules::art_data::ArtRegistry;
+        use crate::sim::overlay_grid::OverlayGrid;
+        use crate::sim::pathfinding::PathGrid;
+        use crate::sim::world::Simulation;
+
+        let root = TestAssetRoot::new();
+        std::fs::write(root.path().join("TIBTRE01.TEM"), shp_header(22))
+            .expect("write raw 22-frame terrain SHP");
+        let assets = AssetManager::from_loose_root_for_test(root.path());
+
+        let mut rules_text = String::from(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [TerrainTypes]\n0=TIBTRE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
+             AnimationRate=3\nAnimationProbability=1\n\
+             [OverlayTypes]\n",
+        );
+        for index in 0..12 {
+            rules_text.push_str(&format!("{index}=TIB{:02}\n", index + 1));
+        }
+        rules_text.push_str("12=TIBFALLBACK\n");
+        for index in 1..=12 {
+            rules_text.push_str(&format!("[TIB{index:02}]\nTiberium=yes\n"));
+        }
+        rules_text.push_str(
+            "[TIBFALLBACK]\nTiberium=yes\n\
+             [Tiberiums]\n0=Riparius\n\
+             [Riparius]\nImage=1\n",
+        );
+        let rules_ini = IniFile::from_str(&rules_text);
+        let mut rules = RuleSet::from_ini(&rules_ini).expect("terrain-spawner rules");
+        let art = ArtRegistry::from_ini(&IniFile::from_str("[TIBTRE01]\nTheater=yes\n"));
+        rules.merge_art_data(&art);
+        rules.art_registry = art;
+        rules.bind_terrain_spawner_assets(&rules_ini, &assets, "TEM", "TEMPERATE");
+
+        let registry = OverlayTypeRegistry::from_ini(&rules_ini, None);
+        let mut sim = Simulation::with_seed(7);
+        sim.resolved_terrain = Some(resolved_grid(32, 32));
+        sim.overlay_grid = Some(OverlayGrid::new(32, 32));
+        construct_terrain_objects(
+            &mut sim,
+            &[TerrainObject {
+                rx: 10,
+                ry: 10,
+                name: "TIBTRE01".to_string(),
+            }],
+            &rules,
+            false,
+        );
+        assert_eq!(
+            seed_terrain_spawner_animation(&mut sim, &rules, &registry),
+            1
+        );
+        let state = &sim.production.terrain_spawners[&(10, 10)];
+        assert_eq!(state.frame_count, 22);
+        assert_eq!(state.midpoint_frame, 11);
+
+        // Make absence of the registry observable: a registry-aware spawn uses
+        // TIB01..TIB12, while the fallback-only path would stamp id 12.
+        sim.production.default_ore_overlay_id = Some(12);
+        let path_grid = PathGrid::test_all_passable(32, 32);
+        let height_map = BTreeMap::new();
+        let advance = |sim: &mut Simulation| {
+            sim.advance_tick(
+                &[],
+                Some(&rules),
+                &height_map,
+                Some(&path_grid),
+                Some(&registry),
+                67,
+            )
+        };
+
+        assert!(advance(&mut sim).frame_committed);
+        assert_eq!(
+            sim.overlay_grid
+                .as_ref()
+                .expect("overlay grid")
+                .iter_occupied()
+                .count(),
+            0
+        );
+        for _ in 0..32 {
+            assert!(advance(&mut sim).frame_committed);
+            assert_eq!(
+                sim.overlay_grid
+                    .as_ref()
+                    .expect("overlay grid")
+                    .iter_occupied()
+                    .count(),
+                0
+            );
+        }
+        assert!(advance(&mut sim).frame_committed);
+        assert_eq!(
+            sim.production.terrain_spawners[&(10, 10)].phase,
+            TerrainSpawnerPhase::Idle
+        );
+        assert!(
+            sim.production.resource_nodes.is_empty(),
+            "the complete native context must not fall back to compatibility nodes"
+        );
+        let placed_cells: Vec<(u8, u8)> = sim
+            .overlay_grid
+            .as_ref()
+            .expect("overlay grid")
+            .iter_occupied()
+            .map(|(_, _, cell)| {
+                (
+                    cell.overlay_id.expect("occupied identity"),
+                    cell.overlay_data,
+                )
+            })
+            .collect();
+        assert_eq!(placed_cells.len(), 1);
+        assert_eq!(placed_cells[0].1, SPAWN_DENSITY_LEVELS as u8);
+        assert!(
+            placed_cells[0].0 < 12,
+            "registry variants must beat fallback id"
         );
     }
 
@@ -1559,14 +1731,13 @@ SpreadPercentage=.06
              [TREE01]\nSpawnsTiberium=no\nIsAnimated=yes\n\
              [TREE02]\nSpawnsTiberium=yes\nIsAnimated=no\n",
         );
-        let rules = RuleSet::from_ini(&ini).expect("rules");
+        let mut rules = RuleSet::from_ini(&ini).expect("rules");
+        rules.set_terrain_spawner_frame_count_for_test("TIBTRE01", STOCK_FRAME_COUNT);
         let mut sim = Simulation::new();
-        let mut overlay_names = BTreeMap::new();
-        overlay_names.insert(2u8, "TIB1".to_string());
-        overlay_names.insert(7u8, "RUBBLE".to_string());
-        let mut terrain_frame_counts = BTreeMap::new();
-        terrain_frame_counts.insert("TIBTRE01".to_string(), STOCK_FRAME_COUNT);
-
+        let overlay_registry = OverlayTypeRegistry::from_ini(
+            &IniFile::from_str("[OverlayTypes]\n0=FILL0\n1=FILL1\n2=TIB1\n"),
+            None,
+        );
         let objs = vec![
             TerrainObject {
                 rx: 5,
@@ -1589,14 +1760,7 @@ SpreadPercentage=.06
                 name: "UNKNOWN".to_string(),
             },
         ];
-        let seeded = seed_terrain_spawners(
-            &mut sim,
-            &objs,
-            &rules,
-            &overlay_names,
-            &terrain_frame_counts,
-            false,
-        );
+        let seeded = seed_terrain_spawners(&mut sim, &objs, &rules, &overlay_registry, false);
         assert_eq!(seeded, 1);
         let placed = sim
             .production
@@ -1609,6 +1773,9 @@ SpreadPercentage=.06
             TerrainSpawnProbability::from_micros(3000)
         );
         assert_eq!(placed.animation_rate_ticks, 3);
+        // Rendering addresses 11 body frames in the 22-frame SHP. Native
+        // TerrainClass::AI reads raw 22 and performs the one midpoint divide
+        // itself, so the authoritative target must remain 11 rather than 5.
         assert_eq!(placed.frame_count, STOCK_FRAME_COUNT);
         assert_eq!(placed.midpoint_frame, STOCK_FRAME_COUNT / 2);
         assert_eq!(
@@ -1751,8 +1918,7 @@ SpreadPercentage=.06
     }
 
     /// The animation index is a decoration over already-constructed objects, so
-    /// running it alone (the production load order: construct with the map
-    /// entities, decorate after the atlas) can never resurrect terrain.
+    /// running it alone can never resurrect terrain.
     #[test]
     fn gsi_17_01_spawner_animation_pass_only_decorates_constructed_objects() {
         use crate::map::overlay::TerrainObject;
@@ -1764,13 +1930,12 @@ SpreadPercentage=.06
              [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n\
              AnimationRate=3\nAnimationProbability=.003\n",
         );
-        let rules = RuleSet::from_ini(&ini).expect("rules");
-        let mut frame_counts = BTreeMap::new();
-        frame_counts.insert("TIBTRE01".to_string(), STOCK_FRAME_COUNT);
+        let mut rules = RuleSet::from_ini(&ini).expect("rules");
+        rules.set_terrain_spawner_frame_count_for_test("TIBTRE01", STOCK_FRAME_COUNT);
 
         let mut sim = Simulation::new();
         assert_eq!(
-            seed_terrain_spawner_animation(&mut sim, &rules, &BTreeMap::new(), &frame_counts),
+            seed_terrain_spawner_animation(&mut sim, &rules, &OverlayTypeRegistry::empty()),
             0,
             "no constructed objects means no spawners"
         );
@@ -1791,7 +1956,7 @@ SpreadPercentage=.06
             "construction alone leaves the animation index empty"
         );
         assert_eq!(
-            seed_terrain_spawner_animation(&mut sim, &rules, &BTreeMap::new(), &frame_counts),
+            seed_terrain_spawner_animation(&mut sim, &rules, &OverlayTypeRegistry::empty()),
             1
         );
         assert_eq!(
@@ -1865,8 +2030,7 @@ SpreadPercentage=.06
                 &mut sim,
                 &objects,
                 &rules,
-                &BTreeMap::new(),
-                &BTreeMap::new(),
+                &OverlayTypeRegistry::empty(),
                 snow_theater,
             );
 
@@ -1925,6 +2089,38 @@ SpreadPercentage=.06
                     0
                 );
             }
+        }
+    }
+
+    fn shp_header(frame_count: u16) -> Vec<u8> {
+        let mut data = vec![0_u8; 8 + usize::from(frame_count) * 24];
+        data[6..8].copy_from_slice(&frame_count.to_le_bytes());
+        data
+    }
+
+    static NEXT_ASSET_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    struct TestAssetRoot(PathBuf);
+
+    impl TestAssetRoot {
+        fn new() -> Self {
+            let serial = NEXT_ASSET_ROOT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "vera20k-terrain-spawner-live-{}-{serial}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create terrain spawner test root");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestAssetRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 }

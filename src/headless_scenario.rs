@@ -73,7 +73,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         crate::rules::infantry_sequence::parse_infantry_sequence_registry(&art_ini);
     let overlay_registry = OverlayTypeRegistry::from_ini(&rules_ini, Some(&art_ini));
 
-    let resolved = ResolvedTerrainGrid::build(
+    let mut resolved = ResolvedTerrainGrid::build(
         &map,
         Some(&theater),
         Some(&assets),
@@ -93,11 +93,26 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     .map_err(|error| format!("bind authoritative animation assets: {error}"))?;
     rules.art_registry = art;
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
+    rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
     rules.bind_animation_sequences(&infantry_sequences);
+    let mut overlay_grid =
+        OverlayGrid::from_overlay_entries(&map.overlays, resolved.width(), resolved.height());
+    let cleared_terrain_overlay_cells =
+        crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
+            &mut overlay_grid,
+            &mut resolved,
+            &map.terrain_objects,
+            &rules,
+            &overlay_registry,
+        );
+    if !cleared_terrain_overlay_cells.is_empty() {
+        log::info!(
+            "Cleared {} same-cell tiberium overlay cell(s) for recognized terrain",
+            cleared_terrain_overlay_cells.len(),
+        );
+    }
     let height_map = resolved.build_height_map();
     let path_grid = PathGrid::from_resolved_terrain(&resolved);
-    let overlay_grid =
-        OverlayGrid::from_overlay_entries(&map.overlays, resolved.width(), resolved.height());
     let lighting_profiles = crate::map::lighting::parse_lighting_profiles(&map.ini);
 
     let descriptor = ScenarioDescriptor {
@@ -156,6 +171,17 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 
     sim.resolved_terrain = Some(resolved);
     sim.overlay_grid = Some(overlay_grid);
+    crate::sim::terrain_spawn::construct_terrain_objects(
+        &mut sim,
+        &map.terrain_objects,
+        &rules,
+        map.header.theater.eq_ignore_ascii_case("SNOW"),
+    );
+    crate::sim::terrain_spawn::seed_terrain_spawner_animation(
+        &mut sim,
+        &rules,
+        &overlay_registry,
+    );
     // The production-side resource-node index is deliberately not seeded: its helper is
     // `#[cfg(test)]`-gated, and nothing reads that index without miners, which this
     // scenario has none of. Ore is still present as map overlays. Seed it here when unit
@@ -179,7 +205,7 @@ impl HeadlessScenario {
             Some(&self.rules),
             &self.height_map,
             Some(&self.path_grid),
-            None,
+            Some(&self.overlay_registry),
             SIM_TICK_MS,
         );
     }

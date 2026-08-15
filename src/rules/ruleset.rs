@@ -2255,6 +2255,9 @@ pub struct RuleSet {
     /// GPU-independent SHP frame counts used by authoritative world-effect
     /// and particle timing. Bound once from the active assets and ART data.
     effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog,
+    /// Raw terrain SHP counts used by authoritative TIBTRE animation timing.
+    /// Presentation keeps its separate body-frame projection.
+    terrain_spawner_assets: crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog,
     /// Complete immutable per-object animation timing catalog. Gameplay reads
     /// this rules-owned resource directly; presentation cannot replace timing
     /// on an individual frame.
@@ -2742,6 +2745,8 @@ impl RuleSet {
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
             effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog::default(),
+            terrain_spawner_assets:
+                crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::default(),
             animation_sequences: BTreeMap::new(),
             ion_cannon_warhead_id: None,
             c4_warhead_id: None,
@@ -2927,16 +2932,17 @@ impl RuleSet {
         self.source_ini_hash
     }
 
-    /// Compatibility identity for processed rules plus the resolved animation
-    /// and authoritative effect-frame inputs currently bound to this ruleset.
+    /// Compatibility identity for processed rules plus the resolved animation,
+    /// effect-frame, and terrain-spawner frame inputs bound to this ruleset.
     /// Other asset-derived simulation inputs are added by later ownership
     /// slices and are not claimed by this hash yet.
     pub fn simulation_config_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        b"rules-simulation-config-v2".hash(&mut hasher);
+        b"rules-simulation-config-v3".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
         self.animation_sequences.hash(&mut hasher);
         self.effect_assets.hash(&mut hasher);
+        self.terrain_spawner_assets.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -3270,6 +3276,25 @@ impl RuleSet {
         );
     }
 
+    /// Resolve raw terrain SHP frame counts for authoritative TIBTRE midpoint
+    /// timing without consulting a renderer atlas.
+    pub fn bind_terrain_spawner_assets(
+        &mut self,
+        rules_ini: &crate::rules::ini_parser::IniFile,
+        asset_manager: &crate::assets::asset_manager::AssetManager,
+        theater_ext: &str,
+        theater_name: &str,
+    ) {
+        self.terrain_spawner_assets =
+            crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::bind(
+                self,
+                rules_ini,
+                asset_manager,
+                theater_ext,
+                theater_name,
+            );
+    }
+
     /// Authoritative consumer-visible SHP frame count for a world effect or
     /// particle image. Lookup is case-insensitive and does not intern names.
     pub fn effect_frame_count(&self, name: &str) -> Option<u16> {
@@ -3280,6 +3305,11 @@ impl RuleSet {
     /// the native particle body/shadow policy is still UNCHECKED.
     pub fn raw_effect_frame_count(&self, name: &str) -> Option<u16> {
         self.effect_assets.raw_frame_count(name)
+    }
+
+    /// Raw SHP header count used by `TerrainClass::AI` midpoint timing.
+    pub fn terrain_spawner_frame_count(&self, name: &str) -> Option<u16> {
+        self.terrain_spawner_assets.frame_count(name)
     }
 
     fn rebuild_animation_sequences(
@@ -3315,6 +3345,15 @@ impl RuleSet {
     #[cfg(test)]
     pub(crate) fn set_effect_frame_count_for_test(&mut self, name: &str, raw: u16, available: u16) {
         self.effect_assets.set_for_test(name, raw, available);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_terrain_spawner_frame_count_for_test(
+        &mut self,
+        name: &str,
+        frame_count: u16,
+    ) {
+        self.terrain_spawner_assets.set_for_test(name, frame_count);
     }
 
     /// Total number of game objects across all categories.
@@ -5642,6 +5681,25 @@ ZAdjust=-10
 
         first.set_effect_frame_count_for_test("WARPOUT", 5, 5);
         second.set_effect_frame_count_for_test("WARPOUT", 6, 6);
+
+        assert_eq!(first.source_ini_hash(), second.source_ini_hash());
+        assert_ne!(
+            first.simulation_config_hash(),
+            second.simulation_config_hash()
+        );
+    }
+
+    #[test]
+    fn simulation_config_hash_changes_with_terrain_spawner_frame_count() {
+        let ini = IniFile::from_str(
+            "[TerrainTypes]\n0=TIBTRE01\n\
+             [TIBTRE01]\nSpawnsTiberium=yes\nIsAnimated=yes\n",
+        );
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut second = RuleSet::from_ini(&ini).expect("second rules");
+
+        first.set_terrain_spawner_frame_count_for_test("TIBTRE01", 22);
+        second.set_terrain_spawner_frame_count_for_test("TIBTRE01", 24);
 
         assert_eq!(first.source_ini_hash(), second.source_ini_hash());
         assert_ne!(

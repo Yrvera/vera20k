@@ -490,7 +490,7 @@ mod map_wall_owner_candidate_tests {
             },
         ];
 
-        let cleared = clear_tiberium_source_cells_for_terrain(
+        let cleared = crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
             &mut overlays,
             &mut terrain,
             &terrain_objects,
@@ -1093,51 +1093,6 @@ impl LightingFingerprint {
     }
 }
 
-fn clear_tiberium_source_cells_for_terrain(
-    overlay_grid: &mut crate::sim::overlay_grid::OverlayGrid,
-    resolved_terrain: &mut ResolvedTerrainGrid,
-    terrain_objects: &[TerrainObject],
-    rules: &RuleSet,
-    overlay_registry: &OverlayTypeRegistry,
-) -> BTreeSet<(u16, u16)> {
-    let mut cleared_cells = BTreeSet::new();
-    for terrain_object in terrain_objects {
-        if rules
-            .terrain_object_type_case_insensitive(&terrain_object.name)
-            .is_none()
-        {
-            continue;
-        }
-        let Some(overlay_id) = overlay_grid
-            .cell(terrain_object.rx, terrain_object.ry)
-            .overlay_id
-        else {
-            continue;
-        };
-        if !overlay_registry
-            .flags(overlay_id)
-            .is_some_and(|flags| flags.tiberium)
-        {
-            continue;
-        }
-
-        // TerrainClass::Unlimbo clears the cell's Tiberium during map load.
-        // Write the initialization grid directly so this does not become a
-        // runtime dirty-cell mutation after Simulation construction.
-        *overlay_grid.cell_mut(terrain_object.rx, terrain_object.ry) = Default::default();
-        crate::sim::overlay_grid::recalc_overlay_passability(
-            overlay_grid,
-            resolved_terrain,
-            overlay_registry,
-            terrain_object.rx,
-            terrain_object.ry,
-        );
-        cleared_cells.insert((terrain_object.rx, terrain_object.ry));
-    }
-
-    cleared_cells
-}
-
 /// Lightweight metadata used by the main-menu map selector.
 #[derive(Debug, Clone)]
 pub struct MapMenuEntry {
@@ -1564,6 +1519,12 @@ pub(crate) fn load_map_from_initial(
             theater_ext,
             &map_data.header.theater,
         );
+        r.bind_terrain_spawner_assets(
+            &rules_ini,
+            &asset_manager,
+            theater_ext,
+            &map_data.header.theater,
+        );
         r.bind_animation_sequences(&infantry_sequences);
     }
     let variant_table_generated = variant_selector.generated_table();
@@ -1649,7 +1610,7 @@ pub(crate) fn load_map_from_initial(
         skirmish_launch_session.is_some(),
     );
     let cleared_terrain_overlay_cells = rules.as_ref().map_or_else(BTreeSet::new, |rules| {
-        clear_tiberium_source_cells_for_terrain(
+        crate::sim::terrain_spawn::clear_tiberium_source_cells_for_terrain(
             &mut overlay_grid,
             &mut resolved_terrain,
             &map_data.terrain_objects,
@@ -1984,26 +1945,16 @@ pub(crate) fn load_map_from_initial(
         bridge_railing_tile_bases,
     );
 
-    let mut terrain_frame_counts = BTreeMap::new();
-    if let Some(atlas) = overlay_atlas.as_ref() {
-        for obj in &map_data.terrain_objects {
-            if let Some(frame_count) = atlas.terrain_anim_frame_count(&obj.name) {
-                terrain_frame_counts.insert(obj.name.clone(), u16::from(frame_count));
-                terrain_frame_counts.insert(obj.name.to_ascii_uppercase(), u16::from(frame_count));
-            }
-        }
-    }
-
     if let Some(sim) = &mut simulation {
         // Attach the TIBTRE ore-spawner animation index to the terrain objects
-        // constructed ahead of the map entities. Skip gracefully if rules failed
-        // to load (matches the ore_growth_config pattern below).
+        // constructed ahead of the map entities. Its authoritative raw SHP
+        // count is rules-owned; the overlay atlas retains only presentation's
+        // body-frame range.
         if let Some(rules_for_terrain) = rules.as_ref() {
             let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawner_animation(
                 sim,
                 rules_for_terrain,
-                &overlay_names,
-                &terrain_frame_counts,
+                &overlay_registry,
             );
             if seeded_terrain > 0 {
                 log::info!(
