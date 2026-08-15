@@ -20,14 +20,15 @@ use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
 use crate::app_skirmish::{
-    apply_explicit_skirmish_launch_session, apply_preloaded_battle_launch_session,
-    apply_skirmish_ai_opening_credits,
-    apply_skirmish_launch_alliances, build_overlay_atlas_from_map,
-    house_color_map_for_launch_session, initialize_skirmish_launch_houses,
+    build_overlay_atlas_from_map, house_color_map_for_launch_session,
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
-use crate::sim::scenario_bootstrap::{PreloadedBattleStartPlan, ScenarioBootstrapRng};
+use crate::sim::scenario_bootstrap::{
+    PreloadedBattleStartPlan, ScenarioBootstrapRng, apply_explicit_skirmish_launch_session,
+    apply_preloaded_battle_launch_session, apply_skirmish_ai_opening_credits,
+    apply_skirmish_launch_alliances, initialize_skirmish_launch_houses,
+};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
