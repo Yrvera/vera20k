@@ -5,6 +5,9 @@
 //! boundary. Runtime selectors, transition state, dispatch timers, authority,
 //! and handler execution remain in sim::mission.
 //!
+//! Float appears only here, at parse time — the per-minute control rates are
+//! pre-converted to integer frames so no float ever reaches a tick path.
+//!
 //! ## Dependency rules
 //! - Part of rules/ and depends only on rules::ini_parser.
 //! - No dependency on sim/ or runtime scheduling.
