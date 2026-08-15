@@ -54,11 +54,8 @@ unclear, stop before mutation and report the conflict.
 ### Local-only backup preflight
 
 Before an authorized action could remove a checkout or local-only data, refresh
-the adjacent private backup with:
-
-```text
-powershell -NoProfile -File ..\vera20k-docs-backup\backup.ps1
-```
+the adjacent private local backup using the machine-local command recorded in
+`LOCAL.md` (section "Local-only backup").
 
 Require a successful backup commit before continuing. If the backup script is
 missing, refuses because source files disappeared, or reports unapproved
