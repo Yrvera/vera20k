@@ -2933,16 +2933,36 @@ impl RuleSet {
     }
 
     /// Compatibility identity for processed rules plus the resolved animation,
-    /// effect-frame, and terrain-spawner frame inputs bound to this ruleset.
+    /// effect-frame, terrain-spawner frame, and smudge-selection inputs bound
+    /// to this ruleset.
     /// Other asset-derived simulation inputs are added by later ownership
     /// slices and are not claimed by this hash yet.
     pub fn simulation_config_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        b"rules-simulation-config-v3".hash(&mut hasher);
+        b"rules-simulation-config-v4".hash(&mut hasher);
         self.source_ini_hash.hash(&mut hasher);
         self.animation_sequences.hash(&mut hasher);
         self.effect_assets.hash(&mut hasher);
         self.terrain_spawner_assets.hash(&mut hasher);
+        b"art-smudge-config-v1".hash(&mut hasher);
+        let smudge_anim_inputs = self
+            .art_registry
+            .iter_entries()
+            .filter(|(_, entry)| entry.scorch || entry.crater || entry.force_big_craters)
+            .map(|(name, entry)| {
+                (
+                    name.to_string(),
+                    (
+                        entry.scorch,
+                        entry.crater,
+                        entry.force_big_craters,
+                        entry.frame_width,
+                        entry.frame_height,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        smudge_anim_inputs.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -5706,5 +5726,43 @@ ZAdjust=-10
             first.simulation_config_hash(),
             second.simulation_config_hash()
         );
+    }
+
+    #[test]
+    fn simulation_config_hash_covers_canonical_smudge_anim_dimensions() {
+        let ini = IniFile::from_str("[InfantryTypes]\n[VehicleTypes]\n");
+        let mut first = RuleSet::from_ini(&ini).expect("first rules");
+        let mut reordered = RuleSet::from_ini(&ini).expect("reordered rules");
+        let mut changed = RuleSet::from_ini(&ini).expect("changed rules");
+
+        let mut first_art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[BIGCRATER]\nCrater=yes\n[SCORCH]\nScorch=yes\n",
+        ));
+        let mut reordered_art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
+            "[SCORCH]\nScorch=yes\n[BIGCRATER]\nCrater=yes\n",
+        ));
+        for art in [&mut first_art, &mut reordered_art] {
+            let big = art.get_mut("BIGCRATER").expect("big crater art");
+            big.frame_width = 61;
+            big.frame_height = 51;
+        }
+        let mut changed_art = first_art.clone();
+        let changed_big = changed_art
+            .get_mut("BIGCRATER")
+            .expect("changed crater art");
+        changed_big.frame_width = 60;
+        changed_big.frame_height = 50;
+
+        first.merge_art_data(&first_art);
+        reordered.merge_art_data(&reordered_art);
+        changed.merge_art_data(&changed_art);
+
+        assert_eq!(first.source_ini_hash(), reordered.source_ini_hash());
+        assert_eq!(
+            first.simulation_config_hash(),
+            reordered.simulation_config_hash(),
+            "art section insertion order must not affect compatibility"
+        );
+        assert_ne!(first.simulation_config_hash(), changed.simulation_config_hash());
     }
 }

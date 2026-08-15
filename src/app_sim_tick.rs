@@ -1969,7 +1969,8 @@ pub(crate) fn clamp_cell_to_grid(
 
 pub(crate) fn rules_hash(rules: &crate::rules::ruleset::RuleSet) -> u64 {
     // Compatibility covers the processed rules layers plus resolved entity
-    // animation, effect/particle timing, and terrain-spawner raw frame timing.
+    // animation, effect/particle timing, terrain-spawner raw frame timing, and
+    // smudge-selection frame dimensions.
     // Compatibility must distinguish static inputs that can advance the same
     // entity differently.
     rules.simulation_config_hash()

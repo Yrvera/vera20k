@@ -91,6 +91,13 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         &map.header.theater,
     )
     .map_err(|error| format!("bind authoritative animation assets: {error}"))?;
+    let (populated_smudge_dims, fallback_smudge_dims) =
+        art.populate_anim_frame_dims(&assets, theater.extension, &map.header.theater);
+    log::info!(
+        "Anim frame dims: {} populated, {} fallback (defaults to 30x30)",
+        populated_smudge_dims,
+        fallback_smudge_dims,
+    );
     rules.art_registry = art;
     rules.bind_effect_assets(&assets, theater.extension, &map.header.theater);
     rules.bind_terrain_spawner_assets(&rules_ini, &assets, theater.extension, &map.header.theater);
