@@ -789,6 +789,11 @@ fn advance_in_game_runtime_mode(state: &mut AppState, mode: RuntimeAdvanceMode) 
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
         let frame_committed = advance_one_simulation_frame(state, tick_lane);
+        crate::app_sidebar_render::advance_sidebar_credits_after_frame(
+            state,
+            frame_committed,
+            tick_lane,
+        );
         if frame_committed && admitted_by_pacer {
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");

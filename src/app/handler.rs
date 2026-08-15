@@ -24,6 +24,7 @@ impl App {
             state.ui_scale = new_scale;
         }
         Self::invalidate_main_menu_movie_if_base_changed(state);
+        crate::app_sidebar_render::refresh_sidebar_projection(state);
     }
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {

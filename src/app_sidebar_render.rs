@@ -1,7 +1,8 @@
 //! Sidebar view construction, minimap interaction, chrome helpers, and render pass.
 //!
-//! Builds the SidebarView data model each frame, handles minimap drag/click,
-//! resolves sidebar chrome theme, and creates the main wgpu render pass.
+//! Refreshes the retained SidebarView projection at explicit state transitions,
+//! handles minimap drag/click, resolves sidebar chrome theme, and creates the
+//! main wgpu render pass.
 //!
 //! Instance builders for sidebar layers live in app_sidebar_build.rs.
 //!
@@ -26,13 +27,84 @@ pub(crate) use crate::app_sidebar_build::{
 // Sidebar view construction
 // ---------------------------------------------------------------------------
 
-pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> {
+/// Return the one retained sidebar projection. Reading it never advances
+/// credits, clears targeting, or clamps scroll state.
+pub(crate) fn current_sidebar_view(state: &AppState) -> Option<&SidebarView> {
+    state.sidebar_projection.view()
+}
+
+/// Advance the displayed balance at the authoritative gameplay-frame seam.
+pub(crate) fn advance_sidebar_credits_after_frame(
+    state: &mut AppState,
+    frame_committed: bool,
+    tick_lane: crate::sim::world::TickLane,
+) {
+    if !crate::app::sidebar_projection::credits_advance_for_frame(frame_committed, tick_lane) {
+        return;
+    }
+    let owner_name = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
+    let Some(sim) = state.simulation.as_ref() else {
+        return;
+    };
+    let credits = production::credits_for_owner(sim, &owner_name);
+    state
+        .sidebar_projection
+        .advance_credits(&owner_name, credits);
+}
+
+/// Reconcile state-derived sidebar inputs and replace the retained immutable
+/// projection. This is called only from explicit simulation/input/lifecycle
+/// transitions, never from a view consumer.
+pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
     let owner_name: String =
         preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
-    let (sim, rules) = (state.simulation.as_ref()?, state.rules.as_ref()?);
-    let mut build_options = production::build_options_for_owner(sim, rules, &owner_name);
-    let mut queue_items = production::queue_view_for_owner(sim, rules, &owner_name);
-    let mut ready_buildings = production::ready_buildings_for_owner(sim, rules, &owner_name);
+    let Some((
+        mut build_options,
+        mut queue_items,
+        mut ready_buildings,
+        producer_focus,
+        credits,
+        power_produced,
+        power_drained,
+        sw_views,
+    )) = (|| {
+        let (sim, rules) = (state.simulation.as_ref()?, state.rules.as_ref()?);
+        let producer_focus = [
+            production::ProductionCategory::Building,
+            production::ProductionCategory::Defense,
+            production::ProductionCategory::Infantry,
+            production::ProductionCategory::Vehicle,
+            production::ProductionCategory::Aircraft,
+        ]
+        .into_iter()
+        .filter_map(|category| {
+            production::active_producer_for_owner_category(sim, rules, &owner_name, category)
+        })
+        .collect::<Vec<_>>();
+        let owner_iid = sim.interner.get(&owner_name).unwrap_or_default();
+        let sw_views = if sim.session.game_options.super_weapons {
+            crate::sim::superweapon::superweapon_views_for_owner(sim, rules, &owner_iid)
+        } else {
+            Vec::new()
+        };
+        let (power_produced, power_drained) =
+            production::power_balance_for_owner(sim, rules, &owner_name);
+        Some((
+            production::build_options_for_owner(sim, rules, &owner_name),
+            production::queue_view_for_owner(sim, rules, &owner_name),
+            production::ready_buildings_for_owner(sim, rules, &owner_name),
+            producer_focus,
+            production::credits_for_owner(sim, &owner_name),
+            power_produced,
+            power_drained,
+            sw_views,
+        ))
+    })()
+    else {
+        state.sidebar_projection.replace_view(None);
+        return;
+    };
+
     // Resolve CSF display names (e.g., "Name:MTNK" → "Grizzly Battle Tank").
     if let Some(csf) = &state.csf {
         for opt in &mut build_options {
@@ -45,68 +117,22 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
             ready.display_name = resolve_csf_name(csf, &ready.display_name);
         }
     }
-    let producer_focus = [
-        production::ProductionCategory::Building,
-        production::ProductionCategory::Defense,
-        production::ProductionCategory::Infantry,
-        production::ProductionCategory::Vehicle,
-        production::ProductionCategory::Aircraft,
-    ]
-    .into_iter()
-    .filter_map(|category| {
-        production::active_producer_for_owner_category(sim, rules, &owner_name, category)
-    })
-    .collect::<Vec<_>>();
-    let credits = production::credits_for_owner(sim, &owner_name);
-    // Smooth credits animation: step = |diff| / 8, clamped [1, 143].
-    // Ticks once per render frame.
-    let displayed = state
-        .displayed_credits
-        .entry(owner_name.clone())
-        .or_insert(credits);
-    if *displayed != credits {
-        let diff = (credits - *displayed).unsigned_abs().max(1) as i32;
-        let step = (diff / 8).clamp(1, 143);
-        if credits > *displayed {
-            *displayed += step;
-        } else {
-            *displayed -= step;
-        }
-    }
-    let display_credits = *displayed;
-    let (power_produced, power_drained) =
-        production::power_balance_for_owner(sim, rules, &owner_name);
-    let tab_btn_size = current_sidebar_chrome(state)
-        .and_then(|atlas| atlas.tab_frames[0][0].as_ref())
-        .map(|entry| {
-            [
-                entry.pixel_size[0] * state.ui_scale,
-                entry.pixel_size[1] * state.ui_scale,
-            ]
-        });
-    let repair_btn_size = current_sidebar_chrome(state)
-        .and_then(|atlas| atlas.repair_frames[0].as_ref())
-        .map(|entry| {
-            [
-                entry.pixel_size[0] * state.ui_scale,
-                entry.pixel_size[1] * state.ui_scale,
-            ]
-        });
-    let sell_btn_size = current_sidebar_chrome(state)
-        .and_then(|atlas| atlas.sell_frames[0].as_ref())
-        .map(|entry| {
-            [
-                entry.pixel_size[0] * state.ui_scale,
-                entry.pixel_size[1] * state.ui_scale,
-            ]
-        });
-    let interner = state.simulation.as_ref().map(|s| &s.interner);
-    // Query superweapon views for sidebar cameos.
-    let owner_iid = sim.interner.get(&owner_name).unwrap_or_default();
-    let sw_views = if sim.session.game_options.super_weapons {
-        crate::sim::superweapon::superweapon_views_for_owner(sim, rules, &owner_iid)
-    } else {
-        Vec::new()
+    let display_credits = state
+        .sidebar_projection
+        .displayed_credits_or_seed(&owner_name, credits);
+    let (tab_btn_size, repair_btn_size, sell_btn_size, scroll_down_btn_size, scroll_up_btn_size) = {
+        let scale = state.ui_scale;
+        let size = |entry: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
+            entry.map(|entry| [entry.pixel_size[0] * scale, entry.pixel_size[1] * scale])
+        };
+        let atlas = current_sidebar_chrome(state);
+        (
+            size(atlas.and_then(|atlas| atlas.tab_frames[0][0].as_ref())),
+            size(atlas.and_then(|atlas| atlas.repair_frames[0].as_ref())),
+            size(atlas.and_then(|atlas| atlas.sell_frames[0].as_ref())),
+            size(atlas.and_then(|atlas| atlas.scroll_down_frames[0].as_ref())),
+            size(atlas.and_then(|atlas| atlas.scroll_up_frames[0].as_ref())),
+        )
     };
     sync_targeting_mode(
         &mut state.targeting_mode,
@@ -130,42 +156,21 @@ pub(crate) fn current_sidebar_view(state: &mut AppState) -> Option<SidebarView> 
         state.targeting_mode.as_ref(),
         &producer_focus,
         state.sidebar_scroll_rows,
-        interner,
+        state.simulation.as_ref().map(|sim| &sim.interner),
         &sw_views,
         &state.sidebar_gadget_state,
         repair_btn_size,
         sell_btn_size,
+        scroll_down_btn_size,
+        scroll_up_btn_size,
     );
-    if state.sidebar_scroll_rows > view.max_scroll_rows {
-        state.sidebar_scroll_rows = view.max_scroll_rows;
-        view = sidebar::build_sidebar_view_with_spec(
-            state.sidebar_layout_spec,
-            state.render_width() as f32,
-            state.render_height() as f32,
-            state.active_sidebar_tab,
-            credits,
-            power_produced,
-            power_drained,
-            tab_btn_size,
-            &queue_items,
-            &build_options,
-            &ready_buildings,
-            state.targeting_mode.as_ref(),
-            &producer_focus,
-            state.sidebar_scroll_rows,
-            interner,
-            &sw_views,
-            &state.sidebar_gadget_state,
-            repair_btn_size,
-            sell_btn_size,
-        );
-    }
+    state.sidebar_scroll_rows = view.scroll_rows;
     if let Some(atlas) = state.sidebar_cameo_atlas.as_ref() {
         for item in &mut view.items {
             item.has_cameo_art = atlas.get(&item.type_id).is_some();
         }
     }
-    Some(view)
+    state.sidebar_projection.replace_view(Some(view));
 }
 
 pub(crate) fn sync_targeting_mode(

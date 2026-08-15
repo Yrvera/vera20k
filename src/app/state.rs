@@ -243,9 +243,9 @@ pub(crate) struct AppState {
     /// §4.3: the native composite timer freezes during pause). Fed pause
     /// edges by `app_messages::update`.
     pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
-    /// Smoothly animated credits display per owner — ticks toward actual balance
-    /// each frame (step = |diff| / 8, clamped to [1, 143]).
-    pub(crate) displayed_credits: HashMap<String, i32>,
+    /// Retained immutable sidebar view plus its per-owner animated credit state.
+    /// Consumers read the snapshot; explicit transitions rebuild it.
+    pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
     /// Content insets [left, top, right, bottom] derived from the transparent opening
     /// in radar.shp frame 0. Used to position the minimap inside the chrome housing.
     /// Unscaled pixels — multiply by `ui_scale` at use site.

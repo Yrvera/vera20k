@@ -246,6 +246,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // view cell, so F1 before any Ctrl+F1 is a valid "go home".
     crate::app_camera::seed_view_bookmarks_from_current_view(state);
     state.asset_manager = result.asset_manager;
+    state.targeting_mode = None;
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
     state.sidebar_scroll_rows = 0;
@@ -450,6 +451,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             }
         }
     }
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
 }
 
 /// Load sound.ini / soundmd.ini and build a SoundRegistry.

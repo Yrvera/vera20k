@@ -74,6 +74,7 @@ pub(crate) mod persistence;
 mod shell_main_menu;
 mod shell_random_map;
 mod shell_skirmish;
+pub(crate) mod sidebar_projection;
 mod state;
 
 pub(crate) use shell_random_map::{

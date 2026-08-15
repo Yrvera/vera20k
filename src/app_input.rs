@@ -81,6 +81,7 @@ pub(crate) fn handle_mouse_input(
         // in-game surface is now on the retained list — R7 complete).
         GadgetConsume::Consumed | GadgetConsume::NotConsumed => {}
     }
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -765,14 +766,15 @@ pub(crate) fn wheel_scrolled_row(current: usize, max_rows: usize, action: WheelA
 /// wheel scrolls the sidebar from anywhere on the screen — and there is no world
 /// zoom in gamemd for the wheel to reach instead.
 pub(crate) fn sidebar_wheel_scroll(state: &mut AppState, delta_lines: f32) {
-    let Some(view) = current_sidebar_view(state) else {
+    let Some(view) = current_sidebar_view(state).cloned() else {
         return;
     };
     state.sidebar_scroll_rows = wheel_scrolled_row(
-        state.sidebar_scroll_rows,
+        view.scroll_rows,
         view.max_scroll_rows,
         wheel_action(delta_lines),
     );
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
 }
 
 /// Index of a tab's parked scroll row. Exhaustive on purpose: a new tab must
@@ -1110,6 +1112,7 @@ pub(crate) fn handle_hotkey_pressed(
             }
         }
     }
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
 }
 
 fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
@@ -1661,6 +1664,7 @@ fn commit_prepared_load(
         &mut state.rust_l0_receipt,
     );
     state.persistence.last_loaded_save_path = Some(path.to_path_buf());
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
     log::info!("Load: restored simulation from {}", path.display());
 }
 

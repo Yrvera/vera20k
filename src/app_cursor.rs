@@ -62,8 +62,11 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // selection — the wrench/dollar shows over own buildings, no-repair/no-sell
     // elsewhere. Placed before the empty-selection early return below because
     // gamemd shows these cursors even with nothing selected.
-    if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
-        let repair = state.sidebar_gadget_state.repair_mode_on;
+    let (repair_mode, sell_mode) = crate::app_sidebar_render::current_sidebar_view(state)
+        .map(|view| (view.repair_button.active, view.sell_button.active))
+        .unwrap_or_default();
+    if repair_mode || sell_mode {
+        let repair = repair_mode;
         let (wx, wy) =
             crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
         let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some()

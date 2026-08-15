@@ -723,7 +723,7 @@ fn build_placement_preview(
 
 /// Build sidebar UI instances: chrome, cameos, text, minimap, viewport rect, radar animation.
 pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances {
-    let view = current_sidebar_view(state);
+    let view = current_sidebar_view(state).cloned();
     let minimap_rect = active_minimap_screen_rect(state);
     let (tactical_w, tactical_h) =
         crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());

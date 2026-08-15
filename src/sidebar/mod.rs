@@ -16,6 +16,8 @@ use crate::sim::production::ProductionCategory;
 
 pub use layout_spec::{SIDEBAR_LAYOUT_FILE_NAME, SidebarChromeLayoutSpec};
 pub use power_bar_anim::PowerBarAnimState;
+#[cfg(test)]
+pub(crate) use sidebar_view::build_sidebar_view;
 pub(crate) use sidebar_view::build_sidebar_view_with_spec;
 
 /// Original RA2 sidebar chrome width (all SHPs are 168px wide).
@@ -194,6 +196,9 @@ pub struct SidebarTabButton {
     /// True when this is the currently-selected tab. Used by hit-test
     /// disambiguation; the rendered visual is driven by `frame_index`.
     pub active: bool,
+    /// Mirrors the retained gadget disabled bit used to select the visual and
+    /// to synchronize hit-testing/tooltips from this immutable projection.
+    pub disabled: bool,
     /// SHP frame index (0..=4) for the per-theme tab SHP atlas. Picked by
     /// `SidebarGadgetState::tab_frame` each frame.
     pub frame_index: u8,
@@ -206,7 +211,22 @@ pub struct SidebarTabButton {
 pub struct SidebarToggleButton {
     pub rect: Rect,
     pub action: SidebarAction,
+    /// Externally driven latch state for the toggle gadget.
+    pub active: bool,
+    /// Retained gadget disabled bit for hit-testing and tooltip presentation.
+    pub disabled: bool,
     /// SHP frame index (0..=4) for the button's per-theme SHP atlas.
+    pub frame_index: u8,
+}
+
+/// View entry for one of the two SHP-driven strip scroll buttons.
+#[derive(Debug, Clone)]
+pub struct SidebarScrollButton {
+    pub rect: Rect,
+    /// Retained gadget disabled bit. The current gadget lifecycle leaves this
+    /// false, but consumers must not reconstruct that presentation fact.
+    pub disabled: bool,
+    /// SHP frame index (0..=2) for the button's per-theme atlas.
     pub frame_index: u8,
 }
 
@@ -253,6 +273,8 @@ pub struct SidebarView {
     /// `sell_frames[frame_index]`. Hit-test routes to
     /// `SidebarAction::ToggleSellMode`.
     pub sell_button: SidebarToggleButton,
+    pub scroll_down_button: SidebarScrollButton,
+    pub scroll_up_button: SidebarScrollButton,
     pub cancel_button: SidebarControlButton,
     pub cycle_owner_button: SidebarControlButton,
     pub starter_base_button: SidebarControlButton,

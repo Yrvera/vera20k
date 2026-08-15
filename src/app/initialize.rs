@@ -592,7 +592,7 @@ impl App {
             dev_overlay_save_name: String::new(),
             persistence: crate::app::persistence::PersistenceState::new(),
             frame_timer: crate::app_dev_overlay::FrameTimer::new(),
-            displayed_credits: HashMap::new(),
+            sidebar_projection: Default::default(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),
             cached_unit_pages: Vec::new(),

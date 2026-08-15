@@ -12,7 +12,8 @@ use crate::sim::superweapon::SuperWeaponView;
 use super::gadget_flash::SidebarGadgetState;
 use super::{
     CAMEO_COLUMNS, Rect, SidebarAction, SidebarChromeLayoutSpec, SidebarControlButton, SidebarItem,
-    SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView, compute_layout_with_spec,
+    SidebarScrollButton, SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView,
+    compute_layout_with_spec, scroll_button_rects,
 };
 
 #[cfg(test)]
@@ -55,6 +56,8 @@ pub(crate) fn build_sidebar_view(
         gadget_state,
         repair_button_size,
         sell_button_size,
+        None,
+        None,
     )
 }
 
@@ -78,6 +81,8 @@ pub(crate) fn build_sidebar_view_with_spec(
     gadget_state: &SidebarGadgetState,
     repair_button_size: Option<[f32; 2]>,
     sell_button_size: Option<[f32; 2]>,
+    scroll_down_button_size: Option<[f32; 2]>,
+    scroll_up_button_size: Option<[f32; 2]>,
 ) -> SidebarView {
     // Collect items first to know how many rows we need.
     let selected_category = active_tab.category();
@@ -137,6 +142,7 @@ pub(crate) fn build_sidebar_view_with_spec(
                     h: tab_h,
                 },
                 active: tab == active_tab,
+                disabled: gadget_state.tab_disabled[idx],
                 frame_index: gadget_state.tab_frame(idx, tab == active_tab),
             }
         })
@@ -167,12 +173,32 @@ pub(crate) fn build_sidebar_view_with_spec(
     let repair_button = SidebarToggleButton {
         rect: repair_rect,
         action: SidebarAction::ToggleRepairMode,
+        active: gadget_state.repair_mode_on,
+        disabled: gadget_state.repair_disabled,
         frame_index: gadget_state.repair_frame(),
     };
     let sell_button = SidebarToggleButton {
         rect: sell_rect,
         action: SidebarAction::ToggleSellMode,
+        active: gadget_state.sell_mode_on,
+        disabled: gadget_state.sell_disabled,
         frame_index: gadget_state.sell_frame(),
+    };
+    let (scroll_down_rect, scroll_up_rect) = scroll_button_rects(
+        &layout,
+        layout_spec.sidebar_width,
+        scroll_down_button_size,
+        scroll_up_button_size,
+    );
+    let scroll_down_button = SidebarScrollButton {
+        rect: scroll_down_rect,
+        disabled: false,
+        frame_index: gadget_state.scroll_down_frame(),
+    };
+    let scroll_up_button = SidebarScrollButton {
+        rect: scroll_up_rect,
+        disabled: false,
+        frame_index: gadget_state.scroll_up_frame(),
     };
 
     // Cameo grid positioning.
@@ -254,6 +280,8 @@ pub(crate) fn build_sidebar_view_with_spec(
         items,
         repair_button,
         sell_button,
+        scroll_down_button,
+        scroll_up_button,
         pause_button: active_queue_exists.then_some(SidebarControlButton {
             rect: Rect {
                 x: btn_x1,
@@ -548,6 +576,40 @@ mod tests {
         for tab in &view.tabs {
             approx_eq(tab.rect.y + tab.rect.h, view.layout.cameo_grid_top);
         }
+    }
+
+    #[test]
+    fn gadget_presentation_is_retained_in_sidebar_view() {
+        let mut gadgets = SidebarGadgetState::new();
+        gadgets.tab_disabled[1] = true;
+        gadgets.repair_mode_on = true;
+        gadgets.sell_disabled = true;
+        gadgets.scroll_down_pressed = true;
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Building,
+            0,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &[],
+            &[],
+            &[],
+            None,
+            &[],
+            0,
+            None,
+            &gadgets,
+            None,
+            None,
+        );
+
+        assert!(view.tabs[1].disabled);
+        assert!(view.repair_button.active);
+        assert!(view.sell_button.disabled);
+        assert_eq!(view.scroll_down_button.frame_index, 1);
+        assert_eq!(view.scroll_up_button.frame_index, 0);
     }
 
     #[test]

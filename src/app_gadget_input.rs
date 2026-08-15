@@ -132,26 +132,6 @@ fn rect_px(r: sidebar::Rect) -> GadgetRect {
     )
 }
 
-/// Atlas frame-0 sizes for the scroll pair, ×ui_scale (same convention as the
-/// repair/sell view rects — zero size when the atlas is missing).
-fn scroll_sizes(state: &AppState) -> (Option<[f32; 2]>, Option<[f32; 2]>) {
-    let Some(atlas) = crate::app_sidebar_render::current_sidebar_chrome(state) else {
-        return (None, None);
-    };
-    let sz = |e: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
-        e.map(|e| {
-            [
-                e.pixel_size[0] * state.ui_scale,
-                e.pixel_size[1] * state.ui_scale,
-            ]
-        })
-    };
-    (
-        sz(atlas.scroll_down_frames[0].as_ref()),
-        sz(atlas.scroll_up_frames[0].as_ref()),
-    )
-}
-
 /// Build the list once (retained order = tabs 0..3, repair, sell, scroll-down,
 /// scroll-up; rects are disjoint so relative order is unobservable today, and
 /// this pins ONE order for hit priority + draw, study O7/G20), then re-sync
@@ -159,18 +139,11 @@ fn scroll_sizes(state: &AppState) -> (Option<[f32; 2]>, Option<[f32; 2]>) {
 /// (the native external latch-on/latch-off equivalent — tabs are externally
 /// driven, study §2.1).
 fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
-    let (down_size, up_size) = scroll_sizes(state);
-    let (down_rect, up_rect) = sidebar::scroll_button_rects(
-        &view.layout,
-        state.sidebar_layout_spec.sidebar_width,
-        down_size,
-        up_size,
-    );
     let tab_rects: Vec<GadgetRect> = view.tabs.iter().map(|t| rect_px(t.rect)).collect();
     let tab_active: Vec<bool> = view.tabs.iter().map(|t| t.active).collect();
+    let tab_disabled: Vec<bool> = view.tabs.iter().map(|t| t.disabled).collect();
     let repair_rect = rect_px(view.repair_button.rect);
     let sell_rect = rect_px(view.sell_button.rect);
-    let gs = state.sidebar_gadget_state.clone();
 
     let gadgets = &mut state.in_game_gadgets;
     if gadgets.handles.is_none() {
@@ -219,7 +192,7 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
             &mut gadgets.list,
             handles.tabs[i],
             rect,
-            gs.tab_disabled[i],
+            tab_disabled.get(i).copied().unwrap_or(false),
             Some(active),
         );
     }
@@ -227,28 +200,28 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
         &mut gadgets.list,
         handles.repair,
         repair_rect,
-        gs.repair_disabled,
-        Some(gs.repair_mode_on),
+        view.repair_button.disabled,
+        Some(view.repair_button.active),
     );
     sync(
         &mut gadgets.list,
         handles.sell,
         sell_rect,
-        gs.sell_disabled,
-        Some(gs.sell_mode_on),
+        view.sell_button.disabled,
+        Some(view.sell_button.active),
     );
     sync(
         &mut gadgets.list,
         handles.scroll_down,
-        rect_px(down_rect),
-        false,
+        rect_px(view.scroll_down_button.rect),
+        view.scroll_down_button.disabled,
         None,
     );
     sync(
         &mut gadgets.list,
         handles.scroll_up,
-        rect_px(up_rect),
-        false,
+        rect_px(view.scroll_up_button.rect),
+        view.scroll_up_button.disabled,
         None,
     );
     sync_regions(state, view);
@@ -401,7 +374,7 @@ pub(crate) fn handle_mouse_button_event(
         MouseButton::Right => state.in_game_gadgets.right_held = pressed,
         _ => return GadgetConsume::NotConsumed,
     }
-    let Some(view) = current_sidebar_view(state) else {
+    let Some(view) = current_sidebar_view(state).cloned() else {
         return GadgetConsume::NotConsumed;
     };
     sync_gadgets(state, &view);
@@ -419,11 +392,12 @@ pub(crate) fn handle_mouse_button_event(
 /// the pressed visual on drag-off and restores it on drag-back (G22 rows 2/3)
 /// and would drive G23 hold-repeat for any future held-mask gadget.
 pub(crate) fn idle_tick(state: &mut AppState) {
-    let Some(view) = current_sidebar_view(state) else {
+    let Some(view) = current_sidebar_view(state).cloned() else {
         return;
     };
     sync_gadgets(state, &view);
     let _ = run_tick(state, &view, 0);
+    crate::app_sidebar_render::refresh_sidebar_projection(state);
 }
 
 fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume {
@@ -549,13 +523,12 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
         // consumed release, including clamped no-op scrolls at either end.
         ID_SCROLL_DOWN => {
             let page = view.layout.side2_tile_count.max(1);
-            state.sidebar_scroll_rows =
-                (state.sidebar_scroll_rows + page).min(view.max_scroll_rows);
+            state.sidebar_scroll_rows = (view.scroll_rows + page).min(view.max_scroll_rows);
             play_gui_tab_sound(state);
         }
         ID_SCROLL_UP => {
             let page = view.layout.side2_tile_count.max(1);
-            state.sidebar_scroll_rows = state.sidebar_scroll_rows.saturating_sub(page);
+            state.sidebar_scroll_rows = view.scroll_rows.saturating_sub(page);
             play_gui_tab_sound(state);
         }
         // Cameo press (A2): map the fired id back to its SidebarItem and run the

@@ -146,7 +146,7 @@ fn cameo_tip_text(money_format: Option<&str>, name: &str, cost: Option<i32>) -> 
 /// arrows from their `Tip:*` labels (with the disabled suffix), repair/sell
 /// from direct CSF keys, cameos through the money format.
 fn sync_in_game_regions(state: &mut AppState) {
-    let Some(view) = current_sidebar_view(state) else {
+    let Some(view) = current_sidebar_view(state).cloned() else {
         state.tooltips.sync_regions(&[]);
         return;
     };
@@ -177,13 +177,7 @@ fn sync_in_game_regions(state: &mut AppState) {
             .get(i)
             .copied()
             .unwrap_or(TIP_LABELS_TAB[TIP_LABELS_TAB.len() - 1]);
-        let disabled = state
-            .sidebar_gadget_state
-            .tab_disabled
-            .get(i)
-            .copied()
-            .unwrap_or(false);
-        let text = with_disabled_suffix(state, csf_text(state, label), disabled);
+        let text = with_disabled_suffix(state, csf_text(state, label), tab.disabled);
         regions.push(TipRegion {
             id: crate::app_gadget_input::ID_TAB_BASE as u32 + i as u32,
             rect: tip_rect(tab.rect),
@@ -201,41 +195,17 @@ fn sync_in_game_regions(state: &mut AppState) {
         text: csf_text(state, "TXT_SELL_MODE"),
     });
     {
-        let (down_size, up_size) = {
-            let atlas = crate::app_sidebar_render::current_sidebar_chrome(state);
-            let sz = |e: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
-                e.map(|e| {
-                    [
-                        e.pixel_size[0] * state.ui_scale,
-                        e.pixel_size[1] * state.ui_scale,
-                    ]
-                })
-            };
-            match atlas {
-                Some(a) => (
-                    sz(a.scroll_down_frames[0].as_ref()),
-                    sz(a.scroll_up_frames[0].as_ref()),
-                ),
-                None => (None, None),
-            }
-        };
-        let (down_rect, up_rect) = crate::sidebar::scroll_button_rects(
-            &view.layout,
-            state.sidebar_layout_spec.sidebar_width,
-            down_size,
-            up_size,
-        );
         // Our scroll gadget model carries no disabled state yet, so the
         // `Tip:Disabled` branch is unreachable for this pair; the labels
         // themselves are the native ones.
         regions.push(TipRegion {
             id: crate::app_gadget_input::ID_SCROLL_DOWN as u32,
-            rect: tip_rect(down_rect),
+            rect: tip_rect(view.scroll_down_button.rect),
             text: csf_text(state, TIP_LABEL_SCROLL_DOWN),
         });
         regions.push(TipRegion {
             id: crate::app_gadget_input::ID_SCROLL_UP as u32,
-            rect: tip_rect(up_rect),
+            rect: tip_rect(view.scroll_up_button.rect),
             text: csf_text(state, TIP_LABEL_SCROLL_UP),
         });
     }
