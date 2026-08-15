@@ -290,6 +290,33 @@ struct RenderedShpSprite {
     offset_y: f32,
 }
 
+/// End an incremental rebuild without invalidating the atlas that was already
+/// usable by the renderer.
+///
+/// Some rebuild failures happen after `rendered_cache` has been moved out of
+/// the prior atlas and new sprites have been appended. Truncating to the exact
+/// extraction length before putting the vector back makes that move atomic from
+/// the caller's point of view. Initial construction deliberately has no fallback
+/// and keeps the existing fail-fast contract for required cell-drawer assets.
+#[cold]
+fn abort_sprite_atlas_refresh(
+    previous_atlas: Option<SpriteAtlas>,
+    extracted_cache: Option<Vec<RenderedShpSprite>>,
+    previous_cache_len: usize,
+    failure: String,
+) -> Option<SpriteAtlas> {
+    let Some(mut previous) = previous_atlas else {
+        panic!("{failure}");
+    };
+
+    if let Some(mut cache) = extracted_cache {
+        cache.truncate(previous_cache_len);
+        previous.rendered_cache = cache;
+    }
+    log::warn!("{failure}; keeping the previous valid sprite atlas");
+    Some(previous)
+}
+
 /// Collect the base set of (type_id, house_color) pairs from the ECS world.
 ///
 /// Returns the set of unique (type_id, color) combos that would trigger atlas entries.
@@ -420,7 +447,8 @@ pub(crate) fn sprite_palette_choice(
 ///
 /// `theater_ext` is the file extension for theater-specific SHP files
 /// (e.g., "tem" for TEMPERATE). Civilian buildings use `{TYPE_ID}.{ext}`
-/// instead of `{TYPE_ID}.SHP`.
+/// instead of `{TYPE_ID}.SHP`. A supplied prior atlas is returned unchanged
+/// when no replacement sprite can be produced.
 pub fn build_sprite_atlas(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -438,6 +466,7 @@ pub fn build_sprite_atlas(
     existing: Option<SpriteAtlas>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<SpriteAtlas> {
+    let mut previous_atlas = existing;
     // Step 1: Collect unique (type_id, facing, frame, house_color) keys.
     // Structures get facing=0 since buildings don't rotate.
     let mut needed: HashSet<ShpSpriteKey> = HashSet::new();
@@ -872,12 +901,24 @@ pub fn build_sprite_atlas(
                         log::info!("WorldEffect SHP {}: {} frames loaded", name, count);
                     }
                     Err(error) if required_cell_drawer => {
-                        panic!("bound cell-drawer animation [{name}] failed SHP decode: {error}")
+                        return abort_sprite_atlas_refresh(
+                            previous_atlas,
+                            None,
+                            0,
+                            format!(
+                                "bound cell-drawer animation [{name}] failed SHP decode: {error}"
+                            ),
+                        );
                     }
                     Err(_) => {}
                 },
                 None if required_cell_drawer => {
-                    panic!("bound cell-drawer animation [{name}] has no SHP asset")
+                    return abort_sprite_atlas_refresh(
+                        previous_atlas,
+                        None,
+                        0,
+                        format!("bound cell-drawer animation [{name}] has no SHP asset"),
+                    );
                 }
                 None => {}
             }
@@ -927,13 +968,17 @@ pub fn build_sprite_atlas(
     }
 
     if needed.is_empty() {
-        log::info!("No SHP sprite entities found — skipping sprite atlas");
-        return None;
+        log::info!("No SHP sprite entities found — keeping the current sprite atlas");
+        return previous_atlas;
     }
 
     // Step 1e: Extract cached rendered sprites from existing atlas, diff against needed.
-    let mut cached: Vec<RenderedShpSprite> = existing
-        .map(|atlas| atlas.rendered_cache)
+    let previous_cache_len = previous_atlas
+        .as_ref()
+        .map_or(0, |atlas| atlas.rendered_cache.len());
+    let mut cached: Vec<RenderedShpSprite> = previous_atlas
+        .as_mut()
+        .map(|atlas| std::mem::take(&mut atlas.rendered_cache))
         .unwrap_or_default();
     let cached_keys: HashSet<ShpSpriteKey> = cached.iter().map(|s| s.key.clone()).collect();
     let new_count: usize = needed.iter().filter(|k| !cached_keys.contains(k)).count();
@@ -955,7 +1000,12 @@ pub fn build_sprite_atlas(
     }
 
     if !cell_drawer_type_ids.is_empty() && cell_palette.is_none() {
-        panic!("terrain-attached animations require the active theater ISO palette");
+        return abort_sprite_atlas_refresh(
+            previous_atlas,
+            Some(cached),
+            previous_cache_len,
+            "terrain-attached animations require the active theater ISO palette".to_string(),
+        );
     }
 
     // Step 2: Render only new sprites (skip cached ones).
@@ -986,10 +1036,15 @@ pub fn build_sprite_atlas(
         ) {
             Some(sprite) => cached.push(sprite),
             None if cell_drawer_type_ids.contains(&key.type_id.to_ascii_uppercase()) => {
-                panic!(
-                    "bound cell-drawer animation [{}] frame {} failed SHP rendering",
-                    key.type_id, key.frame
-                )
+                return abort_sprite_atlas_refresh(
+                    previous_atlas,
+                    Some(cached),
+                    previous_cache_len,
+                    format!(
+                        "bound cell-drawer animation [{}] frame {} failed SHP rendering",
+                        key.type_id, key.frame
+                    ),
+                );
             }
             None => log::debug!(
                 "No SHP for {} (facing {}, frame {})",
@@ -1021,7 +1076,15 @@ pub fn build_sprite_atlas(
     }
 
     if cached.is_empty() {
-        log::warn!("No SHP sprites rendered — sprite atlas will be empty");
+        log::warn!("No SHP sprites rendered");
+        if previous_atlas.is_some() {
+            return abort_sprite_atlas_refresh(
+                previous_atlas,
+                Some(cached),
+                previous_cache_len,
+                "sprite atlas refresh produced no rendered sprites".to_string(),
+            );
+        }
         return None;
     }
 

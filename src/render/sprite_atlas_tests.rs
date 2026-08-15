@@ -47,6 +47,78 @@ fn test_empty_world_returns_none() {
     assert!(needed.is_empty());
 }
 
+fn rendered_test_sprite(type_id: &str, rgba: Vec<u8>) -> RenderedShpSprite {
+    RenderedShpSprite {
+        key: ShpSpriteKey {
+            type_id: type_id.to_string(),
+            facing: 0,
+            frame: 0,
+            house_color: HouseColorIndex::default(),
+        },
+        rgba,
+        width: 1,
+        height: 1,
+        offset_x: -1.0,
+        offset_y: -2.0,
+    }
+}
+
+#[test]
+fn incremental_refresh_failure_restores_the_exact_prior_rendered_cache() {
+    let prior_key = make_shp_key("PRIOR", 0);
+    let prior_entry = ShpSpriteEntry {
+        uv_origin: [0.0, 0.0],
+        uv_size: [1.0, 1.0],
+        pixel_size: [1.0, 1.0],
+        offset_x: -1.0,
+        offset_y: -2.0,
+        page: 0,
+    };
+    let mut prior = SpriteAtlas {
+        pages: Vec::new(),
+        entries: HashMap::from([(prior_key.clone(), prior_entry)]),
+        make_frame_counts: HashMap::from([("PRIOR".to_string(), 3)]),
+        active_anim_frame_counts: HashMap::from([("PRIOR".to_string(), 4)]),
+        building_bounds: HashMap::from([(
+            "PRIOR".to_string(),
+            BuildingBounds {
+                min_x: -1.0,
+                min_y: -2.0,
+                width: 1.0,
+                height: 1.0,
+            },
+        )]),
+        rendered_cache: vec![rendered_test_sprite("PRIOR", vec![1, 2, 3, 4])],
+    };
+
+    let prior_cache_len = prior.rendered_cache.len();
+    let mut extracted_cache = std::mem::take(&mut prior.rendered_cache);
+    extracted_cache.push(rendered_test_sprite("NEW", vec![5, 6, 7, 8]));
+
+    let restored = abort_sprite_atlas_refresh(
+        Some(prior),
+        Some(extracted_cache),
+        prior_cache_len,
+        "required incremental sprite failed".to_string(),
+    )
+    .expect("an incremental failure must retain the prior atlas");
+
+    assert_eq!(restored.sprite_count(), 1);
+    assert!(restored.get(&prior_key).is_some());
+    assert_eq!(restored.make_frame_counts["PRIOR"], 3);
+    assert_eq!(restored.active_anim_frame_counts["PRIOR"], 4);
+    assert_eq!(restored.building_bounds["PRIOR"].width, 1.0);
+    assert_eq!(restored.rendered_cache.len(), 1);
+    assert_eq!(restored.rendered_cache[0].key, prior_key);
+    assert_eq!(restored.rendered_cache[0].rgba, vec![1, 2, 3, 4]);
+}
+
+#[test]
+#[should_panic(expected = "required initial sprite failed")]
+fn required_initial_build_failure_remains_fail_fast() {
+    let _ = abort_sprite_atlas_refresh(None, None, 0, "required initial sprite failed".to_string());
+}
+
 #[test]
 fn test_key_collection_deduplicates() {
     let hc = HouseColorIndex::default();

@@ -344,7 +344,6 @@ impl App {
 
         match action {
             SaveLoadAction::Load(path) => {
-                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
@@ -515,7 +514,6 @@ impl App {
             DevOverlayAction::ReloadLastLoad => {
                 if let Some(path) = state.persistence.last_loaded_save_path.clone() {
                     if state.persistence.repository.exists(&path) {
-                        crate::app_loading::clear_match_startup_state(state);
                         app_input::load_save_file(state, &path);
                     } else {
                         log::warn!(
@@ -526,7 +524,6 @@ impl App {
                 }
             }
             DevOverlayAction::LoadSave(path) => {
-                crate::app_loading::clear_match_startup_state(state);
                 app_input::load_save_file(state, &path);
             }
         }

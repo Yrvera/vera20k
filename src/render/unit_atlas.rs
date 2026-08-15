@@ -380,7 +380,8 @@ pub fn collect_needed_unit_keys(
 /// 3. Diffs against cached sprites — renders only new keys.
 /// 4. Shelf-packs all sprites (cached + new) into a single atlas texture.
 ///
-/// Returns None if no voxel entities exist or all fail to load.
+/// Returns `None` only when no prior atlas exists and no voxel sprite can be
+/// produced. A supplied prior atlas is returned unchanged on ordinary failure.
 pub fn build_unit_atlas(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -393,6 +394,7 @@ pub fn build_unit_atlas(
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<UnitAtlas> {
     use crate::map::entities::EntityCategory;
+    let mut previous_atlas = existing;
     // Step 1: Collect unique (type_id, facing, house_color, layer, frame, slope_type) keys.
     // For turret units, insert separate Body/Turret/Barrel entries per facing.
     // For non-turret units, insert a single Composite entry per facing.
@@ -451,12 +453,11 @@ pub fn build_unit_atlas(
     }
 
     if needed.is_empty() {
-        log::info!("No voxel entities found — skipping unit atlas");
-        return None;
+        log::info!("No voxel entities found — keeping the current unit atlas");
+        return previous_atlas;
     }
 
     // Step 1.5: Extract cached sprites from existing atlas, diff against needed keys.
-    let mut previous_atlas = existing;
     let previous_cache_len = previous_atlas
         .as_ref()
         .map_or(0, |atlas| atlas.rendered_cache.len());
@@ -545,7 +546,13 @@ pub fn build_unit_atlas(
     }
 
     if cached.is_empty() {
-        log::warn!("No unit sprites rendered — unit atlas will be empty");
+        log::warn!("No unit sprites rendered");
+        if let Some(mut previous) = previous_atlas {
+            cached.truncate(previous_cache_len);
+            previous.rendered_cache = cached;
+            log::warn!("Keeping the previous valid unit atlas after render failure");
+            return Some(previous);
+        }
         return None;
     }
 

@@ -1346,11 +1346,7 @@ fn quicksave(state: &mut AppState) {
     );
     let tick = sim.session.tick;
     let filename = format!("save_tick{tick}_{now}.bin");
-    match state
-        .persistence
-        .repository
-        .write_named(&filename, &bytes)
-    {
+    match state.persistence.repository.write_named(&filename, &bytes) {
         Ok(path) => {
             log::info!(
                 "Quicksave: saved {} bytes to {}",
@@ -1368,7 +1364,7 @@ fn quicksave(state: &mut AppState) {
             crate::app::persistence::SaveWriteStage::WriteFile => {
                 log::error!("Quicksave: write failed: {error}")
             }
-        }
+        },
     }
 }
 
@@ -1406,17 +1402,9 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         crate::sim::snapshot::GameSnapshot::save_validated(sim, map_hash, rules_h, raw_name, now);
     let tick = sim.session.tick;
     let filename = format!("save_{sanitized}_tick{tick}_{now}.bin");
-    match state
-        .persistence
-        .repository
-        .write_named(&filename, &bytes)
-    {
+    match state.persistence.repository.write_named(&filename, &bytes) {
         Ok(path) => {
-            log::info!(
-                "Save As: saved {} bytes to {}",
-                bytes.len(),
-                path.display()
-            );
+            log::info!("Save As: saved {} bytes to {}", bytes.len(), path.display());
             state.persistence.last_save_tick = Some(tick);
             state.persistence.last_save_instant = Some(std::time::Instant::now());
             state.persistence.invalidate_save_list();
@@ -1428,7 +1416,7 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
             crate::app::persistence::SaveWriteStage::WriteFile => {
                 log::error!("Save As: write failed: {error}")
             }
-        }
+        },
     }
 }
 
@@ -1567,103 +1555,75 @@ fn quickload(state: &mut AppState) {
 
 /// Load a save file by path. Used by both quickload and the save/load panel.
 pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
-    let bytes = match state.persistence.repository.read(path) {
-        Ok(b) => b,
-        Err(e) => {
-            log::warn!("Load: could not read {}: {e}", path.display());
-            return;
-        }
-    };
-    let Some(current_sim) = &state.simulation else {
-        log::warn!("Load: no active simulation to restore");
-        return;
-    };
-    let Some(map_hash) = state.loaded_map_hash else {
-        log::warn!("Load: active world has no authoritative source-map digest");
-        return;
-    };
-    let Some(rules) = state.rules.as_ref() else {
-        log::warn!("Load: active rules are unavailable");
-        return;
-    };
-    let rules_hash = crate::app_sim_tick::rules_hash(rules);
-    let expected_map_name = current_sim.session.map_name.clone();
-    let snapshot = match crate::sim::snapshot::GameSnapshot::load_validated(
-        &bytes,
-        map_hash,
-        rules_hash,
-        &expected_map_name,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("Load: {e}");
-            return;
-        }
-    };
-
-    // Grab cache data from the current sim (these fields are #[serde(skip)]
-    // and must be restored after deserialization).
-    let terrain_speed_config = current_sim.terrain_speed_config.clone();
-    let bridge_explosions = current_sim.bridge_explosions.clone();
-    let metallic_debris = current_sim.metallic_debris.clone();
-    let bridge_anim_sounds = current_sim.bridge_anim_sounds.clone();
-
-    let resolved_terrain = match state.resolved_terrain.clone() {
-        Some(rt) => rt,
-        None => {
-            log::error!("Load: no resolved_terrain available");
-            return;
-        }
-    };
-
-    // Resolve every saved stable-ID slot before rebuilding derived runtime
-    // indexes. A malformed object graph never replaces the active simulation.
-    let mut sim = snapshot.sim;
-    // This is the in-scenario Load Game route: native load reseeds
-    // Scenario->Random after reading ScenarioClass, while the process-global
-    // seed and Main/MapGen cursors retain their live values.
-    sim.retain_in_scenario_process_state_from(current_sim);
-    if let Err(error) = sim.restore_after_snapshot_load() {
-        log::error!("Load: restoration validation failed: {error}");
-        return;
-    }
-    sim.rebuild_caches_after_load(
-        resolved_terrain,
-        terrain_speed_config,
-        bridge_explosions,
-        metallic_debris,
-        bridge_anim_sounds,
+    let preparation = crate::app::persistence::PreparedLoad::from_repository(
+        crate::app::persistence::LoadPreparationView::new(
+            &state.persistence.repository,
+            state.simulation.as_ref(),
+            state.loaded_map_hash,
+            state.rules.as_ref(),
+            state.resolved_terrain.as_ref(),
+            state.overlay_registry.as_ref(),
+            crate::app::persistence::MatchStartupStateView::new(
+                &state.active_loading_correlation,
+                &state.loaded_startup,
+                &state.rust_l0_receipt,
+            ),
+        ),
+        path,
     );
-    let Some(overlay_registry) = state.overlay_registry.as_ref() else {
-        log::error!("Load: restoration validation failed: active overlay registry is unavailable");
-        return;
-    };
-    let map_restore =
-        match sim.restore_map_authority_after_snapshot_load(rules, overlay_registry) {
-            Ok(output) => output,
-            Err(error) => {
-                log::error!("Load: restoration validation failed: {error}");
-                return;
-            }
-        };
+    match preparation {
+        Ok(prepared) => commit_prepared_load(state, path, prepared),
+        Err(error) => log_prepared_load_error(path, &error),
+    }
+}
+
+fn log_prepared_load_error(
+    path: &std::path::Path,
+    error: &crate::app::persistence::PreparedLoadError,
+) {
+    use crate::app::persistence::PreparedLoadError;
+
+    match error {
+        PreparedLoadError::ReadFile(source) => {
+            log::warn!("Load: could not read {}: {source}", path.display())
+        }
+        PreparedLoadError::MissingCurrentSimulation
+        | PreparedLoadError::MissingMapHash
+        | PreparedLoadError::MissingRules => log::warn!("Load: {error}"),
+        PreparedLoadError::Snapshot(source) => log::error!("Load: {source}"),
+        PreparedLoadError::MissingTerrainTemplate => {
+            log::error!("Load: {error}")
+        }
+        PreparedLoadError::MissingOverlayRegistry => {
+            log::error!("Load: restoration validation failed: {error}")
+        }
+        PreparedLoadError::Restore(source) => {
+            log::error!("Load: restoration validation failed: {source}")
+        }
+    }
+}
+
+/// Apply the enumerated post-prepare replacement bundle. This function has no
+/// recoverable failure path; best-effort presentation rebuilds retain their
+/// prior valid resources when replacement is unavailable.
+fn commit_prepared_load(
+    state: &mut AppState,
+    path: &std::path::Path,
+    prepared: crate::app::persistence::PreparedLoad,
+) {
+    let native_tiberium_stats = prepared.native_tiberium_stats();
+    let (simulation, occupied_overlays, preserved_startup) = prepared.into_parts();
     log::info!(
         "Load: rebuilt native tiberium queues ({} growth, {} spread)",
-        map_restore.native_tiberium_stats.growth_entries,
-        map_restore.native_tiberium_stats.spread_entries,
+        native_tiberium_stats.growth_entries,
+        native_tiberium_stats.spread_entries,
     );
-    sim.resolve_type_handles(rules);
-    if let Err(error) = sim.restore_move_sound_handles_after_load(rules) {
-        log::error!("Load: restoration validation failed: {error}");
-        return;
-    }
+
     crate::app::reset_scenario_exit_runtime(state);
-    state.simulation = Some(sim);
+    state.simulation = Some(simulation);
     crate::app_transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
-    crate::app_sim_tick::upsert_occupied_overlay_render_entries(
-        state,
-        map_restore.occupied_overlays,
-    );
+    crate::app_sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
 
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.
@@ -1692,6 +1652,14 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     // Close the save/load panel after loading.
     state.show_save_load_panel = false;
 
+    // Same-content in-scenario load retains the accepted startup authority
+    // that admitted the running match. Cross-session loads require a new
+    // explicit receipt and do not use this route.
+    preserved_startup.restore(
+        &mut state.active_loading_correlation,
+        &mut state.loaded_startup,
+        &mut state.rust_l0_receipt,
+    );
     state.persistence.last_loaded_save_path = Some(path.to_path_buf());
     log::info!("Load: restored simulation from {}", path.display());
 }
