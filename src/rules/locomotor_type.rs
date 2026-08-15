@@ -62,51 +62,74 @@ pub enum LocomotorKind {
     Parachute,
 }
 
-/// Well-known RA2/YR COM CLSIDs for each locomotor class.
-/// Format in rules.ini: `Locomotor={CLSID-GUID}`
-const CLSID_DRIVE: &str = "4A582741-9839-11D1-B709-00A024DDAFD1";
-const CLSID_HOVER: &str = "4A582742-9839-11D1-B709-00A024DDAFD1";
-const CLSID_WALK: &str = "4A582744-9839-11D1-B709-00A024DDAFD1";
-const CLSID_FLY: &str = "4A582746-9839-11D1-B709-00A024DDAFD1";
-const CLSID_TELEPORT: &str = "4A582747-9839-11D1-B709-00A024DDAFD1";
-const CLSID_MECH: &str = "55D141B8-DB94-11D1-AC98-006008055BB5";
-const CLSID_SHIP: &str = "2BEA74E1-7CCA-11D3-BE14-00104B62A16C";
-const CLSID_JUMPJET: &str = "92612C46-F71F-11D1-AC9F-006008055BB5";
-const CLSID_ROCKET: &str = "B7B49766-E576-11D3-9BD9-00104B972FE8";
+/// The eight CLSIDs selected by uncommented `Locomotor=` keys in retail YR, in
+/// the braces-and-upper-case spelling the retail INI uses. Kind-valued mirror
+/// of the substrate's class table; `install_tables_agree_with_rules_kind_table`
+/// in `sim::movement::locomotion::install` locks the two together.
+///
+/// The dormant Tiberian Sun CLSIDs (Mech, Tunnel, DropPod) are deliberately
+/// absent: the executable registers those classes, but no live movement system
+/// exists, so an INI naming one falls back to the constructor seed like any
+/// other unrecognized value. (An earlier parser here resolved the Mech CLSID
+/// to `LocomotorKind::Mech`; that was VERA-invented and never production-reachable.)
+pub const INSTALLED_CLSID_KIND_TABLE: [(&str, LocomotorKind); 8] = [
+    (
+        "{4A582741-9839-11D1-B709-00A024DDAFD1}",
+        LocomotorKind::Drive,
+    ),
+    (
+        "{4A582742-9839-11D1-B709-00A024DDAFD1}",
+        LocomotorKind::Hover,
+    ),
+    ("{4A582744-9839-11D1-B709-00A024DDAFD1}", LocomotorKind::Walk),
+    ("{4A582746-9839-11D1-B709-00A024DDAFD1}", LocomotorKind::Fly),
+    (
+        "{4A582747-9839-11D1-B709-00A024DDAFD1}",
+        LocomotorKind::Teleport,
+    ),
+    ("{2BEA74E1-7CCA-11D3-BE14-00104B62A16C}", LocomotorKind::Ship),
+    (
+        "{92612C46-F71F-11D1-AC9F-006008055BB5}",
+        LocomotorKind::Jumpjet,
+    ),
+    (
+        "{B7B49766-E576-11D3-9BD9-00104B972FE8}",
+        LocomotorKind::Rocket,
+    ),
+];
 
-impl LocomotorKind {
-    /// Parse a LocomotorKind from an RA2/YR COM CLSID string.
-    ///
-    /// The input may include curly braces (e.g., `{4A582741-...}`).
-    /// Unrecognized CLSIDs default to `Teleport`, matching the original engine's
-    /// fallback behavior where an invalid locomotor produces Teleport movement.
-    pub fn from_clsid(clsid: &str) -> Self {
-        // Strip curly braces and whitespace, uppercase for comparison.
-        let normalized: String = clsid
-            .trim()
-            .trim_start_matches('{')
-            .trim_end_matches('}')
-            .to_ascii_uppercase();
+/// Parse a retail GUID spelling into one of the eight installable kinds.
+///
+/// Braces are optional and ASCII case is ignored. Parse failure stays
+/// explicit; [`resolve_installed_kind`] owns the native silent/default
+/// fallback.
+pub fn kind_from_clsid(text: &str) -> Option<LocomotorKind> {
+    let normalized = text
+        .trim()
+        .strip_prefix('{')
+        .and_then(|text| text.strip_suffix('}'))
+        .unwrap_or_else(|| text.trim());
 
-        match normalized.as_str() {
-            CLSID_DRIVE => Self::Drive,
-            CLSID_HOVER => Self::Hover,
-            CLSID_WALK => Self::Walk,
-            CLSID_FLY => Self::Fly,
-            CLSID_TELEPORT => Self::Teleport,
-            CLSID_MECH => Self::Mech,
-            CLSID_SHIP => Self::Ship,
-            CLSID_JUMPJET => Self::Jumpjet,
-            CLSID_ROCKET => Self::Rocket,
-            _ => {
-                log::warn!(
-                    "Unknown locomotor CLSID '{}', defaulting to Teleport",
-                    clsid
-                );
-                Self::Teleport
-            }
-        }
-    }
+    INSTALLED_CLSID_KIND_TABLE
+        .iter()
+        .find(|(clsid, _)| clsid[1..clsid.len() - 1].eq_ignore_ascii_case(normalized))
+        .map(|(_, kind)| *kind)
+}
+
+/// The kind a type installs when its `Locomotor=` value is absent or does not
+/// parse: the native type constructor's seed.
+///
+/// gamemd seeds the type's locomotor-CLSID field with the **Teleport** GUID
+/// before any INI is read, then passes the field's current value as the CLSID
+/// reader's default argument — so an absent key and an unparseable value take
+/// the same path with no category input. Full derivation and the retail
+/// reachability analysis live in `sim::movement::locomotion::install`.
+pub const DEFAULT_INSTALLED_KIND: LocomotorKind = LocomotorKind::Teleport;
+
+/// Resolve the locomotor kind a type installs at spawn from its raw
+/// `Locomotor=` text (`None` when the key is absent).
+pub fn resolve_installed_kind(value: Option<&str>) -> LocomotorKind {
+    value.and_then(kind_from_clsid).unwrap_or(DEFAULT_INSTALLED_KIND)
 }
 
 // ---------------------------------------------------------------------------
@@ -412,70 +435,49 @@ mod tests {
     }
 
     #[test]
-    fn test_clsid_drive() {
-        let kind = LocomotorKind::from_clsid("{4A582741-9839-11d1-B709-00A024DDAFD1}");
-        assert_eq!(kind, LocomotorKind::Drive);
-    }
-
-    #[test]
-    fn test_clsid_all_known() {
-        // The 9 CLSIDs that map to an implemented locomotor. Tunnel and DropPod
-        // are deliberately absent — see dormant_clsids_absent_from_retail_inis.
-        let cases: Vec<(&str, LocomotorKind)> = vec![
-            (
-                "{4A582741-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::Drive,
-            ),
-            (
-                "{4A582742-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::Hover,
-            ),
-            (
-                "{4A582744-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::Walk,
-            ),
-            ("{4A582746-9839-11d1-B709-00A024DDAFD1}", LocomotorKind::Fly),
-            (
-                "{4A582747-9839-11d1-B709-00A024DDAFD1}",
-                LocomotorKind::Teleport,
-            ),
-            (
-                "{55D141B8-DB94-11d1-AC98-006008055BB5}",
-                LocomotorKind::Mech,
-            ),
-            (
-                "{2BEA74E1-7CCA-11d3-BE14-00104B62A16C}",
-                LocomotorKind::Ship,
-            ),
-            (
-                "{92612C46-F71F-11d1-AC9F-006008055BB5}",
-                LocomotorKind::Jumpjet,
-            ),
-            (
-                "{B7B49766-E576-11d3-9BD9-00104B972FE8}",
-                LocomotorKind::Rocket,
-            ),
-        ];
-        for (clsid, expected) in cases {
+    fn installed_table_resolves_every_row_with_and_without_braces() {
+        for &(clsid, kind) in &INSTALLED_CLSID_KIND_TABLE {
+            assert_eq!(kind_from_clsid(clsid), Some(kind), "CLSID: {clsid}");
             assert_eq!(
-                LocomotorKind::from_clsid(clsid),
-                expected,
-                "CLSID: {}",
-                clsid
+                kind_from_clsid(&clsid[1..clsid.len() - 1]),
+                Some(kind),
+                "braceless CLSID: {clsid}"
             );
+            assert_eq!(resolve_installed_kind(Some(clsid)), kind);
         }
     }
 
     #[test]
-    fn test_clsid_unknown_defaults_to_teleport() {
-        let kind = LocomotorKind::from_clsid("{00000000-0000-0000-0000-000000000000}");
-        assert_eq!(kind, LocomotorKind::Teleport);
+    fn lowercase_retail_spelling_resolves() {
+        // Four stock sections spell `11d1` in lower case.
+        assert_eq!(
+            kind_from_clsid("{4A582747-9839-11d1-B709-00A024DDAFD1}"),
+            Some(LocomotorKind::Teleport)
+        );
     }
 
     #[test]
-    fn test_clsid_no_braces() {
-        let kind = LocomotorKind::from_clsid("4A582744-9839-11D1-B709-00A024DDAFD1");
-        assert_eq!(kind, LocomotorKind::Walk);
+    fn absent_and_unparseable_values_take_the_constructor_seed() {
+        assert_eq!(resolve_installed_kind(None), DEFAULT_INSTALLED_KIND);
+        for bad in [
+            "",
+            "not-a-guid",
+            "{00000000-0000-0000-0000-000000000000}",
+        ] {
+            assert_eq!(kind_from_clsid(bad), None);
+            assert_eq!(resolve_installed_kind(Some(bad)), DEFAULT_INSTALLED_KIND);
+        }
+    }
+
+    #[test]
+    fn dormant_mech_clsid_does_not_resolve() {
+        // The executable registers the Mech class but no live movement system
+        // exists; the production install path treats its CLSID like any other
+        // unrecognized value. The deleted `from_clsid` parser mapped it to
+        // `LocomotorKind::Mech` — VERA-invented, never production-reachable.
+        let mech = "{55D141B8-DB94-11D1-AC98-006008055BB5}";
+        assert_eq!(kind_from_clsid(mech), None);
+        assert_eq!(resolve_installed_kind(Some(mech)), LocomotorKind::Teleport);
     }
 
     #[test]

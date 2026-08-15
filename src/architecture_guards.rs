@@ -40,8 +40,6 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
     // F05: pure direction tables move to util::direction_tables.
     ("util/fixed_math.rs", "sim"),
-    // F04: installed locomotor parsing consolidates in rules::locomotor_type.
-    ("rules/object_type.rs", "sim"),
     // F04: interned sim handles leave RuleSet (ResolvedRuleHandles).
     ("rules/ruleset.rs", "sim"),
     // F04: rules-semantic OverlayTypeRegistry data moves under rules.
