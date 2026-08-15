@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_score_snapshot_roundtrips_in_v80() {
+    fn terminal_score_snapshot_roundtrips_in_v81() {
         let mut sim = natural_terminal_sim(0x51C0_DEF0);
         let tick = sim.advance_tick(
             &[],
@@ -427,10 +427,10 @@ mod tests {
 
         let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 1, 2, "score.map", 0);
         let header = crate::sim::snapshot::GameSnapshot::read_header(&bytes)
-            .expect("v80 score snapshot header");
-        assert_eq!(header.version, 80);
+            .expect("v81 score snapshot header");
+        assert_eq!(header.version, 81);
         let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
-            .expect("v80 score snapshot")
+            .expect("v81 score snapshot")
             .sim;
         assert_eq!(restored.terminal_score_snapshot(), Some(&expected));
     }

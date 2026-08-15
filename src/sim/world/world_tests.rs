@@ -55,6 +55,149 @@ fn empty_heights() -> BTreeMap<(u16, u16), u8> {
     BTreeMap::new()
 }
 
+fn game_speed_command_sim() -> (Simulation, crate::sim::intern::InternedId) {
+    let mut sim = Simulation::with_seed(0x5EED_0001);
+    let owner = sim.interner.intern("Local");
+    sim.houses.insert(
+        owner,
+        crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+    );
+    sim.session.house_order.push(owner);
+    (sim, owner)
+}
+
+#[test]
+fn game_speed_transition_applies_at_ingress_before_triggers_and_hash() {
+    let (mut sim, owner) = game_speed_command_sim();
+    let (mut control, _) = game_speed_command_sim();
+    let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
+
+    let result = sim.advance_master_frame(
+        &[command],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+    let control_result = control.advance_master_frame(
+        &[],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        None,
+    );
+
+    assert!(result.frame_committed);
+    assert_eq!(result.executed_commands, 1);
+    assert_eq!(result.tick, control_result.tick);
+    assert_eq!(sim.session.binary_frame, control.session.binary_frame);
+    assert_eq!(sim.session.game_options.game_speed, 4);
+    assert_eq!(control.session.game_options.game_speed, 1);
+    assert_ne!(result.state_hash, control_result.state_hash);
+    assert_eq!(result.state_hash, sim.state_hash());
+    assert!(sim.take_master_frame_test_trace().starts_with(&[
+        MasterFrameTestRung::SessionCommands,
+        MasterFrameTestRung::Triggers,
+        MasterFrameTestRung::LogicVector,
+    ]));
+}
+
+#[test]
+fn invalid_or_unknown_game_speed_transition_is_consumed_without_state_effect() {
+    let (mut invalid, owner) = game_speed_command_sim();
+    let (mut invalid_control, _) = game_speed_command_sim();
+    let invalid_result = invalid.advance_tick(
+        &[CommandEnvelope::new(
+            owner,
+            1,
+            Command::SetGameSpeed { speed: 7 },
+        )],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+    let invalid_control_result =
+        invalid_control.advance_tick(&[], None, &empty_heights(), None, None, 67);
+    assert_eq!(invalid_result.executed_commands, 1);
+    assert_eq!(invalid.session.game_options.game_speed, 1);
+    assert_eq!(invalid_result.state_hash, invalid_control_result.state_hash);
+
+    let (mut unknown, _) = game_speed_command_sim();
+    let (mut unknown_control, _) = game_speed_command_sim();
+    let unknown_owner = unknown.interner.intern("Unknown");
+    let unknown_control_owner = unknown_control.interner.intern("Unknown");
+    assert_eq!(unknown_owner, unknown_control_owner);
+    let unknown_result = unknown.advance_tick(
+        &[CommandEnvelope::new(
+            unknown_owner,
+            1,
+            Command::SetGameSpeed { speed: 4 },
+        )],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+    );
+    let unknown_control_result =
+        unknown_control.advance_tick(&[], None, &empty_heights(), None, None, 67);
+    assert_eq!(unknown_result.executed_commands, 1);
+    assert_eq!(unknown.session.game_options.game_speed, 1);
+    assert_eq!(unknown_result.state_hash, unknown_control_result.state_hash);
+}
+
+#[test]
+fn game_speed_ingress_uses_house_order_and_survives_same_frame_exit() {
+    let (mut sim, local) = game_speed_command_sim();
+    let remote = sim.interner.intern("Remote");
+    sim.houses.insert(
+        remote,
+        crate::sim::house_state::HouseState::new(remote, 1, None, false, 0, 10),
+    );
+    sim.session.house_order.push(remote);
+    let commands = [
+        CommandEnvelope::new(remote, 1, Command::SetGameSpeed { speed: 2 }),
+        CommandEnvelope::new(local, 1, Command::SetGameSpeed { speed: 4 }),
+        CommandEnvelope::new(local, 1, Command::ExitMatch),
+    ];
+
+    let result = sim.advance_tick(&commands, None, &empty_heights(), None, None, 67);
+
+    assert!(!result.frame_committed);
+    assert_eq!(result.executed_commands, 3);
+    assert_eq!(sim.session.game_options.game_speed, 2);
+    assert!(sim.quit_requested);
+    assert_eq!(result.state_hash, sim.state_hash());
+}
+
+#[test]
+fn network_modal_does_not_execute_game_speed_ingress() {
+    let (mut sim, owner) = game_speed_command_sim();
+    let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
+
+    let result = sim.advance_master_frame(
+        &[command],
+        None,
+        &empty_heights(),
+        None,
+        None,
+        67,
+        TickLane::NetworkModal,
+        None,
+    );
+
+    assert_eq!(result.executed_commands, 0);
+    assert_eq!(sim.session.game_options.game_speed, 1);
+}
+
 fn animation_boundary_fixture() -> (Simulation, RuleSet) {
     let mut sim = Simulation::with_seed(0xA11A_7100);
     let owner = sim.interner.intern("Americans");

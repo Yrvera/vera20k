@@ -231,6 +231,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
     assert_eq!(
         sim.take_master_frame_test_trace(),
         vec![
+            MasterFrameTestRung::SessionCommands,
             MasterFrameTestRung::Triggers,
             MasterFrameTestRung::LogicVector,
             MasterFrameTestRung::Houses,

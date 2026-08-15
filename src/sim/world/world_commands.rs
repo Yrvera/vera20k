@@ -1266,6 +1266,10 @@ impl Simulation {
                 };
                 self.sell_wall_at_cell(command_owner, *x, *y, rules, path_grid, overlays)
             }
+            // Offline game-speed transitions are consumed at master-frame
+            // ingress so early authoritative animation work sees the new rate.
+            // Reaching the ordinary EventClass-shaped tail must not apply one.
+            Command::SetGameSpeed { .. } => false,
             Command::ExitMatch => {
                 let Some(owner) = self.interner.get(command_owner) else {
                     return false;

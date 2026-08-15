@@ -462,8 +462,9 @@ pub(crate) struct AppState {
     /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
     /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
-    /// transient interaction flags. `game_speed` is the single source of truth for
-    /// `sim_speed_tps` (derived on game start and on Options close). App/ui-level.
+    /// transient interaction flags. `game_speed` mirrors the launched sim and
+    /// queues an authoritative transition on close; `sim_speed_tps` is its local
+    /// presentation readout. App/ui-level.
     pub(crate) in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState,
     /// Laid-out 0xBBB anchor cached by the overlay render pass each frame it draws,
     /// so the paused mouse handler hit-tests the exact rects that were rendered

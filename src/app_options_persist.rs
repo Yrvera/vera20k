@@ -1,7 +1,7 @@
 //! In-game Options (0xBBB) close path: apply effects + persist `[Options]` to RA2MD.INI.
 //!
 //! Part of the app layer. `apply_in_game_options` runs every control's downstream
-//! effect (sim cadence + live consumers) ON CLOSE only (KD-8 — never during
+//! effect (queues sim cadence + updates live consumers) ON CLOSE only (KD-8 — never during
 //! interaction); `persist_in_game_options` writes the touched `[Options]` keys to
 //! `{ra2_dir}/RA2MD.INI` via the single-key in-place writer, mirroring the existing
 //! `[Audio] ScoreVolume` round-trip. `in_game_options_close` ties them together
@@ -66,11 +66,27 @@ fn apply_target_lines(target_lines: &mut TargetLineState, opts: &InGameOptionsSt
 /// effects when the dialog closes, so the battlefield behind the non-opaque overlay
 /// must not visibly change until Back.
 pub(crate) fn apply_in_game_options(state: &mut AppState) {
-    // Keep the UI readout in sync. Frame admission itself uses the stored
-    // speed byte directly, and deterministic consumers read the session copy.
+    // Keep the UI readout in sync immediately. The sim-owned speed changes only
+    // when the replayable transition is admitted before the next logic frame.
     state.sim_speed_tps = crate::app_types::tps_for_game_speed(state.in_game_options.game_speed);
-    if let Some(sim) = state.simulation.as_mut() {
-        sim.session.game_options.game_speed = state.in_game_options.game_speed as i32;
+    if state.simulation.is_some() {
+        let owner = crate::app_commands::preferred_local_owner_name(state);
+        let speed = u8::try_from(state.in_game_options.game_speed).ok();
+        let scheduled = match (owner, speed) {
+            (Some(owner), Some(speed)) => crate::app_commands::try_schedule_command(
+                state,
+                &owner,
+                crate::sim::command::Command::SetGameSpeed { speed },
+            ),
+            _ => None,
+        };
+        if scheduled.is_none() {
+            log::warn!(
+                "In-game Options could not queue GameSpeed={} for the local house",
+                state.in_game_options.game_speed
+            );
+            crate::app_transitions::sync_in_game_options_speed_from_sim(state);
+        }
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
     apply_target_lines(&mut state.target_lines, &state.in_game_options);

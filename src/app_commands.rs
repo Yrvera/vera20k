@@ -695,7 +695,26 @@ fn schedule_command_in_sim(
     payload: Command,
 ) -> Option<u64> {
     let execute_tick = sim.session.tick;
-    let owner_id = sim.interner.intern(owner);
+    let owner_id = match &payload {
+        Command::SetGameSpeed { speed } => {
+            if *speed > crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED {
+                return None;
+            }
+            let owner_id = sim.interner.get(owner)?;
+            if !sim.houses.contains_key(&owner_id) {
+                return None;
+            }
+            let requested_speed = sim
+                .projected_in_game_options_speed()
+                .map(i32::from)
+                .unwrap_or(sim.session.game_options.game_speed);
+            if requested_speed == i32::from(*speed) {
+                return Some(execute_tick);
+            }
+            owner_id
+        }
+        _ => sim.interner.intern(owner),
+    };
     let envelope = match payload {
         Command::ExitMatch => {
             let record = sim.encode_exit_record(owner_id)?;
@@ -784,6 +803,43 @@ mod tests {
     use crate::sim::game_entity::GameEntity;
     use crate::sim::house_state::HouseState;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn options_game_speed_queues_once_without_immediate_sim_mutation() {
+        let mut sim = Simulation::new();
+        let local = sim.interner.intern("Local");
+        sim.houses
+            .insert(local, HouseState::new(local, 0, None, true, 0, 10));
+        sim.session.house_order.push(local);
+        let before_hash = sim.state_hash();
+
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 4 }),
+            Some(0)
+        );
+        assert_eq!(sim.session.game_options.game_speed, 1);
+        assert_eq!(sim.state_hash(), before_hash);
+        assert_eq!(sim.pending_commands.len(), 1);
+
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 4 }),
+            Some(0),
+            "reopening Options before admission accepts the existing request"
+        );
+        assert_eq!(sim.pending_commands.len(), 1, "duplicate request is elided");
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Local", Command::SetGameSpeed { speed: 7 }),
+            None,
+            "the in-game trackbar cannot emit stored speed 7"
+        );
+
+        let interned_before_unknown = sim.interner.len();
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Unknown", Command::SetGameSpeed { speed: 3 }),
+            None
+        );
+        assert_eq!(sim.interner.len(), interned_before_unknown);
+    }
 
     #[test]
     fn gsi_01_04_abort_waits_for_one_due_exit_dispatch_before_terminal_edge() {

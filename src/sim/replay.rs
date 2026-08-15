@@ -1395,4 +1395,47 @@ mod tests {
         assert_eq!(sim.take_executed_exit_owner(), Some(owner));
         assert_eq!(sim.take_executed_exit_owner(), None);
     }
+
+    #[test]
+    fn diagnostic_replay_reproduces_midmatch_game_speed_transition() {
+        let make_sim = || {
+            let mut sim = Simulation::with_seed(7);
+            let owner = sim.interner.intern("Local");
+            sim.houses.insert(
+                owner,
+                crate::sim::house_state::HouseState::new(owner, 0, None, true, 0, 10),
+            );
+            sim.session.house_order.push(owner);
+            (sim, owner)
+        };
+        let (mut recorded, owner) = make_sim();
+        let command = CommandEnvelope::new(owner, 1, Command::SetGameSpeed { speed: 4 });
+        let tick = recorded.advance_tick(
+            std::slice::from_ref(&command),
+            None,
+            &BTreeMap::new(),
+            None,
+            None,
+            67,
+        );
+        assert_eq!(recorded.session.game_options.game_speed, 4);
+
+        let mut log = ReplayLog::new(ReplayHeader {
+            version: 1,
+            tick_hz: 15,
+            seed: 7,
+            map_name: "speed.map".to_string(),
+            rules_hash: 0,
+        });
+        log.record_tick(tick.tick, vec![command], tick.state_hash);
+        let json = serde_json::to_string(&log).expect("serialize GameSpeed replay");
+        let decoded: ReplayLog = serde_json::from_str(&json).expect("decode GameSpeed replay");
+
+        let (mut replayed, _) = make_sim();
+        let hashes = ReplayRunner::run(&mut replayed, &decoded, None, &BTreeMap::new(), None, 67);
+        assert_eq!(hashes, vec![tick.state_hash]);
+        assert_eq!(replayed.session.game_options.game_speed, 4);
+        assert_eq!(replayed.state_hash(), recorded.state_hash());
+        assert_eq!(NATIVE_REPLAY_VERSION, 10);
+    }
 }

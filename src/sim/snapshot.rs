@@ -256,7 +256,9 @@ use crate::sim::world::Simulation;
 // Bumped 79 -> 80: the natural win/loss terminal edge now serializes and hashes
 // its one-shot raw score snapshot before returning. This adds the snapshot field
 // and prevents score-bonus Scenario RNG draws from repeating after load.
-const SNAPSHOT_VERSION: u32 = 80;
+// Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
+// SetGameSpeed transition. Appending the enum variant changes the bincode schema.
+const SNAPSHOT_VERSION: u32 = 81;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2553,10 +2555,11 @@ mod tests {
     /// 77 -> 78 made living GameEntity Animation timing hash-authoritative;
     /// 78 -> 79 moved building-overlay finalization before the returned hash
     /// and made the already-serialized overlay component hash-authoritative;
-    /// 79 -> 80 added the serialized/hash-authoritative terminal score snapshot.
+    /// 79 -> 80 added the serialized/hash-authoritative terminal score snapshot;
+    /// 80 -> 81 added the pending-command offline GameSpeed transition payload.
     #[test]
-    fn gsi_13_06_snapshot_version_is_80() {
-        assert_eq!(super::SNAPSHOT_VERSION, 80);
+    fn gsi_13_06_snapshot_version_is_81() {
+        assert_eq!(super::SNAPSHOT_VERSION, 81);
     }
 
     #[test]
@@ -2603,14 +2606,14 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v80 building-overlay header");
-        assert_eq!(header.version, 80);
+        let header = GameSnapshot::read_header(&bytes).expect("v81 building-overlay header");
+        assert_eq!(header.version, 81);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v80 building-overlay snapshot")
+            .expect("v81 building-overlay snapshot")
             .sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v80 building-overlay snapshot restores structurally");
+            .expect("v81 building-overlay snapshot restores structurally");
         let overlays = restored
             .substrate
             .entities
@@ -2688,7 +2691,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v80 body-counter snapshot")
+            .expect("v81 body-counter snapshot")
             .sim;
         assert_eq!(
             restored
@@ -2805,6 +2808,60 @@ mod tests {
         assert!(!restored.quit_requested);
         assert_eq!(restored.take_executed_exit_owner(), None);
         assert_eq!(restored.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn pending_game_speed_transition_roundtrips_in_v81_and_executes_once() {
+        use crate::sim::command::{Command, CommandEnvelope};
+        use crate::sim::house_state::HouseState;
+
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Americans");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+        sim.session.house_order.push(owner);
+        let hash_without_pending_input = sim.state_hash();
+        sim.pending_commands.push(CommandEnvelope::new(
+            owner,
+            1,
+            Command::SetGameSpeed { speed: 4 },
+        ));
+        assert_eq!(sim.state_hash(), hash_without_pending_input);
+
+        let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
+        let header = GameSnapshot::read_header(&bytes).expect("v81 GameSpeed header");
+        assert_eq!(header.version, 81);
+        let mut restored = GameSnapshot::load(&bytes)
+            .expect("v81 GameSpeed snapshot")
+            .sim;
+        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert_eq!(restored.session.game_options.game_speed, 1);
+        assert_eq!(restored.projected_in_game_options_speed(), Some(4));
+
+        let due = restored.take_due_commands();
+        let result = restored.advance_tick(
+            &due,
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            67,
+        );
+        assert_eq!(result.executed_commands, 1);
+        assert_eq!(restored.session.game_options.game_speed, 4);
+        assert!(restored.pending_commands.is_empty());
+        assert_eq!(result.state_hash, restored.state_hash());
+
+        let second = restored.advance_tick(
+            &[],
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            67,
+        );
+        assert_eq!(second.executed_commands, 0);
+        assert_eq!(restored.session.game_options.game_speed, 4);
     }
 
     #[test]

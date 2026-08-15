@@ -1648,6 +1648,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     }
     crate::app::reset_scenario_exit_runtime(state);
     state.simulation = Some(sim);
+    crate::app_transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
     crate::app_sim_tick::upsert_occupied_overlay_render_entries(
         state,

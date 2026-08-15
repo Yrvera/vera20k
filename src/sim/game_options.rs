@@ -1,8 +1,9 @@
 //! Per-match game settings — the lobby options card.
 //!
-//! Parsed from `[MultiplayerDialogSettings]` in rulesmd.ini. Set once at game
-//! start, read-only during gameplay. Included in the deterministic state
-//! hash for lockstep correctness.
+//! Parsed from `[MultiplayerDialogSettings]` in rulesmd.ini. Most fields are set
+//! once at game start; the offline in-game Options dialog may change game speed
+//! through a synchronized simulation command. Included in the deterministic
+//! state hash for lockstep correctness.
 
 use crate::rules::ini_parser::IniFile;
 
@@ -13,9 +14,13 @@ const NORMALIZED_DELAY_SHORT: [[u16; 8]; 4] = [
     [7, 6, 5, 4, 4, 4, 3, 2],
 ];
 
+/// Highest stored value emitted by the retail in-game speed trackbar.
+pub(crate) const IN_GAME_OPTIONS_MAX_SPEED: u8 = 6;
+
 /// Per-match game settings from the lobby / `[MultiplayerDialogSettings]`.
 ///
-/// Set once at game start, read-only during gameplay.
+/// Set once at game start except for the synchronized offline game-speed
+/// transition admitted by [`GameOptions::apply_in_game_speed`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameOptions {
     // --- Runtime-checked by gameplay systems ---
@@ -91,6 +96,22 @@ impl Default for GameOptions {
 }
 
 impl GameOptions {
+    /// Apply one offline in-game Options speed transition.
+    ///
+    /// `OptionsClass::ApplyFromInGameDialog @ 0x004E1DE0` maps the 0..=6
+    /// trackbar to `stored = 6 - slider_position`. Native offline modes 0/5
+    /// store that value before the next `Main_Tick`; active network modes use
+    /// EventClass opcode 0x0D at the tail instead. VERA currently implements
+    /// only the offline ingress timing and rejects values the dialog cannot
+    /// emit rather than fabricating a clamp.
+    pub(crate) fn apply_in_game_speed(&mut self, speed: u8) -> bool {
+        if speed > IN_GAME_OPTIONS_MAX_SPEED {
+            return false;
+        }
+        self.game_speed = i32::from(speed);
+        true
+    }
+
     /// Scale a normalized animation delay through the currently stored speed.
     pub fn normalized_anim_delay(&self, delay: u16) -> u16 {
         if delay == 0 {
@@ -207,6 +228,15 @@ mod tests {
     #[test]
     fn build_off_ally_default_matches_yr_enabled() {
         assert!(GameOptions::default().build_off_ally);
+    }
+
+    #[test]
+    fn in_game_speed_transition_accepts_six_and_rejects_seven_without_clamping() {
+        let mut options = GameOptions::default();
+        assert!(options.apply_in_game_speed(6));
+        assert_eq!(options.game_speed, 6);
+        assert!(!options.apply_in_game_speed(7));
+        assert_eq!(options.game_speed, 6);
     }
 
     #[test]

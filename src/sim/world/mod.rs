@@ -320,6 +320,7 @@ pub(crate) struct TriggerInputs<'a> {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MasterFrameTestRung {
+    SessionCommands,
     Triggers,
     LogicVector,
     Houses,
@@ -2230,6 +2231,34 @@ impl Simulation {
     /// Queue a command for future execution at its scheduled tick.
     pub fn queue_command(&mut self, cmd: CommandEnvelope) {
         self.pending_commands.push(cmd);
+    }
+
+    /// Speed the next ordinary frame will observe after all due offline
+    /// Options transitions execute in canonical house/insertion order.
+    ///
+    /// This read-only projection lets fresh-map and snapshot replacement sync
+    /// client UI without consuming or applying a pending authoritative command.
+    pub(crate) fn projected_in_game_options_speed(&self) -> Option<u8> {
+        let mut projected = u8::try_from(self.session.game_options.game_speed)
+            .ok()
+            .filter(|speed| *speed <= crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED);
+        let execute_tick = self.session.tick.saturating_add(1);
+        for owner in self.due_command_house_order(&self.pending_commands, execute_tick) {
+            for command in self.pending_commands.iter().filter(|command| {
+                command.execute_tick <= execute_tick && command.owner == owner
+            }) {
+                if !self.houses.contains_key(&owner) {
+                    continue;
+                }
+                let Command::SetGameSpeed { speed } = &command.payload else {
+                    continue;
+                };
+                if *speed <= crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED {
+                    projected = Some(*speed);
+                }
+            }
+        }
+        projected
     }
 
     /// Consume the terminal edge raised by one executed EXIT command.
@@ -4362,6 +4391,60 @@ impl Simulation {
         }
     }
 
+    /// Canonical receiver order for every due command in one master frame.
+    /// Registered HouseClass order wins; standalone-fixture owners are appended
+    /// in their first issue order, matching the established tail dispatcher.
+    fn due_command_house_order(
+        &self,
+        commands: &[CommandEnvelope],
+        execute_tick: u64,
+    ) -> Vec<InternedId> {
+        let mut house_order = self.session.house_order.clone();
+        for command in commands
+            .iter()
+            .filter(|command| command.execute_tick <= execute_tick)
+        {
+            if !house_order.contains(&command.owner) {
+                house_order.push(command.owner);
+            }
+        }
+        house_order
+    }
+
+    fn command_uses_frame_ingress(command: &Command) -> bool {
+        matches!(command, Command::SetGameSpeed { .. })
+    }
+
+    /// Apply offline session transitions before triggers and the live-object
+    /// walk. Native offline Options stores GameSpeed before the next Main_Tick;
+    /// VERA transports the transition as a replayable command, then admits it
+    /// at this dedicated ingress instead of the ordinary EventClass tail.
+    fn apply_due_frame_ingress_commands(
+        &mut self,
+        commands: &[CommandEnvelope],
+        execute_tick: u64,
+    ) -> usize {
+        let mut executed_commands = 0usize;
+        for owner in self.due_command_house_order(commands, execute_tick) {
+            for command in commands.iter().filter(|command| {
+                command.execute_tick <= execute_tick
+                    && command.owner == owner
+                    && Self::command_uses_frame_ingress(&command.payload)
+            }) {
+                let Command::SetGameSpeed { speed } = &command.payload else {
+                    unreachable!("frame-ingress predicate admitted a non-session command");
+                };
+                if self.houses.contains_key(&owner) {
+                    let _ = self.session.game_options.apply_in_game_speed(*speed);
+                }
+                // Preserve the established dispatcher convention: every due
+                // envelope is consumed/counts even when validation rejects it.
+                executed_commands += 1;
+            }
+        }
+        executed_commands
+    }
+
     /// Advance one deterministic simulation tick.
     /// Apply all due commands in HouseClass registration
     /// order. Each house preserves insertion order within the normal and
@@ -4385,22 +4468,11 @@ impl Simulation {
             .cloned()
             .or_else(|| self.path_grid.as_deref().cloned());
 
-        let mut house_order = self.session.house_order.clone();
-        for command in commands
-            .iter()
-            .filter(|command| command.execute_tick <= execute_tick)
-        {
-            if !house_order.contains(&command.owner) {
-                // Standalone simulations have no launch descriptor to register
-                // houses. First issue order is their deterministic substitute.
-                house_order.push(command.owner);
-            }
-        }
-
-        for owner in house_order {
+        for owner in self.due_command_house_order(commands, execute_tick) {
             for command in commands.iter().filter(|command| {
                 command.execute_tick <= execute_tick
                     && command.owner == owner
+                    && !Self::command_uses_frame_ingress(&command.payload)
                     && !Self::command_uses_megamission(&command.payload)
             }) {
                 let (applied, spawned, destroyed, placed_owner) = self.apply_one_due_command(
@@ -4778,6 +4850,12 @@ impl Simulation {
         // aircraft, …) are dying-gated, so a corpse is excluded until that drain.
         let mut bridge_state_changed = false;
         let mut passenger_ownership_changed = false;
+
+        if lane == TickLane::Ordinary {
+            executed_commands += self.apply_due_frame_ingress_commands(commands, execute_tick);
+        }
+        #[cfg(test)]
+        self.trace_master_frame_rung(MasterFrameTestRung::SessionCommands);
 
         // YR LogicClass::Update establishes trigger state before visiting the
         // live LogicVector, so object work in this frame observes its actions.

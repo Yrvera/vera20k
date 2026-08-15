@@ -27,6 +27,21 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Mirror the authoritative speed whenever a complete Simulation replaces the
+/// app's live match, including both fresh-map handoff and in-scenario load.
+pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
+    let Some(game_speed) = state
+        .simulation
+        .as_ref()
+        .and_then(crate::sim::world::Simulation::projected_in_game_options_speed)
+        .map(u32::from)
+    else {
+        return;
+    };
+    state.in_game_options.game_speed = game_speed;
+    state.sim_speed_tps = crate::app_types::tps_for_game_speed(game_speed);
+}
+
 pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
     app_init::MapLoadResult {
         startup: crate::match_bootstrap::LoadingStartup::Generic {
@@ -101,6 +116,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.resolved_terrain = result.resolved_terrain;
     state.simulation = result.simulation;
     state.combat_lights.clear();
+    sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = &mut state.simulation {
         sim.input_delay_ticks = state.configured_input_delay_ticks;
     }
@@ -627,4 +643,27 @@ pub(crate) fn clear_screen(encoder: &mut wgpu::CommandEncoder, view: &wgpu::Text
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+}
+
+#[cfg(test)]
+mod game_speed_tests {
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::house_state::HouseState;
+    use crate::sim::world::Simulation;
+
+    #[test]
+    fn loaded_lobby_speed_projection_includes_due_transition() {
+        let mut sim = Simulation::new();
+        let owner = sim.interner.intern("Local");
+        sim.houses
+            .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
+        sim.session.house_order.push(owner);
+        sim.pending_commands.push(CommandEnvelope::new(
+            owner,
+            1,
+            Command::SetGameSpeed { speed: 4 },
+        ));
+
+        assert_eq!(sim.projected_in_game_options_speed(), Some(4));
+    }
 }
