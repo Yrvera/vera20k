@@ -34,6 +34,16 @@ prompt whose bar is a vibe ("clean", "idiomatic", "coherent") authorizes
 unbounded work — the program will happily consume weeks matching a reference
 nobody chose.
 
+A valid bar passes three tests: **named** (a specific thing, not a
+category), **fetchable** (the critic can read it, run it, decompile it, or
+diff against it), and **comparable** (the work and the bar can sit side by
+side under one judgment). Everything else in the prompt is scaffolding —
+the loop only produces quality if the thing it compares against is real.
+If the user hasn't named a bar, propose two or three concrete candidates
+and stop for their pick before writing the prompt; never invent the
+reference silently, because the executor's critics will then invent their
+own.
+
 ## New-goal template
 
 Six parts, in this order. Keep the whole prompt near one page; the executor's
@@ -57,13 +67,19 @@ do not try to pre-decide everything.
    allowlisted, a golden, a schema check — whatever ratchets this domain).
 4. **Execution protocol.** One coherent slice at a time. Builder implements;
    smallest relevant `--lib` filter; a fresh read-only critic gets the
-   requirement, evidence, diff, and literal validation output — builders
-   never grade themselves; close the largest meaningful gap and repeat with
-   a fresh critic until pass; commit. **Publish per tier**: open or update
-   the PR when a tier completes — correctness fixes never wait on refactor
-   slices. Evidence rules: sim behavior changes name their gamemd source or
-   carry UNCHECKED; verification is production-observable ("it compiled" and
-   "it plays" are different checkpoints — pin the one that matters).
+   requirement, evidence, diff, and actual validation output — **not the
+   builder's reasoning** (the builder remembers why every decision felt
+   right; the critic must judge the artifact, not the narrative). Builders
+   never grade themselves. The critic passes a slice only when its diff and
+   non-interactive validation **reproduce the contract** without unsupported
+   approximations — a defined pass condition, not a review ritual. On
+   BLOCK: close the largest meaningful gap and resubmit to a fresh critic
+   until pass; re-verify the previous round's fixes before judging anything
+   new; commit. **Publish per tier**: open or update the PR when a tier
+   completes — correctness fixes never wait on refactor slices. Evidence
+   rules: sim behavior changes name their gamemd source or carry UNCHECKED;
+   verification is production-observable ("it compiled" and "it plays" are
+   different checkpoints — pin the one that matters).
 5. **Structure rules.** A trait only where two real implementations already
    exist in production. Fix dependency direction by moving code to the lower
    layer, never by inverting through an interface. Headless, replay, and
