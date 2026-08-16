@@ -62,9 +62,9 @@ pub(crate) fn handle_mouse_input(
         // never reaches the tactical body, so the capture is dropped here.
         // Leaving it set would freeze edge auto-scroll for the rest of the match.
         if !pressed {
-            state.tactical_mouse.left_held = false;
-            state.tactical_mouse.right_held = false;
-            state.tactical_mouse.release();
+            state.input.tactical_mouse.left_held = false;
+            state.input.tactical_mouse.right_held = false;
+            state.input.tactical_mouse.release();
         }
         crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
         return;
@@ -144,8 +144,8 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // not the band drag arms: the modal gates live inside the
                 // drag-arm helper, not around the capture. The capture is what
                 // freezes edge auto-scroll for the length of the gesture.
-                state.tactical_mouse.left_held = true;
-                state.tactical_mouse.captured = true;
+                state.input.tactical_mouse.left_held = true;
+                state.input.tactical_mouse.captured = true;
                 if state.targeting_mode.is_some()
                     || state.sidebar_gadget_state.repair_mode_on
                     || state.sidebar_gadget_state.sell_mode_on
@@ -154,10 +154,10 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 }
                 state
                     .selection_state
-                    .begin_drag(state.cursor_x, state.cursor_y);
+                    .begin_drag(state.input.cursor_x, state.input.cursor_y);
             } else {
-                state.tactical_mouse.left_held = false;
-                state.tactical_mouse.captured = false;
+                state.input.tactical_mouse.left_held = false;
+                state.input.tactical_mouse.captured = false;
                 // Repair / Sell cursor modes consume the click — toggle repair or
                 // sell the own building under the cursor. The mode stays active
                 // (sticky) so the player can act on several buildings in a row.
@@ -182,13 +182,13 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                             state.render_height(),
                         );
                     clamp_tactical_drag_endpoint(
-                        state.cursor_x,
-                        state.cursor_y,
+                        state.input.cursor_x,
+                        state.input.cursor_y,
                         tactical_width,
                         tactical_height,
                     )
                 } else {
-                    (state.cursor_x, state.cursor_y)
+                    (state.input.cursor_x, state.input.cursor_y)
                 };
                 let mut action: SelectAction = state
                     .selection_state
@@ -219,7 +219,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // TypeSelect modifies only actions that already resolved as
                 // selection/toggle. Ground move, attack, and every other
                 // context action keep their ordinary priority while T is held.
-                let type_select_held = state.type_select.held();
+                let type_select_held = state.input.type_select.held();
                 if matches!(
                     route_click_action_before_type_select(
                         action,
@@ -242,15 +242,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     let current_selection = selected_stable_ids_in_order(state);
                     let map_order = map_entity_creation_order(sim.entities());
                     let held_type_select = type_select_held;
-                    let scope_order = if state.type_select.across_map {
+                    let scope_order = if state.input.type_select.across_map {
                         map_order.as_slice()
                     } else {
                         screen_order.as_slice()
                     };
                     match action {
                         SelectAction::Click(sx, sy) => {
-                            let world_x: f32 = sx / state.zoom_level + state.camera_x;
-                            let world_y: f32 = sy / state.zoom_level + state.camera_y;
+                            let world_x: f32 = sx / state.input.zoom_level + state.input.camera_x;
+                            let world_y: f32 = sy / state.input.zoom_level + state.input.camera_y;
                             let fog_ref = if state.sandbox_full_visibility {
                                 None
                             } else {
@@ -326,12 +326,12 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                             } else {
                                 Some(&sim.fog)
                             };
-                            let z = state.zoom_level;
+                            let z = state.input.zoom_level;
                             let (min_x, min_y, max_x, max_y) = (
-                                min_x / z + state.camera_x,
-                                min_y / z + state.camera_y,
-                                max_x / z + state.camera_x,
-                                max_y / z + state.camera_y,
+                                min_x / z + state.input.camera_x,
+                                min_y / z + state.input.camera_y,
+                                max_x / z + state.input.camera_x,
+                                max_y / z + state.input.camera_y,
                             );
                             if held_type_select {
                                 queued_selection = Some(compute_type_select_box_mutation(
@@ -415,24 +415,24 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
         }
         MouseButton::Right => {
             if btn_state.is_pressed() {
-                state.tactical_mouse.right_held = true;
+                state.input.tactical_mouse.right_held = true;
                 // The native right press has no game effect at all: it records
                 // the pan anchor and takes the capture, and only does that when
                 // no other button already holds it. Everything the player sees
                 // happens on the release edge.
-                if !state.tactical_mouse.captured {
+                if !state.input.tactical_mouse.captured {
                     state
-                        .tactical_mouse
-                        .begin_right_drag((state.cursor_x, state.cursor_y));
+                        .input.tactical_mouse
+                        .begin_right_drag((state.input.cursor_x, state.input.cursor_y));
                 }
             } else {
-                state.tactical_mouse.right_held = false;
-                if state.tactical_mouse.captured {
+                state.input.tactical_mouse.right_held = false;
+                if state.input.tactical_mouse.captured {
                     // The cancel ladder runs only when the drag threshold was
                     // never crossed. A right drag that panned the map ends
                     // silently — the selection survives it.
-                    let run_cancel_ladder = !state.tactical_mouse.right_threshold_crossed;
-                    state.tactical_mouse.release();
+                    let run_cancel_ladder = !state.input.tactical_mouse.right_threshold_crossed;
+                    state.input.tactical_mouse.release();
                     if run_cancel_ladder {
                         right_click_cancel_ladder(state);
                     }
@@ -479,7 +479,7 @@ fn band_caught_drawn_object(
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let fog_ref = if state.sandbox_full_visibility {
         None
     } else {
@@ -490,10 +490,10 @@ fn band_caught_drawn_object(
         encounter_order,
         fog_ref,
         preferred_local_owner_name(state).as_deref(),
-        min_x / z + state.camera_x,
-        min_y / z + state.camera_y,
-        max_x / z + state.camera_x,
-        max_y / z + state.camera_y,
+        min_x / z + state.input.camera_x,
+        min_y / z + state.input.camera_y,
+        max_x / z + state.input.camera_x,
+        max_y / z + state.input.camera_y,
         Some(&sim.interner),
     )
 }
@@ -558,8 +558,8 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     let (tactical_width, tactical_height) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let clamped_endpoint = clamp_tactical_drag_endpoint(
-        state.cursor_x,
-        state.cursor_y,
+        state.input.cursor_x,
+        state.input.cursor_y,
         tactical_width,
         tactical_height,
     );
@@ -571,7 +571,7 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // rendered/stored endpoint is restricted to the tactical surface.
     state
         .selection_state
-        .update_drag(state.cursor_x, state.cursor_y);
+        .update_drag(state.input.cursor_x, state.input.cursor_y);
     if state.selection_state.is_band_box_active() {
         state.selection_state.drag_current = Some(clamped_endpoint);
     }
@@ -1032,15 +1032,15 @@ pub(crate) fn handle_type_select_key_edge(
             return false;
         }
         state
-            .type_select
+            .input.type_select
             .press(physical_code, std::time::Instant::now(), repeat);
         return true;
     }
-    if !is_type_select && !state.type_select.owns_key(physical_code) {
+    if !is_type_select && !state.input.type_select.owns_key(physical_code) {
         return false;
     }
     let execute_tap = state
-        .type_select
+        .input.type_select
         .release(physical_code, std::time::Instant::now());
     if execute_tap {
         execute_type_select_tap(state);
@@ -1049,7 +1049,7 @@ pub(crate) fn handle_type_select_key_edge(
 }
 
 fn execute_type_select_tap(state: &mut AppState) {
-    state.type_select.prepare_tap_scope();
+    state.input.type_select.prepare_tap_scope();
     let result = {
         let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
@@ -1067,13 +1067,13 @@ fn execute_type_select_tap(state: &mut AppState) {
             preferred_local_owner_name(state).as_deref(),
             state.rules(),
             Some(&sim.interner),
-            state.type_select.across_map,
+            state.input.type_select.across_map,
         )
     };
     let outcome = result.outcome;
     let across_map = result.across_map;
     apply_selection_mutation(state, result.mutation, false, TYPE_SELECT_TAP_VOICE_POLICY);
-    state.type_select.finish_tap(outcome, across_map);
+    state.input.type_select.finish_tap(outcome, across_map);
     crate::app::input::messages::post_type_select_feedback(state, outcome.csf_key());
     // Native marks the tactical display dirty here but does not start action
     // lines. The visible-window event loop already requests a redraw from
@@ -1099,7 +1099,7 @@ pub(crate) fn handle_hotkey_pressed(
             | HotkeyFallback::ArrowDown,
         ) => {}
         HotkeyResolution::Unhandled => {
-            if KeyModifiers::from_modifiers_state(state.hotkey_modifiers).dev_chord() {
+            if KeyModifiers::from_modifiers_state(state.input.hotkey_modifiers).dev_chord() {
                 handle_dev_hotkey_pressed(state, physical_code);
             }
         }
@@ -1143,7 +1143,7 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
             }
         }
         HotkeyCommand::ScreenCapture => {
-            state.retail_screenshot_requested = true;
+            state.input.retail_screenshot_requested = true;
             state.platform.window.request_redraw();
         }
         HotkeyCommand::View(slot) => crate::app::input::camera::recall_view_bookmark(state, slot),
@@ -1741,11 +1741,11 @@ impl KeyModifiers {
 }
 
 pub(crate) fn is_shift_held(state: &AppState) -> bool {
-    state.hotkey_modifiers.shift_key()
+    state.input.hotkey_modifiers.shift_key()
 }
 
 pub(crate) fn is_ctrl_held(state: &AppState) -> bool {
-    state.hotkey_modifiers.control_key()
+    state.input.hotkey_modifiers.control_key()
 }
 
 /// Return `true` if either Alt key is currently held.
@@ -1753,7 +1753,7 @@ pub(crate) fn is_ctrl_held(state: &AppState) -> bool {
 /// Used in order resolution to detect Alt+Ctrl = attack-move (NOT force-fire),
 /// matching gamemd's `What_Action_OnCell` Alt-overrides-Ctrl rule.
 pub(crate) fn is_alt_held(state: &AppState) -> bool {
-    state.hotkey_modifiers.alt_key()
+    state.input.hotkey_modifiers.alt_key()
 }
 
 /// Read the player-side selection vector in native order. While a selection
@@ -1798,7 +1798,7 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
                 .is_some_and(|entity| entity.lifecycle.object_alive)
         });
         if state.selection_order.len() != before_retain {
-            state.type_select.reset_scope();
+            state.input.type_select.reset_scope();
         }
         let committed: Vec<u64> = sim
             .entities()
@@ -1834,7 +1834,7 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
         }
     }
     if lifecycle_removed {
-        state.type_select.reset_scope();
+        state.input.type_select.reset_scope();
     }
     state.selection_order = reconciled;
     state.selection_order_pending = false;
@@ -1884,9 +1884,9 @@ fn apply_selection_mutation(
     }
 
     if reset_type_select_scope {
-        state.type_select.reset_scope();
+        state.input.type_select.reset_scope();
     } else if native_selection_mode_reset {
-        state.type_select.note_successful_selection_mutation(false);
+        state.input.type_select.note_successful_selection_mutation(false);
     }
     for id in selection_voice_recipients(
         voice_policy,

@@ -66,7 +66,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if repair_mode || sell_mode {
         let repair = repair_mode;
         let (wx, wy) =
-            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
         let valid = crate::app::input::commands::own_building_under_point(state, wx, wy).is_some()
             || (!repair && crate::app::input::commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
@@ -81,9 +81,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     }
     let owner = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
     let (hover_rx, hover_ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
     let owner_id = sim.interner.get(&owner);
     if crate::app::presentation::instances::cell_visibility_for_local_owner(
         owner_id,
@@ -899,8 +899,8 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
         .as_ref()
         .unwrap()
         .contains_screen_point_in_rect(
-            state.cursor_x,
-            state.cursor_y,
+            state.input.cursor_x,
+            state.input.cursor_y,
             rect.x,
             rect.y,
             rect.w,
@@ -916,7 +916,7 @@ pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
         w: sw,
         h: state.render_height() as f32 - 20.0,
     };
-    panel_rect.contains(state.cursor_x, state.cursor_y)
+    panel_rect.contains(state.input.cursor_x, state.input.cursor_y)
 }
 
 /// Map a SuperWeaponType `Action=` INI string to its targeting cursor.

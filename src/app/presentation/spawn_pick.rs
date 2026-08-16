@@ -23,14 +23,14 @@ const WAYPOINT_CLICK_RADIUS: f32 = 40.0;
 /// Check if the cursor is over a waypoint marker and return its index if so.
 pub(crate) fn hovered_waypoint(state: &AppState) -> Option<usize> {
     let starts = waypoints::multiplayer_start_waypoints(&state.waypoints);
-    let cx: f32 = state.cursor_x;
-    let cy: f32 = state.cursor_y;
+    let cx: f32 = state.input.cursor_x;
+    let cy: f32 = state.input.cursor_y;
 
     for (i, wp) in starts.iter().enumerate() {
         let z: u8 = state.height_map().get(&(wp.rx, wp.ry)).copied().unwrap_or(0);
         let (world_x, world_y) = terrain::iso_to_screen(wp.rx, wp.ry, z);
-        let screen_x: f32 = world_x - state.camera_x;
-        let screen_y: f32 = world_y - state.camera_y;
+        let screen_x: f32 = world_x - state.input.camera_x;
+        let screen_y: f32 = world_y - state.input.camera_y;
 
         let dx: f32 = cx - screen_x;
         let dy: f32 = cy - screen_y;
@@ -130,7 +130,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Spawn pick re-anchors the opening view, so the camera bookmarks are
     // re-seeded with it — the same "all four slots hold the starting view"
     // state gamemd's scenario load leaves behind.
-    state.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
+    state.input.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
 
     // Reset timing for clean InGame start.
     state.platform.frame_pacer.reset_for_immediate_frame();

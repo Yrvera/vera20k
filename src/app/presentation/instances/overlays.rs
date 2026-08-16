@@ -149,10 +149,10 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
@@ -272,10 +272,10 @@ pub(crate) fn build_anim_class_instances(
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z2 = state.zoom_level;
+    let z2 = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z2,
         state.render_height() as f32 / z2,
     );
@@ -507,7 +507,7 @@ pub(crate) fn build_overlay_instances(
         Some(a) => a,
         None => return,
     };
-    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
+    let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
     let (origin_y, world_height) = state
         .terrain_grid
         .as_ref()
@@ -777,10 +777,10 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         (Some(a), Some(r)) => (a, r),
         _ => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
@@ -884,10 +884,10 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         Some(a) => a,
         None => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
@@ -976,10 +976,10 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
         _ => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
@@ -1055,10 +1055,10 @@ pub(crate) fn build_projectile_visual_instances(
         Some(a) => a,
         None => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
@@ -1170,10 +1170,10 @@ pub(crate) fn build_parachute_instances(
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );

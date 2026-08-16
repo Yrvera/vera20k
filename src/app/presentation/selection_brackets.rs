@@ -86,8 +86,8 @@ impl<'a> BracketPixelFilter<'a> {
     fn from_state(state: &'a AppState) -> Self {
         Self {
             shroud: state.shroud_buffer.as_ref(),
-            camera_x: state.camera_x,
-            camera_y: state.camera_y,
+            camera_x: state.input.camera_x,
+            camera_y: state.input.camera_y,
             enabled: !state.sandbox_full_visibility,
         }
     }
@@ -342,8 +342,8 @@ pub(crate) fn build_selection_bracket_instances(
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
-    let cam_x = state.camera_x;
-    let cam_y = state.camera_y;
+    let cam_x = state.input.camera_x;
+    let cam_y = state.input.camera_y;
     let final_front_filter = BracketPixelFilter::from_state(state);
     let mut out = SelectionBracketInstances::default();
 

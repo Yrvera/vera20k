@@ -536,7 +536,7 @@ impl App {
             None
         };
         let retail_screenshot_current_frame =
-            std::mem::take(&mut state.retail_screenshot_requested);
+            std::mem::take(&mut state.input.retail_screenshot_requested);
         let pending_retail_screenshot = state
             .renderer.retail_screenshot_frame_cache
             .capture_previous_if_requested(

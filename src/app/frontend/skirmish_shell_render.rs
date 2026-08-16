@@ -514,8 +514,8 @@ fn render_in_game_options_overlay_with_atlas(
     // pre-offset every instance by the rounded camera scroll the shader
     // subtracts, netting the intended screen pixels — the in-game sidebar/cursor
     // convention.
-    let cam_dx = state.camera_x.round();
-    let cam_dy = state.camera_y.round();
+    let cam_dx = state.input.camera_x.round();
+    let cam_dy = state.input.camera_y.round();
     let mut cursor_instances: Vec<SpriteInstance> =
         shell_cursor_instance(state).into_iter().collect();
     for inst in instances
@@ -608,8 +608,8 @@ fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
-            state.cursor_x - sequence.hotspot[0],
-            state.cursor_y - sequence.hotspot[1],
+            state.input.cursor_x - sequence.hotspot[0],
+            state.input.cursor_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],

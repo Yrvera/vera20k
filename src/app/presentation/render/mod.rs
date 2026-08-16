@@ -76,7 +76,7 @@ pub(crate) fn render_game(
 
     let local_owner = preferred_local_owner_name(state);
     // Effective viewport in world pixels — zoom shrinks what's visible.
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let vsw = sw / z;
     let vsh = sh / z;
 
@@ -107,11 +107,11 @@ pub(crate) fn render_game(
                     &state.renderer.gpu,
                     view.fog(),
                     owner_id,
-                    state.camera_x,
-                    state.camera_y,
+                    state.input.camera_x,
+                    state.input.camera_y,
                     rw,
                     rh,
-                    state.zoom_level,
+                    state.input.zoom_level,
                     shroud_height_grid.as_deref(),
                 );
             }
@@ -134,8 +134,8 @@ pub(crate) fn render_game(
         &state.renderer.gpu,
         &combat_lights,
         [sw, sh],
-        [state.camera_x, state.camera_y],
-        state.zoom_level,
+        [state.input.camera_x, state.input.camera_y],
+        state.input.zoom_level,
     );
     let composition_view = state.renderer.combat_light_renderer.composition_view();
 

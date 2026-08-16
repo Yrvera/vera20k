@@ -818,9 +818,9 @@ fn advance_in_game_runtime_mode(
         &state.renderer.gpu,
         sw,
         sh,
-        state.camera_x,
-        state.camera_y,
-        state.zoom_level,
+        state.input.camera_x,
+        state.input.camera_y,
+        state.input.zoom_level,
     );
 }
 
@@ -1619,7 +1619,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // — the entity anchor with the render-coordinate lift taken off — and
     // `build_ghost_sprite` derives the preview from the same helper, so the
     // preview and the placed building always align.
-    let (rx, ry) = screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+    let (rx, ry) = screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
     state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
         rules,
@@ -1828,8 +1828,8 @@ pub(crate) fn is_any_layer_walkable(
 pub(crate) fn screen_point_to_world(state: &AppState, screen_x: f32, screen_y: f32) -> (f32, f32) {
     // Screen pixel / zoom = world offset from camera top-left.
     (
-        screen_x / state.zoom_level + state.camera_x,
-        screen_y / state.zoom_level + state.camera_y,
+        screen_x / state.input.zoom_level + state.input.camera_x,
+        screen_y / state.input.zoom_level + state.input.camera_y,
     )
 }
 

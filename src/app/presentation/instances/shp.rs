@@ -90,10 +90,10 @@ pub(crate) fn build_shp_instances(
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );

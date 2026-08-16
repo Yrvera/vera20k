@@ -56,8 +56,8 @@ impl App {
         state.match_audio.reset_for_new_match();
         state.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
-        state.zoom_level = 1.0;
-        state.zoom_target = 1.0;
+        state.input.zoom_level = 1.0;
+        state.input.zoom_target = 1.0;
         state.platform.window.set_cursor_visible(true);
         log::info!("Returned to main menu");
     }
@@ -76,9 +76,9 @@ impl App {
             return;
         }
         state.platform.window_active = active;
-        state.keys_held.clear();
-        state.hotkey_modifiers = ModifiersState::empty();
-        state.type_select.clear_held();
+        state.input.keys_held.clear();
+        state.input.hotkey_modifiers = ModifiersState::empty();
+        state.input.type_select.clear_held();
         // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
         // stops/restores the primary DirectSound output through 0x00407020 /
         // 0x00407040 while secondary playback cursors continue. Keep this on

@@ -192,8 +192,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         crate::render::terrain_instances::build_visible_instances(
             grid,
             Some(&state.lighting_grid),
-            state.camera_x,
-            state.camera_y,
+            state.input.camera_x,
+            state.input.camera_y,
             sw,
             sh,
             uv_fn,
@@ -467,8 +467,8 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
         overlay_registry,
         occupancy: sim.occupancy(),
         fog: &sim.fog,
-        camera_x: state.camera_x,
-        camera_y: state.camera_y,
+        camera_x: state.input.camera_x,
+        camera_y: state.input.camera_y,
         viewport_w: sw,
         viewport_h: sh,
         map_w: resolved.width(),
@@ -526,8 +526,8 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
         &rules.smudge_types,
         resolved_terrain,
         &lookup,
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         sw,
         sh,
     )
@@ -609,7 +609,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     let cargo_pip = build_cargo_pip_instances(state, sw, sh);
     let software_cursor = build_software_cursor_instances(state);
     let drag = match &state.selection_overlay {
-        Some(o) => o.build_drag_rect(&state.selection_state, state.camera_x, state.camera_y),
+        Some(o) => o.build_drag_rect(&state.selection_state, state.input.camera_x, state.input.camera_y),
         None => Vec::new(),
     };
 
@@ -745,8 +745,8 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let minimap = if minimap_visible {
         match &state.minimap {
             Some(mm) => vec![mm.build_minimap_instance_in_rect(
-                state.camera_x,
-                state.camera_y,
+                state.input.camera_x,
+                state.input.camera_y,
                 minimap_rect.x,
                 minimap_rect.y,
                 minimap_rect.w,
@@ -759,11 +759,11 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     };
     let viewport_rect = if minimap_visible {
         // Viewport rect shows the visible world area — shrinks when zoomed in.
-        let z = state.zoom_level;
+        let z = state.input.zoom_level;
         match &state.minimap {
             Some(mm) => mm.build_viewport_rect_in_rect(
-                state.camera_x,
-                state.camera_y,
+                state.input.camera_x,
+                state.input.camera_y,
                 tactical_w as f32 / z,
                 tactical_h as f32 / z,
                 minimap_rect.x,
@@ -828,7 +828,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
             v,
             state.ui_scale,
             crate::app::presentation::sidebar_text::credits_tint(theme),
-            [state.camera_x, state.camera_y],
+            [state.input.camera_x, state.input.camera_y],
         ));
     }
 
@@ -872,8 +872,8 @@ fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
     let s = state.ui_scale;
     vec![SpriteInstance {
         position: [
-            state.camera_x + layout.sidebar_x,
-            state.camera_y + layout.radar_y,
+            state.input.camera_x + layout.sidebar_x,
+            state.input.camera_y + layout.radar_y,
         ],
         size: [ra.width as f32 * s, ra.height as f32 * s],
         uv_origin: [0.0, 0.0],

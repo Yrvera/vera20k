@@ -173,12 +173,12 @@ pub(crate) fn own_building_under_point(
 
 pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
     if visible_object_under_point(state, world_x, world_y).is_some() {
         return false;
     }
     let (rx, ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
     let Some(owner) = preferred_local_owner(state) else {
         return false;
     };
@@ -256,7 +256,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         return false;
     }
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
     let object_under_cursor = visible_object_under_point(state, world_x, world_y);
     if let Some(entity_id) = object_under_cursor.and_then(|id| own_building_id(state, id)) {
         let owner: String =
@@ -269,7 +269,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         schedule_command(state, &owner, payload);
     } else if sell && object_under_cursor.is_none() {
         let (rx, ry) =
-            crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
         let Some(owner) = preferred_local_owner(state) else {
             return true;
         };
@@ -307,7 +307,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
         );
         (preview.rx, preview.ry)
     } else {
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y)
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y)
     };
     if let Some(preview) = state.building_placement_preview.as_ref() {
         if !preview.valid {
@@ -372,7 +372,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     let owner: String = resolve_owner(state);
     let sw_type_id = intern_in_sim(state, section);
     let (rx, ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
     schedule_command(
         state,
         &owner,

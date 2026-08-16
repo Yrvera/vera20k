@@ -226,8 +226,8 @@ pub(crate) fn is_cursor_over_minimap(state: &AppState) -> bool {
     };
     let rect = active_minimap_screen_rect(state);
     minimap.contains_screen_point_in_rect(
-        state.cursor_x,
-        state.cursor_y,
+        state.input.cursor_x,
+        state.input.cursor_y,
         rect.x,
         rect.y,
         rect.w,
@@ -338,14 +338,14 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let tactical_w = tactical_w as f32;
     let tactical_h = tactical_h as f32;
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let rect = active_minimap_screen_rect(state);
     // camera_top_left_for_screen_point_in_rect returns the camera top-left that
     // would center the viewport on the clicked point. We want the world center point.
     // Visible world area = screen / zoom.
     let (cam_x, cam_y) = minimap.camera_top_left_for_screen_point_in_rect(
-        state.cursor_x,
-        state.cursor_y,
+        state.input.cursor_x,
+        state.input.cursor_y,
         tactical_w / z,
         tactical_h / z,
         rect.x,
@@ -372,11 +372,11 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     let sh = state.render_height() as f32;
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let z = state.zoom_level;
+    let z = state.input.zoom_level;
     let rect = active_minimap_screen_rect(state);
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
-        state.cursor_x,
-        state.cursor_y,
+        state.input.cursor_x,
+        state.input.cursor_y,
         tactical_w as f32 / z,
         tactical_h as f32 / z,
         rect.x,
@@ -384,8 +384,8 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
         rect.w,
         rect.h,
     );
-    state.camera_x = cx;
-    state.camera_y = cy;
+    state.input.camera_x = cx;
+    state.input.camera_y = cy;
     crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
 }
 

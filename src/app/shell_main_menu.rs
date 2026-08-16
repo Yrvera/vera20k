@@ -21,13 +21,13 @@ impl App {
     pub(super) fn handle_score_shell_mouse_move(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
         state.score_shell_state.continue_hovered =
-            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+            layout.hit_continue(state.input.cursor_x.round() as i32, state.input.cursor_y.round() as i32);
     }
 
     pub(super) fn handle_score_shell_mouse_down(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
         let inside =
-            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+            layout.hit_continue(state.input.cursor_x.round() as i32, state.input.cursor_y.round() as i32);
         state.score_shell_state.continue_pressed = inside;
         if inside {
             Self::play_main_menu_button_sound(state);
@@ -40,7 +40,7 @@ impl App {
     pub(super) fn handle_score_shell_mouse_up(state: &mut AppState) {
         let layout = Self::score_shell_layout(state);
         let inside =
-            layout.hit_continue(state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+            layout.hit_continue(state.input.cursor_x.round() as i32, state.input.cursor_y.round() as i32);
         let activated = state.score_shell_state.continue_pressed && inside;
         state.score_shell_state.continue_pressed = false;
         if activated {
@@ -60,8 +60,8 @@ impl App {
         state.score_shell_state = Default::default();
         state.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
-        state.zoom_level = 1.0;
-        state.zoom_target = 1.0;
+        state.input.zoom_level = 1.0;
+        state.input.zoom_target = 1.0;
     }
 
     fn single_player_shell_layout(
@@ -300,8 +300,8 @@ impl App {
             state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
@@ -322,8 +322,8 @@ impl App {
             state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
@@ -340,8 +340,8 @@ impl App {
             state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x00E2), false);
@@ -378,8 +378,8 @@ impl App {
 
     pub(super) fn handle_exit_confirm_modal_mouse_down(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
             return;
         }
@@ -388,8 +388,8 @@ impl App {
 
     pub(super) fn handle_exit_confirm_modal_mouse_up(state: &mut AppState) {
         let feed = Self::exit_confirm_modal_feed(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         if state.shell_controller.top_id() != Some(crate::ui::shell::descriptor::DialogId(0x0120)) {
             return;
         }
@@ -417,8 +417,8 @@ impl App {
     pub(super) fn handle_single_player_shell_mouse_down(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
         let feed = Self::single_player_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
         state
             .shell_controller
@@ -441,8 +441,8 @@ impl App {
     pub(super) fn handle_single_player_shell_mouse_move(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
         let feed = Self::single_player_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(crate::ui::shell::descriptor::DialogId(0x0100), false);
@@ -455,8 +455,8 @@ impl App {
     pub(super) fn handle_single_player_shell_mouse_up(state: &mut AppState) {
         let layout = Self::single_player_shell_layout(state);
         let feed = Self::single_player_shell_button_feed(&layout);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let load_enabled = state.single_player_shell_state.load_saved_game_enabled;
         state
             .shell_controller

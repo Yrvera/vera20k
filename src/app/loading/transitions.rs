@@ -255,10 +255,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         (result.scenario.camera_anchor_x, result.scenario.camera_anchor_y),
         tactical_width as f32,
         tactical_height as f32,
-        state.zoom_level,
+        state.input.zoom_level,
     );
-    state.camera_x = camera_x;
-    state.camera_y = camera_y;
+    state.input.camera_x = camera_x;
+    state.input.camera_y = camera_y;
     // gamemd's scenario reader fills all four camera bookmarks with the opening
     // view cell, so F1 before any Ctrl+F1 is a valid "go home".
     crate::app::input::camera::seed_view_bookmarks_from_current_view(state);
@@ -317,12 +317,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         ));
     }
     state.minimap_dragging = false;
-    state.tactical_mouse = Default::default();
-    state.keys_held.clear();
+    state.input.tactical_mouse = Default::default();
+    state.input.keys_held.clear();
     let (tactical_width, tactical_height) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    state.cursor_x = tactical_width as f32 * 0.5;
-    state.cursor_y = tactical_height as f32 * 0.5;
+    state.input.cursor_x = tactical_width as f32 * 0.5;
+    state.input.cursor_y = tactical_height as f32 * 0.5;
 
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.

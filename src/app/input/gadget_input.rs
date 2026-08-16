@@ -404,8 +404,8 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
     // We tick synchronously on the edge, so event coords == live coords
     // (gamemd latches coords at enqueue; with no queue lag the two sources
     // are identical — G6 still selects per the key's low byte).
-    let cx = state.cursor_x.round() as i32;
-    let cy = state.cursor_y.round() as i32;
+    let cx = state.input.cursor_x.round() as i32;
+    let cy = state.input.cursor_y.round() as i32;
     let input = GadgetInput {
         queued_key: key,
         event_x: cx,

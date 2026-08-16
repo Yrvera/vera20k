@@ -182,8 +182,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
         return;
     };
-    let cam_x = state.camera_x;
-    let cam_y = state.camera_y;
+    let cam_x = state.input.camera_x;
+    let cam_y = state.input.camera_y;
     sfx.advance_voice_queue();
 
     for event in &events {

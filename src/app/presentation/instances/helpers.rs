@@ -145,14 +145,14 @@ fn tactical_bounded_entity_encounter_order(
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
-    let zoom = state.zoom_level.max(f32::EPSILON);
+    let zoom = state.input.zoom_level.max(f32::EPSILON);
     let margin = 32.0 / zoom;
     let (width_px, height_px) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let min_x = state.camera_x - margin;
-    let min_y = state.camera_y - margin;
-    let max_x = state.camera_x + width_px as f32 / zoom + margin;
-    let max_y = state.camera_y + height_px as f32 / zoom + margin;
+    let min_x = state.input.camera_x - margin;
+    let min_y = state.input.camera_y - margin;
+    let max_x = state.input.camera_x + width_px as f32 / zoom + margin;
+    let max_y = state.input.camera_y + height_px as f32 / zoom + margin;
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner
         .as_deref()

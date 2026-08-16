@@ -67,7 +67,7 @@ pub(crate) fn now_ms(state: &AppState) -> u64 {
 /// CursorMoved feed (all screens).
 pub(crate) fn on_mouse_move(state: &mut AppState) {
     let now = now_ms(state);
-    let (x, y) = (state.cursor_x.round() as i32, state.cursor_y.round() as i32);
+    let (x, y) = (state.input.cursor_x.round() as i32, state.input.cursor_y.round() as i32);
     state.tooltips.on_mouse_move(x, y, now);
 }
 
@@ -270,7 +270,7 @@ pub(crate) fn build_tooltip_instances(
         // both do. `tip.x/y` are cursor coordinates, already screen space, so
         // without this the popup is displaced by the whole camera offset and
         // leaves the screen as soon as the player scrolls.
-        [state.camera_x, state.camera_y],
+        [state.input.camera_x, state.input.camera_y],
         state.renderer.bit_font.darken_texture().is_some(),
     )
 }

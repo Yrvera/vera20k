@@ -167,7 +167,7 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
     message_text_instances(
         &state.renderer.bit_font,
         &state.message_list,
-        [state.camera_x, state.camera_y],
+        [state.input.camera_x, state.input.camera_y],
     )
 }
 

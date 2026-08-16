@@ -45,7 +45,7 @@ pub(crate) fn build_sidebar_chrome_instances(
         &view.tabs,
         &state.power_bar_anim,
         [state.render_width() as f32, state.render_height() as f32],
-        [state.camera_x, state.camera_y],
+        [state.input.camera_x, state.input.camera_y],
         state.ui_scale,
     )
 }
@@ -552,7 +552,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     let mut instances = Vec::new();
     let mut gclock_instances = Vec::new();
     let mut overlay_instances = Vec::new();
-    let co = [state.camera_x, state.camera_y];
+    let co = [state.input.camera_x, state.input.camera_y];
     let gclock_frames: &[SidebarChromeEntry] =
         crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
@@ -688,7 +688,7 @@ pub(crate) fn build_sidebar_text_instances(
     }
     let s = state.ui_scale;
     let ts = ready_text_scale(s);
-    let co = [state.camera_x, state.camera_y];
+    let co = [state.input.camera_x, state.input.camera_y];
     let mut instances = Vec::new();
 
     for item in &view.items {

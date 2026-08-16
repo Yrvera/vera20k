@@ -225,8 +225,8 @@ pub(crate) fn build_bridge_body_instances(
         &state.lighting_grid,
         origin_y,
         world_height,
-        state.camera_x,
-        state.camera_y,
+        state.input.camera_x,
+        state.input.camera_y,
         sw,
         sh,
         out,
@@ -257,7 +257,7 @@ pub(crate) fn build_bridge_shadow_instances(
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
+    let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present {
@@ -350,7 +350,7 @@ pub(crate) fn build_bridge_railing_instances(
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.camera_x, state.camera_y);
+    let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present || BridgeRuntimeState::effective_render_state(cell).is_none() {

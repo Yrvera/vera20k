@@ -315,8 +315,8 @@ fn cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
-            state.cursor_x - sequence.hotspot[0],
-            state.cursor_y - sequence.hotspot[1],
+            state.input.cursor_x - sequence.hotspot[0],
+            state.input.cursor_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],

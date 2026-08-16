@@ -234,8 +234,8 @@ impl TacticalCaptureSession {
             font: font_identity,
             sidebar_layout: sidebar_layout_identity,
         });
-        state.cursor_x = capture.post_load_cursor.x as f32;
-        state.cursor_y = capture.post_load_cursor.y as f32;
+        state.input.cursor_x = capture.post_load_cursor.x as f32;
+        state.input.cursor_y = capture.post_load_cursor.y as f32;
         let now_ms =
             crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
         state.platform.frame_pacer.reanchor(now_ms);
@@ -282,8 +282,8 @@ impl TacticalCaptureSession {
             state.skirmish_settings.clone(),
         );
         crate::app::loading::pump::begin_loading(state, request);
-        state.zoom_level = 1.0;
-        state.zoom_target = 1.0;
+        state.input.zoom_level = 1.0;
+        state.input.zoom_target = 1.0;
         Ok(())
     }
 
@@ -683,8 +683,8 @@ impl TacticalCaptureSession {
             "Rust L0 lacks the Default software cursor sequence"
         );
         ensure!(
-            state.cursor_x == profile.capture.post_load_cursor.x as f32
-                && state.cursor_y == profile.capture.post_load_cursor.y as f32,
+            state.input.cursor_x == profile.capture.post_load_cursor.x as f32
+                && state.input.cursor_y == profile.capture.post_load_cursor.y as f32,
             "post-load cursor differs from the sealed neutral point"
         );
 
@@ -954,8 +954,8 @@ impl TacticalCaptureSession {
             .unwrap_or(CursorId::Default);
         let cursor_ready = state.use_software_cursor()
             && cursor_id == CursorId::Default
-            && state.cursor_x == profile.capture.post_load_cursor.x as f32
-            && state.cursor_y == profile.capture.post_load_cursor.y as f32;
+            && state.input.cursor_x == profile.capture.post_load_cursor.x as f32
+            && state.input.cursor_y == profile.capture.post_load_cursor.y as f32;
         let power = sim.power_states.get(&owner_id);
         let power_ready = power.is_some_and(|power| {
             power.total_output >= power.total_drain
@@ -973,7 +973,7 @@ impl TacticalCaptureSession {
             && !state.show_hotkey_help
             && state.targeting_mode.is_none()
             && state.building_placement_preview.is_none()
-            && state.keys_held.is_empty()
+            && state.input.keys_held.is_empty()
             && !state.minimap_dragging
             && !state.sidebar_gadget_state.repair_mode_on
             && !state.sidebar_gadget_state.sell_mode_on;
@@ -1023,7 +1023,7 @@ impl TacticalCaptureSession {
                 "power_ready": power_ready,
                 "bound_structures_ready": bound_structures_ready,
                 "cursor_id": format!("{cursor_id:?}"),
-                "cursor": {"x": state.cursor_x, "y": state.cursor_y},
+                "cursor": {"x": state.input.cursor_x, "y": state.input.cursor_y},
                 "no_modal_or_debug": no_modal_or_debug,
                 "panel_contains_aperture": panel_contains_aperture,
                 "sidebar_values_ready": sidebar_values_ready,
@@ -1171,8 +1171,8 @@ impl TacticalCaptureSession {
             },
             "render": render,
             "cursor": {
-                "x": state.cursor_x,
-                "y": state.cursor_y,
+                "x": state.input.cursor_x,
+                "y": state.input.cursor_y,
                 "id": format!("{:?}", crate::app::input::cursor::current_cursor_feedback_kind(state)
                     .and_then(crate::app::input::cursor::cursor_id_for_feedback)
                     .unwrap_or(CursorId::Default)),

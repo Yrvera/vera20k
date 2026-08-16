@@ -218,8 +218,8 @@ impl App {
         );
         crate::app::loading::pump::begin_loading(state, request);
         Self::enter_game_window_mode(state);
-        state.zoom_level = 1.0;
-        state.zoom_target = 1.0;
+        state.input.zoom_level = 1.0;
+        state.input.zoom_target = 1.0;
     }
 
     fn start_skirmish_session(
@@ -272,8 +272,8 @@ impl App {
         state.skirmish_preview_texture = None;
         crate::app::loading::pump::begin_loading(state, request);
         Self::enter_game_window_mode(state);
-        state.zoom_level = 1.0;
-        state.zoom_target = 1.0;
+        state.input.zoom_level = 1.0;
+        state.input.zoom_target = 1.0;
     }
 
     pub(crate) fn ensure_skirmish_shell_chrome(state: &mut AppState) -> bool {
@@ -557,8 +557,8 @@ impl App {
 
     fn handle_choose_map_modal_mouse_down(state: &mut AppState) -> bool {
         let layout = Self::skirmish_choose_map_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
@@ -590,8 +590,8 @@ impl App {
 
     fn handle_choose_map_modal_mouse_up(state: &mut AppState) -> bool {
         let layout = Self::skirmish_choose_map_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
@@ -641,8 +641,8 @@ impl App {
 
     fn handle_choose_map_modal_mouse_wheel(state: &mut AppState, lines: f32) -> bool {
         let layout = Self::skirmish_choose_map_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return false;
         };
@@ -817,8 +817,8 @@ impl App {
             return false;
         }
         let feed = Self::validation_modal_feed(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(Self::validation_modal_dialog_id(), true);
@@ -832,8 +832,8 @@ impl App {
             return false;
         }
         let feed = Self::validation_modal_feed(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         state
             .shell_controller
             .ensure_active(Self::validation_modal_dialog_id(), true);
@@ -863,8 +863,8 @@ impl App {
             return;
         }
         let layout = Self::skirmish_shell_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         if crate::ui::skirmish_shell::player_name_edit_rect_hit(&layout, x, y) {
             crate::ui::skirmish_shell::focus_player_name_edit(&mut state.skirmish_shell_state);
             Self::sync_player_name_edit_scroll(state);
@@ -928,8 +928,8 @@ impl App {
             return;
         }
         let layout = Self::skirmish_shell_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         let released_button = crate::ui::skirmish_shell::hit_test_owner_draw_button(&layout, x, y);
         let pressed_button = state.skirmish_shell_state.pressed_owner_draw_button.take();
         state.skirmish_shell_last_painted_pressed_button = None;
@@ -961,8 +961,8 @@ impl App {
         }
         if state.skirmish_shell_state.choose_map_modal.is_some() {
             let layout = Self::skirmish_choose_map_layout(state);
-            let x = state.cursor_x.round() as i32;
-            let y = state.cursor_y.round() as i32;
+            let x = state.input.cursor_x.round() as i32;
+            let y = state.input.cursor_y.round() as i32;
             Self::update_choose_map_modal_status_help(state, &layout, x, y);
             return;
         }
@@ -973,8 +973,8 @@ impl App {
             return;
         }
         let layout = Self::skirmish_shell_layout(state);
-        let x = state.cursor_x.round() as i32;
-        let y = state.cursor_y.round() as i32;
+        let x = state.input.cursor_x.round() as i32;
+        let y = state.input.cursor_y.round() as i32;
         Self::update_skirmish_shell_status_help(state, &layout, x, y);
         crate::ui::skirmish_shell::handle_option_mouse_move(
             &mut state.skirmish_shell_state,

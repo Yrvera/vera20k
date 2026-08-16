@@ -280,7 +280,7 @@ impl ApplicationHandler for App {
                     // Without this the right-drag pan keeps applying its
                     // anchor-relative step every frame and edge scroll stays
                     // inhibited until the player right-clicks again.
-                    state.tactical_mouse = Default::default();
+                    state.input.tactical_mouse = Default::default();
                     state.selection_state.cancel_drag();
                     state.minimap_dragging = false;
                 }
@@ -295,7 +295,7 @@ impl ApplicationHandler for App {
                 // Native's paused input capture admits Escape only and does not
                 // mutate the recorded keyboard state for other input.
                 if !state.paused {
-                    state.hotkey_modifiers = modifiers.state();
+                    state.input.hotkey_modifiers = modifiers.state();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -398,10 +398,10 @@ impl ApplicationHandler for App {
                         &key_without_modifiers,
                         event.location,
                     );
-                    let hotkey_resolution = state.hotkey_bindings.resolve_event(
+                    let hotkey_resolution = state.input.hotkey_bindings.resolve_event(
                         binding_key,
                         event.location,
-                        state.hotkey_modifiers,
+                        state.input.hotkey_modifiers,
                     );
                     if in_game && (is_escape || !egui_consumed) {
                         let type_select_consumed = dispatch::handle_type_select_key_edge(
@@ -422,20 +422,20 @@ impl ApplicationHandler for App {
                             if let Some(scroll_key) =
                                 crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                             {
-                                state.keys_held.insert(scroll_key);
+                                state.input.keys_held.insert(scroll_key);
                             } else if crate::app::input::hotkeys::physical_scroll_key(code).is_none() {
-                                state.keys_held.insert(code);
+                                state.input.keys_held.insert(code);
                             }
                         } else {
                             // A release always clears a previously admitted
                             // scroll flag, even if NumLock or bindings changed
                             // while the key was held.
-                            state.keys_held.remove(&code);
+                            state.input.keys_held.remove(&code);
                             if let Some(scroll_key) =
                                 crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                                     .or_else(|| crate::app::input::hotkeys::physical_scroll_key(code))
                             {
-                                state.keys_held.remove(&scroll_key);
+                                state.input.keys_held.remove(&scroll_key);
                             }
                         }
                     }
@@ -454,8 +454,8 @@ impl ApplicationHandler for App {
                 } else {
                     (1.0, 1.0)
                 };
-                state.cursor_x = position.x as f32 * sx;
-                state.cursor_y = position.y as f32 * sy;
+                state.input.cursor_x = position.x as f32 * sx;
+                state.input.cursor_y = position.y as f32 * sy;
                 // Keep OS cursor hidden whenever the software cursor is active.
                 if state.use_software_cursor() {
                     state.platform.window.set_cursor_visible(false);

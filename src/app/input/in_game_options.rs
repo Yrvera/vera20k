@@ -79,8 +79,8 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
     let screen_h = state.render_height() as i32;
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
-    let cx = state.cursor_x.round() as i32;
-    let cy = state.cursor_y.round() as i32;
+    let cx = state.input.cursor_x.round() as i32;
+    let cy = state.input.cursor_y.round() as i32;
 
     if pressed {
         match in_game_options_hit(&laid, (cx, cy)) {
@@ -125,7 +125,7 @@ pub(crate) fn in_game_options_drag(state: &mut AppState) {
     let Some(rect) = laid.iter().find(|l| l.id == id).map(|l| l.rect) else {
         return;
     };
-    let cx = state.cursor_x.round() as i32;
+    let cx = state.input.cursor_x.round() as i32;
     let pos =
         trackbar_pos_from_mouse_x(cx, OPTIONS_SPEED_MIN as i32, OPTIONS_SPEED_MAX as i32, rect);
     store_slider_value(&mut state.in_game_options, id, pos);
