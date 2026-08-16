@@ -612,7 +612,7 @@ impl App {
         // hard stop and output-scale restoration so ScoreX begins audible.
         if let Some(crate::app_scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
             tick.after_stop
-            && let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager)
+            && let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager())
         {
             let _ = player.play_track(theme, assets);
         }
@@ -663,7 +663,7 @@ impl App {
                     .get("EVA_BattleControlTerminated", faction)
                     .unwrap_or(fallback)
                     .to_string();
-                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) {
+                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) {
                     let _ = sfx.interrupt_eva_sound(
                         &sound_id,
                         &state.sound_registry,

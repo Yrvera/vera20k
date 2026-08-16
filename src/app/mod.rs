@@ -66,6 +66,7 @@ mod initialize;
 mod in_game;
 pub(crate) mod match_diagnostics;
 pub(crate) mod persistence;
+pub(crate) mod process_assets;
 mod shell_main_menu;
 mod shell_random_map;
 mod shell_skirmish;

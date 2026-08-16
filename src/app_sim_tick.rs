@@ -197,7 +197,7 @@ fn announce_local_state_evas(state: &mut AppState) {
                 .to_string()
         })
         .collect();
-    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) else {
+    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) else {
         return;
     };
     for sound_id in &sound_ids {
@@ -804,7 +804,7 @@ fn advance_in_game_runtime_mode(
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app_gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
+    if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
         player.update(assets, music_now_ms);
     }
     if decision.tactical_mutation {
@@ -1637,13 +1637,13 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Uses an incremental approach: first checks if the existing atlases already
 /// contain all needed sprite keys. If so, skips the expensive rebuild entirely.
 /// Only performs a full rebuild when genuinely new sprite types appear.
-/// Reuses `state.asset_manager` instead of creating a new one (avoids re-opening
+/// Reuses the process asset manager instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     let Some(rt) = state.sim_runtime.as_ref() else { return };
     let sim = &rt.simulation;
     let bound_rules = Some(&rt.resources.rules);
-    let Some(asset_manager) = &state.asset_manager else {
+    let Some(asset_manager) = state.process_assets.manager() else {
         log::warn!("Atlas refresh skipped: no asset manager available");
         return;
     };

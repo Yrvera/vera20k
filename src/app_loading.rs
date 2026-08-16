@@ -560,10 +560,10 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
         .game_config
         .as_ref()
         .map(|config| config.paths.ra2_dir.clone());
-    // Retail has one process-global MIX list and LoadFileFromMIX cache. Move
+    // Retail has one process-global MIX list and LoadFileFromMIX cache. Lease
     // that same manager through the loading job instead of reconstructing it
-    // at the shell -> scenario boundary.
-    session.job.asset_manager = state.asset_manager.take();
+    // at the shell -> scenario boundary (F11 slot: Available -> Loading).
+    session.job.asset_manager = state.process_assets.lease_for_loading();
     // Resolve the backing fill from the live rules `[Colors]` schemes now that
     // `state.rules` is reachable (the native ctor only sees the launch session).
     if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules()) {
@@ -581,10 +581,13 @@ pub(crate) fn loading_map_name(state: &AppState) -> Option<&str> {
 }
 
 pub(crate) fn clear_loading_state(state: &mut AppState) {
-    if let Some(mut session) = state.loading_session.take()
-        && state.asset_manager.is_none()
-    {
-        state.asset_manager = session.job.asset_manager.take();
+    // F11 slot: the rescue is unconditional — the leased manager (with its
+    // sticky CRC cache and theater identity) always comes home. The old code
+    // rescued only when the state slot was empty and otherwise dropped it.
+    if let Some(mut session) = state.loading_session.take() {
+        if let Some(manager) = session.job.asset_manager.take() {
+            state.process_assets.return_from_loading(manager);
+        }
     }
     state.loading_screen_atlas = None;
     state.loading_progress = LoadingProgressState::standard_skirmish();
@@ -903,9 +906,17 @@ fn ensure_session_job_asset_manager(
         );
     }
     if session.job.asset_manager.is_none() {
-        let asset_manager = if let Some(asset_manager) = state.asset_manager.take() {
+        let asset_manager = if let Some(asset_manager) = state.process_assets.lease_for_loading() {
             asset_manager
         } else {
+            // The process manager is gone (never constructed, or a lease was
+            // lost). Reconstructing loses the sticky CRC cache and theater
+            // identity — log it rather than hiding the anomaly.
+            log::warn!(
+                "loading job reconstructs an AssetManager; process-sticky \
+                 MIX cache and theater identity restart"
+            );
+            state.process_assets.note_lease_ended_without_return();
             AssetManager::new(
                 session
                     .job
@@ -920,8 +931,10 @@ fn ensure_session_job_asset_manager(
 }
 
 fn restore_job_asset_manager(state: &mut AppState, session: &mut LoadingSession) {
-    if state.asset_manager.is_none() {
-        state.asset_manager = session.job.asset_manager.take();
+    // F11 slot: unconditional return (Loading -> Available); a double return
+    // keeps the resident manager and logs inside the slot.
+    if let Some(manager) = session.job.asset_manager.take() {
+        state.process_assets.return_from_loading(manager);
     }
 }
 

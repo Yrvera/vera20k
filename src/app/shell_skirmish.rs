@@ -287,7 +287,7 @@ impl App {
             return true;
         }
 
-        let Some(assets) = state.asset_manager.as_ref() else {
+        let Some(assets) = state.process_assets.manager() else {
             log::warn!(
                 "Could not prepare Skirmish shell chrome: process asset manager is unavailable"
             );

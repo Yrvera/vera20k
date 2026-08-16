@@ -531,7 +531,9 @@ impl App {
             ui_scale,
             sidebar_scroll_rows: 0,
             sidebar_scroll_rows_parked: [0; 4],
-            asset_manager: startup_asset_manager,
+            process_assets: crate::app::process_assets::ProcessAssets::from_startup(
+                startup_asset_manager,
+            ),
             music_player: startup_audio
                 .initialize_music_output
                 .then(MusicPlayer::new)

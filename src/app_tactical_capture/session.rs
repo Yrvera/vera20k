@@ -673,7 +673,7 @@ impl TacticalCaptureSession {
                 && state.sidebar_chrome.is_some()
                 && state.software_cursor.is_some()
                 && sim.path_grid().is_some()
-                && state.asset_manager.is_some(),
+                && state.process_assets.is_available(),
             "Rust L0 is missing one or more production render/simulation resources"
         );
         ensure!(
@@ -711,8 +711,8 @@ impl TacticalCaptureSession {
             "loaded map source differs from sealed MIX provenance"
         );
         let resolved = state
-            .asset_manager
-            .as_ref()
+            .process_assets
+            .manager()
             .and_then(|assets| assets.resolve_ref(&profile.fixture.logical_map_name))
             .context("post-load production asset lookup cannot resolve fixture map")?;
         let payload_sha256 = sha256_hex(resolved.bytes);

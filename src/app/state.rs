@@ -5,7 +5,7 @@
 //! extracted group; unrelated presentation, input, and match state stay flat.
 
 use super::{
-    AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
+    BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
     EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
@@ -393,8 +393,9 @@ pub(crate) struct AppState {
     /// Parked scroll row per sidebar tab, indexed by `app_input::tab_scroll_slot`.
     /// One entry per `SidebarTab` variant.
     pub(crate) sidebar_scroll_rows_parked: [usize; 4],
-    /// Asset manager — kept alive for music track lookups.
-    pub(crate) asset_manager: Option<AssetManager>,
+    /// Process-wide asset ownership (F11): the one retail MIX manager for
+    /// the process, leased to the loading pipeline and always returned.
+    pub(crate) process_assets: crate::app::process_assets::ProcessAssets,
     /// Background music player (rodio).
     pub(crate) music_player: Option<MusicPlayer>,
     /// Sound effect player (rodio) — plays one-shot SFX (weapons, voices, UI).

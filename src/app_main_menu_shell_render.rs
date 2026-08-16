@@ -334,7 +334,7 @@ pub(crate) fn ensure_movie_for_current_layout(
     }
     clear_ra2ts_movie_session(state);
 
-    let Some(assets) = state.asset_manager.as_ref() else {
+    let Some(assets) = state.process_assets.manager() else {
         state.main_menu_shell_failed = true;
         return Ok(());
     };

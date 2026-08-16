@@ -179,7 +179,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     }
     let vp_w = state.render_width() as f32;
     let vp_h = state.render_height() as f32;
-    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, &state.asset_manager) else {
+    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) else {
         return;
     };
     let cam_x = state.camera_x;

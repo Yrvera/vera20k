@@ -258,7 +258,13 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // gamemd's scenario reader fills all four camera bookmarks with the opening
     // view cell, so F1 before any Ctrl+F1 is a valid "go home".
     crate::app_camera::seed_view_bookmarks_from_current_view(state);
-    state.asset_manager = result.asset_manager;
+    // F11 slot: only an actually-carried manager returns (Loading ->
+    // Available). The fallback result carries None — the old unconditional
+    // assignment wiped the manager the failure path had just restored,
+    // discarding the process-sticky MIX cache and theater identity.
+    if let Some(manager) = result.asset_manager {
+        state.process_assets.return_from_loading(manager);
+    }
     state.targeting_mode = None;
     state.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
@@ -319,12 +325,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.selection_overlay = Some(SelectionOverlay::new(
         &state.gpu,
         &state.batch_renderer,
-        state.asset_manager.as_ref(),
+        state.process_assets.manager(),
     ));
 
     // Create GPU ABuffer for per-pixel shroud darkening.
     // Loads SHROUD.SHP brightness data and the 256-byte edge LUT.
-    if let Some(ref am) = state.asset_manager {
+    if let Some(am) = state.process_assets.manager() {
         if let Some(grid) = state
             .sim_runtime
             .as_ref()
@@ -369,7 +375,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.spawn_pick_pending = result.spawn_pick_pending;
 
     // Load sound.ini / soundmd.ini for SFX sound ID resolution.
-    if let Some(ref assets) = state.asset_manager {
+    if let Some(assets) = state.process_assets.manager() {
         state.sound_registry = load_sound_registry(assets);
         state.audio_indices = if crate::app::should_load_audio_indices(state.audio_indices_enabled)
         {
@@ -384,7 +390,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // leaves the current shell stream in place while Theme owns its fade and
     // deferred QueueSong/automatic request.
     let music_now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.music_player, &state.asset_manager) {
+    if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
         let request = player.resolve_scenario_theme(state.map_basic.theme.as_deref(), assets);
         player.request_scenario_theme(request, music_now_ms);
     }

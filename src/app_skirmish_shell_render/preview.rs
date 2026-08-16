@@ -260,9 +260,9 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         .game_config
         .as_ref()
         .map(|config| config.paths.ra2_dir.as_path())
-        .or_else(|| state.asset_manager.as_ref().map(|assets| assets.ra2_dir()));
+        .or_else(|| state.process_assets.manager().map(|assets| assets.ra2_dir()));
     let decoded = selected_entry.as_ref().and_then(|entry| {
-        decode_preview_for_map_entry(entry, ra2_dir, state.asset_manager.as_ref())
+        decode_preview_for_map_entry(entry, ra2_dir, state.process_assets.manager())
     });
 
     let Some(decoded) = decoded.as_ref() else {

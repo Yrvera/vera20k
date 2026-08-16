@@ -143,7 +143,7 @@ impl App {
         // A second Generate makes the previous dialog result stale immediately,
         // even when setup cannot progress far enough to spawn the worker.
         state.random_map_retention.begin_generation();
-        let Some(asset_manager) = state.asset_manager.as_mut() else {
+        let Some(asset_manager) = state.process_assets.manager_mut() else {
             return false;
         };
         let settings = crate::map::rmg::RmgSettings::load(asset_manager);
@@ -391,7 +391,7 @@ impl App {
         let resolved_terrain = {
             let frontend_main_rng = &mut state.frontend_main_rng;
             let selector_cache = &mut state.tile_variant_selector_cache;
-            let asset_manager = state.asset_manager.as_ref();
+            let asset_manager = state.process_assets.manager();
             let mut raw_draw = || frontend_main_rng.next_u32();
             let mut selector = selector_cache.begin_load(&mut raw_draw);
             // RMG InitMap supplies explicit Clear cells. Its preview never
@@ -418,7 +418,7 @@ impl App {
         // radar triple. The artwork is never sampled for it, so there is no
         // substitute for loading the file.
         let overlay_registry = state.overlay_registry();
-        let assets = state.asset_manager.as_ref();
+        let assets = state.process_assets.manager();
         let theater_ext = job.theater.extension;
         let overlay_radar = |overlay_id: u8, stage: u8| -> Option<[u8; 3]> {
             let registry = overlay_registry?;
@@ -832,8 +832,8 @@ impl App {
         // RMGMD.INI drives the randomizer's vegetation bounds; without it the
         // derived vegetation collapses to zero and randomized maps lose trees.
         let settings = state
-            .asset_manager
-            .as_ref()
+            .process_assets
+            .manager()
             .map(crate::map::rmg::RmgSettings::load)
             .unwrap_or_default();
         let description = state
