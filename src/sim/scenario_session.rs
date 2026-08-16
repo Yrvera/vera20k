@@ -6,6 +6,7 @@
 //! Data flows one-way app→sim; this module depends only on sim/ siblings.
 
 use std::collections::BTreeMap;
+use std::hash::Hash;
 
 use crate::sim::game_options::GameOptions;
 use crate::sim::intern::InternedId;
@@ -272,6 +273,83 @@ pub struct ScenarioSession {
 }
 
 impl ScenarioSession {
+    /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
+    /// the pre-session hash prefix order is preserved (SC-2). The clock and
+    /// game options keep their original fold positions above; this fold adds
+    /// only the fields new to the session aggregate. Order is part of the
+    /// hash contract and must never change.
+    pub(crate) fn fold_identity(&self, hasher: &mut impl std::hash::Hasher) {
+        let s = self;
+        s.seed.hash(hasher);
+        s.map_name.hash(hasher);
+        s.theater.hash(hasher);
+        s.game_mode_nonzero.hash(hasher);
+        // Preserve the legacy default-false hash stream while still making
+        // the native ScenarioFlags 0x20 state lockstep-visible.
+        if s.no_damage {
+            b"scenario-no-damage-v1".hash(hasher);
+        }
+        (s.map_width, s.map_height).hash(hasher);
+        (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
+        s.mp_start_waypoints.len().hash(hasher);
+        for (idx, cell) in &s.mp_start_waypoints {
+            idx.hash(hasher);
+            cell.hash(hasher);
+        }
+        s.start_slot_houses.len().hash(hasher);
+        for (idx, owner) in &s.start_slot_houses {
+            idx.hash(hasher);
+            owner.hash(hasher);
+        }
+        s.house_order.hash(hasher);
+
+        let lighting = &s.lighting;
+        lighting.normal.ambient_percent.hash(hasher);
+        lighting.normal.red_percent.hash(hasher);
+        lighting.normal.green_percent.hash(hasher);
+        lighting.normal.blue_percent.hash(hasher);
+        lighting.normal.ground_units.hash(hasher);
+        lighting.normal.level_units.hash(hasher);
+        lighting.ion.ambient_percent.hash(hasher);
+        lighting.ion.red_percent.hash(hasher);
+        lighting.ion.green_percent.hash(hasher);
+        lighting.ion.blue_percent.hash(hasher);
+        lighting.ion.ground_units.hash(hasher);
+        lighting.ion.level_units.hash(hasher);
+        lighting.current_ambient.hash(hasher);
+        lighting.target_ambient.hash(hasher);
+        match lighting.selected_profile {
+            crate::sim::scenario_session::ScenarioLightingProfile::Normal => 0u8.hash(hasher),
+            crate::sim::scenario_session::ScenarioLightingProfile::Ion => 1u8.hash(hasher),
+        }
+        lighting.transition_timer.start_frame().hash(hasher);
+        lighting.transition_timer.duration().hash(hasher);
+    }
+
+    /// Hash per-match game options for lockstep verification.
+    pub(crate) fn fold_game_options(&self, hasher: &mut impl std::hash::Hasher) {
+        let opts = &self.game_options;
+        opts.short_game.hash(hasher);
+        opts.bases.hash(hasher);
+        opts.bridges_destroyable.hash(hasher);
+        opts.super_weapons.hash(hasher);
+        opts.build_off_ally.hash(hasher);
+        opts.crates.hash(hasher);
+        opts.mcv_redeploy.hash(hasher);
+        opts.fog_of_war.hash(hasher);
+        opts.shroud.hash(hasher);
+        opts.tiberium_grows.hash(hasher);
+        opts.multi_engineer.hash(hasher);
+        opts.harvester_truce.hash(hasher);
+        opts.ally_change_allowed.hash(hasher);
+        opts.starting_credits.hash(hasher);
+        opts.unit_count.hash(hasher);
+        opts.tech_level.hash(hasher);
+        opts.game_speed.hash(hasher);
+        opts.ai_difficulty.hash(hasher);
+        opts.ai_players.hash(hasher);
+    }
+
     pub fn from_descriptor(desc: &ScenarioDescriptor) -> Self {
         Self {
             seed: u64::from(desc.seed),
@@ -363,6 +441,7 @@ mod tests {
         use crate::map::entities::{EntityCategory, MapEntity};
         use crate::sim::command::{Command, CommandEnvelope};
         use std::collections::BTreeMap;
+use std::hash::Hash;
 
         fn build(seed: u32) -> Simulation {
             let mut sim = Simulation::from_descriptor(&ScenarioDescriptor {

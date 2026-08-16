@@ -1330,38 +1330,9 @@ impl Simulation {
         }
 
         let (index, identities) = RestoredObjectIndex::build(self)?;
-        if self.substrate.next_stable_object_id <= index.highest_id {
-            return Err(SnapshotRestoreError::ObjectIdCounterBehind {
-                next_id: self.substrate.next_stable_object_id,
-                highest_id: index.highest_id,
-            });
-        }
-
-        let highest_order = self
+        let seen_logic = self
             .substrate
-            .entities
-            .values()
-            .filter(|entity| entity.lifecycle.cell_marked)
-            .map(|entity| entity.occupancy_enter_order)
-            .max()
-            .unwrap_or(0);
-        let next_order = self.substrate.next_occupancy_enter_order.current();
-        if next_order <= highest_order {
-            return Err(SnapshotRestoreError::OccupancyOrderCounterBehind {
-                next_order,
-                highest_order,
-            });
-        }
-
-        let mut seen_logic = BTreeSet::new();
-        for &object_id in self.substrate.logic.as_slice() {
-            if !seen_logic.insert(object_id) {
-                return Err(SnapshotRestoreError::DuplicateLogicIdentity { object_id });
-            }
-            if !identities.contains_key(&object_id) {
-                return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
-            }
-        }
+            .validate_restored_counters_and_logic(index.highest_id, &identities)?;
         let pending_delete_ids = self
             .substrate
             .pending_delete
