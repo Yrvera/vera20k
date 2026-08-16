@@ -648,7 +648,7 @@ fn render_skirmish_shell_with_atlas(
     // "working" frame until the player moved the mouse.
     if crate::app::App::poll_random_map_generation(state) {
         state.platform.window.request_redraw();
-    } else if state.random_map_generation.is_some() {
+    } else if state.frontend.random_map_generation.is_some() {
         state.platform.window.request_redraw();
     }
     let layout = compute_layout(state.render_width(), state.render_height());
@@ -672,7 +672,7 @@ fn render_skirmish_shell_with_atlas(
     update_owner_draw_button_paint_sound(state, mode);
     ensure_selected_preview_texture(state);
     let selected_entry = state
-        .scenario_catalog.shell_maps()
+        .frontend.scenario_catalog.shell_maps()
         .get(state.frontend.skirmish_shell_state.selected_map_idx);
     // Both the sentinel's RandMap.img and the setup dialog's generated image
     // already carry their start markers, so the overlay pass must not add them
@@ -691,7 +691,7 @@ fn render_skirmish_shell_with_atlas(
         .or_else(|| choose_map_layout.as_ref().map(|layout| layout.preview))
         .unwrap_or(layout.map_preview);
     let fitted_preview_rect = state
-        .skirmish_preview_texture
+        .frontend.skirmish_preview_texture
         .as_ref()
         .map(|preview| aspect_fit_rect(preview_rect, preview.width, preview.height));
     let projected_start_positions = selected_preview_bounds
@@ -703,7 +703,7 @@ fn render_skirmish_shell_with_atlas(
         &projected_start_positions,
         preview_has_baked_start_markers,
     );
-    let preview_instance = state.skirmish_preview_texture.as_ref().and_then(|preview| {
+    let preview_instance = state.frontend.skirmish_preview_texture.as_ref().and_then(|preview| {
         build_preview_surface_instance(preview_rect, preview.width, preview.height)
     });
     let preview_buffer = preview_instance.as_ref().and_then(|instance| {
@@ -741,8 +741,8 @@ fn render_skirmish_shell_with_atlas(
         validation_ok_pressed,
         &state.frontend.skirmish_shell_state,
         color_schemes,
-        state.scenario_catalog.shell_maps(),
-        &state.skirmish_modes,
+        state.frontend.scenario_catalog.shell_maps(),
+        &state.frontend.skirmish_modes,
         wave,
     );
     let mut instances = instances;
@@ -763,7 +763,7 @@ fn render_skirmish_shell_with_atlas(
             &layout,
             validation_layout.as_ref(),
             &state.frontend.skirmish_shell_state,
-            state.scenario_catalog.shell_maps(),
+            state.frontend.scenario_catalog.shell_maps(),
         )
     };
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {
@@ -872,7 +872,7 @@ fn render_skirmish_shell_with_atlas(
         .renderer.batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
     if let (Some(preview), Some((buffer, count))) = (
-        state.skirmish_preview_texture.as_ref(),
+        state.frontend.skirmish_preview_texture.as_ref(),
         preview_buffer.as_ref(),
     ) {
         state.renderer.batch_renderer.draw_with_buffer_passthrough(

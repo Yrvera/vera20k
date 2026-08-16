@@ -549,9 +549,9 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
         .accepted()
         .map(|startup| startup.correlation);
     replace_match_startup_slots(
-        &mut state.active_loading_correlation,
-        &mut state.loaded_startup,
-        &mut state.rust_l0_receipt,
+        &mut state.frontend.active_loading_correlation,
+        &mut state.frontend.loaded_startup,
+        &mut state.frontend.rust_l0_receipt,
         next_active,
     );
     clear_loading_state(state);
@@ -569,13 +569,13 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
     if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules()) {
         native.resolve_player_colors(&rules.color_schemes, &rules.house_color_ramps);
     }
-    state.loading_session = Some(session);
-    state.screen = GameScreen::Loading;
+    state.frontend.loading_session = Some(session);
+    state.frontend.screen = GameScreen::Loading;
 }
 
 pub(crate) fn loading_map_name(state: &AppState) -> Option<&str> {
     state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .map(|session| session.request.selected_map_file())
 }
@@ -584,22 +584,22 @@ pub(crate) fn clear_loading_state(state: &mut AppState) {
     // F11 slot: the rescue is unconditional — the leased manager (with its
     // sticky CRC cache and theater identity) always comes home. The old code
     // rescued only when the state slot was empty and otherwise dropped it.
-    if let Some(mut session) = state.loading_session.take() {
+    if let Some(mut session) = state.frontend.loading_session.take() {
         if let Some(manager) = session.job.asset_manager.take() {
             state.process_assets.return_from_loading(manager);
         }
     }
-    state.loading_screen_atlas = None;
-    state.loading_progress = LoadingProgressState::standard_skirmish();
+    state.frontend.loading_screen_atlas = None;
+    state.frontend.loading_progress = LoadingProgressState::standard_skirmish();
 }
 
 /// Close any prior/in-flight match startup without resetting the process-wide
 /// monotonically increasing correlation allocator.
 pub(crate) fn clear_match_startup_state(state: &mut AppState) {
     replace_match_startup_slots(
-        &mut state.active_loading_correlation,
-        &mut state.loaded_startup,
-        &mut state.rust_l0_receipt,
+        &mut state.frontend.active_loading_correlation,
+        &mut state.frontend.loaded_startup,
+        &mut state.frontend.rust_l0_receipt,
         None,
     );
 }
@@ -619,7 +619,7 @@ fn replace_match_startup_slots(
 /// screen's progress row. `None` outside a skirmish launch.
 pub(crate) fn launch_player_name(state: &AppState) -> Option<String> {
     state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.request.skirmish_launch_session())
         .map(|launch| launch.player_name.clone())
@@ -627,13 +627,13 @@ pub(crate) fn launch_player_name(state: &AppState) -> Option<String> {
 
 pub(crate) fn is_native_loading_session(state: &AppState) -> bool {
     state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .is_some_and(|session| session.native.is_some())
 }
 
 pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
-    let Some(mut session) = state.loading_session.take() else {
+    let Some(mut session) = state.frontend.loading_session.take() else {
         return LoadingPump::Pending;
     };
     if session.native_pump_blocked() {
@@ -872,7 +872,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
     };
 
     if matches!(result, LoadingPump::Pending) {
-        state.loading_session = Some(session);
+        state.frontend.loading_session = Some(session);
     } else if matches!(result, LoadingPump::Failed(_)) {
         restore_job_asset_manager(state, &mut session);
     }
@@ -880,11 +880,11 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
 }
 
 fn ensure_job_asset_manager(state: &mut AppState) -> anyhow::Result<()> {
-    let Some(mut session) = state.loading_session.take() else {
+    let Some(mut session) = state.frontend.loading_session.take() else {
         return Ok(());
     };
     let result = ensure_session_job_asset_manager(state, &mut session);
-    state.loading_session = Some(session);
+    state.frontend.loading_session = Some(session);
     result
 }
 
@@ -949,7 +949,7 @@ fn restore_job_asset_manager(state: &mut AppState, session: &mut LoadingSession)
 /// after that 3% frame has been presented.
 fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyhow::Result<()> {
     let should_prepare = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .is_some_and(|native| {
@@ -957,14 +957,14 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
                 .progress_cadence
                 .preloads_scenario_before_first_frame()
         })
-        && state.loading_session.as_ref().is_some_and(|session| {
+        && state.frontend.loading_session.as_ref().is_some_and(|session| {
             matches!(session.job.phase, LoadingJobPhase::InitialMapSelection)
         });
     if !should_prepare {
         return Ok(());
     }
 
-    let Some(mut session) = state.loading_session.take() else {
+    let Some(mut session) = state.frontend.loading_session.take() else {
         return Ok(());
     };
     let requested_map_file = session.request.selected_map_file().to_string();
@@ -992,11 +992,11 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
                 .request
                 .prepare_battle_start_plan(initial.map_data());
             session.job.phase = LoadingJobPhase::RemainingLegacyLoad(Some(initial));
-            state.loading_session = Some(session);
+            state.frontend.loading_session = Some(session);
             Ok(())
         }
         Err(err) => {
-            state.loading_session = Some(session);
+            state.frontend.loading_session = Some(session);
             Err(err)
         }
     }
@@ -1080,7 +1080,7 @@ pub(crate) fn selected_map_start_assignments(
 /// special-unit line, the briefing and "Loading..." from every random-map load.
 fn ensure_loading_composition_snapshot(state: &mut AppState) {
     let snapshot = {
-        let Some(session) = state.loading_session.as_ref() else {
+        let Some(session) = state.frontend.loading_session.as_ref() else {
             return;
         };
         let Some(native) = session.native.as_ref() else {
@@ -1136,7 +1136,7 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
     };
 
     if let Some(native) = state
-        .loading_session
+        .frontend.loading_session
         .as_mut()
         .and_then(|session| session.native.as_mut())
     {
@@ -1179,7 +1179,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         return Ok(());
     };
     if state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .and_then(|native| native.atlas.as_ref())
@@ -1188,7 +1188,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         return Ok(());
     }
     if state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(loading_asset_manager)
         .is_none()
@@ -1196,7 +1196,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         ensure_job_asset_manager(state)?;
     }
     let loading_archives_ready = state
-        .loading_session
+        .frontend.loading_session
         .as_mut()
         .and_then(|session| session.job.asset_manager.as_mut())
         .ok_or_else(|| {
@@ -1211,7 +1211,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
     prepare_selected_map_initial_before_first_frame(state)?;
     ensure_loading_composition_snapshot(state);
     let Some(assets) = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(loading_asset_manager)
     else {
@@ -1221,13 +1221,13 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
     };
     let width = LoadingScreenWidth::for_render_width(state.renderer.gpu.config.width);
     let progress_ramp = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .map(|native| native.progress_ramp)
         .ok_or_else(|| anyhow::anyhow!("native loading session lost its progress ramp"))?;
     let prepared_preview = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .and_then(|native| native.composition.as_ref())
@@ -1238,7 +1238,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
             rgba: preview.image.rgba.clone(),
         });
     let marker_remaps = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .and_then(|native| native.composition.as_ref())
@@ -1275,7 +1275,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         composition_input,
     );
     if let Some(native) = state
-        .loading_session
+        .frontend.loading_session
         .as_mut()
         .and_then(|session| session.native.as_mut())
     {
@@ -1283,7 +1283,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         native.atlas = atlas;
     }
     if state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .is_some_and(|native| native.first_renderer_ready)
@@ -1309,7 +1309,7 @@ pub(crate) fn render_loading_screen(
     if let Err(err) = ensure_native_loading_atlas(state) {
         return LoadingRenderResult::NativeFailed(err);
     }
-    if let Some(session) = state.loading_session.as_mut()
+    if let Some(session) = state.frontend.loading_session.as_mut()
         && !session.first_frame_presented
         && let Some(native) = session.native.as_mut()
     {
@@ -1321,7 +1321,7 @@ pub(crate) fn render_loading_screen(
             .advance_progress(native.progress_cadence.effective_percent(3));
     }
     let Some(native) = state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
     else {
@@ -1445,19 +1445,19 @@ pub(crate) fn render_loading_screen(
 }
 
 pub(crate) fn loading_screen_presented(state: &mut AppState) {
-    let Some(session) = state.loading_session.as_mut() else {
-        state.loading_progress.advance_progress(3);
+    let Some(session) = state.frontend.loading_session.as_mut() else {
+        state.frontend.loading_progress.advance_progress(3);
         return;
     };
     session.first_frame_presented = true;
 }
 
 fn selected_loading_art_variant(state: &AppState) -> Option<LoadingArtVariant> {
-    if !matches!(state.screen, GameScreen::Loading) {
+    if !matches!(state.frontend.screen, GameScreen::Loading) {
         return None;
     }
     state
-        .loading_session
+        .frontend.loading_session
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .map(|native| native.variant)

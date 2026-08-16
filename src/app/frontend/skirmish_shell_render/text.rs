@@ -472,13 +472,13 @@ pub(crate) fn skirmish_right_panel_label_strings(state: &AppState) -> (String, S
     let shell = &state.frontend.skirmish_shell_state;
     let title = localized_label(state, "GUI:SkirmishGame", "Skirmish Game");
     let game_type = state
-        .skirmish_modes
+        .frontend.skirmish_modes
         .iter()
         .find(|mode| mode.id == shell.selected_mode_id)
         .map(|mode| localized_label(state, &mode.ui_name_key, &mode.ui_name_key))
         .unwrap_or_else(|| localized_label(state, "GUI:Battle", "Battle"));
     let map_label = state
-        .scenario_catalog.shell_maps()
+        .frontend.scenario_catalog.shell_maps()
         .get(shell.selected_map_idx)
         .map(|map| map.display_name.clone())
         .unwrap_or_else(|| "None".to_string());
@@ -1020,7 +1020,7 @@ pub(super) fn push_choose_map_modal_text_draws(
             ChooseMapModalButton::CreateRandomMap0x583,
         ),
     ] {
-        let disabled = !modal.button_enabled(button, &state.skirmish_modes);
+        let disabled = !modal.button_enabled(button, &state.frontend.skirmish_modes);
         push_text_draw(
             out,
             state,
@@ -1042,11 +1042,11 @@ pub(super) fn push_choose_map_modal_text_draws(
         );
     }
 
-    let mode_count = modal.mode_row_count(&state.skirmish_modes);
+    let mode_count = modal.mode_row_count(&state.frontend.skirmish_modes);
     let mode_content = choose_map_listbox_content_rect(mode_count, layout.mode_list);
     let visible_mode_rows = choose_map_listbox_visible_row_count(layout.mode_list);
     for (visible_row, mode) in state
-        .skirmish_modes
+        .frontend.skirmish_modes
         .iter()
         .skip(modal.mode_top_index)
         .take(visible_mode_rows)
@@ -1076,7 +1076,7 @@ pub(super) fn push_choose_map_modal_text_draws(
         .take(visible_map_rows)
         .enumerate()
     {
-        let Some(record) = state.scenario_catalog.records().get(*record_idx) else {
+        let Some(record) = state.frontend.scenario_catalog.records().get(*record_idx) else {
             continue;
         };
         let row_rect = choose_map_listbox_row_rect(map_content, visible_row);

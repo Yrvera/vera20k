@@ -54,7 +54,7 @@ impl App {
             player.set_output_scale(1.0);
         }
         state.match_audio.reset_for_new_match();
-        state.screen = GameScreen::MainMenu;
+        state.frontend.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
         state.input.zoom_level = 1.0;
         state.input.zoom_target = 1.0;
@@ -646,7 +646,7 @@ impl App {
             }) => {
                 state.frontend.score_screen = Some(model);
                 state.frontend.score_shell_state = Default::default();
-                state.screen = GameScreen::MissionResult { title, detail };
+                state.frontend.screen = GameScreen::MissionResult { title, detail };
             }
             Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu) => {
                 Self::return_to_main_menu(state);

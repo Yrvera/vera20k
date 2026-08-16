@@ -2,14 +2,14 @@ use super::*;
 
 impl App {
     pub(super) fn single_player_shell_active(state: &AppState) -> bool {
-        state.screen == GameScreen::MainMenu && state.frontend.shell_route.single_player()
+        state.frontend.screen == GameScreen::MainMenu && state.frontend.shell_route.single_player()
     }
 
     /// The end-of-match score screen owns input whenever it has both a resolved
     /// model and the shell chrome to draw it with; without either, the result
     /// screen falls back to its egui form and egui keeps the input.
     pub(super) fn score_shell_active(state: &AppState) -> bool {
-        matches!(state.screen, GameScreen::MissionResult { .. })
+        matches!(state.frontend.screen, GameScreen::MissionResult { .. })
             && state.frontend.score_screen.is_some()
             && state.frontend.main_menu_shell_chrome.is_some()
     }
@@ -58,7 +58,7 @@ impl App {
         state.scenario_elapsed_clock.reset();
         state.frontend.score_screen = None;
         state.frontend.score_shell_state = Default::default();
-        state.screen = GameScreen::MainMenu;
+        state.frontend.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
         state.input.zoom_level = 1.0;
         state.input.zoom_target = 1.0;
@@ -144,7 +144,7 @@ impl App {
         state.frontend.skirmish_shell_state.pressed_owner_draw_button = None;
         crate::ui::skirmish_shell::blur_player_name_edit(&mut state.frontend.skirmish_shell_state);
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
-        state.skirmish_preview_texture = None;
+        state.frontend.skirmish_preview_texture = None;
         Self::open_single_player_shell(state);
     }
 
@@ -173,8 +173,8 @@ impl App {
         state.renderer.egui.begin_frame(&state.platform.window);
         let action = main_menu::draw_main_menu_with_maps(
             &state.renderer.egui.ctx,
-            &state.available_maps,
-            &mut state.skirmish_settings,
+            &state.frontend.available_maps,
+            &mut state.frontend.skirmish_settings,
         );
         let mut dev_shell_enabled = state.frontend.dev_skirmish_shell_enabled;
         let dev_shell_changed =
@@ -500,7 +500,7 @@ impl App {
     pub(crate) fn play_shell_slide_completion_sound(_state: &mut AppState) {}
 
     pub(super) fn maintain_main_menu_intro(state: &mut AppState) {
-        if state.screen != GameScreen::MainMenu || state.frontend.quit_cascade.is_some() {
+        if state.frontend.screen != GameScreen::MainMenu || state.frontend.quit_cascade.is_some() {
             return;
         }
         let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());

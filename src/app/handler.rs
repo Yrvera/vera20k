@@ -244,7 +244,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
-            && (state.screen != GameScreen::InGame || state.paused || state.match_presentation.show_save_load_panel);
+            && (state.frontend.screen != GameScreen::InGame || state.paused || state.match_presentation.show_save_load_panel);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -304,7 +304,7 @@ impl ApplicationHandler for App {
                     // so the player can toggle pause regardless of egui focus.
                     let is_escape: bool =
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
-                    let in_game: bool = state.screen == GameScreen::InGame;
+                    let in_game: bool = state.frontend.screen == GameScreen::InGame;
                     let paused_at_event = in_game && state.paused;
 
                     if crate::app::frontend::shell_transition::blocks_shell_input(state) {
@@ -444,8 +444,8 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 // When upscaling, remap window coordinates to render-target coordinates.
                 let use_render_source_coords = state.renderer.upscale_pass.is_some()
-                    && (state.screen == GameScreen::InGame
-                        || state.screen == GameScreen::SpawnPick);
+                    && (state.frontend.screen == GameScreen::InGame
+                        || state.frontend.screen == GameScreen::SpawnPick);
                 let (sx, sy) = if use_render_source_coords {
                     (
                         state.render_width() as f32 / state.renderer.gpu.config.width as f32,
@@ -467,7 +467,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if !egui_consumed
-                    && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
+                    && (state.frontend.screen == GameScreen::InGame || state.frontend.screen == GameScreen::SpawnPick)
                 {
                     dispatch::handle_cursor_moved_in_game(state);
                 }
@@ -481,7 +481,7 @@ impl ApplicationHandler for App {
                     Self::handle_score_shell_mouse_move(state);
                 }
                 if !egui_consumed
-                    && state.screen == GameScreen::MainMenu
+                    && state.frontend.screen == GameScreen::MainMenu
                     && !state.frontend.main_menu_shell_failed
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
@@ -515,7 +515,7 @@ impl ApplicationHandler for App {
                 // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
                     if state.frontend.exit_confirm_modal.is_some()
-                        && state.screen == GameScreen::MainMenu
+                        && state.frontend.screen == GameScreen::MainMenu
                         && !state.frontend.main_menu_shell_failed
                         && button == MouseButton::Left
                     {
@@ -551,7 +551,7 @@ impl ApplicationHandler for App {
                             Self::handle_single_player_shell_mouse_up(state);
                         }
                     }
-                } else if state.screen == GameScreen::MainMenu
+                } else if state.frontend.screen == GameScreen::MainMenu
                     && !state.frontend.main_menu_shell_failed
                     && !egui_consumed
                 {
@@ -562,11 +562,11 @@ impl ApplicationHandler for App {
                             Self::handle_main_menu_shell_mouse_up(state, event_loop);
                         }
                     }
-                } else if !egui_consumed && state.screen == GameScreen::SpawnPick {
+                } else if !egui_consumed && state.frontend.screen == GameScreen::SpawnPick {
                     if button == MouseButton::Left && btn_state.is_pressed() {
                         crate::app::presentation::spawn_pick::handle_spawn_pick_click(state);
                     }
-                } else if !egui_consumed && state.screen == GameScreen::InGame {
+                } else if !egui_consumed && state.frontend.screen == GameScreen::InGame {
                     dispatch::handle_mouse_input(state, button, btn_state);
                 }
             }
@@ -579,7 +579,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if !egui_consumed
-                    && state.screen == GameScreen::MainMenu
+                    && state.frontend.screen == GameScreen::MainMenu
                     && Self::native_skirmish_shell_active(state)
                     && Self::handle_skirmish_shell_mouse_wheel(state, lines)
                 {
@@ -587,8 +587,8 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if !egui_consumed
-                    && (state.screen == GameScreen::SpawnPick
-                        || (state.screen == GameScreen::InGame && !state.paused))
+                    && (state.frontend.screen == GameScreen::SpawnPick
+                        || (state.frontend.screen == GameScreen::InGame && !state.paused))
                 {
                     // Every wheel notch scrolls the active build strip by one
                     // row, wherever the cursor is. gamemd routes the wheel

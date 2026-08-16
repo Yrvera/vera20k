@@ -361,36 +361,36 @@ impl App {
             });
 
         let mut state = AppState {
-            random_map_generation: None,
-            random_map_retention: RandomMapGenerationRetention::default(),
             map_basic: BasicSection::default(),
             sim_runtime: None,
             match_diagnostics: Default::default(),
-            shell_preview_overlay_registry: None,
             game_config,
+            tile_variant_selector_cache: Default::default(),
+            scenario_outcome: None,
+            scenario_exit: None,
+            loaded_map_source: None,
+            loaded_map_hash: None,
+            csf: startup_csf,
+            platform: PlatformState::new(window),
+            frontend: crate::app::frontend::state::FrontendState {
             screen: GameScreen::default(),
             available_maps,
             scenario_catalog,
             skirmish_modes,
             skirmish_settings,
             loading_session: None,
-            tile_variant_selector_cache: Default::default(),
             frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
             next_match_correlation: 1,
             active_loading_correlation: None,
             loaded_startup: None,
             rust_l0_receipt: None,
+            random_map_generation: None,
+            random_map_retention: RandomMapGenerationRetention::default(),
             skirmish_preview_texture: None,
             loading_screen_atlas: None,
             loading_progress: crate::app::loading::pump::LoadingProgressState::standard_skirmish(),
-            scenario_outcome: None,
-            scenario_exit: None,
-            loaded_map_source: None,
-            loaded_map_hash: None,
             frontend_rules: startup_rules,
-            csf: startup_csf,
-            platform: PlatformState::new(window),
-            frontend: crate::app::frontend::state::FrontendState {
+            shell_preview_overlay_registry: None,
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
             offline_skirmish_runtime,
@@ -619,7 +619,7 @@ impl App {
         }
 
         if std::env::var("RA2_QUICKPLAY").is_ok() {
-            let skirmish_settings = state.skirmish_settings.clone();
+            let skirmish_settings = state.frontend.skirmish_settings.clone();
             let request =
                 crate::app::loading::pump::LoadingRequest::generic_map_load("auto", skirmish_settings);
             crate::app::loading::pump::begin_loading(&mut state, request);

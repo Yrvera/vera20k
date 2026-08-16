@@ -142,7 +142,7 @@ impl App {
     ) -> bool {
         // A second Generate makes the previous dialog result stale immediately,
         // even when setup cannot progress far enough to spawn the worker.
-        state.random_map_retention.begin_generation();
+        state.frontend.random_map_retention.begin_generation();
         let Some(asset_manager) = state.process_assets.manager_mut() else {
             return false;
         };
@@ -211,7 +211,7 @@ impl App {
             });
         match spawned {
             Ok(_handle) => {
-                state.random_map_generation = Some(RandomMapGenerationJob {
+                state.frontend.random_map_generation = Some(RandomMapGenerationJob {
                     receiver,
                     theater: Box::new(theater),
                     terrain_rules: Box::new(terrain_rules),
@@ -235,17 +235,17 @@ impl App {
     /// the expensive half, and an image the worker overtook before a frame was
     /// drawn was never on screen to be seen.
     pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
-        if state.random_map_generation.is_some()
+        if state.frontend.random_map_generation.is_some()
             && state.frontend.skirmish_shell_state.random_map_setup_modal.is_none()
         {
             // The dialog went away without the job going with it. Drop it here
             // rather than trusting every close path to remember: a job with no
             // dialog has nowhere to deliver, and letting it finish would write
             // a preview file for a map nobody asked for.
-            state.random_map_generation = None;
+            state.frontend.random_map_generation = None;
             return false;
         }
-        let Some(job) = state.random_map_generation.as_ref() else {
+        let Some(job) = state.frontend.random_map_generation.as_ref() else {
             return false;
         };
         let mut latest_progress = None;
@@ -268,11 +268,11 @@ impl App {
 
         if let Some(generated) = finished {
             let job = state
-                .random_map_generation
+                .frontend.random_map_generation
                 .take()
                 .expect("checked present above");
             let preview = Self::rasterise_generated_map(state, &job, &generated);
-            state.random_map_retention.finish_generation(*generated);
+            state.frontend.random_map_retention.finish_generation(*generated);
             if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(preview);
             }
@@ -286,7 +286,7 @@ impl App {
             // The worker ended without a result. Clear the job so the dialog
             // does not sit disabled forever waiting on it.
             log::warn!("random map: the generator thread ended without a result");
-            state.random_map_generation = None;
+            state.frontend.random_map_generation = None;
             if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(None);
             }
@@ -299,12 +299,12 @@ impl App {
         // Lifted out and put straight back: rasterising reads the job and the
         // rest of the app state at once, and the job lives inside that state.
         let job = state
-            .random_map_generation
+            .frontend.random_map_generation
             .take()
             .expect("checked present above");
         let preview =
             Self::rasterise_map(state, &job, &snapshot.map_file, &snapshot.start_waypoints);
-        state.random_map_generation = Some(job);
+        state.frontend.random_map_generation = Some(job);
         if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
             if let Some(preview) = preview {
                 modal.show_progress_preview(preview);
@@ -317,7 +317,7 @@ impl App {
     /// retention disposition already chosen by accept or cancel.
     fn dismiss_random_map_setup(state: &mut AppState) {
         state.frontend.skirmish_shell_state.random_map_setup_modal = None;
-        state.random_map_generation = None;
+        state.frontend.random_map_generation = None;
     }
 
     /// Cancel the setup dialog, abandoning any generation and every retained
@@ -330,7 +330,7 @@ impl App {
     /// walked away from.
     fn cancel_random_map_setup(state: &mut AppState) {
         Self::dismiss_random_map_setup(state);
-        state.random_map_retention.cancel_setup();
+        state.frontend.random_map_retention.cancel_setup();
     }
 
     /// Commit the dialog's options and close it. Shared by the immediate accept
@@ -346,7 +346,7 @@ impl App {
         };
         match Self::commit_random_map_setup(state, &options) {
             Ok(()) => {
-                state.random_map_retention.accept_setup(RANDMAP_SED_FILE);
+                state.frontend.random_map_retention.accept_setup(RANDMAP_SED_FILE);
                 // Successful OK already chose the retained result; dialog
                 // teardown must not run the cancellation invalidation path.
                 Self::dismiss_random_map_setup(state);
@@ -389,7 +389,7 @@ impl App {
         // path will; a different setting here would colour cells the player
         // never sees.
         let resolved_terrain = {
-            let frontend_main_rng = &mut state.frontend_main_rng;
+            let frontend_main_rng = &mut state.frontend.frontend_main_rng;
             let selector_cache = &mut state.tile_variant_selector_cache;
             let asset_manager = state.process_assets.manager();
             let mut raw_draw = || frontend_main_rng.next_u32();
@@ -683,10 +683,10 @@ impl App {
         // on drop, so the loadable-map projection can never drift from the
         // records — the old hand-patch by name-position is gone.
         let index = {
-            let mut records = state.scenario_catalog.records_mut();
+            let mut records = state.frontend.scenario_catalog.records_mut();
             modal.create_random_map(
                 &mut records,
-                &state.skirmish_modes,
+                &state.frontend.skirmish_modes,
                 display,
                 options.num_players,
             )
@@ -871,10 +871,10 @@ impl App {
         let mut open_browser: Option<SavedSeedMode> = None;
         match released.expect("checked equal to pressed control") {
             Control::Randomize0x621 => {
-                modal.randomize_options(&settings, &mut state.frontend_main_rng, &description);
+                modal.randomize_options(&settings, &mut state.frontend.frontend_main_rng, &description);
             }
             Control::Generate0x620 => {
-                modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
+                modal.reroll_derived_for_generate(&settings, &mut state.frontend.frontend_main_rng);
                 modal.begin_generate();
                 generate_requested = true;
             }
@@ -885,7 +885,7 @@ impl App {
                     modal.accept(),
                     crate::ui::skirmish_shell::AcceptOutcome::NeedsGenerate
                 ) {
-                    modal.reroll_derived_for_generate(&settings, &mut state.frontend_main_rng);
+                    modal.reroll_derived_for_generate(&settings, &mut state.frontend.frontend_main_rng);
                     modal.begin_generate();
                     generate_requested = true;
                 }

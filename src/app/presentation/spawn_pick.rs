@@ -61,7 +61,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     );
 
     // Update skirmish settings to use the chosen position, then seed MCVs.
-    state.skirmish_settings.start_position = StartPosition::Position(wp_idx as u8);
+    state.frontend.skirmish_settings.start_position = StartPosition::Position(wp_idx as u8);
 
     // Build temp map data before borrowing state.simulation mutably.
     let temp_map = build_temp_map_data_for_seeding(state);
@@ -76,7 +76,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                 &state.match_presentation.house_roster,
                 ruleset,
                 &resources.height_map,
-                &state.skirmish_settings,
+                &state.frontend.skirmish_settings,
             )
         } else {
             None
@@ -137,7 +137,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
     state.scenario_elapsed_clock.start(now_ms);
 
-    state.screen = GameScreen::InGame;
+    state.frontend.screen = GameScreen::InGame;
     log::info!("SpawnPick complete — transitioned to InGame");
     true
 }

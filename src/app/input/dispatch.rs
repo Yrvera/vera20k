@@ -1560,9 +1560,9 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             state.terrain_template(),
             state.overlay_registry(),
             crate::app::persistence::MatchStartupStateView::new(
-                &state.active_loading_correlation,
-                &state.loaded_startup,
-                &state.rust_l0_receipt,
+                &state.frontend.active_loading_correlation,
+                &state.frontend.loaded_startup,
+                &state.frontend.rust_l0_receipt,
             ),
         ),
         path,
@@ -1678,9 +1678,9 @@ fn commit_prepared_load(
     // that admitted the running match. Cross-session loads require a new
     // explicit receipt and do not use this route.
     preserved_startup.restore(
-        &mut state.active_loading_correlation,
-        &mut state.loaded_startup,
-        &mut state.rust_l0_receipt,
+        &mut state.frontend.active_loading_correlation,
+        &mut state.frontend.loaded_startup,
+        &mut state.frontend.rust_l0_receipt,
     );
     state.persistence.last_loaded_save_path = Some(path.to_path_buf());
     crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);

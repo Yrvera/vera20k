@@ -253,7 +253,7 @@ impl TacticalCaptureSession {
             }
         };
         let correlation =
-            crate::match_bootstrap::allocate_match_correlation(&mut state.next_match_correlation)
+            crate::match_bootstrap::allocate_match_correlation(&mut state.frontend.next_match_correlation)
                 .context("allocate tactical match correlation")?;
         let mut clock = ControlledSeedClock(self.request.profile().launch.seed);
         let startup =
@@ -276,10 +276,10 @@ impl TacticalCaptureSession {
         state.frontend.skirmish_shell_last_painted_pressed_button = None;
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.frontend.shell_first_paint_slide = None;
-        state.skirmish_preview_texture = None;
+        state.frontend.skirmish_preview_texture = None;
         let request = crate::app::loading::pump::LoadingRequest::accepted_skirmish(
             startup,
-            state.skirmish_settings.clone(),
+            state.frontend.skirmish_settings.clone(),
         );
         crate::app::loading::pump::begin_loading(state, request);
         state.input.zoom_level = 1.0;
@@ -312,7 +312,7 @@ impl TacticalCaptureSession {
             bail!("hidden tactical capture window gained focus");
         }
 
-        match state.screen {
+        match state.frontend.screen {
             GameScreen::Loading => return Ok(()),
             GameScreen::InGame => {}
             _ if self.script.is_none() => {
@@ -588,17 +588,17 @@ impl TacticalCaptureSession {
 
     fn validate_rust_l0(&mut self, state: &AppState) -> Result<()> {
         let profile = self.request.profile();
-        ensure!(state.screen == GameScreen::InGame, "Rust L0 is not InGame");
+        ensure!(state.frontend.screen == GameScreen::InGame, "Rust L0 is not InGame");
         ensure!(
             state.local_player_owner.as_deref() == Some(profile.launch.player_name.as_str()),
             "local owner differs from sealed tactical launch"
         );
         let startup = state
-            .loaded_startup
+            .frontend.loaded_startup
             .as_ref()
             .context("accepted loaded startup is absent")?;
         let receipt = state
-            .rust_l0_receipt
+            .frontend.rust_l0_receipt
             .as_ref()
             .context("Rust L0 receipt is absent")?;
         ensure!(
@@ -851,10 +851,10 @@ impl TacticalCaptureSession {
             binary_frame: sim.session.binary_frame,
             wall_elapsed_ms,
             accepted_rust_l0: crate::match_bootstrap::accepted_tick_is_admitted(
-                state.loaded_startup.as_ref(),
-                state.rust_l0_receipt.as_ref(),
+                state.frontend.loaded_startup.as_ref(),
+                state.frontend.rust_l0_receipt.as_ref(),
             ),
-            in_game: state.screen == GameScreen::InGame,
+            in_game: state.frontend.screen == GameScreen::InGame,
             local_owner: owner.clone(),
             match_ended,
             build_options_strict: production::has_strict_build_option_for_owner(sim, rules, &owner),
@@ -883,7 +883,7 @@ impl TacticalCaptureSession {
             return Ok(false);
         }
         ensure!(
-            state.screen == GameScreen::InGame,
+            state.frontend.screen == GameScreen::InGame,
             "tactical render observation is not InGame"
         );
         let (ready, render_evidence) = self.render_readiness(state, output)?;

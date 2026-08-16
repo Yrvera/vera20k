@@ -45,7 +45,7 @@ impl App {
         // expire against wall time while the world is stopped. Park the clock
         // and skip the expiry pass; `messages::update` closes the span and
         // resumes ownership on the first foreground frame.
-        if state.screen == GameScreen::InGame && !state.platform.window_active {
+        if state.frontend.screen == GameScreen::InGame && !state.platform.window_active {
             let wall = crate::app::input::tooltips::now_ms(state);
             state.match_presentation.message_clock.set_paused(true, wall);
         } else {
@@ -124,7 +124,7 @@ impl App {
         // gate sits at the call site, not inside the runtime, so a focus edge
         // never re-anchors the frame pacer on its own.
         if tactical_capture.is_none()
-            && matches!(state.screen, GameScreen::InGame)
+            && matches!(state.frontend.screen, GameScreen::InGame)
             && state.platform.window_active
             && state.scenario_exit.is_none()
             && state.scenario_outcome.is_none()
@@ -200,7 +200,7 @@ impl App {
         };
         let mut game_render_output: Option<crate::app::presentation::render::GameRenderOutput> = None;
 
-        match &state.screen {
+        match &state.frontend.screen {
             GameScreen::MainMenu => {
                 if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
                     main_menu_entry_token,
@@ -336,7 +336,7 @@ impl App {
                         log::warn!("Could not render native loading screen: {err:#}");
                         crate::app::loading::pump::clear_loading_state(state);
                         crate::app::loading::pump::clear_match_startup_state(state);
-                        state.screen = GameScreen::MissionResult {
+                        state.frontend.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
                         };
@@ -627,7 +627,7 @@ impl App {
         // Deferred loading: after presenting the Loading screen frame,
         // pump one loading phase. The next patch will continue splitting the
         // remaining legacy load body into smaller phases.
-        if matches!(state.screen, GameScreen::Loading) {
+        if matches!(state.frontend.screen, GameScreen::Loading) {
             crate::app::loading::pump::loading_screen_presented(state);
             let native_loading = crate::app::loading::pump::is_native_loading_session(state);
             match crate::app::loading::pump::pump_loading_after_present(state) {
@@ -642,7 +642,7 @@ impl App {
                     if native_loading {
                         crate::app::loading::pump::clear_loading_state(state);
                         crate::app::loading::pump::clear_match_startup_state(state);
-                        state.screen = GameScreen::MissionResult {
+                        state.frontend.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
                         };

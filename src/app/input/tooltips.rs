@@ -81,7 +81,7 @@ pub(crate) fn on_button_event(state: &mut AppState) {
 /// the delayed-tooltip timer.
 pub(crate) fn update(state: &mut AppState) {
     let now = now_ms(state);
-    if state.screen == GameScreen::InGame {
+    if state.frontend.screen == GameScreen::InGame {
         sync_in_game_regions(state);
     } else {
         state.match_presentation.tooltips.sync_regions(&[]);
@@ -251,7 +251,7 @@ pub(crate) fn build_tooltip_instances(
     let Some(tip) = state.match_presentation.tooltips.active() else {
         return (Vec::new(), Vec::new());
     };
-    if state.screen != GameScreen::InGame {
+    if state.frontend.screen != GameScreen::InGame {
         return (Vec::new(), Vec::new());
     }
     // gamemd draws the tip in the current sidebar text colour, so the same

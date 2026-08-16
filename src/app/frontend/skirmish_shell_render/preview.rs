@@ -94,7 +94,7 @@ pub(super) fn selected_preview_texture_is_current(
     selected_map_idx: usize,
 ) -> bool {
     state
-        .skirmish_preview_texture
+        .frontend.skirmish_preview_texture
         .as_ref()
         .is_some_and(|cached| {
             // A setup-dialog preview happens to carry the selected index too, so it
@@ -214,12 +214,12 @@ pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> b
         return false;
     };
     let Some(preview) = modal.generated_preview.as_ref() else {
-        state.skirmish_preview_texture = None;
+        state.frontend.skirmish_preview_texture = None;
         return true;
     };
     let generation = modal.preview_generation;
     let already_current = state
-        .skirmish_preview_texture
+        .frontend.skirmish_preview_texture
         .as_ref()
         .is_some_and(|texture| texture.setup_preview_generation == Some(generation));
     if already_current {
@@ -232,7 +232,7 @@ pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> b
         preview.width,
         preview.height,
     );
-    state.skirmish_preview_texture = Some(SkirmishPreviewTexture {
+    state.frontend.skirmish_preview_texture = Some(SkirmishPreviewTexture {
         selected_map_idx: state.frontend.skirmish_shell_state.selected_map_idx,
         texture,
         width: preview.width,
@@ -247,7 +247,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         return;
     }
     let selected_map_idx = state.frontend.skirmish_shell_state.selected_map_idx;
-    let selected_entry = state.scenario_catalog.shell_maps().get(selected_map_idx).cloned();
+    let selected_entry = state.frontend.scenario_catalog.shell_maps().get(selected_map_idx).cloned();
     let selected_is_random_sentinel = selected_entry
         .as_ref()
         .is_some_and(is_random_map_sentinel_entry);
@@ -266,7 +266,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
     });
 
     let Some(decoded) = decoded.as_ref() else {
-        state.skirmish_preview_texture = None;
+        state.frontend.skirmish_preview_texture = None;
         return;
     };
 
@@ -276,7 +276,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         decoded.width,
         decoded.height,
     );
-    state.skirmish_preview_texture = Some(SkirmishPreviewTexture {
+    state.frontend.skirmish_preview_texture = Some(SkirmishPreviewTexture {
         selected_map_idx,
         texture,
         width: decoded.width,

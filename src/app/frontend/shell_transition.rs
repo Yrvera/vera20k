@@ -299,7 +299,7 @@ pub(crate) fn main_menu_presented_is_poisoned(state: &AppState) -> bool {
 /// screen.
 pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideKind> {
     use crate::ui::game_screen::GameScreen;
-    if state.screen != GameScreen::MainMenu {
+    if state.frontend.screen != GameScreen::MainMenu {
         return None;
     }
     let candidate =

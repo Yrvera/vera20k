@@ -135,7 +135,7 @@ fn type_select_message_rgb(
 /// halves are required: skipping alone would let wall-time deadlines expire
 /// the instant the game unpauses.
 pub(crate) fn update(state: &mut AppState) {
-    if state.screen != GameScreen::InGame {
+    if state.frontend.screen != GameScreen::InGame {
         return;
     }
     let wall = crate::app::input::tooltips::now_ms(state);
@@ -161,7 +161,7 @@ fn sync_view(state: &mut AppState) {
 
 /// Text instances for the "message_text" pooled buffer (GAME.FNT atlas).
 pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstance> {
-    if state.screen != GameScreen::InGame {
+    if state.frontend.screen != GameScreen::InGame {
         return Vec::new();
     }
     message_text_instances(

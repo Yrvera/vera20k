@@ -43,57 +43,16 @@ pub(crate) struct AppState {
     /// App-owned diagnostic recording (F10) — never inside the simulation, so
     /// no load/install path can silently drop an unflushed segment.
     pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
-    /// Shell-retained overlay registry for the random-map preview: keeps the
-    /// last-loaded match registry across scenario exit, matching the pre-F07
-    /// persistence of the old app field. Match paths read the runtime-bound
-    /// copy via `overlay_registry()`.
-    pub(crate) shell_preview_overlay_registry: Option<OverlayTypeRegistry>,
     /// Loaded GameConfig — missing config.toml falls back to the executable root;
     /// None only when config loading or executable-root discovery fails.
     /// Read at render time for cosmetic toggles (extra_animations) and other
     /// per-session user preferences. Set in AppState::new() from the existing
     /// GameConfig::load() call; not mutated afterwards.
     pub(crate) game_config: Option<GameConfig>,
-    /// Which screen is currently active (MainMenu, Loading, InGame).
-    pub(crate) screen: GameScreen,
-    /// Available maps from the RA2 directory for menu selection.
-    pub(crate) available_maps: Vec<MapMenuEntry>,
-    /// Scenario records + their projected shell map entries (F11): one owner,
-    /// projection re-derived on every mutation so indices cannot drift.
-    pub(crate) scenario_catalog: crate::app::scenario_catalog::ScenarioCatalog,
-    /// MPModes rows used by the native Choose Map modal.
-    pub(crate) skirmish_modes: Vec<crate::skirmish_modes::SkirmishGameMode>,
-    /// Player-configured skirmish settings (map, country, credits, etc.).
-    pub(crate) skirmish_settings: SkirmishSettings,
-    pub(crate) loading_session: Option<crate::app::loading::pump::LoadingSession>,
     /// Process-persistent terrain-load cache. Scenario teardown, failed loads,
     /// reseeds, and save transitions must not clear it.
     pub(crate) tile_variant_selector_cache:
         crate::map::tile_variant_selector::TileVariantSelectorCache,
-    /// Process-owned front-end Main stream. RMG dialog actions and the first
-    /// preview selector reach share this cursor; accepted matches reseed their
-    /// own Main stream instead of inheriting it.
-    pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
-    /// Process-lifetime monotonic identity source; zero is permanently reserved.
-    pub(crate) next_match_correlation: u64,
-    /// Correlation owned by the currently loading accepted attempt.
-    pub(crate) active_loading_correlation: Option<crate::match_bootstrap::MatchCorrelationId>,
-    /// Accepted startup authority retained after successful installation.
-    pub(crate) loaded_startup: Option<crate::match_bootstrap::PreparedMatchStartup>,
-    /// Immutable pre-first-tick evidence for the loaded accepted startup.
-    pub(crate) rust_l0_receipt: Option<crate::match_bootstrap::RustL0Receipt>,
-    /// Generation running on a worker, if any. Generating a map takes long
-    /// enough to freeze the window if done inline, which also means the
-    /// dialog's "Working / Please Wait" never gets a frame to appear in.
-    pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
-    /// Exact setup-generated map retained through OK until loading owns it.
-    pub(crate) random_map_retention: RandomMapGenerationRetention,
-    pub(crate) skirmish_preview_texture:
-        Option<crate::app::frontend::skirmish_shell_render::SkirmishPreviewTexture>,
-    /// Minimap renderer — created at map load time.
-    pub(crate) loading_screen_atlas:
-        Option<crate::render::loading_screen_chrome::LoadingScreenAtlas>,
-    pub(crate) loading_progress: crate::app::loading::pump::LoadingProgressState,
     /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
     /// result and SavourDelay target live in serialized `HouseState`.
     pub(crate) scenario_outcome: Option<crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait>,
@@ -101,10 +60,6 @@ pub(crate) struct AppState {
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
     pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
-    /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
-    /// Startup-shell rules loaded at boot for menu presentation; match paths
-    /// read the runtime-bound copy via `rules()`.
-    pub(crate) frontend_rules: Option<crate::rules::ruleset::RuleSet>,
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Match elapsed wall time for the retail score screen. App-local and never
@@ -258,7 +213,7 @@ impl AppState {
         self.sim_runtime
             .as_ref()
             .map(|rt| &rt.resources.overlay_registry)
-            .or(self.shell_preview_overlay_registry.as_ref())
+            .or(self.frontend.shell_preview_overlay_registry.as_ref())
     }
 }
 
@@ -269,7 +224,7 @@ impl AppState {
         self.sim_runtime
             .as_ref()
             .map(|rt| &rt.resources.rules)
-            .or(self.frontend_rules.as_ref())
+            .or(self.frontend.frontend_rules.as_ref())
     }
 }
 

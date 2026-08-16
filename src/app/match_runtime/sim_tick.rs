@@ -215,7 +215,7 @@ fn announce_local_state_evas(state: &mut AppState) {
 /// SavourDelay expiry frame. A loaded expiry latch reconstructs this wait but
 /// never reconstructs the already-consumed transition EVA edge.
 pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_ms: u64) {
-    if !matches!(state.screen, GameScreen::InGame) || state.scenario_exit.is_some() {
+    if !matches!(state.frontend.screen, GameScreen::InGame) || state.scenario_exit.is_some() {
         return;
     }
     if state.scenario_outcome.is_none() {
@@ -631,8 +631,8 @@ pub(crate) fn decide_runtime_pass(inputs: RuntimePassInputs) -> RuntimePassDecis
 
 pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
     let startup_admitted = crate::match_bootstrap::accepted_tick_is_admitted(
-        state.loaded_startup.as_ref(),
-        state.rust_l0_receipt.as_ref(),
+        state.frontend.loaded_startup.as_ref(),
+        state.frontend.rust_l0_receipt.as_ref(),
     );
     if !startup_admitted {
         log::error!("Accepted match tick blocked: matching Rust L0 receipt is absent");
@@ -655,16 +655,16 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) {
 pub(crate) fn advance_in_game_runtime_exact_step(
     state: &mut AppState,
 ) -> Result<ExactStepReceipt, ExactStepError> {
-    let admitted = state.loaded_startup.is_some()
-        && state.rust_l0_receipt.is_some()
+    let admitted = state.frontend.loaded_startup.is_some()
+        && state.frontend.rust_l0_receipt.is_some()
         && crate::match_bootstrap::accepted_tick_is_admitted(
-            state.loaded_startup.as_ref(),
-            state.rust_l0_receipt.as_ref(),
+            state.frontend.loaded_startup.as_ref(),
+            state.frontend.rust_l0_receipt.as_ref(),
         );
     if !admitted {
         return Err(ExactStepError::MissingAcceptedRustL0);
     }
-    if state.screen != GameScreen::InGame {
+    if state.frontend.screen != GameScreen::InGame {
         return Err(ExactStepError::ScreenNotInGame);
     }
     let (tick_before, binary_frame_before) = state
@@ -1559,7 +1559,7 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
                 crate::app::input::messages::post_system_message(state, text);
             }
             TriggerEffect::MissionResult { title, detail } => {
-                state.screen = GameScreen::MissionResult {
+                state.frontend.screen = GameScreen::MissionResult {
                     title: title.clone(),
                     detail: detail.clone(),
                 };

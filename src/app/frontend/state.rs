@@ -8,6 +8,11 @@
 use std::time::Instant;
 
 use super::startup_splash;
+use crate::app::loading::init::MapMenuEntry;
+use crate::app::shell_random_map::{RandomMapGenerationJob, RandomMapGenerationRetention};
+use crate::map::overlay_types::OverlayTypeRegistry;
+use crate::ui::game_screen::GameScreen;
+use crate::ui::main_menu::SkirmishSettings;
 
 pub(crate) struct FrontendState {
     /// Opt-in research shell path. Defaults off so the egui Skirmish setup is visible.
@@ -79,4 +84,49 @@ pub(crate) struct FrontendState {
     /// Which shell surface owns the MainMenu screen (F11): structural
     /// exclusivity replaces the old boolean triple.
     pub(crate) shell_route: crate::app::shell_route::ShellRoute,
+    /// Which screen is currently active (MainMenu, Loading, InGame).
+    pub(crate) screen: GameScreen,
+    /// Available maps from the RA2 directory for menu selection.
+    pub(crate) available_maps: Vec<MapMenuEntry>,
+    /// Scenario records + their projected shell map entries (F11): one owner,
+    /// projection re-derived on every mutation so indices cannot drift.
+    pub(crate) scenario_catalog: crate::app::scenario_catalog::ScenarioCatalog,
+    /// MPModes rows used by the native Choose Map modal.
+    pub(crate) skirmish_modes: Vec<crate::skirmish_modes::SkirmishGameMode>,
+    /// Player-configured skirmish settings (map, country, credits, etc.).
+    pub(crate) skirmish_settings: SkirmishSettings,
+    pub(crate) loading_session: Option<crate::app::loading::pump::LoadingSession>,
+    /// Process-owned front-end Main stream. RMG dialog actions and the first
+    /// preview selector reach share this cursor; accepted matches reseed their
+    /// own Main stream instead of inheriting it.
+    pub(crate) frontend_main_rng: crate::sim::rng::SimRng,
+    /// Process-lifetime monotonic identity source; zero is permanently reserved.
+    pub(crate) next_match_correlation: u64,
+    /// Correlation owned by the currently loading accepted attempt.
+    pub(crate) active_loading_correlation: Option<crate::match_bootstrap::MatchCorrelationId>,
+    /// Accepted startup authority retained after successful installation.
+    pub(crate) loaded_startup: Option<crate::match_bootstrap::PreparedMatchStartup>,
+    /// Immutable pre-first-tick evidence for the loaded accepted startup.
+    pub(crate) rust_l0_receipt: Option<crate::match_bootstrap::RustL0Receipt>,
+    /// Generation running on a worker, if any. Generating a map takes long
+    /// enough to freeze the window if done inline, which also means the
+    /// dialog's "Working / Please Wait" never gets a frame to appear in.
+    pub(crate) random_map_generation: Option<RandomMapGenerationJob>,
+    /// Exact setup-generated map retained through OK until loading owns it.
+    pub(crate) random_map_retention: RandomMapGenerationRetention,
+    pub(crate) skirmish_preview_texture:
+        Option<crate::app::frontend::skirmish_shell_render::SkirmishPreviewTexture>,
+    /// Minimap renderer — created at map load time.
+    pub(crate) loading_screen_atlas:
+        Option<crate::render::loading_screen_chrome::LoadingScreenAtlas>,
+    pub(crate) loading_progress: crate::app::loading::pump::LoadingProgressState,
+    /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
+    /// Startup-shell rules loaded at boot for menu presentation; match paths
+    /// read the runtime-bound copy via `rules()`.
+    pub(crate) frontend_rules: Option<crate::rules::ruleset::RuleSet>,
+    /// Shell-retained overlay registry for the random-map preview: keeps the
+    /// last-loaded match registry across scenario exit, matching the pre-F07
+    /// persistence of the old app field. Match paths read the runtime-bound
+    /// copy via `overlay_registry()`.
+    pub(crate) shell_preview_overlay_registry: Option<OverlayTypeRegistry>,
 }

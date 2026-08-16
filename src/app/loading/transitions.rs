@@ -117,7 +117,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.loaded_map_source = Some(result.scenario.map_source);
     state.loaded_map_hash = result.scenario.map_hash;
     state.match_presentation.terrain_grid = result.scenario.terrain_grid;
-    state.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
+    state.frontend.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
     // F10 lifecycle: a new match install closes the outgoing diagnostic
     // segment before the runtime slot is overwritten — the old install
     // dropped any unflushed segment silently. A failed close discards
@@ -403,7 +403,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
 
     if state.input.spawn_pick_pending {
         crate::app::loading::pump::clear_match_startup_state(state);
-        state.screen = GameScreen::SpawnPick;
+        state.frontend.screen = GameScreen::SpawnPick;
         if returns_scenario_rng_to_offline_shell {
             state
                 .frontend.offline_skirmish_runtime
@@ -419,15 +419,15 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                         .as_ref()
                         .map(|rt| &rt.simulation)
                         .ok_or_else(|| "accepted map load produced no Simulation".to_string())?;
-                    let active_correlation = state.active_loading_correlation.ok_or_else(|| {
+                    let active_correlation = state.frontend.active_loading_correlation.ok_or_else(|| {
                         "accepted map load lost its active correlation".to_string()
                     })?;
                     crate::match_bootstrap::RustL0Observation {
                         startup: &prepared,
                         simulation,
                         active_correlation,
-                        prior_receipt: state.rust_l0_receipt.as_ref(),
-                        screen_is_loading: matches!(state.screen, GameScreen::Loading),
+                        prior_receipt: state.frontend.rust_l0_receipt.as_ref(),
+                        screen_is_loading: matches!(state.frontend.screen, GameScreen::Loading),
                         spawn_pick_active: state.input.spawn_pick_pending,
                     }
                     .acknowledge()
@@ -436,15 +436,15 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
 
                 match receipt {
                     Ok(receipt) => {
-                        state.loaded_startup = Some(prepared);
-                        state.rust_l0_receipt = Some(receipt);
-                        state.active_loading_correlation = None;
+                        state.frontend.loaded_startup = Some(prepared);
+                        state.frontend.rust_l0_receipt = Some(receipt);
+                        state.frontend.active_loading_correlation = None;
                         let now_ms = sim_tick::monotonic_frame_pacer_ms(
                             state,
                             std::time::Instant::now(),
                         );
                         state.scenario_elapsed_clock.start(now_ms);
-                        state.screen = GameScreen::InGame;
+                        state.frontend.screen = GameScreen::InGame;
                         state
                             .frontend.offline_skirmish_runtime
                             .mark_gameplay_rng_return_pending();
@@ -452,7 +452,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                     }
                     Err(err) => {
                         crate::app::loading::pump::clear_match_startup_state(state);
-                        state.screen = GameScreen::MissionResult {
+                        state.frontend.screen = GameScreen::MissionResult {
                             title: "Startup Rejected".to_string(),
                             detail: err.clone(),
                         };
@@ -462,13 +462,13 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             }
             crate::match_bootstrap::LoadingStartup::UnverifiedLegacy { .. }
             | crate::match_bootstrap::LoadingStartup::Generic { .. } => {
-                state.active_loading_correlation = None;
-                state.loaded_startup = None;
-                state.rust_l0_receipt = None;
+                state.frontend.active_loading_correlation = None;
+                state.frontend.loaded_startup = None;
+                state.frontend.rust_l0_receipt = None;
                 let now_ms =
                     sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
                 state.scenario_elapsed_clock.start(now_ms);
-                state.screen = GameScreen::InGame;
+                state.frontend.screen = GameScreen::InGame;
                 if returns_scenario_rng_to_offline_shell {
                     state
                         .frontend.offline_skirmish_runtime
