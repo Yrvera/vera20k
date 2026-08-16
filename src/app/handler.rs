@@ -19,10 +19,10 @@ impl App {
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
-        if (new_scale - state.match_presentation.ui_scale).abs() > f32::EPSILON {
-            log::info!("UI scale changed: {}x -> {}x", state.match_presentation.ui_scale, new_scale);
-            state.match_presentation.sidebar_layout_spec = state.match_presentation.sidebar_layout_spec_base.with_scale(new_scale);
-            state.match_presentation.ui_scale = new_scale;
+        if (new_scale - state.match_state.match_presentation.ui_scale).abs() > f32::EPSILON {
+            log::info!("UI scale changed: {}x -> {}x", state.match_state.match_presentation.ui_scale, new_scale);
+            state.match_state.match_presentation.sidebar_layout_spec = state.match_state.match_presentation.sidebar_layout_spec_base.with_scale(new_scale);
+            state.match_state.match_presentation.ui_scale = new_scale;
         }
         Self::invalidate_main_menu_movie_if_base_changed(state);
         crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
@@ -244,7 +244,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
-            && (state.frontend.screen != GameScreen::InGame || state.paused || state.match_presentation.show_save_load_panel);
+            && (state.frontend.screen != GameScreen::InGame || state.match_state.paused || state.match_state.match_presentation.show_save_load_panel);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -280,9 +280,9 @@ impl ApplicationHandler for App {
                     // Without this the right-drag pan keeps applying its
                     // anchor-relative step every frame and edge scroll stays
                     // inhibited until the player right-clicks again.
-                    state.input.tactical_mouse = Default::default();
-                    state.input.selection_state.cancel_drag();
-                    state.input.minimap_dragging = false;
+                    state.match_state.input.tactical_mouse = Default::default();
+                    state.match_state.input.selection_state.cancel_drag();
+                    state.match_state.input.minimap_dragging = false;
                 }
                 Self::set_window_active(state, active);
             }
@@ -294,8 +294,8 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Native's paused input capture admits Escape only and does not
                 // mutate the recorded keyboard state for other input.
-                if !state.paused {
-                    state.input.hotkey_modifiers = modifiers.state();
+                if !state.match_state.paused {
+                    state.match_state.input.hotkey_modifiers = modifiers.state();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -305,7 +305,7 @@ impl ApplicationHandler for App {
                     let is_escape: bool =
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
                     let in_game: bool = state.frontend.screen == GameScreen::InGame;
-                    let paused_at_event = in_game && state.paused;
+                    let paused_at_event = in_game && state.match_state.paused;
 
                     if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                         return;
@@ -398,10 +398,10 @@ impl ApplicationHandler for App {
                         &key_without_modifiers,
                         event.location,
                     );
-                    let hotkey_resolution = state.input.hotkey_bindings.resolve_event(
+                    let hotkey_resolution = state.match_state.input.hotkey_bindings.resolve_event(
                         binding_key,
                         event.location,
-                        state.input.hotkey_modifiers,
+                        state.match_state.input.hotkey_modifiers,
                     );
                     if in_game && (is_escape || !egui_consumed) {
                         let type_select_consumed = dispatch::handle_type_select_key_edge(
@@ -422,20 +422,20 @@ impl ApplicationHandler for App {
                             if let Some(scroll_key) =
                                 crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                             {
-                                state.input.keys_held.insert(scroll_key);
+                                state.match_state.input.keys_held.insert(scroll_key);
                             } else if crate::app::input::hotkeys::physical_scroll_key(code).is_none() {
-                                state.input.keys_held.insert(code);
+                                state.match_state.input.keys_held.insert(code);
                             }
                         } else {
                             // A release always clears a previously admitted
                             // scroll flag, even if NumLock or bindings changed
                             // while the key was held.
-                            state.input.keys_held.remove(&code);
+                            state.match_state.input.keys_held.remove(&code);
                             if let Some(scroll_key) =
                                 crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                                     .or_else(|| crate::app::input::hotkeys::physical_scroll_key(code))
                             {
-                                state.input.keys_held.remove(&scroll_key);
+                                state.match_state.input.keys_held.remove(&scroll_key);
                             }
                         }
                     }
@@ -454,8 +454,8 @@ impl ApplicationHandler for App {
                 } else {
                     (1.0, 1.0)
                 };
-                state.input.cursor_x = position.x as f32 * sx;
-                state.input.cursor_y = position.y as f32 * sy;
+                state.match_state.input.cursor_x = position.x as f32 * sx;
+                state.match_state.input.cursor_y = position.y as f32 * sy;
                 // Keep OS cursor hidden whenever the software cursor is active.
                 if state.use_software_cursor() {
                     state.platform.window.set_cursor_visible(false);
@@ -588,7 +588,7 @@ impl ApplicationHandler for App {
                 }
                 if !egui_consumed
                     && (state.frontend.screen == GameScreen::SpawnPick
-                        || (state.frontend.screen == GameScreen::InGame && !state.paused))
+                        || (state.frontend.screen == GameScreen::InGame && !state.match_state.paused))
                 {
                     // Every wheel notch scrolls the active build strip by one
                     // row, wherever the cursor is. gamemd routes the wheel

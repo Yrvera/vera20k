@@ -523,8 +523,8 @@ impl App {
             return false;
         };
         let layout = Self::skirmish_saved_seed_layout(state, mode);
-        let x = state.input.cursor_x.round() as i32;
-        let y = state.input.cursor_y.round() as i32;
+        let x = state.match_state.input.cursor_x.round() as i32;
+        let y = state.match_state.input.cursor_y.round() as i32;
         let mut play_sound = false;
         if let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() {
             match crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y) {
@@ -567,8 +567,8 @@ impl App {
         };
         let layout = Self::skirmish_saved_seed_layout(state, mode);
         let dir = Self::saved_seed_dir(state);
-        let x = state.input.cursor_x.round() as i32;
-        let y = state.input.cursor_y.round() as i32;
+        let x = state.match_state.input.cursor_x.round() as i32;
+        let y = state.match_state.input.cursor_y.round() as i32;
 
         use crate::ui::skirmish_shell::SavedSeedControl as SeedControl;
         use crate::ui::skirmish_shell::SavedSeedOutcome as Outcome;
@@ -714,8 +714,8 @@ impl App {
 
     pub(super) fn handle_random_map_setup_mouse_down(state: &mut AppState) -> bool {
         let layout = Self::skirmish_random_map_setup_layout(state);
-        let x = state.input.cursor_x.round() as i32;
-        let y = state.input.cursor_y.round() as i32;
+        let x = state.match_state.input.cursor_x.round() as i32;
+        let y = state.match_state.input.cursor_y.round() as i32;
         let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
         };
@@ -798,7 +798,7 @@ impl App {
 
     pub(super) fn handle_random_map_setup_mouse_move(state: &mut AppState) {
         let layout = Self::skirmish_random_map_setup_layout(state);
-        let x = state.input.cursor_x.round() as i32;
+        let x = state.match_state.input.cursor_x.round() as i32;
         let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return;
         };
@@ -820,8 +820,8 @@ impl App {
         use crate::ui::skirmish_shell::RandomMapSetupControl as Control;
 
         let layout = Self::skirmish_random_map_setup_layout(state);
-        let x = state.input.cursor_x.round() as i32;
-        let y = state.input.cursor_y.round() as i32;
+        let x = state.match_state.input.cursor_x.round() as i32;
+        let y = state.match_state.input.cursor_y.round() as i32;
         // RMGMD.INI drives the randomizer's vegetation bounds; without it the
         // derived vegetation collapses to zero and randomized maps lose trees.
         let settings = state

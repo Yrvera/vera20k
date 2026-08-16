@@ -15,7 +15,7 @@ impl App {
     /// Hand the scenario RNG cursor back to the offline shell when a match ends.
     pub(super) fn capture_returned_skirmish_rng(state: &mut AppState) {
         let gameplay_rng = state
-            .sim_runtime
+            .match_state.sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .map(crate::sim::world::Simulation::clone_scenario_rng);
@@ -29,15 +29,15 @@ impl App {
     }
 
     pub(super) fn return_to_main_menu(state: &mut AppState) {
-        state.paused = false;
-        state.match_presentation.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
-        state.match_presentation.in_game_options_anchor = None;
+        state.match_state.paused = false;
+        state.match_state.match_presentation.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
+        state.match_state.match_presentation.in_game_options_anchor = None;
         // Persist the deterministic diagnostic log before its owning sim is
         // torn down.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app::loading::pump::clear_match_startup_state(state);
-        state.scenario_elapsed_clock.reset();
+        state.match_state.scenario_elapsed_clock.reset();
         if let Some(ref mut player) = state.audio.music_player {
             player.stop();
         }
@@ -53,11 +53,11 @@ impl App {
         if let Some(ref mut player) = state.audio.music_player {
             player.set_output_scale(1.0);
         }
-        state.match_audio.reset_for_new_match();
+        state.match_state.match_audio.reset_for_new_match();
         state.frontend.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
-        state.input.zoom_level = 1.0;
-        state.input.zoom_target = 1.0;
+        state.match_state.input.zoom_level = 1.0;
+        state.match_state.input.zoom_target = 1.0;
         state.platform.window.set_cursor_visible(true);
         log::info!("Returned to main menu");
     }
@@ -76,9 +76,9 @@ impl App {
             return;
         }
         state.platform.window_active = active;
-        state.input.keys_held.clear();
-        state.input.hotkey_modifiers = ModifiersState::empty();
-        state.input.type_select.clear_held();
+        state.match_state.input.keys_held.clear();
+        state.match_state.input.hotkey_modifiers = ModifiersState::empty();
+        state.match_state.input.type_select.clear_held();
         // gamemd-derived: the `WM_ACTIVATEAPP` changed edge at 0x007778AC
         // stops/restores the primary DirectSound output through 0x00407020 /
         // 0x00407040 while secondary playback cursors continue. Keep this on
@@ -123,11 +123,11 @@ impl App {
     /// open and a placement/targeting or repair/sell mode is armed, Escape
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
-        let in_world_mode_armed = state.input.targeting_mode.is_some()
-            || state.match_presentation.sidebar_gadget_state.repair_mode_on
-            || state.match_presentation.sidebar_gadget_state.sell_mode_on;
+        let in_world_mode_armed = state.match_state.input.targeting_mode.is_some()
+            || state.match_state.match_presentation.sidebar_gadget_state.repair_mode_on
+            || state.match_state.match_presentation.sidebar_gadget_state.sell_mode_on;
         crate::ui::pause_menu::escape_belongs_to_modal_machine(
-            state.match_presentation.in_game_menu,
+            state.match_state.match_presentation.in_game_menu,
             in_world_mode_armed,
         )
     }
@@ -139,10 +139,10 @@ impl App {
         // Backing out of Options takes the same exit its Back control does —
         // apply and persist the touched `[Options]` values — so the two ways of
         // leaving the dialog cannot disagree about what was saved.
-        if state.match_presentation.in_game_menu == InGameMenuState::Options {
+        if state.match_state.match_presentation.in_game_menu == InGameMenuState::Options {
             crate::app::persistence::options::in_game_options_close(state);
         }
-        let next = state.match_presentation.in_game_menu.on_escape();
+        let next = state.match_state.match_presentation.in_game_menu.on_escape();
         Self::enter_in_game_menu_state(state, next);
     }
 
@@ -161,7 +161,7 @@ impl App {
     ) {
         use crate::ui::pause_menu::InGameMenuState;
 
-        let previous = state.match_presentation.in_game_menu;
+        let previous = state.match_state.match_presentation.in_game_menu;
         if previous == next {
             return;
         }
@@ -172,34 +172,34 @@ impl App {
         {
             let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
             if will_be_open {
-                state.scenario_elapsed_clock.pause(now_ms);
+                state.match_state.scenario_elapsed_clock.pause(now_ms);
             } else {
-                state.scenario_elapsed_clock.resume(now_ms);
+                state.match_state.scenario_elapsed_clock.resume(now_ms);
             }
         }
-        state.match_presentation.in_game_menu = next;
+        state.match_state.match_presentation.in_game_menu = next;
 
         // Leaving Options: drop the cached `0xBBB` hit-test anchor so the
         // overlay's own mouse handler cannot claim clicks aimed at the menu.
         if previous == InGameMenuState::Options {
-            state.match_presentation.in_game_options_anchor = None;
+            state.match_state.match_presentation.in_game_options_anchor = None;
         }
         if next == InGameMenuState::Options {
             // Reset the transient interaction flags so the drag-gated
             // value-label quirk resets on every open.
-            state.match_presentation.in_game_options.on_open();
+            state.match_state.match_presentation.in_game_options.on_open();
         }
 
-        state.paused = next.is_open();
+        state.match_state.paused = next.is_open();
         if next.is_open() {
             // Show the OS cursor so the modal is clickable.
-            if state.match_presentation.software_cursor.is_some() {
+            if state.match_state.match_presentation.software_cursor.is_some() {
                 state.platform.window.set_cursor_visible(true);
             }
         } else {
             // Elapsed modal time must not cause a catch-up frame.
             state.platform.frame_pacer.reset_for_immediate_frame();
-            if state.match_presentation.software_cursor.is_some() {
+            if state.match_state.match_presentation.software_cursor.is_some() {
                 state.platform.window.set_cursor_visible(false);
             }
         }
@@ -213,7 +213,7 @@ impl App {
     pub(super) fn handle_in_game_menu(state: &mut AppState) {
         use crate::ui::pause_menu::{self, InGameMenuState, ModalOutcome};
 
-        let outcome = match state.match_presentation.in_game_menu {
+        let outcome = match state.match_state.match_presentation.in_game_menu {
             InGameMenuState::Closed => ModalOutcome::Stay,
             InGameMenuState::Menu => {
                 pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.renderer.egui.ctx))
@@ -249,7 +249,7 @@ impl App {
     pub(super) fn sync_in_game_menu_with_options_overlay(state: &mut AppState) {
         use crate::ui::pause_menu::InGameMenuState;
 
-        if state.match_presentation.in_game_menu == InGameMenuState::Options && !state.paused {
+        if state.match_state.match_presentation.in_game_menu == InGameMenuState::Options && !state.match_state.paused {
             Self::enter_in_game_menu_state(state, InGameMenuState::Menu);
         }
     }
@@ -264,7 +264,7 @@ impl App {
     /// event; teardown begins after the event-tail dispatcher executes it.
     fn exit_match_to_shell(state: &mut AppState) {
         log::info!("Abort Mission confirmed — queueing EXIT event");
-        if state.scenario_exit.is_some() {
+        if state.match_state.scenario_exit.is_some() {
             return;
         }
         let Some(owner) = crate::app::input::commands::preferred_local_owner(state) else {
@@ -291,14 +291,14 @@ impl App {
         let local_owner = crate::app::input::commands::preferred_local_owner(state);
         let local_owner_id = local_owner.as_deref().and_then(|owner| {
             state
-                .sim_runtime
+                .match_state.sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.interner.get(owner))
         });
         let local_outcome_exit_ready = local_owner_id.is_some_and(|owner| {
             state
-                .sim_runtime
+                .match_state.sim_runtime
                 .as_ref()
                 .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.houses.get(&owner))
@@ -306,7 +306,7 @@ impl App {
                 .is_some_and(|outcome| outcome.exit_ready)
         });
         let executed_owner = state
-            .sim_runtime
+            .match_state.sim_runtime
             .as_mut()
             .map(|rt| &mut rt.simulation)
             .and_then(|sim| sim.take_executed_exit_owner());
@@ -325,14 +325,14 @@ impl App {
             // edge is still consumed, but cannot clear or replace that route.
             return;
         }
-        if state.scenario_exit.is_some() {
+        if state.match_state.scenario_exit.is_some() {
             return;
         }
 
         // Abort is the independent EXIT-event route: it never inherits the
         // victory/defeat HouseClass SavourDelay or its outcome-voice wait.
-        state.scenario_outcome = None;
-        let _ = state.scenario_elapsed_clock.stop(wall_ms);
+        state.match_state.scenario_outcome = None;
+        let _ = state.match_state.scenario_elapsed_clock.stop(wall_ms);
         // gamemd provenance: battle abort teardown; verified
         // GameExit__BattleControlTerminated @ 0x00686570 starts Theme's fade,
         // then fades the independent audio master, bounds its voice pump to
@@ -346,7 +346,7 @@ impl App {
         if let Some(action) = scenario_exit.take_start_voice_action() {
             Self::apply_scenario_exit_voice_action(state, action);
         }
-        state.scenario_exit = Some(scenario_exit);
+        state.match_state.scenario_exit = Some(scenario_exit);
     }
 
     /// Draw the save/load panel and handle its actions.
@@ -372,7 +372,7 @@ impl App {
                 state.persistence.invalidate_save_list();
             }
             SaveLoadAction::Close => {
-                state.match_presentation.show_save_load_panel = false;
+                state.match_state.match_presentation.show_save_load_panel = false;
             }
             SaveLoadAction::None => {}
         }
@@ -435,23 +435,23 @@ impl App {
         let mut save_name = std::mem::take(&mut state.diag.dev_overlay_save_name);
 
         let mut info = DevOverlayInfo {
-            sim_speed_tps: state.sim_speed_tps,
-            paused: state.paused,
+            sim_speed_tps: state.match_state.sim_speed_tps,
+            paused: state.match_state.paused,
             music_volume: state.audio.music_player.as_ref().map_or(0.5, |p| p.volume()),
             sfx_volume: state.audio.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
             show_pathgrid: state.diag.debug_show_pathgrid,
             show_cell_grid: state.diag.debug_show_cell_grid,
             show_heightmap: state.diag.debug_show_heightmap,
             show_unit_inspector: state.diag.debug_unit_inspector,
-            reveal_map: state.sandbox_full_visibility,
+            reveal_map: state.match_state.sandbox_full_visibility,
             fps: state.diag.frame_timer.fps(),
             frame_ms: state.diag.frame_timer.frame_ms_mean(),
-            tick_budget_ms: if state.sim_speed_tps == 0 {
+            tick_budget_ms: if state.match_state.sim_speed_tps == 0 {
                 0.0
             } else {
-                1000.0 / state.sim_speed_tps as f32
+                1000.0 / state.match_state.sim_speed_tps as f32
             },
-            entity_count: state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.entities().len()),
+            entity_count: state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.persistence.last_save_tick,
             last_save_age,
@@ -473,12 +473,12 @@ impl App {
             // so the next native Options close reasserts the Options speed. The
             // 0..6 bucket model cannot represent these arbitrary tps values.
             DevOverlayAction::SetGameSpeed(tps) => {
-                state.sim_speed_tps = tps.max(1);
-                log::info!("Game speed: {} tps", state.sim_speed_tps);
+                state.match_state.sim_speed_tps = tps.max(1);
+                log::info!("Game speed: {} tps", state.match_state.sim_speed_tps);
             }
             DevOverlayAction::ResetGameSpeed => {
-                state.sim_speed_tps = crate::app::types::default_yr_skirmish_tps();
-                log::info!("Game speed reset to {} tps", state.sim_speed_tps);
+                state.match_state.sim_speed_tps = crate::app::types::default_yr_skirmish_tps();
+                log::info!("Game speed reset to {} tps", state.match_state.sim_speed_tps);
             }
             DevOverlayAction::SetMusicVolume(v) => {
                 if let Some(p) = &mut state.audio.music_player {
@@ -497,7 +497,7 @@ impl App {
                 Self::return_to_main_menu(state);
             }
             DevOverlayAction::StepOneTick => {
-                if state.paused {
+                if state.match_state.paused {
                     state.diag.debug_frame_step_requested = true;
                 }
             }
@@ -514,10 +514,10 @@ impl App {
                 dispatch::toggle_unit_inspector(state);
             }
             DevOverlayAction::ToggleRevealMap => {
-                state.sandbox_full_visibility = !state.sandbox_full_visibility;
+                state.match_state.sandbox_full_visibility = !state.match_state.sandbox_full_visibility;
                 log::info!(
                     "Reveal map: {}",
-                    if state.sandbox_full_visibility {
+                    if state.match_state.sandbox_full_visibility {
                         "ON"
                     } else {
                         "OFF"
@@ -582,11 +582,11 @@ impl App {
     }
 
     pub(super) fn drive_scenario_exit(state: &mut AppState, wall_ms: u64) {
-        if state.scenario_exit.is_none() {
+        if state.match_state.scenario_exit.is_none() {
             return;
         }
         let poll_voices = state
-            .scenario_exit
+            .match_state.scenario_exit
             .as_ref()
             .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
         let voices_active = poll_voices
@@ -595,7 +595,7 @@ impl App {
                 .as_mut()
                 .is_some_and(|sfx| sfx.pump_and_check_voices());
         let tick = state
-            .scenario_exit
+            .match_state.scenario_exit
             .as_mut()
             .expect("scenario exit remains present")
             .tick(wall_ms, voices_active);
@@ -634,10 +634,10 @@ impl App {
         }
 
         let destination = state
-            .scenario_exit
+            .match_state.scenario_exit
             .as_mut()
             .and_then(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::take_destination);
-        state.scenario_exit = None;
+        state.match_state.scenario_exit = None;
         match destination {
             Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::Score {
                 title,
@@ -661,11 +661,11 @@ impl App {
     ) {
         match action {
             crate::app::match_runtime::scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
-                let Some(owner) = state.local_player_owner.as_deref() else {
+                let Some(owner) = state.match_state.local_player_owner.as_deref() else {
                     log::warn!("Battle-control termination EVA has no pinned local owner");
                     return;
                 };
-                let faction = crate::app::presentation::building_anim::eva_faction_key(owner, &state.match_presentation.house_roster);
+                let faction = crate::app::presentation::building_anim::eva_faction_key(owner, &state.match_state.match_presentation.house_roster);
                 let fallback = match faction {
                     "Russian" => "csof015",
                     "Yuri" => "cyur015",

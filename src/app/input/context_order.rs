@@ -176,7 +176,7 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
 /// entity; retail speaks the object that resolved the order, so order resolution
 /// needs to name the speaker explicitly.
 fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &str) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
     let Some(rules) = state.rules().map(|r| r) else { return };
     let Some(entity) = sim.entities().get(speaker_id) else {
         return;
@@ -202,7 +202,7 @@ fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &
             sound_id: id.clone(),
         }
     };
-    state.match_audio.sound_events.push(event);
+    state.match_state.match_audio.sound_events.push(event);
 }
 
 /// Commit a resolved order batch: one voice line, the action lines, the queue.
@@ -215,7 +215,7 @@ fn finish_order(
     queued: Vec<CommandEnvelope>,
     speaker_id: Option<u64>,
 ) -> bool {
-    let queued = if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+    let queued = if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
         queued
             .into_iter()
             .filter_map(|envelope| {
@@ -231,9 +231,9 @@ fn finish_order(
     if let Some(speaker_id) = speaker_id {
         emit_resolved_order_voice(state, speaker_id, &queued);
     }
-    let current_tick = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
-    crate::app::presentation::target_lines::record_command_lines(&mut state.match_presentation.target_lines, &queued, current_tick);
-    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+    let current_tick = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
+    crate::app::presentation::target_lines::record_command_lines(&mut state.match_state.match_presentation.target_lines, &queued, current_tick);
+    if let Some(sim) = state.match_state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.queue_commands(queued);
     }
     true
@@ -402,10 +402,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         is_shift_held(state),
         is_alt_held(state),
     );
-    let order_mode = state.input.queued_order_mode;
+    let order_mode = state.match_state.input.queued_order_mode;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let owner_id: InternedId = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(|s| s.interner.get(&owner))
@@ -418,7 +418,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut speaker_id: Option<u64> = None;
     let selected_ids = selected_stable_ids_in_order(state);
 
-    if let Some(rt) = state.sim_runtime.as_mut() {
+    if let Some(rt) = state.match_state.sim_runtime.as_mut() {
         let resources = &rt.resources;
         let sim = &mut rt.simulation;
         let execute_tick = sim.session.tick;
@@ -488,10 +488,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             world_x,
             world_y,
             &owner,
-            state.sandbox_full_visibility,
+            state.match_state.sandbox_full_visibility,
             Some(&resources.rules),
             &resources.height_map,
-            Some(&state.match_presentation.tactical_bridge_inverse_map),
+            Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
         );
 
         let only_miners_selected = mobile_count > 0 && selected_miner_ids.len() == mobile_count;
@@ -969,10 +969,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     sim,
                     world_x,
                     world_y,
-                    state.sandbox_full_visibility,
+                    state.match_state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.match_presentation.tactical_bridge_inverse_map),
+                    Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
                 )
             } else {
                 pick_enemy_target_stable_id(
@@ -980,10 +980,10 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     world_x,
                     world_y,
                     &owner,
-                    state.sandbox_full_visibility,
+                    state.match_state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.match_presentation.tactical_bridge_inverse_map),
+                    Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
                 )
             };
             // Assign a shared group_id when multiple units move together.
@@ -1002,7 +1002,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             // comment cited as a "shroud check" is in fact the waypoint lookup.
             // Left in place because removing it changes click routing; recorded
             // as a DRIFT for its own slice. Computed once outside the loop.
-            let cell_is_shrouded: bool = if force_fire && !state.sandbox_full_visibility {
+            let cell_is_shrouded: bool = if force_fire && !state.match_state.sandbox_full_visibility {
                 let owner_id_for_fog = sim.interner.get(&owner).unwrap_or_default();
                 !sim.fog
                     .is_cell_revealed(owner_id_for_fog, target_rx, target_ry)
@@ -1149,8 +1149,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     if queued.is_empty() {
         return false;
     }
-    if consumed_order_mode && state.input.queued_order_mode != OrderMode::Move {
-        state.input.queued_order_mode = OrderMode::Move;
+    if consumed_order_mode && state.match_state.input.queued_order_mode != OrderMode::Move {
+        state.match_state.input.queued_order_mode = OrderMode::Move;
     }
     finish_order(state, queued, speaker_id)
 }

@@ -39,14 +39,14 @@ pub(crate) fn build_sidebar_chrome_instances(
     };
     build_sidebar_chrome_instances_for_layout(
         atlas,
-        state.match_presentation.sidebar_layout_spec,
+        state.match_state.match_presentation.sidebar_layout_spec,
         &view.layout,
         view,
         &view.tabs,
-        &state.match_presentation.power_bar_anim,
+        &state.match_state.match_presentation.power_bar_anim,
         [state.render_width() as f32, state.render_height() as f32],
-        [state.input.camera_x, state.input.camera_y],
-        state.match_presentation.ui_scale,
+        [state.match_state.input.camera_x, state.match_state.input.camera_y],
+        state.match_state.match_presentation.ui_scale,
     )
 }
 
@@ -546,13 +546,13 @@ pub(crate) fn build_sidebar_cameo_instances(
     Vec<SpriteInstance>,
     Vec<SpriteInstance>,
 ) {
-    let Some(atlas) = state.match_presentation.sidebar_cameo_atlas.as_ref() else {
+    let Some(atlas) = state.match_state.match_presentation.sidebar_cameo_atlas.as_ref() else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut instances = Vec::new();
     let mut gclock_instances = Vec::new();
     let mut overlay_instances = Vec::new();
-    let co = [state.input.camera_x, state.input.camera_y];
+    let co = [state.match_state.input.camera_x, state.match_state.input.camera_y];
     let gclock_frames: &[SidebarChromeEntry] =
         crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
@@ -620,7 +620,7 @@ pub(crate) fn build_sidebar_cameo_instances(
         if let Some(status_text) = cameo_status_text(item, ready_text, hold_text)
             && state.renderer.bit_font.darken_texture().is_some()
         {
-            let s = state.match_presentation.ui_scale;
+            let s = state.match_state.match_presentation.ui_scale;
             let ts = ready_text_scale(s);
             let text_w = state.renderer.bit_font.text_width(status_text) as f32 * ts;
             let strip_w = text_w + READY_PAD_X * 2.0 * ts;
@@ -649,7 +649,7 @@ pub(crate) fn build_sidebar_cameo_instances(
         // Original: ComputeTextRect(cameo_x+60, cameo_y+1, 0x242, x_pad=2, y_pad=1)
         // The dark rect extends x_pad (2px) past the cameo right edge.
         if has_queue_badge && state.renderer.bit_font.darken_texture().is_some() {
-            let ts = ready_text_scale(state.match_presentation.ui_scale);
+            let ts = ready_text_scale(state.match_state.match_presentation.ui_scale);
             let count_str = format!("{}", item.queued_count);
             let text_w = state.renderer.bit_font.text_width(&count_str) as f32 * ts;
             let strip_w = text_w + QUEUE_COUNT_PAD_X * 2.0 * ts;
@@ -686,9 +686,9 @@ pub(crate) fn build_sidebar_text_instances(
         // No FNT loaded — text will be rendered by egui fallback.
         return Vec::new();
     }
-    let s = state.match_presentation.ui_scale;
+    let s = state.match_state.match_presentation.ui_scale;
     let ts = ready_text_scale(s);
-    let co = [state.input.camera_x, state.input.camera_y];
+    let co = [state.match_state.input.camera_x, state.match_state.input.camera_y];
     let mut instances = Vec::new();
 
     for item in &view.items {

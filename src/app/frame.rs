@@ -47,7 +47,7 @@ impl App {
         // resumes ownership on the first foreground frame.
         if state.frontend.screen == GameScreen::InGame && !state.platform.window_active {
             let wall = crate::app::input::tooltips::now_ms(state);
-            state.match_presentation.message_clock.set_paused(true, wall);
+            state.match_state.match_presentation.message_clock.set_paused(true, wall);
         } else {
             crate::app::input::messages::update(state);
         }
@@ -126,8 +126,8 @@ impl App {
         if tactical_capture.is_none()
             && matches!(state.frontend.screen, GameScreen::InGame)
             && state.platform.window_active
-            && state.scenario_exit.is_none()
-            && state.scenario_outcome.is_none()
+            && state.match_state.scenario_exit.is_none()
+            && state.match_state.scenario_outcome.is_none()
         {
             let now = Instant::now();
             let now_ms = sim_tick::monotonic_frame_pacer_ms(state, now);
@@ -224,7 +224,7 @@ impl App {
                     )? {
                         crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
                             state.renderer.egui.begin_frame(&state.platform.window);
-                            if state.match_presentation.show_save_load_panel {
+                            if state.match_state.match_presentation.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
                             }
                             // Campaign selector (and any other menu modal) draws
@@ -374,7 +374,7 @@ impl App {
                 // opens) draws the native `0xBBB` overlay over the frozen
                 // battlefield, before egui. The in-game menu and the abort
                 // confirmation are egui cards drawn in the pass below.
-                if state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
+                if state.match_state.match_presentation.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
                     if Self::ensure_skirmish_shell_chrome(state) {
                         crate::app::frontend::skirmish_shell_render::render_in_game_options_overlay(
                             state,
@@ -392,7 +392,7 @@ impl App {
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.diag.debug_show_pathgrid
                     || state.diag.debug_unit_inspector
-                    || state.match_presentation.show_hotkey_help;
+                    || state.match_state.match_presentation.show_hotkey_help;
                 let prev_visuals = if any_debug_panel {
                     Some(crate::app::diagnostics::debug_panel::push_debug_light_visuals(
                         &state.renderer.egui.ctx,
@@ -404,20 +404,20 @@ impl App {
                     crate::app::diagnostics::debug_panel::draw_debug_panel(&state.renderer.egui.ctx, state);
                 }
                 crate::app::diagnostics::debug_panel::draw_event_history_panel(&state.renderer.egui.ctx, state);
-                if state.match_presentation.show_hotkey_help {
+                if state.match_state.match_presentation.show_hotkey_help {
                     crate::app::diagnostics::debug_panel::draw_hotkey_help(&state.renderer.egui.ctx);
                 }
                 if let Some(prev) = prev_visuals {
                     crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.renderer.egui.ctx, prev);
                 }
-                if state.match_presentation.show_save_load_panel {
+                if state.match_state.match_presentation.show_save_load_panel {
                     Self::handle_save_load_panel(state);
                 }
                 // The in-scenario modal cards. Options is the native `0xBBB`
                 // overlay drawn above; the menu and the abort confirmation are
                 // drawn here and their routes committed immediately.
                 Self::handle_in_game_menu(state);
-                if state.paused {
+                if state.match_state.paused {
                     // The dev overlay rides along with any in-scenario modal —
                     // push its own light visuals so its chrome matches the
                     // debug panels.
@@ -536,7 +536,7 @@ impl App {
             None
         };
         let retail_screenshot_current_frame =
-            std::mem::take(&mut state.input.retail_screenshot_requested);
+            std::mem::take(&mut state.match_state.input.retail_screenshot_requested);
         let pending_retail_screenshot = state
             .renderer.retail_screenshot_frame_cache
             .capture_previous_if_requested(

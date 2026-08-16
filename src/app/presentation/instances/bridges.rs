@@ -203,30 +203,30 @@ pub(crate) fn build_bridge_body_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.match_presentation.bridge_atlas.as_ref() else {
+    let Some(atlas) = state.match_state.match_presentation.bridge_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state
-        .match_presentation.terrain_grid
+        .match_state.match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
     build_bridge_body_instances_inner(
         bridge_state,
         atlas,
-        &state.match_presentation.overlay_names,
+        &state.match_state.match_presentation.overlay_names,
         &state.height_map(),
-        &state.match_presentation.lighting_grid,
+        &state.match_state.match_presentation.lighting_grid,
         origin_y,
         world_height,
-        state.input.camera_x,
-        state.input.camera_y,
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
         sw,
         sh,
         out,
@@ -243,21 +243,21 @@ pub(crate) fn build_bridge_shadow_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.match_presentation.bridge_atlas.as_ref() else {
+    let Some(atlas) = state.match_state.match_presentation.bridge_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state
-        .match_presentation.terrain_grid
+        .match_state.match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
+    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present {
@@ -267,7 +267,7 @@ pub(crate) fn build_bridge_shadow_instances(
             continue;
         };
         let Some(axis) = cell.axis else { continue };
-        let Some(name) = state.match_presentation.overlay_names.get(&cell.overlay_byte) else {
+        let Some(name) = state.match_state.match_presentation.overlay_names.get(&cell.overlay_byte) else {
             continue;
         };
         if !is_high_bridge_body_name(name) {
@@ -336,21 +336,21 @@ pub(crate) fn build_bridge_railing_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.match_presentation.bridge_railing_atlas.as_ref() else {
+    let Some(atlas) = state.match_state.match_presentation.bridge_railing_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state
-        .match_presentation.terrain_grid
+        .match_state.match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
+    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
 
     for ((rx, ry), cell) in bridge_state.iter_cells() {
         if !cell.deck_present || BridgeRuntimeState::effective_render_state(cell).is_none() {
@@ -414,7 +414,7 @@ fn resolve_bridge_kind_and_sub_idx(
     cell: &BridgeRuntimeCell,
 ) -> Option<(BridgeKind, i32, u8)> {
     let name = state
-        .match_presentation.overlay_names
+        .match_state.match_presentation.overlay_names
         .get(&cell.overlay_byte)?
         .to_ascii_uppercase();
     let kind = if matches!(

@@ -27,17 +27,17 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState) {
         .and_then(|rules| rules.general.parachute_render.as_ref())
         .cloned()
     else {
-        state.match_presentation.parachute_anims.clear();
+        state.match_state.match_presentation.parachute_anims.clear();
         return;
     };
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.match_presentation.parachute_anims.clear();
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+        state.match_state.match_presentation.parachute_anims.clear();
         return;
     };
 
     // Phase 1: despawn anims whose target is gone or has landed.
     state
-        .match_presentation.parachute_anims
+        .match_state.match_presentation.parachute_anims
         .retain(|anim| match sim.entities().get(anim.target_id) {
             Some(entity) => {
                 entity.lifecycle.object_alive
@@ -56,11 +56,11 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState) {
             e.lifecycle.object_alive && !e.lifecycle.in_limbo && e.parachute_state.is_some()
         })
         .map(|e| e.stable_id)
-        .filter(|sid| !state.match_presentation.parachute_anims.iter().any(|a| a.target_id == *sid))
+        .filter(|sid| !state.match_state.match_presentation.parachute_anims.iter().any(|a| a.target_id == *sid))
         .collect();
 
     for target_id in new_targets {
-        state.match_presentation.parachute_anims.push(ParachuteAnim {
+        state.match_state.match_presentation.parachute_anims.push(ParachuteAnim {
             target_id,
             frame: 0,
             loop_start: config.loop_start,
@@ -71,7 +71,7 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState) {
     }
 
     // Phase 3: advance frames.
-    for anim in &mut state.match_presentation.parachute_anims {
+    for anim in &mut state.match_state.match_presentation.parachute_anims {
         if anim.frame_delay == 0 {
             continue;
         }

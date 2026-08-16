@@ -48,7 +48,7 @@ struct BracketDepthCtx {
 impl BracketDepthCtx {
     fn from_state(state: &AppState, cell_z: u8) -> Self {
         let (origin_y, world_height) = state
-            .match_presentation.terrain_grid
+            .match_state.match_presentation.terrain_grid
             .as_ref()
             .map(|g| (g.origin_y, g.world_height))
             .unwrap_or((0.0, 1.0));
@@ -85,10 +85,10 @@ struct BracketPixelFilter<'a> {
 impl<'a> BracketPixelFilter<'a> {
     fn from_state(state: &'a AppState) -> Self {
         Self {
-            shroud: state.match_presentation.shroud_buffer.as_ref(),
-            camera_x: state.input.camera_x,
-            camera_y: state.input.camera_y,
-            enabled: !state.sandbox_full_visibility,
+            shroud: state.match_state.match_presentation.shroud_buffer.as_ref(),
+            camera_x: state.match_state.input.camera_x,
+            camera_y: state.match_state.input.camera_y,
+            enabled: !state.match_state.sandbox_full_visibility,
         }
     }
 
@@ -336,14 +336,14 @@ pub(crate) fn build_selection_bracket_instances(
     sw: f32,
     sh: f32,
 ) -> SelectionBracketInstances {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return SelectionBracketInstances::default();
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
-    let cam_x = state.input.camera_x;
-    let cam_y = state.input.camera_y;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
+    let cam_x = state.match_state.input.camera_x;
+    let cam_y = state.match_state.input.camera_y;
     let final_front_filter = BracketPixelFilter::from_state(state);
     let mut out = SelectionBracketInstances::default();
 

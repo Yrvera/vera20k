@@ -397,26 +397,26 @@ impl ViewBookmarks {
 fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
     let (tactical_w, tactical_h) =
         tactical_viewport_size_px(state.render_width(), state.render_height());
-    let world_x = state.input.camera_x + tactical_w as f32 / (2.0 * state.input.zoom_level);
-    let world_y = state.input.camera_y + tactical_h as f32 / (2.0 * state.input.zoom_level);
+    let world_x = state.match_state.input.camera_x + tactical_w as f32 / (2.0 * state.match_state.input.zoom_level);
+    let world_y = state.match_state.input.camera_y + tactical_h as f32 / (2.0 * state.match_state.input.zoom_level);
     crate::app::match_runtime::sim_tick::world_point_to_cell(
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     )
 }
 
 /// `SetView<slot+1>` — capture the current view into a bookmark.
 pub(crate) fn set_view_bookmark(state: &mut AppState, slot: usize) {
     let (rx, ry) = tactical_centre_cell(state);
-    state.input.view_bookmarks.set(slot, rx, ry);
+    state.match_state.input.view_bookmarks.set(slot, rx, ry);
     log::info!("SetView{}: bookmark set to cell ({rx}, {ry})", slot + 1);
 }
 
 /// `View<slot+1>` — jump the camera to a bookmark.
 pub(crate) fn recall_view_bookmark(state: &mut AppState, slot: usize) {
-    let Some((rx, ry)) = state.input.view_bookmarks.get(slot) else {
+    let Some((rx, ry)) = state.match_state.input.view_bookmarks.get(slot) else {
         return;
     };
     center_camera_on_cell(state, rx, ry);
@@ -427,7 +427,7 @@ pub(crate) fn recall_view_bookmark(state: &mut AppState, slot: usize) {
 /// scenario reader fills the four slots with the opening view.
 pub(crate) fn seed_view_bookmarks_from_current_view(state: &mut AppState) {
     let (rx, ry) = tactical_centre_cell(state);
-    state.input.view_bookmarks.seed_all(rx, ry);
+    state.match_state.input.view_bookmarks.seed_all(rx, ry);
 }
 
 // ---------------------------------------------------------------------------
@@ -595,13 +595,13 @@ fn right_drag_pan_step(
 
 /// Drive the right-drag map pan for this frame.
 fn update_right_drag_pan(state: &mut AppState) {
-    if !state.input.tactical_mouse.right_drag_owns_frame() {
+    if !state.match_state.input.tactical_mouse.right_drag_owns_frame() {
         return;
     }
-    let anchor = state.input.tactical_mouse.right_anchor;
-    let cursor = (state.input.cursor_x, state.input.cursor_y);
+    let anchor = state.match_state.input.tactical_mouse.right_anchor;
+    let cursor = (state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let (drag_metric_x, drag_metric_y) = system_drag_metrics_px();
-    if !state.input.tactical_mouse.right_threshold_crossed
+    if !state.match_state.input.tactical_mouse.right_threshold_crossed
         && right_drag_threshold_crossed(
             cursor.0 - anchor.0,
             cursor.1 - anchor.1,
@@ -609,19 +609,19 @@ fn update_right_drag_pan(state: &mut AppState) {
             drag_metric_y,
         )
     {
-        state.input.tactical_mouse.right_threshold_crossed = true;
+        state.match_state.input.tactical_mouse.right_threshold_crossed = true;
     }
-    if !state.input.tactical_mouse.right_threshold_crossed {
+    if !state.match_state.input.tactical_mouse.right_threshold_crossed {
         return;
     }
-    if !state.input.tactical_mouse.right_pan_engaged {
+    if !state.match_state.input.tactical_mouse.right_pan_engaged {
         // A live band box wins the race: the original cancels the drag instead
         // of engaging the pan, and only engages on a later frame.
-        if state.input.selection_state.is_band_box_active() {
-            state.input.selection_state.cancel_drag();
+        if state.match_state.input.selection_state.is_band_box_active() {
+            state.match_state.input.selection_state.cancel_drag();
             return;
         }
-        state.input.tactical_mouse.right_pan_engaged = true;
+        state.match_state.input.tactical_mouse.right_pan_engaged = true;
     }
 
     let (dx, dy) = right_drag_pan_step(
@@ -629,12 +629,12 @@ fn update_right_drag_pan(state: &mut AppState) {
         cursor,
         state.render_width() as f32,
         state.render_height() as f32,
-        state.match_presentation.in_game_options.scroll_rate,
+        state.match_state.match_presentation.in_game_options.scroll_rate,
     );
     // The pan distance is in window pixels. Stock YR has no world zoom, so the
     // divide is VERA-internal and exact at zoom 1.0.
-    state.input.camera_x += dx / state.input.zoom_level;
-    state.input.camera_y += dy / state.input.zoom_level;
+    state.match_state.input.camera_x += dx / state.match_state.input.zoom_level;
+    state.match_state.input.camera_y += dy / state.match_state.input.zoom_level;
 }
 
 /// Arrow-key scroll distance for this frame, in world pixels.
@@ -647,7 +647,7 @@ fn keyboard_scroll_distance(state: &AppState) -> f32 {
         (KEY_SCROLL_DISTANCE * KEY_SCROLL_SHIFT_MULTIPLIER).trunc()
     } else if crate::app::input::dispatch::is_ctrl_held(state) {
         let cells = state
-            .sim_runtime
+            .match_state.sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .map_or(0u32, |sim| u32::from(sim.fog.width.max(sim.fog.height)));
@@ -664,25 +664,25 @@ pub(crate) fn update_camera(state: &mut AppState) {
 
     let key_distance = keyboard_scroll_distance(state);
     if state
-        .input.keys_held
+        .match_state.input.keys_held
         .contains(&winit::keyboard::KeyCode::ArrowLeft)
     {
-        state.input.camera_x -= key_distance / state.input.zoom_level;
+        state.match_state.input.camera_x -= key_distance / state.match_state.input.zoom_level;
     }
     if state
-        .input.keys_held
+        .match_state.input.keys_held
         .contains(&winit::keyboard::KeyCode::ArrowRight)
     {
-        state.input.camera_x += key_distance / state.input.zoom_level;
+        state.match_state.input.camera_x += key_distance / state.match_state.input.zoom_level;
     }
-    if state.input.keys_held.contains(&winit::keyboard::KeyCode::ArrowUp) {
-        state.input.camera_y -= key_distance / state.input.zoom_level;
+    if state.match_state.input.keys_held.contains(&winit::keyboard::KeyCode::ArrowUp) {
+        state.match_state.input.camera_y -= key_distance / state.match_state.input.zoom_level;
     }
     if state
-        .input.keys_held
+        .match_state.input.keys_held
         .contains(&winit::keyboard::KeyCode::ArrowDown)
     {
-        state.input.camera_y += key_distance / state.input.zoom_level;
+        state.match_state.input.camera_y += key_distance / state.match_state.input.zoom_level;
     }
 
     update_right_drag_pan(state);
@@ -694,13 +694,13 @@ pub(crate) fn update_camera(state: &mut AppState) {
     // the capture, so the map is frozen for the whole of a band-box or
     // right-drag gesture. The minimap-drag inhibit is VERA-internal: gamemd's
     // minimap re-centres only on press, while this flag owns the gesture here.
-    if !state.input.tactical_mouse.captured && !state.input.minimap_dragging {
-        let now = state.input.edge_scroll.radar_timer();
-        let scroll_rate = state.match_presentation.in_game_options.scroll_rate;
+    if !state.match_state.input.tactical_mouse.captured && !state.match_state.input.minimap_dragging {
+        let now = state.match_state.input.edge_scroll.radar_timer();
+        let scroll_rate = state.match_state.match_presentation.in_game_options.scroll_rate;
         let active_direction =
-            edge_scroll_intent((state.input.cursor_x, state.input.cursor_y), sw as i32, sh as i32);
+            edge_scroll_intent((state.match_state.input.cursor_x, state.match_state.input.cursor_y), sw as i32, sh as i32);
         let requested_direction =
-            active_direction.or_else(|| state.input.edge_scroll.coasting_direction());
+            active_direction.or_else(|| state.match_state.input.edge_scroll.coasting_direction());
         let movement_allowed = requested_direction
             .is_none_or(|direction| camera_scroll_direction_allowed(state, direction, sw, sh));
         let scroll_multiplier = state
@@ -709,21 +709,21 @@ pub(crate) fn update_camera(state: &mut AppState) {
                 rules.general.scroll_multiplier
             });
         let (dx, dy) = edge_scroll_step_with_context(
-            &mut state.input.edge_scroll,
-            (state.input.cursor_x, state.input.cursor_y),
+            &mut state.match_state.input.edge_scroll,
+            (state.match_state.input.cursor_x, state.match_state.input.cursor_y),
             sw as i32,
             sh as i32,
             scroll_rate,
             scroll_multiplier,
-            state.match_presentation.in_game_gadgets.right_held,
+            state.match_state.match_presentation.in_game_gadgets.right_held,
             movement_allowed,
             now,
         );
         // The speed table is in window pixels. Stock YR has no world zoom, so
         // the divide is VERA-internal: it keeps the on-screen scroll rate
         // constant across VERA's zoom range and is exact at zoom 1.0.
-        state.input.camera_x += dx / state.input.zoom_level;
-        state.input.camera_y += dy / state.input.zoom_level;
+        state.match_state.input.camera_x += dx / state.match_state.input.zoom_level;
+        state.match_state.input.camera_y += dy / state.match_state.input.zoom_level;
     }
 
     clamp_camera_to_playable_area(state, sw, sh);
@@ -750,7 +750,7 @@ const ZOOM_SNAP: f32 = 0.002;
 /// spectator/debug view can drive it, but nothing calls this today.
 #[allow(dead_code)]
 pub(crate) fn apply_zoom(state: &mut AppState, delta_lines: f32) {
-    let old_target = state.input.zoom_target;
+    let old_target = state.match_state.input.zoom_target;
     let factor = ZOOM_STEP.powf(delta_lines);
     let new_target = (old_target * factor).clamp(MIN_ZOOM, MAX_ZOOM);
     if (new_target - old_target).abs() < 1e-6 {
@@ -758,22 +758,22 @@ pub(crate) fn apply_zoom(state: &mut AppState, delta_lines: f32) {
     }
 
     // Record the world point under the cursor — animate_zoom keeps it stable.
-    let z = state.input.zoom_level;
-    state.input.zoom_anchor_world = [
-        state.input.cursor_x / z + state.input.camera_x,
-        state.input.cursor_y / z + state.input.camera_y,
+    let z = state.match_state.input.zoom_level;
+    state.match_state.input.zoom_anchor_world = [
+        state.match_state.input.cursor_x / z + state.match_state.input.camera_x,
+        state.match_state.input.cursor_y / z + state.match_state.input.camera_y,
     ];
-    state.input.zoom_anchor_screen = [state.input.cursor_x, state.input.cursor_y];
-    state.input.zoom_target = new_target;
+    state.match_state.input.zoom_anchor_screen = [state.match_state.input.cursor_x, state.match_state.input.cursor_y];
+    state.match_state.input.zoom_target = new_target;
 }
 
 /// Animate zoom_level toward zoom_target each frame, adjusting the camera so
 /// the anchor world point stays at the anchor screen position.
 pub(crate) fn animate_zoom(state: &mut AppState) {
-    let diff = state.input.zoom_target - state.input.zoom_level;
+    let diff = state.match_state.input.zoom_target - state.match_state.input.zoom_level;
     if diff.abs() < ZOOM_SNAP {
-        if (state.input.zoom_level - state.input.zoom_target).abs() > 1e-7 {
-            state.input.zoom_level = state.input.zoom_target;
+        if (state.match_state.input.zoom_level - state.match_state.input.zoom_target).abs() > 1e-7 {
+            state.match_state.input.zoom_level = state.match_state.input.zoom_target;
             let sw = state.render_width() as f32;
             let sh = state.render_height() as f32;
             clamp_camera_to_playable_area(state, sw, sh);
@@ -781,13 +781,13 @@ pub(crate) fn animate_zoom(state: &mut AppState) {
         return;
     }
 
-    state.input.zoom_level += diff * ZOOM_EASE;
+    state.match_state.input.zoom_level += diff * ZOOM_EASE;
 
     // Adjust camera so the anchor world point stays at the anchor screen position:
     //   anchor_world_x = anchor_screen_x / zoom + camera_x
     //   camera_x = anchor_world_x - anchor_screen_x / zoom
-    state.input.camera_x = state.input.zoom_anchor_world[0] - state.input.zoom_anchor_screen[0] / state.input.zoom_level;
-    state.input.camera_y = state.input.zoom_anchor_world[1] - state.input.zoom_anchor_screen[1] / state.input.zoom_level;
+    state.match_state.input.camera_x = state.match_state.input.zoom_anchor_world[0] - state.match_state.input.zoom_anchor_screen[0] / state.match_state.input.zoom_level;
+    state.match_state.input.camera_y = state.match_state.input.zoom_anchor_world[1] - state.match_state.input.zoom_anchor_screen[1] / state.match_state.input.zoom_level;
 
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
@@ -878,18 +878,18 @@ pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
         world,
         tactical_w as f32,
         tactical_h as f32,
-        state.input.zoom_level,
+        state.match_state.input.zoom_level,
     );
-    state.input.camera_x = cx;
-    state.input.camera_y = cy;
+    state.match_state.input.camera_x = cx;
+    state.match_state.input.camera_y = cy;
     clamp_camera_to_playable_area(state, sw, sh);
 }
 
 pub(crate) fn clamp_camera_to_playable_area(state: &mut AppState, sw: f32, sh: f32) {
     let (camera_x, camera_y) =
-        clamp_camera_point_for_state(state, (state.input.camera_x, state.input.camera_y), sw, sh);
-    state.input.camera_y = camera_y;
-    state.input.camera_x = camera_x;
+        clamp_camera_point_for_state(state, (state.match_state.input.camera_x, state.match_state.input.camera_y), sw, sh);
+    state.match_state.input.camera_y = camera_y;
+    state.match_state.input.camera_x = camera_x;
 }
 
 fn clamp_camera_point_for_state(
@@ -898,7 +898,7 @@ fn clamp_camera_point_for_state(
     sw: f32,
     sh: f32,
 ) -> (f32, f32) {
-    let Some(grid) = &state.match_presentation.terrain_grid else {
+    let Some(grid) = &state.match_state.match_presentation.terrain_grid else {
         return point;
     };
     let (area_x, area_y, area_w, area_h) = match grid.local_bounds {
@@ -916,7 +916,7 @@ fn clamp_camera_point_for_state(
         point,
         (area_x, area_y, area_w, area_h),
         (viewport_w as f32, viewport_h as f32),
-        state.input.zoom_level,
+        state.match_state.input.zoom_level,
     )
 }
 
@@ -958,16 +958,16 @@ fn camera_scroll_direction_allowed(
     sw: f32,
     sh: f32,
 ) -> bool {
-    if state.match_presentation.terrain_grid.is_none() {
+    if state.match_state.match_presentation.terrain_grid.is_none() {
         return true;
     }
     let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];
     let candidate = (
-        state.input.camera_x + dx / state.input.zoom_level,
-        state.input.camera_y + dy / state.input.zoom_level,
+        state.match_state.input.camera_x + dx / state.match_state.input.zoom_level,
+        state.match_state.input.camera_y + dy / state.match_state.input.zoom_level,
     );
     let clamped = clamp_camera_point_for_state(state, candidate, sw, sh);
-    requested_scroll_survives_clamp((state.input.camera_x, state.input.camera_y), clamped, direction)
+    requested_scroll_survives_clamp((state.match_state.input.camera_x, state.match_state.input.camera_y), clamped, direction)
 }
 
 fn requested_scroll_survives_clamp(
@@ -984,7 +984,7 @@ fn requested_scroll_survives_clamp(
 pub(crate) fn edge_scroll_cursor_state(state: &AppState) -> Option<(ScrollDir, bool)> {
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
-    let direction = edge_scroll_intent((state.input.cursor_x, state.input.cursor_y), sw as i32, sh as i32)?;
+    let direction = edge_scroll_intent((state.match_state.input.cursor_x, state.match_state.input.cursor_y), sw as i32, sh as i32)?;
     Some((
         direction,
         !camera_scroll_direction_allowed(state, direction, sw, sh),

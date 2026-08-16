@@ -726,8 +726,8 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                 ));
             };
             let native_theater_cache_mismatch = theater_cache_mismatch(
-                state.loaded_map_source.is_some(),
-                &state.match_presentation.theater_name,
+                state.match_state.loaded_map_source.is_some(),
+                &state.match_state.match_presentation.theater_name,
                 initial.theater_name(),
             );
             // All mid-load milestones (12..98) are emitted inside the loader; the

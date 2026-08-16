@@ -39,15 +39,15 @@ const PARTICLE_Y_LIFT: f32 = 15.0;
 /// `state.match_presentation.sprite_atlas.page_count()`). This function appends; sorting is the
 /// caller's responsibility (see `build_world_instances`).
 pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.sprite_atlas, state.rules().map(|r| r)) {
+    let (sim, atlas, rules) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas, state.rules().map(|r| r)) {
         (Some(s), Some(a), Some(r)) => (s, a, r),
         _ => return,
     };
 
-    let z = state.input.zoom_level;
+    let z = state.match_state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.input.camera_x,
-        state.input.camera_y,
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );

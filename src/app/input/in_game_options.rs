@@ -72,35 +72,35 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
     if button != MouseButton::Left {
         return; // consume non-left while paused; nothing to do
     }
-    let Some(anchor) = state.match_presentation.in_game_options_anchor else {
+    let Some(anchor) = state.match_state.match_presentation.in_game_options_anchor else {
         return; // overlay not rendered yet -> nothing to hit-test
     };
     let screen_w = state.render_width() as i32;
     let screen_h = state.render_height() as i32;
     let desc = build_in_game_options_descriptor();
     let laid = layout_pass_in_game_options(&desc, screen_w, screen_h, anchor);
-    let cx = state.input.cursor_x.round() as i32;
-    let cy = state.input.cursor_y.round() as i32;
+    let cx = state.match_state.input.cursor_x.round() as i32;
+    let cy = state.match_state.input.cursor_y.round() as i32;
 
     if pressed {
         match in_game_options_hit(&laid, (cx, cy)) {
             OptionsHit::Button(id) => {
                 // Buttons (Back/Keyboard/Sound) paint pressed on hold; the action
                 // fires on release over the same rect (Back) or no-ops (KD-7 stubs).
-                state.match_presentation.in_game_options.pressed_button = Some(id);
+                state.match_state.match_presentation.in_game_options.pressed_button = Some(id);
             }
             OptionsHit::Slider(id, pos) => begin_slider_press(state, id, pos),
             // Checkbox toggles on press (BS_AUTOCHECKBOX) — visual/stored only (KD-8).
-            OptionsHit::Checkbox(id) => toggle_checkbox(&mut state.match_presentation.in_game_options, id),
+            OptionsHit::Checkbox(id) => toggle_checkbox(&mut state.match_state.match_presentation.in_game_options, id),
             OptionsHit::None => {}
         }
     } else {
         // Release: a Back press that ends still over the Back rect closes + applies
         // + persists. Keyboard/Sound release: clear pressed, no action (KD-7).
-        let over_back = state.match_presentation.in_game_options.pressed_button == Some(control::BACK)
+        let over_back = state.match_state.match_presentation.in_game_options.pressed_button == Some(control::BACK)
             && back_rect_contains(&laid, cx, cy);
-        state.match_presentation.in_game_options.pressed_button = None;
-        state.match_presentation.in_game_options.dragging_slider = None;
+        state.match_state.match_presentation.in_game_options.pressed_button = None;
+        state.match_state.match_presentation.in_game_options.dragging_slider = None;
         if over_back {
             crate::app::persistence::options::in_game_options_close(state);
         }
@@ -112,10 +112,10 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
 /// cadence and other effects are deferred to close (KD-8). No-op when no slider is
 /// being dragged (so a paused move with no active drag is simply swallowed upstream).
 pub(crate) fn in_game_options_drag(state: &mut AppState) {
-    let Some(id) = state.match_presentation.in_game_options.dragging_slider else {
+    let Some(id) = state.match_state.match_presentation.in_game_options.dragging_slider else {
         return;
     };
-    let Some(anchor) = state.match_presentation.in_game_options_anchor else {
+    let Some(anchor) = state.match_state.match_presentation.in_game_options_anchor else {
         return;
     };
     let screen_w = state.render_width() as i32;
@@ -125,23 +125,23 @@ pub(crate) fn in_game_options_drag(state: &mut AppState) {
     let Some(rect) = laid.iter().find(|l| l.id == id).map(|l| l.rect) else {
         return;
     };
-    let cx = state.input.cursor_x.round() as i32;
+    let cx = state.match_state.input.cursor_x.round() as i32;
     let pos =
         trackbar_pos_from_mouse_x(cx, OPTIONS_SPEED_MIN as i32, OPTIONS_SPEED_MAX as i32, rect);
-    store_slider_value(&mut state.match_presentation.in_game_options, id, pos);
+    store_slider_value(&mut state.match_state.match_presentation.in_game_options, id, pos);
 }
 
 /// Begin a slider drag on press: mark it dragging, set the per-slider drag flag (so
 /// the value label swaps from the template "Faster" to the position word), and
 /// store the pressed-at value. Visual/stored only (KD-8).
 fn begin_slider_press(state: &mut AppState, id: u16, pos: i32) {
-    state.match_presentation.in_game_options.dragging_slider = Some(id);
+    state.match_state.match_presentation.in_game_options.dragging_slider = Some(id);
     match id {
-        control::GAME_SPEED => state.match_presentation.in_game_options.game_speed_label_dragged = true,
-        control::SCROLL_RATE => state.match_presentation.in_game_options.scroll_rate_label_dragged = true,
+        control::GAME_SPEED => state.match_state.match_presentation.in_game_options.game_speed_label_dragged = true,
+        control::SCROLL_RATE => state.match_state.match_presentation.in_game_options.scroll_rate_label_dragged = true,
         _ => {}
     }
-    store_slider_value(&mut state.match_presentation.in_game_options, id, pos);
+    store_slider_value(&mut state.match_state.match_presentation.in_game_options, id, pos);
 }
 
 /// Store a slider's new internal value from a slider position (`6 - pos`). Render

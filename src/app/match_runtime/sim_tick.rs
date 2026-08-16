@@ -62,7 +62,7 @@ fn wall_sell_sound_for_local(
 pub(crate) fn flush_replay_log(state: &mut AppState) {
     let (session_tick, now) = replay_flush_facts(state);
     match state
-        .match_diagnostics
+        .match_state.match_diagnostics
         .flush_to(session_tick, Path::new(REPLAYS_DIR), now)
     {
         Ok(Some(flush)) => log::info!(
@@ -80,7 +80,7 @@ pub(crate) fn flush_replay_log(state: &mut AppState) {
 /// timeline can never append under the previous timeline's header.
 pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
     let (session_tick, now) = replay_flush_facts(state);
-    match state.match_diagnostics.close_segment_for_new_timeline(
+    match state.match_state.match_diagnostics.close_segment_for_new_timeline(
         session_tick,
         Path::new(REPLAYS_DIR),
         now,
@@ -99,7 +99,7 @@ pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
 
 fn replay_flush_facts(state: &AppState) -> (u64, u64) {
     let session_tick = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map_or(0, |rt| rt.simulation.session.tick);
     let now = std::time::SystemTime::now()
@@ -125,7 +125,7 @@ fn announce_local_state_evas(state: &mut AppState) {
     // Read phase (immutable sim borrow): compute this frame's states and the
     // newly-dying set; commit to the trackers after the borrow ends.
     let (low_power, funds_stalled, current_dying, newly_dying) = {
-        let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+        let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
         };
         let owner_id = sim.interner.get(&owner);
@@ -160,34 +160,34 @@ fn announce_local_state_evas(state: &mut AppState) {
         let newly_dying: Vec<u64> = current_dying
             .iter()
             .copied()
-            .filter(|id| !state.match_audio.eva_announced_dying.contains(id))
+            .filter(|id| !state.match_state.match_audio.eva_announced_dying.contains(id))
             .collect();
         (low_power, funds_stalled, current_dying, newly_dying)
     };
 
     let mut cues: Vec<(&'static str, &'static str)> = Vec::new();
-    if low_power && !state.match_audio.eva_low_power_active {
+    if low_power && !state.match_state.match_audio.eva_low_power_active {
         cues.push(("EVA_LowPower", "ceva053"));
     }
-    state.match_audio.eva_low_power_active = low_power;
-    if funds_stalled && !state.match_audio.eva_funds_stalled {
+    state.match_state.match_audio.eva_low_power_active = low_power;
+    if funds_stalled && !state.match_state.match_audio.eva_funds_stalled {
         cues.push(("EVA_InsufficientFunds", "ceva050"));
     }
-    state.match_audio.eva_funds_stalled = funds_stalled;
+    state.match_state.match_audio.eva_funds_stalled = funds_stalled;
     if !newly_dying.is_empty() {
         cues.push(("EVA_UnitLost", "ceva064"));
     }
     // Prune despawned corpses, then record this frame's announcements.
     state
-        .match_audio
+        .match_state.match_audio
         .eva_announced_dying
         .retain(|id| current_dying.contains(id));
-    state.match_audio.eva_announced_dying.extend(newly_dying);
+    state.match_state.match_audio.eva_announced_dying.extend(newly_dying);
 
     if cues.is_empty() {
         return;
     }
-    let faction = crate::app::presentation::building_anim::eva_faction_key(&owner, &state.match_presentation.house_roster);
+    let faction = crate::app::presentation::building_anim::eva_faction_key(&owner, &state.match_state.match_presentation.house_roster);
     let sound_ids: Vec<String> = cues
         .iter()
         .map(|(cue, fallback)| {
@@ -215,14 +215,14 @@ fn announce_local_state_evas(state: &mut AppState) {
 /// SavourDelay expiry frame. A loaded expiry latch reconstructs this wait but
 /// never reconstructs the already-consumed transition EVA edge.
 pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_ms: u64) {
-    if !matches!(state.frontend.screen, GameScreen::InGame) || state.scenario_exit.is_some() {
+    if !matches!(state.frontend.screen, GameScreen::InGame) || state.match_state.scenario_exit.is_some() {
         return;
     }
-    if state.scenario_outcome.is_none() {
-        let Some(owner) = state.local_player_owner.as_deref() else {
+    if state.match_state.scenario_outcome.is_none() {
+        let Some(owner) = state.match_state.local_player_owner.as_deref() else {
             return;
         };
-        let outcome = state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
+        let outcome = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
                 .and_then(|house| house.outcome_state)
                 .filter(|outcome| outcome.exit_ready)
@@ -234,7 +234,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
             "Match end ready for local player '{owner}': {}",
             crate::app::match_runtime::scenario_exit::outcome_title(outcome.kind)
         );
-        state.scenario_outcome = Some(crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait::start(
+        state.match_state.scenario_outcome = Some(crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait::start(
             wall_ms,
             outcome.kind,
         ));
@@ -245,7 +245,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         .as_mut()
         .is_some_and(|sfx| sfx.pump_and_check_voices());
     let finished = state
-        .scenario_outcome
+        .match_state.scenario_outcome
         .as_ref()
         .is_some_and(|outcome| outcome.tick(wall_ms, voices_active));
     if !finished {
@@ -253,18 +253,18 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
     }
 
     let outcome = state
-        .scenario_outcome
+        .match_state.scenario_outcome
         .as_ref()
         .expect("finished outcome voice wait remains present")
         .kind();
-    state.scenario_outcome = None;
+    state.match_state.scenario_outcome = None;
     state.frontend.finished_game_count = state.frontend.finished_game_count.saturating_add(1);
-    let elapsed_seconds = state.scenario_elapsed_clock.stop(wall_ms);
+    let elapsed_seconds = state.match_state.scenario_elapsed_clock.stop(wall_ms);
     let model = build_score_screen_model(state, elapsed_seconds);
     // The outcome handlers at 0x00685670 / 0x00685DC0 begin only after the
     // HouseClass timer and 0x78-bucket Vox wait. From here the existing cascade
     // performs their master fade, 300-bucket tail, hard stop, and SCORE handoff.
-    state.scenario_exit = Some(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
+    state.match_state.scenario_exit = Some(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
         wall_ms,
         crate::app::match_runtime::scenario_exit::ScenarioExitDestination::Score {
             title: crate::app::match_runtime::scenario_exit::outcome_title(outcome).to_string(),
@@ -339,7 +339,7 @@ fn build_score_screen_model(
     // clears LoadingSession instead of pinning the handle for the match, so the
     // ordinary fallback remains a recorded presentation residual.
     let local_handle = crate::app::loading::pump::launch_player_name(state);
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return ScoreScreenModel::default();
     };
     let Some(raw_snapshot) = sim.terminal_score_snapshot().cloned() else {
@@ -367,7 +367,7 @@ fn build_score_screen_model(
             country_name.as_deref(),
         );
         let color_index = state
-            .match_presentation.house_color_map
+            .match_state.match_presentation.house_color_map
             .get(&owner_name)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -668,7 +668,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
         return Err(ExactStepError::ScreenNotInGame);
     }
     let (tick_before, binary_frame_before) = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .map(|sim| (sim.session.tick, sim.session.binary_frame))
@@ -679,7 +679,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
     state.platform.frame_pacer.reanchor(now_ms);
 
     let (tick_after, binary_frame_after) = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .map(|sim| (sim.session.tick, sim.session.binary_frame))
@@ -719,8 +719,8 @@ fn advance_in_game_runtime_mode(
         matches!(mode, RuntimeAdvanceMode::WallClock { .. }) && state.diag.debug_frame_step_requested;
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
-            let game_speed = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or_else(
-                || state.match_presentation.in_game_options.game_speed.min(6) as u8,
+            let game_speed = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or_else(
+                || state.match_state.match_presentation.in_game_options.game_speed.min(6) as u8,
                 |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
             );
             // Pure timing consult; pause/menu blocking belongs to the decision.
@@ -736,8 +736,8 @@ fn advance_in_game_runtime_mode(
         window_active: state.platform.window_active,
         startup_admitted,
         frame_stepping,
-        paused: state.paused,
-        menu_open: state.match_presentation.in_game_menu.is_open(),
+        paused: state.match_state.paused,
+        menu_open: state.match_state.match_presentation.in_game_menu.is_open(),
         session_mode: current_session_mode(state),
         pacer_timing_admits,
     });
@@ -751,7 +751,7 @@ fn advance_in_game_runtime_mode(
     if decision.run_sim {
         let tick_lane = decision.tick_lane;
         let garrison_flash_start_tick = state
-            .sim_runtime
+            .match_state.sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick)
@@ -772,7 +772,7 @@ fn advance_in_game_runtime_mode(
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);
         let garrison_flash_elapsed_ticks = state
-            .sim_runtime
+            .match_state.sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
@@ -790,7 +790,7 @@ fn advance_in_game_runtime_mode(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
         );
-        finish_fire_effect_batch(&mut state.match_presentation.pending_fire_effects);
+        finish_fire_effect_batch(&mut state.match_state.match_presentation.pending_fire_effects);
         crate::app::presentation::fire_effects::tick_weapon_muzzle_flashes(state, 16);
         crate::app::presentation::chute_anim::tick_parachute_anims(state);
     }
@@ -818,9 +818,9 @@ fn advance_in_game_runtime_mode(
         &state.renderer.gpu,
         sw,
         sh,
-        state.input.camera_x,
-        state.input.camera_y,
-        state.input.zoom_level,
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+        state.match_state.input.zoom_level,
     );
 }
 
@@ -838,18 +838,18 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     let mut refresh_atlases_after_tick = false;
     // Trigger definitions are runtime-bound (F07), so a live runtime is the
     // only activity source; the old trigger-only fixture mode is unrepresentable.
-    let runtime_active = state.sim_runtime.is_some();
+    let runtime_active = state.match_state.sim_runtime.is_some();
     if !runtime_active {
         return false;
     }
-    let mut frame_committed = state.sim_runtime.is_none();
+    let mut frame_committed = state.match_state.sim_runtime.is_none();
 
-    if let Some(rt) = state.sim_runtime.as_ref() {
+    if let Some(rt) = state.match_state.sim_runtime.as_ref() {
         // F10: the segment opens lazily on the first frame of a timeline and
         // lives on the app-owned diagnostics owner, never on the simulation.
-        if state.match_diagnostics.replay_log.is_none() {
+        if state.match_state.match_diagnostics.replay_log.is_none() {
             let sim = &rt.simulation;
-            state.match_diagnostics.replay_log = Some(ReplayLog::new(ReplayHeader {
+            state.match_state.match_diagnostics.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: SIM_TICK_HZ,
                 seed: sim.session.seed,
@@ -861,7 +861,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         }
     }
 
-    begin_fire_effect_batch(&mut state.match_presentation.pending_fire_effects);
+    begin_fire_effect_batch(&mut state.match_state.match_presentation.pending_fire_effects);
 
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
@@ -875,7 +875,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
-        if let Some(rt) = state.sim_runtime.as_mut() {
+        if let Some(rt) = state.match_state.sim_runtime.as_mut() {
             let sim = &mut rt.simulation;
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
@@ -933,7 +933,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
             drained_fire_events = frame_fire_events;
-            append_fire_effect_batch(&mut state.match_presentation.pending_fire_effects, &drained_fire_events);
+            append_fire_effect_batch(&mut state.match_state.match_presentation.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
@@ -1040,7 +1040,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1067,7 +1067,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1086,7 +1086,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let (eva_key, fallback) = outcome_eva_entry(kind, faction);
                         let eva_sound_id = state
@@ -1117,7 +1117,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1137,7 +1137,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1156,7 +1156,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1280,7 +1280,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             let faction = crate::app::presentation::building_anim::eva_faction_key(
                                 owner_str,
-                                &state.match_presentation.house_roster,
+                                &state.match_state.match_presentation.house_roster,
                             );
                             state
                                 .audio.eva_registry
@@ -1316,14 +1316,14 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Repeat cooldown across both cue kinds (the native
                         // per-house attack-voice delay is UNVERIFIED — see the
                         // field doc on AppState).
-                        if sim.session.tick < state.match_audio.eva_under_attack_block_until_tick {
+                        if sim.session.tick < state.match_state.match_audio.eva_under_attack_block_until_tick {
                             continue;
                         }
-                        state.match_audio.eva_under_attack_block_until_tick =
+                        state.match_state.match_audio.eva_under_attack_block_until_tick =
                             sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.match_presentation.house_roster,
+                            &state.match_state.match_presentation.house_roster,
                         );
                         let (cue, fallback) = if miner {
                             ("EVA_OreMinerUnderAttack", "ceva037")
@@ -1353,7 +1353,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                     }
                 };
-                state.match_audio.sound_events.push(app_event);
+                state.match_state.match_audio.sound_events.push(app_event);
             }
             if tick_result.destroyed_structure {
                 refresh_atlases_after_tick = true;
@@ -1371,13 +1371,13 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             // though Main_Tick skips its frame commit. EventClass EXIT carries
             // a command; natural win/loss carries the one-shot score/RNG latch.
             if should_record_replay_tick(&tick_result, &due_commands) {
-                if let Some(log) = &mut state.match_diagnostics.replay_log {
+                if let Some(log) = &mut state.match_state.match_diagnostics.replay_log {
                     log.record_tick(tick_result.tick, due_commands, tick_result.state_hash);
                 }
             }
         }
         if frame_committed {
-            state.match_presentation.combat_lights.commit_frame(drained_combat_lights);
+            state.match_state.match_presentation.combat_lights.commit_frame(drained_combat_lights);
         }
         crate::app::input::dispatch::reconcile_selection_order_after_sim(state);
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
@@ -1387,10 +1387,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             match output {
                 LifecycleOutput::DetachAttachedAnims { stable_id } => {
                     state
-                        .match_presentation.garrison_muzzle_flashes
+                        .match_state.match_presentation.garrison_muzzle_flashes
                         .retain(|flash| flash.building_id != stable_id);
                     state
-                        .match_presentation.parachute_anims
+                        .match_state.match_presentation.parachute_anims
                         .retain(|anim| anim.target_id != stable_id);
                 }
                 LifecycleOutput::StopVoc { stable_id } => {
@@ -1448,23 +1448,23 @@ const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
 fn refresh_cell_lighting(state: &mut AppState) {
     let changed_view = {
         let (Some(sim), Some(rules), Some(terrain)) = (
-            state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+            state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.rules(),
             state.terrain_template(),
         ) else {
             return;
         };
         let view = crate::app::loading::init::derive_lighting_view(
-            &state.match_presentation.map_lighting_config,
+            &state.match_state.match_presentation.map_lighting_config,
             Some(sim),
             Some(rules),
-            state.match_presentation.in_game_options.detail_level,
+            state.match_state.match_presentation.in_game_options.detail_level,
         );
-        if state.match_presentation.last_lighting_view_fingerprint == Some(view.fingerprint) {
+        if state.match_state.match_presentation.last_lighting_view_fingerprint == Some(view.fingerprint) {
             None
         } else {
-            let profile_changed = state.match_presentation.applied_lighting_profile != Some(view.profile)
-                || state.match_presentation.applied_lighting_detail_level != view.detail_level;
+            let profile_changed = state.match_state.match_presentation.applied_lighting_profile != Some(view.profile)
+                || state.match_state.match_presentation.applied_lighting_detail_level != view.detail_level;
             let affected_cells = if profile_changed {
                 terrain
                     .iter()
@@ -1477,7 +1477,7 @@ fn refresh_cell_lighting(state: &mut AppState) {
                 let mut seen = std::collections::BTreeSet::new();
                 let mut cells = Vec::new();
                 for source in state
-                    .match_presentation.applied_lighting_sources
+                    .match_state.match_presentation.applied_lighting_sources
                     .iter()
                     .chain(view.point_lights.iter())
                 {
@@ -1500,16 +1500,16 @@ fn refresh_cell_lighting(state: &mut AppState) {
 
     if let Some((view, affected_cells)) = changed_view {
         // A new queued source flushes the old batch before its area is enumerated.
-        if let Some(mut pending) = state.match_presentation.pending_lighting_refresh.take() {
+        if let Some(mut pending) = state.match_state.match_presentation.pending_lighting_refresh.take() {
             pending.gather_all();
-            let committed = pending.commit_into(&mut state.match_presentation.lighting_grid);
+            let committed = pending.commit_into(&mut state.match_state.match_presentation.lighting_grid);
             debug_assert!(committed);
         }
-        state.match_presentation.last_lighting_view_fingerprint = Some(view.fingerprint);
-        state.match_presentation.applied_lighting_profile = Some(view.profile);
-        state.match_presentation.applied_lighting_detail_level = view.detail_level;
-        state.match_presentation.applied_lighting_sources = view.point_lights.clone();
-        state.match_presentation.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
+        state.match_state.match_presentation.last_lighting_view_fingerprint = Some(view.fingerprint);
+        state.match_state.match_presentation.applied_lighting_profile = Some(view.profile);
+        state.match_state.match_presentation.applied_lighting_detail_level = view.detail_level;
+        state.match_state.match_presentation.applied_lighting_sources = view.point_lights.clone();
+        state.match_state.match_presentation.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
             crate::map::lighting::DeferredCellLightRefresh::new_with_profile(
                 affected_cells,
                 view.profile,
@@ -1520,15 +1520,15 @@ fn refresh_cell_lighting(state: &mut AppState) {
     }
 
     let completed = state
-        .match_presentation.pending_lighting_refresh
+        .match_state.match_presentation.pending_lighting_refresh
         .as_mut()
         .is_some_and(|pending| pending.gather(CELL_LIGHT_GATHER_BUDGET));
     if completed {
         let pending = state
-            .match_presentation.pending_lighting_refresh
+            .match_state.match_presentation.pending_lighting_refresh
             .take()
             .expect("completed lighting refresh remains installed");
-        let committed = pending.commit_into(&mut state.match_presentation.lighting_grid);
+        let committed = pending.commit_into(&mut state.match_state.match_presentation.lighting_grid);
         debug_assert!(committed, "completed lighting refresh commits atomically");
     }
 }
@@ -1569,7 +1569,7 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
 }
 
 fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
-    let Some(waypoint) = state.match_presentation.waypoints.get(&waypoint_index) else {
+    let Some(waypoint) = state.match_state.match_presentation.waypoints.get(&waypoint_index) else {
         log::warn!(
             "Trigger action requested missing waypoint {} for camera centering",
             waypoint_index
@@ -1583,12 +1583,12 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     let Some(type_id) = state.armed_building_type() else {
-        state.input.building_placement_preview = None;
+        state.match_state.input.building_placement_preview = None;
         return;
     };
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
-        state.input.building_placement_preview = None;
+    let (Some(sim), Some(rules)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
+        state.match_state.input.building_placement_preview = None;
         return;
     };
     // Offset so the foundation shadow centers on the cursor, not top-left corner.
@@ -1619,8 +1619,8 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // — the entity anchor with the render-coordinate lift taken off — and
     // `build_ghost_sprite` derives the preview from the same helper, so the
     // preview and the placed building always align.
-    let (rx, ry) = screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
-    state.input.building_placement_preview = production::placement_preview_for_owner_with_overlays(
+    let (rx, ry) = screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
+    state.match_state.input.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
         rules,
         &owner,
@@ -1641,7 +1641,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Reuses the process asset manager instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
-    let Some(rt) = state.sim_runtime.as_ref() else { return };
+    let Some(rt) = state.match_state.sim_runtime.as_ref() else { return };
     let sim = &rt.simulation;
     let bound_rules = Some(&rt.resources.rules);
     let Some(asset_manager) = state.process_assets.manager() else {
@@ -1657,7 +1657,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules.map(|rules| &rules.art_registry),
         Some(&sim.interner),
     );
-    let unit_rebuild: bool = match &state.match_presentation.unit_atlas {
+    let unit_rebuild: bool = match &state.match_state.match_presentation.unit_atlas {
         Some(atlas) => !atlas.has_all_keys(&unit_needed),
         None => !unit_needed.is_empty(),
     };
@@ -1670,11 +1670,11 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     );
     let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
-        &state.match_presentation.house_color_map,
+        &state.match_state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
-    let sprite_rebuild: bool = match &state.match_presentation.sprite_atlas {
+    let sprite_rebuild: bool = match &state.match_state.match_presentation.sprite_atlas {
         Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
         None => !sprite_base_keys.is_empty(),
     };
@@ -1685,7 +1685,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         return;
     }
 
-    let unit_palette = load_unit_palette(asset_manager, &state.match_presentation.theater_ext);
+    let unit_palette = load_unit_palette(asset_manager, &state.match_state.match_presentation.theater_ext);
     let Some(palette) = unit_palette else {
         log::warn!("Atlas refresh skipped: unit palette not found");
         return;
@@ -1693,7 +1693,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 
     if unit_rebuild {
         log::info!("Rebuilding unit atlas: new voxel entity types detected");
-        let existing = state.match_presentation.unit_atlas.take();
+        let existing = state.match_state.match_presentation.unit_atlas.take();
         if let Some(new_unit_atlas) = unit_atlas::build_unit_atlas(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
@@ -1705,13 +1705,13 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             state.renderer.vxl_compute.as_mut(),
             Some(&sim.interner),
         ) {
-            state.match_presentation.unit_atlas = Some(new_unit_atlas);
+            state.match_state.match_presentation.unit_atlas = Some(new_unit_atlas);
         }
     }
 
     if sprite_rebuild {
         log::warn!(">>> SPRITE ATLAS REBUILD TRIGGERED — new SHP entity types detected <<<");
-        let existing = state.match_presentation.sprite_atlas.take();
+        let existing = state.match_state.match_presentation.sprite_atlas.take();
         let cell_drawer_type_ids: HashSet<String> = sim
             .resolved_terrain
             .as_ref()
@@ -1719,25 +1719,25 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             .flat_map(|terrain| terrain.tile_animations())
             .map(|anim| anim.anim_name.to_ascii_uppercase())
             .collect();
-        let cell_palette = load_iso_palette(asset_manager, &state.match_presentation.theater_ext);
+        let cell_palette = load_iso_palette(asset_manager, &state.match_state.match_presentation.theater_ext);
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             sim.entities(),
             asset_manager,
             &palette,
-            &state.match_presentation.theater_ext,
-            &state.match_presentation.theater_name,
+            &state.match_state.match_presentation.theater_ext,
+            &state.match_state.match_presentation.theater_name,
             bound_rules,
             bound_rules.map(|rules| &rules.art_registry),
-            &state.match_presentation.house_color_map,
+            &state.match_state.match_presentation.house_color_map,
             &extra_buildings,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
             existing,
             Some(&sim.interner),
         ) {
-            state.match_presentation.sprite_atlas = Some(new_sprite_atlas);
+            state.match_state.match_presentation.sprite_atlas = Some(new_sprite_atlas);
         }
     }
 }
@@ -1763,7 +1763,7 @@ pub(crate) fn upsert_occupied_overlay_render_entries(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
-    let synced = state.match_presentation.overlays.upsert_occupied(candidates);
+    let synced = state.match_state.match_presentation.overlays.upsert_occupied(candidates);
     if synced != 0 {
         log::trace!(
             "Synced {} occupied cells from OverlayGrid to state.overlays",
@@ -1828,8 +1828,8 @@ pub(crate) fn is_any_layer_walkable(
 pub(crate) fn screen_point_to_world(state: &AppState, screen_x: f32, screen_y: f32) -> (f32, f32) {
     // Screen pixel / zoom = world offset from camera top-left.
     (
-        screen_x / state.input.zoom_level + state.input.camera_x,
-        screen_y / state.input.zoom_level + state.input.camera_y,
+        screen_x / state.match_state.input.zoom_level + state.match_state.input.camera_x,
+        screen_y / state.match_state.input.zoom_level + state.match_state.input.camera_y,
     )
 }
 
@@ -1881,7 +1881,7 @@ pub(crate) fn screen_point_to_world_cell(
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     )
 }
 

@@ -52,19 +52,19 @@ fn health_bar_hover_target(
     state: &AppState,
     local_owner: Option<&str>,
 ) -> Option<(u64, HoverTargetKind)> {
-    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let local_owner = local_owner?;
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let hover = crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
         local_owner,
-        state.sandbox_full_visibility,
+        state.match_state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     )?;
     match hover.kind {
         HoverTargetKind::FriendlyStructure
@@ -132,12 +132,12 @@ pub(crate) fn build_building_status_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let pip_size: [f32; 2] = overlay.pip_frame_size();
     let pip_uv_size: [f32; 2] = overlay.pip_uv_size();
     let (pip_adj_x, pip_adj_y) = overlay.pip_canvas_adj();
@@ -231,8 +231,8 @@ pub(crate) fn build_building_status_instances(
                 min_y,
                 total_w,
                 total_h,
-                state.input.camera_x,
-                state.input.camera_y,
+                state.match_state.input.camera_x,
+                state.match_state.input.camera_y,
                 sw,
                 sh,
                 48.0,
@@ -277,8 +277,8 @@ pub(crate) fn build_building_status_instances(
                 min_y,
                 total_w,
                 total_h,
-                state.input.camera_x,
-                state.input.camera_y,
+                state.match_state.input.camera_x,
+                state.match_state.input.camera_y,
                 sw,
                 sh,
                 48.0,
@@ -326,7 +326,7 @@ pub(crate) fn build_occupant_pip_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
         return Vec::new();
     };
     let has_tex = overlay.occupant_pip_texture().is_some();
@@ -338,7 +338,7 @@ pub(crate) fn build_occupant_pip_instances(
     let (adj_x, adj_y) = overlay.occupant_pip_canvas_adj();
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let rules = state.rules();
     let mut instances = Vec::new();
 
@@ -387,8 +387,8 @@ pub(crate) fn build_occupant_pip_instances(
             min_y,
             total_w,
             total_h,
-            state.input.camera_x,
-            state.input.camera_y,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
             sw,
             sh,
             48.0,
@@ -435,7 +435,7 @@ pub(crate) fn build_unit_status_bg_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
         return Vec::new();
     };
     if overlay.pipbrd_texture().is_none() {
@@ -443,7 +443,7 @@ pub(crate) fn build_unit_status_bg_instances(
     }
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let hovered_unit_id = unit_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
     for e in sim.entities().values() {
@@ -495,8 +495,8 @@ pub(crate) fn build_unit_status_bg_instances(
             bar_y,
             bar_size[0],
             bar_size[1],
-            state.input.camera_x,
-            state.input.camera_y,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
             sw,
             sh,
             48.0,
@@ -525,12 +525,12 @@ pub(crate) fn build_unit_status_fill_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let (cond_y, cond_r) = condition_thresholds(state);
     let hovered_unit_id = unit_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
@@ -599,8 +599,8 @@ pub(crate) fn build_unit_status_fill_instances(
                 pip_start_y,
                 total_w,
                 pip_size[1],
-                state.input.camera_x,
-                state.input.camera_y,
+                state.match_state.input.camera_x,
+                state.match_state.input.camera_y,
                 sw,
                 sh,
                 48.0,
@@ -633,8 +633,8 @@ pub(crate) fn build_unit_status_fill_instances(
                 pip_start_y,
                 total_w,
                 seg_h,
-                state.input.camera_x,
-                state.input.camera_y,
+                state.match_state.input.camera_x,
+                state.match_state.input.camera_y,
                 sw,
                 sh,
                 48.0,
@@ -675,7 +675,7 @@ const CARGO_PIP_STEP_X: f32 = 4.0;
 /// Empty slots shown as variant 0. Start at (sx - 15 + canvas_adj_x, sy + 10 + canvas_adj_y),
 /// step (+4, 0) per pip. Draw order: gem pips first, then ore pips, then empty slots.
 pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.selection_overlay) else {
         return Vec::new();
     };
     let Some(_tib_tex) = overlay.tiberium_pip_texture() else {
@@ -684,7 +684,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let mut instances = Vec::new();
     let (tib_adj_x, tib_adj_y) = overlay.tiberium_pip_canvas_adj();
     let pip_size: [f32; 2] = overlay.tiberium_pip_frame_size();
@@ -740,8 +740,8 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
             start_y,
             total_w,
             pip_size[1],
-            state.input.camera_x,
-            state.input.camera_y,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
             sw,
             sh,
             48.0,
@@ -835,12 +835,12 @@ pub(crate) fn build_building_radius_ring_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
+    let (Some(sim), Some(rules)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let mut instances = Vec::new();
 
     for e in sim.entities().values() {
@@ -878,8 +878,8 @@ pub(crate) fn build_building_radius_ring_instances(
             center_y - radius_y,
             radius_x * 2.0,
             radius_y * 2.0,
-            state.input.camera_x,
-            state.input.camera_y,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
             sw,
             sh,
             16.0,
@@ -987,7 +987,7 @@ fn health_pip_variant(ratio: f32, condition_yellow: f32, condition_red: f32) -> 
 /// The id travels with the sequence because the animation phase is keyed on it —
 /// changing shape restarts the sequence at frame 0.
 fn active_cursor_sequence(state: &AppState) -> Option<(CursorId, &SoftwareCursorSequence)> {
-    let cursor = state.match_presentation.software_cursor.as_ref()?;
+    let cursor = state.match_state.match_presentation.software_cursor.as_ref()?;
     let id: CursorId = current_cursor_feedback_kind(state)
         .and_then(cursor_id_for_feedback)
         .unwrap_or(CursorId::Default);
@@ -1010,8 +1010,8 @@ pub(crate) fn build_software_cursor_instances(state: &AppState) -> Vec<SpriteIns
     // Note: cursor_x/y are in screen space; camera offset is NOT applied (cursor is UI).
     vec![SpriteInstance {
         position: [
-            state.input.cursor_x + state.input.camera_x - sequence.hotspot[0],
-            state.input.cursor_y + state.input.camera_y - sequence.hotspot[1],
+            state.match_state.input.cursor_x + state.match_state.input.camera_x - sequence.hotspot[0],
+            state.match_state.input.cursor_y + state.match_state.input.camera_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],

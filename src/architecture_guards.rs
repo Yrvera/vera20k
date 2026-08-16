@@ -471,3 +471,71 @@ fn bare_and_aliased_app_imports_cannot_evade_the_scan() {
     assert!(group_contains_root("use crate::{app as a, ui::x};\n", "app"));
     assert!(!group_contains_root("use crate::{apple, ui::x};\n", "app"));
 }
+
+/// F12 finish criterion: `AppState` holds exactly the eight named owners from
+/// the design's Target Architecture — no unrelated flat field may return.
+#[test]
+fn app_state_contains_only_named_owners() {
+    let state_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/state.rs");
+    let source = fs::read_to_string(&state_rs).expect("read src/app/state.rs");
+    let body_start = source
+        .find("pub(crate) struct AppState {")
+        .expect("AppState struct in src/app/state.rs");
+    let body = &source[body_start..];
+    let body_end = body.find("\n}").expect("AppState struct end");
+    let body = &body[..body_end];
+
+    let mut fields: Vec<&str> = Vec::new();
+    for line in body.lines() {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("pub(crate) ") {
+            if let Some((name, _)) = rest.split_once(':') {
+                if !name.contains('(') {
+                    fields.push(name.trim());
+                }
+            }
+        }
+    }
+    let expected = [
+        "platform",
+        "renderer",
+        "diag",
+        "frontend",
+        "match_state",
+        "process_assets",
+        "audio",
+        "persistence",
+    ];
+    assert_eq!(
+        fields,
+        expected,
+        "AppState must contain exactly the eight F12 owners. A new per-match \
+         fact belongs in MatchState (or one of its owners); a new process fact \
+         belongs in the platform/process/renderer/audio/frontend/persistence/\
+         diagnostics owner it is scoped to."
+    );
+}
+
+/// F12 finish criterion: the root app inventory lives under `src/app/`;
+/// `src/lib.rs` declares no root `app_*` module.
+#[test]
+fn no_root_app_modules_remain() {
+    let lib_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    let source = fs::read_to_string(&lib_rs).expect("read src/lib.rs");
+    let offenders: Vec<&str> = source
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| {
+            line.strip_prefix("pub mod app_")
+                .or_else(|| line.strip_prefix("pub(crate) mod app_"))
+                .or_else(|| line.strip_prefix("mod app_"))
+                .is_some()
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "root app_* module(s) declared in src/lib.rs: {offenders:?}\n\
+         The app layer inventory lives under src/app/ (F12); add new app \
+         modules there."
+    );
+}

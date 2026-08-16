@@ -23,7 +23,7 @@ const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
 /// Building one-shot overlays now advance inside the authoritative simulation
 /// frame; this independent timer only drives looping terrain presentation.
 pub(crate) fn tick_terrain_overlay_animations(state: &mut AppState, dt_ms: u32) {
-    state.match_presentation.idle_anim_elapsed_ms += dt_ms;
+    state.match_state.match_presentation.idle_anim_elapsed_ms += dt_ms;
 }
 
 pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames;
@@ -38,8 +38,8 @@ pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames
 /// the app-side stand-in for that construction frame — recorded once, the first
 /// logic frame the structure is seen.
 pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.match_presentation.building_anim_phase_base.clear();
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+        state.match_state.match_presentation.building_anim_phase_base.clear();
         return;
     };
     let tick = sim.session.tick;
@@ -49,7 +49,7 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
         .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
         .map(|(id, _)| id)
         .collect();
-    record_building_anim_phase_bases(&mut state.match_presentation.building_anim_phase_base, &live, tick);
+    record_building_anim_phase_bases(&mut state.match_state.match_presentation.building_anim_phase_base, &live, tick);
 }
 
 /// Insert a phase base for every newly seen structure and forget the ones that
@@ -77,11 +77,11 @@ fn record_building_anim_phase_bases(
 /// Falls back to zero for a structure with no recorded base, which renders the
 /// animation's first loop frame rather than an arbitrary one.
 pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u64) -> u32 {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return 0;
     };
     state
-        .match_presentation.building_anim_phase_base
+        .match_state.match_presentation.building_anim_phase_base
         .get(&stable_id)
         .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
         .unwrap_or(0)
@@ -91,19 +91,19 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);
     let (power_produced, power_drained) =
-        match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules(), owner_name.as_deref()) {
+        match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules(), owner_name.as_deref()) {
             (Some(sim), Some(rules), Some(owner)) => {
                 production::power_balance_for_owner(sim, rules, owner)
             }
             _ => (0, 0),
         };
-    let theoretical = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner_name.as_deref()) {
+    let theoretical = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner_name.as_deref()) {
         (Some(sim), Some(owner)) => production::theoretical_power_for_owner(sim, owner),
         _ => 0,
     };
 
     // Compute bar height from sidebar layout.
-    let spec = state.match_presentation.sidebar_layout_spec;
+    let spec = state.match_state.match_presentation.sidebar_layout_spec;
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let layout = crate::sidebar::compute_layout_with_spec(spec, sw, sh, 0);
@@ -111,17 +111,17 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let region_top = layout.tabs_y + spec.power_bar_top_y;
     let bar_height_px = (region_bottom - region_top).max(0.0) as i32;
 
-    state.match_presentation.power_bar_anim.set_max_segments(bar_height_px);
+    state.match_state.match_presentation.power_bar_anim.set_max_segments(bar_height_px);
     state
-        .match_presentation.power_bar_anim
+        .match_state.match_presentation.power_bar_anim
         .update(power_produced, power_drained, theoretical);
-    state.match_presentation.power_bar_anim.tick();
+    state.match_state.match_presentation.power_bar_anim.tick();
 }
 
 /// Update radar availability from ECS and tick the radar chrome animation.
 pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     let new_has_radar: bool = match (
-        state.sim_runtime.as_ref().map(|rt| &rt.simulation),
+        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules(),
         preferred_local_owner_name(state).as_deref(),
     ) {
@@ -130,9 +130,9 @@ pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
         }
         _ => false,
     };
-    state.match_presentation.has_radar = new_has_radar;
+    state.match_state.match_presentation.has_radar = new_has_radar;
 
-    if let Some(ref mut ra) = state.match_presentation.radar_anim {
+    if let Some(ref mut ra) = state.match_state.match_presentation.radar_anim {
         ra.set_has_radar(new_has_radar);
         ra.tick(&state.renderer.gpu, dt_ms);
     }
@@ -170,7 +170,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     use crate::audio::events::GameSoundEvent;
     use crate::audio::sfx::calc_spatial_volume;
 
-    let events = state.match_audio.sound_events.drain();
+    let events = state.match_state.match_audio.sound_events.drain();
     if events.is_empty() {
         if let Some(sfx) = &mut state.audio.sfx_player {
             sfx.advance_voice_queue();
@@ -182,8 +182,8 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
         return;
     };
-    let cam_x = state.input.camera_x;
-    let cam_y = state.input.camera_y;
+    let cam_x = state.match_state.input.camera_x;
+    let cam_y = state.match_state.input.camera_y;
     sfx.advance_voice_queue();
 
     for event in &events {
@@ -367,33 +367,33 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     // Phase 1: spawn new flashes from pending fire events.
     let new_flashes: Vec<GarrisonMuzzleFlash> = {
-        let sim = match state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+        let sim = match state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
             Some(s) => s,
             None => {
-                state.match_presentation.garrison_muzzle_flashes.clear();
+                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
         let art_reg = match state.rules().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
-                state.match_presentation.garrison_muzzle_flashes.clear();
+                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
         let rules = match state.rules() {
             Some(r) => r,
             None => {
-                state.match_presentation.garrison_muzzle_flashes.clear();
+                state.match_state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
         let frame_counts = state
-            .match_presentation.sprite_atlas
+            .match_state.match_presentation.sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         state
-            .match_presentation.pending_fire_effects
+            .match_state.match_presentation.pending_fire_effects
             .iter()
             .filter_map(|ev| {
                 let anim_name = ev.occupant_anim.as_ref()?;
@@ -423,24 +423,24 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             })
             .collect()
     };
-    state.match_presentation.garrison_muzzle_flashes.extend(new_flashes);
+    state.match_state.match_presentation.garrison_muzzle_flashes.extend(new_flashes);
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
     let Some((sim, art_reg)) = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry)) else {
-        state.match_presentation.garrison_muzzle_flashes.clear();
+        state.match_state.match_presentation.garrison_muzzle_flashes.clear();
         return;
     };
     let empty_frame_counts = HashMap::new();
     let frame_counts = state
-        .match_presentation.sprite_atlas
+        .match_state.match_presentation.sprite_atlas
         .as_ref()
         .map(|atlas| &atlas.active_anim_frame_counts)
         .unwrap_or(&empty_frame_counts);
-    state.match_presentation.garrison_muzzle_flashes.retain_mut(|flash| {
+    state.match_state.match_presentation.garrison_muzzle_flashes.retain_mut(|flash| {
         advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
     });
 }

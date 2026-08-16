@@ -395,13 +395,13 @@ pub(crate) fn ensure_movie_for_current_layout(
 /// render uses a camera offset of (0,0), so the cursor sits at the raw screen
 /// pointer position minus the hotspot.
 fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
-    let cursor = state.match_presentation.software_cursor.as_ref()?;
+    let cursor = state.match_state.match_presentation.software_cursor.as_ref()?;
     let sequence = cursor.get(crate::app::types::CursorId::Default)?;
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
-            state.input.cursor_x - sequence.hotspot[0],
-            state.input.cursor_y - sequence.hotspot[1],
+            state.match_state.input.cursor_x - sequence.hotspot[0],
+            state.match_state.input.cursor_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],
@@ -620,7 +620,7 @@ fn render_main_menu_shell_to_target_inner(
         .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     // Default-cursor frame-0 texture, borrowed for the duration of the pass.
     let cursor_texture = state
-        .match_presentation.software_cursor
+        .match_state.match_presentation.software_cursor
         .as_ref()
         .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())

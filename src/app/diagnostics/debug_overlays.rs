@@ -55,7 +55,7 @@ pub(crate) fn resolve_debug_speed_type(state: &AppState) -> SpeedType {
         return st;
     }
     state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(|sim| {
@@ -77,7 +77,7 @@ pub(crate) fn build_terrain_cost_overlay_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         log::warn!("Terrain cost overlay: no simulation");
         return Vec::new();
     };
@@ -103,8 +103,8 @@ pub(crate) fn build_terrain_cost_overlay_instances(
             speed_type,
             width,
             height,
-            state.input.camera_x,
-            state.input.camera_y,
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
             sw,
             sh,
             sample_costs,
@@ -112,8 +112,8 @@ pub(crate) fn build_terrain_cost_overlay_instances(
     }
 
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(2048);
-    let cam_x: f32 = state.input.camera_x;
-    let cam_y: f32 = state.input.camera_y;
+    let cam_x: f32 = state.match_state.input.camera_x;
+    let cam_y: f32 = state.match_state.input.camera_y;
 
     for ry in 0..height {
         for rx in 0..width {
@@ -159,8 +159,8 @@ pub(crate) fn build_heightmap_overlay_instances(
     if state.height_map().is_empty() {
         return Vec::new();
     }
-    let cam_x: f32 = state.input.camera_x;
-    let cam_y: f32 = state.input.camera_y;
+    let cam_x: f32 = state.match_state.input.camera_x;
+    let cam_y: f32 = state.match_state.input.camera_y;
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(2048);
 
     // Find max z for normalization.
@@ -231,8 +231,8 @@ pub(crate) fn build_cell_grid_overlay_instances(
     sh: f32,
 ) -> Vec<SpriteInstance> {
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(4096);
-    let cam_x: f32 = state.input.camera_x;
-    let cam_y: f32 = state.input.camera_y;
+    let cam_x: f32 = state.match_state.input.camera_x;
+    let cam_y: f32 = state.match_state.input.camera_y;
 
     /// Terrain cell grid: bright cyan outlines.
     const TERRAIN_TINT: [f32; 3] = [0.0, 0.9, 0.9];
@@ -242,7 +242,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
     const GRID_DEPTH: f32 = 0.0003;
 
     // Terrain grid cells.
-    if let Some(grid) = &state.match_presentation.terrain_grid {
+    if let Some(grid) = &state.match_state.match_presentation.terrain_grid {
         for cell in &grid.cells {
             if !in_view(
                 cell.screen_x,
@@ -272,7 +272,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
 
     // Overlay cells — re-compute iso_to_screen for each overlay entry so the
     // diamond outline uses the exact same formula as overlay rendering.
-    for entry in state.match_presentation.overlays.iter() {
+    for entry in state.match_state.match_presentation.overlays.iter() {
         let z: u8 = state
             .height_map()
             .get(&(entry.rx, entry.ry))
@@ -308,11 +308,11 @@ pub(crate) fn build_path_overlay_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
-    let cam_x: f32 = state.input.camera_x;
-    let cam_y: f32 = state.input.camera_y;
+    let cam_x: f32 = state.match_state.input.camera_x;
+    let cam_y: f32 = state.match_state.input.camera_y;
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(128);
 
     /// Path step color: bright cyan.

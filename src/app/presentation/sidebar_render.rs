@@ -30,7 +30,7 @@ pub(crate) use crate::app::presentation::sidebar_build::{
 /// Return the one retained sidebar projection. Reading it never advances
 /// credits, clears targeting, or clamps scroll state.
 pub(crate) fn current_sidebar_view(state: &AppState) -> Option<&SidebarView> {
-    state.match_presentation.sidebar_projection.view()
+    state.match_state.match_presentation.sidebar_projection.view()
 }
 
 /// Advance the displayed balance at the authoritative gameplay-frame seam.
@@ -43,12 +43,12 @@ pub(crate) fn advance_sidebar_credits_after_frame(
         return;
     }
     let owner_name = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let credits = production::credits_for_owner(sim, &owner_name);
     state
-        .match_presentation.sidebar_projection
+        .match_state.match_presentation.sidebar_projection
         .advance_credits(&owner_name, credits);
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         power_drained,
         sw_views,
     )) = (|| {
-        let (sim, rules) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules()?);
+        let (sim, rules) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules()?);
         let producer_focus = [
             production::ProductionCategory::Building,
             production::ProductionCategory::Defense,
@@ -101,7 +101,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         ))
     })()
     else {
-        state.match_presentation.sidebar_projection.replace_view(None);
+        state.match_state.match_presentation.sidebar_projection.replace_view(None);
         return;
     };
 
@@ -118,10 +118,10 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         }
     }
     let display_credits = state
-        .match_presentation.sidebar_projection
+        .match_state.match_presentation.sidebar_projection
         .displayed_credits_or_seed(&owner_name, credits);
     let (tab_btn_size, repair_btn_size, sell_btn_size, scroll_down_btn_size, scroll_up_btn_size) = {
-        let scale = state.match_presentation.ui_scale;
+        let scale = state.match_state.match_presentation.ui_scale;
         let size = |entry: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
             entry.map(|entry| [entry.pixel_size[0] * scale, entry.pixel_size[1] * scale])
         };
@@ -135,14 +135,14 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         )
     };
     sync_targeting_mode(
-        &mut state.input.targeting_mode,
-        &mut state.input.building_placement_preview,
+        &mut state.match_state.input.targeting_mode,
+        &mut state.match_state.input.building_placement_preview,
         &ready_buildings,
         &sw_views,
-        state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
+        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
     );
     // App targeting state -> the sidebar-owned armed projection (F06 seam).
-    let armed_entry = state.input.targeting_mode.as_ref().map(|mode| match mode {
+    let armed_entry = state.match_state.input.targeting_mode.as_ref().map(|mode| match mode {
         crate::app::types::TargetingMode::BuildingPlacement(section) => {
             sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
         }
@@ -151,10 +151,10 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         }
     });
     let mut view = sidebar::build_sidebar_view_with_spec(
-        state.match_presentation.sidebar_layout_spec,
+        state.match_state.match_presentation.sidebar_layout_spec,
         state.render_width() as f32,
         state.render_height() as f32,
-        state.match_presentation.active_sidebar_tab,
+        state.match_state.match_presentation.active_sidebar_tab,
         display_credits,
         power_produced,
         power_drained,
@@ -164,22 +164,22 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &ready_buildings,
         armed_entry.as_ref(),
         &producer_focus,
-        state.match_presentation.sidebar_scroll_rows,
-        state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| &sim.interner),
+        state.match_state.match_presentation.sidebar_scroll_rows,
+        state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| &sim.interner),
         &sw_views,
-        &state.match_presentation.sidebar_gadget_state,
+        &state.match_state.match_presentation.sidebar_gadget_state,
         repair_btn_size,
         sell_btn_size,
         scroll_down_btn_size,
         scroll_up_btn_size,
     );
-    state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
-    if let Some(atlas) = state.match_presentation.sidebar_cameo_atlas.as_ref() {
+    state.match_state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
+    if let Some(atlas) = state.match_state.match_presentation.sidebar_cameo_atlas.as_ref() {
         for item in &mut view.items {
             item.has_cameo_art = atlas.get(&item.type_id).is_some();
         }
     }
-    state.match_presentation.sidebar_projection.replace_view(Some(view));
+    state.match_state.match_presentation.sidebar_projection.replace_view(Some(view));
 }
 
 pub(crate) fn sync_targeting_mode(
@@ -215,19 +215,19 @@ pub(crate) fn sync_targeting_mode(
 pub(crate) fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .match_presentation.radar_anim
+        .match_state.match_presentation.radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
         return false;
     }
-    let Some(minimap) = &state.match_presentation.minimap else {
+    let Some(minimap) = &state.match_state.match_presentation.minimap else {
         return false;
     };
     let rect = active_minimap_screen_rect(state);
     minimap.contains_screen_point_in_rect(
-        state.input.cursor_x,
-        state.input.cursor_y,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
         rect.x,
         rect.y,
         rect.w,
@@ -244,8 +244,8 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
     if minimap_move_order_if_selected(state) {
         return true;
     }
-    state.input.minimap_dragging = true;
-    state.input.selection_state.cancel_drag();
+    state.match_state.input.minimap_dragging = true;
+    state.match_state.input.selection_state.cancel_drag();
     update_camera_from_minimap_cursor(state);
     true
 }
@@ -254,7 +254,7 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
 /// click location and return true. Otherwise return false (caller does camera drag).
 fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     let selected_ids = crate::app::input::dispatch::selected_stable_ids_in_order(state);
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
     if selected_ids.is_empty() {
@@ -269,7 +269,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         .unwrap_or_else(|| "Americans".to_string());
     let owner_id = sim.interner.get(&owner).unwrap_or_default();
     let execute_tick = sim.session.tick;
-    let order_mode = state.input.queued_order_mode;
+    let order_mode = state.match_state.input.queued_order_mode;
     let shift_held: bool = crate::app::input::dispatch::is_shift_held(state);
     let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();
     for &entity_id in &selected_ids {
@@ -316,9 +316,9 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     }
     // Reset order mode after issuing the command (like the main viewport does).
     if order_mode != crate::app::presentation::render::OrderMode::Move {
-        state.input.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
+        state.match_state.input.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
     }
-    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+    if let Some(sim) = state.match_state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         let queued = queued
             .into_iter()
             .filter_map(|envelope| {
@@ -333,19 +333,19 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
 /// Convert the current minimap cursor position to iso (rx, ry) coordinates.
 /// Returns None if no minimap is available.
 fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
-    let minimap = state.match_presentation.minimap.as_ref()?;
+    let minimap = state.match_state.match_presentation.minimap.as_ref()?;
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let tactical_w = tactical_w as f32;
     let tactical_h = tactical_h as f32;
-    let z = state.input.zoom_level;
+    let z = state.match_state.input.zoom_level;
     let rect = active_minimap_screen_rect(state);
     // camera_top_left_for_screen_point_in_rect returns the camera top-left that
     // would center the viewport on the clicked point. We want the world center point.
     // Visible world area = screen / zoom.
     let (cam_x, cam_y) = minimap.camera_top_left_for_screen_point_in_rect(
-        state.input.cursor_x,
-        state.input.cursor_y,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
         tactical_w / z,
         tactical_h / z,
         rect.x,
@@ -360,23 +360,23 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     ))
 }
 
 pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
-    let Some(minimap) = &state.match_presentation.minimap else {
+    let Some(minimap) = &state.match_state.match_presentation.minimap else {
         return;
     };
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let z = state.input.zoom_level;
+    let z = state.match_state.input.zoom_level;
     let rect = active_minimap_screen_rect(state);
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
-        state.input.cursor_x,
-        state.input.cursor_y,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
         tactical_w as f32 / z,
         tactical_h as f32 / z,
         rect.x,
@@ -384,8 +384,8 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
         rect.w,
         rect.h,
     );
-    state.input.camera_x = cx;
-    state.input.camera_y = cy;
+    state.match_state.input.camera_x = cx;
+    state.match_state.input.camera_y = cy;
     crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
 }
 
@@ -399,8 +399,8 @@ pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Re
         const MINIMAP_WIDTH: f32 = 140.0;
         const MINIMAP_HEIGHT: f32 = 120.0;
 
-        let spec = state.match_presentation.sidebar_layout_spec;
-        let s = state.match_presentation.ui_scale;
+        let spec = state.match_state.match_presentation.sidebar_layout_spec;
+        let s = state.match_state.match_presentation.ui_scale;
         let sidebar_x = sw - spec.sidebar_width + spec.x_offset;
         crate::sidebar::Rect {
             x: sidebar_x + MINIMAP_LEFT * s,
@@ -431,7 +431,7 @@ pub(crate) fn current_sidebar_theme(
 ) -> crate::render::sidebar_chrome::SidebarTheme {
     preferred_local_owner_name(state)
         .and_then(|owner| {
-            sidebar_theme_for_owner_sources(state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.house_roster, &owner)
+            sidebar_theme_for_owner_sources(state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.house_roster, &owner)
         })
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }
@@ -439,7 +439,7 @@ pub(crate) fn current_sidebar_theme(
 pub(crate) fn current_sidebar_chrome(
     state: &AppState,
 ) -> Option<&crate::render::sidebar_chrome::SidebarChromeAtlas> {
-    let set = state.match_presentation.sidebar_chrome.as_ref()?;
+    let set = state.match_state.match_presentation.sidebar_chrome.as_ref()?;
     let theme = current_sidebar_theme(state);
     set.for_theme(theme)
 }

@@ -68,10 +68,10 @@ fn apply_target_lines(target_lines: &mut TargetLineState, opts: &InGameOptionsSt
 pub(crate) fn apply_in_game_options(state: &mut AppState) {
     // Keep the UI readout in sync immediately. The sim-owned speed changes only
     // when the replayable transition is admitted before the next logic frame.
-    state.sim_speed_tps = crate::app::types::tps_for_game_speed(state.match_presentation.in_game_options.game_speed);
-    if state.sim_runtime.is_some() {
+    state.match_state.sim_speed_tps = crate::app::types::tps_for_game_speed(state.match_state.match_presentation.in_game_options.game_speed);
+    if state.match_state.sim_runtime.is_some() {
         let owner = crate::app::input::commands::preferred_local_owner_name(state);
-        let speed = u8::try_from(state.match_presentation.in_game_options.game_speed).ok();
+        let speed = u8::try_from(state.match_state.match_presentation.in_game_options.game_speed).ok();
         let scheduled = match (owner, speed) {
             (Some(owner), Some(speed)) => crate::app::input::commands::try_schedule_command(
                 state,
@@ -83,13 +83,13 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
         if scheduled.is_none() {
             log::warn!(
                 "In-game Options could not queue GameSpeed={} for the local house",
-                state.match_presentation.in_game_options.game_speed
+                state.match_state.match_presentation.in_game_options.game_speed
             );
             crate::app::loading::transitions::sync_in_game_options_speed_from_sim(state);
         }
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
-    apply_target_lines(&mut state.match_presentation.target_lines, &state.match_presentation.in_game_options);
+    apply_target_lines(&mut state.match_state.match_presentation.target_lines, &state.match_state.match_presentation.in_game_options);
     // ScrollRate is read at startup and consumed directly by the camera each
     // frame, so nothing has to be pushed from this close path.
     // The remaining two are persist-only; no render behavior is fabricated:
@@ -111,7 +111,7 @@ pub(crate) fn persist_in_game_options(state: &AppState, result: i32) {
         return;
     };
     let path = config.paths.ra2_dir.join(RA2MD_INI_FILENAME);
-    let o = &state.match_presentation.in_game_options;
+    let o = &state.match_state.match_presentation.in_game_options;
     // Internal values are stored verbatim: GameSpeed/ScrollRate already hold
     // `6 - slider_pos`; DetailLevel direct; checkboxes as "1"/"0".
     let pairs = [
@@ -138,14 +138,14 @@ pub(crate) fn persist_in_game_options(state: &AppState, result: i32) {
 pub(crate) fn in_game_options_close(state: &mut AppState) {
     apply_in_game_options(state);
     persist_in_game_options(state, IN_GAME_OPTIONS_RESULT_BACK);
-    state.paused = false;
+    state.match_state.paused = false;
     state.platform.frame_pacer.reset_for_immediate_frame();
-    if state.match_presentation.software_cursor.is_some() {
+    if state.match_state.match_presentation.software_cursor.is_some() {
         state.platform.window.set_cursor_visible(false);
     }
     log::info!(
         "In-game Options closed; resumed at {} tps",
-        state.sim_speed_tps
+        state.match_state.sim_speed_tps
     );
 }
 

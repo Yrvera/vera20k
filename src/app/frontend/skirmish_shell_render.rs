@@ -489,13 +489,13 @@ fn render_in_game_options_overlay_with_atlas(
     // Cache the anchor the render computed so the paused mouse handler hit-tests
     // the exact rects that were drawn (the sidebar-anchored button Y is only known
     // here; see KD-6).
-    state.match_presentation.in_game_options_anchor = Some(anchor);
+    state.match_state.match_presentation.in_game_options_anchor = Some(anchor);
     let mut instances = in_game_options::build_in_game_options_instances(
         &chrome,
         screen_w,
         screen_h,
         anchor,
-        &state.match_presentation.in_game_options,
+        &state.match_state.match_presentation.in_game_options,
     );
     // Visible text statics (title/captions/value-labels/footer) as BitFont glyphs.
     // They sample the BitFont atlas (a different texture from the owner-draw chrome
@@ -506,7 +506,7 @@ fn render_in_game_options_overlay_with_atlas(
         screen_w,
         screen_h,
         anchor,
-        &state.match_presentation.in_game_options,
+        &state.match_state.match_presentation.in_game_options,
     );
     // The world camera buffer (shared, uploaded once per tick) still drives the
     // game pass recorded into this same encoder, so we must NOT re-point it at
@@ -514,8 +514,8 @@ fn render_in_game_options_overlay_with_atlas(
     // pre-offset every instance by the rounded camera scroll the shader
     // subtracts, netting the intended screen pixels — the in-game sidebar/cursor
     // convention.
-    let cam_dx = state.input.camera_x.round();
-    let cam_dy = state.input.camera_y.round();
+    let cam_dx = state.match_state.input.camera_x.round();
+    let cam_dy = state.match_state.input.camera_y.round();
     let mut cursor_instances: Vec<SpriteInstance> =
         shell_cursor_instance(state).into_iter().collect();
     for inst in instances
@@ -537,7 +537,7 @@ fn render_in_game_options_overlay_with_atlas(
         .renderer.batch_renderer
         .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     let cursor_texture = state
-        .match_presentation.software_cursor
+        .match_state.match_presentation.software_cursor
         .as_ref()
         .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())
@@ -603,13 +603,13 @@ fn render_in_game_options_overlay_with_atlas(
 /// main-menu shell. Returns None when no software cursor is loaded; the OS
 /// cursor is hidden process-wide, so without this the shell shows no pointer.
 fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
-    let cursor = state.match_presentation.software_cursor.as_ref()?;
+    let cursor = state.match_state.match_presentation.software_cursor.as_ref()?;
     let sequence = cursor.get(crate::app::types::CursorId::Default)?;
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
-            state.input.cursor_x - sequence.hotspot[0],
-            state.input.cursor_y - sequence.hotspot[1],
+            state.match_state.input.cursor_x - sequence.hotspot[0],
+            state.match_state.input.cursor_y - sequence.hotspot[1],
         ],
         size: [frame.width, frame.height],
         uv_origin: [0.0, 0.0],
@@ -840,7 +840,7 @@ fn render_skirmish_shell_with_atlas(
         .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     // Default-cursor frame-0 texture, borrowed for the duration of the pass.
     let cursor_texture = state
-        .match_presentation.software_cursor
+        .match_state.match_presentation.software_cursor
         .as_ref()
         .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())

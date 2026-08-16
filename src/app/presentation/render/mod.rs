@@ -76,7 +76,7 @@ pub(crate) fn render_game(
 
     let local_owner = preferred_local_owner_name(state);
     // Effective viewport in world pixels — zoom shrinks what's visible.
-    let z = state.input.zoom_level;
+    let z = state.match_state.input.zoom_level;
     let vsw = sw / z;
     let vsh = sh / z;
 
@@ -94,24 +94,24 @@ pub(crate) fn render_game(
     // holds `&mut state.shroud_buffer`, so it keeps the field chain and views
     // the runtime directly for split borrows.
     let shroud_height_grid = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .and_then(|rt| rt.view().path_grid())
         .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
-    if let Some(ref mut shroud_buf) = state.match_presentation.shroud_buffer {
-        if !state.sandbox_full_visibility {
-            if let (Some(rt), Some(owner)) = (state.sim_runtime.as_ref(), &local_owner) {
+    if let Some(ref mut shroud_buf) = state.match_state.match_presentation.shroud_buffer {
+        if !state.match_state.sandbox_full_visibility {
+            if let (Some(rt), Some(owner)) = (state.match_state.sim_runtime.as_ref(), &local_owner) {
                 let view = rt.view();
                 let owner_id = view.interner().get(owner).unwrap_or_default();
                 shroud_buf.rebuild_if_needed(
                     &state.renderer.gpu,
                     view.fog(),
                     owner_id,
-                    state.input.camera_x,
-                    state.input.camera_y,
+                    state.match_state.input.camera_x,
+                    state.match_state.input.camera_y,
                     rw,
                     rh,
-                    state.input.zoom_level,
+                    state.match_state.input.zoom_level,
                     shroud_height_grid.as_deref(),
                 );
             }
@@ -127,15 +127,15 @@ pub(crate) fn render_game(
 
     // Phase 6: Upload all instances to GPU buffer pool.
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
-    state.match_presentation.cached_overlay_instances = world.overlay;
+    state.match_state.match_presentation.cached_overlay_instances = world.overlay;
 
-    let combat_lights = state.match_presentation.combat_lights.draw_records();
+    let combat_lights = state.match_state.match_presentation.combat_lights.draw_records();
     state.renderer.combat_light_renderer.prepare(
         &state.renderer.gpu,
         &combat_lights,
         [sw, sh],
-        [state.input.camera_x, state.input.camera_y],
-        state.input.zoom_level,
+        [state.match_state.input.camera_x, state.match_state.input.camera_y],
+        state.match_state.input.zoom_level,
     );
     let composition_view = state.renderer.combat_light_renderer.composition_view();
 
@@ -161,8 +161,8 @@ pub(crate) fn render_game(
     );
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
-    state.match_presentation.cached_unit_instances = world.unit;
-    state.match_presentation.cached_unit_pages = world.unit_pages;
+    state.match_state.match_presentation.cached_unit_instances = world.unit;
+    state.match_state.match_presentation.cached_unit_pages = world.unit_pages;
     Ok(GameRenderOutput {
         instance_counts: sidebar.emitted_instance_counts(),
         sidebar_view: sidebar.view,

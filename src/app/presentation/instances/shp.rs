@@ -86,20 +86,20 @@ pub(crate) fn build_shp_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z = state.input.zoom_level;
+    let z = state.match_state.input.zoom_level;
     let (cam_x, cam_y, sw, sh) = (
-        state.input.camera_x,
-        state.input.camera_y,
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
-    let ignore_visibility = state.sandbox_full_visibility;
+    let ignore_visibility = state.match_state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
 
     let encounter_order =
@@ -137,7 +137,7 @@ pub(crate) fn build_shp_instances(
         }
         let pos = &entity.position;
         let hc: HouseColorIndex = state
-            .match_presentation.house_color_map
+            .match_state.match_presentation.house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -303,7 +303,7 @@ pub(crate) fn build_shp_instances(
             parachute_body_depths.insert(entity.stable_id, depth);
         }
         let tint = shp_body_tint(
-            &state.match_presentation.lighting_grid,
+            &state.match_state.match_presentation.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
             state.rules()
@@ -418,7 +418,7 @@ pub(crate) fn build_shp_instances(
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
                 let world_height: f32 = state
-                    .match_presentation.terrain_grid
+                    .match_state.match_presentation.terrain_grid
                     .as_ref()
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);
@@ -536,7 +536,7 @@ fn emit_building_turret_vxl(
     anim_x: i32,
     anim_y: i32,
 ) -> Option<(usize, SpriteInstance)> {
-    let unit_atlas = match &state.match_presentation.unit_atlas {
+    let unit_atlas = match &state.match_state.match_presentation.unit_atlas {
         Some(a) => a,
         None => return None,
     };

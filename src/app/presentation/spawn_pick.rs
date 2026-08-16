@@ -22,15 +22,15 @@ const WAYPOINT_CLICK_RADIUS: f32 = 40.0;
 
 /// Check if the cursor is over a waypoint marker and return its index if so.
 pub(crate) fn hovered_waypoint(state: &AppState) -> Option<usize> {
-    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
-    let cx: f32 = state.input.cursor_x;
-    let cy: f32 = state.input.cursor_y;
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_state.match_presentation.waypoints);
+    let cx: f32 = state.match_state.input.cursor_x;
+    let cy: f32 = state.match_state.input.cursor_y;
 
     for (i, wp) in starts.iter().enumerate() {
         let z: u8 = state.height_map().get(&(wp.rx, wp.ry)).copied().unwrap_or(0);
         let (world_x, world_y) = terrain::iso_to_screen(wp.rx, wp.ry, z);
-        let screen_x: f32 = world_x - state.input.camera_x;
-        let screen_y: f32 = world_y - state.input.camera_y;
+        let screen_x: f32 = world_x - state.match_state.input.camera_x;
+        let screen_y: f32 = world_y - state.match_state.input.camera_y;
 
         let dx: f32 = cx - screen_x;
         let dy: f32 = cy - screen_y;
@@ -48,7 +48,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
         return false;
     };
 
-    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_state.match_presentation.waypoints);
     if wp_idx >= starts.len() {
         return false;
     }
@@ -66,14 +66,14 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Build temp map data before borrowing state.simulation mutably.
     let temp_map = build_temp_map_data_for_seeding(state);
     let seeded_owner: Option<String> =
-        if let Some(rt) = state.sim_runtime.as_mut() {
+        if let Some(rt) = state.match_state.sim_runtime.as_mut() {
             let resources = &rt.resources;
             let ruleset = &resources.rules;
             let sim = &mut rt.simulation;
             seed_skirmish_opening_if_needed(
                 sim,
                 &temp_map,
-                &state.match_presentation.house_roster,
+                &state.match_state.match_presentation.house_roster,
                 ruleset,
                 &resources.height_map,
                 &state.frontend.skirmish_settings,
@@ -84,14 +84,14 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
 
     // Set up AI players and rebuild entity atlases now that MCVs are spawned.
     if let Some(ref local_owner) = seeded_owner {
-        if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+        if let Some(sim) = state.match_state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
             // F10: sim owns both writes; the app only names the local owner.
-            sim.register_ai_players_from_roster(&state.match_presentation.house_roster, local_owner);
+            sim.register_ai_players_from_roster(&state.match_state.match_presentation.house_roster, local_owner);
             // Ensure the local player is marked human even if the map lacks PlayerControl=yes.
             sim.mark_house_human(local_owner);
         }
         // Rebuild entity atlases to include the newly spawned MCVs.
-        if let Some(rt) = state.sim_runtime.as_ref() {
+        if let Some(rt) = state.match_state.sim_runtime.as_ref() {
             let sim = &rt.simulation;
             let bound_rules = Some(&rt.resources.rules);
             let asset_manager = state.process_assets.manager();
@@ -101,27 +101,27 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     assets,
                     &state.renderer.gpu,
                     &state.renderer.batch_renderer,
-                    &state.match_presentation.theater_ext,
-                    &state.match_presentation.theater_name,
+                    &state.match_state.match_presentation.theater_ext,
+                    &state.match_state.match_presentation.theater_name,
                     bound_rules,
                     bound_rules.map(|rules| &rules.art_registry),
-                    &state.match_presentation.house_color_map,
+                    &state.match_state.match_presentation.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
                     None, // cell palette reloads from the active theater archive
                     state.renderer.vxl_compute.as_mut(),
                 );
-                state.match_presentation.unit_atlas = new_unit_atlas;
-                state.match_presentation.sprite_atlas = new_sprite_atlas;
-                state.match_presentation.palette_set = new_palette_set;
+                state.match_state.match_presentation.unit_atlas = new_unit_atlas;
+                state.match_state.match_presentation.sprite_atlas = new_sprite_atlas;
+                state.match_state.match_presentation.palette_set = new_palette_set;
             }
         }
     }
 
     // Spawn-pick completes match launch: pin the match-scoped local player
     // here too (same contract as the skirmish-session launch path).
-    state.local_player_owner = seeded_owner.clone();
-    state.local_owner_override = seeded_owner;
-    state.input.spawn_pick_pending = false;
+    state.match_state.local_player_owner = seeded_owner.clone();
+    state.match_state.local_owner_override = seeded_owner;
+    state.match_state.input.spawn_pick_pending = false;
 
     // Center camera on the chosen spawn position, using the tactical viewport
     // (window minus the sidebar column) rather than the whole window.
@@ -130,12 +130,12 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Spawn pick re-anchors the opening view, so the camera bookmarks are
     // re-seeded with it — the same "all four slots hold the starting view"
     // state gamemd's scenario load leaves behind.
-    state.input.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
+    state.match_state.input.view_bookmarks.seed_all(chosen_wp.rx, chosen_wp.ry);
 
     // Reset timing for clean InGame start.
     state.platform.frame_pacer.reset_for_immediate_frame();
     let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
-    state.scenario_elapsed_clock.start(now_ms);
+    state.match_state.scenario_elapsed_clock.start(now_ms);
 
     state.frontend.screen = GameScreen::InGame;
     log::info!("SpawnPick complete — transitioned to InGame");
@@ -150,7 +150,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
 
     MapFile {
         header: MapHeader {
-            theater: state.match_presentation.theater_name.clone(),
+            theater: state.match_state.match_presentation.theater_name.clone(),
             fill: "Clear".to_string(),
             level: 0,
             width: 0,
@@ -170,7 +170,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         overlay_data: crate::map::overlay::OverlayDataPack::default(),
         smudges: Vec::new(),
         terrain_objects: Vec::new(),
-        waypoints: state.match_presentation.waypoints.clone(),
+        waypoints: state.match_state.match_presentation.waypoints.clone(),
         cell_tags: std::collections::HashMap::new(),
         tags: std::collections::HashMap::new(),
         triggers: std::collections::HashMap::new(),
@@ -194,8 +194,8 @@ pub(crate) fn render_spawn_pick(
     destination_view: &wgpu::TextureView,
 ) -> anyhow::Result<()> {
     // Temporarily enable sandbox visibility so the whole map is visible.
-    let prev_visibility = state.sandbox_full_visibility;
-    state.sandbox_full_visibility = true;
+    let prev_visibility = state.match_state.sandbox_full_visibility;
+    state.match_state.sandbox_full_visibility = true;
     let result = if state.renderer.upscale_pass.is_some() {
         let game_depth = state.renderer.upscale_pass.as_ref().unwrap().depth_view().clone();
         let saved_depth = std::mem::replace(&mut state.renderer.depth_view, game_depth);
@@ -205,7 +205,7 @@ pub(crate) fn render_spawn_pick(
     } else {
         render::render_game(state, encoder)
     };
-    state.sandbox_full_visibility = prev_visibility;
+    state.match_state.sandbox_full_visibility = prev_visibility;
     result?;
     if let Some(upscale) = state.renderer.upscale_pass.as_ref() {
         state
@@ -220,7 +220,7 @@ pub(crate) fn render_spawn_pick(
 
 /// Draw the SpawnPick egui overlay: instructions + hovered waypoint info.
 pub(crate) fn draw_spawn_pick_overlay(ctx: &egui::Context, state: &AppState) {
-    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_state.match_presentation.waypoints);
     let hovered = hovered_waypoint(state);
 
     // Top-center banner with instructions.

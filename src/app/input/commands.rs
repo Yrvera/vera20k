@@ -19,7 +19,7 @@ const DEFAULT_OWNER: &str = "Americans";
 /// no simulation yet.
 fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
     state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_mut()
         .map(|rt| &mut rt.simulation)
         .map(|sim| sim.interner.intern(s))
@@ -130,23 +130,23 @@ pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
 
 /// Stable id of the visible object selected by the tactical object picker.
 fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> Option<u64> {
-    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let owner = preferred_local_owner(state)?;
     crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
         &owner,
-        state.sandbox_full_visibility,
+        state.match_state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     )
     .map(|hover| hover.stable_id)
 }
 
 fn own_building_id(state: &AppState, stable_id: u64) -> Option<u64> {
-    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let owner = preferred_local_owner(state)?;
     let entity = sim.entities().get(stable_id)?;
     (entity.category == EntityCategory::Structure
@@ -173,23 +173,23 @@ pub(crate) fn own_building_under_point(
 
 pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     if visible_object_under_point(state, world_x, world_y).is_some() {
         return false;
     }
     let (rx, ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let Some(owner) = preferred_local_owner(state) else {
         return false;
     };
-    match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
+    match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
         (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
             sim,
             overlays,
             &owner,
             rx,
             ry,
-            state.sandbox_full_visibility,
+            state.match_state.sandbox_full_visibility,
             false,
         )
         .is_some(),
@@ -250,13 +250,13 @@ fn sell_wall_command_for_cell(
 /// repair/sell mode was active (the click is consumed by the mode regardless of
 /// whether it landed on a building), `false` when neither mode is on.
 pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
-    let repair = state.match_presentation.sidebar_gadget_state.repair_mode_on;
-    let sell = state.match_presentation.sidebar_gadget_state.sell_mode_on;
+    let repair = state.match_state.match_presentation.sidebar_gadget_state.repair_mode_on;
+    let sell = state.match_state.match_presentation.sidebar_gadget_state.sell_mode_on;
     if !repair && !sell {
         return false;
     }
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let object_under_cursor = visible_object_under_point(state, world_x, world_y);
     if let Some(entity_id) = object_under_cursor.and_then(|id| own_building_id(state, id)) {
         let owner: String =
@@ -269,18 +269,18 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         schedule_command(state, &owner, payload);
     } else if sell && object_under_cursor.is_none() {
         let (rx, ry) =
-            crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
         let Some(owner) = preferred_local_owner(state) else {
             return true;
         };
-        let payload = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
+        let payload = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
             (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
                 sim,
                 overlays,
                 &owner,
                 rx,
                 ry,
-                state.sandbox_full_visibility,
+                state.match_state.sandbox_full_visibility,
                 false,
             ),
             _ => None,
@@ -296,7 +296,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     let owner: String = resolve_owner(state);
     // Use the preview's stored (rx, ry) so the placed building exactly matches
     // the ghost the player saw, avoiding any cursor-movement drift between frames.
-    let (rx, ry) = if let Some(preview) = state.input.building_placement_preview.as_ref() {
+    let (rx, ry) = if let Some(preview) = state.match_state.input.building_placement_preview.as_ref() {
         log::info!(
             "Click placement: using preview ({},{}) size={}x{} type={}",
             preview.rx,
@@ -307,9 +307,9 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
         );
         (preview.rx, preview.ry)
     } else {
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y)
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y)
     };
-    if let Some(preview) = state.input.building_placement_preview.as_ref() {
+    if let Some(preview) = state.match_state.input.building_placement_preview.as_ref() {
         if !preview.valid {
             if let Some(reason) = &preview.reason {
                 log::warn!(
@@ -338,8 +338,8 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     );
     // Clear placement mode immediately so the foundation preview stops following
     // the cursor after the order is issued.
-    state.input.targeting_mode = None;
-    state.input.building_placement_preview = None;
+    state.match_state.input.targeting_mode = None;
+    state.match_state.input.building_placement_preview = None;
     log::info!(
         "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick=current",
         owner,
@@ -372,7 +372,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     let owner: String = resolve_owner(state);
     let sw_type_id = intern_in_sim(state, section);
     let (rx, ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     schedule_command(
         state,
         &owner,
@@ -382,7 +382,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
             target_ry: ry,
         },
     );
-    state.input.targeting_mode = None;
+    state.match_state.input.targeting_mode = None;
     log::info!(
         "SuperWeapon launch queued: owner={} section={} cell=({}, {}) issue_frame=current",
         owner,
@@ -394,7 +394,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
 
 pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
     let owner: String = resolve_owner(state);
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules()) else {
+    let (Some(sim), Some(rules)) = (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules()) else {
         return;
     };
     let opening = [
@@ -453,11 +453,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let (mut base_rx, mut base_ry) =
         crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
     let path_grid = state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid_snapshot);
-    let Some(rt) = state.sim_runtime.as_mut() else {
+    let Some(rt) = state.match_state.sim_runtime.as_mut() else {
         return;
     };
     let resources = &rt.resources;
@@ -552,7 +552,7 @@ pub(crate) fn cycle_local_owner(state: &mut AppState) {
     // Debug-only control: inert whenever a match pinned the local player at
     // launch — identity must not move mid-match. Cycling remains available in
     // unpinned sandbox flows (empty-map dev sessions).
-    if state.local_player_owner.is_some() {
+    if state.match_state.local_player_owner.is_some() {
         log::info!("Cycle owner ignored: local player is pinned for this match");
         return;
     }
@@ -568,8 +568,8 @@ pub(crate) fn cycle_local_owner(state: &mut AppState) {
         .unwrap_or(0);
     // Move out of Vec instead of cloning, then clone once for the override.
     let next = owners.swap_remove(next_idx);
-    state.local_owner_override = Some(next.clone());
-    state.input.targeting_mode = None;
+    state.match_state.local_owner_override = Some(next.clone());
+    state.match_state.input.targeting_mode = None;
     log::info!("Local owner switched to {}", next);
 }
 
@@ -583,10 +583,10 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     // client issues commands as its fixed house, so identity cannot be a
     // per-call heuristic. Everything below is the legacy dev/sandbox
     // fallback, reachable only when no launch flow pinned an owner.
-    if let Some(owner) = &state.local_player_owner {
+    if let Some(owner) = &state.match_state.local_player_owner {
         return Some(owner.clone());
     }
-    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     // Sandbox fallback: prefer owner of selected unit first.
     for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
@@ -596,7 +596,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     }
 
     // Then explicit local override set by debug actions.
-    if let Some(owner) = &state.local_owner_override {
+    if let Some(owner) = &state.match_state.local_owner_override {
         if is_playable_house_name(owner) {
             return Some(owner.clone());
         }
@@ -646,14 +646,14 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
 pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
     let mut owners: Vec<String> = state
-        .match_presentation.house_roster
+        .match_state.match_presentation.house_roster
         .houses
         .iter()
         .filter(|house| is_playable_house_name(&house.name))
         .filter(|house| house.player_control != Some(false))
         .map(|house| house.name.clone())
         .collect();
-    if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+    if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
         for entity in sim.entities().values() {
             let owner_str = sim.interner.resolve(entity.owner);
             if is_playable_house_name(owner_str) {
@@ -778,7 +778,7 @@ pub(crate) fn try_schedule_command(
     payload: Command,
 ) -> Option<u64> {
     state
-        .sim_runtime
+        .match_state.sim_runtime
         .as_mut()
         .map(|rt| &mut rt.simulation)
         .and_then(|sim| schedule_command_in_sim(sim, owner, payload))

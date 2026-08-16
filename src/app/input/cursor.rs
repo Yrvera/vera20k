@@ -24,7 +24,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             CursorFeedbackKind::Scroll(dir)
         });
     }
-    if state.input.minimap_dragging || is_cursor_over_minimap(state) {
+    if state.match_state.input.minimap_dragging || is_cursor_over_minimap(state) {
         // Show the minimap-specific Move cursor when hovering over the minimap
         // (reference §7.4 — MiniFrame/MiniCount for the Move cursor = frames 42–51).
         return Some(CursorFeedbackKind::MinimapMove);
@@ -43,7 +43,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             .unwrap_or(CursorId::Default);
         return Some(CursorFeedbackKind::SuperWeaponTarget(cursor_id));
     }
-    if let Some(preview) = state.input.building_placement_preview.as_ref() {
+    if let Some(preview) = state.match_state.input.building_placement_preview.as_ref() {
         return Some(if preview.valid {
             CursorFeedbackKind::PlaceValid
         } else {
@@ -53,7 +53,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if state.armed_building_type().is_some() {
         return Some(CursorFeedbackKind::Invalid);
     }
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return None;
     };
     // Repair / Sell cursor modes take over the tactical map regardless of
@@ -66,7 +66,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if repair_mode || sell_mode {
         let repair = repair_mode;
         let (wx, wy) =
-            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
         let valid = crate::app::input::commands::own_building_under_point(state, wx, wy).is_some()
             || (!repair && crate::app::input::commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
@@ -81,22 +81,22 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     }
     let owner = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
     let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let (hover_rx, hover_ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
     let owner_id = sim.interner.get(&owner);
     if crate::app::presentation::instances::cell_visibility_for_local_owner(
         owner_id,
         Some(&sim.fog),
         hover_rx,
         hover_ry,
-        state.sandbox_full_visibility,
+        state.match_state.sandbox_full_visibility,
     ) != CellVisibilityState::Visible
     {
         // Over shrouded/fogged cells the player can still issue move orders,
         // so show the queued-order-mode cursor (Move / AttackMove / Guard)
         // instead of reverting to the default arrow.
-        return Some(match state.input.queued_order_mode {
+        return Some(match state.match_state.input.queued_order_mode {
             crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
             crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
             crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
@@ -112,10 +112,10 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         world_x,
         world_y,
         &owner,
-        state.sandbox_full_visibility,
+        state.match_state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.match_presentation.tactical_bridge_inverse_map),
+        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
     );
     // gamemd's DetermineAction resolves ONE object for the whole selection and
     // shows that object's action, for the cell branch as well as the object
@@ -201,7 +201,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     {
         return Some(CursorFeedbackKind::Harvest);
     }
-    Some(match state.input.queued_order_mode {
+    Some(match state.match_state.input.queued_order_mode {
         crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
         crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
         crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
@@ -884,23 +884,23 @@ fn cursor_animation_start() -> &'static Instant {
 fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .match_presentation.radar_anim
+        .match_state.match_presentation.radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
         return false;
     }
-    let Some(_minimap) = &state.match_presentation.minimap else {
+    let Some(_minimap) = &state.match_state.match_presentation.minimap else {
         return false;
     };
     let rect = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
     state
-        .match_presentation.minimap
+        .match_state.match_presentation.minimap
         .as_ref()
         .unwrap()
         .contains_screen_point_in_rect(
-            state.input.cursor_x,
-            state.input.cursor_y,
+            state.match_state.input.cursor_x,
+            state.match_state.input.cursor_y,
             rect.x,
             rect.y,
             rect.w,
@@ -909,14 +909,14 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
 }
 
 pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
-    let sw = state.match_presentation.sidebar_layout_spec.sidebar_width;
+    let sw = state.match_state.match_presentation.sidebar_layout_spec.sidebar_width;
     let panel_rect = crate::sidebar::Rect {
         x: state.render_width() as f32 - sw - 10.0,
         y: 10.0,
         w: sw,
         h: state.render_height() as f32 - 20.0,
     };
-    panel_rect.contains(state.input.cursor_x, state.input.cursor_y)
+    panel_rect.contains(state.match_state.input.cursor_x, state.match_state.input.cursor_y)
 }
 
 /// Map a SuperWeaponType `Action=` INI string to its targeting cursor.

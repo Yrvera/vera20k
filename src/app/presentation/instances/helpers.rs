@@ -142,17 +142,17 @@ fn tactical_bounded_entity_encounter_order(
     state: &AppState,
     bulk_register_live_buildings: bool,
 ) -> Vec<u64> {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
-    let zoom = state.input.zoom_level.max(f32::EPSILON);
+    let zoom = state.match_state.input.zoom_level.max(f32::EPSILON);
     let margin = 32.0 / zoom;
     let (width_px, height_px) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let min_x = state.input.camera_x - margin;
-    let min_y = state.input.camera_y - margin;
-    let max_x = state.input.camera_x + width_px as f32 / zoom + margin;
-    let max_y = state.input.camera_y + height_px as f32 / zoom + margin;
+    let min_x = state.match_state.input.camera_x - margin;
+    let min_y = state.match_state.input.camera_y - margin;
+    let max_x = state.match_state.input.camera_x + width_px as f32 / zoom + margin;
+    let max_y = state.match_state.input.camera_y + height_px as f32 / zoom + margin;
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner
         .as_deref()
@@ -165,7 +165,7 @@ fn tactical_bounded_entity_encounter_order(
         local_owner.as_deref(),
         local_owner_id,
         &sim.fog,
-        state.sandbox_full_visibility,
+        state.match_state.sandbox_full_visibility,
         sim.session.binary_frame,
         bulk_register_live_buildings,
     )
@@ -340,7 +340,7 @@ pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
 /// Higher elevation (z) → slightly smaller depth (closer to camera).
 pub(crate) fn compute_sprite_depth(state: &AppState, screen_y: f32, z: u8) -> f32 {
     let (origin_y, world_height) = state
-        .match_presentation.terrain_grid
+        .match_state.match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));

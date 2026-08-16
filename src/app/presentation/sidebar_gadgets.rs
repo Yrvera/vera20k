@@ -29,7 +29,7 @@ const FLASH_PERIOD_TICKS: u32 = 10;
 /// Drive the sidebar gadget state for this frame. Call once per render frame
 /// after `update_power_bar_anim`.
 pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(rules) = state.rules() else {
@@ -51,7 +51,7 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     let initial_state: u8 = if next_boundary & 1 == 0 { 1 } else { 0 };
 
     // --- Step 3: drive Start/Stop on each tab. ---
-    let gadgets = &mut state.match_presentation.sidebar_gadget_state;
+    let gadgets = &mut state.match_state.match_presentation.sidebar_gadget_state;
     // Building (idx 0) — never flashes in retail.
     gadgets.tab_flashes[SidebarTab::Building.tab_index()].stop();
     // Defense (idx 1) — flashes on any SW ready.

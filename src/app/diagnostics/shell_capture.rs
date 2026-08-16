@@ -318,8 +318,8 @@ impl MainMenuCaptureSnapshot {
                 .is_some_and(|identity| identity.base() == MainMenuMovieBase::Ra2tsL),
             chrome_loaded: state.frontend.main_menu_shell_chrome.is_some(),
             software_cursor_active: state.use_software_cursor(),
-            cursor_x: state.input.cursor_x,
-            cursor_y: state.input.cursor_y,
+            cursor_x: state.match_state.input.cursor_x,
+            cursor_y: state.match_state.input.cursor_y,
         }
     }
 }
@@ -490,8 +490,8 @@ impl ShellCaptureSession {
     }
 
     pub(crate) fn prepare_state(&mut self, state: &mut AppState) {
-        state.input.cursor_x = self.request.cursor_x as f32;
-        state.input.cursor_y = self.request.cursor_y as f32;
+        state.match_state.input.cursor_x = self.request.cursor_x as f32;
+        state.match_state.input.cursor_y = self.request.cursor_y as f32;
         self.started_at = Some(Instant::now());
     }
 
