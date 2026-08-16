@@ -1237,6 +1237,13 @@ pub(crate) fn load_map_from_initial(
         LoadedMapSource::LegacyFallback { .. } => None,
     };
     let skirmish_launch_session = startup.launch_session();
+    // F09: the sim-owned launch descriptor. The shell close transaction
+    // resolved every random country/color before this point, so validation
+    // failing here is a programming error, not a user state.
+    let match_launch_descriptor = skirmish_launch_session.map(|session| {
+        crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(session.clone())
+            .expect("shell close transaction resolves every random choice before launch")
+    });
     // The scenario/Main pair and the one-time TMP selector construction share
     // the same single resolved seed word. Generic loads retain the explicitly
     // unverified fallback, but it is sampled exactly once.
@@ -1609,11 +1616,11 @@ pub(crate) fn load_map_from_initial(
     log::info!("Match seed: 0x{:08X}", scenario_descriptor.seed);
 
     let initialize_houses_before_objects = |sim: &mut Simulation| {
-        if let Some(session) = skirmish_launch_session {
+        if let Some(descriptor) = match_launch_descriptor.as_ref() {
             let ruleset = rules
                 .as_ref()
                 .expect("offline skirmish requires rules before House construction");
-            initialize_skirmish_launch_houses(sim, &house_roster, ruleset, session);
+            initialize_skirmish_launch_houses(sim, &house_roster, ruleset, descriptor);
         } else {
             initialize_map_roster_houses(sim, &house_roster, rules.as_ref());
         }
@@ -1664,7 +1671,9 @@ pub(crate) fn load_map_from_initial(
     let mut initial_local_owner: Option<String> = None;
     if !spawn_pick_pending {
         if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
-            let should_rebuild_entity_atlases = if let Some(session) = skirmish_launch_session {
+            let should_rebuild_entity_atlases = if let Some(descriptor) =
+                match_launch_descriptor.as_ref()
+            {
                 // Complete standard-Battle vectors were resolved before the
                 // first loading frame and terrain continued their post-plan
                 // Scenario cursor. Other modes/deficient maps retain the
@@ -1677,7 +1686,7 @@ pub(crate) fn load_map_from_initial(
                         ruleset,
                         &height_map,
                         &resolved_terrain,
-                        session,
+                        descriptor,
                         plan,
                     )
                 } else {
@@ -1688,7 +1697,7 @@ pub(crate) fn load_map_from_initial(
                         ruleset,
                         &height_map,
                         &resolved_terrain,
-                        session,
+                        descriptor,
                     )
                 };
                 initial_local_owner = result.local_owner;
@@ -1846,7 +1855,7 @@ pub(crate) fn load_map_from_initial(
             &overlay_registry,
             overlay_grid,
             &house_roster,
-            skirmish_launch_session,
+            match_launch_descriptor.as_ref(),
         );
         if let Some(stats) = output.tiberium_queues {
             log::info!(

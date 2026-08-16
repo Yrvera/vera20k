@@ -165,6 +165,11 @@ mod tests {
         SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
     };
 
+    fn launch_descriptor(session: &SkirmishLaunchSession) -> MatchLaunchDescriptor {
+        MatchLaunchDescriptor::from_resolved(session.clone())
+            .expect("test fixture session is fully resolved")
+    }
+
     fn test_session() -> SkirmishLaunchSession {
         SkirmishLaunchSession {
             mode: test_battle_mode(),
@@ -270,7 +275,7 @@ mod tests {
             &test_standard_launch_rules(),
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 0);
@@ -711,7 +716,7 @@ mod tests {
             &test_standard_launch_rules(),
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(
@@ -740,7 +745,7 @@ mod tests {
         let mut sim = Simulation::new();
         let rules = test_standard_launch_rules();
 
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &session);
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
 
         let order: Vec<_> = sim
             .session
@@ -781,7 +786,7 @@ mod tests {
 
         let session = test_session();
         let mut sim = Simulation::new();
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &session);
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
         assert!(sim.entities().is_empty());
 
         let spawned = sim.spawn_from_map(
@@ -1077,7 +1082,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.active_slots, 2);
@@ -1176,7 +1181,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
             &plan,
         );
         assert_eq!(result.active_slots, 2);
@@ -1335,7 +1340,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 0);
@@ -1382,7 +1387,7 @@ mod tests {
                 &rules,
                 &test_height_map(),
                 &terrain,
-                &session,
+                &launch_descriptor(&session),
             );
             let owner = result
                 .local_owner
@@ -1458,11 +1463,40 @@ mod tests {
         );
     }
 
+    /// F09: the descriptor supersedes the old "explicit application bypasses
+    /// the legacy resolver even with a poison random flag" guarantee — an
+    /// unresolved random flag can no longer cross into sim at all, so the
+    /// legacy resolver has nothing to bypass.
     #[test]
-    fn explicit_skirmish_application_bypasses_legacy_resolver_even_with_poison_random_flag() {
+    fn unresolved_shell_random_flag_cannot_cross_into_sim() {
+        let mut poisoned = test_session();
+        poisoned.local.country_random = true;
+        assert_eq!(
+            MatchLaunchDescriptor::from_resolved(poisoned),
+            Err(UnresolvedShellChoice {
+                ai_slot: None,
+                choice: "country",
+            })
+        );
+
+        let mut poisoned_ai = test_session();
+        poisoned_ai.opponents[0].color_random = true;
+        assert_eq!(
+            MatchLaunchDescriptor::from_resolved(poisoned_ai),
+            Err(UnresolvedShellChoice {
+                ai_slot: Some(0),
+                choice: "color",
+            })
+        );
+    }
+
+    /// The RNG contract the poison test previously pinned: explicit
+    /// application consumes exactly the start-assignment draw and nothing
+    /// from any legacy random-resolution path.
+    #[test]
+    fn explicit_skirmish_application_consumes_only_the_start_assignment_draw() {
         let mut sim = Simulation::new();
         let mut session = test_session();
-        session.local.country_random = true;
         session.opponents[0].start_position = LaunchStartPosition::Position(0);
         session.options.bases = false;
         session.options.unit_count = 0;
@@ -1480,16 +1514,12 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 0);
         assert_eq!(result.active_slots, 2);
         assert_eq!(sim.rng_state().scenario, expected_scenario.logical_state());
-        assert!(
-            session.local.country_random,
-            "the borrowed poison fixture must remain marked random"
-        );
     }
 
     #[test]
@@ -1547,7 +1577,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 0);
@@ -1587,7 +1617,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 2);
@@ -1611,7 +1641,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 2);
@@ -1635,7 +1665,7 @@ mod tests {
             &mut sim,
             &roster_with_neutral_and_playable(),
             &rules,
-            &session,
+            &launch_descriptor(&session),
         );
         sim.spawn_object(
             "AMCV",
@@ -1660,7 +1690,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 2);
@@ -1818,7 +1848,7 @@ mod tests {
             &rules,
             &test_height_map(),
             &terrain,
-            &session,
+            &launch_descriptor(&session),
         );
 
         assert_eq!(result.spawned_mcvs, 2);

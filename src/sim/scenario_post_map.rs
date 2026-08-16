@@ -15,6 +15,7 @@ use crate::rules::ruleset::RuleSet;
 use crate::sim::crates::CratePlacement;
 use crate::sim::ore_growth::NativeTiberiumRebuildStats;
 use crate::sim::world::Simulation;
+#[cfg(test)]
 use crate::skirmish_launch::SkirmishLaunchSession;
 
 /// Immutable inputs for the one-shot post-map scenario command.
@@ -26,7 +27,7 @@ pub(crate) struct ScenarioPostMapInput<'a> {
     pub(crate) rules: &'a RuleSet,
     pub(crate) overlay_registry: &'a OverlayTypeRegistry,
     pub(crate) house_roster: &'a HouseRoster,
-    pub(crate) skirmish_session: Option<&'a SkirmishLaunchSession>,
+    pub(crate) skirmish_session: Option<&'a crate::sim::scenario_bootstrap::MatchLaunchDescriptor>,
 }
 
 /// Presentation/logging facts returned after authoritative initialization.
@@ -88,7 +89,8 @@ impl Simulation {
         // placement below pins the newly published path snapshot.
         let navigation_published = self.rebuild_dynamic_navigation(input.rules);
 
-        let crates = if let Some(session) = input.skirmish_session {
+        let crates = if let Some(descriptor) = input.skirmish_session {
+            let session = descriptor.session();
             crate::sim::scenario_bootstrap::apply_skirmish_ai_opening_credits(self);
             let player_count = crate::sim::crates::human_player_count(self);
             let initial_path = self.path_grid_snapshot();
@@ -323,7 +325,10 @@ mod tests {
         let basic = BasicSection::default();
         let special_flags = SpecialFlagsSection::default();
         let roster = HouseRoster::default();
-        let session = allied_skirmish_session();
+        let descriptor = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(
+            allied_skirmish_session(),
+        )
+        .expect("fixture session is fully resolved");
 
         let output = sim.finalize_scenario_post_map(ScenarioPostMapInput {
             map_width: MAP_SIZE,
@@ -333,7 +338,7 @@ mod tests {
             rules: &rules,
             overlay_registry: &overlays,
             house_roster: &roster,
-            skirmish_session: Some(&session),
+            skirmish_session: Some(&descriptor),
         });
 
         assert_eq!(
