@@ -453,6 +453,17 @@ pub(crate) struct LoadingSession {
 }
 
 impl LoadingSession {
+    /// The pump's native admission gate (F07 characterization): a native
+    /// session may not pump loader work until its first loading frame
+    /// composition is ready to present. `first_renderer_ready` flips only when
+    /// the session-local atlas decode completes, and the frame loop calls the
+    /// pump strictly after `loading_screen_presented`.
+    pub(crate) fn native_pump_blocked(&self) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| !native.first_renderer_ready)
+    }
+
     fn from_request(request: LoadingRequest) -> Self {
         let native = match (&request.presentation, request.skirmish_launch_session()) {
             (LoadingPresentation::NativeSelectedSkirmish, Some(skirmish_launch_session)) => {
@@ -616,11 +627,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
     let Some(mut session) = state.loading_session.take() else {
         return LoadingPump::Pending;
     };
-    if session
-        .native
-        .as_ref()
-        .is_some_and(|native| !native.first_renderer_ready)
-    {
+    if session.native_pump_blocked() {
         restore_job_asset_manager(state, &mut session);
         return LoadingPump::Failed(anyhow::anyhow!(
             "native Skirmish loading renderer was not ready before the first loading pump"
@@ -2147,7 +2154,7 @@ mod tests {
         }
     }
 
-    fn test_launch_session(country: LaunchCountry) -> SkirmishLaunchSession {
+    pub(super) fn test_launch_session(country: LaunchCountry) -> SkirmishLaunchSession {
         SkirmishLaunchSession {
             mode: SkirmishLaunchMode {
                 id: 1,
@@ -2210,7 +2217,7 @@ mod tests {
         crate::match_bootstrap::prepare_match_startup(correlation, accepted, &mut TestClock(seed))
     }
 
-    fn unverified_seed(value: u32) -> crate::match_bootstrap::MatchSeed {
+    pub(super) fn unverified_seed(value: u32) -> crate::match_bootstrap::MatchSeed {
         crate::match_bootstrap::MatchSeed {
             value,
             source: crate::match_bootstrap::MatchSeedSource::Controlled,
@@ -3026,5 +3033,40 @@ mod tests {
             .count();
 
         assert_eq!(presents, 2);
+    }
+}
+
+#[cfg(test)]
+mod pump_gate_tests {
+    use super::*;
+    use crate::skirmish_launch::LaunchCountry;
+
+    /// F07 characterization: deferred loader work begins only after the first
+    /// native loading frame can present. A fresh native session is blocked
+    /// (composition has not produced the first renderer), and readiness alone
+    /// unblocks it; the frame loop calls the pump strictly after
+    /// `loading_screen_presented` inside the Loading-screen branch.
+    #[test]
+    fn loading_pump_starts_only_after_present() {
+        let request = LoadingRequest::unverified_legacy_skirmish(
+            tests::test_launch_session(LaunchCountry::America),
+            tests::unverified_seed(7),
+            SkirmishSettings::default(),
+        );
+        let mut session = LoadingSession::from_request(request);
+        assert!(
+            session.native.is_some(),
+            "native skirmish presentation must build a native loading session"
+        );
+        assert!(!session.first_frame_presented);
+        assert!(
+            session.native_pump_blocked(),
+            "the pump must refuse native sessions before the first loading frame is ready"
+        );
+
+        if let Some(native) = session.native.as_mut() {
+            native.first_renderer_ready = true;
+        }
+        assert!(!session.native_pump_blocked());
     }
 }

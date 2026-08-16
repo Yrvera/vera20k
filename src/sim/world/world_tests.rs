@@ -8778,3 +8778,68 @@ fn rule_handles_accessor_panics_before_resolution() {
     let sim = Simulation::new();
     let _ = sim.rule_handles();
 }
+
+/// F07 characterization: the production app frame seam — drain due commands,
+/// advance with the app-bound resources, then post-frame reads — pinned as a
+/// contract before the SimRuntime extraction. The app adapter internally pins
+/// its own canonical path snapshot (`advance_app_frame` has no path-grid
+/// parameter), so callers cannot substitute navigation.
+#[test]
+fn current_rust_frame_call_order_is_preserved() {
+    let rules = RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules parse");
+    let mut sim: Simulation = Simulation::new();
+    sim.spawn_from_map(
+        &[make_test_entity("MTNK", EntityCategory::Unit)],
+        None,
+        &empty_heights(),
+    );
+    let select = cmd_envelope(
+        &sim,
+        "Americans",
+        sim.session.tick + 2,
+        Command::Select { entity_ids: vec![1], additive: false },
+    );
+    sim.queue_command(select);
+
+    // Not yet due (dispatch admits execute_tick <= tick + 1): the drain
+    // leaves the queue intact, and an empty-command frame carries it forward.
+    assert!(sim.take_due_commands().is_empty());
+    let _ = sim.advance_app_frame(
+        &[],
+        Some(&rules),
+        &std::collections::BTreeMap::new(),
+        None,
+        16,
+        TickLane::Ordinary,
+        None,
+    );
+
+    // Step to the due tick with the exact app-shaped call: drained commands
+    // in, bound resources, Ordinary lane. The command must execute within
+    // THIS frame (drain-before-advance), not the next.
+    let tick_before = sim.session.tick;
+    let due = sim.take_due_commands();
+    assert_eq!(due.len(), 1, "the queued command is due exactly once");
+    let output = sim.advance_app_frame(
+        &due,
+        Some(&rules),
+        &std::collections::BTreeMap::new(),
+        None,
+        16,
+        TickLane::Ordinary,
+        None,
+    );
+    assert!(output.tick.frame_committed);
+    assert_eq!(sim.session.tick, tick_before + 1);
+    assert!(
+        sim.substrate.entities.get(1).is_some_and(|e| e.selected),
+        "a due command executes in the frame that drained it"
+    );
+    // Once-per-pass drain: nothing left for a second consumer.
+    assert!(sim.take_due_commands().is_empty());
+
+    // Post-frame reads (fog merge, digest) observe the committed frame.
+    let owner = sim.interner.get("Americans").expect("owner interned");
+    sim.fog.build_merged_for(owner, &sim.interner);
+    let _ = sim.parity_digest();
+}
