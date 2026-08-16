@@ -12,9 +12,10 @@ use crate::util::direction::DIRECTION_DELTAS;
 pub const CELL_DELTAS: [(i32, i32); 8] = DIRECTION_DELTAS;
 
 /// Checked cell-delta. `None` for `dir > 7` (incl. the tube sentinel 8) — the
-/// safe sim accessor.
+/// safe sim accessor. Delegates to the canonical
+/// `util::direction::direction_delta` so the checked lookup exists once.
 pub fn cell_delta(dir: u8) -> Option<(i32, i32)> {
-    CELL_DELTAS.get(dir as usize).copied()
+    crate::util::direction::direction_delta(dir)
 }
 
 /// Faithful mirror of gamemd's unchecked `MapCoord_Step_By_Direction` indexing

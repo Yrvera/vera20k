@@ -4,6 +4,23 @@
 //! `0=N, 1=NE, 2=E, 3=SE, 4=S, 5=SW, 6=W, 7=NW`.
 //! Direction byte `8` is a tube-step sentinel in path replay helpers, not a
 //! ninth compass direction.
+//!
+//! ## Ownership split (three direction-math owners in util/, F14)
+//! - **This module** is the single authority for the 8-way vocabulary:
+//!   `DIRECTION_DELTAS`, the `Ra2Direction` ids, and the 8-bit
+//!   facing→direction quantization (`direction_from_facing`).
+//! - **`direction_tables/`** is the sim-facing gamemd table-family entry
+//!   point. It re-exports/delegates the 8-way primitives from here (see
+//!   `CELL_DELTAS`, `dir_from_facing8`) and ADDS what this module does not
+//!   own: 16-bit facings, lepton deltas, DRAGON frames, muzzle rotation.
+//! - **`facing_table.rs`** owns facing→movement *vectors* (sin/cos) only; it
+//!   quantizes nothing.
+//!
+//! Do not add a new facing/direction conversion without checking all three
+//! headers — a fourth parallel helper is how definition drift starts.
+//! `opposite_direction` below and `direction_tables::quantize::opposite_dir`
+//! are deliberate checked/unchecked twins of the same `(d±4)&7` identity,
+//! both exact-equality tested.
 
 pub const DIRECTION_COUNT: usize = 8;
 pub const TUBE_STEP_DIRECTION: u8 = 8;
