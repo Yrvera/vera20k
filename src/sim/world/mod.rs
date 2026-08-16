@@ -1283,8 +1283,8 @@ impl Simulation {
         projectile_detonations: &[crate::sim::projectile::ProjectileDetonation],
         wave_damage_events: &[crate::sim::wave::WaveDamageEvent],
     ) -> crate::sim::combat::CombatTickResult {
-        // Resolve BEFORE the interner is taken below: the lazy arm must pin
-        // ids against the live interner, never the emptied placeholder.
+        // Copy-read the pre-resolved handles: Some from init/load in
+        // production, None for fixtures. Ticks never resolve or intern.
         let rule_handles = self.rule_handles;
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
@@ -1386,8 +1386,8 @@ impl Simulation {
         if detonations.is_empty() {
             return;
         }
-        // Resolve after the early-out (fixtures never intern warhead names
-        // they do not exercise) and BEFORE the interner is taken below.
+        // Copy-read the pre-resolved handles (Some in production, None for
+        // fixtures); ticks never resolve or intern.
         let rule_handles = self.rule_handles;
 
         let mut entities = std::mem::take(&mut self.substrate.entities);
