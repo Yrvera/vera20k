@@ -359,7 +359,7 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
     Some(crate::app_sim_tick::world_point_to_cell(
         world_x,
         world_y,
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     ))
 }

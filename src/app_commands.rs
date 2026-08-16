@@ -139,7 +139,7 @@ fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> O
         &owner,
         state.sandbox_full_visibility,
         state.rules.as_ref(),
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )
     .map(|hover| hover.stable_id)
@@ -457,9 +457,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid_snapshot);
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_mut().map(|rt| &mut rt.simulation), &state.rules) else {
+    let (Some(rt), Some(rules)) = (state.sim_runtime.as_mut(), &state.rules) else {
         return;
     };
+    let resources = &rt.resources;
+    let sim = &mut rt.simulation;
     if let Some(grid) = path_grid.as_deref() {
         (base_rx, base_ry) = crate::app_sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
     }
@@ -514,7 +516,7 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
                 spawn_cell.1,
                 64,
                 rules,
-                &state.height_map,
+                &resources.height_map,
             )
             .is_some()
         {

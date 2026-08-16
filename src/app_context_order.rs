@@ -418,7 +418,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut speaker_id: Option<u64> = None;
     let selected_ids = selected_stable_ids_in_order(state);
 
-    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+    if let Some(rt) = state.sim_runtime.as_mut() {
+        let resources = &rt.resources;
+        let sim = &mut rt.simulation;
         let execute_tick = sim.session.tick;
         if selected_ids.is_empty() {
             return false;
@@ -488,7 +490,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             &owner,
             state.sandbox_full_visibility,
             state.rules.as_ref(),
-            &state.height_map,
+            &resources.height_map,
             Some(&state.tactical_bridge_inverse_map),
         );
 
@@ -977,7 +979,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     world_y,
                     state.sandbox_full_visibility,
                     state.rules.as_ref(),
-                    &state.height_map,
+                    &resources.height_map,
                     Some(&state.tactical_bridge_inverse_map),
                 )
             } else {
@@ -988,7 +990,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     &owner,
                     state.sandbox_full_visibility,
                     state.rules.as_ref(),
-                    &state.height_map,
+                    &resources.height_map,
                     Some(&state.tactical_bridge_inverse_map),
                 )
             };

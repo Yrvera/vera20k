@@ -197,7 +197,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             // --- Cursor cell info ---
             ui.label(format!("Cursor cell: ({}, {})", cursor_rx, cursor_ry));
             let z: u8 = state
-                .height_map
+                .height_map()
                 .get(&(cursor_rx, cursor_ry))
                 .copied()
                 .unwrap_or(0);

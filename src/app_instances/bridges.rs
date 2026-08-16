@@ -221,7 +221,7 @@ pub(crate) fn build_bridge_body_instances(
         bridge_state,
         atlas,
         &state.overlay_names,
-        &state.height_map,
+        &state.height_map(),
         &state.lighting_grid,
         origin_y,
         world_height,
@@ -284,7 +284,7 @@ pub(crate) fn build_bridge_shadow_instances(
         let y_offset = compute_bridge_body_y_offset(render_state, axis);
 
         let z: u8 = state
-            .height_map
+            .height_map()
             .get(&(rx, ry))
             .copied()
             .unwrap_or(cell.deck_level);
@@ -366,7 +366,7 @@ pub(crate) fn build_bridge_railing_instances(
         };
 
         let z: u8 = state
-            .height_map
+            .height_map()
             .get(&(rx, ry))
             .copied()
             .unwrap_or(cell.deck_level);

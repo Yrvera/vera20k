@@ -502,8 +502,6 @@ impl App {
             score_screen: None,
             score_shell_state: Default::default(),
             finished_game_count: 0,
-            height_map: BTreeMap::new(),
-            bridge_height_map: BTreeMap::new(),
             tactical_bridge_inverse_map: BTreeMap::new(),
             lighting_grid: CellLightGrid::new(),
             applied_lighting_sources: Vec::new(),

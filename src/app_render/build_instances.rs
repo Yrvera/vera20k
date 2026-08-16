@@ -615,12 +615,12 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     let target_line = crate::app_target_lines::build_target_line_instances(
         &state.target_lines,
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-        &state.height_map,
+        &state.height_map(),
     );
     let factory_rally = crate::app_target_lines::build_factory_rally_line_instances(
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules.as_ref(),
-        &state.height_map,
+        &state.height_map(),
         &state.house_color_map,
         preferred_local_owner(state).as_deref(),
     );
@@ -678,19 +678,19 @@ fn build_placement_preview(
                 // Walls show the cursor cell + auto-fill cells toward existing walls.
                 // Draws place.shp on every intermediate cell between cursor and
                 // nearest same-type wall.
-                let (mut valid, mut invalid) = o.build_building_preview(preview, &state.height_map);
+                let (mut valid, mut invalid) = o.build_building_preview(preview, &state.height_map());
                 if !preview.wall_autofill_cells.is_empty() {
                     let (av, ai) = o.build_wall_autofill_diamonds(
                         &preview.wall_autofill_cells,
                         preview.valid,
-                        &state.height_map,
+                        &state.height_map(),
                     );
                     valid.extend(av);
                     invalid.extend(ai);
                 }
                 (valid, invalid, Vec::new(), 0, Vec::new())
             } else {
-                let (valid, invalid) = o.build_building_preview(preview, &state.height_map);
+                let (valid, invalid) = o.build_building_preview(preview, &state.height_map());
                 let hc: crate::rules::house_colors::HouseColorIndex = state
                     .house_color_map
                     .get(
@@ -707,7 +707,7 @@ fn build_placement_preview(
                         preview,
                         state.sprite_atlas.as_ref(),
                         hc,
-                        &state.height_map,
+                        &state.height_map(),
                         state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
                     );
                 let (ghost, page) = match ghost_result {

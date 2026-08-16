@@ -114,9 +114,13 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
-    state.sim_runtime = result
-        .simulation
-        .map(crate::sim::runtime::SimRuntime::from_simulation);
+    state.sim_runtime = result.simulation.map(|simulation| crate::sim::runtime::SimRuntime {
+        simulation,
+        resources: crate::sim::runtime::SimResources {
+            height_map: result.height_map,
+            bridge_height_map: result.bridge_height_map,
+        },
+    });
     state.combat_lights.clear();
     sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
@@ -185,8 +189,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.overlay_registry = Some(result.overlay_registry);
     state.house_color_map = result.house_color_map;
     state.house_roster = result.house_roster;
-    state.height_map = result.height_map;
-    state.bridge_height_map = result.bridge_height_map;
     state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
     state.lighting_grid = result.lighting_grid;
     state.applied_lighting_sources.clear();

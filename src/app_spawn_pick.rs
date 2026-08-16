@@ -27,7 +27,7 @@ pub(crate) fn hovered_waypoint(state: &AppState) -> Option<usize> {
     let cy: f32 = state.cursor_y;
 
     for (i, wp) in starts.iter().enumerate() {
-        let z: u8 = state.height_map.get(&(wp.rx, wp.ry)).copied().unwrap_or(0);
+        let z: u8 = state.height_map().get(&(wp.rx, wp.ry)).copied().unwrap_or(0);
         let (world_x, world_y) = terrain::iso_to_screen(wp.rx, wp.ry, z);
         let screen_x: f32 = world_x - state.camera_x;
         let screen_y: f32 = world_y - state.camera_y;
@@ -66,13 +66,15 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Build temp map data before borrowing state.simulation mutably.
     let temp_map = build_temp_map_data_for_seeding(state);
     let seeded_owner: Option<String> =
-        if let (Some(sim), Some(ruleset)) = (state.sim_runtime.as_mut().map(|rt| &mut rt.simulation), state.rules.as_ref()) {
+        if let (Some(rt), Some(ruleset)) = (state.sim_runtime.as_mut(), state.rules.as_ref()) {
+            let resources = &rt.resources;
+            let sim = &mut rt.simulation;
             seed_skirmish_opening_if_needed(
                 sim,
                 &temp_map,
                 &state.house_roster,
                 ruleset,
-                &state.height_map,
+                &resources.height_map,
                 &state.skirmish_settings,
             )
         } else {

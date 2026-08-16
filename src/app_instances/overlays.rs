@@ -618,7 +618,7 @@ pub(crate) fn build_overlay_instances(
         };
 
         let z: u8 = state
-            .height_map
+            .height_map()
             .get(&(entry.rx, entry.ry))
             .copied()
             .unwrap_or(0);
@@ -701,7 +701,7 @@ pub(crate) fn build_overlay_instances(
         }
 
         let z: u8 = state
-            .height_map
+            .height_map()
             .get(&(obj.rx, obj.ry))
             .copied()
             .unwrap_or(0);

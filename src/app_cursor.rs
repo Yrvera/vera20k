@@ -116,7 +116,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         &owner,
         state.sandbox_full_visibility,
         state.rules.as_ref(),
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     );
     // gamemd's DetermineAction resolves ONE object for the whole selection and

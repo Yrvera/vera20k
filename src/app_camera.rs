@@ -402,7 +402,7 @@ fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
     crate::app_sim_tick::world_point_to_cell(
         world_x,
         world_y,
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )
 }
@@ -869,7 +869,7 @@ pub(crate) fn cell_centre_world_point(rx: u16, ry: u16, z: u8) -> (f32, f32) {
 }
 
 pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
-    let z = state.height_map.get(&(rx, ry)).copied().unwrap_or(0);
+    let z = state.height_map().get(&(rx, ry)).copied().unwrap_or(0);
     let world = cell_centre_world_point(rx, ry, z);
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;

@@ -14,7 +14,12 @@ use crate::sim::world::Simulation;
 
 /// Immutable per-match resources bound at construction (F07 cones land here).
 #[derive(Default)]
-pub struct SimResources {}
+pub struct SimResources {
+    /// Fixed per-cell terrain heights parsed from the loaded map.
+    pub height_map: std::collections::BTreeMap<(u16, u16), u8>,
+    /// Bridge-deck heights layered above the terrain heights.
+    pub bridge_height_map: std::collections::BTreeMap<(u16, u16), u8>,
+}
 
 /// The runtime owner: one deterministic simulation plus its bound resources.
 pub struct SimRuntime {

@@ -402,7 +402,7 @@ pub(crate) fn is_near_bridge_cell(state: &AppState, rx: u16, ry: u16) -> bool {
                 continue;
             }
             if state
-                .bridge_height_map
+                .bridge_height_map()
                 .contains_key(&(nx as u16, ny as u16))
             {
                 return true;

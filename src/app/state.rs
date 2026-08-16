@@ -298,11 +298,6 @@ pub(crate) struct AppState {
     /// Number of matches finished this session — the score screen's `Game: n`.
     /// gamemd increments the same counter as it tears the scenario down.
     pub(crate) finished_game_count: u32,
-    /// Cell (rx, ry) → terrain elevation z for entity/overlay height lookup.
-    pub(crate) height_map: BTreeMap<(u16, u16), u8>,
-    /// Cell (rx, ry) → bridge deck elevation z. Only bridge cells present.
-    /// Used by screen_to_iso to resolve clicks on high bridge surfaces.
-    pub(crate) bridge_height_map: BTreeMap<(u16, u16), u8>,
     /// Cell (rx, ry) -> high-bridge facts used by the tactical cursor inverse.
     pub(crate) tactical_bridge_inverse_map:
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
@@ -584,5 +579,26 @@ impl AppState {
         self.targeting_mode
             .as_ref()
             .and_then(crate::app_types::TargetingMode::as_super_weapon)
+    }
+}
+
+impl AppState {
+    /// Fixed per-cell terrain heights for the active match, or the empty map
+    /// when no runtime exists — matching the pre-F07 always-present field.
+    pub(crate) fn height_map(&self) -> &BTreeMap<(u16, u16), u8> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<(u16, u16), u8>> = std::sync::OnceLock::new();
+        self.sim_runtime
+            .as_ref()
+            .map(|rt| &rt.resources.height_map)
+            .unwrap_or_else(|| EMPTY.get_or_init(BTreeMap::new))
+    }
+
+    /// Bridge-deck heights for the active match (see `height_map`).
+    pub(crate) fn bridge_height_map(&self) -> &BTreeMap<(u16, u16), u8> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<(u16, u16), u8>> = std::sync::OnceLock::new();
+        self.sim_runtime
+            .as_ref()
+            .map(|rt| &rt.resources.bridge_height_map)
+            .unwrap_or_else(|| EMPTY.get_or_init(BTreeMap::new))
     }
 }

@@ -119,10 +119,10 @@ pub(crate) fn build_terrain_cost_overlay_instances(
         for rx in 0..width {
             // Bridge cells use deck height so dots appear ON the bridge.
             let z: u8 = state
-                .bridge_height_map
+                .bridge_height_map()
                 .get(&(rx, ry))
                 .copied()
-                .unwrap_or_else(|| state.height_map.get(&(rx, ry)).copied().unwrap_or(0));
+                .unwrap_or_else(|| state.height_map().get(&(rx, ry)).copied().unwrap_or(0));
             let (sx, sy) = terrain::iso_to_screen(rx, ry, z);
 
             if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 60.0) {
@@ -156,7 +156,7 @@ pub(crate) fn build_heightmap_overlay_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    if state.height_map.is_empty() {
+    if state.height_map().is_empty() {
         return Vec::new();
     }
     let cam_x: f32 = state.camera_x;
@@ -164,31 +164,31 @@ pub(crate) fn build_heightmap_overlay_instances(
     let mut instances: Vec<SpriteInstance> = Vec::with_capacity(2048);
 
     // Find max z for normalization.
-    let max_z: u8 = state.height_map.values().copied().max().unwrap_or(1).max(1);
+    let max_z: u8 = state.height_map().values().copied().max().unwrap_or(1).max(1);
 
     // One-shot diagnostic: log bridge_height_map size on first call.
     use std::sync::atomic::{AtomicBool, Ordering};
     static LOGGED: AtomicBool = AtomicBool::new(false);
     if !LOGGED.swap(true, Ordering::Relaxed) {
-        let bridge_count = state.bridge_height_map.len();
-        let sample: Vec<_> = state.bridge_height_map.iter().take(10).collect();
+        let bridge_count = state.bridge_height_map().len();
+        let sample: Vec<_> = state.bridge_height_map().iter().take(10).collect();
         log::info!(
             "HeightmapOverlay: bridge_height_map has {} entries, height_map has {} entries. Sample: {:?}",
             bridge_count,
-            state.height_map.len(),
+            state.height_map().len(),
             sample,
         );
     }
 
-    for (&(rx, ry), &z) in &state.height_map {
+    for (&(rx, ry), &z) in state.height_map() {
         // Bridge cells: render at deck height so the overlay aligns with the bridge surface.
-        let render_z: u8 = state.bridge_height_map.get(&(rx, ry)).copied().unwrap_or(z);
+        let render_z: u8 = state.bridge_height_map().get(&(rx, ry)).copied().unwrap_or(z);
         let (sx, sy) = terrain::iso_to_screen(rx, ry, render_z);
         if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 60.0) {
             continue;
         }
 
-        let is_bridge = state.bridge_height_map.contains_key(&(rx, ry));
+        let is_bridge = state.bridge_height_map().contains_key(&(rx, ry));
         let tint: [f32; 3] = if is_bridge {
             // Solid blue for bridge deck cells — high alpha so the bridge
             // structure doesn't show through the overlay.
@@ -274,7 +274,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
     // diamond outline uses the exact same formula as overlay rendering.
     for entry in &state.overlays {
         let z: u8 = state
-            .height_map
+            .height_map()
             .get(&(entry.rx, entry.ry))
             .copied()
             .unwrap_or(0);
@@ -331,7 +331,7 @@ pub(crate) fn build_path_overlay_instances(
             continue;
         };
         for (i, &(px, py)) in mt.path.iter().enumerate() {
-            let z: u8 = state.height_map.get(&(px, py)).copied().unwrap_or(0);
+            let z: u8 = state.height_map().get(&(px, py)).copied().unwrap_or(0);
             let (sx, sy) = terrain::iso_to_screen(px, py, z);
             if !in_view(sx, sy, TILE_WIDTH, TILE_HEIGHT, cam_x, cam_y, sw, sh, 60.0) {
                 continue;
@@ -359,7 +359,7 @@ pub(crate) fn build_path_overlay_instances(
             let last = mt.path.last().copied().unwrap_or((0, 0));
             if goal != last {
                 let z: u8 = state
-                    .height_map
+                    .height_map()
                     .get(&(goal.0, goal.1))
                     .copied()
                     .unwrap_or(0);

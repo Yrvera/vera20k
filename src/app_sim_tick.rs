@@ -964,7 +964,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
-        if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+        if let Some(rt) = state.sim_runtime.as_mut() {
+            let resources = &rt.resources;
+            let sim = &mut rt.simulation;
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.
@@ -984,7 +986,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             } = sim.advance_app_frame(
                 &due_commands,
                 state.rules.as_ref(),
-                &state.height_map,
+                &resources.height_map,
                 state.overlay_registry.as_ref(),
                 SIM_TICK_MS,
                 tick_lane,
@@ -1733,7 +1735,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         rx,
         ry,
         sim.path_grid(),
-        &state.height_map,
+        &state.height_map(),
         state.overlay_registry.as_ref(),
     );
 }
@@ -1998,7 +2000,7 @@ pub(crate) fn screen_point_to_world_cell(
     world_point_to_cell(
         world_x,
         world_y,
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )
 }

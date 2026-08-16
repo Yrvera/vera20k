@@ -65,7 +65,7 @@ fn health_bar_hover_target(
         local_owner,
         state.sandbox_full_visibility,
         state.rules.as_ref(),
-        &state.height_map,
+        &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )?;
     match hover.kind {

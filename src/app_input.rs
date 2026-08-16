@@ -267,7 +267,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     CLICK_SELECT_RADIUS,
                                     state.rules.as_ref(),
                                     Some(&sim.houses),
-                                    &state.height_map,
+                                    &state.height_map(),
                                     Some(&state.tactical_bridge_inverse_map),
                                     Some(&sim.interner),
                                 );
@@ -295,7 +295,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         shift,
                                         state.rules.as_ref(),
                                         Some(&sim.houses),
-                                        &state.height_map,
+                                        &state.height_map(),
                                         Some(&state.tactical_bridge_inverse_map),
                                         Some(&sim.interner),
                                     )
@@ -314,7 +314,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     shift,
                                     state.rules.as_ref(),
                                     Some(&sim.houses),
-                                    &state.height_map,
+                                    &state.height_map(),
                                     Some(&state.tactical_bridge_inverse_map),
                                     Some(&sim.interner),
                                 );
