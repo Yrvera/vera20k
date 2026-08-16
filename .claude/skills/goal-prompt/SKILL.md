@@ -93,6 +93,29 @@ do not try to pre-decide everything.
    `cargo test -p vera20k --lib`; all completed tiers published for review —
    not parked on the branch.
 
+## Two continuation models — choose before writing
+
+A program outliving one session continues in one of two ways; pick
+deliberately, because they produce different prompts:
+
+- **Idempotent re-entry** (prefer when available). Write the prompt as a
+  convergent pass, not a linear program: "Preserve what already matches,
+  replace what is wrong, and implement what is missing" over an external
+  frozen ledger (a phase/plan document). Every invocation re-derives the
+  frontier by checking each item's disposition against the bar — no
+  memory, no handoff, no stale done-inventory to trust. When a run dies
+  (usage limit, crash), fire the same prompt again. This works exactly
+  when a fresh executor can determine what is done by inspecting the
+  artifact against the bar; it is the proven pattern of the Codex phase
+  prompts, which converged over repeated runs with zero handoff text.
+- **Continuation header** (below). Needed when the truth lives in session
+  state rather than in the work: mid-slice on a shared branch, unreviewed
+  inherited commits, a tool switch, an ownership question. The header
+  transfers exactly the facts the world cannot re-derive.
+
+The test: if re-running from scratch would waste nothing but a little
+re-checking, write idempotently and skip the header.
+
 ## Continuation header template
 
 Prepend this to the governing prompt, filled in concretely:
