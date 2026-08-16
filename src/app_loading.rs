@@ -909,13 +909,16 @@ fn ensure_session_job_asset_manager(
         let asset_manager = if let Some(asset_manager) = state.process_assets.lease_for_loading() {
             asset_manager
         } else {
-            // The process manager is gone (never constructed, or a lease was
-            // lost). Reconstructing loses the sticky CRC cache and theater
-            // identity — log it rather than hiding the anomaly.
-            log::warn!(
-                "loading job reconstructs an AssetManager; process-sticky \
-                 MIX cache and theater identity restart"
-            );
+            // Warn only when a manager actually existed and its lease was
+            // lost — reconstructing then loses the sticky CRC cache and
+            // theater identity. An asset-less startup (no retail archives)
+            // has nothing to lose and stays quiet.
+            if state.process_assets.is_leased() {
+                log::warn!(
+                    "loading job reconstructs an AssetManager; process-sticky \
+                     MIX cache and theater identity restart"
+                );
+            }
             state.process_assets.note_lease_ended_without_return();
             AssetManager::new(
                 session

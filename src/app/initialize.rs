@@ -3,7 +3,7 @@
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
     BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
-    GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig, MapMenuEntry,
+    GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig,
     ModifiersState, MusicPlayer, PhysicalSize, PlatformState, RandomMapGenerationRetention,
     RefCell, Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,

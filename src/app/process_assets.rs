@@ -47,6 +47,13 @@ impl ProcessAssets {
         self.manager.is_some()
     }
 
+    /// True while a lease is outstanding — distinguishes `Loading` (a manager
+    /// existed and went out) from Absent (startup never constructed one), so
+    /// the reconstruction path only warns about a real loss.
+    pub(crate) fn is_leased(&self) -> bool {
+        self.leased
+    }
+
     /// `Available -> Loading`. Returns `None` when the slot is absent or the
     /// manager is already leased out.
     pub(crate) fn lease_for_loading(&mut self) -> Option<AssetManager> {

@@ -35,3 +35,38 @@ impl MatchAudioState {
         *self = Self::default();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MatchAudioState;
+
+    /// F11: the new-match reset covers the WHOLE owner — most importantly the
+    /// tick-indexed under-attack suppression window (previously carried into
+    /// the next match and silencing its under-attack EVA line) and the queued
+    /// sound events (previously surviving teardown undrained).
+    #[test]
+    fn new_match_reset_clears_the_under_attack_window_and_queued_events() {
+        let mut audio = MatchAudioState::default();
+        audio
+            .sound_events
+            .push(crate::audio::events::GameSoundEvent::UiSound {
+                sound_id: "leftover".to_string(),
+            });
+        audio.eva_low_power_active = true;
+        audio.eva_funds_stalled = true;
+        audio.eva_announced_dying.insert(41);
+        audio.eva_under_attack_block_until_tick = 40_000;
+
+        audio.reset_for_new_match();
+
+        assert!(audio.sound_events.drain().is_empty(), "queued events dropped");
+        assert!(!audio.eva_low_power_active);
+        assert!(!audio.eva_funds_stalled);
+        assert!(audio.eva_announced_dying.is_empty());
+        assert_eq!(
+            audio.eva_under_attack_block_until_tick, 0,
+            "the suppression window must not carry into a match whose tick \
+             counter restarts at zero"
+        );
+    }
+}

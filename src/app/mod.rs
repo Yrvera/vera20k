@@ -22,7 +22,6 @@ use crate::app_render;
 use crate::app_sim_tick;
 use crate::app_transitions;
 use crate::assets::asset_manager::AssetManager;
-use crate::audio::events::SoundEventQueue;
 use crate::audio::music::MusicPlayer;
 use crate::audio::sfx::SfxPlayer;
 use crate::map::basic::BasicSection;
