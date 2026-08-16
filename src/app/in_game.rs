@@ -21,7 +21,7 @@ impl App {
             .map(crate::sim::world::Simulation::clone_scenario_rng);
         if let Some(gameplay_rng) = gameplay_rng
             && state
-                .offline_skirmish_runtime
+                .frontend.offline_skirmish_runtime
                 .capture_returned_gameplay_rng(gameplay_rng)
         {
             log::info!("Returned gameplay Scenario cursor to the offline shell");
@@ -575,7 +575,7 @@ impl App {
     /// completion and then exits the event loop.
     pub(super) fn start_quit_cascade(state: &mut AppState) {
         let start_volume = state.audio.music_player.as_ref().map_or(0.0, |p| p.volume());
-        state.quit_cascade = Some(crate::app::frontend::quit_cascade::QuitCascade::start(
+        state.frontend.quit_cascade = Some(crate::app::frontend::quit_cascade::QuitCascade::start(
             Instant::now(),
             start_volume,
         ));
@@ -644,8 +644,8 @@ impl App {
                 detail,
                 model,
             }) => {
-                state.score_screen = Some(model);
-                state.score_shell_state = Default::default();
+                state.frontend.score_screen = Some(model);
+                state.frontend.score_shell_state = Default::default();
                 state.screen = GameScreen::MissionResult { title, detail };
             }
             Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu) => {

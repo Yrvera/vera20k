@@ -258,7 +258,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         .expect("finished outcome voice wait remains present")
         .kind();
     state.scenario_outcome = None;
-    state.finished_game_count = state.finished_game_count.saturating_add(1);
+    state.frontend.finished_game_count = state.frontend.finished_game_count.saturating_add(1);
     let elapsed_seconds = state.scenario_elapsed_clock.stop(wall_ms);
     let model = build_score_screen_model(state, elapsed_seconds);
     // The outcome handlers at 0x00685670 / 0x00685DC0 begin only after the
@@ -396,7 +396,7 @@ fn build_score_screen_model(
         // A stock offline skirmish takes the skirmish heading; the networked
         // heading belongs to the multiplayer session type.
         title_key: "GUI:SkirmishScore",
-        game_number: state.finished_game_count,
+        game_number: state.frontend.finished_game_count,
         // The clock performs native's signed division first. The existing UI
         // model is unsigned and applies the native 99:59:59 ceiling, so keep
         // the pathological rollover representation local to this boundary.

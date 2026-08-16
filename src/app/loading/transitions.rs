@@ -406,7 +406,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         state.screen = GameScreen::SpawnPick;
         if returns_scenario_rng_to_offline_shell {
             state
-                .offline_skirmish_runtime
+                .frontend.offline_skirmish_runtime
                 .mark_gameplay_rng_return_pending();
         }
         log::info!("Transitioned to SpawnPick — player must choose a start location");
@@ -446,7 +446,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                         state.scenario_elapsed_clock.start(now_ms);
                         state.screen = GameScreen::InGame;
                         state
-                            .offline_skirmish_runtime
+                            .frontend.offline_skirmish_runtime
                             .mark_gameplay_rng_return_pending();
                         log::info!("Transitioned to InGame after Rust L0 acknowledgement");
                     }
@@ -471,7 +471,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                 state.screen = GameScreen::InGame;
                 if returns_scenario_rng_to_offline_shell {
                     state
-                        .offline_skirmish_runtime
+                        .frontend.offline_skirmish_runtime
                         .mark_gameplay_rng_return_pending();
                 }
                 log::info!("Transitioned to InGame on noncertifying startup path");

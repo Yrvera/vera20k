@@ -52,12 +52,12 @@ impl App {
             crate::app::input::messages::update(state);
         }
         if state
-            .startup_splash
+            .frontend.startup_splash
             .as_ref()
             .is_some_and(|splash| splash.is_active(Instant::now()))
         {
             let splash = state
-                .startup_splash
+                .frontend.startup_splash
                 .as_ref()
                 .expect("active startup splash exists");
             startup_splash::render_and_present(
@@ -68,13 +68,13 @@ impl App {
                 splash,
             )?;
             state
-                .startup_splash
+                .frontend.startup_splash
                 .as_mut()
                 .expect("active startup splash exists")
                 .mark_presented(Instant::now());
             return Ok(());
         }
-        state.startup_splash = None;
+        state.frontend.startup_splash = None;
 
         // HouseClass keeps simulating for SavourDelay, then blocks on the
         // current outcome Vox before it raises the victory/defeat exit global.
@@ -90,14 +90,14 @@ impl App {
 
         // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
         // voice poll before borrowing the cascade mutably to avoid aliasing.
-        if state.quit_cascade.is_some() {
+        if state.frontend.quit_cascade.is_some() {
             let now = Instant::now();
             let voices_active = state
                 .audio.sfx_player
                 .as_ref()
                 .is_some_and(|sfx| sfx.voices_active());
             let tick = state
-                .quit_cascade
+                .frontend.quit_cascade
                 .as_mut()
                 .expect("cascade present")
                 .tick(now, voices_active);
@@ -110,7 +110,7 @@ impl App {
                 }
             }
             if tick.finished {
-                state.quit_cascade = None;
+                state.frontend.quit_cascade = None;
                 event_loop.exit();
                 return Ok(());
             }
@@ -248,7 +248,7 @@ impl App {
                             )?;
                         }
                     }
-                } else if !state.main_menu_shell_failed {
+                } else if !state.frontend.main_menu_shell_failed {
                     match crate::app::frontend::main_menu_shell_render::render_main_menu_shell(
                         state,
                         &mut encoder,
@@ -286,7 +286,7 @@ impl App {
                                 {
                                     anyhow::ensure!(
                                         state
-                                            .main_menu_shell_state
+                                            .frontend.main_menu_shell_state
                                             .title_reveal
                                             .record_presented(receipt),
                                         "main-menu title receipt was stale at present commit"
@@ -579,7 +579,7 @@ impl App {
         if let Some(receipt) = pending_main_menu_title_receipt.take() {
             anyhow::ensure!(
                 state
-                    .main_menu_shell_state
+                    .frontend.main_menu_shell_state
                     .title_reveal
                     .record_presented(receipt),
                 "main-menu title receipt was stale at present commit"

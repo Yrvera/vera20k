@@ -100,9 +100,9 @@ fn sp_paint_labels<'a>(
     let mut out = Vec::with_capacity(layout.buttons.len() + 2);
     for button in &layout.buttons {
         let enabled = button.id != SinglePlayerControlId::LoadSavedGame0x689
-            || state.single_player_shell_state.load_saved_game_enabled;
+            || state.frontend.single_player_shell_state.load_saved_game_enabled;
         let pressed =
-            enabled && state.single_player_shell_state.pressed_owner_draw_button == Some(button.id);
+            enabled && state.frontend.single_player_shell_state.pressed_owner_draw_button == Some(button.id);
         out.push(PaintLabel {
             text: resolve_csf(state, csf_key_for_control(button.id)),
             rect: owner_draw_button_label_rect(button.rect, pressed),
@@ -123,7 +123,7 @@ fn sp_paint_labels<'a>(
         path_a_reveal: None,
     });
     if let Some(key) =
-        single_player_status_csf_key(state.single_player_shell_state.hovered_owner_draw_button)
+        single_player_status_csf_key(state.frontend.single_player_shell_state.hovered_owner_draw_button)
     {
         out.push(PaintLabel {
             text: resolve_csf(state, key),
@@ -183,20 +183,20 @@ pub(crate) fn render_single_player_shell(
         state,
         crate::app::frontend::main_menu_shell_render::Ra2tsDialogOwner::SinglePlayer0x100,
     )?;
-    if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
-        state.main_menu_shell_failed = true;
+    if state.frontend.main_menu_shell_failed || state.frontend.main_menu_shell_chrome.is_none() {
+        state.frontend.main_menu_shell_failed = true;
         return Ok(SinglePlayerShellRenderResult::Fallback);
     }
 
-    if let Some(movie) = state.main_menu_movie.as_mut() {
+    if let Some(movie) = state.frontend.main_menu_movie.as_mut() {
         let now = Instant::now();
         let elapsed = now
-            .duration_since(state.main_menu_movie_last_step)
+            .duration_since(state.frontend.main_menu_movie_last_step)
             .as_secs_f64();
-        state.main_menu_movie_last_step = now;
+        state.frontend.main_menu_movie_last_step = now;
         if let Err(err) = movie.step(&state.renderer.gpu, elapsed) {
             log::warn!("Failed to step single-player RA2TS movie: {err:#}");
-            state.main_menu_shell_failed = true;
+            state.frontend.main_menu_shell_failed = true;
             return Ok(SinglePlayerShellRenderResult::Fallback);
         }
     }
@@ -210,13 +210,13 @@ pub(crate) fn render_single_player_shell(
     let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     // While a first-paint slide is live the buttons animate through their
     // SDBTNANM ramp frames; off-slide this is None and they paint steady-state.
-    let wave = state.shell_first_paint_slide.clone();
+    let wave = state.frontend.shell_first_paint_slide.clone();
     let chrome = state
-        .main_menu_shell_chrome
+        .frontend.main_menu_shell_chrome
         .as_ref()
         .expect("checked before render");
     let movie_texture = state
-        .main_menu_movie
+        .frontend.main_menu_movie
         .as_ref()
         .map(|movie| movie.batch_texture())
         .expect("movie loaded before render");
@@ -231,9 +231,9 @@ pub(crate) fn render_single_player_shell(
     );
     let buttons = sp_paint_buttons(
         &layout,
-        state.single_player_shell_state.pressed_owner_draw_button,
-        state.single_player_shell_state.hovered_owner_draw_button,
-        state.single_player_shell_state.load_saved_game_enabled,
+        state.frontend.single_player_shell_state.pressed_owner_draw_button,
+        state.frontend.single_player_shell_state.hovered_owner_draw_button,
+        state.frontend.single_player_shell_state.load_saved_game_enabled,
         wave.as_ref(),
     );
     let button_instances =

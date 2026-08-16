@@ -236,7 +236,7 @@ impl App {
     /// drawn was never on screen to be seen.
     pub(crate) fn poll_random_map_generation(state: &mut AppState) -> bool {
         if state.random_map_generation.is_some()
-            && state.skirmish_shell_state.random_map_setup_modal.is_none()
+            && state.frontend.skirmish_shell_state.random_map_setup_modal.is_none()
         {
             // The dialog went away without the job going with it. Drop it here
             // rather than trusting every close path to remember: a job with no
@@ -273,7 +273,7 @@ impl App {
                 .expect("checked present above");
             let preview = Self::rasterise_generated_map(state, &job, &generated);
             state.random_map_retention.finish_generation(*generated);
-            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+            if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(preview);
             }
             if job.accept_on_finish {
@@ -287,7 +287,7 @@ impl App {
             // does not sit disabled forever waiting on it.
             log::warn!("random map: the generator thread ended without a result");
             state.random_map_generation = None;
-            if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+            if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                 modal.finish_generate(None);
             }
             return true;
@@ -305,7 +305,7 @@ impl App {
         let preview =
             Self::rasterise_map(state, &job, &snapshot.map_file, &snapshot.start_waypoints);
         state.random_map_generation = Some(job);
-        if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+        if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
             if let Some(preview) = preview {
                 modal.show_progress_preview(preview);
             }
@@ -316,7 +316,7 @@ impl App {
     /// Remove the setup dialog and any in-flight worker without changing the
     /// retention disposition already chosen by accept or cancel.
     fn dismiss_random_map_setup(state: &mut AppState) {
-        state.skirmish_shell_state.random_map_setup_modal = None;
+        state.frontend.skirmish_shell_state.random_map_setup_modal = None;
         state.random_map_generation = None;
     }
 
@@ -337,7 +337,7 @@ impl App {
     /// and the one deferred behind a generation.
     fn accept_random_map_setup(state: &mut AppState) {
         let Some(crate::ui::skirmish_shell::AcceptOutcome::Commit(options)) = state
-            .skirmish_shell_state
+            .frontend.skirmish_shell_state
             .random_map_setup_modal
             .as_ref()
             .map(|modal| modal.accept())
@@ -516,7 +516,7 @@ impl App {
 
     pub(super) fn handle_saved_seed_browser_mouse_down(state: &mut AppState) -> bool {
         let Some(mode) = state
-            .skirmish_shell_state
+            .frontend.skirmish_shell_state
             .saved_seed_browser
             .as_ref()
             .map(|browser| browser.mode)
@@ -527,7 +527,7 @@ impl App {
         let x = state.input.cursor_x.round() as i32;
         let y = state.input.cursor_y.round() as i32;
         let mut play_sound = false;
-        if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+        if let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() {
             match crate::ui::skirmish_shell::saved_seed_control_at(&layout, x, y) {
                 Some(crate::ui::skirmish_shell::SavedSeedControl::List) => {
                     if let Some(row) = crate::ui::skirmish_shell::saved_seed_list_row_at(
@@ -559,7 +559,7 @@ impl App {
 
     pub(super) fn handle_saved_seed_browser_mouse_up(state: &mut AppState) -> bool {
         let Some(mode) = state
-            .skirmish_shell_state
+            .frontend.skirmish_shell_state
             .saved_seed_browser
             .as_ref()
             .map(|browser| browser.mode)
@@ -575,7 +575,7 @@ impl App {
         use crate::ui::skirmish_shell::SavedSeedOutcome as Outcome;
 
         let outcome = {
-            let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() else {
+            let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() else {
                 return false;
             };
             let pressed = browser.pressed_control.take();
@@ -593,32 +593,32 @@ impl App {
             return true;
         };
         let Some(dir) = dir else {
-            state.skirmish_shell_state.saved_seed_browser = None;
+            state.frontend.skirmish_shell_state.saved_seed_browser = None;
             return true;
         };
 
         match outcome {
-            Outcome::Close => state.skirmish_shell_state.saved_seed_browser = None,
+            Outcome::Close => state.frontend.skirmish_shell_state.saved_seed_browser = None,
             Outcome::Load(file_name) => {
                 match crate::map::rmg::saved_seeds::load_saved_seed(&dir.join(&file_name)) {
                     Ok(options) => {
                         // Loading replaces the working options and invalidates
                         // any generated result, exactly as an edit would.
                         if let Some(modal) =
-                            state.skirmish_shell_state.random_map_setup_modal.as_mut()
+                            state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut()
                         {
                             modal.options = options;
                             modal.generated = false;
                             modal.generated_preview = None;
                         }
-                        state.skirmish_shell_state.saved_seed_browser = None;
+                        state.frontend.skirmish_shell_state.saved_seed_browser = None;
                     }
                     Err(err) => log::warn!("saved seed: could not read {file_name}: {err}"),
                 }
             }
             Outcome::Save(name) => {
                 let options = state
-                    .skirmish_shell_state
+                    .frontend.skirmish_shell_state
                     .random_map_setup_modal
                     .as_ref()
                     .map(|modal| modal.options.clone());
@@ -630,7 +630,7 @@ impl App {
                         {
                             log::warn!("saved seed: could not write {name}: {err}");
                         }
-                        state.skirmish_shell_state.saved_seed_browser = None;
+                        state.frontend.skirmish_shell_state.saved_seed_browser = None;
                     }
                     // A refused name leaves the browser open so the player can
                     // retype rather than silently losing the save.
@@ -644,7 +644,7 @@ impl App {
                     log::warn!("saved seed: could not delete {file_name}: {err}");
                 }
                 // Delete stays open so several can be removed in one visit.
-                if let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_mut() {
+                if let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_mut() {
                     browser.remove_entry(&file_name);
                 }
             }
@@ -676,7 +676,7 @@ impl App {
         };
         // Reuse the modal helper: it upserts the single sentinel, honours the
         // mode's random-map admission, and refreshes the filtered record list.
-        let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
+        let Some(modal) = state.frontend.skirmish_shell_state.choose_map_modal.as_mut() else {
             return Ok(());
         };
         // F11: the catalog's mutation guard re-projects the shell map entries
@@ -717,7 +717,7 @@ impl App {
         let layout = Self::skirmish_random_map_setup_layout(state);
         let x = state.input.cursor_x.round() as i32;
         let y = state.input.cursor_y.round() as i32;
-        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+        let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
         };
         // An open list covers the rows under it, so it gets first refusal on the
@@ -800,7 +800,7 @@ impl App {
     pub(super) fn handle_random_map_setup_mouse_move(state: &mut AppState) {
         let layout = Self::skirmish_random_map_setup_layout(state);
         let x = state.input.cursor_x.round() as i32;
-        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+        let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return;
         };
         if !modal.dragging_players_thumb {
@@ -835,7 +835,7 @@ impl App {
             .as_ref()
             .map(|csf| csf.text(RANDOM_MAP_DESCRIPTION_KEY).into_owned())
             .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());
-        let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() else {
+        let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() else {
             return false;
         };
         if modal.dragging_players_thumb {
@@ -919,13 +919,13 @@ impl App {
             let entries = Self::saved_seed_dir(state)
                 .map(|dir| crate::map::rmg::saved_seeds::list_saved_seeds(&dir))
                 .unwrap_or_default();
-            state.skirmish_shell_state.saved_seed_browser =
+            state.frontend.skirmish_shell_state.saved_seed_browser =
                 Some(SavedSeedBrowserState::open(mode, entries));
             return true;
         }
         if generate_requested {
             let options = state
-                .skirmish_shell_state
+                .frontend.skirmish_shell_state
                 .random_map_setup_modal
                 .as_ref()
                 .map(|modal| modal.options.clone());
@@ -936,7 +936,7 @@ impl App {
                 // Nothing will arrive, so the dialog must not be left sitting
                 // in its generating state with every control disabled.
                 log::warn!("random map: could not start generation for the configured options");
-                if let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_mut() {
+                if let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_mut() {
                     modal.finish_generate(None);
                 }
             }

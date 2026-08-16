@@ -417,9 +417,9 @@ fn apply_owner_draw_button_paint_state(
 }
 
 fn update_owner_draw_button_paint_sound(state: &mut AppState, mode: ShellRenderMode) {
-    let pressed = state.skirmish_shell_state.pressed_owner_draw_button;
+    let pressed = state.frontend.skirmish_shell_state.pressed_owner_draw_button;
     if apply_owner_draw_button_paint_state(
-        &mut state.skirmish_shell_last_painted_pressed_button,
+        &mut state.frontend.skirmish_shell_last_painted_pressed_button,
         pressed,
         mode,
     ) {
@@ -460,7 +460,7 @@ pub(crate) fn render_in_game_options_overlay(
     target: &wgpu::TextureView,
     sidebar_view: Option<&crate::sidebar::SidebarView>,
 ) -> anyhow::Result<()> {
-    let chrome = state.skirmish_shell_chrome.take();
+    let chrome = state.frontend.skirmish_shell_chrome.take();
     let result = render_in_game_options_overlay_with_atlas(
         state,
         encoder,
@@ -468,7 +468,7 @@ pub(crate) fn render_in_game_options_overlay(
         chrome.as_ref(),
         sidebar_view,
     );
-    state.skirmish_shell_chrome = chrome;
+    state.frontend.skirmish_shell_chrome = chrome;
     result
 }
 
@@ -627,9 +627,9 @@ pub(crate) fn render_skirmish_shell_to_target(
     target: ShellRenderTarget<'_>,
     mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
-    let chrome = state.skirmish_shell_chrome.take();
+    let chrome = state.frontend.skirmish_shell_chrome.take();
     let result = render_skirmish_shell_with_atlas(state, encoder, target, chrome.as_ref(), mode);
-    state.skirmish_shell_chrome = chrome;
+    state.frontend.skirmish_shell_chrome = chrome;
     result
 }
 
@@ -653,12 +653,12 @@ fn render_skirmish_shell_with_atlas(
     }
     let layout = compute_layout(state.render_width(), state.render_height());
     let choose_map_layout = state
-        .skirmish_shell_state
+        .frontend.skirmish_shell_state
         .choose_map_modal
         .as_ref()
         .map(|_| compute_choose_map_modal_layout(state.render_width(), state.render_height()));
     let validation_layout = state
-        .skirmish_shell_state
+        .frontend.skirmish_shell_state
         .validation_modal
         .as_ref()
         .map(|_| compute_validation_modal_layout(state.render_width(), state.render_height()));
@@ -673,15 +673,15 @@ fn render_skirmish_shell_with_atlas(
     ensure_selected_preview_texture(state);
     let selected_entry = state
         .scenario_catalog.shell_maps()
-        .get(state.skirmish_shell_state.selected_map_idx);
+        .get(state.frontend.skirmish_shell_state.selected_map_idx);
     // Both the sentinel's RandMap.img and the setup dialog's generated image
     // already carry their start markers, so the overlay pass must not add them
     // a second time.
     let preview_has_baked_start_markers = selected_entry.is_some_and(is_random_map_sentinel_entry)
-        || state.skirmish_shell_state.random_map_setup_modal.is_some();
+        || state.frontend.skirmish_shell_state.random_map_setup_modal.is_some();
     let selected_preview_bounds =
         selected_entry.and_then(|entry| entry.preview_source_bounds.as_ref());
-    let setup_modal_open = state.skirmish_shell_state.random_map_setup_modal.is_some();
+    let setup_modal_open = state.frontend.skirmish_shell_state.random_map_setup_modal.is_some();
     // While the setup dialog is up it owns the preview box, so the image goes in
     // its own 0x468 rect rather than the chooser's.
     let setup_preview_rect = setup_modal_open.then(|| {
@@ -721,7 +721,7 @@ fn render_skirmish_shell_with_atlas(
         .create_instance_buffer(&state.renderer.gpu, &marker_instances);
 
     let wave = if mode == ShellRenderMode::TransitionPreview {
-        state.shell_first_paint_slide.as_ref()
+        state.frontend.shell_first_paint_slide.as_ref()
     } else {
         None
     };
@@ -729,9 +729,9 @@ fn render_skirmish_shell_with_atlas(
         .rules()
         .map(|rules| rules.color_schemes.as_slice())
         .unwrap_or(&[]);
-    let validation_ok_pressed = state.shell_controller.top_id()
+    let validation_ok_pressed = state.frontend.shell_controller.top_id()
         == Some(crate::ui::shell::descriptor::DialogId(0x00CE))
-        && state.shell_controller.pressed() == Some(crate::ui::shell::modal::control::OK);
+        && state.frontend.shell_controller.pressed() == Some(crate::ui::shell::modal::control::OK);
     let instances = build_skirmish_shell_instances(
         atlas,
         &state.renderer.bit_font,
@@ -739,7 +739,7 @@ fn render_skirmish_shell_with_atlas(
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
         validation_ok_pressed,
-        &state.skirmish_shell_state,
+        &state.frontend.skirmish_shell_state,
         color_schemes,
         state.scenario_catalog.shell_maps(),
         &state.skirmish_modes,
@@ -762,7 +762,7 @@ fn render_skirmish_shell_with_atlas(
             state,
             &layout,
             validation_layout.as_ref(),
-            &state.skirmish_shell_state,
+            &state.frontend.skirmish_shell_state,
             state.scenario_catalog.shell_maps(),
         )
     };
@@ -770,7 +770,7 @@ fn render_skirmish_shell_with_atlas(
         // Mirrors the sprite pass: the setup dialog replaces the chooser, so
         // only one of the two contributes text.
         if let Some(mode) = state
-            .skirmish_shell_state
+            .frontend.skirmish_shell_state
             .saved_seed_browser
             .as_ref()
             .map(|browser| browser.mode)
@@ -781,7 +781,7 @@ fn render_skirmish_shell_with_atlas(
                 choose_map_layout.screen.h as u32,
             );
             push_saved_seed_modal_text_draws(&mut shell_draws, state, &seed_layout);
-        } else if state.skirmish_shell_state.random_map_setup_modal.is_some() {
+        } else if state.frontend.skirmish_shell_state.random_map_setup_modal.is_some() {
             let setup_layout = compute_random_map_setup_layout(
                 choose_map_layout.screen.w as u32,
                 choose_map_layout.screen.h as u32,

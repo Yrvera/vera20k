@@ -218,13 +218,13 @@ fn build_labels<'a>(
         text: resolve_csf(state, "GUI:Continue"),
         rect: owner_draw_button_label_rect(
             layout.continue_button,
-            state.score_shell_state.continue_pressed,
+            state.frontend.score_shell_state.continue_pressed,
         ),
         align: BUTTON_LABEL_ALIGN,
         rgb: SHELL_TEXT_RGB_ENABLED,
         path_a_reveal: None,
     });
-    if state.score_shell_state.continue_hovered {
+    if state.frontend.score_shell_state.continue_hovered {
         out.push(PaintLabel {
             text: resolve_csf(state, "STT:MPScoreButtonContinue"),
             rect: layout.status_help,
@@ -334,7 +334,7 @@ pub(crate) fn render_score_shell(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> Result<ScoreShellRenderResult> {
-    if state.main_menu_shell_chrome.is_none() || state.score_screen.is_none() {
+    if state.frontend.main_menu_shell_chrome.is_none() || state.frontend.score_screen.is_none() {
         return Ok(ScoreShellRenderResult::Fallback);
     }
     let color = state.renderer.shell_surface_presenter.source_render_view();
@@ -361,10 +361,10 @@ fn render_score_shell_to_target(
     target: ShellRenderTarget<'_>,
 ) -> Result<ScoreShellRenderResult> {
     let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
-    let Some(model) = state.score_screen.clone() else {
+    let Some(model) = state.frontend.score_screen.clone() else {
         return Ok(ScoreShellRenderResult::Fallback);
     };
-    let Some(chrome) = state.main_menu_shell_chrome.as_ref() else {
+    let Some(chrome) = state.frontend.main_menu_shell_chrome.as_ref() else {
         return Ok(ScoreShellRenderResult::Fallback);
     };
 
@@ -377,8 +377,8 @@ fn render_score_shell_to_target(
     );
     let buttons = [PaintButton {
         rect: layout.continue_button,
-        pressed: state.score_shell_state.continue_pressed,
-        hovered: state.score_shell_state.continue_hovered,
+        pressed: state.frontend.score_shell_state.continue_pressed,
+        hovered: state.frontend.score_shell_state.continue_hovered,
         enabled: true,
         wave_frame: None,
     }];
@@ -434,7 +434,7 @@ fn render_score_shell_to_target(
         .and_then(|sequence| sequence.frames.first())
         .map(|frame| &frame.texture);
     let chrome = state
-        .main_menu_shell_chrome
+        .frontend.main_menu_shell_chrome
         .as_ref()
         .expect("checked before render");
 

@@ -291,32 +291,32 @@ struct MainMenuCaptureSnapshot {
 
 impl MainMenuCaptureSnapshot {
     fn from_state(state: &AppState) -> Self {
-        let movie_identity = state.main_menu_movie_identity;
+        let movie_identity = state.frontend.main_menu_movie_identity;
         Self {
             width: state.renderer.gpu.config.width,
             height: state.renderer.gpu.config.height,
             main_menu_screen: state.screen == GameScreen::MainMenu,
-            shell_failed: state.main_menu_shell_failed,
-            single_player_active: state.shell_route.single_player(),
-            skirmish_active: state.shell_route.skirmish() || state.dev_skirmish_shell_enabled,
+            shell_failed: state.frontend.main_menu_shell_failed,
+            single_player_active: state.frontend.shell_route.single_player(),
+            skirmish_active: state.frontend.shell_route.skirmish() || state.frontend.dev_skirmish_shell_enabled,
             // The legacy skirmish-setup flag was write-dead (never set after
             // startup); the capture snapshot keeps the field as literal false.
             legacy_skirmish_setup_active: false,
             modal_open: state.main_menu_dialog_open(),
-            quit_active: state.quit_cascade.is_some(),
-            first_paint_slide_active: state.shell_first_paint_slide.is_some(),
-            active_slide_is_main_menu: state.shell_slide_active_shell
+            quit_active: state.frontend.quit_cascade.is_some(),
+            first_paint_slide_active: state.frontend.shell_first_paint_slide.is_some(),
+            active_slide_is_main_menu: state.frontend.shell_slide_active_shell
                 == Some(ShellSlideKind::MainMenu),
             title_terminal_persistent: state
-                .main_menu_shell_state
+                .frontend.main_menu_shell_state
                 .title_reveal
                 .is_terminal_persistent(),
-            movie_loaded: state.main_menu_movie.is_some(),
+            movie_loaded: state.frontend.main_menu_movie.is_some(),
             movie_owner_is_main_menu: movie_identity
                 .is_some_and(|identity| identity.owner() == Ra2tsDialogOwner::MainMenu0xE2),
             movie_base_is_large: movie_identity
                 .is_some_and(|identity| identity.base() == MainMenuMovieBase::Ra2tsL),
-            chrome_loaded: state.main_menu_shell_chrome.is_some(),
+            chrome_loaded: state.frontend.main_menu_shell_chrome.is_some(),
             software_cursor_active: state.use_software_cursor(),
             cursor_x: state.input.cursor_x,
             cursor_y: state.input.cursor_y,
@@ -588,7 +588,7 @@ impl ShellCaptureSession {
         );
         ensure!(
             matches!(
-                state.main_menu_shell_state.title_reveal.paint_window(),
+                state.frontend.main_menu_shell_state.title_reveal.paint_window(),
                 Kind1PaintWindow::Hidden
             ),
             "entry sequence title became visible"
@@ -700,7 +700,7 @@ impl ShellCaptureSession {
             "capture outcome was already recorded"
         );
         ensure!(
-            state.shell_first_paint_slide.is_none(),
+            state.frontend.shell_first_paint_slide.is_none(),
             "entry sequence completion ran before the wave cleared"
         );
         let started_at = self

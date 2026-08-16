@@ -208,7 +208,7 @@ impl ApplicationHandler for App {
         // owns the display. Keep close/resize/redraw operational, but discard
         // player input until the post-present deadline has elapsed.
         if state
-            .startup_splash
+            .frontend.startup_splash
             .as_ref()
             .is_some_and(|splash| splash.is_active(Instant::now()))
             && matches!(
@@ -253,7 +253,7 @@ impl ApplicationHandler for App {
                     // Pump/quit exits write the last durable snapshot after
                     // teardown, without a fresh control pack or RNG draw.
                     Self::teardown_skirmish_shell_for_start(state);
-                    state.offline_skirmish_runtime.persist_snapshot();
+                    state.frontend.offline_skirmish_runtime.persist_snapshot();
                 }
                 event_loop.exit();
             }
@@ -319,7 +319,7 @@ impl ApplicationHandler for App {
                     // not on the stack and keep the direct close.
                     if Self::main_menu_dialog_open(state) {
                         if is_escape {
-                            if state.exit_confirm_modal.is_some() {
+                            if state.frontend.exit_confirm_modal.is_some() {
                                 if !Self::route_exit_confirm_modal_key(state, ShellKey::Escape) {
                                     // Defensive: on_key only fails with an
                                     // empty route — still close consistently.
@@ -344,7 +344,7 @@ impl ApplicationHandler for App {
                     }
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
-                        if state.skirmish_shell_state.choose_map_modal.is_some() {
+                        if state.frontend.skirmish_shell_state.choose_map_modal.is_some() {
                             // Native chooser `0x6B` has no verified Escape
                             // dismissal. Consume the key without applying the
                             // Cancel transaction or changing its selection.
@@ -482,12 +482,12 @@ impl ApplicationHandler for App {
                 }
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
-                    && !state.main_menu_shell_failed
+                    && !state.frontend.main_menu_shell_failed
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
                     // While the SHP quit-confirm modal owns the controller, the menu
                     // move handler must not re-activate 0xE2 and reset the gesture.
-                    && state.exit_confirm_modal.is_none()
+                    && state.frontend.exit_confirm_modal.is_none()
                 {
                     Self::handle_main_menu_shell_mouse_move(state);
                 }
@@ -514,9 +514,9 @@ impl ApplicationHandler for App {
                 // path; the egui fallback and the other egui dialogs (options/movies/
                 // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
-                    if state.exit_confirm_modal.is_some()
+                    if state.frontend.exit_confirm_modal.is_some()
                         && state.screen == GameScreen::MainMenu
-                        && !state.main_menu_shell_failed
+                        && !state.frontend.main_menu_shell_failed
                         && button == MouseButton::Left
                     {
                         if btn_state.is_pressed() {
@@ -552,7 +552,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 } else if state.screen == GameScreen::MainMenu
-                    && !state.main_menu_shell_failed
+                    && !state.frontend.main_menu_shell_failed
                     && !egui_consumed
                 {
                     if button == MouseButton::Left {

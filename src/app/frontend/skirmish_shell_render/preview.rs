@@ -210,7 +210,7 @@ pub(super) fn decode_preview_from_ini(ini: &IniFile, source: &str) -> Option<Dec
 /// generated map and nothing else — before the first generate it stays empty
 /// rather than borrowing whatever the chooser underneath had selected.
 pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> bool {
-    let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_ref() else {
+    let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_ref() else {
         return false;
     };
     let Some(preview) = modal.generated_preview.as_ref() else {
@@ -233,7 +233,7 @@ pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> b
         preview.height,
     );
     state.skirmish_preview_texture = Some(SkirmishPreviewTexture {
-        selected_map_idx: state.skirmish_shell_state.selected_map_idx,
+        selected_map_idx: state.frontend.skirmish_shell_state.selected_map_idx,
         texture,
         width: preview.width,
         height: preview.height,
@@ -246,7 +246,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
     if ensure_random_map_setup_preview_texture(state) {
         return;
     }
-    let selected_map_idx = state.skirmish_shell_state.selected_map_idx;
+    let selected_map_idx = state.frontend.skirmish_shell_state.selected_map_idx;
     let selected_entry = state.scenario_catalog.shell_maps().get(selected_map_idx).cloned();
     let selected_is_random_sentinel = selected_entry
         .as_ref()

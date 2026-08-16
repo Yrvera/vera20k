@@ -107,9 +107,9 @@ fn ra2ts_movie_session_is_reusable(
 /// This models destruction of the owning dialog's child static `0x71A`. The
 /// next movie-bearing dialog reconstructs its own session lazily on first paint.
 pub(crate) fn clear_ra2ts_movie_session(state: &mut AppState) {
-    state.main_menu_movie = None;
-    state.main_menu_movie_identity = None;
-    state.main_menu_movie_last_step = Instant::now();
+    state.frontend.main_menu_movie = None;
+    state.frontend.main_menu_movie_identity = None;
+    state.frontend.main_menu_movie_last_step = Instant::now();
 }
 
 fn push_entry_sized(
@@ -326,8 +326,8 @@ pub(crate) fn ensure_movie_for_current_layout(
     let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     let requested_identity = Ra2tsMovieSessionIdentity::new(requested_owner, layout.movie_base);
     if ra2ts_movie_session_is_reusable(
-        state.main_menu_movie.is_some(),
-        state.main_menu_movie_identity,
+        state.frontend.main_menu_movie.is_some(),
+        state.frontend.main_menu_movie_identity,
         requested_identity,
     ) {
         return Ok(());
@@ -335,7 +335,7 @@ pub(crate) fn ensure_movie_for_current_layout(
     clear_ra2ts_movie_session(state);
 
     let Some(assets) = state.process_assets.manager() else {
-        state.main_menu_shell_failed = true;
+        state.frontend.main_menu_shell_failed = true;
         return Ok(());
     };
     let asset_name = layout.movie_base.asset_name();
@@ -355,7 +355,7 @@ pub(crate) fn ensure_movie_for_current_layout(
         .map(|bytes| (bytes, RA2_SHELL_MOVIE_ARCHIVE));
     let Some((bytes, source)) = preferred.or_else(|| assets.get_with_source_ref(asset_name)) else {
         log::warn!("Missing main-menu RA2TS movie asset {asset_name}");
-        state.main_menu_shell_failed = true;
+        state.frontend.main_menu_shell_failed = true;
         return Ok(());
     };
     if !source.eq_ignore_ascii_case(RA2_SHELL_MOVIE_ARCHIVE) {
@@ -374,7 +374,7 @@ pub(crate) fn ensure_movie_for_current_layout(
         Ok(movie) => movie,
         Err(err) => {
             log::warn!("Failed to load main-menu RA2TS movie {asset_name} from {source}: {err:#}");
-            state.main_menu_shell_failed = true;
+            state.frontend.main_menu_shell_failed = true;
             return Ok(());
         }
     };
@@ -382,9 +382,9 @@ pub(crate) fn ensure_movie_for_current_layout(
         "Loaded {asset_name} for main menu from {}",
         movie.source_archive()
     );
-    state.main_menu_movie = Some(movie);
-    state.main_menu_movie_identity = Some(requested_identity);
-    state.main_menu_movie_last_step = Instant::now();
+    state.frontend.main_menu_movie = Some(movie);
+    state.frontend.main_menu_movie_identity = Some(requested_identity);
+    state.frontend.main_menu_movie_last_step = Instant::now();
     Ok(())
 }
 
@@ -423,7 +423,7 @@ pub(crate) fn render_main_menu_shell(
     destination: &wgpu::Texture,
 ) -> Result<MainMenuShellRenderResult> {
     let (title_window, title_receipt) =
-        match state.main_menu_shell_state.title_reveal.paint_window() {
+        match state.frontend.main_menu_shell_state.title_reveal.paint_window() {
             Kind1PaintWindow::Hidden => (None, None),
             Kind1PaintWindow::Retained(window) => (Some(window), None),
             Kind1PaintWindow::Due { window, receipt } => (Some(window), Some(receipt)),
@@ -475,7 +475,7 @@ pub(crate) fn render_main_menu_first_paint_frame(
                 .renderer.shell_surface_presenter
                 .encode_present(encoder, destination);
             let token = state
-                .shell_first_paint_slide
+                .frontend.shell_first_paint_slide
                 .as_ref()
                 .and_then(|wave| wave.mint_present_token(frame))
                 .ok_or_else(|| {
@@ -495,31 +495,31 @@ fn render_main_menu_shell_to_target_inner(
     entry_frame: Option<MainMenuEntryPaintFrame>,
 ) -> Result<MainMenuShellRenderResult> {
     ensure_movie_for_current_layout(state, Ra2tsDialogOwner::MainMenu0xE2)?;
-    if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
-        state.main_menu_shell_failed = true;
+    if state.frontend.main_menu_shell_failed || state.frontend.main_menu_shell_chrome.is_none() {
+        state.frontend.main_menu_shell_failed = true;
         return Ok(MainMenuShellRenderResult::Fallback);
     }
 
-    if let Some(movie) = state.main_menu_movie.as_mut() {
+    if let Some(movie) = state.frontend.main_menu_movie.as_mut() {
         let now = Instant::now();
         let elapsed = now
-            .duration_since(state.main_menu_movie_last_step)
+            .duration_since(state.frontend.main_menu_movie_last_step)
             .as_secs_f64();
-        state.main_menu_movie_last_step = now;
+        state.frontend.main_menu_movie_last_step = now;
         if let Err(err) = movie.step(&state.renderer.gpu, elapsed) {
             log::warn!("Failed to step main-menu RA2TS movie: {err:#}");
-            state.main_menu_shell_failed = true;
+            state.frontend.main_menu_shell_failed = true;
             return Ok(MainMenuShellRenderResult::Fallback);
         }
     }
 
     let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     let chrome = state
-        .main_menu_shell_chrome
+        .frontend.main_menu_shell_chrome
         .as_ref()
         .expect("checked before render");
     let movie_texture = state
-        .main_menu_movie
+        .frontend.main_menu_movie
         .as_ref()
         .map(|movie| movie.batch_texture())
         .expect("movie loaded before render");
@@ -535,7 +535,7 @@ fn render_main_menu_shell_to_target_inner(
     );
     let buttons = main_menu_paint_buttons(
         &layout,
-        state.main_menu_shell_state.pressed_owner_draw_button,
+        state.frontend.main_menu_shell_state.pressed_owner_draw_button,
         entry_frame,
     );
     // 0xE2 never flashes, so the hover clock is unused (None) — keep the call
@@ -550,13 +550,13 @@ fn render_main_menu_shell_to_target_inner(
     let version_text = format!(
         "{} {}",
         resolve_csf(state, "GUI:Version"),
-        state.version_txt
+        state.frontend.version_txt
     );
     let labels = main_menu_paint_labels(
         state,
         &layout,
-        state.main_menu_shell_state.pressed_owner_draw_button,
-        state.main_menu_shell_state.hovered_owner_draw_button,
+        state.frontend.main_menu_shell_state.pressed_owner_draw_button,
+        state.frontend.main_menu_shell_state.hovered_owner_draw_button,
         &version_text,
         title_window,
     );
@@ -566,7 +566,7 @@ fn render_main_menu_shell_to_target_inner(
     // cursor). `None` when the modal is closed or the skirmish atlas (which holds
     // PUDLGBGN/MNBTTN) is not loaded.
     let modal_overlay = build_exit_confirm_modal_overlay(state);
-    let skirmish_chrome = state.skirmish_shell_chrome.as_ref();
+    let skirmish_chrome = state.frontend.skirmish_shell_chrome.as_ref();
 
     state.renderer.batch_renderer.update_camera(
         &state.renderer.gpu,
@@ -632,7 +632,7 @@ fn render_main_menu_shell_to_target_inner(
     // here (like every other layer) so it outlives the render pass. Only present on
     // the SHP path (the atlas is unavailable on the egui fallback).
     let fade_alpha = state
-        .quit_cascade
+        .frontend.quit_cascade
         .as_ref()
         .map_or(0.0, |cascade| cascade.overlay_alpha());
     let fade_buffer = if fade_alpha > 0.0 {
@@ -799,13 +799,13 @@ const EXIT_CONFIRM_MODAL_DEPTHS: shell_paint::ModalDepths = shell_paint::ModalDe
 /// modal while open). Returns `None` when the modal is closed or its art is absent.
 fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::ModalDraw> {
     use crate::ui::shell::modal;
-    let modal_state = state.exit_confirm_modal.as_ref()?;
-    let atlas = state.skirmish_shell_chrome.as_ref()?;
+    let modal_state = state.frontend.exit_confirm_modal.as_ref()?;
+    let atlas = state.frontend.skirmish_shell_chrome.as_ref()?;
     let layout = modal::quit_confirm_layout(
         state.renderer.gpu.config.width as i32,
         state.renderer.gpu.config.height as i32,
     );
-    let pressed = state.shell_controller.pressed();
+    let pressed = state.frontend.shell_controller.pressed();
     let ok_pressed = pressed == Some(modal::control::OK);
     let cancel_pressed = pressed == Some(modal::control::CANCEL);
     let frames = shell_paint::ModalButtonFrames {

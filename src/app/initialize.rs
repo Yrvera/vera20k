@@ -380,14 +380,22 @@ impl App {
             active_loading_correlation: None,
             loaded_startup: None,
             rust_l0_receipt: None,
+            skirmish_preview_texture: None,
+            loading_screen_atlas: None,
+            loading_progress: crate::app::loading::pump::LoadingProgressState::standard_skirmish(),
+            scenario_outcome: None,
+            scenario_exit: None,
+            loaded_map_source: None,
+            loaded_map_hash: None,
+            frontend_rules: startup_rules,
+            csf: startup_csf,
+            platform: PlatformState::new(window),
+            frontend: crate::app::frontend::state::FrontendState {
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
             offline_skirmish_runtime,
             skirmish_shell_last_painted_pressed_button: None,
             skirmish_shell_chrome,
-            skirmish_preview_texture: None,
-            loading_screen_atlas: None,
-            loading_progress: crate::app::loading::pump::LoadingProgressState::standard_skirmish(),
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             single_player_shell_state:
                 crate::ui::single_player_shell::SinglePlayerShellState::default(),
@@ -398,21 +406,20 @@ impl App {
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
             version_txt,
-            shell_route: Default::default(),
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
             shell_slide_generation: 0,
             quit_cascade: None,
-            scenario_outcome: None,
-            scenario_exit: None,
-            loaded_map_source: None,
-            loaded_map_hash: None,
-            frontend_rules: startup_rules,
-            csf: startup_csf,
+            startup_splash,
+            exit_confirm_modal: None,
+            options_dialog: None,
+            movies_credits_dialog: None,
+            campaign_select: None,
             score_screen: None,
             score_shell_state: Default::default(),
             finished_game_count: 0,
-            platform: PlatformState::new(window),
+            shell_route: Default::default(),
+            },
             match_presentation: crate::app::presentation::state::MatchPresentationState {
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
@@ -568,11 +575,6 @@ impl App {
             sim_speed_tps: crate::app::types::tps_for_game_speed(
                 crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
             ),
-            startup_splash,
-            exit_confirm_modal: None,
-            options_dialog: None,
-            movies_credits_dialog: None,
-            campaign_select: None,
             persistence: crate::app::persistence::PersistenceState::new(),
             diag: crate::app::diagnostics::state::DiagnosticsState {
                 debug_frame_step_requested: false,
@@ -612,7 +614,7 @@ impl App {
             player.set_volume(saved_volume);
         }
 
-        if state.dev_skirmish_shell_enabled {
+        if state.frontend.dev_skirmish_shell_enabled {
             Self::ensure_active_cooperative_shell_selection(&mut state);
         }
 

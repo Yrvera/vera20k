@@ -469,7 +469,7 @@ fn static_reveal_window(
 /// label strings (title / game-type / map-label). Shared by the renderer and
 /// the reveal-start trigger so both resolve identical text.
 pub(crate) fn skirmish_right_panel_label_strings(state: &AppState) -> (String, String, String) {
-    let shell = &state.skirmish_shell_state;
+    let shell = &state.frontend.skirmish_shell_state;
     let title = localized_label(state, "GUI:SkirmishGame", "Skirmish Game");
     let game_type = state
         .skirmish_modes
@@ -830,7 +830,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
     state: &AppState,
     layout: &RandomMapSetupLayout,
 ) {
-    let Some(modal) = state.skirmish_shell_state.random_map_setup_modal.as_ref() else {
+    let Some(modal) = state.frontend.skirmish_shell_state.random_map_setup_modal.as_ref() else {
         return;
     };
 
@@ -961,7 +961,7 @@ pub(super) fn push_choose_map_modal_text_draws(
     state: &AppState,
     layout: &ChooseMapModalLayout,
 ) {
-    let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_ref() else {
+    let Some(modal) = state.frontend.skirmish_shell_state.choose_map_modal.as_ref() else {
         return;
     };
 
@@ -1032,7 +1032,7 @@ pub(super) fn push_choose_map_modal_text_draws(
         );
     }
 
-    if let Some(status_help_text) = choose_map_modal_status_help_text(&state.skirmish_shell_state) {
+    if let Some(status_help_text) = choose_map_modal_status_help_text(&state.frontend.skirmish_shell_state) {
         push_label_draw(
             out,
             state,
@@ -1099,7 +1099,7 @@ pub(super) fn push_validation_modal_text_draws(
     layout: &ValidationModalLayout,
     pressed: bool,
 ) {
-    let Some(modal) = state.skirmish_shell_state.validation_modal.as_ref() else {
+    let Some(modal) = state.frontend.skirmish_shell_state.validation_modal.as_ref() else {
         return;
     };
     let body = [PaintLabel {
@@ -1329,7 +1329,7 @@ pub(super) fn push_saved_seed_modal_text_draws(
     state: &AppState,
     layout: &SavedSeedLayout,
 ) {
-    let Some(browser) = state.skirmish_shell_state.saved_seed_browser.as_ref() else {
+    let Some(browser) = state.frontend.skirmish_shell_state.saved_seed_browser.as_ref() else {
         return;
     };
     let (title_key, title_fallback) = browser.mode.title_label();

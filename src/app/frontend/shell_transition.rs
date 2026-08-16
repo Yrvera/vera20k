@@ -103,10 +103,10 @@ struct ShellLifecycleReducer<'a> {
 impl<'a> ShellLifecycleReducer<'a> {
     fn from_state(state: &'a mut AppState) -> Self {
         Self {
-            active_shell: &mut state.shell_slide_active_shell,
-            first_paint_slide: &mut state.shell_first_paint_slide,
-            slide_generation: &mut state.shell_slide_generation,
-            title_reveal: &mut state.main_menu_shell_state.title_reveal,
+            active_shell: &mut state.frontend.shell_slide_active_shell,
+            first_paint_slide: &mut state.frontend.shell_first_paint_slide,
+            slide_generation: &mut state.frontend.shell_slide_generation,
+            title_reveal: &mut state.frontend.main_menu_shell_state.title_reveal,
         }
     }
 
@@ -204,7 +204,7 @@ impl<'a> ShellLifecycleReducer<'a> {
 /// and keep animating afterwards, when that renderer no longer runs.
 pub(crate) fn advance_shell_static_reveals(state: &mut AppState) {
     state
-        .skirmish_shell_state
+        .frontend.skirmish_shell_state
         .advance_right_panel_static_reveals(Instant::now());
 }
 
@@ -223,10 +223,10 @@ pub(crate) fn invalidate_main_menu_dialog_instance(state: &mut AppState) {
 /// before its own successful presentation.
 pub(crate) fn poll_main_menu_title_reveal(state: &mut AppState) {
     if current_shell_slide_target(state) == Some(ShellSlideKind::MainMenu)
-        && state.shell_first_paint_slide.is_none()
+        && state.frontend.shell_first_paint_slide.is_none()
     {
         state
-            .main_menu_shell_state
+            .frontend.main_menu_shell_state
             .title_reveal
             .poll_timer(Instant::now());
     }
@@ -234,7 +234,7 @@ pub(crate) fn poll_main_menu_title_reveal(state: &mut AppState) {
 
 pub(crate) fn current_main_menu_entry_frame(state: &AppState) -> Option<MainMenuEntryPaintFrame> {
     state
-        .shell_first_paint_slide
+        .frontend.shell_first_paint_slide
         .as_ref()
         .and_then(ShellFrameWave::current_main_menu_frame)
 }
@@ -248,14 +248,14 @@ pub(crate) fn record_main_menu_entry_presented(
     let generation = token.generation();
     let tick = token.tick();
     if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu) {
-        if let Some(wave) = state.shell_first_paint_slide.as_mut() {
+        if let Some(wave) = state.frontend.shell_first_paint_slide.as_mut() {
             wave.poison_presented();
         }
         bail!(
             "main-menu present token {generation}:{tick} committed after route ownership changed"
         );
     }
-    let Some(wave) = state.shell_first_paint_slide.as_mut() else {
+    let Some(wave) = state.frontend.shell_first_paint_slide.as_mut() else {
         bail!("main-menu present token {generation}:{tick} has no active wave");
     };
     if let Err(error) = wave.record_presented(token, Instant::now()) {
@@ -269,8 +269,8 @@ pub(crate) fn blocks_shell_input(state: &AppState) -> bool {
     // The graceful quit cascade also freezes shell input (the original processes
     // no input during its blocking teardown), so a stray click can't re-enter the
     // menu mid-fade.
-    state.quit_cascade.is_some()
-        || transition_blocks_shell_input(state.shell_first_paint_slide.as_ref())
+    state.frontend.quit_cascade.is_some()
+        || transition_blocks_shell_input(state.frontend.shell_first_paint_slide.as_ref())
 }
 
 pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>) -> bool {
@@ -279,14 +279,14 @@ pub(crate) fn transition_blocks_shell_input(transition: Option<&ShellFrameWave>)
 
 pub(crate) fn main_menu_presented_wake_deadline(state: &AppState) -> Option<Instant> {
     state
-        .shell_first_paint_slide
+        .frontend.shell_first_paint_slide
         .as_ref()
         .and_then(ShellFrameWave::presented_wake_deadline)
 }
 
 pub(crate) fn main_menu_presented_is_poisoned(state: &AppState) -> bool {
     state
-        .shell_first_paint_slide
+        .frontend.shell_first_paint_slide
         .as_ref()
         .is_some_and(ShellFrameWave::is_presented_poisoned)
 }
@@ -303,11 +303,11 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
         return None;
     }
     let candidate =
-        if state.shell_route.skirmish() || state.dev_skirmish_shell_enabled {
+        if state.frontend.shell_route.skirmish() || state.frontend.dev_skirmish_shell_enabled {
             ShellSlideKind::Skirmish
-        } else if state.shell_route.single_player() {
+        } else if state.frontend.shell_route.single_player() {
             ShellSlideKind::SinglePlayer
-        } else if !state.main_menu_shell_failed {
+        } else if !state.frontend.main_menu_shell_failed {
             ShellSlideKind::MainMenu
         } else {
             return None;
@@ -320,10 +320,10 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
 pub(crate) fn prepare_main_menu_first_paint_before_acquire(state: &mut AppState) {
     let target = current_shell_slide_target(state);
     if target == Some(ShellSlideKind::MainMenu) {
-        if state.shell_slide_active_shell != target {
+        if state.frontend.shell_slide_active_shell != target {
             ShellLifecycleReducer::from_state(state).observe_target(target, Instant::now());
         }
-    } else if state.shell_slide_active_shell == Some(ShellSlideKind::MainMenu) {
+    } else if state.frontend.shell_slide_active_shell == Some(ShellSlideKind::MainMenu) {
         ShellLifecycleReducer::from_state(state).observe_target(None, Instant::now());
     }
 }
@@ -336,7 +336,7 @@ pub(crate) fn poll_main_menu_first_paint_before_acquire(
     if current_shell_slide_target(state) != Some(ShellSlideKind::MainMenu) {
         return Ok(MainMenuFirstPaintPoll::Acquire);
     }
-    let Some(wave) = state.shell_first_paint_slide.as_mut() else {
+    let Some(wave) = state.frontend.shell_first_paint_slide.as_mut() else {
         return Ok(MainMenuFirstPaintPoll::Acquire);
     };
     let Some(poll) = wave.poll_presented(now) else {
@@ -370,7 +370,7 @@ pub(crate) fn activate_shell_first_paint_after_acquire(state: &mut AppState) {
     let target = current_shell_slide_target(state);
     if target == Some(ShellSlideKind::MainMenu) {
         if state
-            .shell_first_paint_slide
+            .frontend.shell_first_paint_slide
             .as_mut()
             .is_some_and(ShellFrameWave::activate_after_acquire)
         {
@@ -394,13 +394,13 @@ pub(crate) fn render_shell_first_paint_slide(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> Result<ShellFirstPaintRenderResult> {
-    if state.shell_first_paint_slide.is_none() {
+    if state.frontend.shell_first_paint_slide.is_none() {
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     }
     let Some(kind) = current_shell_slide_target(state) else {
         // No eligible shell is showing; drop the stale wave and let the normal
         // dispatch paint this frame.
-        state.shell_first_paint_slide = None;
+        state.frontend.shell_first_paint_slide = None;
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     };
 
@@ -419,7 +419,7 @@ pub(crate) fn render_shell_first_paint_slide(
                 })
             }
             crate::app::frontend::main_menu_shell_render::MainMenuEntryRenderResult::Fallback => {
-                state.shell_first_paint_slide = None;
+                state.frontend.shell_first_paint_slide = None;
                 Ok(ShellFirstPaintRenderResult::NotRendered)
             }
         };
@@ -431,7 +431,7 @@ pub(crate) fn render_shell_first_paint_slide(
         ShellSlideKind::Skirmish => {
             if !crate::app::App::ensure_skirmish_shell_chrome(state) {
                 log::warn!("Skirmish shell chrome unavailable; cancelling first-paint slide");
-                state.shell_first_paint_slide = None;
+                state.frontend.shell_first_paint_slide = None;
                 return Ok(ShellFirstPaintRenderResult::NotRendered);
             }
             let color = state.renderer.shell_surface_presenter.source_render_view();
@@ -464,7 +464,7 @@ pub(crate) fn render_shell_first_paint_slide(
     if !rendered {
         // Shell fell back (assets missing): abandon the slide so the normal
         // dispatch can render the fallback path with its egui overlays.
-        state.shell_first_paint_slide = None;
+        state.frontend.shell_first_paint_slide = None;
         return Ok(ShellFirstPaintRenderResult::NotRendered);
     }
 
@@ -478,7 +478,7 @@ pub(crate) fn render_shell_first_paint_slide(
             let (title, game_type, map_label) =
                 crate::app::frontend::skirmish_shell_render::skirmish_right_panel_label_strings(state);
             state
-                .skirmish_shell_state
+                .frontend.skirmish_shell_state
                 .start_right_panel_static_reveals(&title, &game_type, &map_label, now);
         }
         Some(ShellWaveCompletion::SinglePlayer) | None => {}
