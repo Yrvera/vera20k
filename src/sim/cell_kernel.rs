@@ -9,7 +9,7 @@ use crate::util::lepton::{
     GROUND_LEVEL_HEIGHT_LEPTONS, UnsupportedGroundSlope, ground_height_leptons,
 };
 
-pub const LEPTONS_PER_CELL: i32 = 256;
+pub const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 pub const CELL_CENTER_LEPTONS: i32 = 128;
 pub const INFANTRY_OCCUPATION_VEHICLE_BIT: u8 = 0x20;
 pub const INFANTRY_OCCUPATION_OBJECT_BIT: u8 = 0x40;

@@ -2261,7 +2261,7 @@ fn trimmed_centroid_leptons(points: &[(i64, i64)]) -> Option<(i64, i64)> {
 }
 
 /// Leptons per cell.
-const LEPTONS_PER_CELL: i64 = 256;
+const LEPTONS_PER_CELL: i64 = crate::util::lepton::LEPTONS_PER_CELL_I32 as i64;
 
 /// Live members of a control group, in the sim's iteration order.
 fn live_group_members(state: &AppState, group: &[u64]) -> Vec<u64> {

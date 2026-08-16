@@ -470,7 +470,7 @@ fn presentation_anim_frame_count(
 fn anim_world_render_coords(
     world: crate::sim::anim_class::AnimWorldCoord,
 ) -> (f32, f32, u16, u16, u8) {
-    const CELL_LEPTONS: i32 = 256;
+    const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
     const HEIGHT_LEVEL_LEPTONS: i32 = 128;
     let rx = world
         .x

@@ -381,7 +381,7 @@ pub struct TerrainTileAnimation {
 }
 
 /// Leptons per cell along one map axis.
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 /// Cell-centre offset used by the tile-animation spawn coordinate.
 const CELL_CENTRE_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
 

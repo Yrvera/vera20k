@@ -45,7 +45,7 @@ pub const GROUND_LEVEL_UNIT_SCALE: i32 = 250;
 pub const POINT_LIGHT_UNIT_SCALE: i32 = LIGHT_UNIT;
 
 /// Leptons per cell in RA2's coordinate system.
-pub const LEPTONS_PER_CELL: i32 = 256;
+pub const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 
 const HALF_CELL_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
 const BOTTOM_LEVEL_OFFSET: i32 = 4;

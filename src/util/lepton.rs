@@ -20,6 +20,13 @@ use crate::util::fixed_math::{SIM_ZERO, SimFixed};
 /// Number of leptons per cell (256). This is RA2's fundamental spatial unit ratio.
 pub const LEPTONS_PER_CELL: SimFixed = SimFixed::lit("256");
 
+/// Integer form of the leptons-per-cell ratio, for shift/divide coordinate
+/// math. The single authority for the value 256 across the crate — modules
+/// that want a local name or width (`i64`, hex) derive from this constant
+/// instead of re-declaring the literal. A test pins it equal to the
+/// `SimFixed` form above.
+pub const LEPTONS_PER_CELL_I32: i32 = 256;
+
 /// Lepton offset for the center of a cell (128). Default sub-cell position.
 pub const CELL_CENTER_LEPTON: SimFixed = SimFixed::lit("128");
 
@@ -311,6 +318,11 @@ pub fn cell_delta_to_lepton_dir(dx: i32, dy: i32) -> (SimFixed, SimFixed, SimFix
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_and_fixed_leptons_per_cell_agree() {
+        assert_eq!(LEPTONS_PER_CELL, SimFixed::from_num(LEPTONS_PER_CELL_I32));
+    }
     use crate::map::terrain;
 
     #[test]

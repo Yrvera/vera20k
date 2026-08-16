@@ -604,7 +604,7 @@ enum ActionDistanceTarget {
 }
 
 /// Leptons per cell — a cell centre sits half a cell in on both axes.
-const LEPTONS_PER_CELL: i64 = 256;
+const LEPTONS_PER_CELL: i64 = crate::util::lepton::LEPTONS_PER_CELL_I32 as i64;
 
 /// World point in leptons for one entity, including altitude when terrain is
 /// resolved. gamemd's resolver reads the object's full 3-D world coordinate.

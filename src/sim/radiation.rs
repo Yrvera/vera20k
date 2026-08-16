@@ -25,7 +25,7 @@ use crate::rules::ruleset::RadiationRules;
 use crate::util::lepton::{UnsupportedGroundSlope, ground_height_leptons};
 
 /// Leptons per cell edge (cell-center to cell-center step).
-const LEPTONS_PER_CELL: i64 = 256;
+const LEPTONS_PER_CELL: i64 = crate::util::lepton::LEPTONS_PER_CELL_I32 as i64;
 
 /// Fallback square bound when no terrain grid is loaded (headless tests):
 /// the engine-native full grid extent.

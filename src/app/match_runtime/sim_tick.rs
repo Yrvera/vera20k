@@ -406,7 +406,7 @@ fn build_score_screen_model(
 }
 
 fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f32, f32) {
-    const CELL_LEPTONS: i32 = 256;
+    const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
     const HEIGHT_LEVEL_LEPTONS: i32 = 128;
     let rx = world
         .x

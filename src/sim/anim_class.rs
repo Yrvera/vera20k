@@ -30,7 +30,7 @@ pub struct AnimWorldCoord {
     pub z: i32,
 }
 
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;
 const BUILDING_RENDER_ORIGIN_LEPTONS: i32 = 128;

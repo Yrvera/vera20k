@@ -31,7 +31,7 @@ pub struct PreviewImage {
 }
 
 /// Leptons per cell; a cell centre sits half a cell in on both axes.
-const LEPTONS_PER_CELL: i32 = 0x100;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const CELL_CENTRE_LEPTONS: i32 = 0x80;
 /// Projection scales — the isometric tile is 60x30, and the transform halves
 /// both before the fixed-point shift.

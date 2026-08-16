@@ -23,7 +23,7 @@ const RTTI_PARTICLE_SYSTEM: i32 = 0x18;
 const RTTI_TERRAIN: i32 = 0x24;
 const RTTI_WAVE: i32 = 0x240;
 const SYNC_EXEMPT_ANIM_ID: i32 = -2;
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const CELL_CENTER_LEPTON: i32 = 128;
 const WAVE_EXTENDED_ENDPOINT_SCALE: NativeF32Bits = NativeF32Bits::from_bits(0x3f86_6666);
 

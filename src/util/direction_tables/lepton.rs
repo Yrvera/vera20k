@@ -7,7 +7,7 @@
 
 use super::cell::CELL_DELTAS;
 
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 
 /// 8-direction lepton-delta table = `CELL_DELTAS[i] * 256`, compass order.
 /// Const-derived from the (proven-identical) cell table so it cannot drift.
@@ -30,7 +30,13 @@ pub fn lepton_delta(dir: u8) -> Option<(i32, i32)> {
 }
 
 /// Signed lepton→cell toward zero, matching gamemd `(v + (v>>31 & 0xFF)) >> 8`.
-pub fn lepton_to_cell(v: i32) -> i32 {
+///
+/// The single implementation of this conversion in the crate (F14): sim
+/// callers (`mission::readiness::native_lepton_cell`,
+/// `movement::group_destination`) delegate here rather than re-deriving the
+/// signum correction — the naive `v / 256` or bare `>> 8` differ on negative
+/// leptons.
+pub const fn lepton_to_cell(v: i32) -> i32 {
     (v + ((v >> 31) & 0xFF)) >> 8
 }
 

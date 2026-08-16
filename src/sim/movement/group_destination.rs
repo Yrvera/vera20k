@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::util::native_x87::{NativeF32Bits, NativeF64Bits, X87Chop53, sqrt_approx_f32};
+use crate::util::direction_tables::lepton_to_cell;
 
 const MAX_CANDIDATE_PROBES: usize = 6;
 
@@ -205,10 +206,6 @@ fn distance_3d(lhs: [i32; 3], rhs: [i32; 3]) -> i32 {
     let root =
         X87Chop53::load_f32(root_bits).expect("Sqrt_Approx always returns a finite normal or zero");
     X87Chop53::ftol_i64(root).expect("map-space distance fits a signed integer") as i32
-}
-
-fn lepton_to_cell(value: i32) -> i32 {
-    value.wrapping_add((value >> 31) & 255) >> 8
 }
 
 fn normalized_step(direction: (i32, i32)) -> (NativeF32Bits, NativeF32Bits) {
