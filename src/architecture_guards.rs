@@ -375,7 +375,7 @@ fn contains_crate_ref(text: &str, root: &str) -> bool {
     false
 }
 
-/// Brace-grouped `use crate::{...}` paths (`use crate::{init::X, ui::Y}`)
+/// Brace-grouped `use crate::{...}` paths (`use crate::{app_init::X, ui::Y}`)
 /// hide the root from `contains_crate_ref`; walk each group's top-level
 /// segments. Found in the wild at ui/main_menu.rs before F06 closed it.
 fn group_contains_root(text: &str, root: &str) -> bool {

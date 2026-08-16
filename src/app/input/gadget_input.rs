@@ -52,7 +52,7 @@ const SCROLL_FLAGS: u16 = 0x0055;
 const IN_GAME_LIST: ListId = ListId(1);
 
 /// What the in-game gadget walk did with a mouse edge (A3 routing). The caller
-/// (`core::handle_mouse_input`) dispatches on this instead of a bare bool.
+/// (`input::dispatch::handle_mouse_input`) dispatches on this instead of a bare bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GadgetConsume {
     /// Nothing on the list consumed it — fall through to the legacy path.

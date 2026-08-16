@@ -249,7 +249,14 @@ def repository_root() -> Path:
 
 
 def repository_contract_path() -> Path:
-    return repository_root() / "src" / "app_tactical_capture_contract.v1.json"
+    return (
+        repository_root()
+        / "src"
+        / "app"
+        / "diagnostics"
+        / "tactical_capture"
+        / "contract.v1.json"
+    )
 
 
 def _exact_object(value: Any, keys: tuple[str, ...], field: str) -> Mapping[str, Any]:

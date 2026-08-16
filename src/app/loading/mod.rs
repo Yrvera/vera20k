@@ -3,7 +3,7 @@
 //! transition into InGame.
 
 pub(crate) mod composition;
-pub mod init;
+pub(crate) mod init;
 pub(crate) mod init_helpers;
 pub(crate) mod progress_row;
 pub(crate) mod pump;

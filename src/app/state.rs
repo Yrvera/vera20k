@@ -381,7 +381,7 @@ pub(crate) struct AppState {
     /// keeps every consumer reading one field while the position stops bleeding
     /// across tabs.
     pub(crate) sidebar_scroll_rows: usize,
-    /// Parked scroll row per sidebar tab, indexed by `core::tab_scroll_slot`.
+    /// Parked scroll row per sidebar tab, indexed by `input::dispatch::tab_scroll_slot`.
     /// One entry per `SidebarTab` variant.
     pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Process-wide asset ownership (F11): the one retail MIX manager for

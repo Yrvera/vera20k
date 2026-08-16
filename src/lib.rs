@@ -49,8 +49,6 @@ pub mod util;
 // The app orchestrator. Public for testing but not intended for direct use.
 pub mod app;
 
-// App initialization helpers — map loading, entity spawning, asset loading.
-// Extracted from app.rs to keep the orchestrator under 600 lines.
 /// Headless retail-scenario loading for parity runs (no GPU, no window).
 pub mod headless_scenario;
 pub mod match_bootstrap;
@@ -61,82 +59,6 @@ pub mod skirmish_launch;
 pub mod skirmish_modes;
 pub mod skirmish_persistence;
 
-// Shared type definitions and constants used across app_* modules.
-// Extracted from app_render.rs to decouple type imports from rendering.
-
-// In-game rendering — terrain tiles, unit sprites, SHP sprites.
-// Extracted from app.rs to keep the orchestrator under 600 lines.
-
-// In-game input handling — mouse clicks, hotkeys, sidebar interactions.
-// Extracted from app_render.rs to keep files under 400 lines.
-
-// Paused in-game Options (0xBBB) overlay mouse routing + the close/apply/persist
-// path (Slice 5a-iii interaction).
-
-// Context-sensitive order resolution — click-to-command decision tree.
-// Extracted from app_input.rs to separate order logic from raw input handling.
-
-// Entity picking, hover-target resolution, and selection snapshots.
-// Extracted from app_render.rs to keep files under 400 lines.
-
-// Sidebar rendering — view construction, minimap, chrome helpers.
-// Extracted from app_render.rs to keep files under 400 lines.
-
-// Sidebar sprite instance builders — slots, chrome, cameos, text.
-// Extracted from app_sidebar_render.rs to keep files under 400 lines.
-
-// Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
-
-// In-game gadget substrate driver: retained sidebar button list, mouse-edge +
-// idle ticks, fired-ID application, pressed-bit publication.
-
-// Tooltip service driver: wall clock, event feeds, region sync, draw build.
-
-// Chat/system message surface driver: posts, expiry, draw build.
-
-// Build/production commands and owner management.
-// Extracted from app_render.rs.
-
-// Simulation tick loop, triggers, atlas refresh, path grid rebuild.
-// Extracted from app_render.rs.
-
-// Camera positioning — keyboard scroll, edge scroll, clamping.
-// Extracted from app_sim_tick.rs.
-
-// Building animation lifecycle, damage fires, sidebar UI tick, sound playback.
-// Extracted from app_sim_tick.rs.
-
-// Weapon fire presentation: non-garrison muzzle flashes and FLH-positioned reports.
-
-// App-owned presentation runtime for the native transient combat-light vector.
-
-// Parachute SHP animation lifecycle for descending paradropped infantry.
-
-// App state transitions: map loading, screen clearing.
-
-// Cursor feedback analysis and software cursor frame selection.
-
-// UI overlay builders — status bars, software cursor.
-// Extracted from app_render.rs.
-
-// Isometric 3D selection bracket lines for buildings.
-
-// Target/action lines — colored lines from units to command destinations.
-
-// Legacy egui-based sidebar text overlay kept as fallback/reference.
-
-// Per-frame instance builders — units, sprites, overlays.
-// Extracted from app_render.rs to keep files under 600 lines.
-
-// Spawn-pick phase — player chooses their starting position on the map.
-
-// Debug visualization overlays — pathgrid walkability, terrain costs.
-// Toggled via hotkeys (P / F9 = pathgrid).
-// Debug info panel — egui overlay with PathGrid/entity info (shown with pathgrid overlay).
-// Save/load panel — egui overlay for managing save files (F5).
-// Developer overlay — egui panel with runtime knobs, diagnostics,
-// and save/load helpers. Toggled with backtick (`).
-// Explicit presentation index over dynamic overlay cells (F08).
 // Source-level dependency guards for the domain-boundaries ledger.
 #[cfg(test)]
 mod architecture_guards;
