@@ -281,7 +281,7 @@ pub struct ResolvedTerrainCell {
     /// initialize `BridgeRuntimeCell.bridgehead_anchor_class` instead of
     /// the unconditional Variant0 default. None defaults to Variant0
     /// sim-side.
-    pub bridgehead_anchor_class_at_load: Option<crate::sim::bridge_state::BridgeheadAnchorClass>,
+    pub bridgehead_anchor_class_at_load: Option<crate::map::bridge_facts::BridgeheadAnchorClass>,
 }
 
 impl ResolvedTerrainCell {
