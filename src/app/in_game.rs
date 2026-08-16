@@ -477,7 +477,7 @@ impl App {
                 log::info!("Game speed: {} tps", state.sim_speed_tps);
             }
             DevOverlayAction::ResetGameSpeed => {
-                state.sim_speed_tps = crate::app_types::default_yr_skirmish_tps();
+                state.sim_speed_tps = crate::app::types::default_yr_skirmish_tps();
                 log::info!("Game speed reset to {} tps", state.sim_speed_tps);
             }
             DevOverlayAction::SetMusicVolume(v) => {
@@ -575,7 +575,7 @@ impl App {
     /// completion and then exits the event loop.
     pub(super) fn start_quit_cascade(state: &mut AppState) {
         let start_volume = state.music_player.as_ref().map_or(0.0, |p| p.volume());
-        state.quit_cascade = Some(crate::app_quit_cascade::QuitCascade::start(
+        state.quit_cascade = Some(crate::app::frontend::quit_cascade::QuitCascade::start(
             Instant::now(),
             start_volume,
         ));

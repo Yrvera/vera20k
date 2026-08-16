@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::app::AppState;
-use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
+use crate::app::frontend::shell_transition::{ButtonGroup, ShellFrameWave};
 use crate::render::batch::SpriteInstance;
 use crate::render::shell_paint::{
     self, ArtFit, ButtonPolicy, CURSOR_DEPTH, MOVIE_DEPTH, PaintButton, PaintLabel,
@@ -157,7 +157,7 @@ fn movie_instance(layout: &SinglePlayerShellLayout) -> SpriteInstance {
 /// cursor is hidden process-wide, so without this the shell shows no pointer.
 fn shell_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     let cursor = state.software_cursor.as_ref()?;
-    let sequence = cursor.get(crate::app_types::CursorId::Default)?;
+    let sequence = cursor.get(crate::app::types::CursorId::Default)?;
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
@@ -179,9 +179,9 @@ pub(crate) fn render_single_player_shell(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> Result<SinglePlayerShellRenderResult> {
-    crate::app_main_menu_shell_render::ensure_movie_for_current_layout(
+    crate::app::frontend::main_menu_shell_render::ensure_movie_for_current_layout(
         state,
-        crate::app_main_menu_shell_render::Ra2tsDialogOwner::SinglePlayer0x100,
+        crate::app::frontend::main_menu_shell_render::Ra2tsDialogOwner::SinglePlayer0x100,
     )?;
     if state.main_menu_shell_failed || state.main_menu_shell_chrome.is_none() {
         state.main_menu_shell_failed = true;
@@ -274,7 +274,7 @@ pub(crate) fn render_single_player_shell(
     let cursor_texture = state
         .software_cursor
         .as_ref()
-        .and_then(|cursor| cursor.get(crate::app_types::CursorId::Default))
+        .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())
         .map(|frame| &frame.texture);
 
@@ -285,7 +285,7 @@ pub(crate) fn render_single_player_shell(
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(crate::app_types::CLEAR_COLOR),
+                load: wgpu::LoadOp::Clear(crate::app::types::CLEAR_COLOR),
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn gsi_13_26_single_player_steady_frame_uses_rgb565_presenter_after_full_composition() {
-        let source = include_str!("app_single_player_shell_render.rs");
+        let source = include_str!("single_player_shell_render.rs");
         let production = source
             .split_once("#[cfg(test)]")
             .expect("test module follows production renderer")
@@ -427,7 +427,7 @@ mod tests {
         assert!(cursor < pass_end);
         assert!(pass_end < present);
 
-        let app_source = include_str!("app/frame.rs");
+        let app_source = include_str!("../frame.rs");
         let dispatch = &app_source[app_source
             .find("else if Self::single_player_shell_active(state)")
             .expect("single-player steady dispatch")..];

@@ -85,8 +85,8 @@ impl App {
         // 0x100. Invalidate at the route edge rather than waiting for a paint:
         // a queued Back/Escape can otherwise return to 0xE2 before 0x100 draws
         // and incorrectly preserve the old main-menu movie timeline.
-        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
-        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
+        crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app::frontend::shell_transition::invalidate_main_menu_dialog_instance(state);
         state.shell_route = crate::app::shell_route::ShellRoute::SinglePlayer;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -98,8 +98,8 @@ impl App {
         // Result 0x12 destroys 0x100 before the main-menu loop constructs a new
         // 0xE2. Clear immediately so a same-event-loop round trip cannot reuse
         // the source dialog's movie session.
-        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
-        crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
+        crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app::frontend::shell_transition::invalidate_main_menu_dialog_instance(state);
         state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
@@ -118,7 +118,7 @@ impl App {
         // Native destroys dialog 0x100 and its child 0x71A movie handle before
         // constructing 0x102. Drop the hidden Rust session as well so returning
         // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
-        crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+        crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         state.shell_route = crate::app::shell_route::ShellRoute::Skirmish {
             return_to_single_player: true,
         };
@@ -733,7 +733,7 @@ impl App {
             .main_menu_movie_identity
             .is_some_and(|identity| identity.base() != movie_base)
         {
-            crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
+            crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         }
     }
 }

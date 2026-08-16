@@ -35,7 +35,7 @@ pub(crate) struct AppState {
     pub(crate) tile_atlas: Option<TileAtlas>,
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
-    pub(crate) loaded_map_source: Option<crate::app_list_maps::LoadedMapSource>,
+    pub(crate) loaded_map_source: Option<crate::app::frontend::list_maps::LoadedMapSource>,
     /// Deterministic digest of the parsed source map INI. `None` only for
     /// generated/fallback worlds without an authoritative source-map payload.
     pub(crate) loaded_map_hash: Option<u64>,
@@ -108,7 +108,7 @@ pub(crate) struct AppState {
     pub(crate) hotkey_bindings: crate::app::input::hotkeys::HotkeyBindings,
     pub(crate) hotkey_modifiers: ModifiersState,
     /// Hybrid held/tap state for the retail TypeSelect command.
-    pub(crate) type_select: crate::app_types::TypeSelectInputState,
+    pub(crate) type_select: crate::app::types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
     /// Previous presented pre-cursor composition, retained for input-time
@@ -149,7 +149,7 @@ pub(crate) struct AppState {
     pub(crate) skirmish_shell_state: crate::ui::skirmish_shell::SkirmishShellState,
     /// Process-lifetime offline shell snapshot, Scenario cursor, and
     /// Cooperative progress authority.
-    pub(crate) offline_skirmish_runtime: crate::app_skirmish_session::OfflineSkirmishRuntime,
+    pub(crate) offline_skirmish_runtime: crate::app::frontend::skirmish_session::OfflineSkirmishRuntime,
     /// Last owner-draw Skirmish button state observed by the native render path.
     /// Used for the retail GenericClick paint-transition sound.
     pub(crate) skirmish_shell_last_painted_pressed_button:
@@ -163,7 +163,7 @@ pub(crate) struct AppState {
     /// Exact setup-generated map retained through OK until loading owns it.
     pub(crate) random_map_retention: RandomMapGenerationRetention,
     pub(crate) skirmish_preview_texture:
-        Option<crate::app_skirmish_shell_render::SkirmishPreviewTexture>,
+        Option<crate::app::frontend::skirmish_shell_render::SkirmishPreviewTexture>,
     /// Minimap renderer — created at map load time.
     pub(crate) loading_screen_atlas:
         Option<crate::render::loading_screen_chrome::LoadingScreenAtlas>,
@@ -179,7 +179,7 @@ pub(crate) struct AppState {
         Option<crate::render::main_menu_shell_chrome::MainMenuShellChromeAtlas>,
     pub(crate) main_menu_movie: Option<crate::render::bink_movie::BinkMovieSurface>,
     pub(crate) main_menu_movie_identity:
-        Option<crate::app_main_menu_shell_render::Ra2tsMovieSessionIdentity>,
+        Option<crate::app::frontend::main_menu_shell_render::Ra2tsMovieSessionIdentity>,
     pub(crate) main_menu_movie_last_step: Instant,
     pub(crate) main_menu_shell_failed: bool,
     /// Numeric internal-version string used by the bottom-right main-menu line.
@@ -191,17 +191,17 @@ pub(crate) struct AppState {
     /// Active shell first-paint controls-reveal slide (presentation only). gamemd
     /// plays this on the first paint of every shell dialog (menu / single-player /
     /// skirmish); the wave swaps each owner-draw button's SDBTNANM frame index.
-    pub(crate) shell_first_paint_slide: Option<crate::app_shell_transition::ShellFrameWave>,
+    pub(crate) shell_first_paint_slide: Option<crate::app::frontend::shell_transition::ShellFrameWave>,
     /// Which shell dialog the first-paint slide last fired for. Drives per-frame
     /// edge detection so the slide (re)starts on entry into each shell and is
     /// cancelled on leaving all of them.
-    pub(crate) shell_slide_active_shell: Option<crate::app_shell_transition::ShellSlideKind>,
+    pub(crate) shell_slide_active_shell: Option<crate::app::frontend::shell_transition::ShellSlideKind>,
     /// Monotonic identity for each newly armed exact Main Menu `0xE2` instance.
     pub(crate) shell_slide_generation: u64,
     /// Active graceful quit cascade (music fade → trailing-voice wait → hard stop
     /// → exit). Some only between Exit-confirm OK and window close; freezes shell
     /// input while it runs.
-    pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
+    pub(crate) quit_cascade: Option<crate::app::frontend::quit_cascade::QuitCascade>,
     /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
     /// result and SavourDelay target live in serialized `HouseState`.
     pub(crate) scenario_outcome: Option<crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait>,
@@ -359,7 +359,7 @@ pub(crate) struct AppState {
     /// Mutually-exclusive cursor-on-tactical-map targeting mode (building
     /// placement OR superweapon). Right-click and Esc clear; arming one
     /// kind clears the other.
-    pub(crate) targeting_mode: Option<crate::app_types::TargetingMode>,
+    pub(crate) targeting_mode: Option<crate::app::types::TargetingMode>,
     /// Current placement preview for the armed building, if any.
     pub(crate) building_placement_preview: Option<BuildingPlacementPreview>,
     /// Active tab for the custom in-game sidebar.
@@ -562,7 +562,7 @@ impl AppState {
     pub(crate) fn armed_building_type(&self) -> Option<&str> {
         self.targeting_mode
             .as_ref()
-            .and_then(crate::app_types::TargetingMode::as_building_placement)
+            .and_then(crate::app::types::TargetingMode::as_building_placement)
     }
 
     /// Return the SW section name if the targeting mode is set to
@@ -570,7 +570,7 @@ impl AppState {
     pub(crate) fn armed_super_weapon_type(&self) -> Option<&str> {
         self.targeting_mode
             .as_ref()
-            .and_then(crate::app_types::TargetingMode::as_super_weapon)
+            .and_then(crate::app::types::TargetingMode::as_super_weapon)
     }
 }
 

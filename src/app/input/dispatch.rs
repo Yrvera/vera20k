@@ -25,7 +25,7 @@ use crate::app::input::entity_pick::{
 };
 use crate::app::input::hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
 use crate::app::presentation::sidebar_render::current_sidebar_view;
-use crate::app_types::OrderMode;
+use crate::app::types::OrderMode;
 use crate::audio::events::GameSoundEvent;
 use crate::map::entities::EntityCategory;
 use crate::sidebar::{SidebarAction, SidebarTab};
@@ -606,7 +606,7 @@ mod item83_click_route_tests {
     use super::{ClickActionRoute, route_click_action_before_type_select};
     use crate::app::input::context_order::object_click_payload;
     use crate::app::input::entity_pick::compute_type_select_click_mutation;
-    use crate::app_types::OrderMode;
+    use crate::app::types::OrderMode;
     use crate::map::entities::EntityCategory;
     use crate::sim::command::Command;
     use crate::sim::components::Health;
@@ -807,7 +807,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
         }
         SidebarAction::ArmPlacement(type_id) => {
             state.targeting_mode =
-                Some(crate::app_types::TargetingMode::BuildingPlacement(type_id));
+                Some(crate::app::types::TargetingMode::BuildingPlacement(type_id));
             state.sidebar_gadget_state.repair_mode_on = false;
             state.sidebar_gadget_state.sell_mode_on = false;
         }
@@ -816,7 +816,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             state.building_placement_preview = None;
         }
         SidebarAction::ArmSuperWeapon(section) => {
-            state.targeting_mode = Some(crate::app_types::TargetingMode::SuperWeapon(section));
+            state.targeting_mode = Some(crate::app::types::TargetingMode::SuperWeapon(section));
             // Mutual exclusion: clear building-placement preview AND repair/sell modes.
             state.building_placement_preview = None;
             state.sidebar_gadget_state.repair_mode_on = false;

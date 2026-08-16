@@ -307,7 +307,7 @@ impl ApplicationHandler for App {
                     let in_game: bool = state.screen == GameScreen::InGame;
                     let paused_at_event = in_game && state.paused;
 
-                    if crate::app_shell_transition::blocks_shell_input(state) {
+                    if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                         return;
                     }
 
@@ -463,7 +463,7 @@ impl ApplicationHandler for App {
                 // Shared tooltip service: every move restarts the show delay
                 // and hides a visible tip (study S1).
                 crate::app::input::tooltips::on_mouse_move(state);
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 if !egui_consumed
@@ -506,7 +506,7 @@ impl ApplicationHandler for App {
                 // Any button press/release kills a visible tooltip + pending
                 // timer (all buttons incl. middle — study S1).
                 crate::app::input::tooltips::on_button_event(state);
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 // While a main-menu modal dialog is open, route the click to the
@@ -575,7 +575,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y as f32 / 30.0).clamp(-3.0, 3.0),
                 };
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 if !egui_consumed
@@ -630,17 +630,17 @@ impl ApplicationHandler for App {
             if !session.is_finished() {
                 let mut deadline = session.next_wake_deadline();
                 if let Some(wave_deadline) =
-                    crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                    crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
                 {
                     deadline = deadline.max(wave_deadline);
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
         } else if let Some(state) = &self.state {
-            if crate::app_shell_transition::main_menu_presented_is_poisoned(state) {
+            if crate::app::frontend::shell_transition::main_menu_presented_is_poisoned(state) {
                 event_loop.set_control_flow(ControlFlow::Wait);
             } else if let Some(deadline) =
-                crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
             {
                 if Instant::now() >= deadline {
                     state.platform.window.request_redraw();

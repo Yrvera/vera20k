@@ -15,8 +15,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
 
 use crate::app::AppState;
-use crate::app_main_menu_shell_render::Ra2tsDialogOwner;
-use crate::app_shell_transition::{MainMenuEntryPresentToken, ShellSlideKind};
+use crate::app::frontend::main_menu_shell_render::Ra2tsDialogOwner;
+use crate::app::frontend::shell_transition::{MainMenuEntryPresentToken, ShellSlideKind};
 use crate::render::frame_readback::PendingBgra8Readback;
 use crate::ui::game_screen::GameScreen;
 use crate::ui::main_menu_shell::MainMenuMovieBase;
@@ -593,7 +593,7 @@ impl ShellCaptureSession {
             ),
             "entry sequence title became visible"
         );
-        let frame = crate::app_shell_transition::current_main_menu_entry_frame(state)
+        let frame = crate::app::frontend::shell_transition::current_main_menu_entry_frame(state)
             .context("entry sequence rendered without a ready frame")?;
         let identity = EntrySequenceFrameIdentity {
             generation: token.generation(),

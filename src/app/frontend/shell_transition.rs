@@ -353,7 +353,7 @@ pub(crate) fn poll_main_menu_first_paint_before_acquire(
             // Active-retail stock leaves ShellButtonSlideSound empty, but the
             // completion hook remains a named lifecycle edge.
             crate::app::App::play_shell_slide_completion_sound(state);
-            let title = crate::app_main_menu_shell_render::main_menu_title_text(state).into_owned();
+            let title = crate::app::frontend::main_menu_shell_render::main_menu_title_text(state).into_owned();
             if !ShellLifecycleReducer::from_state(state)
                 .complete_presented_main_menu(generation, &title, now)
             {
@@ -407,18 +407,18 @@ pub(crate) fn render_shell_first_paint_slide(
     if kind == ShellSlideKind::MainMenu {
         let frame = current_main_menu_entry_frame(state)
             .ok_or_else(|| anyhow::anyhow!("main-menu entry acquired without a ready frame"))?;
-        return match crate::app_main_menu_shell_render::render_main_menu_first_paint_frame(
+        return match crate::app::frontend::main_menu_shell_render::render_main_menu_first_paint_frame(
             state,
             encoder,
             destination,
             frame,
         )? {
-            crate::app_main_menu_shell_render::MainMenuEntryRenderResult::Rendered { token } => {
+            crate::app::frontend::main_menu_shell_render::MainMenuEntryRenderResult::Rendered { token } => {
                 Ok(ShellFirstPaintRenderResult::Rendered {
                     main_menu_entry_token: Some(token),
                 })
             }
-            crate::app_main_menu_shell_render::MainMenuEntryRenderResult::Fallback => {
+            crate::app::frontend::main_menu_shell_render::MainMenuEntryRenderResult::Fallback => {
                 state.shell_first_paint_slide = None;
                 Ok(ShellFirstPaintRenderResult::NotRendered)
             }
@@ -436,14 +436,14 @@ pub(crate) fn render_shell_first_paint_slide(
             }
             let color = state.shell_surface_presenter.source_render_view();
             let depth = state.depth_view.clone();
-            crate::app_skirmish_shell_render::render_skirmish_shell_to_target(
+            crate::app::frontend::skirmish_shell_render::render_skirmish_shell_to_target(
                 state,
                 encoder,
                 crate::render::shell_transition_pass::ShellRenderTarget {
                     color: &color,
                     depth: &depth,
                 },
-                crate::app_skirmish_shell_render::ShellRenderMode::TransitionPreview,
+                crate::app::frontend::skirmish_shell_render::ShellRenderMode::TransitionPreview,
             )?;
             state
                 .shell_surface_presenter
@@ -451,12 +451,12 @@ pub(crate) fn render_shell_first_paint_slide(
             true
         }
         ShellSlideKind::SinglePlayer => matches!(
-            crate::app_single_player_shell_render::render_single_player_shell(
+            crate::app::frontend::single_player_shell_render::render_single_player_shell(
                 state,
                 encoder,
                 destination,
             )?,
-            crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered
+            crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered
         ),
         ShellSlideKind::MainMenu => unreachable!("handled above"),
     };
@@ -476,7 +476,7 @@ pub(crate) fn render_shell_first_paint_slide(
         Some(ShellWaveCompletion::Skirmish) => {
             let now = Instant::now();
             let (title, game_type, map_label) =
-                crate::app_skirmish_shell_render::skirmish_right_panel_label_strings(state);
+                crate::app::frontend::skirmish_shell_render::skirmish_right_panel_label_strings(state);
             state
                 .skirmish_shell_state
                 .start_right_panel_static_reveals(&title, &game_type, &map_label, now);
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn gsi_13_26_single_player_first_paint_uses_same_presenter_entrypoint() {
-        let source = include_str!("app_shell_transition.rs");
+        let source = include_str!("shell_transition.rs");
         let production = source
             .split_once("#[cfg(test)]")
             .expect("test module follows production transition renderer")

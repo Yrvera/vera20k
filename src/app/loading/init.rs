@@ -16,10 +16,10 @@ use crate::app::loading::init_helpers::{
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
     scheduler_anim_roots, theater_ext_for,
 };
-use crate::app_list_maps::{
+use crate::app::frontend::list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
 };
-use crate::app_skirmish::{
+use crate::app::frontend::skirmish::{
     build_overlay_atlas_from_map, house_color_map_for_launch_session,
     seed_skirmish_opening_if_needed,
 };

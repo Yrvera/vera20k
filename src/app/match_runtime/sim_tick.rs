@@ -16,8 +16,8 @@ use crate::app::input::commands::{preferred_local_owner, preferred_local_owner_n
 /// Minimum ticks between under-attack EVA voice lines (~30 s at 67 ms/tick).
 /// The native per-house attack-voice repeat delay is UNVERIFIED-pending-trace.
 const EVA_UNDER_ATTACK_COOLDOWN_TICKS: u64 = 450;
-use crate::app_types::SIM_TICK_HZ;
-use crate::app_types::SIM_TICK_MS;
+use crate::app::types::SIM_TICK_HZ;
+use crate::app::types::SIM_TICK_MS;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::audio::events::GameSoundEvent;
@@ -1663,7 +1663,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     };
 
     // Check if sprite atlas needs rebuilding (new SHP entity types appeared).
-    let extra_buildings: Vec<&str> = crate::app_skirmish::deployable_building_types(
+    let extra_buildings: Vec<&str> = crate::app::frontend::skirmish::deployable_building_types(
         sim.entities(),
         bound_rules,
         Some(&sim.interner),

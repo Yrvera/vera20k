@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::app::AppState;
-use crate::app_shell_transition::{
+use crate::app::frontend::shell_transition::{
     ButtonGroup, MainMenuEntryPaintFrame, MainMenuEntryPresentToken,
 };
 use crate::render::batch::SpriteInstance;
@@ -396,7 +396,7 @@ pub(crate) fn ensure_movie_for_current_layout(
 /// pointer position minus the hotspot.
 fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     let cursor = state.software_cursor.as_ref()?;
-    let sequence = cursor.get(crate::app_types::CursorId::Default)?;
+    let sequence = cursor.get(crate::app::types::CursorId::Default)?;
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
@@ -622,7 +622,7 @@ fn render_main_menu_shell_to_target_inner(
     let cursor_texture = state
         .software_cursor
         .as_ref()
-        .and_then(|cursor| cursor.get(crate::app_types::CursorId::Default))
+        .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())
         .map(|frame| &frame.texture);
 
@@ -669,7 +669,7 @@ fn render_main_menu_shell_to_target_inner(
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(crate::app_types::CLEAR_COLOR),
+                load: wgpu::LoadOp::Clear(crate::app::types::CLEAR_COLOR),
                 store: wgpu::StoreOp::Store,
             },
         })],

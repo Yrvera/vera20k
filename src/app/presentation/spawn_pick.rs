@@ -11,7 +11,7 @@
 use crate::app::AppState;
 use crate::app::loading::init_helpers::build_entity_atlases;
 use crate::app::presentation::render;
-use crate::app_skirmish::seed_skirmish_opening_if_needed;
+use crate::app::frontend::skirmish::seed_skirmish_opening_if_needed;
 use crate::map::terrain;
 use crate::map::waypoints;
 use crate::ui::game_screen::GameScreen;

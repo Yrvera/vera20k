@@ -22,7 +22,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_types::ScrollDir;
+use crate::app::types::ScrollDir;
 use crate::map::terrain;
 
 /// Stock YR reserves a fixed 168-pixel right sidebar and a fixed 32-pixel

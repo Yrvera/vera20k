@@ -8,7 +8,7 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
-use crate::app_types::HoverTargetKind;
+use crate::app::types::HoverTargetKind;
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::entity_store::EntityStore;
@@ -38,7 +38,7 @@ pub(crate) struct SelectionMutation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeSelectTapResult {
     pub(crate) mutation: SelectionMutation,
-    pub(crate) outcome: crate::app_types::TypeSelectOutcome,
+    pub(crate) outcome: crate::app::types::TypeSelectOutcome,
     pub(crate) across_map: bool,
 }
 
@@ -505,7 +505,7 @@ pub(crate) fn compute_type_select_tap(
     if seeds.is_empty() {
         return TypeSelectTapResult {
             mutation,
-            outcome: crate::app_types::TypeSelectOutcome::Empty,
+            outcome: crate::app::types::TypeSelectOutcome::Empty,
             across_map: false,
         };
     }
@@ -527,7 +527,7 @@ pub(crate) fn compute_type_select_tap(
             ));
             return TypeSelectTapResult {
                 mutation,
-                outcome: crate::app_types::TypeSelectOutcome::Screen,
+                outcome: crate::app::types::TypeSelectOutcome::Screen,
                 across_map: false,
             };
         }
@@ -551,7 +551,7 @@ pub(crate) fn compute_type_select_tap(
     ));
     TypeSelectTapResult {
         mutation,
-        outcome: crate::app_types::TypeSelectOutcome::Map,
+        outcome: crate::app::types::TypeSelectOutcome::Map,
         across_map: true,
     }
 }
@@ -1225,7 +1225,7 @@ mod tests {
             Some(&interner),
             false,
         );
-        assert_eq!(first.outcome, crate::app_types::TypeSelectOutcome::Screen);
+        assert_eq!(first.outcome, crate::app::types::TypeSelectOutcome::Screen);
         assert_eq!(first.mutation.select, [1, 2, 4, 3]);
         assert!(!first.across_map);
 
@@ -1240,7 +1240,7 @@ mod tests {
             Some(&interner),
             false,
         );
-        assert_eq!(second.outcome, crate::app_types::TypeSelectOutcome::Map);
+        assert_eq!(second.outcome, crate::app::types::TypeSelectOutcome::Map);
         assert_eq!(second.mutation.select, [1, 2, 3, 4, 5]);
         assert!(second.across_map);
     }
@@ -1260,7 +1260,7 @@ mod tests {
             true,
         );
 
-        assert_eq!(tap.outcome, crate::app_types::TypeSelectOutcome::Empty);
+        assert_eq!(tap.outcome, crate::app::types::TypeSelectOutcome::Empty);
         assert_eq!(tap.outcome.csf_key(), "MSG:NothingSelected");
     }
 
@@ -1312,7 +1312,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(tap.outcome, crate::app_types::TypeSelectOutcome::Screen);
+        assert_eq!(tap.outcome, crate::app::types::TypeSelectOutcome::Screen);
         assert!(!tap.across_map);
         assert_eq!(
             tap.mutation.select,
@@ -1736,8 +1736,8 @@ mod tests {
         let screen = [1, 3];
         let map = [1, 2, 3, 4];
 
-        let mut input = crate::app_types::TypeSelectInputState::default();
-        input.finish_tap(crate::app_types::TypeSelectOutcome::Map, true);
+        let mut input = crate::app::types::TypeSelectInputState::default();
+        input.finish_tap(crate::app::types::TypeSelectOutcome::Map, true);
         let pressed_at = Instant::now();
         input.press(KeyCode::KeyT, pressed_at, false);
 
@@ -1797,7 +1797,7 @@ mod tests {
             Some(&interner),
             input.across_map,
         );
-        assert_eq!(tap.outcome, crate::app_types::TypeSelectOutcome::Screen);
+        assert_eq!(tap.outcome, crate::app::types::TypeSelectOutcome::Screen);
         assert_eq!(tap.mutation.select, [1, 3]);
         assert!(
             !tap.mutation.select.contains(&4),

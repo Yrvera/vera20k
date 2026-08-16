@@ -4,7 +4,7 @@
 //! returned actions into ordinary simulation commands, and records the actual
 //! scheduled tick. This module never mutates simulation state itself.
 
-use crate::app_types::SIM_TICK_MS;
+use crate::app::types::SIM_TICK_MS;
 
 use super::placement::PlacementChoice;
 

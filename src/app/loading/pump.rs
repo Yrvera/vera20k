@@ -1387,7 +1387,7 @@ pub(crate) fn render_loading_screen(
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(crate::app_types::CLEAR_COLOR),
+                load: wgpu::LoadOp::Clear(crate::app::types::CLEAR_COLOR),
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -1886,7 +1886,7 @@ fn present_native_loading(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::app_types::CLEAR_COLOR),
+                    load: wgpu::LoadOp::Clear(crate::app::types::CLEAR_COLOR),
                     store: wgpu::StoreOp::Store,
                 },
             })],

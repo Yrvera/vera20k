@@ -17,7 +17,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::loading::init::MapMenuEntry;
 use crate::app::input::dispatch;
-use crate::app_list_maps;
+use crate::app::frontend::list_maps;
 use crate::app::presentation::render;
 use crate::app::match_runtime::sim_tick;
 use crate::app::loading::transitions;
@@ -59,6 +59,7 @@ use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
 pub mod frontend;
+pub(crate) mod types;
 pub(crate) mod input;
 mod frame;
 mod handler;
@@ -133,12 +134,12 @@ impl Default for StartupAudioDisposition {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new(crate::app_startup_options::RetailStartupOptions::default())
+        Self::new(crate::app::frontend::startup_options::RetailStartupOptions::default())
     }
 }
 
 impl App {
-    pub fn new(startup_options: crate::app_startup_options::RetailStartupOptions) -> Self {
+    pub fn new(startup_options: crate::app::frontend::startup_options::RetailStartupOptions) -> Self {
         Self {
             state: None,
             shell_capture: None,
@@ -158,7 +159,7 @@ impl App {
         }
     }
 
-    pub fn new_tactical_capture(request: crate::app_launch::TacticalCaptureRequest) -> Self {
+    pub fn new_tactical_capture(request: crate::app::frontend::launch::TacticalCaptureRequest) -> Self {
         Self {
             state: None,
             shell_capture: None,

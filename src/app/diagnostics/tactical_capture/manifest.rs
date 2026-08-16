@@ -560,7 +560,7 @@ mod tests {
         )
         .expect("profile");
         let contract = TacticalCaptureContract::load_external(
-            &root.join("src/app_tactical_capture_contract.v1.json"),
+            &root.join("src/app/diagnostics/tactical_capture/contract.v1.json"),
         )
         .expect("contract");
         (profile, contract)

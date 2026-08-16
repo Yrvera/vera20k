@@ -741,7 +741,7 @@ fn test_hover_target_distinguishes_friendly_and_enemy_categories() {
 
 #[test]
 fn test_ready_buildings_do_not_auto_arm_placement() {
-    let mut armed: Option<crate::app_types::TargetingMode> = None;
+    let mut armed: Option<crate::app::types::TargetingMode> = None;
     let mut preview = None;
     let ready = vec![ReadyBuildingView {
         type_id: crate::sim::intern::test_intern("GAPOWR"),
@@ -760,7 +760,7 @@ fn test_ready_buildings_do_not_auto_arm_placement() {
 
 #[test]
 fn test_invalid_armed_building_clears_when_not_ready() {
-    let mut armed = Some(crate::app_types::TargetingMode::BuildingPlacement(
+    let mut armed = Some(crate::app::types::TargetingMode::BuildingPlacement(
         "GAPOWR".to_string(),
     ));
     let mut preview = Some(crate::sim::production::BuildingPlacementPreview {
@@ -784,7 +784,7 @@ fn test_invalid_armed_building_clears_when_not_ready() {
 #[test]
 fn test_sw_armed_preserved_when_ready() {
     use crate::sim::superweapon::SuperWeaponView;
-    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+    let mut armed = Some(crate::app::types::TargetingMode::SuperWeapon(
         "LightningStormSpecial".to_string(),
     ));
     let mut preview = None;
@@ -806,7 +806,7 @@ fn test_sw_armed_preserved_when_ready() {
 #[test]
 fn test_sw_armed_cleared_when_not_ready() {
     use crate::sim::superweapon::SuperWeaponView;
-    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+    let mut armed = Some(crate::app::types::TargetingMode::SuperWeapon(
         "LightningStormSpecial".to_string(),
     ));
     let mut preview = None;
@@ -827,7 +827,7 @@ fn test_sw_armed_cleared_when_not_ready() {
 
 #[test]
 fn test_sw_armed_cleared_when_view_gone() {
-    let mut armed = Some(crate::app_types::TargetingMode::SuperWeapon(
+    let mut armed = Some(crate::app::types::TargetingMode::SuperWeapon(
         "LightningStormSpecial".to_string(),
     ));
     let mut preview = None;

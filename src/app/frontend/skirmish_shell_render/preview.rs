@@ -162,7 +162,7 @@ pub(super) fn decode_preview_for_map_entry(
 
     if let Some(ra2_dir) = ra2_dir {
         let ini_path = ra2_dir.join(&entry.file_name);
-        if let Some(ini) = crate::app_list_maps::read_map_ini_for_metadata(&ini_path) {
+        if let Some(ini) = crate::app::frontend::list_maps::read_map_ini_for_metadata(&ini_path) {
             if let Some(preview) = decode_preview_from_ini(&ini, &entry.file_name) {
                 return Some(preview);
             }
@@ -170,7 +170,7 @@ pub(super) fn decode_preview_for_map_entry(
     }
 
     if let Some(assets) = assets {
-        for candidate in crate::app_list_maps::asset_map_candidates(&entry.file_name) {
+        for candidate in crate::app::frontend::list_maps::asset_map_candidates(&entry.file_name) {
             if let Some(bytes) = assets.get_ref(&candidate) {
                 if let Some(preview) = decode_preview_from_map_bytes(bytes, &candidate) {
                     return Some(preview);

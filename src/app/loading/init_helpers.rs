@@ -28,7 +28,7 @@ use crate::rules::ruleset::RuleSet;
 
 use crate::sim::world::Simulation;
 
-use crate::app_skirmish::deployable_building_types;
+use crate::app::frontend::skirmish::deployable_building_types;
 
 pub(crate) fn build_sidebar_cameo_atlas(
     gpu: &GpuContext,

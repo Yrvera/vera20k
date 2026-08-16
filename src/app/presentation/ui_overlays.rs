@@ -8,7 +8,7 @@ use crate::app::input::cursor::{
     current_cursor_feedback_kind, cursor_id_for_feedback, software_cursor_frame_for,
 };
 use crate::app::presentation::instances::in_view;
-use crate::app_types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
+use crate::app::types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::{BatchTexture, SpriteInstance};
 use crate::rules::object_type::ObjectType;

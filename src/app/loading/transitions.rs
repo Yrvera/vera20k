@@ -40,7 +40,7 @@ pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
         return;
     };
     state.in_game_options.game_speed = game_speed;
-    state.sim_speed_tps = crate::app_types::tps_for_game_speed(game_speed);
+    state.sim_speed_tps = crate::app::types::tps_for_game_speed(game_speed);
 }
 
 pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
@@ -49,7 +49,7 @@ pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
             startup: crate::match_bootstrap::LoadingStartup::Generic {
                 selected_map_file: "fallback".to_string(),
             },
-            map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
+            map_source: crate::app::frontend::list_maps::LoadedMapSource::LegacyFallback {
                 label: "fallback".to_string(),
             },
             map_hash: None,

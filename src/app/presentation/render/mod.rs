@@ -27,8 +27,8 @@ mod merge_passes;
 use anyhow::Result;
 
 // Re-export shared types so any remaining `use crate::app::presentation::render::Foo` imports still compile.
-// New code should import from `crate::app_types` directly.
-pub(crate) use crate::app_types::*;
+// New code should import from `crate::app::types` directly.
+pub(crate) use crate::app::types::*;
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;

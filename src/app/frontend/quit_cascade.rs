@@ -1,7 +1,7 @@
 //! Graceful main-menu quit cascade (presentation/teardown only).
 //!
 //! A non-blocking per-frame state machine, modelled on
-//! [`crate::app_shell_transition::ShellFrameWave`]: it owns timing only and
+//! [`crate::app::frontend::shell_transition::ShellFrameWave`]: it owns timing only and
 //! returns the effects the app applies each frame (lower music volume, hard-stop
 //! music, exit). The original runs this teardown as a blocking thread spin; the
 //! port reproduces the same observable timing across frames so the winit event

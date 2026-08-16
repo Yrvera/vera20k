@@ -23,7 +23,7 @@ pub(crate) use super::integrity::{
 pub(crate) const PROFILE_SCHEMA: &str = "vera20k.tactical-profile.v1";
 pub(crate) const CONTRACT_SCHEMA: &str = "vera20k.tactical-capture-contract.v1";
 pub(crate) const CHECKPOINT_RADAR_ONLINE_V1: &str = "radar-online-v1";
-pub(crate) const EMBEDDED_CONTRACT: &str = include_str!("../../../app_tactical_capture_contract.v1.json");
+pub(crate) const EMBEDDED_CONTRACT: &str = include_str!("contract.v1.json");
 pub(crate) const ABSOLUTE_TIMEOUT_MAX_SECONDS: u32 = 900;
 pub(crate) const FRAME_FILE_NAME: &str = "frame.bgra";
 pub(crate) const MANIFEST_FILE_NAME: &str = "capture.json";

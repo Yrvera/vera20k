@@ -85,7 +85,7 @@ mod tests {
     /// records and the projected entries always describe the same scenario.
     #[test]
     fn scenario_catalog_indices_cannot_drift() {
-        let records = crate::app_list_maps::list_loose_skirmish_scenario_records()
+        let records = crate::app::frontend::list_maps::list_loose_skirmish_scenario_records()
             .unwrap_or_default();
         let mut catalog = ScenarioCatalog::from_records(records);
         let assert_projection = |catalog: &ScenarioCatalog| {

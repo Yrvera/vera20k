@@ -148,18 +148,18 @@ impl App {
             match step {
                 ShellFramePreludeStep::MaintainIntro => Self::maintain_main_menu_intro(state),
                 ShellFramePreludeStep::ObserveEntry => {
-                    crate::app_shell_transition::prepare_main_menu_first_paint_before_acquire(state)
+                    crate::app::frontend::shell_transition::prepare_main_menu_first_paint_before_acquire(state)
                 }
             }
         }
-        match crate::app_shell_transition::poll_main_menu_first_paint_before_acquire(
+        match crate::app::frontend::shell_transition::poll_main_menu_first_paint_before_acquire(
             state,
             Instant::now(),
         )? {
-            crate::app_shell_transition::MainMenuFirstPaintPoll::WaitUntil(_) => {
+            crate::app::frontend::shell_transition::MainMenuFirstPaintPoll::WaitUntil(_) => {
                 return Ok(());
             }
-            crate::app_shell_transition::MainMenuFirstPaintPoll::Completed => {
+            crate::app::frontend::shell_transition::MainMenuFirstPaintPoll::Completed => {
                 if let Some(session) = shell_capture.as_deref_mut()
                     && session.completion_handoff()
                         == crate::app::diagnostics::shell_capture::ShellCompletionHandoff::
@@ -170,7 +170,7 @@ impl App {
                     return Ok(());
                 }
             }
-            crate::app_shell_transition::MainMenuFirstPaintPoll::Acquire => {}
+            crate::app::frontend::shell_transition::MainMenuFirstPaintPoll::Acquire => {}
         }
 
         let output: wgpu::SurfaceTexture = state
@@ -189,11 +189,11 @@ impl App {
         let mut pending_main_menu_entry_token = None;
         let mut pending_main_menu_title_receipt = None;
 
-        crate::app_shell_transition::activate_shell_first_paint_after_acquire(state);
+        crate::app::frontend::shell_transition::activate_shell_first_paint_after_acquire(state);
         // Advance the Skirmish right-panel static text reveals (started at the
         // slide's completion edge). 30 ms-gated internally; a no-op when idle.
-        crate::app_shell_transition::advance_shell_static_reveals(state);
-        crate::app_shell_transition::poll_main_menu_title_reveal(state);
+        crate::app::frontend::shell_transition::advance_shell_static_reveals(state);
+        crate::app::frontend::shell_transition::poll_main_menu_title_reveal(state);
         let shell_capture_current_frame = match shell_capture.as_deref_mut() {
             Some(session) => session.should_capture_current_frame(state)?,
             None => false,
@@ -202,27 +202,27 @@ impl App {
 
         match &state.screen {
             GameScreen::MainMenu => {
-                if let crate::app_shell_transition::ShellFirstPaintRenderResult::Rendered {
+                if let crate::app::frontend::shell_transition::ShellFirstPaintRenderResult::Rendered {
                     main_menu_entry_token,
-                } = crate::app_shell_transition::render_shell_first_paint_slide(
+                } = crate::app::frontend::shell_transition::render_shell_first_paint_slide(
                     state,
                     &mut encoder,
                     &output.texture,
                 )? {
                     pending_main_menu_entry_token = main_menu_entry_token;
                 } else if Self::native_skirmish_shell_active(state) {
-                    crate::app_skirmish_shell_render::render_skirmish_shell(
+                    crate::app::frontend::skirmish_shell_render::render_skirmish_shell(
                         state,
                         &mut encoder,
                         &output.texture,
                     )?;
                 } else if Self::single_player_shell_active(state) {
-                    match crate::app_single_player_shell_render::render_single_player_shell(
+                    match crate::app::frontend::single_player_shell_render::render_single_player_shell(
                         state,
                         &mut encoder,
                         &output.texture,
                     )? {
-                        crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
+                        crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
                             state.egui.begin_frame(&state.platform.window);
                             if state.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
@@ -239,7 +239,7 @@ impl App {
                                 state.use_software_cursor(),
                             );
                         }
-                        crate::app_single_player_shell_render::SinglePlayerShellRenderResult::Fallback => {
+                        crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Fallback => {
                             Self::render_egui_main_menu_fallback(
                                 state,
                                 &mut encoder,
@@ -249,12 +249,12 @@ impl App {
                         }
                     }
                 } else if !state.main_menu_shell_failed {
-                    match crate::app_main_menu_shell_render::render_main_menu_shell(
+                    match crate::app::frontend::main_menu_shell_render::render_main_menu_shell(
                         state,
                         &mut encoder,
                         &output.texture,
                     )? {
-                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Rendered {
+                        crate::app::frontend::main_menu_shell_render::MainMenuShellRenderResult::Rendered {
                             title_receipt,
                         } => {
                             pending_main_menu_title_receipt = title_receipt;
@@ -277,7 +277,7 @@ impl App {
                                 if let Some(token) =
                                     pending_main_menu_entry_token.take()
                                 {
-                                    crate::app_shell_transition::record_main_menu_entry_presented(
+                                    crate::app::frontend::shell_transition::record_main_menu_entry_presented(
                                         state, token,
                                     )?;
                                 }
@@ -296,7 +296,7 @@ impl App {
                                 return Ok(());
                             }
                         }
-                        crate::app_main_menu_shell_render::MainMenuShellRenderResult::Fallback => {
+                        crate::app::frontend::main_menu_shell_render::MainMenuShellRenderResult::Fallback => {
                             Self::render_egui_main_menu_fallback(
                                 state,
                                 &mut encoder,
@@ -376,7 +376,7 @@ impl App {
                 // confirmation are egui cards drawn in the pass below.
                 if state.in_game_menu == crate::ui::pause_menu::InGameMenuState::Options {
                     if Self::ensure_skirmish_shell_chrome(state) {
-                        crate::app_skirmish_shell_render::render_in_game_options_overlay(
+                        crate::app::frontend::skirmish_shell_render::render_in_game_options_overlay(
                             state,
                             &mut encoder,
                             &view,
@@ -444,12 +444,12 @@ impl App {
                 // non-art card.
                 let score_rendered = if Self::score_shell_active(state) {
                     matches!(
-                        crate::app_score_shell_render::render_score_shell(
+                        crate::app::frontend::score_shell_render::render_score_shell(
                             state,
                             &mut encoder,
                             &output.texture,
                         )?,
-                        crate::app_score_shell_render::ScoreShellRenderResult::Rendered
+                        crate::app::frontend::score_shell_render::ScoreShellRenderResult::Rendered
                     )
                 } else {
                     false
@@ -567,7 +567,7 @@ impl App {
         output.present();
         state.retail_screenshot_frame_cache.commit_presented();
         if let Some(token) = pending_main_menu_entry_token.take() {
-            crate::app_shell_transition::record_main_menu_entry_presented(state, token)?;
+            crate::app::frontend::shell_transition::record_main_menu_entry_presented(state, token)?;
         }
         if let (Some(identity), Some(readback)) = (entry_sequence_identity, pending_entry_sequence)
         {

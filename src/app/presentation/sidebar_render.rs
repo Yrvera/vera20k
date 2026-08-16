@@ -143,10 +143,10 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
     );
     // App targeting state -> the sidebar-owned armed projection (F06 seam).
     let armed_entry = state.targeting_mode.as_ref().map(|mode| match mode {
-        crate::app_types::TargetingMode::BuildingPlacement(section) => {
+        crate::app::types::TargetingMode::BuildingPlacement(section) => {
             sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
         }
-        crate::app_types::TargetingMode::SuperWeapon(section) => {
+        crate::app::types::TargetingMode::SuperWeapon(section) => {
             sidebar::ArmedSidebarEntry::SuperWeapon(section.clone())
         }
     });
@@ -183,7 +183,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
 }
 
 pub(crate) fn sync_targeting_mode(
-    targeting_mode: &mut Option<crate::app_types::TargetingMode>,
+    targeting_mode: &mut Option<crate::app::types::TargetingMode>,
     building_placement_preview: &mut Option<crate::sim::production::BuildingPlacementPreview>,
     ready_buildings: &[production::ReadyBuildingView],
     super_weapons: &[crate::sim::superweapon::SuperWeaponView],
@@ -191,14 +191,14 @@ pub(crate) fn sync_targeting_mode(
 ) {
     let still_valid = match targeting_mode.as_ref() {
         None => true,
-        Some(crate::app_types::TargetingMode::BuildingPlacement(armed)) => {
+        Some(crate::app::types::TargetingMode::BuildingPlacement(armed)) => {
             ready_buildings.iter().any(|ready| {
                 interner.map_or(false, |i| {
                     i.resolve(ready.type_id).eq_ignore_ascii_case(armed)
                 })
             })
         }
-        Some(crate::app_types::TargetingMode::SuperWeapon(section)) => super_weapons
+        Some(crate::app::types::TargetingMode::SuperWeapon(section)) => super_weapons
             .iter()
             .any(|sw| sw.is_ready && sw.display_name.eq_ignore_ascii_case(section)),
     };

@@ -1,6 +1,7 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
 use super::presentation::render;
+use super::frontend::list_maps;
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
     BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
@@ -9,7 +10,7 @@ use super::{
     RefCell, Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
     SidebarTab, StartupAudioDisposition, Window, WindowAttributes,
-    app_list_maps, auto_detect_ui_scale, frontend::startup_splash,
+    auto_detect_ui_scale, frontend::startup_splash,
     should_load_audio_indices,
 };
 
@@ -224,14 +225,14 @@ impl App {
         let main_menu_shell_failed =
             startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
         let version_txt = Self::load_version_txt();
-        let available_maps = app_list_maps::list_available_maps().unwrap_or_else(|err| {
+        let available_maps = list_maps::list_available_maps().unwrap_or_else(|err| {
             log::warn!("Could not list maps for menu: {:#}", err);
             Vec::new()
         });
         let skirmish_scenario_records =
             match (startup_asset_manager.as_mut(), game_config.as_ref()) {
                 (Some(assets), Some(config)) => {
-                    app_list_maps::list_skirmish_scenario_records_with_assets(
+                    list_maps::list_skirmish_scenario_records_with_assets(
                         &config.paths.ra2_dir,
                         assets,
                         startup_csf.as_ref(),
@@ -287,9 +288,9 @@ impl App {
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
         let skirmish_defaults =
-            crate::app_skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
+            crate::app::frontend::skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
         let offline_skirmish_runtime =
-            crate::app_skirmish_session::OfflineSkirmishRuntime::initialize(
+            crate::app::frontend::skirmish_session::OfflineSkirmishRuntime::initialize(
                 frontend_seed.value,
                 game_config
                     .as_ref()
@@ -406,7 +407,7 @@ impl App {
             keys_held: HashSet::new(),
             hotkey_bindings,
             hotkey_modifiers: ModifiersState::empty(),
-            type_select: crate::app_types::TypeSelectInputState::default(),
+            type_select: crate::app::types::TypeSelectInputState::default(),
             retail_screenshot_requested: false,
             retail_screenshot_frame_cache: Default::default(),
             egui,
@@ -554,11 +555,11 @@ impl App {
             // (internal 1) and derive `sim_speed_tps` from the same value, so the
             // Options slider reflects the current pace. The resulting tps is
             // unchanged from the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
-            sim_speed_tps: crate::app_types::tps_for_game_speed(
-                crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+            sim_speed_tps: crate::app::types::tps_for_game_speed(
+                crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
             ),
             in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
-                game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                game_speed: crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
                 scroll_rate: saved_scroll_rate,
                 detail_level: saved_detail_level,
                 ..Default::default()

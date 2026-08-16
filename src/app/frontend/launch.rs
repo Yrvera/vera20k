@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::app::diagnostics::shell_capture::{self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest};
-use crate::app_startup_options::{RetailStartupOptions, consume_retail_switches};
+use crate::app::frontend::startup_options::{RetailStartupOptions, consume_retail_switches};
 use crate::app::diagnostics::tactical_capture::profile::{
     CHECKPOINT_RADAR_ONLINE_V1, SealedJsonFile, TacticalCaptureContract, TacticalCaptureProfile,
     validate_new_output_directory,
@@ -268,7 +268,7 @@ mod tests {
             root.join("tools/tactical_certification/profiles/soviet-radar-online-v1.json")
                 .into_os_string(),
             "--contract".into(),
-            root.join("src/app_tactical_capture_contract.v1.json")
+            root.join("src/app/diagnostics/tactical_capture/contract.v1.json")
                 .into_os_string(),
             "--output".into(),
             output.as_os_str().to_owned(),

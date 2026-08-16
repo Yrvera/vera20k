@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;
 use crate::app::presentation::instances::CellVisibilityState;
-use crate::app_types::{
+use crate::app::types::{
     CursorFeedbackKind, CursorId, HoverTargetKind, ScrollDir, SoftwareCursorFrame,
     SoftwareCursorSequence,
 };
@@ -952,7 +952,7 @@ mod tests {
         super_weapon_cursor_id, what_action_on_cell,
     };
     use crate::app::input::entity_pick::HoverTargetKindWithId;
-    use crate::app_types::{CursorFeedbackKind, CursorId, HoverTargetKind};
+    use crate::app::types::{CursorFeedbackKind, CursorId, HoverTargetKind};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::world::Simulation;
@@ -1320,7 +1320,7 @@ mod tests {
 #[cfg(test)]
 mod cursor_animation_tests {
     use super::CursorAnimation;
-    use crate::app_types::{CursorFeedbackKind, CursorId, ScrollDir};
+    use crate::app::types::{CursorFeedbackKind, CursorId, ScrollDir};
 
     /// Retail interval for every animated cursor row: rate 4 x 16 ms.
     const INTERVAL_MS: u64 = 64;

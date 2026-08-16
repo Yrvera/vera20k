@@ -53,17 +53,6 @@ pub mod app;
 // Extracted from app.rs to keep the orchestrator under 600 lines.
 /// Headless retail-scenario loading for parity runs (no GPU, no window).
 pub mod headless_scenario;
-pub mod app_launch;
-pub mod app_list_maps;
-pub mod app_main_menu_shell_render;
-pub mod app_quit_cascade;
-pub mod app_score_shell_render;
-pub mod app_shell_transition;
-pub mod app_single_player_shell_render;
-pub mod app_skirmish;
-pub mod app_skirmish_session;
-pub mod app_skirmish_shell_render;
-pub mod app_startup_options;
 pub mod match_bootstrap;
 
 // App-level skirmish startup contract shared by the menu shell and map loader.
@@ -74,7 +63,6 @@ pub mod skirmish_persistence;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
-pub mod app_types;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
 // Extracted from app.rs to keep the orchestrator under 600 lines.

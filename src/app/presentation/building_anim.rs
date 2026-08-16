@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;
-use crate::app_types::SIM_TICK_MS;
+use crate::app::types::SIM_TICK_MS;
 use crate::sim::components::{AnimRuntime, GarrisonMuzzleFlash};
 use crate::sim::production;
 use crate::sim::world::Simulation;

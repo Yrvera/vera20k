@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use crate::app::AppState;
-use crate::app_launch::TacticalCaptureRequest;
+use crate::app::frontend::launch::TacticalCaptureRequest;
 use crate::app::presentation::render::GameRenderOutput;
 use crate::app::diagnostics::tactical_capture::evidence::{
     ArtifactEvidence, FinalFingerprint, GraphicsEvidence, SidebarRenderEvidence,
@@ -31,7 +31,7 @@ use crate::app::diagnostics::tactical_capture::script::{
     TacticalEntityObservation, TacticalExpectedLedger, TacticalObservation, TacticalScript,
     TacticalScriptConfig, TacticalScriptStage, TacticalStageBudgets,
 };
-use crate::app_types::{CursorId, SIM_TICK_MS};
+use crate::app::types::{CursorId, SIM_TICK_MS};
 use crate::match_bootstrap::{MatchSeedClock, MatchSeedSource, StartupSessionClassification};
 use crate::render::radar_anim::RadarAnimPhase;
 use crate::render::sidebar_chrome::SidebarTheme;
@@ -693,7 +693,7 @@ impl TacticalCaptureSession {
             .as_ref()
             .context("loaded map source evidence is absent")?;
         let (logical_name, source_archive, entry_id, payload_len) = match loaded {
-            crate::app_list_maps::LoadedMapSource::Mix {
+            crate::app::frontend::list_maps::LoadedMapSource::Mix {
                 logical_name,
                 source_archive,
                 entry_id,

@@ -29,12 +29,12 @@ fn main() -> Result<()> {
         log::info!("Log file: {}", path.display());
     }
 
-    let launch_mode = vera20k::app_launch::parse_launch_args(std::env::args_os().skip(1))?;
+    let launch_mode = vera20k::app::frontend::launch::parse_launch_args(std::env::args_os().skip(1))?;
 
     // A help switch terminates before anything else is created, matching the
     // native switch parser returning a failure that makes WinMain bail.
-    if matches!(launch_mode, vera20k::app_launch::AppLaunchMode::Usage) {
-        println!("{}", vera20k::app_startup_options::usage_text());
+    if matches!(launch_mode, vera20k::app::frontend::launch::AppLaunchMode::Usage) {
+        println!("{}", vera20k::app::frontend::startup_options::usage_text());
         return Ok(());
     }
 
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     // are deliberately left ungated so parallel captures still run —
     // VERA-internal exemption, native has no capture mode.
     let _instance_guard = match &launch_mode {
-        vera20k::app_launch::AppLaunchMode::Interactive(_) => {
+        vera20k::app::frontend::launch::AppLaunchMode::Interactive(_) => {
             match vera20k::util::single_instance::acquire() {
                 vera20k::util::single_instance::SingleInstance::Acquired(guard) => Some(guard),
                 vera20k::util::single_instance::SingleInstance::AlreadyRunning => {
@@ -67,8 +67,8 @@ fn main() -> Result<()> {
     // Create the app and hand control to the event loop.
     // This blocks until the window is closed.
     let mut app: vera20k::app::App = match launch_mode {
-        vera20k::app_launch::AppLaunchMode::Usage => unreachable!("usage returned above"),
-        vera20k::app_launch::AppLaunchMode::Interactive(options) => {
+        vera20k::app::frontend::launch::AppLaunchMode::Usage => unreachable!("usage returned above"),
+        vera20k::app::frontend::launch::AppLaunchMode::Interactive(options) => {
             // The switch table's results are process-global in native and are
             // re-read where most are consumed (the display owner for screen
             // size, AssetManager for `-CD`). Audio init is owned by `App`, so
@@ -76,11 +76,11 @@ fn main() -> Result<()> {
             log::info!("Retail startup switches: {options:?}");
             vera20k::app::App::new(options)
         }
-        vera20k::app_launch::AppLaunchMode::ShellCapture(request) => {
+        vera20k::app::frontend::launch::AppLaunchMode::ShellCapture(request) => {
             request.validate_runtime_environment()?;
             vera20k::app::App::new_shell_capture(request)
         }
-        vera20k::app_launch::AppLaunchMode::TacticalCapture(request) => {
+        vera20k::app::frontend::launch::AppLaunchMode::TacticalCapture(request) => {
             request.validate_runtime_environment()?;
             vera20k::app::App::new_tactical_capture(request)
         }

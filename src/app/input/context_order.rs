@@ -15,7 +15,7 @@ use crate::app::input::entity_pick::{
     hover_target_at_point, pick_any_target_stable_id, pick_enemy_target_stable_id,
 };
 use crate::app::input::dispatch::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order};
-use crate::app_types::{HoverTargetKind, OrderMode};
+use crate::app::types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::intern::InternedId;
