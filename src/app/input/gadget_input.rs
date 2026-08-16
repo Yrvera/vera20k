@@ -13,7 +13,7 @@
 use winit::event::MouseButton;
 
 use crate::app::AppState;
-use crate::app_sidebar_render::current_sidebar_view;
+use crate::app::presentation::sidebar_render::current_sidebar_view;
 use crate::sidebar::{self, SidebarAction, SidebarTab, SidebarView};
 use crate::ui::gadget::focus::FocusState;
 use crate::ui::gadget::list::{GadgetBehavior, GadgetList, GadgetSpec, ToggleKind};
@@ -311,7 +311,7 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
         .as_ref()
         .is_none_or(|ra| ra.is_minimap_visible())
         && state.minimap.is_some();
-    let mini_rect = rect_px(crate::app_sidebar_render::active_minimap_screen_rect(state));
+    let mini_rect = rect_px(crate::app::presentation::sidebar_render::active_minimap_screen_rect(state));
     if let Some(mh) = state.in_game_gadgets.minimap
         && let Some(g) = state.in_game_gadgets.list.get_mut(mh)
     {
@@ -397,7 +397,7 @@ pub(crate) fn idle_tick(state: &mut AppState) {
     };
     sync_gadgets(state, &view);
     let _ = run_tick(state, &view, 0);
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume {

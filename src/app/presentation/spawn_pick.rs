@@ -10,7 +10,7 @@
 
 use crate::app::AppState;
 use crate::app::loading::init_helpers::build_entity_atlases;
-use crate::app_render;
+use crate::app::presentation::render;
 use crate::app_skirmish::seed_skirmish_opening_if_needed;
 use crate::map::terrain;
 use crate::map::waypoints;
@@ -199,11 +199,11 @@ pub(crate) fn render_spawn_pick(
     let result = if state.upscale_pass.is_some() {
         let game_depth = state.upscale_pass.as_ref().unwrap().depth_view().clone();
         let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
-        let result = app_render::render_game(state, encoder);
+        let result = render::render_game(state, encoder);
         state.depth_view = saved_depth;
         result
     } else {
-        app_render::render_game(state, encoder)
+        render::render_game(state, encoder)
     };
     state.sandbox_full_visibility = prev_visibility;
     result?;

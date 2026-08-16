@@ -25,7 +25,7 @@ impl App {
             state.ui_scale = new_scale;
         }
         Self::invalidate_main_menu_movie_if_base_changed(state);
-        crate::app_sidebar_render::refresh_sidebar_projection(state);
+        crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
     }
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
@@ -564,7 +564,7 @@ impl ApplicationHandler for App {
                     }
                 } else if !egui_consumed && state.screen == GameScreen::SpawnPick {
                     if button == MouseButton::Left && btn_state.is_pressed() {
-                        crate::app_spawn_pick::handle_spawn_pick_click(state);
+                        crate::app::presentation::spawn_pick::handle_spawn_pick_click(state);
                     }
                 } else if !egui_consumed && state.screen == GameScreen::InGame {
                     dispatch::handle_mouse_input(state, button, btn_state);

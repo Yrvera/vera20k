@@ -665,7 +665,7 @@ impl App {
                     log::warn!("Battle-control termination EVA has no pinned local owner");
                     return;
                 };
-                let faction = crate::app_building_anim::eva_faction_key(owner, &state.house_roster);
+                let faction = crate::app::presentation::building_anim::eva_faction_key(owner, &state.house_roster);
                 let fallback = match faction {
                     "Russian" => "csof015",
                     "Yuri" => "cyur015",

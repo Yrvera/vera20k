@@ -210,13 +210,13 @@ fn sell_wall_command_for_cell(
         return None;
     }
     let local_owner_id = sim.interner.get(local_owner)?;
-    if crate::app_instances::cell_visibility_for_local_owner(
+    if crate::app::presentation::instances::cell_visibility_for_local_owner(
         Some(local_owner_id),
         Some(&sim.fog),
         rx,
         ry,
         ignore_visibility,
-    ) != crate::app_instances::CellVisibilityState::Visible
+    ) != crate::app::presentation::instances::CellVisibilityState::Visible
     {
         return None;
     }
@@ -363,7 +363,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     // Guard: arming click's RELEASE lands on the cameo. Don't fire the SW
     // at a bogus off-map cell behind the sidebar panel; leave the mode
     // armed so the next real map click fires.
-    if crate::app_sidebar_render::is_cursor_over_minimap(state)
+    if crate::app::presentation::sidebar_render::is_cursor_over_minimap(state)
         || crate::app::input::cursor::current_sidebar_view_hit(state)
     {
         return;

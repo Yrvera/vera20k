@@ -7,7 +7,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_instances::in_view;
+use crate::app::presentation::instances::in_view;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
 use crate::render::batch::SpriteInstance;
 use crate::rules::locomotor_type::SpeedType;

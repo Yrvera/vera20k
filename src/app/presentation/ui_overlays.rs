@@ -7,7 +7,7 @@ use crate::app::input::commands::preferred_local_owner_name;
 use crate::app::input::cursor::{
     current_cursor_feedback_kind, cursor_id_for_feedback, software_cursor_frame_for,
 };
-use crate::app_instances::in_view;
+use crate::app::presentation::instances::in_view;
 use crate::app_types::{CursorId, HoverTargetKind, SoftwareCursorSequence};
 use crate::map::entities::EntityCategory;
 use crate::render::batch::{BatchTexture, SpriteInstance};
@@ -469,7 +469,7 @@ pub(crate) fn build_unit_status_bg_instances(
         }
         // Already the drawn position, height lift included, so the bar tracks
         // the sprite for airborne units without repeating the lift here.
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(e);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(e);
         let is_infantry: bool = e.category == EntityCategory::Infantry;
         let (bar_size, uv_origin, uv_size) = if is_infantry {
             (
@@ -558,7 +558,7 @@ pub(crate) fn build_unit_status_fill_instances(
         }
         // Already the drawn position, height lift included, so the bar tracks
         // the sprite for airborne units without repeating the lift here.
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(e);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(e);
         let ratio: f32 = if health.max == 0 {
             0.0
         } else {
@@ -721,7 +721,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
             continue;
         }
 
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(e);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(e);
         let bracket_delta: f32 = obj
             .map(|o| o.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);

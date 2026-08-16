@@ -1395,7 +1395,7 @@ mod tests {
                 .expect("explicit launch must return its pinned local owner");
             assert_eq!(owner, "Commander");
 
-            let actual = crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+            let actual = crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(
                 Some(&sim),
                 &roster,
                 owner,
@@ -1425,7 +1425,7 @@ mod tests {
         };
 
         assert_eq!(
-            crate::app_sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
+            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
             Some(SidebarTheme::Soviet),
             "an absent live owner must preserve the existing roster resolver"
         );
@@ -1435,7 +1435,7 @@ mod tests {
         sim.houses
             .insert(owner_id, HouseState::new(owner_id, 2, None, true, 0, 10));
         assert_eq!(
-            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(
                 Some(&sim),
                 &roster,
                 "MapPlayer",
@@ -1453,7 +1453,7 @@ mod tests {
             .insert(owner_id, HouseState::new(owner_id, 7, None, true, 0, 10));
 
         assert_eq!(
-            crate::app_sidebar_render::sidebar_theme_for_owner_sources(
+            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(
                 Some(&sim),
                 &HouseRoster::default(),
                 "DynamicOwner",

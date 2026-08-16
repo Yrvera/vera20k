@@ -216,7 +216,7 @@ mod tests {
 
     /// The production wrapper must read the *displayed* credit total and the
     /// sidebar panel rect off a real `SidebarView`, and land the glyphs inside
-    /// the sidebar column. This is what `app_render::build_instances` appends
+    /// the sidebar column. This is what `render::build_instances` appends
     /// to the `sidebar_text` lane, which is drawn from the GAME.FNT atlas.
     #[test]
     fn view_wrapper_places_credits_inside_the_sidebar_panel() {

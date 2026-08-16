@@ -2,7 +2,7 @@
 //!
 //! Split into sub-modules for the 600-line file limit.
 //! This facade re-exports all public items so external consumers
-//! can continue using `crate::app_instances::*`.
+//! can continue using `crate::app::presentation::instances::*`.
 //!
 //! ## Sub-modules
 //! - `helpers` — depth sorting, interpolation, visibility checks

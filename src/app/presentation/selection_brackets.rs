@@ -10,7 +10,7 @@
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;
-use crate::app_instances::in_view;
+use crate::app::presentation::instances::in_view;
 use crate::map::entities::EntityCategory;
 use crate::render::batch::SpriteInstance;
 use crate::render::shroud_buffer::ShroudBuffer;
@@ -61,7 +61,7 @@ impl BracketDepthCtx {
 
     /// Depth for a pixel plotted at `row` that stands `height` px above ground.
     fn depth_at(&self, row: i32, height: f32) -> f32 {
-        crate::app_instances::compute_sprite_depth_params(
+        crate::app::presentation::instances::compute_sprite_depth_params(
             self.origin_y,
             self.world_height,
             row as f32 + height,

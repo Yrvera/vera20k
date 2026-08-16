@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::app_render::{GameRenderInstanceCounts, GameRenderOutput};
+use crate::app::presentation::render::{GameRenderInstanceCounts, GameRenderOutput};
 use crate::render::egui_integration::{EguiCaptureObservation, SelectedSystemFontIdentity};
 use crate::render::gpu::GpuAdapterObservation;
 use crate::render::sidebar_chrome::{

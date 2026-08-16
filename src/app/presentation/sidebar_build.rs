@@ -9,7 +9,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_sidebar_render::current_sidebar_chrome;
+use crate::app::presentation::sidebar_render::current_sidebar_chrome;
 use crate::render::batch::SpriteInstance;
 use crate::render::sidebar_chrome::{SidebarChromeAtlas, SidebarChromeEntry};
 use crate::sidebar::power_bar_anim::PowerBarAnimState;
@@ -554,7 +554,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     let mut overlay_instances = Vec::new();
     let co = [state.camera_x, state.camera_y];
     let gclock_frames: &[SidebarChromeEntry] =
-        crate::app_sidebar_render::current_sidebar_chrome(state)
+        crate::app::presentation::sidebar_render::current_sidebar_chrome(state)
             .map(|a| a.gclock_frames.as_slice())
             .unwrap_or(&[]);
     for item in &view.items {

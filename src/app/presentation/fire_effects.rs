@@ -907,7 +907,7 @@ mod tests {
         for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16), (41_u16, 17_u16)] {
             let projectile =
                 target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
-            let world_effect = crate::app_instances::world_effect_screen_position(
+            let world_effect = crate::app::presentation::instances::world_effect_screen_position(
                 rx,
                 ry,
                 crate::util::lepton::CELL_CENTER_LEPTON,
@@ -1165,7 +1165,7 @@ mod tests {
             for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16)] {
                 let projectile =
                     target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
-                let world_effect = crate::app_instances::world_effect_screen_position(
+                let world_effect = crate::app::presentation::instances::world_effect_screen_position(
                     rx,
                     ry,
                     crate::util::lepton::CELL_CENTER_LEPTON,

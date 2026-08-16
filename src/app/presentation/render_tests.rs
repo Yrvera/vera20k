@@ -4,7 +4,7 @@ use crate::app::input::entity_pick::{
     pick_enemy_target_stable_id,
 };
 use crate::app::input::dispatch::CLICK_SELECT_RADIUS;
-use crate::app_sidebar_render::sync_targeting_mode;
+use crate::app::presentation::sidebar_render::sync_targeting_mode;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::sim::components::Health;

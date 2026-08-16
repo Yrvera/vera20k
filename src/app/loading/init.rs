@@ -683,14 +683,14 @@ mod map_wall_owner_candidate_tests {
         sim.radiation
             .apply_detonation(detonation, 0, &rules.radiation, None);
         let old_epoch =
-            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation);
+            crate::app::presentation::radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation);
         let first = derive_lighting_view(&LightingConfig::default(), Some(&sim), Some(&rules), 2);
         assert_eq!(first.point_lights.len(), 1);
 
         sim.radiation
             .apply_detonation(detonation, 0, &rules.radiation, None);
         assert_eq!(
-            crate::app_radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation,),
+            crate::app::presentation::radiation_light::radiation_light_epoch(&sim.radiation, &rules.radiation,),
             old_epoch,
             "the former center-plus-step epoch cannot see a same-cell rearm"
         );
@@ -772,7 +772,7 @@ pub struct PresentationLoadAssets {
     pub bridge_railing_atlas: Option<BridgeRailingAtlas>,
     pub sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
     pub sidebar_chrome: Option<SidebarChromeSet>,
-    pub(crate) software_cursor: Option<crate::app_render::SoftwareCursor>,
+    pub(crate) software_cursor: Option<crate::app::presentation::render::SoftwareCursor>,
     /// Overlay ID → type name mapping (from rules.ini [OverlayTypes]).
     pub overlay_names: BTreeMap<u8, String>,
     /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
@@ -899,7 +899,7 @@ pub(crate) fn derive_lighting_view(
     let building_lights = collect_live_building_lights(simulation, rules, detail_level);
     let radiation_lights = match (simulation, rules) {
         (Some(sim), Some(rules)) => {
-            crate::app_radiation_light::collect_radiation_lights(sim, rules)
+            crate::app::presentation::radiation_light::collect_radiation_lights(sim, rules)
         }
         _ => Vec::new(),
     };

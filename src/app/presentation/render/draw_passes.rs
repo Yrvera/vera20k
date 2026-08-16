@@ -7,11 +7,11 @@
 //! - Internal to app_render — only called from mod.rs via `dispatch_draw_passes()`.
 
 use crate::app::AppState;
-use crate::app_sidebar_render::{
+use crate::app::presentation::sidebar_render::{
     begin_main_load_pass, begin_main_pass, current_sidebar_chrome_texture,
     current_sidebar_gclock_texture,
 };
-use crate::app_ui_overlays::current_software_cursor_texture;
+use crate::app::presentation::ui_overlays::current_software_cursor_texture;
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
 use crate::render::bridge_atlas::BridgeAtlas;
 use crate::render::overlay_atlas::OverlayAtlas;

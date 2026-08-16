@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::app::loading::init;
-use crate::app_render;
+use crate::app::presentation::render;
 use crate::app::match_runtime::sim_tick;
 use crate::map::basic::BasicSection;
 use crate::map::houses::HouseRoster;
@@ -362,7 +362,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     }
 
     state.platform.frame_pacer.reset_for_immediate_frame();
-    state.queued_order_mode = app_render::OrderMode::Move;
+    state.queued_order_mode = render::OrderMode::Move;
     for group in &mut state.control_groups {
         group.clear();
     }
@@ -478,7 +478,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             }
         }
     }
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 /// Load sound.ini / soundmd.ini and build a SoundRegistry.

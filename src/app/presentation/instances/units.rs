@@ -11,7 +11,7 @@ use super::helpers::{
     ground_sort_row, in_view, is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
-use crate::app_render::draw_plan_lowering::{
+use crate::app::presentation::render::draw_plan_lowering::{
     GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedGroundObjectInstance,
 };
 use crate::map::entities::EntityCategory;

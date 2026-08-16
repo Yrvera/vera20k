@@ -6,7 +6,7 @@ use super::{
     ALLIED_SIDE_ARCHIVE_ORDER, SIDE_TWO_ARCHIVE_ORDER, SidebarSideRoute, build_gclock_cpu_atlas,
     is_generic_sidebar_shp_name, resolve_sidebar_asset_in_order,
 };
-use crate::app_sidebar_build::build_gclock_instance;
+use crate::app::presentation::sidebar_build::build_gclock_instance;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::mix_archive::MixArchive;
 use crate::assets::mix_hash::mix_hash;

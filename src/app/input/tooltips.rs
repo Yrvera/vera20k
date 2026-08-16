@@ -8,7 +8,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_sidebar_render::{current_sidebar_theme, current_sidebar_view};
+use crate::app::presentation::sidebar_render::{current_sidebar_theme, current_sidebar_view};
 use crate::assets::csf_file::{CsfArg, format_csf};
 use crate::render::batch::SpriteInstance;
 use crate::ui::game_screen::GameScreen;

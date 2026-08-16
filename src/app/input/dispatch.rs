@@ -24,7 +24,7 @@ use crate::app::input::entity_pick::{
     map_entity_creation_order, pick_entity_at_point,
 };
 use crate::app::input::hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
-use crate::app_sidebar_render::current_sidebar_view;
+use crate::app::presentation::sidebar_render::current_sidebar_view;
 use crate::app_types::OrderMode;
 use crate::audio::events::GameSoundEvent;
 use crate::map::entities::EntityCategory;
@@ -81,7 +81,7 @@ pub(crate) fn handle_mouse_input(
         // in-game surface is now on the retained list — R7 complete).
         GadgetConsume::Consumed | GadgetConsume::NotConsumed => {}
     }
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,7 +209,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     && !shift
                 {
                     let order =
-                        crate::app_instances::tactical_band_preflight_entity_encounter_order(state);
+                        crate::app::presentation::instances::tactical_band_preflight_entity_encounter_order(state);
                     if band_caught_drawn_object(state, &order, min_x, min_y, max_x, max_y) {
                         band_preflight_order = Some(order);
                     } else {
@@ -238,7 +238,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 let mut held_type_select_batch = false;
                 if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                     let screen_order =
-                        crate::app_instances::tactical_screen_entity_encounter_order(state);
+                        crate::app::presentation::instances::tactical_screen_entity_encounter_order(state);
                     let current_selection = selected_stable_ids_in_order(state);
                     let map_order = map_entity_creation_order(sim.entities());
                     let held_type_select = type_select_held;
@@ -506,7 +506,7 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
     match button {
         MouseButton::Left => {
             if btn_state.is_pressed() {
-                crate::app_sidebar_render::try_begin_minimap_drag(state);
+                crate::app::presentation::sidebar_render::try_begin_minimap_drag(state);
             } else if state.minimap_dragging {
                 state.minimap_dragging = false;
             }
@@ -514,8 +514,8 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
         MouseButton::Right => {
             // A right-press centers the view on the clicked cell (no command);
             // right-release just releases the gadget's sticky capture.
-            if btn_state.is_pressed() && crate::app_sidebar_render::is_cursor_over_minimap(state) {
-                crate::app_sidebar_render::update_camera_from_minimap_cursor(state);
+            if btn_state.is_pressed() && crate::app::presentation::sidebar_render::is_cursor_over_minimap(state) {
+                crate::app::presentation::sidebar_render::update_camera_from_minimap_cursor(state);
             }
         }
         _ => {}
@@ -774,7 +774,7 @@ pub(crate) fn sidebar_wheel_scroll(state: &mut AppState, delta_lines: f32) {
         view.max_scroll_rows,
         wheel_action(delta_lines),
     );
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 /// Index of a tab's parked scroll row. Exhaustive on purpose: a new tab must
@@ -1054,7 +1054,7 @@ fn execute_type_select_tap(state: &mut AppState) {
         let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
         };
-        let screen_order = crate::app_instances::tactical_screen_entity_encounter_order(state);
+        let screen_order = crate::app::presentation::instances::tactical_screen_entity_encounter_order(state);
         let map_order = map_entity_creation_order(sim.entities());
         let current = selected_stable_ids_in_order(state);
         let fog = (!state.sandbox_full_visibility).then_some(&sim.fog);
@@ -1104,7 +1104,7 @@ pub(crate) fn handle_hotkey_pressed(
             }
         }
     }
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
@@ -1683,7 +1683,7 @@ fn commit_prepared_load(
         &mut state.rust_l0_receipt,
     );
     state.persistence.last_loaded_save_path = Some(path.to_path_buf());
-    crate::app_sidebar_render::refresh_sidebar_projection(state);
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
     log::info!("Load: restored simulation from {}", path.display());
 }
 
@@ -1957,7 +1957,7 @@ mod item83_selection_order_tests {
         TYPE_SELECT_TAP_VOICE_POLICY, apply_selection_action_line_policy_at_tick,
         insert_selected_id_by_role, selection_voice_event, selection_voice_recipients,
     };
-    use crate::app_target_lines::TargetLineState;
+    use crate::app::presentation::target_lines::TargetLineState;
     use crate::audio::events::GameSoundEvent;
     use crate::map::entities::EntityCategory;
     use crate::rules::ini_parser::IniFile;
@@ -2372,7 +2372,7 @@ fn apply_selection_action_line_policy(state: &mut AppState, policy: SelectionAct
 }
 
 fn apply_selection_action_line_policy_at_tick(
-    target_lines: &mut crate::app_target_lines::TargetLineState,
+    target_lines: &mut crate::app::presentation::target_lines::TargetLineState,
     tick: u64,
     policy: SelectionActionLinePolicy,
 ) {

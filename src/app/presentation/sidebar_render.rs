@@ -18,7 +18,7 @@ use crate::sidebar::{self, SidebarView};
 use crate::sim::production;
 
 // Re-export instance builders so callers don't need to know about the split.
-pub(crate) use crate::app_sidebar_build::{
+pub(crate) use crate::app::presentation::sidebar_build::{
     build_sidebar_cameo_instances, build_sidebar_chrome_instances, build_sidebar_instances,
     build_sidebar_text_instances,
 };
@@ -291,7 +291,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
             }
         }
         let command = match order_mode {
-            crate::app_render::OrderMode::AttackMove => crate::sim::command::Command::AttackMove {
+            crate::app::presentation::render::OrderMode::AttackMove => crate::sim::command::Command::AttackMove {
                 entity_id,
                 target_rx: goal.0,
                 target_ry: goal.1,
@@ -315,8 +315,8 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         return false;
     }
     // Reset order mode after issuing the command (like the main viewport does).
-    if order_mode != crate::app_render::OrderMode::Move {
-        state.queued_order_mode = crate::app_render::OrderMode::Move;
+    if order_mode != crate::app::presentation::render::OrderMode::Move {
+        state.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
     }
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         let queued = queued
@@ -526,7 +526,7 @@ pub(crate) fn begin_main_pass<'a>(
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(crate::app_render::CLEAR_COLOR),
+                load: wgpu::LoadOp::Clear(crate::app::presentation::render::CLEAR_COLOR),
                 store: wgpu::StoreOp::Store,
             },
         })],

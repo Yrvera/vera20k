@@ -13,7 +13,7 @@ use super::helpers::{
     is_under_bridge_render_state, tactical_entity_render_admission,
 };
 use crate::app::AppState;
-use crate::app_render::draw_plan_lowering::{
+use crate::app::presentation::render::draw_plan_lowering::{
     GroundPieceInstance, GroundTexture, NativeGroundOrder, PlannedBuildingPieceInstance,
     PlannedGroundObjectInstance,
 };
@@ -434,7 +434,7 @@ pub(crate) fn build_shp_instances(
                     depth,
                     tint,
                     entity.building_anim_overlays.as_ref(),
-                    crate::app_building_anim::building_anim_elapsed_logic_frames(
+                    crate::app::presentation::building_anim::building_anim_elapsed_logic_frames(
                         state,
                         entity.stable_id,
                     ),
@@ -872,7 +872,7 @@ fn emit_building_anims(
                         selected.loop_start,
                         selected.loop_end,
                         selected.start_frame,
-                        crate::app_building_anim::building_anim_rate_logic_frames(
+                        crate::app::presentation::building_anim::building_anim_rate_logic_frames(
                             art_reg,
                             selected.anim_type,
                             game_options,
@@ -899,7 +899,7 @@ fn emit_building_anims(
                 selected.loop_start,
                 selected.loop_end,
                 selected.start_frame,
-                crate::app_building_anim::building_anim_rate_logic_frames(
+                crate::app::presentation::building_anim::building_anim_rate_logic_frames(
                     art_reg,
                     selected.anim_type,
                     game_options,
@@ -1102,7 +1102,7 @@ mod tests {
     use super::resting_building_anim_frame;
     use super::selected_building_anim_view;
     use super::shp_body_tint;
-    use crate::app_building_anim::building_anim_rate_logic_frames;
+    use crate::app::presentation::building_anim::building_anim_rate_logic_frames;
     use crate::map::entities::EntityCategory;
     use crate::map::lighting::CellLightGrid;
     use crate::rules::art_data::{

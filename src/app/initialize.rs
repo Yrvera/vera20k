@@ -1,5 +1,6 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
+use super::presentation::render;
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
     BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
@@ -8,7 +9,7 @@ use super::{
     RefCell, Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
     SidebarTab, StartupAudioDisposition, Window, WindowAttributes,
-    app_list_maps, app_render, auto_detect_ui_scale, frontend::startup_splash,
+    app_list_maps, auto_detect_ui_scale, frontend::startup_splash,
     should_load_audio_indices,
 };
 
@@ -507,9 +508,9 @@ impl App {
             theater_ext: "tem".to_string(),
             platform: PlatformState::new(window),
             scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock::new(),
-            target_lines: crate::app_target_lines::TargetLineState::default(),
+            target_lines: crate::app::presentation::target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
-            queued_order_mode: app_render::OrderMode::Move,
+            queued_order_mode: render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
             last_control_group_press: None,
             local_player_owner: None,

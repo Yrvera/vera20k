@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::app::AppState;
-use crate::app_fire_effects::ProjectileVisual;
+use crate::app::presentation::fire_effects::ProjectileVisual;
 use crate::map::lighting::DEFAULT_TINT;
 use crate::map::overlay_types::is_bridge_overlay_index;
 use crate::map::terrain::{self, TILE_HEIGHT, TILE_WIDTH};
@@ -232,7 +232,7 @@ fn anim_render_destination(
     owner_entity: Option<u64>,
     world_coord: crate::sim::anim_class::AnimWorldCoord,
     config: Option<&AnimTypeRuntimeConfig>,
-    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+    ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) -> Option<AnimRenderDestination> {
     // Owner-attached damage fire retains its established parent-adjacent path.
     // gamemd-derived: no-owner `AnimClass::GetLayer @ 0x00424CB0` returns the
@@ -265,8 +265,8 @@ pub(crate) fn build_anim_class_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
-    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
-    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+    ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
     let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
@@ -364,10 +364,10 @@ pub(crate) fn build_anim_class_instances(
             ground_order,
         ) {
             Some(AnimRenderDestination::Ground(parent)) => ground_objects.push(
-                crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+                crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
                     parent,
-                    vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
-                        target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+                    vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                        target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                             entry.page as usize,
                         ),
                         instance,
@@ -493,15 +493,15 @@ fn anim_world_render_coords(
 /// Build SpriteInstances for visible overlay objects and terrain objects.
 ///
 /// Bridge body, body shadow, and railing instances are emitted separately by
-/// `app_instances::bridges` (Phase D). Low bridges (LOBRDG*) ride in the
+/// `instances::bridges` (Phase D). Low bridges (LOBRDG*) ride in the
 /// generic `instances` bucket and use the regular overlay atlas.
 pub(crate) fn build_overlay_instances(
     state: &AppState,
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
-    ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
-    ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
+    ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
     let atlas = match &state.overlay_atlas {
         Some(a) => a,
@@ -551,7 +551,7 @@ pub(crate) fn build_overlay_instances(
             continue;
         };
 
-        // High-bridge bodies are emitted by `app_instances::bridges` reading
+        // High-bridge bodies are emitted by `instances::bridges` reading
         // `BridgeRuntimeCell` post-tick. Skip them here so they don't double-
         // render via the static map overlay list.
         if is_high_bridge_body_name(static_name) {
@@ -645,10 +645,10 @@ pub(crate) fn build_overlay_instances(
         let depth_z: u8 = z;
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
         let tint: [f32; 3] = state.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
-        planned_cells.push(crate::app_render::draw_plan_lowering::PlannedCellInstance {
+        planned_cells.push(crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
             draw: crate::render::tactical_draw_plan::CellDraw {
                 id: next_draw_id,
-                kind: crate::app_render::draw_plan_lowering::cell_draw_kind(is_wall),
+                kind: crate::app::presentation::render::draw_plan_lowering::cell_draw_kind(is_wall),
                 policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
             },
             instance: SpriteInstance {
@@ -668,7 +668,7 @@ pub(crate) fn build_overlay_instances(
         next_draw_id += 1;
     }
 
-    instances.extend(crate::app_render::draw_plan_lowering::lower_cell_instances(
+    instances.extend(crate::app::presentation::render::draw_plan_lowering::lower_cell_instances(
         planned_cells,
     ));
 
@@ -741,10 +741,10 @@ pub(crate) fn build_overlay_instances(
             continue;
         };
         ground_objects.push(
-            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+            crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
                 parent,
-                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
-                    target: crate::app_render::draw_plan_lowering::GroundTexture::OverlayAtlas,
+                vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::OverlayAtlas,
                     instance: SpriteInstance {
                         position: [
                             screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
@@ -1110,7 +1110,7 @@ pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstanc
     let observer = crate::app::input::commands::preferred_local_owner(state)
         .as_deref()
         .and_then(|owner| sim.interner.get(owner));
-    for wave in crate::app_fire_effects::build_weapon_wave_visuals(sim, observer) {
+    for wave in crate::app::presentation::fire_effects::build_weapon_wave_visuals(sim, observer) {
         let projected: Vec<[f32; 2]> = crate::render::wave_geometry::draw_order(wave.geometry)
             .into_iter()
             .map(|point| {
@@ -1152,7 +1152,7 @@ pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstanc
 /// PARACH frames are NOT registered in `effect_type_ids` (see Task 8).
 pub(crate) fn build_parachute_instances(
     state: &AppState,
-    ground_objects: &mut [crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance],
+    ground_objects: &mut [crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance],
     body_depths: &super::shp::ParachuteBodyDepths,
 ) {
     /// Depth epsilon — chute sorts slightly above the GI body. Half of the
@@ -1236,8 +1236,8 @@ pub(crate) fn build_parachute_instances(
         };
         parent
             .pieces
-            .push(crate::app_render::draw_plan_lowering::GroundPieceInstance {
-                target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(
+            .push(crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
                     entry.page as usize,
                 ),
                 instance: SpriteInstance {
@@ -1281,7 +1281,7 @@ mod tests {
             "[WA_CUSTOM]\nYSortAdjust=7\n\
              [TUNTOP_CUSTOM]\nLayer=ground\nYSortAdjust=1000\n",
         ));
-        let order = crate::app_render::draw_plan_lowering::NativeGroundOrder::new(&[5, 10, 20]);
+        let order = crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[5, 10, 20]);
         let wa = art.anim_runtime_config("WA_CUSTOM");
         let tuntop = art.anim_runtime_config("TUNTOP_CUSTOM");
         let world = crate::sim::anim_class::AnimWorldCoord {
@@ -1317,15 +1317,15 @@ mod tests {
             )
             .unwrap();
         let pieces = |parent| {
-            crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance::object(
+            crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance::object(
                 parent,
-                vec![crate::app_render::draw_plan_lowering::GroundPieceInstance {
-                    target: crate::app_render::draw_plan_lowering::GroundTexture::ShpPage(0),
+                vec![crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                    target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(0),
                     instance: crate::render::batch::SpriteInstance::default(),
                 }],
             )
         };
-        let lowered = crate::app_render::draw_plan_lowering::lower_ground_object_instances(vec![
+        let lowered = crate::app::presentation::render::draw_plan_lowering::lower_ground_object_instances(vec![
             pieces(tunnel_draw),
             pieces(ordinary),
         ]);
@@ -1626,7 +1626,7 @@ mod tests {
 
     #[test]
     fn effective_anim_z_adjust_slot_overrides_type() {
-        use crate::app_instances::helpers::effective_anim_z_adjust;
+        use crate::app::presentation::instances::helpers::effective_anim_z_adjust;
         // Nonzero slot override (e.g. ActiveAnimZAdjust=-100) wins.
         assert_eq!(effective_anim_z_adjust(-100, -300), -100);
         // Zero slot falls back to the anim type's own ZAdjust=.

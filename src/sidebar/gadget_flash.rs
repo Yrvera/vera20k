@@ -134,7 +134,7 @@ pub fn scroll_frame_select(pressed: bool) -> u8 {
 /// Persistent flash + mode state for the in-game sidebar gadgets.
 ///
 /// Lives on `AppState` (one instance per app session). Ticked once per sim
-/// tick by `app_sidebar_gadgets::update_sidebar_gadget_state`. Read by the
+/// tick by `sidebar_gadgets::update_sidebar_gadget_state`. Read by the
 /// per-frame `SidebarView` builder to populate gadget `frame_index` fields.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarGadgetState {

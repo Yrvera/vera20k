@@ -187,7 +187,7 @@ fn announce_local_state_evas(state: &mut AppState) {
     if cues.is_empty() {
         return;
     }
-    let faction = crate::app_building_anim::eva_faction_key(&owner, &state.house_roster);
+    let faction = crate::app::presentation::building_anim::eva_faction_key(&owner, &state.house_roster);
     let sound_ids: Vec<String> = cues
         .iter()
         .map(|(cue, fallback)| {
@@ -757,7 +757,7 @@ fn advance_in_game_runtime_mode(
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
         let frame_committed = advance_one_simulation_frame(state, tick_lane);
-        crate::app_sidebar_render::advance_sidebar_credits_after_frame(
+        crate::app::presentation::sidebar_render::advance_sidebar_credits_after_frame(
             state,
             frame_committed,
             tick_lane,
@@ -777,31 +777,31 @@ fn advance_in_game_runtime_mode(
             .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
-        crate::app_building_anim::drain_sound_events(state);
+        crate::app::presentation::building_anim::drain_sound_events(state);
         // Building one-shots, refinery particles, and their logic-frame clocks
         // were finalized inside the authoritative sim transaction. Only the
         // independent wall-clock terrain-overlay timer remains app-owned.
-        crate::app_building_anim::tick_terrain_overlay_animations(state, 16);
+        crate::app::presentation::building_anim::tick_terrain_overlay_animations(state, 16);
         // Looping slot animations are phased off the logic frame their building
         // was placed, so the base has to be recorded on a sim frame boundary
         // rather than on a render frame.
-        crate::app_building_anim::refresh_building_anim_phase_bases(state);
-        crate::app_building_anim::tick_garrison_muzzle_flashes(
+        crate::app::presentation::building_anim::refresh_building_anim_phase_bases(state);
+        crate::app::presentation::building_anim::tick_garrison_muzzle_flashes(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
         );
         finish_fire_effect_batch(&mut state.pending_fire_effects);
-        crate::app_fire_effects::tick_weapon_muzzle_flashes(state, 16);
-        crate::app_chute_anim::tick_parachute_anims(state);
+        crate::app::presentation::fire_effects::tick_weapon_muzzle_flashes(state, 16);
+        crate::app::presentation::chute_anim::tick_parachute_anims(state);
     }
 
     // Refresh changed point-light producers after the sim step. The queued
     // Cell refresh itself remains all-gathered-before-commit.
     refresh_cell_lighting(state);
 
-    crate::app_building_anim::update_radar_state(state, SIM_TICK_MS as f32);
-    crate::app_building_anim::update_power_bar_anim(state);
-    crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
+    crate::app::presentation::building_anim::update_radar_state(state, SIM_TICK_MS as f32);
+    crate::app::presentation::building_anim::update_power_bar_anim(state);
+    crate::app::presentation::sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
@@ -902,7 +902,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             frame_overlay_updates = overlay_updates;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
-                drained_combat_lights = crate::app_combat_lights::materialize_simulation_impacts(
+                drained_combat_lights = crate::app::presentation::combat_lights::materialize_simulation_impacts(
                     invulnerability_impacts,
                     Some(&resources.rules),
                     &sim.interner,
@@ -1038,7 +1038,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1065,7 +1065,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1084,7 +1084,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1115,7 +1115,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1135,7 +1135,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1154,7 +1154,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1278,7 +1278,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                                 .as_deref()
                                 .is_some_and(|l| l.eq_ignore_ascii_case(owner_str))
                         {
-                            let faction = crate::app_building_anim::eva_faction_key(
+                            let faction = crate::app::presentation::building_anim::eva_faction_key(
                                 owner_str,
                                 &state.house_roster,
                             );
@@ -1321,7 +1321,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         state.match_audio.eva_under_attack_block_until_tick =
                             sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
-                        let faction = crate::app_building_anim::eva_faction_key(
+                        let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
                             &state.house_roster,
                         );
@@ -1407,7 +1407,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 | LifecycleOutput::ClearRedraw { .. } => {}
             }
         }
-        crate::app_fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
+        crate::app::presentation::fire_effects::spawn_non_garrison_fire_effects(state, &drained_fire_events);
 
         // Black-cell census, on a schedule rather than a keypress: nobody hits a debug key
         // at the exact moment they notice the artifact. Spread-out ticks give a time series,
@@ -1780,7 +1780,7 @@ fn upsert_overlay_entries(
     existing: &mut Vec<crate::map::overlay::OverlayEntry>,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) -> usize {
-    let mut index = crate::app_overlay_index::OverlayRenderIndex::default();
+    let mut index = crate::app::presentation::overlay_index::OverlayRenderIndex::default();
     index.replace_from_source(std::mem::take(existing));
     let synced = index.upsert_occupied(candidates);
     *existing = index.as_slice().to_vec();

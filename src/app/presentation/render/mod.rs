@@ -26,7 +26,7 @@ mod merge_passes;
 
 use anyhow::Result;
 
-// Re-export shared types so any remaining `use crate::app_render::Foo` imports still compile.
+// Re-export shared types so any remaining `use crate::app::presentation::render::Foo` imports still compile.
 // New code should import from `crate::app_types` directly.
 pub(crate) use crate::app_types::*;
 
@@ -328,7 +328,7 @@ fn upload_to_gpu(
 
 #[cfg(test)]
 mod tests {
-    include!("../app_render_tests.rs");
+    include!("../render_tests.rs");
 
     #[test]
     fn game_render_counts_preserve_exact_emitted_lengths() {

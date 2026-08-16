@@ -399,7 +399,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                 let anim_name = ev.occupant_anim.as_ref()?;
                 let anim_section = sim.interner.resolve(*anim_name).to_ascii_uppercase();
                 let origin =
-                    crate::app_fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
+                    crate::app::presentation::fire_effects::resolve_fire_origin_from_sim(sim, rules, art_reg, ev)
                         .ok()?;
                 let runtime_config = art_reg.anim_runtime_config(&anim_section)?;
                 let total_frames =

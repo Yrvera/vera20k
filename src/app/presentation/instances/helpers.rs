@@ -62,7 +62,7 @@ pub(crate) fn tactical_entity_encounter_order(
             let (coord, y_sort_adjust) = if entity.category == EntityCategory::Structure {
                 let object_type =
                     rules.and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
-                crate::app_render::draw_plan_lowering::building_ground_order_parts(
+                crate::app::presentation::render::draw_plan_lowering::building_ground_order_parts(
                     location,
                     object_type.is_some_and(|object| object.turret_anim_is_voxel),
                     object_type.is_some_and(|object| object.gate),

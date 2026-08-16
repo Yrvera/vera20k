@@ -5,7 +5,7 @@
 
 use super::loading::transitions;
 use super::{
-    ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, sim_tick,
+    ActiveEventLoop, App, AppState, GameScreen, Instant, Result, render, sim_tick,
     frontend::startup_splash, main_menu,
 };
 
@@ -198,7 +198,7 @@ impl App {
             Some(session) => session.should_capture_current_frame(state)?,
             None => false,
         };
-        let mut game_render_output: Option<crate::app_render::GameRenderOutput> = None;
+        let mut game_render_output: Option<crate::app::presentation::render::GameRenderOutput> = None;
 
         match &state.screen {
             GameScreen::MainMenu => {
@@ -349,7 +349,7 @@ impl App {
                     let up = state.upscale_pass.as_ref().unwrap();
                     let game_depth = up.depth_view().clone();
                     let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
-                    let result = app_render::render_game(state, &mut encoder);
+                    let result = render::render_game(state, &mut encoder);
                     state.depth_view = saved_depth;
                     let render_output = result?;
                     state.combat_light_renderer.copy_to(
@@ -363,7 +363,7 @@ impl App {
                         .draw(&mut encoder, &view);
                     render_output
                 } else {
-                    let render_output = app_render::render_game(state, &mut encoder)?;
+                    let render_output = render::render_game(state, &mut encoder)?;
                     state
                         .combat_light_renderer
                         .copy_to(&mut encoder, &output.texture);
@@ -476,14 +476,14 @@ impl App {
                 }
             }
             GameScreen::SpawnPick => {
-                crate::app_spawn_pick::render_spawn_pick(
+                crate::app::presentation::spawn_pick::render_spawn_pick(
                     state,
                     &mut encoder,
                     &output.texture,
                     &view,
                 )?;
                 state.egui.begin_frame(&state.platform.window);
-                crate::app_spawn_pick::draw_spawn_pick_overlay(&state.egui.ctx.clone(), state);
+                crate::app::presentation::spawn_pick::draw_spawn_pick_overlay(&state.egui.ctx.clone(), state);
                 state.egui.end_frame_and_render(
                     &state.gpu,
                     &mut encoder,

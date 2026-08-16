@@ -232,7 +232,7 @@ fn finish_order(
         emit_resolved_order_voice(state, speaker_id, &queued);
     }
     let current_tick = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
-    crate::app_target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
+    crate::app::presentation::target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.queue_commands(queued);
     }

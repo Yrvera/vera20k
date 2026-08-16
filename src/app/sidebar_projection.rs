@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn sidebar_view_reads_are_pure() {
         let _pure_getter: for<'a> fn(&'a crate::app::AppState) -> Option<&'a SidebarView> =
-            crate::app_sidebar_render::current_sidebar_view;
+            crate::app::presentation::sidebar_render::current_sidebar_view;
         let mut projection = SidebarProjectionState::default();
         assert_eq!(projection.displayed_credits_or_seed("Americans", 100), 100);
         projection.replace_view(Some(retained_test_view(100)));

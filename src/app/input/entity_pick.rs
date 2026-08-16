@@ -128,7 +128,7 @@ pub(crate) fn hover_target_at_point(
         let (sx, sy) = if is_structure {
             crate::render::locomotor_visual::screen_position(entity)
         } else {
-            crate::app_instances::interpolated_screen_position_entity(entity)
+            crate::app::presentation::instances::interpolated_screen_position_entity(entity)
         };
         // Hit test: structures use foundation cells, mobile units use elliptical distance.
         if is_structure {
@@ -337,7 +337,7 @@ pub(crate) fn band_rect_contains_drawn_object(
         if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
             return false;
         }
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(entity);
         if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
             return false;
         }
@@ -689,7 +689,7 @@ pub(crate) fn compute_type_select_box_mutation(
         let Some(entity) = entities.get(id) else {
             continue;
         };
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(entity);
         if !entity.lifecycle.object_alive || sx < min_x || sx > max_x || sy < min_y || sy > max_y {
             continue;
         }
@@ -765,7 +765,7 @@ fn entities_in_rect(
             let entity = entities.get(*entity)?;
             // Rectangle first, the way the native walk does it: the per-object
             // filter only runs for objects the box actually covers.
-            let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+            let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(entity);
             if !(sx >= min_x && sx <= max_x && sy >= min_y && sy <= max_y) {
                 return None;
             }
@@ -954,7 +954,7 @@ pub(crate) fn pick_entity_at_point(
         {
             continue;
         }
-        let (sx, sy) = crate::app_instances::interpolated_screen_position_entity(entity);
+        let (sx, sy) = crate::app::presentation::instances::interpolated_screen_position_entity(entity);
         let distance = pick_distance_sq(sx - world_x, sy - world_y) as i32;
         if distance < PICK_DISTANCE_THRESHOLD as i32
             && best.is_none_or(|(_, best_distance)| distance < best_distance)
@@ -1508,7 +1508,7 @@ mod tests {
             false,
         ));
         let (x, y) =
-            crate::app_instances::interpolated_screen_position_entity(entities.get(1).unwrap());
+            crate::app::presentation::instances::interpolated_screen_position_entity(entities.get(1).unwrap());
 
         let mutation = compute_type_select_box_mutation(
             &entities,

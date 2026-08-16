@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::app::AppState;
 use crate::app_launch::TacticalCaptureRequest;
-use crate::app_render::GameRenderOutput;
+use crate::app::presentation::render::GameRenderOutput;
 use crate::app::diagnostics::tactical_capture::evidence::{
     ArtifactEvidence, FinalFingerprint, GraphicsEvidence, SidebarRenderEvidence,
     SidebarSourceEvidence, build_evidence,
@@ -921,7 +921,7 @@ impl TacticalCaptureSession {
             crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Russia => SidebarTheme::Soviet,
             crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Yuri => SidebarTheme::Yuri,
         };
-        let actual_theme = crate::app_sidebar_render::current_sidebar_theme(state);
+        let actual_theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
         let radar_phase_online = state
             .radar_anim
             .as_ref()
@@ -931,7 +931,7 @@ impl TacticalCaptureSession {
             .as_ref()
             .context("radar animation lacks construction provenance")?;
         let source_evidence = SidebarSourceEvidence::from_identity(radar_source);
-        let aperture = crate::app_sidebar_render::active_minimap_screen_rect(state);
+        let aperture = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
         let insets = state
             .radar_content_insets
             .context("radar content insets are absent")?;

@@ -8,7 +8,7 @@
 //! with the unpause/timing-reset that matches the pause-menu Resume path.
 
 use crate::app::AppState;
-use crate::app_target_lines::TargetLineState;
+use crate::app::presentation::target_lines::TargetLineState;
 use crate::rules::ini_parser::IniFile;
 use crate::ui::shell::in_game_options_state::InGameOptionsState;
 use crate::ui::shell::modal::ModalResult;

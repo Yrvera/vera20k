@@ -4,6 +4,7 @@
 //! are introduced incrementally. Platform lifecycle and pacing are the first
 //! extracted group; unrelated presentation, input, and match state stay flat.
 
+use super::presentation::render;
 use super::{
     BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
@@ -14,7 +15,7 @@ use super::{
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, SkirmishSettings,
     SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
-    UnitAtlas, Waypoint, app_render, frontend::startup_splash,
+    UnitAtlas, Waypoint, frontend::startup_splash,
 };
 
 mod platform;
@@ -28,7 +29,7 @@ pub(crate) struct AppState {
     pub(crate) gpu: GpuContext,
     pub(crate) batch_renderer: BatchRenderer,
     pub(crate) combat_light_renderer: crate::render::combat_light::CombatLightRenderer,
-    pub(crate) combat_lights: crate::app_combat_lights::CombatLightRuntime,
+    pub(crate) combat_lights: crate::app::presentation::combat_lights::CombatLightRuntime,
     /// Reusable GPU instance buffers — avoids per-frame GPU buffer allocation.
     pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
     pub(crate) tile_atlas: Option<TileAtlas>,
@@ -54,7 +55,7 @@ pub(crate) struct AppState {
     pub(crate) bridge_atlas: Option<BridgeAtlas>,
     pub(crate) bridge_railing_atlas: Option<BridgeRailingAtlas>,
     /// Overlay entries from map for per-frame instance generation.
-    pub(crate) overlays: crate::app_overlay_index::OverlayRenderIndex,
+    pub(crate) overlays: crate::app::presentation::overlay_index::OverlayRenderIndex,
     /// Terrain objects from map for per-frame instance generation.
     pub(crate) terrain_objects: Vec<TerrainObject>,
     pub(crate) waypoints: HashMap<u32, Waypoint>,
@@ -222,7 +223,7 @@ pub(crate) struct AppState {
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
     /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
-    /// `app_sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
+    /// `sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
     /// read each frame by the sidebar view builder to pick SHP frame indices.
     pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
     /// In-game gadget substrate (study §6.1): retained sidebar button list +
@@ -264,7 +265,7 @@ pub(crate) struct AppState {
     /// Bitmap font atlas used by the custom sidebar text path.
     pub(crate) bit_font: BitFont,
     /// Asset-backed software cursor shown in-game when available.
-    pub(crate) software_cursor: Option<app_render::SoftwareCursor>,
+    pub(crate) software_cursor: Option<render::SoftwareCursor>,
     /// Selection drag state — tracks mouse drag for box-select.
     pub(crate) selection_state: SelectionState,
     /// Player-side `g_CurrentObjects` order. Selection commands update this
@@ -326,11 +327,11 @@ pub(crate) struct AppState {
     /// serialized, hashed, or read by deterministic simulation.
     pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,
     /// Target/action lines — colored lines from selected units to command destinations.
-    pub(crate) target_lines: crate::app_target_lines::TargetLineState,
+    pub(crate) target_lines: crate::app::presentation::target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
     pub(crate) configured_input_delay_ticks: u64,
     /// Pending order mode for the next right-click command.
-    pub(crate) queued_order_mode: app_render::OrderMode,
+    pub(crate) queued_order_mode: render::OrderMode,
     /// Control group slots (0-9) storing stable entity ids.
     pub(crate) control_groups: Vec<Vec<u64>>,
     /// Slot and wall-clock instant of the last plain control-group recall, for
@@ -410,7 +411,7 @@ pub(crate) struct AppState {
     /// App-owned presentation state; combat only emits the fire facts.
     pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
     /// Active render-only projectile sprites spawned from non-instant weapon fire.
-    pub(crate) projectile_visuals: Vec<crate::app_fire_effects::ProjectileVisual>,
+    pub(crate) projectile_visuals: Vec<crate::app::presentation::fire_effects::ProjectileVisual>,
     /// Active parachute animations, one per descending paradropped infantry.
     /// Polling-based lifecycle: spawned when an entity gains parachute_state
     /// in the sim, removed on landing or death. Render-only; not snapshotted.

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;
-use crate::app_instances::CellVisibilityState;
+use crate::app::presentation::instances::CellVisibilityState;
 use crate::app_types::{
     CursorFeedbackKind, CursorId, HoverTargetKind, ScrollDir, SoftwareCursorFrame,
     SoftwareCursorSequence,
@@ -60,7 +60,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // selection — the wrench/dollar shows over own buildings, no-repair/no-sell
     // elsewhere. Placed before the empty-selection early return below because
     // gamemd shows these cursors even with nothing selected.
-    let (repair_mode, sell_mode) = crate::app_sidebar_render::current_sidebar_view(state)
+    let (repair_mode, sell_mode) = crate::app::presentation::sidebar_render::current_sidebar_view(state)
         .map(|view| (view.repair_button.active, view.sell_button.active))
         .unwrap_or_default();
     if repair_mode || sell_mode {
@@ -85,7 +85,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     let (hover_rx, hover_ry) =
         crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     let owner_id = sim.interner.get(&owner);
-    if crate::app_instances::cell_visibility_for_local_owner(
+    if crate::app::presentation::instances::cell_visibility_for_local_owner(
         owner_id,
         Some(&sim.fog),
         hover_rx,
@@ -97,9 +97,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         // so show the queued-order-mode cursor (Move / AttackMove / Guard)
         // instead of reverting to the default arrow.
         return Some(match state.queued_order_mode {
-            crate::app_render::OrderMode::Move => CursorFeedbackKind::Move,
-            crate::app_render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
-            crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
+            crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
+            crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
+            crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
         });
     }
     let modifier = crate::app::input::context_order::resolve_order_modifiers(
@@ -202,9 +202,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         return Some(CursorFeedbackKind::Harvest);
     }
     Some(match state.queued_order_mode {
-        crate::app_render::OrderMode::Move => CursorFeedbackKind::Move,
-        crate::app_render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
-        crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
+        crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
+        crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
+        crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
     })
 }
 
@@ -893,7 +893,7 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
     let Some(_minimap) = &state.minimap else {
         return false;
     };
-    let rect = crate::app_sidebar_render::active_minimap_screen_rect(state);
+    let rect = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
     state
         .minimap
         .as_ref()

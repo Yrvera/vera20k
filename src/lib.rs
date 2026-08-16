@@ -57,7 +57,6 @@ pub mod app_launch;
 pub mod app_list_maps;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
-pub mod app_radiation_light;
 pub mod app_score_shell_render;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
@@ -79,7 +78,6 @@ pub mod app_types;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
 // Extracted from app.rs to keep the orchestrator under 600 lines.
-pub mod app_render;
 
 // In-game input handling — mouse clicks, hotkeys, sidebar interactions.
 // Extracted from app_render.rs to keep files under 400 lines.
@@ -95,14 +93,11 @@ pub mod app_render;
 
 // Sidebar rendering — view construction, minimap, chrome helpers.
 // Extracted from app_render.rs to keep files under 400 lines.
-pub mod app_sidebar_render;
 
 // Sidebar sprite instance builders — slots, chrome, cameos, text.
 // Extracted from app_sidebar_render.rs to keep files under 400 lines.
-pub mod app_sidebar_build;
 
 // Per-sim-tick orchestrator for sidebar gadget flash + Repair/Sell mode state.
-pub mod app_sidebar_gadgets;
 
 // In-game gadget substrate driver: retained sidebar button list, mouse-edge +
 // idle ticks, fired-ID application, pressed-bit publication.
@@ -122,16 +117,12 @@ pub mod app_sidebar_gadgets;
 
 // Building animation lifecycle, damage fires, sidebar UI tick, sound playback.
 // Extracted from app_sim_tick.rs.
-pub mod app_building_anim;
 
 // Weapon fire presentation: non-garrison muzzle flashes and FLH-positioned reports.
-pub mod app_fire_effects;
 
 // App-owned presentation runtime for the native transient combat-light vector.
-pub mod app_combat_lights;
 
 // Parachute SHP animation lifecycle for descending paradropped infantry.
-pub mod app_chute_anim;
 
 // App state transitions: map loading, screen clearing.
 
@@ -139,23 +130,17 @@ pub mod app_chute_anim;
 
 // UI overlay builders — status bars, software cursor.
 // Extracted from app_render.rs.
-pub mod app_ui_overlays;
 
 // Isometric 3D selection bracket lines for buildings.
-pub mod app_selection_brackets;
 
 // Target/action lines — colored lines from units to command destinations.
-pub mod app_target_lines;
 
 // Legacy egui-based sidebar text overlay kept as fallback/reference.
-pub mod app_sidebar_text;
 
 // Per-frame instance builders — units, sprites, overlays.
 // Extracted from app_render.rs to keep files under 600 lines.
-pub mod app_instances;
 
 // Spawn-pick phase — player chooses their starting position on the map.
-pub mod app_spawn_pick;
 
 // Debug visualization overlays — pathgrid walkability, terrain costs.
 // Toggled via hotkeys (P / F9 = pathgrid).
@@ -164,7 +149,6 @@ pub mod app_spawn_pick;
 // Developer overlay — egui panel with runtime knobs, diagnostics,
 // and save/load helpers. Toggled with backtick (`).
 // Explicit presentation index over dynamic overlay cells (F08).
-pub mod app_overlay_index;
 // Source-level dependency guards for the domain-boundaries ledger.
 #[cfg(test)]
 mod architecture_guards;

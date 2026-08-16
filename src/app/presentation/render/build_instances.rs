@@ -10,12 +10,12 @@
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner;
 use crate::app::diagnostics::debug_overlays;
-use crate::app_instances;
-use crate::app_sidebar_render::{
+use crate::app::presentation::instances;
+use crate::app::presentation::sidebar_render::{
     active_minimap_screen_rect, build_sidebar_cameo_instances, build_sidebar_chrome_instances,
     build_sidebar_instances as sidebar_inst_fn, build_sidebar_text_instances, current_sidebar_view,
 };
-use crate::app_ui_overlays::{
+use crate::app::presentation::ui_overlays::{
     build_building_radius_ring_instances, build_building_status_instances,
     build_cargo_pip_instances, build_occupant_pip_instances, build_software_cursor_instances,
     build_unit_status_bg_instances, build_unit_status_fill_instances,
@@ -206,7 +206,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 
     // Map overlays and walls remain in the fixed per-cell draw plan. Terrain
     // objects join live Ground registrations below; low bridges (LOBRDG*) ride
-    // in `overlay`, while high bridge bodies use app_instances::bridges.
+    // in `overlay`, while high bridge bodies use instances::bridges.
     let ground_order = super::draw_plan_lowering::NativeGroundOrder::new(
         state
             .sim_runtime
@@ -216,7 +216,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut ground_objects = Vec::new();
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
     overlay.clear();
-    app_instances::build_overlay_instances(
+    instances::build_overlay_instances(
         state,
         sw,
         sh,
@@ -224,14 +224,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut ground_objects,
         &ground_order,
     );
-    // Bridge body, shadow, and railing emission live in app_instances::bridges
+    // Bridge body, shadow, and railing emission live in instances::bridges
     // (Phase D). Read from BridgeRuntimeCell post-tick (NOT OverlayGrid).
     let mut bridge_body: Vec<SpriteInstance> = Vec::new();
     let mut bridge_body_shadow: Vec<SpriteInstance> = Vec::new();
     let mut bridge_railing: Vec<SpriteInstance> = Vec::new();
-    app_instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
-    app_instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
-    app_instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
+    instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bridge_body);
+    instances::bridges::build_bridge_shadow_instances(state, sw, sh, &mut bridge_body_shadow);
+    instances::bridges::build_bridge_railing_instances(state, sw, sh, &mut bridge_railing);
     sort_by_depth_desc(&mut bridge_body);
     sort_by_depth_desc(&mut bridge_body_shadow);
     sort_by_depth_desc(&mut bridge_railing);
@@ -281,7 +281,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         vec![Vec::new(); transition_page_count];
     let mut bridge_unit_transition_paged: Vec<Vec<SpriteInstance>> =
         vec![Vec::new(); transition_page_count];
-    app_instances::build_unit_instances(
+    instances::build_unit_instances(
         state,
         &mut unit,
         &mut unit_pages,
@@ -308,8 +308,8 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // Parachute canopies are composed into their body's draw, so they take the
     // body's key rather than deriving one. Collected here, consumed by
     // `build_parachute_instances` below — which is why it must run after this.
-    let mut parachute_body_depths = app_instances::ParachuteBodyDepths::new();
-    app_instances::build_shp_instances(
+    let mut parachute_body_depths = instances::ParachuteBodyDepths::new();
+    instances::build_shp_instances(
         state,
         &mut shp_paged,
         &mut bridge_shp_paged,
@@ -322,10 +322,10 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &ground_order,
     );
     sort_by_depth_desc_with_pages(&mut unit, &mut unit_pages);
-    app_instances::build_world_effect_instances(state, &mut shp_paged);
+    instances::build_world_effect_instances(state, &mut shp_paged);
     // Scheduler-owned AnimClass objects use their parsed native layer: Ground
     // joins the integer plan, Top appends to the flat page-tagged stream.
-    app_instances::build_anim_class_instances(
+    instances::build_anim_class_instances(
         state,
         &mut shp_paged,
         &mut top_shp,
@@ -344,14 +344,14 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
-    app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
+    instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
     // In-flight projectile sprites (e.g. Guardian GI DRAGON missile).
-    app_instances::build_projectile_visual_instances(state, &mut shp_paged);
+    instances::build_projectile_visual_instances(state, &mut shp_paged);
     // Garrison muzzle flashes (OccupantAnim) at fire port positions.
-    app_instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
+    instances::build_garrison_muzzle_flash_instances(state, &mut shp_paged);
     // Parachute SHPs above descending paradropped infantry (Layer 2 — sorts
     // with the GI body, at the body's own key).
-    app_instances::build_parachute_instances(state, &mut ground_objects, &parachute_body_depths);
+    instances::build_parachute_instances(state, &mut ground_objects, &parachute_body_depths);
     for page in &mut shp_paged {
         sort_by_depth_desc(page);
     }
@@ -361,7 +361,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 
     // Layer 3 particle systems — separate paged list above all Ground-layer
     // geometry per the original's ParticleClass::GetLayer = 3.
-    app_instances::build_particle_instances(state, &mut particle_paged);
+    instances::build_particle_instances(state, &mut particle_paged);
     for page in &mut particle_paged {
         sort_by_depth_desc(page);
     }
@@ -385,7 +385,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         );
     }
 
-    let weapon_waves = app_instances::build_weapon_wave_instances(state);
+    let weapon_waves = instances::build_weapon_wave_instances(state);
 
     // Named residual: BuildingLightRuntime currently records the parent/target
     // relation but not SpotlightClass's evolving child coordinate and angle.
@@ -600,7 +600,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
 /// Build in-game UI overlay instances: selection brackets, health bars,
 /// drag rectangle, building placement preview, and software cursor.
 pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstances {
-    let bracket = crate::app_selection_brackets::build_selection_bracket_instances(state, sw, sh);
+    let bracket = crate::app::presentation::selection_brackets::build_selection_bracket_instances(state, sw, sh);
     let radius_ring: Vec<SpriteInstance> = build_building_radius_ring_instances(state, sw, sh);
     let building_status: Vec<SpriteInstance> = build_building_status_instances(state, sw, sh);
     let occupant_pip = build_occupant_pip_instances(state, sw, sh);
@@ -618,12 +618,12 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
         build_placement_preview(state);
 
     // Target/action lines from selected units to command destinations.
-    let target_line = crate::app_target_lines::build_target_line_instances(
+    let target_line = crate::app::presentation::target_lines::build_target_line_instances(
         &state.target_lines,
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         &state.height_map(),
     );
-    let factory_rally = crate::app_target_lines::build_factory_rally_line_instances(
+    let factory_rally = crate::app::presentation::target_lines::build_factory_rally_line_instances(
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules(),
         &state.height_map(),
@@ -799,7 +799,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .map(|csf| csf.text("TXT_HOLD"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("On Hold"));
     let ready_tint = {
-        let theme = crate::app_sidebar_render::current_sidebar_theme(state);
+        let theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
         crate::render::sidebar_text::side_highlight_color(theme)
     };
     let (cameo, gclock, cameo_overlay) = view
@@ -822,12 +822,12 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     // with the same BitFont on the sidebar surface, in the same packed side
     // text colour as the cameo labels.
     if let Some(v) = view.as_ref() {
-        let theme = crate::app_sidebar_render::current_sidebar_theme(state);
-        text.extend(crate::app_sidebar_text::build_sidebar_credits_instances(
+        let theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
+        text.extend(crate::app::presentation::sidebar_text::build_sidebar_credits_instances(
             &state.bit_font,
             v,
             state.ui_scale,
-            crate::app_sidebar_text::credits_tint(theme),
+            crate::app::presentation::sidebar_text::credits_tint(theme),
             [state.camera_x, state.camera_y],
         ));
     }
