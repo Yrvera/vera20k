@@ -407,3 +407,164 @@ where
     }
     sim
 }
+
+/// BuildingClass::GetCoords projects the stored north-west anchor to the
+/// foundation centre before distance consumers receive it.
+fn project_building_get_coords_xy(
+    northwest_x: i32,
+    northwest_y: i32,
+    foundation_width: u16,
+    foundation_height: u16,
+) -> (i32, i32) {
+    let x_offset = i32::from(foundation_width)
+        .wrapping_sub(1)
+        .wrapping_mul(128);
+    let y_offset = i32::from(foundation_height)
+        .wrapping_sub(1)
+        .wrapping_mul(128);
+    (
+        northwest_x.wrapping_add(x_offset),
+        northwest_y.wrapping_add(y_offset),
+    )
+}
+
+pub(crate) fn map_wall_owner_candidate_from_building(
+    entity: &crate::sim::game_entity::GameEntity,
+    resolved_terrain: &crate::map::resolved_terrain::ResolvedTerrainGrid,
+    house_wall_owner: bool,
+) -> crate::sim::overlay_grid::MapWallOwnerCandidate {
+    let northwest_x = i32::from(entity.position.rx)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_x.to_num::<i32>());
+    let northwest_y = i32::from(entity.position.ry)
+        .wrapping_mul(256)
+        .wrapping_add(entity.position.sub_y.to_num::<i32>());
+    let world_z = resolved_terrain
+        .cell(entity.position.rx, entity.position.ry)
+        .and_then(|cell| {
+            crate::util::lepton::ground_height_leptons(
+                cell.level,
+                cell.slope_type,
+                northwest_x,
+                northwest_y,
+            )
+            .ok()
+        })
+        .unwrap_or(i32::from(entity.position.z) * crate::util::lepton::LEPTONS_PER_LEVEL as i32);
+    let (foundation_width, foundation_height) =
+        crate::sim::production::foundation_dimensions(&entity.foundation);
+    let (world_x, world_y) = project_building_get_coords_xy(
+        northwest_x,
+        northwest_y,
+        foundation_width,
+        foundation_height,
+    );
+
+    crate::sim::overlay_grid::MapWallOwnerCandidate {
+        owner: entity.owner,
+        world_x,
+        world_y,
+        world_z,
+        foundation_width,
+        foundation_height,
+        object_alive: entity.lifecycle.object_alive,
+        cell_marked: entity.lifecycle.cell_marked,
+        house_wall_owner,
+    }
+}
+
+/// Post-funnel scenario finalization shared by the app loader and the
+/// headless loader (F09). The ordering is part of the construction contract:
+/// ore-spawner terrain seeding, map-wall owner reconstruction from the
+/// spawned structures, overlay-grid installation, smudge-grid seeding, then
+/// the authoritative post-map tail (`ScenarioClass::Post_Map_Init` cone).
+pub(crate) fn finalize_constructed_scenario(
+    sim: &mut Simulation,
+    map_data: &crate::map::map_file::MapFile,
+    rules: &RuleSet,
+    overlay_registry: &crate::map::overlay_types::OverlayTypeRegistry,
+    mut overlay_grid: crate::sim::overlay_grid::OverlayGrid,
+    house_roster: &crate::map::houses::HouseRoster,
+    skirmish_session: Option<&crate::skirmish_launch::SkirmishLaunchSession>,
+) -> crate::sim::scenario_post_map::ScenarioPostMapOutput {
+    // Attach the TIBTRE ore-spawner animation index to the terrain objects
+    // constructed ahead of the map entities. Its authoritative raw SHP count
+    // is rules-owned; presentation atlases retain only body-frame ranges.
+    let seeded_terrain =
+        crate::sim::terrain_spawn::seed_terrain_spawner_animation(sim, rules, overlay_registry);
+    if seeded_terrain > 0 {
+        log::info!(
+            "Seeded {} ore-spawning terrain objects (TIBTRE)",
+            seeded_terrain,
+        );
+    }
+    // Move the already-resolved CellClass overlay state into Simulation,
+    // then reconstruct map-wall ownership now that buildings exist.
+    if sim.resolved_terrain.is_some() {
+        let (grid_width, grid_height) = (overlay_grid.width(), overlay_grid.height());
+        let rt = sim
+            .resolved_terrain
+            .as_ref()
+            .expect("terrain checked above");
+        let buildings: Vec<crate::sim::overlay_grid::MapWallOwnerCandidate> = sim
+            .substrate
+            .entities
+            .values()
+            .filter(|entity| entity.category == crate::map::entities::EntityCategory::Structure)
+            .map(|entity| {
+                let country = sim
+                    .houses
+                    .get(&entity.owner)
+                    .and_then(|house| house.country)
+                    .map(|country| sim.interner.resolve(country));
+                map_wall_owner_candidate_from_building(
+                    entity,
+                    rt,
+                    crate::sim::house_state::resolve_wall_owner(Some(rules), country),
+                )
+            })
+            .collect();
+        overlay_grid.reconstruct_map_wall_owners(rt, overlay_registry, &buildings);
+        sim.overlay_grid = Some(overlay_grid);
+        log::info!(
+            "Overlay grid initialized: {}x{}, {} entries",
+            grid_width,
+            grid_height,
+            map_data.overlays.len(),
+        );
+    }
+    // Seed smudge grid from map [Smudge] entries. Requires terrain +
+    // overlay grids built above so placement gates (slope, overlay,
+    // accepts_smudge) can reject invalid map entries at load.
+    if let (Some(rt), Some(overlay)) = (sim.resolved_terrain.as_ref(), sim.overlay_grid.as_ref()) {
+        let grid_width = rt.width();
+        let grid_height = rt.height();
+        sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
+            &map_data.smudges,
+            &rules.smudge_types,
+            rt,
+            overlay,
+            grid_width,
+            grid_height,
+        ));
+        sim.flush_smudge_dirty();
+        log::info!(
+            "Smudge grid initialized: {}x{}, {} entries",
+            grid_width,
+            grid_height,
+            map_data.smudges.len(),
+        );
+    }
+    // The caller submits one immutable initialization command; Simulation owns
+    // every match-affecting write and Scenario RNG draw in the post-map tail.
+    sim.finalize_scenario_post_map(crate::sim::scenario_post_map::ScenarioPostMapInput {
+        map_width: map_data.header.width as u16,
+        map_height: map_data.header.height as u16,
+        basic: &map_data.basic,
+        special_flags: &map_data.special_flags,
+        rules,
+        overlay_registry,
+        house_roster,
+        skirmish_session,
+    })
+}

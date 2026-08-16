@@ -167,9 +167,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // F09: the same GPU-free construction funnel the app uses — bootstrap
     // RNG, map-roster houses before objects, terrain objects before map
     // entities, entity spawn, and terrain-attached animations — then the
-    // app's exact post-funnel order: spawner seed, overlay grid, post-map.
-    // A parity run stands in for a stock skirmish load with bridges
-    // destructible, the retail skirmish default.
+    // shared post-funnel finalization (spawner seed, wall owners, overlay
+    // grid, smudge grid, post-map). A parity run stands in for a stock
+    // skirmish load with bridges destructible, the retail skirmish default.
     let mut sim = crate::sim::runtime::construct_scenario(
         &map,
         &resolved,
@@ -190,23 +190,14 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
             );
         },
     );
-    crate::sim::terrain_spawn::seed_terrain_spawner_animation(
+    let post_map = crate::sim::runtime::finalize_constructed_scenario(
         &mut sim,
+        &map,
         &rules,
         &overlay_registry,
-    );
-    sim.overlay_grid = Some(overlay_grid);
-    let post_map = sim.finalize_scenario_post_map(
-        crate::sim::scenario_post_map::ScenarioPostMapInput {
-            map_width: map.header.width as u16,
-            map_height: map.header.height as u16,
-            basic: &map.basic,
-            special_flags: &map.special_flags,
-            rules: &rules,
-            overlay_registry: &overlay_registry,
-            house_roster: &house_roster,
-            skirmish_session: None,
-        },
+        overlay_grid,
+        &house_roster,
+        None,
     );
     if !post_map.navigation_published {
         return Err("publish headless post-map navigation".to_string());

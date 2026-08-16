@@ -96,71 +96,6 @@ fn resolved_overlay_shp_ids(
     available
 }
 
-/// BuildingClass::GetCoords projects the stored north-west anchor to the
-/// foundation centre before distance consumers receive it.
-fn project_building_get_coords_xy(
-    northwest_x: i32,
-    northwest_y: i32,
-    foundation_width: u16,
-    foundation_height: u16,
-) -> (i32, i32) {
-    let x_offset = i32::from(foundation_width)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    let y_offset = i32::from(foundation_height)
-        .wrapping_sub(1)
-        .wrapping_mul(128);
-    (
-        northwest_x.wrapping_add(x_offset),
-        northwest_y.wrapping_add(y_offset),
-    )
-}
-
-fn map_wall_owner_candidate_from_building(
-    entity: &crate::sim::game_entity::GameEntity,
-    resolved_terrain: &ResolvedTerrainGrid,
-    house_wall_owner: bool,
-) -> crate::sim::overlay_grid::MapWallOwnerCandidate {
-    let northwest_x = i32::from(entity.position.rx)
-        .wrapping_mul(256)
-        .wrapping_add(entity.position.sub_x.to_num::<i32>());
-    let northwest_y = i32::from(entity.position.ry)
-        .wrapping_mul(256)
-        .wrapping_add(entity.position.sub_y.to_num::<i32>());
-    let world_z = resolved_terrain
-        .cell(entity.position.rx, entity.position.ry)
-        .and_then(|cell| {
-            crate::util::lepton::ground_height_leptons(
-                cell.level,
-                cell.slope_type,
-                northwest_x,
-                northwest_y,
-            )
-            .ok()
-        })
-        .unwrap_or(i32::from(entity.position.z) * crate::util::lepton::LEPTONS_PER_LEVEL as i32);
-    let (foundation_width, foundation_height) =
-        crate::sim::production::foundation_dimensions(&entity.foundation);
-    let (world_x, world_y) = project_building_get_coords_xy(
-        northwest_x,
-        northwest_y,
-        foundation_width,
-        foundation_height,
-    );
-
-    crate::sim::overlay_grid::MapWallOwnerCandidate {
-        owner: entity.owner,
-        world_x,
-        world_y,
-        world_z,
-        foundation_width,
-        foundation_height,
-        object_alive: entity.lifecycle.object_alive,
-        cell_marked: entity.lifecycle.cell_marked,
-        house_wall_owner,
-    }
-}
-
 #[cfg(test)]
 mod native_overlay_shp_tests {
     use super::*;
@@ -258,6 +193,7 @@ mod native_overlay_shp_tests {
 mod map_wall_owner_candidate_tests {
     use super::*;
     use crate::map::entities::EntityCategory;
+    use crate::sim::runtime::map_wall_owner_candidate_from_building;
     use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
     use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
     use crate::sim::components::{BuildingUp, Health};
@@ -1884,110 +1820,28 @@ pub(crate) fn load_map_from_initial(
         bridge_railing_tile_bases,
     );
 
-    if let Some(sim) = &mut simulation {
-        // Attach the TIBTRE ore-spawner animation index to the terrain objects
-        // constructed ahead of the map entities. Its authoritative raw SHP
-        // count is rules-owned; the overlay atlas retains only presentation's
-        // body-frame range.
-        if let Some(rules_for_terrain) = rules.as_ref() {
-            let seeded_terrain = crate::sim::terrain_spawn::seed_terrain_spawner_animation(
-                sim,
-                rules_for_terrain,
-                &overlay_registry,
-            );
-            if seeded_terrain > 0 {
-                log::info!(
-                    "Seeded {} ore-spawning terrain objects (TIBTRE)",
-                    seeded_terrain,
-                );
-            }
-        } else {
-            log::warn!("No rules loaded — skipping terrain spawner seeding");
-        }
-        // Move the already-resolved CellClass overlay state into Simulation,
-        // then reconstruct map-wall ownership now that buildings exist.
-        if sim.resolved_terrain.is_some() {
-            let (grid_width, grid_height) = (overlay_grid.width(), overlay_grid.height());
-            let rt = sim
-                .resolved_terrain
-                .as_ref()
-                .expect("terrain checked above");
-            let buildings: Vec<crate::sim::overlay_grid::MapWallOwnerCandidate> = sim
-                .substrate
-                .entities
-                .values()
-                .filter(|entity| entity.category == crate::map::entities::EntityCategory::Structure)
-                .map(|entity| {
-                    let country = sim
-                        .houses
-                        .get(&entity.owner)
-                        .and_then(|house| house.country)
-                        .map(|country| sim.interner.resolve(country));
-                    map_wall_owner_candidate_from_building(
-                        entity,
-                        rt,
-                        crate::sim::house_state::resolve_wall_owner(rules.as_ref(), country),
-                    )
-                })
-                .collect();
-            overlay_grid.reconstruct_map_wall_owners(rt, &overlay_registry, &buildings);
-            overlays_connected.retain(|entry| {
-                overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id)
-            });
-            sim.overlay_grid = Some(overlay_grid);
-            log::info!(
-                "Overlay grid initialized: {}x{}, {} entries",
-                grid_width,
-                grid_height,
-                map_data.overlays.len(),
-            );
-        }
-        // Seed smudge grid from map [Smudge] entries. Requires terrain +
-        // overlay grids built above so placement gates (slope, overlay,
-        // accepts_smudge) can reject invalid map entries at load.
-        if let (Some(rt), Some(overlay), Some(rules_for_smudge)) = (
-            sim.resolved_terrain.as_ref(),
-            sim.overlay_grid.as_ref(),
-            rules.as_ref(),
-        ) {
-            let grid_width = rt.width();
-            let grid_height = rt.height();
-            sim.smudge_grid = Some(crate::sim::smudge_grid::SmudgeGrid::from_map_entries(
-                &map_data.smudges,
-                &rules_for_smudge.smudge_types,
-                rt,
-                overlay,
-                grid_width,
-                grid_height,
-            ));
-            sim.flush_smudge_dirty();
-            log::info!(
-                "Smudge grid initialized: {}x{}, {} entries",
-                grid_width,
-                grid_height,
-                map_data.smudges.len(),
-            );
-        }
-    }
-
-    // The app submits one immutable initialization command; Simulation owns
-    // every match-affecting write and Scenario RNG draw in the post-map tail.
+    // F09: the shared post-funnel finalization — spawner seed, map-wall owner
+    // reconstruction, overlay-grid installation, smudge-grid seeding, and the
+    // authoritative post-map tail — runs through the same sim-owned function
+    // the headless loader uses. The overlay render entries are then re-filtered
+    // against the installed grid (a presentation concern that stays app-side).
     let rules_for_post_map = rules
         .as_ref()
         .expect("merged rules were installed before post-map finalization");
     if let Some(sim) = &mut simulation {
-        let output = sim.finalize_scenario_post_map(
-            crate::sim::scenario_post_map::ScenarioPostMapInput {
-                map_width: map_data.header.width as u16,
-                map_height: map_data.header.height as u16,
-                basic: &map_data.basic,
-                special_flags: &map_data.special_flags,
-                rules: rules_for_post_map,
-                overlay_registry: &overlay_registry,
-                house_roster: &house_roster,
-                skirmish_session: skirmish_launch_session,
-            },
+        let output = crate::sim::runtime::finalize_constructed_scenario(
+            sim,
+            &map_data,
+            rules_for_post_map,
+            &overlay_registry,
+            overlay_grid,
+            &house_roster,
+            skirmish_launch_session,
         );
+        if let Some(grid) = sim.overlay_grid.as_ref() {
+            overlays_connected
+                .retain(|entry| grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id));
+        }
         if let Some(stats) = output.tiberium_queues {
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
