@@ -767,6 +767,34 @@ impl ReplayLog {
 pub struct ReplayRunner;
 
 impl ReplayRunner {
+    /// Re-run diagnostic-log ticks through the bound runtime (F09): rules,
+    /// heights, overlay registry, and trigger definitions come from the
+    /// runtime resources and navigation is the simulation-pinned snapshot -
+    /// nothing is caller-substitutable.
+    pub fn run_runtime(
+        runtime: &mut crate::sim::runtime::SimRuntime,
+        replay: &ReplayLog,
+        tick_ms: u32,
+    ) -> Vec<u64> {
+        let path_grid = runtime.simulation.path_grid_snapshot();
+        let resources = &runtime.resources;
+        Self::run_master_frame(
+            &mut runtime.simulation,
+            replay,
+            Some(&resources.rules),
+            &resources.height_map,
+            path_grid.as_deref(),
+            Some(&resources.overlay_registry),
+            tick_ms,
+            Some(TriggerInputs {
+                graph: &resources.trigger_graph,
+                triggers: &resources.triggers,
+                events: &resources.events,
+                actions: &resources.actions,
+            }),
+        )
+    }
+
     /// Re-run diagnostic-log ticks and return the resulting hash timeline.
     pub fn run(
         sim: &mut Simulation,

@@ -31,11 +31,17 @@ use crate::sim::world::Simulation;
 
 /// A loaded scenario plus the per-tick inputs `advance_tick` needs.
 pub struct HeadlessScenario {
-    pub sim: Simulation,
-    pub rules: RuleSet,
+    /// The runtime owner (F09): simulation plus its bound immutable
+    /// resources - no independently swappable execution inputs remain.
+    pub runtime: crate::sim::runtime::SimRuntime,
     pub map: MapFile,
-    pub height_map: BTreeMap<(u16, u16), u8>,
-    pub overlay_registry: OverlayTypeRegistry,
+}
+
+impl HeadlessScenario {
+    /// Read access for digest/tooling callers.
+    pub fn sim(&self) -> &Simulation {
+        &self.runtime.simulation
+    }
 }
 
 /// Matches the client's simulation cadence so tick numbering is comparable.
@@ -212,25 +218,30 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
     // spawning lands.
 
     Ok(HeadlessScenario {
-        sim,
-        rules,
+        runtime: crate::sim::runtime::SimRuntime {
+            simulation: sim,
+            resources: crate::sim::runtime::SimResources {
+                height_map,
+                bridge_height_map: BTreeMap::new(),
+                overlay_registry,
+                terrain_template: None,
+                rules,
+                trigger_graph: Default::default(),
+                triggers: Default::default(),
+                events: Default::default(),
+                actions: Default::default(),
+            },
+        },
         map,
-        height_map,
-        overlay_registry,
     })
 }
 
 impl HeadlessScenario {
-    /// Advance one committed simulation frame with no player commands.
+    /// Advance one committed simulation frame with no player commands,
+    /// through the same bound-resource runtime transaction the app uses.
     pub fn tick(&mut self) {
-        let path_grid = self.sim.path_grid_snapshot();
-        self.sim.advance_tick(
-            &[],
-            Some(&self.rules),
-            &self.height_map,
-            path_grid.as_deref(),
-            Some(&self.overlay_registry),
-            SIM_TICK_MS,
-        );
+        let _ = self
+            .runtime
+            .advance_frame(&[], SIM_TICK_MS, crate::sim::world::TickLane::Ordinary);
     }
 }

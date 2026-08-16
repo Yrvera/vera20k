@@ -1624,7 +1624,12 @@ fn commit_prepared_load(
     );
 
     crate::app::reset_scenario_exit_runtime(state);
-    state.sim_runtime = Some(crate::sim::runtime::SimRuntime::from_simulation(simulation));
+    // Same-content in-scenario restore: the immutable match resources carry
+    // over; only the simulation is replaced (F07 critic fix).
+    state.sim_runtime = Some(crate::sim::runtime::SimRuntime::rebind_restored(
+        state.sim_runtime.take(),
+        simulation,
+    ));
     crate::app_transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
     crate::app_sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);

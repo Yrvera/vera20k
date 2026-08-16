@@ -120,3 +120,54 @@ impl SimRuntime {
         )
     }
 }
+
+impl SimRuntime {
+    /// Rebind a restored simulation over the surviving match resources
+    /// (same-content in-scenario load: rules, heights, registries, and
+    /// trigger definitions are immutable match inputs and MUST carry over —
+    /// an empty rebind would silently break every bound-resource consumer).
+    pub fn rebind_restored(
+        previous: Option<SimRuntime>,
+        simulation: Simulation,
+    ) -> SimRuntime {
+        let resources = previous
+            .map(|rt| rt.resources)
+            .unwrap_or_else(SimResources::empty);
+        SimRuntime {
+            simulation,
+            resources,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F07 matrix: the runtime always uses bound navigation and resources —
+    /// both production install paths keep the match resources. The map-load
+    /// install binds them from the load result; the in-scenario restore path
+    /// (quickload / save-load panel) must CARRY the surviving resources, not
+    /// rebind empty ones.
+    #[test]
+    fn runtime_always_uses_bound_navigation_and_resources() {
+        let mut resources = SimResources::empty();
+        resources.height_map.insert((3, 4), 7);
+        let original = SimRuntime {
+            simulation: Simulation::new(),
+            resources,
+        };
+
+        let rebound = SimRuntime::rebind_restored(Some(original), Simulation::new());
+        assert_eq!(
+            rebound.resources.height_map.get(&(3, 4)),
+            Some(&7),
+            "restore must carry the match resources, never rebind empty"
+        );
+
+        // Without a surviving runtime (fixture-only path) the rebind is
+        // explicitly empty rather than partially bound.
+        let fresh = SimRuntime::rebind_restored(None, Simulation::new());
+        assert!(fresh.resources.height_map.is_empty());
+    }
+}

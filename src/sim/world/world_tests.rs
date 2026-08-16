@@ -8843,3 +8843,37 @@ fn current_rust_frame_call_order_is_preserved() {
     sim.fog.build_merged_for(owner, &sim.interner);
     let _ = sim.parity_digest();
 }
+
+/// F07: the runtime API preserves the characterized seam — drain from the
+/// runtime's simulation, advance through `SimRuntime::advance_frame` with the
+/// bound resources, and the due command executes within that same frame.
+#[test]
+fn runtime_frame_call_order_matches_the_app_seam() {
+    let mut sim: Simulation = Simulation::new();
+    sim.spawn_from_map(
+        &[make_test_entity("MTNK", EntityCategory::Unit)],
+        None,
+        &empty_heights(),
+    );
+    let select = cmd_envelope(
+        &sim,
+        "Americans",
+        sim.session.tick + 2,
+        Command::Select { entity_ids: vec![1], additive: false },
+    );
+    let mut runtime = crate::sim::runtime::SimRuntime::from_simulation(sim);
+    runtime.simulation.queue_command(select);
+
+    assert!(runtime.simulation.take_due_commands().is_empty());
+    let _ = runtime.advance_frame(&[], 16, TickLane::Ordinary);
+
+    let due = runtime.simulation.take_due_commands();
+    assert_eq!(due.len(), 1);
+    let output = runtime.advance_frame(&due, 16, TickLane::Ordinary);
+    assert!(output.tick.frame_committed);
+    assert!(
+        runtime.simulation.substrate.entities.get(1).is_some_and(|e| e.selected),
+        "a due command executes in the runtime frame that drained it"
+    );
+    assert!(runtime.simulation.take_due_commands().is_empty());
+}
