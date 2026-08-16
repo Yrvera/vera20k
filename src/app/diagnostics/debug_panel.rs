@@ -167,7 +167,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             }
 
             // --- Active SpeedType for terrain cost overlay ---
-            let active_st = crate::app_debug_overlays::resolve_debug_speed_type(state);
+            let active_st = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
             ui.colored_label(
                 egui::Color32::from_rgb(0, 90, 160),
                 format!("Overlay: {} ([ ] to cycle)", active_st.name()),

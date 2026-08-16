@@ -490,7 +490,7 @@ pub(crate) struct AppState {
     /// Save repository, cached listing, and last save/load metadata.
     pub(crate) persistence: crate::app::persistence::PersistenceState,
     /// Rolling FPS / frame-time tracker for the dev overlay readout.
-    pub(crate) frame_timer: crate::app_dev_overlay::FrameTimer,
+    pub(crate) frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,

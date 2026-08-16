@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use crate::app_shell_capture::{self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest};
+use crate::app::diagnostics::shell_capture::{self, AppLaunchMode as ShellAppLaunchMode, ShellCaptureRequest};
 use crate::app_startup_options::{RetailStartupOptions, consume_retail_switches};
-use crate::app_tactical_capture::profile::{
+use crate::app::diagnostics::tactical_capture::profile::{
     CHECKPOINT_RADAR_ONLINE_V1, SealedJsonFile, TacticalCaptureContract, TacticalCaptureProfile,
     validate_new_output_directory,
 };
@@ -125,7 +125,7 @@ where
         if args.first() == Some(&OsString::from(TACTICAL_CAPTURE_FLAG)) {
             return parse_tactical_args(args);
         }
-        return match app_shell_capture::parse_launch_args(args)? {
+        return match shell_capture::parse_launch_args(args)? {
             ShellAppLaunchMode::Interactive => {
                 Ok(AppLaunchMode::Interactive(RetailStartupOptions::default()))
             }
@@ -139,7 +139,7 @@ where
     if retail_options.usage_requested {
         return Ok(AppLaunchMode::Usage);
     }
-    match app_shell_capture::parse_launch_args(args)? {
+    match shell_capture::parse_launch_args(args)? {
         ShellAppLaunchMode::Interactive => Ok(AppLaunchMode::Interactive(retail_options)),
         ShellAppLaunchMode::ShellCapture(request) => Ok(AppLaunchMode::ShellCapture(request)),
     }
@@ -149,7 +149,7 @@ where
 /// its option values must reach the sealed parsers untouched.
 fn is_capture_invocation(args: &[OsString]) -> bool {
     args.iter().any(|argument| {
-        argument == OsStr::new(app_shell_capture::CAPTURE_FLAG)
+        argument == OsStr::new(shell_capture::CAPTURE_FLAG)
             || argument == OsStr::new(TACTICAL_CAPTURE_FLAG)
     })
 }
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn non_tactical_unknown_args_retain_shell_error() {
         let args = [OsString::from("--not-a-real-option")];
-        let shell_error = app_shell_capture::parse_launch_args(args.clone())
+        let shell_error = shell_capture::parse_launch_args(args.clone())
             .expect_err("sealed shell parser must reject");
         let error = parse_launch_args(args).expect_err("sealed shell parser must reject");
         assert_eq!(error.to_string(), shell_error.to_string());
@@ -373,7 +373,7 @@ mod tests {
         .chain(std::iter::once(output.as_os_str().to_owned()))
         .collect();
         let ShellAppLaunchMode::ShellCapture(expected) =
-            app_shell_capture::parse_launch_args(args.clone()).expect("sealed parse")
+            shell_capture::parse_launch_args(args.clone()).expect("sealed parse")
         else {
             panic!("wrong sealed launch mode");
         };

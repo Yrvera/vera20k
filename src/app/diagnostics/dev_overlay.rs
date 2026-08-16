@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::app_debug_panel::debug_panel_frame;
+use crate::app::diagnostics::debug_panel::debug_panel_frame;
 
 /// Number of frames to average for the FPS / frame-time readout.
 const FRAME_TIMER_WINDOW: usize = 60;

@@ -24,9 +24,9 @@ impl App {
     pub(super) fn render_frame(
         state: &mut AppState,
         event_loop: &ActiveEventLoop,
-        mut shell_capture: Option<&mut crate::app_shell_capture::ShellCaptureSession>,
+        mut shell_capture: Option<&mut crate::app::diagnostics::shell_capture::ShellCaptureSession>,
         mut tactical_capture: Option<
-            &mut crate::app_tactical_capture::session::TacticalCaptureSession,
+            &mut crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession,
         >,
     ) -> Result<()> {
         anyhow::ensure!(
@@ -161,7 +161,7 @@ impl App {
             crate::app_shell_transition::MainMenuFirstPaintPoll::Completed => {
                 if let Some(session) = shell_capture.as_deref_mut()
                     && session.completion_handoff()
-                        == crate::app_shell_capture::ShellCompletionHandoff::
+                        == crate::app::diagnostics::shell_capture::ShellCompletionHandoff::
                             FinalizeExitReturnBeforeAcquire
                 {
                     session.complete_entry_sequence_after_wave(state)?;
@@ -393,21 +393,21 @@ impl App {
                     || state.debug_unit_inspector
                     || state.show_hotkey_help;
                 let prev_visuals = if any_debug_panel {
-                    Some(crate::app_debug_panel::push_debug_light_visuals(
+                    Some(crate::app::diagnostics::debug_panel::push_debug_light_visuals(
                         &state.egui.ctx,
                     ))
                 } else {
                     None
                 };
                 if state.debug_show_pathgrid {
-                    crate::app_debug_panel::draw_debug_panel(&state.egui.ctx, state);
+                    crate::app::diagnostics::debug_panel::draw_debug_panel(&state.egui.ctx, state);
                 }
-                crate::app_debug_panel::draw_event_history_panel(&state.egui.ctx, state);
+                crate::app::diagnostics::debug_panel::draw_event_history_panel(&state.egui.ctx, state);
                 if state.show_hotkey_help {
-                    crate::app_debug_panel::draw_hotkey_help(&state.egui.ctx);
+                    crate::app::diagnostics::debug_panel::draw_hotkey_help(&state.egui.ctx);
                 }
                 if let Some(prev) = prev_visuals {
-                    crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
+                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
                 if state.show_save_load_panel {
                     Self::handle_save_load_panel(state);
@@ -420,9 +420,9 @@ impl App {
                     // The dev overlay rides along with any in-scenario modal —
                     // push its own light visuals so its chrome matches the
                     // debug panels.
-                    let prev = crate::app_debug_panel::push_debug_light_visuals(&state.egui.ctx);
+                    let prev = crate::app::diagnostics::debug_panel::push_debug_light_visuals(&state.egui.ctx);
                     Self::handle_dev_overlay(state);
-                    crate::app_debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
+                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
                 }
                 state.egui.end_frame_and_render(
                     &state.gpu,

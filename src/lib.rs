@@ -65,14 +65,12 @@ pub mod app_quit_cascade;
 pub mod app_radiation_light;
 pub mod app_score_shell_render;
 pub mod app_scenario_exit;
-pub mod app_shell_capture;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
 pub mod app_skirmish_session;
 pub mod app_skirmish_shell_render;
 pub mod app_startup_options;
-pub mod app_tactical_capture;
 pub mod match_bootstrap;
 
 // App-level skirmish startup contract shared by the menu shell and map loader.
@@ -181,13 +179,10 @@ pub mod app_spawn_pick;
 
 // Debug visualization overlays — pathgrid walkability, terrain costs.
 // Toggled via hotkeys (P / F9 = pathgrid).
-pub mod app_debug_overlays;
 // Debug info panel — egui overlay with PathGrid/entity info (shown with pathgrid overlay).
-pub mod app_debug_panel;
 // Save/load panel — egui overlay for managing save files (F5).
 // Developer overlay — egui panel with runtime knobs, diagnostics,
 // and save/load helpers. Toggled with backtick (`).
-pub mod app_dev_overlay;
 // Explicit presentation index over dynamic overlay cells (F08).
 pub mod app_overlay_index;
 // Source-level dependency guards for the domain-boundaries ledger.

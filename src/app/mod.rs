@@ -64,6 +64,7 @@ mod handler;
 mod initialize;
 mod in_game;
 pub(crate) mod match_audio;
+pub(crate) mod diagnostics;
 pub(crate) mod match_diagnostics;
 pub(crate) mod persistence;
 pub(crate) mod process_assets;
@@ -87,8 +88,8 @@ const SHELL_WINDOW_HEIGHT: u32 = 600;
 /// Top-level application. Implements winit's ApplicationHandler.
 pub struct App {
     state: Option<AppState>,
-    shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
-    tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
+    shell_capture: Option<crate::app::diagnostics::shell_capture::ShellCaptureSession>,
+    tactical_capture: Option<crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession>,
     startup_audio: StartupAudioDisposition,
 }
 
@@ -144,10 +145,10 @@ impl App {
         }
     }
 
-    pub fn new_shell_capture(request: crate::app_shell_capture::ShellCaptureRequest) -> Self {
+    pub fn new_shell_capture(request: crate::app::diagnostics::shell_capture::ShellCaptureRequest) -> Self {
         Self {
             state: None,
-            shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
+            shell_capture: Some(crate::app::diagnostics::shell_capture::ShellCaptureSession::new(request)),
             tactical_capture: None,
             startup_audio: StartupAudioDisposition::default(),
         }
@@ -158,7 +159,7 @@ impl App {
             state: None,
             shell_capture: None,
             tactical_capture: Some(
-                crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
+                crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession::new(request),
             ),
             startup_audio: StartupAudioDisposition::default(),
         }

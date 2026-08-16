@@ -14,18 +14,18 @@ use serde_json::{Value, json};
 use crate::app::AppState;
 use crate::app_launch::TacticalCaptureRequest;
 use crate::app_render::GameRenderOutput;
-use crate::app_tactical_capture::evidence::{
+use crate::app::diagnostics::tactical_capture::evidence::{
     ArtifactEvidence, FinalFingerprint, GraphicsEvidence, SidebarRenderEvidence,
     SidebarSourceEvidence, build_evidence,
 };
-use crate::app_tactical_capture::manifest::{
+use crate::app::diagnostics::tactical_capture::manifest::{
     FrameArtifact, TacticalCaptureManifest, publish_complete, publish_failure,
 };
-use crate::app_tactical_capture::placement::first_valid_placement;
-use crate::app_tactical_capture::profile::{
+use crate::app::diagnostics::tactical_capture::placement::first_valid_placement;
+use crate::app::diagnostics::tactical_capture::profile::{
     CONTRACT_SCHEMA, EMBEDDED_CONTRACT, TacticalCaptureProfile, sha256_file, sha256_hex,
 };
-use crate::app_tactical_capture::script::{
+use crate::app::diagnostics::tactical_capture::script::{
     BuildOptionObservation, DeploymentContract, ProductionQueueObservation,
     ProductionTargetContract, StageBudget, StructureRole, TacticalAction,
     TacticalEntityObservation, TacticalExpectedLedger, TacticalObservation, TacticalScript,
@@ -918,8 +918,8 @@ impl TacticalCaptureSession {
         let owner = &profile.launch.player_name;
         let owner_id = sim.interner.get(owner).unwrap_or_default();
         let expected_theme = match profile.launch.local.country {
-            crate::app_tactical_capture::profile::TacticalCountry::Russia => SidebarTheme::Soviet,
-            crate::app_tactical_capture::profile::TacticalCountry::Yuri => SidebarTheme::Yuri,
+            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Russia => SidebarTheme::Soviet,
+            crate::app::diagnostics::tactical_capture::profile::TacticalCountry::Yuri => SidebarTheme::Yuri,
         };
         let actual_theme = crate::app_sidebar_render::current_sidebar_theme(state);
         let radar_phase_online = state

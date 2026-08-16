@@ -382,7 +382,7 @@ impl App {
     /// overlay is hidden — caller checks `show_dev_overlay` before
     /// calling.
     pub(super) fn handle_dev_overlay(state: &mut AppState) {
-        use crate::app_dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
+        use crate::app::diagnostics::dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
 
         // Build the recent-saves snapshot from the existing cache.
         state.persistence.refresh_save_list_if_dirty();
@@ -460,7 +460,7 @@ impl App {
             recent_saves,
         };
 
-        let action = app_dev_overlay::draw_dev_overlay(&state.egui.ctx, &mut info);
+        let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(&state.egui.ctx, &mut info);
 
         // Restore the (possibly-edited) buffer.
         state.dev_overlay_save_name = save_name;

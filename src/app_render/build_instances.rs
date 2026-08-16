@@ -9,7 +9,7 @@
 
 use crate::app::AppState;
 use crate::app_commands::preferred_local_owner;
-use crate::app_debug_overlays;
+use crate::app::diagnostics::debug_overlays;
 use crate::app_instances;
 use crate::app_sidebar_render::{
     active_minimap_screen_rect, build_sidebar_cameo_instances, build_sidebar_chrome_instances,
@@ -541,22 +541,22 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
 pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> DebugInstances {
     DebugInstances {
         pathgrid: if state.debug_show_pathgrid {
-            app_debug_overlays::build_terrain_cost_overlay_instances(state, sw, sh)
+            debug_overlays::build_terrain_cost_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
         cell_grid: if state.debug_show_cell_grid {
-            app_debug_overlays::build_cell_grid_overlay_instances(state, sw, sh)
+            debug_overlays::build_cell_grid_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
         path: if state.debug_show_pathgrid {
-            app_debug_overlays::build_path_overlay_instances(state, sw, sh)
+            debug_overlays::build_path_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
         heightmap: if state.debug_show_heightmap {
-            app_debug_overlays::build_heightmap_overlay_instances(state, sw, sh)
+            debug_overlays::build_heightmap_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },

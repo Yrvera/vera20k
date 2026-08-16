@@ -1268,7 +1268,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         }
         KeyCode::BracketRight => {
             if state.debug_show_pathgrid {
-                let current = crate::app_debug_overlays::resolve_debug_speed_type(state);
+                let current = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
                 let next = current.cycle_next();
                 state.debug_terrain_cost_speed_type = Some(next);
                 log::info!("Terrain cost overlay: {}", next.name());
@@ -1276,7 +1276,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         }
         KeyCode::BracketLeft => {
             if state.debug_show_pathgrid {
-                let current = crate::app_debug_overlays::resolve_debug_speed_type(state);
+                let current = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
                 let prev = current.cycle_prev();
                 state.debug_terrain_cost_speed_type = Some(prev);
                 log::info!("Terrain cost overlay: {}", prev.name());
