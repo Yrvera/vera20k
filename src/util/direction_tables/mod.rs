@@ -7,7 +7,7 @@
 //! and consumer cutovers (S6+) are later slices.
 //!
 //! ## Dependency rules
-//! - Part of sim/substrate — depends only on util/. No render/ui/audio/net.
+//! - Part of util/ (map-, rules-, and sim-independent). No render/ui/audio/net.
 
 pub mod cell;
 pub mod dragon;

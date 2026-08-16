@@ -17,6 +17,7 @@
 pub mod actions;
 pub mod basic;
 pub mod bridge_facts;
+pub mod cell_index;
 pub mod briefing;
 pub mod cell_tags;
 pub mod entities;

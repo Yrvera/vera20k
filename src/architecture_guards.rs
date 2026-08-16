@@ -38,8 +38,6 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 /// disappears from the source must also be deleted here, so the ratchet
 /// tightens monotonically.
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
-    // F05: bridge facts / fixed cell indexing / passability move downward.
-    ("map/resolved_terrain.rs", "sim"),
     // F05: sim fog/bridge reads leave map terrain projection.
     ("map/terrain.rs", "sim"),
     // F05: visible instance construction moves to render::terrain_instances.

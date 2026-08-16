@@ -144,8 +144,8 @@ impl DamageState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 /// Cell role within an `AnchorSpan`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BridgeCellRole {
     /// Anchor cell: primary cell of an anchor span; carries the canonical state byte.
     Anchor,
