@@ -41,9 +41,6 @@ const DIR_EAST: u8 = 2;
 const DIR_SOUTH: u8 = 4;
 const DIR_WEST: u8 = 6;
 
-/// Margin around viewport for culling (pixels). Tiles just outside the visible
-/// area are still drawn to avoid pop-in during scrolling.
-
 /// Per-cell high-bridge metadata needed by the tactical inverse.
 ///
 /// This deliberately carries structural/orientation facts instead of only deck

@@ -7,6 +7,10 @@
 use crate::map::rmg::options::RmgOptions;
 use crate::map::rmg::preview::PreviewImage;
 use crate::map::rmg::randomize::{RandomRanged, derive_from_map_type, randomize};
+use crate::map::rmg::settings::RmgSettings;
+
+use super::super::layout::RandomMapSetupControl;
+use super::choose_map::ChooseMapSelection;
 
 /// The production dialog rng: app supplies a frontend SimRng; map stays
 /// sim-independent (F05), so the binding lives with this ui adapter.
@@ -17,10 +21,6 @@ impl RandomRanged for crate::sim::rng::SimRng {
         lo.wrapping_add(self.next_range_u32_inclusive(0, span) as i32)
     }
 }
-use crate::map::rmg::settings::RmgSettings;
-
-use super::super::layout::RandomMapSetupControl;
-use super::choose_map::ChooseMapSelection;
 
 /// Sentinel meaning "no seed chosen yet"; replaced with a random one on open.
 const UNSET_SEED: i32 = -1;
