@@ -4,7 +4,7 @@
 //! captures, and loading-after-present remain in their original source order.
 
 use super::{
-    ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, app_sim_tick,
+    ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, sim_tick,
     app_transitions, frontend::startup_splash, main_menu,
 };
 
@@ -78,9 +78,9 @@ impl App {
         // HouseClass keeps simulating for SavourDelay, then blocks on the
         // current outcome Vox before it raises the victory/defeat exit global.
         // Drive that gate before deciding whether another sim frame is legal.
-        let scenario_now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+        let scenario_now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
         Self::consume_executed_abort_exit(state, scenario_now_ms);
-        crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, scenario_now_ms);
+        crate::app::match_runtime::sim_tick::drive_local_player_outcome_voice_wait(state, scenario_now_ms);
 
         // The native victory/defeat handlers synchronously finish their audio
         // teardown before entering the score dialog. Drive the equivalent
@@ -129,15 +129,15 @@ impl App {
             && state.scenario_outcome.is_none()
         {
             let now = Instant::now();
-            let now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, now);
-            app_sim_tick::advance_in_game_runtime(state, now_ms);
+            let now_ms = sim_tick::monotonic_frame_pacer_ms(state, now);
+            sim_tick::advance_in_game_runtime(state, now_ms);
             // EventClass EXIT is dispatched at the simulation tail. Consume
             // its terminal edge before any outcome route can claim teardown.
             Self::consume_executed_abort_exit(state, now_ms);
             // The SavourDelay expiry is decided in the late house rung of this
             // exact frame. Anchor its 0x78-bucket wall wait to the same observed
             // wall time instead of delaying it to the next render pass.
-            crate::app_sim_tick::drive_local_player_outcome_voice_wait(state, now_ms);
+            crate::app::match_runtime::sim_tick::drive_local_player_outcome_voice_wait(state, now_ms);
             Self::drive_scenario_exit(state, now_ms);
         }
 

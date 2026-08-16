@@ -328,10 +328,10 @@ fn nearest_reachable_goal(
     let Some(grid) = path_grid else {
         return goal;
     };
-    if crate::app_sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
+    if crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
         return goal;
     }
-    crate::app_sim_tick::nearest_walkable_cell_layered(grid, goal, GOAL_FALLBACK_RADIUS)
+    crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(grid, goal, GOAL_FALLBACK_RADIUS)
         .unwrap_or(goal)
 }
 
@@ -390,9 +390,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     screen_y: f32,
     select_friendly_clicks: bool,
 ) -> bool {
-    let (world_x, world_y) = crate::app_sim_tick::screen_point_to_world(state, screen_x, screen_y);
+    let (world_x, world_y) = crate::app::match_runtime::sim_tick::screen_point_to_world(state, screen_x, screen_y);
     let (target_rx, target_ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, screen_x, screen_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, screen_x, screen_y);
     // Retail modifier map: Ctrl = force fire, Alt = force move,
     // Ctrl+Shift = attack move, Ctrl+Alt = guard area. Shift alone has no retail
     // order semantics at all and carries VERA's order queue instead — see
@@ -1071,9 +1071,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         let goal: (u16, u16) = {
                             let mut g = (target_rx, target_ry);
                             if let Some(grid) = sim.path_grid() {
-                                if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
                                     if let Some(nearest) =
-                                        crate::app_sim_tick::nearest_walkable_cell_layered(
+                                        crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
                                             grid, g, 12,
                                         )
                                     {
@@ -1097,9 +1097,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             let goal: (u16, u16) = {
                                 let mut g = (target_rx, target_ry);
                                 if let Some(grid) = sim.path_grid() {
-                                    if !crate::app_sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                    if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
                                         if let Some(nearest) =
-                                            crate::app_sim_tick::nearest_walkable_cell_layered(
+                                            crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
                                                 grid, g, 12,
                                             )
                                         {

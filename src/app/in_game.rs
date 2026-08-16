@@ -34,7 +34,7 @@ impl App {
         state.in_game_options_anchor = None;
         // Persist the deterministic diagnostic log before its owning sim is
         // torn down.
-        crate::app_sim_tick::flush_replay_log(state);
+        crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
         state.scenario_elapsed_clock.reset();
@@ -168,9 +168,9 @@ impl App {
         let was_open = previous.is_open();
         let will_be_open = next.is_open();
         if was_open != will_be_open
-            && !crate::app_sim_tick::current_session_mode(state).is_network()
+            && !crate::app::match_runtime::sim_tick::current_session_mode(state).is_network()
         {
-            let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+            let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
             if will_be_open {
                 state.scenario_elapsed_clock.pause(now_ms);
             } else {
@@ -318,8 +318,8 @@ impl App {
             return;
         }
         if matches!(
-            crate::app_scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
-            crate::app_scenario_exit::ExecutedExitDisposition::Outcome
+            crate::app::match_runtime::scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app::match_runtime::scenario_exit::ExecutedExitDisposition::Outcome
         ) {
             // Main_Game observes the ready victory/loss route first. The EXIT
             // edge is still consumed, but cannot clear or replace that route.
@@ -337,9 +337,9 @@ impl App {
         // GameExit__BattleControlTerminated @ 0x00686570 starts Theme's fade,
         // then fades the independent audio master, bounds its voice pump to
         // 300 timer buckets, and finally hard-stops audio.
-        let mut scenario_exit = crate::app_scenario_exit::ScenarioExitCascade::start(
+        let mut scenario_exit = crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
             wall_ms,
-            crate::app_scenario_exit::ScenarioExitDestination::MainMenu,
+            crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu,
         );
         // `0x00686570` requests EVA_BattleControlTerminated as an INTERRUPT
         // immediately before waiting for the two simultaneous audio fades.
@@ -623,7 +623,7 @@ impl App {
         // ScoreDialog__WndProc @ 0x005C9B10 resolves the literal SCORE theme
         // and starts it immediately on WM_INITDIALOG. Keep this after the
         // hard stop and output-scale restoration so ScoreX begins audible.
-        if let Some(crate::app_scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
+        if let Some(crate::app::match_runtime::scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
             tick.after_stop
             && let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager())
         {
@@ -636,10 +636,10 @@ impl App {
         let destination = state
             .scenario_exit
             .as_mut()
-            .and_then(crate::app_scenario_exit::ScenarioExitCascade::take_destination);
+            .and_then(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::take_destination);
         state.scenario_exit = None;
         match destination {
-            Some(crate::app_scenario_exit::ScenarioExitDestination::Score {
+            Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::Score {
                 title,
                 detail,
                 model,
@@ -648,7 +648,7 @@ impl App {
                 state.score_shell_state = Default::default();
                 state.screen = GameScreen::MissionResult { title, detail };
             }
-            Some(crate::app_scenario_exit::ScenarioExitDestination::MainMenu) => {
+            Some(crate::app::match_runtime::scenario_exit::ScenarioExitDestination::MainMenu) => {
                 Self::return_to_main_menu(state);
             }
             None => log::error!("Scenario exit finished without a destination"),
@@ -657,10 +657,10 @@ impl App {
 
     fn apply_scenario_exit_voice_action(
         state: &mut AppState,
-        action: crate::app_scenario_exit::ScenarioExitVoiceAction,
+        action: crate::app::match_runtime::scenario_exit::ScenarioExitVoiceAction,
     ) {
         match action {
-            crate::app_scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
+            crate::app::match_runtime::scenario_exit::ScenarioExitVoiceAction::InterruptBattleControlTerminated => {
                 let Some(owner) = state.local_player_owner.as_deref() else {
                     log::warn!("Battle-control termination EVA has no pinned local owner");
                     return;

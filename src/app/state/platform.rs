@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use winit::window::Window;
 
-use crate::app_frame_pacer::LocalFramePacer;
+use crate::app::match_runtime::frame_pacer::LocalFramePacer;
 
 /// Window lifecycle and wall-clock pacing owned by the platform layer.
 ///

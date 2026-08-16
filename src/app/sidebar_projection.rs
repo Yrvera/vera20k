@@ -174,16 +174,16 @@ mod tests {
     /// This mirrors the only advance site, which sits inside the
     /// `decision.run_sim` block of `advance_in_game_runtime_mode`.
     fn credits_step(
-        inputs: crate::app_sim_tick::RuntimePassInputs,
+        inputs: crate::app::match_runtime::sim_tick::RuntimePassInputs,
         frame_committed: bool,
     ) -> bool {
-        let decision = crate::app_sim_tick::decide_runtime_pass(inputs);
+        let decision = crate::app::match_runtime::sim_tick::decide_runtime_pass(inputs);
         decision.run_sim && credits_advance_for_frame(frame_committed, decision.tick_lane)
     }
 
     #[test]
     fn sidebar_credit_gate_matrix() {
-        use crate::app_sim_tick::{RuntimePassInputs, SessionMode, decide_runtime_pass};
+        use crate::app::match_runtime::sim_tick::{RuntimePassInputs, SessionMode, decide_runtime_pass};
 
         // Baseline wall-clock pass: active window, accepted startup receipt,
         // elapsed pacer window, nothing paused, no menu. Every freeze case

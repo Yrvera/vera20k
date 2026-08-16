@@ -399,7 +399,7 @@ fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
         tactical_viewport_size_px(state.render_width(), state.render_height());
     let world_x = state.camera_x + tactical_w as f32 / (2.0 * state.zoom_level);
     let world_y = state.camera_y + tactical_h as f32 / (2.0 * state.zoom_level);
-    crate::app_sim_tick::world_point_to_cell(
+    crate::app::match_runtime::sim_tick::world_point_to_cell(
         world_x,
         world_y,
         &state.height_map(),

@@ -282,9 +282,9 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         }
         let mut goal = (target_rx, target_ry);
         if let Some(grid) = sim.path_grid() {
-            if !crate::app_sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
+            if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
                 if let Some(nearest) =
-                    crate::app_sim_tick::nearest_walkable_cell_layered(grid, goal, 12)
+                    crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(grid, goal, 12)
                 {
                     goal = nearest;
                 }
@@ -356,7 +356,7 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
     // The center of the viewport is what was clicked.
     let world_x = cam_x + tactical_w / (2.0 * z);
     let world_y = cam_y + tactical_h / (2.0 * z);
-    Some(crate::app_sim_tick::world_point_to_cell(
+    Some(crate::app::match_runtime::sim_tick::world_point_to_cell(
         world_x,
         world_y,
         &state.height_map(),

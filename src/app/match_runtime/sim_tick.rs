@@ -232,9 +232,9 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         };
         log::info!(
             "Match end ready for local player '{owner}': {}",
-            crate::app_scenario_exit::outcome_title(outcome.kind)
+            crate::app::match_runtime::scenario_exit::outcome_title(outcome.kind)
         );
-        state.scenario_outcome = Some(crate::app_scenario_exit::ScenarioOutcomeVoiceWait::start(
+        state.scenario_outcome = Some(crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait::start(
             wall_ms,
             outcome.kind,
         ));
@@ -264,11 +264,11 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
     // The outcome handlers at 0x00685670 / 0x00685DC0 begin only after the
     // HouseClass timer and 0x78-bucket Vox wait. From here the existing cascade
     // performs their master fade, 300-bucket tail, hard stop, and SCORE handoff.
-    state.scenario_exit = Some(crate::app_scenario_exit::ScenarioExitCascade::start(
+    state.scenario_exit = Some(crate::app::match_runtime::scenario_exit::ScenarioExitCascade::start(
         wall_ms,
-        crate::app_scenario_exit::ScenarioExitDestination::Score {
-            title: crate::app_scenario_exit::outcome_title(outcome).to_string(),
-            detail: crate::app_scenario_exit::outcome_detail(outcome).to_string(),
+        crate::app::match_runtime::scenario_exit::ScenarioExitDestination::Score {
+            title: crate::app::match_runtime::scenario_exit::outcome_title(outcome).to_string(),
+            detail: crate::app::match_runtime::scenario_exit::outcome_detail(outcome).to_string(),
             model,
         },
     ));
@@ -456,7 +456,7 @@ pub(crate) enum ExactStepError {
 }
 
 pub(crate) fn monotonic_frame_pacer_ms(state: &AppState, now: Instant) -> u64 {
-    crate::app_frame_pacer::wall_clock_ms(state.platform.frame_pacer_epoch, now)
+    crate::app::match_runtime::frame_pacer::wall_clock_ms(state.platform.frame_pacer_epoch, now)
 }
 
 /// Front-end session mode, as the modal pump reads it to decide whether the

@@ -173,12 +173,12 @@ pub(crate) fn own_building_under_point(
 
 pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
     let (world_x, world_y) =
-        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
     if visible_object_under_point(state, world_x, world_y).is_some() {
         return false;
     }
     let (rx, ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     let Some(owner) = preferred_local_owner(state) else {
         return false;
     };
@@ -256,7 +256,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         return false;
     }
     let (world_x, world_y) =
-        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
     let object_under_cursor = visible_object_under_point(state, world_x, world_y);
     if let Some(entity_id) = object_under_cursor.and_then(|id| own_building_id(state, id)) {
         let owner: String =
@@ -269,7 +269,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         schedule_command(state, &owner, payload);
     } else if sell && object_under_cursor.is_none() {
         let (rx, ry) =
-            crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
         let Some(owner) = preferred_local_owner(state) else {
             return true;
         };
@@ -307,7 +307,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
         );
         (preview.rx, preview.ry)
     } else {
-        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y)
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y)
     };
     if let Some(preview) = state.building_placement_preview.as_ref() {
         if !preview.valid {
@@ -372,7 +372,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     let owner: String = resolve_owner(state);
     let sw_type_id = intern_in_sim(state, section);
     let (rx, ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     schedule_command(
         state,
         &owner,
@@ -451,7 +451,7 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let sw: f32 = state.render_width() as f32;
     let sh: f32 = state.render_height() as f32;
     let (mut base_rx, mut base_ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
     let path_grid = state
         .sim_runtime
         .as_ref()
@@ -464,7 +464,7 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let sim = &mut rt.simulation;
     let rules = &resources.rules;
     if let Some(grid) = path_grid.as_deref() {
-        (base_rx, base_ry) = crate::app_sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
+        (base_rx, base_ry) = crate::app::match_runtime::sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
     }
 
     let mut debug_types: Vec<String> = {
@@ -503,11 +503,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
             base_ry.saturating_add(2),
         );
         if let Some(grid) = path_grid.as_deref() {
-            desired = crate::app_sim_tick::clamp_cell_to_grid(grid, desired);
+            desired = crate::app::match_runtime::sim_tick::clamp_cell_to_grid(grid, desired);
         }
         let spawn_cell = path_grid
             .as_deref()
-            .and_then(|g| crate::app_sim_tick::nearest_walkable_cell(g, desired, 16))
+            .and_then(|g| crate::app::match_runtime::sim_tick::nearest_walkable_cell(g, desired, 16))
             .unwrap_or(desired);
         if sim
             .spawn_object(
@@ -533,7 +533,7 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
         }
     }
     if spawned > 0 {
-        crate::app_sim_tick::refresh_entity_atlases(state);
+        crate::app::match_runtime::sim_tick::refresh_entity_atlases(state);
         if let Some((rx, ry)) = first_spawn {
             crate::app_camera::center_camera_on_cell(state, rx, ry);
         }
@@ -892,8 +892,8 @@ mod tests {
             "the app cascade receives exactly one executed edge"
         );
         assert_eq!(
-            crate::app_scenario_exit::arbitrate_executed_exit(false),
-            crate::app_scenario_exit::ExecutedExitDisposition::Abort,
+            crate::app::match_runtime::scenario_exit::arbitrate_executed_exit(false),
+            crate::app::match_runtime::scenario_exit::ExecutedExitDisposition::Abort,
             "standalone EXIT keeps the abort route"
         );
         assert_eq!(
@@ -938,8 +938,8 @@ mod tests {
         assert!(local_outcome_exit_ready, "House expiry happened this frame");
         assert_eq!(sim.take_executed_exit_owner(), Some(local));
         assert_eq!(
-            crate::app_scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
-            crate::app_scenario_exit::ExecutedExitDisposition::Outcome,
+            crate::app::match_runtime::scenario_exit::arbitrate_executed_exit(local_outcome_exit_ready),
+            crate::app::match_runtime::scenario_exit::ExecutedExitDisposition::Outcome,
             "Main_Game's victory/loss route has priority over simultaneous EXIT"
         );
         assert_eq!(

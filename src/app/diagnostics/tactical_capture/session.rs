@@ -78,7 +78,7 @@ pub(crate) struct TacticalCaptureSession {
     map_source_evidence: Option<Value>,
     startup_evidence: Option<Value>,
     script: Option<TacticalScript>,
-    exact_step_receipts: Vec<crate::app_sim_tick::ExactStepReceipt>,
+    exact_step_receipts: Vec<crate::app::match_runtime::sim_tick::ExactStepReceipt>,
     last_render_ready: bool,
     last_render_evidence: Option<Value>,
     capture_requested: bool,
@@ -237,7 +237,7 @@ impl TacticalCaptureSession {
         state.cursor_x = capture.post_load_cursor.x as f32;
         state.cursor_y = capture.post_load_cursor.y as f32;
         let now_ms =
-            crate::app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+            crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
         state.platform.frame_pacer.reanchor(now_ms);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
@@ -456,7 +456,7 @@ impl TacticalCaptureSession {
     }
 
     fn advance_exact_step(&mut self, state: &mut AppState) -> Result<()> {
-        let receipt = crate::app_sim_tick::advance_in_game_runtime_exact_step(state)
+        let receipt = crate::app::match_runtime::sim_tick::advance_in_game_runtime_exact_step(state)
             .context("advance hidden tactical production step")?;
         self.exact_step_receipts.push(receipt);
         Ok(())

@@ -55,7 +55,7 @@ fn health_bar_hover_target(
     let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let local_owner = local_owner?;
     let (world_x, world_y) =
-        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
     let hover = crate::app_entity_pick::hover_target_at_point(
         sim,
         world_x,

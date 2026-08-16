@@ -64,7 +64,6 @@ pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
 pub mod app_radiation_light;
 pub mod app_score_shell_render;
-pub mod app_scenario_exit;
 pub mod app_shell_transition;
 pub mod app_single_player_shell_render;
 pub mod app_skirmish;
@@ -131,8 +130,6 @@ pub mod app_commands;
 
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
-pub mod app_frame_pacer;
-pub mod app_sim_tick;
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.

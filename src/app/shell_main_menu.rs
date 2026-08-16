@@ -52,7 +52,7 @@ impl App {
     /// while its simulation is still alive, hand the scenario stream back to the
     /// offline shell, then drop the match.
     pub(super) fn leave_mission_result_screen(state: &mut AppState) {
-        crate::app_sim_tick::flush_replay_log(state);
+        crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
         crate::app_loading::clear_match_startup_state(state);
         state.scenario_elapsed_clock.reset();
@@ -503,7 +503,7 @@ impl App {
         if state.screen != GameScreen::MainMenu || state.quit_cascade.is_some() {
             return;
         }
-        let now_ms = crate::app_sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
+        let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
         if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
             player.play_menu_theme(assets);
             player.update(assets, now_ms);

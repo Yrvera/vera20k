@@ -448,7 +448,7 @@ fn newest_modified_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_frame_pacer::LocalFramePacer;
+    use crate::app::match_runtime::frame_pacer::LocalFramePacer;
     use crate::map::lighting::CellLightGrid;
     use crate::map::overlay::OverlayEntry;
     use crate::rules::ini_parser::IniFile;

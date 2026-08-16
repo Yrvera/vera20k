@@ -66,7 +66,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if repair_mode || sell_mode {
         let repair = repair_mode;
         let (wx, wy) =
-            crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
         let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some()
             || (!repair && crate::app_commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
@@ -81,9 +81,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     }
     let owner = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
     let (world_x, world_y) =
-        crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
     let (hover_rx, hover_ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     let owner_id = sim.interner.get(&owner);
     if crate::app_instances::cell_visibility_for_local_owner(
         owner_id,

@@ -901,7 +901,7 @@ fn click_hits_foundation(
 ) -> bool {
     let (fw, fh) = crate::rules::foundation::foundation_dimensions(foundation);
     let (click_rx, click_ry) =
-        crate::app_sim_tick::world_point_to_cell(world_x, world_y, height_map, bridge_height_map);
+        crate::app::match_runtime::sim_tick::world_point_to_cell(world_x, world_y, height_map, bridge_height_map);
     let crx = click_rx as i32;
     let cry = click_ry as i32;
     let brx = entity_rx as i32;
@@ -929,7 +929,7 @@ pub(crate) fn pick_entity_at_point(
     let _ = click_radius;
     let local_owner_id = local_owner.and_then(|o| interner.and_then(|i| i.get(o)));
     if let (Some(fog), Some(owner_id)) = (fog, local_owner_id) {
-        let (rx, ry) = crate::app_sim_tick::world_point_to_cell(
+        let (rx, ry) = crate::app::match_runtime::sim_tick::world_point_to_cell(
             world_x,
             world_y,
             height_map,

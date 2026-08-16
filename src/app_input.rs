@@ -1328,7 +1328,7 @@ fn quicksave(state: &mut AppState) {
         log::warn!("Quicksave: active rules are unavailable");
         return;
     };
-    let rules_h = crate::app_sim_tick::rules_hash(rules);
+    let rules_h = crate::app::match_runtime::sim_tick::rules_hash(rules);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1389,7 +1389,7 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::warn!("Save As: active rules are unavailable");
         return;
     };
-    let rules_h = crate::app_sim_tick::rules_hash(rules);
+    let rules_h = crate::app::match_runtime::sim_tick::rules_hash(rules);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1620,7 +1620,7 @@ fn commit_prepared_load(
     // timeline's diagnostic segment BEFORE the restored simulation commits;
     // the restored timeline lazily opens its own segment on the next frame.
     // A failed close discards rather than retains (no mixed-header artifact).
-    crate::app_sim_tick::close_replay_segment_for_new_timeline(state);
+    crate::app::match_runtime::sim_tick::close_replay_segment_for_new_timeline(state);
     // Same-content in-scenario restore: the immutable match resources carry
     // over; only the simulation is replaced (F07 critic fix).
     state.sim_runtime = Some(crate::sim::runtime::SimRuntime::rebind_restored(
@@ -1629,7 +1629,7 @@ fn commit_prepared_load(
     ));
     crate::app_transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
-    crate::app_sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
+    crate::app::match_runtime::sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
 
     // F10: the fog view cache was discarded with the load (nonserialized) —
     // rebuild it for the local owner BEFORE the first tactical render, and
@@ -1649,7 +1649,7 @@ fn commit_prepared_load(
 
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.
-    crate::app_sim_tick::refresh_entity_atlases(state);
+    crate::app::match_runtime::sim_tick::refresh_entity_atlases(state);
 
     // Rebuild transient lighting from the loaded live entity set so destroyed
     // light-source buildings do not leave stale point lights behind.

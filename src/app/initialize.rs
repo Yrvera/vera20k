@@ -506,7 +506,7 @@ impl App {
             theater_name: "TEMPERATE".to_string(),
             theater_ext: "tem".to_string(),
             platform: PlatformState::new(window),
-            scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock::new(),
+            scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock::new(),
             target_lines: crate::app_target_lines::TargetLineState::default(),
             configured_input_delay_ticks: input_delay_ticks,
             queued_order_mode: app_render::OrderMode::Move,

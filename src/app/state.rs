@@ -203,11 +203,11 @@ pub(crate) struct AppState {
     pub(crate) quit_cascade: Option<crate::app_quit_cascade::QuitCascade>,
     /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
     /// result and SavourDelay target live in serialized `HouseState`.
-    pub(crate) scenario_outcome: Option<crate::app_scenario_exit::ScenarioOutcomeVoiceWait>,
+    pub(crate) scenario_outcome: Option<crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait>,
     /// Active running-scenario audio teardown. While present the tactical
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
-    pub(crate) scenario_exit: Option<crate::app_scenario_exit::ScenarioExitCascade>,
+    pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
     pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
@@ -324,7 +324,7 @@ pub(crate) struct AppState {
     pub(crate) theater_ext: String,
     /// Match elapsed wall time for the retail score screen. App-local and never
     /// serialized, hashed, or read by deterministic simulation.
-    pub(crate) scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock,
+    pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,
     /// Target/action lines — colored lines from selected units to command destinations.
     pub(crate) target_lines: crate::app_target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.

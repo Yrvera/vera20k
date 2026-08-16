@@ -144,7 +144,7 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
 pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
     // Convert cursor screen position to world coordinates, then to iso cell.
     let (cursor_rx, cursor_ry) =
-        crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
+        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     let path_grid = state
         .sim_runtime
         .as_ref()

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::app_init;
 use crate::app_render;
-use crate::app_sim_tick;
+use crate::app::match_runtime::sim_tick;
 use crate::map::basic::BasicSection;
 use crate::map::houses::HouseRoster;
 use crate::map::overlay_types::OverlayTypeRegistry;
@@ -123,7 +123,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // dropped any unflushed segment silently. A failed close discards
     // rather than retains, so the new timeline cannot append under the
     // old header.
-    crate::app_sim_tick::close_replay_segment_for_new_timeline(state);
+    crate::app::match_runtime::sim_tick::close_replay_segment_for_new_timeline(state);
     let match_rules = result.scenario.rules;
     state.sim_runtime = result.scenario.simulation.zip(match_rules).map(|(simulation, rules)| crate::sim::runtime::SimRuntime {
         simulation,
@@ -395,7 +395,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Start_Scenario resolves `[Basic] Theme` as a theme-section key, then
     // leaves the current shell stream in place while Theme owns its fade and
     // deferred QueueSong/automatic request.
-    let music_now_ms = app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+    let music_now_ms = sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
     if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
         let request = player.resolve_scenario_theme(state.map_basic.theme.as_deref(), assets);
         player.request_scenario_theme(request, music_now_ms);
@@ -439,7 +439,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                         state.loaded_startup = Some(prepared);
                         state.rust_l0_receipt = Some(receipt);
                         state.active_loading_correlation = None;
-                        let now_ms = app_sim_tick::monotonic_frame_pacer_ms(
+                        let now_ms = sim_tick::monotonic_frame_pacer_ms(
                             state,
                             std::time::Instant::now(),
                         );
@@ -466,7 +466,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                 state.loaded_startup = None;
                 state.rust_l0_receipt = None;
                 let now_ms =
-                    app_sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
+                    sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
                 state.scenario_elapsed_clock.start(now_ms);
                 state.screen = GameScreen::InGame;
                 if returns_scenario_rng_to_offline_shell {
