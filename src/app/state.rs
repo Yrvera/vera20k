@@ -284,7 +284,6 @@ pub(crate) struct AppState {
     pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
-    /// Art.ini registry — needed for building animation overlay lookups at render time.
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Owner name → house color index mapping for atlas key lookups.

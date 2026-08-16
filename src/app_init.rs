@@ -820,8 +820,6 @@ pub struct MapLoadResult {
     pub tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
     pub rules: Option<RuleSet>,
-    /// Art.ini registry — kept for building animation overlay lookups at render time.
-    pub art_registry: Option<ArtRegistry>,
     /// CSF string table — localized display names loaded from language MIX.
     pub csf: Option<crate::assets::csf_file::CsfFile>,
     /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
@@ -2201,7 +2199,6 @@ pub(crate) fn load_map_from_initial(
         bridge_height_map,
         tactical_bridge_inverse_map,
         rules,
-        art_registry: art,
         csf,
         fnt_file,
         lighting_grid,

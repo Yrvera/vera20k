@@ -47,7 +47,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         startup: crate::match_bootstrap::LoadingStartup::Generic {
             selected_map_file: "fallback".to_string(),
         },
-        art_registry: None,
         map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
             label: "fallback".to_string(),
         },

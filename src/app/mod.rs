@@ -53,7 +53,6 @@ use crate::render::sidebar_chrome::SidebarChromeSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
-use crate::rules::art_data::ArtRegistry;
 use crate::rules::sound_ini::SoundRegistry;
 use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
 use crate::sim::production::BuildingPlacementPreview;
