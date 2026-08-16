@@ -45,94 +45,98 @@ pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
 
 pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
     app_init::MapLoadResult {
-        startup: crate::match_bootstrap::LoadingStartup::Generic {
-            selected_map_file: "fallback".to_string(),
+        scenario: app_init::ScenarioLoadInputs {
+            startup: crate::match_bootstrap::LoadingStartup::Generic {
+                selected_map_file: "fallback".to_string(),
+            },
+            map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
+                label: "fallback".to_string(),
+            },
+            map_hash: None,
+            basic: BasicSection::default(),
+            terrain_grid: None,
+            resolved_terrain: None,
+            simulation: None,
+            overlays: Vec::new(),
+            terrain_objects: Vec::new(),
+            waypoints: HashMap::new(),
+            cell_tags: HashMap::new(),
+            tags: HashMap::new(),
+            triggers: HashMap::new(),
+            events: HashMap::new(),
+            actions: HashMap::new(),
+            trigger_graph: TriggerGraph::default(),
+            trigger_runtime: TriggerRuntime::default(),
+            overlay_registry: OverlayTypeRegistry::empty(),
+            house_roster: HouseRoster::default(),
+            height_map: BTreeMap::new(),
+            bridge_height_map: BTreeMap::new(),
+            tactical_bridge_inverse_map: BTreeMap::new(),
+            rules: None,
+            map_lighting_config: crate::map::lighting::LightingConfig::default(),
+            theater_name: "TEMPERATE".to_string(),
+            theater_ext: "tem".to_string(),
+            initial_local_owner: None,
+            sandbox_full_visibility: false,
+            spawn_pick_pending: false,
+            camera_anchor_x: 0.0,
+            camera_anchor_y: 0.0,
         },
-        map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
-            label: "fallback".to_string(),
+        presentation: app_init::PresentationLoadAssets {
+            tile_atlas: None,
+            unit_atlas: None,
+            palette_set: None,
+            sprite_atlas: None,
+            overlay_atlas: None,
+            bridge_atlas: None,
+            bridge_railing_atlas: None,
+            sidebar_cameo_atlas: None,
+            sidebar_chrome: None,
+            software_cursor: None,
+            overlay_names: BTreeMap::new(),
+            tiberium_radar_colors: HashMap::new(),
+            house_color_map: HashMap::new(),
+            lighting_grid: crate::map::lighting::CellLightGrid::new(),
+            csf: None,
+            fnt_file: None,
         },
-        map_hash: None,
-        basic: BasicSection::default(),
-        tile_atlas: None,
-        terrain_grid: None,
-        resolved_terrain: None,
-        simulation: None,
-        unit_atlas: None,
-        palette_set: None,
-        sprite_atlas: None,
-        overlay_atlas: None,
-        bridge_atlas: None,
-        bridge_railing_atlas: None,
-        sidebar_cameo_atlas: None,
-        sidebar_chrome: None,
-        software_cursor: None,
-        overlays: Vec::new(),
-        terrain_objects: Vec::new(),
-        waypoints: HashMap::new(),
-        cell_tags: HashMap::new(),
-        tags: HashMap::new(),
-        triggers: HashMap::new(),
-        events: HashMap::new(),
-        actions: HashMap::new(),
-        trigger_graph: TriggerGraph::default(),
-        trigger_runtime: TriggerRuntime::default(),
-        overlay_names: BTreeMap::new(),
-        tiberium_radar_colors: HashMap::new(),
-        overlay_registry: OverlayTypeRegistry::empty(),
-        house_color_map: HashMap::new(),
-        house_roster: HouseRoster::default(),
-        height_map: BTreeMap::new(),
-        bridge_height_map: BTreeMap::new(),
-        tactical_bridge_inverse_map: BTreeMap::new(),
-        lighting_grid: crate::map::lighting::CellLightGrid::new(),
-        map_lighting_config: crate::map::lighting::LightingConfig::default(),
-        rules: None,
-        csf: None,
-        fnt_file: None,
-        camera_anchor_x: 0.0,
-        camera_anchor_y: 0.0,
         asset_manager: None,
-        theater_name: "TEMPERATE".to_string(),
-        theater_ext: "tem".to_string(),
-        initial_local_owner: None,
-        sandbox_full_visibility: false,
-        spawn_pick_pending: false,
     }
 }
 
 pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
     crate::app::reset_scenario_exit_runtime(state);
-    let startup = result.startup;
+    let startup = result.scenario.startup;
     let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();
     // A loaded world is not timed until the launch handoff actually reaches
     // InGame (SpawnPick remains outside the scenario elapsed span).
     state.scenario_elapsed_clock.reset();
-    state.tile_atlas = result.tile_atlas;
+    state.tile_atlas = result.presentation.tile_atlas;
     crate::app_loading::clear_loading_state(state);
-    state.map_basic = result.basic;
-    state.loaded_map_source = Some(result.map_source);
-    state.loaded_map_hash = result.map_hash;
-    state.terrain_grid = result.terrain_grid;
-    state.shell_preview_overlay_registry = Some(result.overlay_registry.clone());
+    state.map_basic = result.scenario.basic;
+    state.loaded_map_source = Some(result.scenario.map_source);
+    state.loaded_map_hash = result.scenario.map_hash;
+    state.terrain_grid = result.scenario.terrain_grid;
+    state.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
     // F10 lifecycle: a new match install closes the outgoing diagnostic
     // segment before the runtime slot is overwritten — the old install
     // dropped any unflushed segment silently. A failed close discards
     // rather than retains, so the new timeline cannot append under the
     // old header.
     crate::app_sim_tick::close_replay_segment_for_new_timeline(state);
-    let match_rules = result.rules;
-    state.sim_runtime = result.simulation.zip(match_rules).map(|(simulation, rules)| crate::sim::runtime::SimRuntime {
+    let match_rules = result.scenario.rules;
+    state.sim_runtime = result.scenario.simulation.zip(match_rules).map(|(simulation, rules)| crate::sim::runtime::SimRuntime {
         simulation,
         resources: crate::sim::runtime::SimResources {
-            height_map: result.height_map,
-            bridge_height_map: result.bridge_height_map,
-            overlay_registry: result.overlay_registry,
-            terrain_template: result.resolved_terrain,
+            height_map: result.scenario.height_map,
+            bridge_height_map: result.scenario.bridge_height_map,
+            overlay_registry: result.scenario.overlay_registry,
+            terrain_template: result.scenario.resolved_terrain,
             rules,
-            trigger_graph: result.trigger_graph,
-            triggers: result.triggers,
-            events: result.events,
-            actions: result.actions,
+            trigger_graph: result.scenario.trigger_graph,
+            triggers: result.scenario.triggers,
+            events: result.scenario.events,
+            actions: result.scenario.actions,
         },
     });
     state.combat_lights.clear();
@@ -140,15 +144,15 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.set_input_delay_ticks(state.configured_input_delay_ticks);
     }
-    state.unit_atlas = result.unit_atlas;
-    state.palette_set = result.palette_set;
-    state.sprite_atlas = result.sprite_atlas;
-    state.overlay_atlas = result.overlay_atlas;
-    state.bridge_atlas = result.bridge_atlas;
-    state.bridge_railing_atlas = result.bridge_railing_atlas;
-    state.sidebar_cameo_atlas = result.sidebar_cameo_atlas;
-    state.sidebar_chrome = result.sidebar_chrome;
-    if let Some(ref fnt) = result.fnt_file {
+    state.unit_atlas = result.presentation.unit_atlas;
+    state.palette_set = result.presentation.palette_set;
+    state.sprite_atlas = result.presentation.sprite_atlas;
+    state.overlay_atlas = result.presentation.overlay_atlas;
+    state.bridge_atlas = result.presentation.bridge_atlas;
+    state.bridge_railing_atlas = result.presentation.bridge_railing_atlas;
+    state.sidebar_cameo_atlas = result.presentation.sidebar_cameo_atlas;
+    state.sidebar_chrome = result.presentation.sidebar_chrome;
+    if let Some(ref fnt) = result.presentation.fnt_file {
         state.bit_font =
             crate::render::bit_font::BitFont::from_fnt(&state.gpu, &state.batch_renderer, fnt);
     }
@@ -185,32 +189,32 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     }
     state.has_radar = false;
 
-    state.software_cursor = result.software_cursor;
-    state.overlays.replace_from_source(result.overlays);
-    state.terrain_objects = result.terrain_objects;
-    state.waypoints = result.waypoints;
-    state.cell_tags = result.cell_tags;
-    state.tags = result.tags;
+    state.software_cursor = result.presentation.software_cursor;
+    state.overlays.replace_from_source(result.scenario.overlays);
+    state.terrain_objects = result.scenario.terrain_objects;
+    state.waypoints = result.scenario.waypoints;
+    state.cell_tags = result.scenario.cell_tags;
+    state.tags = result.scenario.tags;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-        sim.install_trigger_runtime(result.trigger_runtime);
+        sim.install_trigger_runtime(result.scenario.trigger_runtime);
     }
-    state.overlay_names = result.overlay_names;
-    state.tiberium_radar_colors = result.tiberium_radar_colors;
-    state.house_color_map = result.house_color_map;
-    state.house_roster = result.house_roster;
-    state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;
-    state.lighting_grid = result.lighting_grid;
+    state.overlay_names = result.presentation.overlay_names;
+    state.tiberium_radar_colors = result.presentation.tiberium_radar_colors;
+    state.house_color_map = result.presentation.house_color_map;
+    state.house_roster = result.scenario.house_roster;
+    state.tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
+    state.lighting_grid = result.presentation.lighting_grid;
     state.applied_lighting_sources.clear();
     state.applied_lighting_profile = None;
     state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
     state.pending_lighting_refresh = None;
-    state.map_lighting_config = result.map_lighting_config;
+    state.map_lighting_config = result.scenario.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
-    state.csf = result.csf;
-    state.theater_name = result.theater_name;
-    state.theater_ext = result.theater_ext;
+    state.csf = result.presentation.csf;
+    state.theater_name = result.scenario.theater_name;
+    state.theater_ext = result.scenario.theater_ext;
 
     // The background loader has no access to the live renderer detail option.
     // Re-derive once at handoff so the first visible frame already uses the
@@ -248,7 +252,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     let (tactical_width, tactical_height) =
         crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let (camera_x, camera_y) = crate::app_camera::tactical_camera_top_left(
-        (result.camera_anchor_x, result.camera_anchor_y),
+        (result.scenario.camera_anchor_x, result.scenario.camera_anchor_y),
         tactical_width as f32,
         tactical_height as f32,
         state.zoom_level,
@@ -365,16 +369,16 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Pin the match-scoped local player once at launch. When the launch flow
     // supplies no identity (dev/sandbox), the pin stays None and the legacy
     // override/heuristic path resolves the owner instead.
-    state.local_player_owner = result.initial_local_owner.clone();
-    state.local_owner_override = result.initial_local_owner;
+    state.local_player_owner = result.scenario.initial_local_owner.clone();
+    state.local_owner_override = result.scenario.initial_local_owner;
     // F11: reset the whole per-match audio owner. The old reset cleared only
     // three EVA latches — the tick-indexed under-attack suppression window
     // carried into the new match (whose tick counter restarts at 0) and
     // silenced the under-attack EVA line for its first ~30 seconds, and the
     // sound-event queue kept the previous match's undrained events.
     state.match_audio.reset_for_new_match();
-    state.sandbox_full_visibility = result.sandbox_full_visibility;
-    state.spawn_pick_pending = result.spawn_pick_pending;
+    state.sandbox_full_visibility = result.scenario.sandbox_full_visibility;
+    state.spawn_pick_pending = result.scenario.spawn_pick_pending;
 
     // Load sound.ini / soundmd.ini for SFX sound ID resolution.
     if let Some(assets) = state.process_assets.manager() {

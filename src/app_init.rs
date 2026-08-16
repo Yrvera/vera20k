@@ -704,28 +704,17 @@ mod map_wall_owner_candidate_tests {
     }
 }
 
-/// All data produced by loading a map: terrain, tile atlas, entities, and camera.
-pub struct MapLoadResult {
+/// Scenario/runtime inputs produced by loading a map (F11): everything the
+/// sim runtime, trigger machinery, and match view facts consume.
+pub struct ScenarioLoadInputs {
     pub(crate) startup: LoadingStartup,
     pub(crate) map_source: LoadedMapSource,
     /// Digest of the parsed source map INI used for strict save compatibility.
     pub(crate) map_hash: Option<u64>,
     pub basic: BasicSection,
-    pub tile_atlas: Option<TileAtlas>,
     pub terrain_grid: Option<TerrainGrid>,
     pub resolved_terrain: Option<ResolvedTerrainGrid>,
     pub simulation: Option<Simulation>,
-    pub unit_atlas: Option<UnitAtlas>,
-    /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
-    /// None when no theater palette is available (rare).
-    pub palette_set: Option<crate::render::palette_textures::PaletteSet>,
-    pub sprite_atlas: Option<SpriteAtlas>,
-    pub overlay_atlas: Option<OverlayAtlas>,
-    pub bridge_atlas: Option<BridgeAtlas>,
-    pub bridge_railing_atlas: Option<BridgeRailingAtlas>,
-    pub sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
-    pub sidebar_chrome: Option<SidebarChromeSet>,
-    pub(crate) software_cursor: Option<crate::app_render::SoftwareCursor>,
     /// Overlay entries for per-frame instance generation.
     pub overlays: Vec<OverlayEntry>,
     /// Terrain objects for per-frame instance generation.
@@ -738,15 +727,8 @@ pub struct MapLoadResult {
     pub actions: ActionMap,
     pub trigger_graph: TriggerGraph,
     pub trigger_runtime: TriggerRuntime,
-    /// Overlay ID → type name mapping (from rules.ini [OverlayTypes]).
-    pub overlay_names: BTreeMap<u8, String>,
-    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
-    /// extracted from SHP frames for minimap radar display.
-    pub tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
     /// Overlay type registry — kept so wall placement can look up overlay_id by name.
     pub overlay_registry: OverlayTypeRegistry,
-    /// Owner name → house color index mapping (from map [Houses] sections).
-    pub house_color_map: HouseColorMap,
     pub house_roster: HouseRoster,
     /// Cell (rx, ry) → terrain elevation z for overlay/entity height lookup.
     pub height_map: BTreeMap<(u16, u16), u8>,
@@ -755,12 +737,6 @@ pub struct MapLoadResult {
     pub tactical_bridge_inverse_map: BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
     /// Parsed rules.ini data — kept for combat system weapon/warhead lookups.
     pub rules: Option<RuleSet>,
-    /// CSF string table — localized display names loaded from language MIX.
-    pub csf: Option<crate::assets::csf_file::CsfFile>,
-    /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
-    pub fnt_file: Option<crate::assets::fnt_file::FntFile>,
-    /// Per-cell RGB tint from map [Lighting] section.
-    pub lighting_grid: CellLightGrid,
     /// Parsed [Lighting] config used for transient lighting rebuilds.
     pub map_lighting_config: LightingConfig,
     /// Current map theater name (e.g., "DESERT", "TEMPERATE").
@@ -779,7 +755,46 @@ pub struct MapLoadResult {
     /// transition, which knows the scaled sidebar width and the live zoom.
     pub camera_anchor_x: f32,
     pub camera_anchor_y: f32,
-    /// Asset manager — kept alive for music/audio lookups after map load.
+}
+
+/// Presentation assets produced by loading a map (F11): atlases, chrome,
+/// fonts, and derived display tables. Built FROM the constructed scenario;
+/// nothing here feeds back into it.
+pub struct PresentationLoadAssets {
+    pub tile_atlas: Option<TileAtlas>,
+    pub unit_atlas: Option<UnitAtlas>,
+    /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
+    /// None when no theater palette is available (rare).
+    pub palette_set: Option<crate::render::palette_textures::PaletteSet>,
+    pub sprite_atlas: Option<SpriteAtlas>,
+    pub overlay_atlas: Option<OverlayAtlas>,
+    pub bridge_atlas: Option<BridgeAtlas>,
+    pub bridge_railing_atlas: Option<BridgeRailingAtlas>,
+    pub sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
+    pub sidebar_chrome: Option<SidebarChromeSet>,
+    pub(crate) software_cursor: Option<crate::app_render::SoftwareCursor>,
+    /// Overlay ID → type name mapping (from rules.ini [OverlayTypes]).
+    pub overlay_names: BTreeMap<u8, String>,
+    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
+    /// extracted from SHP frames for minimap radar display.
+    pub tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
+    /// Owner name → house color index mapping (from map [Houses] sections).
+    pub house_color_map: HouseColorMap,
+    /// Per-cell RGB tint from map [Lighting] section.
+    pub lighting_grid: CellLightGrid,
+    /// CSF string table — localized display names loaded from language MIX.
+    pub csf: Option<crate::assets::csf_file::CsfFile>,
+    /// Parsed GAME.FNT bitmap font for authentic sidebar text rendering.
+    pub fnt_file: Option<crate::assets::fnt_file::FntFile>,
+}
+
+/// All data produced by loading a map (F11): concrete scenario/runtime inputs
+/// and presentation assets, no longer one cross-domain bag, plus the leased
+/// process asset manager on its way home.
+pub struct MapLoadResult {
+    pub(crate) scenario: ScenarioLoadInputs,
+    pub(crate) presentation: PresentationLoadAssets,
+    /// The leased process manager returning to `ProcessAssets` (F11 slot).
     pub asset_manager: Option<AssetManager>,
 }
 
@@ -1976,53 +1991,57 @@ pub(crate) fn load_map_from_initial(
     // Move fields out of map_data (last use) instead of cloning.
     let theater_name = map_data.header.theater;
     Ok(MapLoadResult {
-        startup,
-        map_source,
-        map_hash,
-        basic: map_data.basic,
-        tile_atlas,
-        terrain_grid: Some(grid),
-        resolved_terrain: Some(resolved_terrain),
-        simulation,
-        unit_atlas,
-        palette_set,
-        sprite_atlas,
-        overlay_atlas,
-        bridge_atlas,
-        bridge_railing_atlas,
-        sidebar_cameo_atlas,
-        sidebar_chrome,
-        software_cursor,
-        overlays: overlays_connected,
-        terrain_objects: map_data.terrain_objects,
-        waypoints: map_data.waypoints,
-        cell_tags: map_data.cell_tags,
-        tags: map_data.tags,
-        triggers: map_data.triggers,
-        events: map_data.events,
-        actions: map_data.actions,
-        trigger_graph: map_data.trigger_graph,
-        trigger_runtime,
-        overlay_names,
-        tiberium_radar_colors,
-        overlay_registry,
-        house_color_map,
-        house_roster,
-        height_map,
-        bridge_height_map,
-        tactical_bridge_inverse_map,
-        rules,
-        csf,
-        fnt_file,
-        lighting_grid,
-        map_lighting_config: lighting_config,
-        theater_name,
-        theater_ext: theater_ext.to_string(),
-        sandbox_full_visibility: false,
-        spawn_pick_pending,
-        initial_local_owner,
-        camera_anchor_x,
-        camera_anchor_y,
+        scenario: ScenarioLoadInputs {
+            startup,
+            map_source,
+            map_hash,
+            basic: map_data.basic,
+            terrain_grid: Some(grid),
+            resolved_terrain: Some(resolved_terrain),
+            simulation,
+            overlays: overlays_connected,
+            terrain_objects: map_data.terrain_objects,
+            waypoints: map_data.waypoints,
+            cell_tags: map_data.cell_tags,
+            tags: map_data.tags,
+            triggers: map_data.triggers,
+            events: map_data.events,
+            actions: map_data.actions,
+            trigger_graph: map_data.trigger_graph,
+            trigger_runtime,
+            overlay_registry,
+            house_roster,
+            height_map,
+            bridge_height_map,
+            tactical_bridge_inverse_map,
+            rules,
+            map_lighting_config: lighting_config,
+            theater_name,
+            theater_ext: theater_ext.to_string(),
+            sandbox_full_visibility: false,
+            spawn_pick_pending,
+            initial_local_owner,
+            camera_anchor_x,
+            camera_anchor_y,
+        },
+        presentation: PresentationLoadAssets {
+            tile_atlas,
+            unit_atlas,
+            palette_set,
+            sprite_atlas,
+            overlay_atlas,
+            bridge_atlas,
+            bridge_railing_atlas,
+            sidebar_cameo_atlas,
+            sidebar_chrome,
+            software_cursor,
+            overlay_names,
+            tiberium_radar_colors,
+            house_color_map,
+            lighting_grid,
+            csf,
+            fnt_file,
+        },
         // The app loading job retains the one process-lifetime manager while
         // this borrowed phase runs, then moves it into the completed result.
         asset_manager: None,
