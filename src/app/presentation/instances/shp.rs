@@ -2,7 +2,7 @@
 //!
 //! Handles building animation overlays (Active/Idle/Special), bibs, build-up
 //! animations, and infantry sprite frame resolution.
-//! Extracted from app_instances.rs to keep files under the 600-line limit.
+//! Split from `presentation::instances` to keep files under the 600-line limit.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

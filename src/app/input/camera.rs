@@ -1,6 +1,6 @@
 //! Camera positioning — keyboard scroll, mouse edge scroll, zoom, and clamping.
 //!
-//! Extracted from app_sim_tick.rs to separate camera control from sim advancement.
+//! Split from `match_runtime::sim_tick` to separate camera control from sim advancement.
 //!
 //! ## Coordinate frames
 //! Three frames meet in this file and mixing them is the classic bug here:

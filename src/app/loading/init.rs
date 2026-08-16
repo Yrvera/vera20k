@@ -1910,7 +1910,7 @@ pub(crate) fn load_map_from_initial(
     //
     // This is a **world point**, not a camera position: the sidebar's real width
     // depends on the UI scale, which only exists once `AppState` is built, so the
-    // conversion to a camera top-left happens in `app_transitions` where the
+    // conversion to a camera top-left happens in `loading::transitions` where the
     // scaled layout spec is available.
     let local_start_cell: Option<(u16, u16)> = initial_local_owner
         .as_deref()

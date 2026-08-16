@@ -2,7 +2,7 @@
 //!
 //! Depends only on immutable launch data and integer shell geometry. GPU asset
 //! decoding remains in `render::loading_screen_chrome`; draw submission remains
-//! in `app_loading`.
+//! in `app::loading`.
 
 use crate::app::loading::composition::{NARROW_LOADING_SCREEN_WIDTH, loading_base_origin};
 use crate::skirmish_launch::SkirmishLaunchSession;

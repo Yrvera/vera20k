@@ -4,7 +4,7 @@
 //! on *what* to render while this module handles *how* to submit it to the GPU.
 //!
 //! ## Dependency rules
-//! - Internal to app_render — only called from mod.rs via `dispatch_draw_passes()`.
+//! - Internal to `presentation::render` — only called from mod.rs via `dispatch_draw_passes()`.
 
 use crate::app::AppState;
 use crate::app::presentation::sidebar_render::{

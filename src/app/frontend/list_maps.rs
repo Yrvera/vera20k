@@ -1,7 +1,7 @@
 //! Map file discovery and loading utilities.
 //!
 //! Scans the RA2 directory for available maps and loads them from disk.
-//! Extracted from app_init_helpers.rs for file-size limits.
+//! Split from `loading::init_helpers` for file-size limits.
 
 use std::path::{Path, PathBuf};
 

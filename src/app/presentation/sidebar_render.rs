@@ -4,9 +4,9 @@
 //! handles minimap drag/click, resolves sidebar chrome theme, and creates the
 //! main wgpu render pass.
 //!
-//! Instance builders for sidebar layers live in app_sidebar_build.rs.
+//! Instance builders for sidebar layers live in `presentation::sidebar_build`.
 //!
-//! Extracted from app_render.rs to keep files under 400 lines.
+//! Split from the presentation render path to keep files under 400 lines.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

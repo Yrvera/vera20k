@@ -79,7 +79,7 @@ pub(in crate::sim) fn credits_entry_for_owner<'a>(
 ) -> &'a mut i32 {
     let key = sim.interner.intern(owner);
     // Ensure house entry exists (auto-create with defaults if missing).
-    // is_human defaults to true: in real games app_init seeds every house
+    // is_human defaults to true: in real games the app loading path seeds every house
     // with its actual flag, so the only callers that hit this fallback are
     // tests / edge cases that never declared a player. Defaulting to human
     // keeps those paths from accidentally activating AI-only behavior

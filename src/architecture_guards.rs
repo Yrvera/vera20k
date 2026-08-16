@@ -555,3 +555,29 @@ fn no_root_app_modules_remain() {
          modules there."
     );
 }
+
+/// F14: after the boundary-test relocation, `sim/` names no presentation,
+/// audio, net, or app root anywhere — production AND test code. Unlike the
+/// layer scan above (which strips test items), this ratchet holds the whole
+/// tree at zero so a new sim-side test cannot quietly reintroduce the edge.
+#[test]
+fn sim_names_no_upper_layer_root_even_in_tests() {
+    let sim_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sim");
+    let mut offenders: Vec<String> = Vec::new();
+    visit_rust_files(&sim_root, &mut |path| {
+        let source = fs::read_to_string(path).unwrap_or_default();
+        let blanked = blank_comments_and_literals(&source);
+        for root in ["render", "net", "sidebar", "ui", "audio", "app"] {
+            if contains_crate_ref(&blanked, root) || group_contains_root(&blanked, root) {
+                offenders.push(format!("{} -> {root}", path.display()));
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "sim/ references upper-layer root(s): {offenders:?}\n\
+         Sim tests that need render/net live in those layers' boundary test \
+         modules (e.g. render::locomotor_visual tests, \
+         net::lockstep_sim_convergence_tests), never inside sim/."
+    );
+}

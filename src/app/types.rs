@@ -1,7 +1,8 @@
 //! Shared type definitions and constants used across app_* modules.
 //!
-//! These types were extracted from app_render.rs because multiple sibling
-//! modules (app_cursor, app_input, app_entity_pick, app_ui_overlays, etc.)
+//! These types were extracted from the render/input glue because multiple sibling
+//! modules (input::cursor, input::dispatch, input::entity_pick,
+//! presentation::ui_overlays, etc.)
 //! depend on them. Centralizing them here avoids coupling unrelated modules
 //! to the rendering orchestration file.
 //!
@@ -150,7 +151,7 @@ impl TypeSelectOutcome {
 }
 
 // Cursor identity and software-cursor DTOs are render-owned (F06);
-// re-exported so app consumers (and the app_render glob) keep their paths.
+// re-exported so app consumers keep their paths.
 pub(crate) use crate::render::cursor_atlas::{
     CursorId, SoftwareCursor, SoftwareCursorFrame, SoftwareCursorSequence,
 };

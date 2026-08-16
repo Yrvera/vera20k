@@ -370,7 +370,7 @@ pub(crate) fn compute_layout_with_spec(
 /// currently draws from.
 ///
 /// MERGE HAZARD: a parallel session is replacing that origin in
-/// `app_sidebar_build.rs` with a theme-dependent `power_bar_origin(theme,
+/// `app::presentation::sidebar_build` with a theme-dependent `power_bar_origin(theme,
 /// layout, ui_scale)`. This helper re-derives `sidebar_x + power_bar_x`, so
 /// once that lands the hover rect and the drawn bar will disagree by the
 /// per-theme x delta with nothing failing. Whoever merges must re-point this
@@ -465,7 +465,7 @@ pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAct
 
 // `sidebar::hit_test` (the legacy press-path hit-test) was retired in A6: every
 // in-game surface — tabs/repair/sell/scroll (A1), cameos (A2), tactical/minimap
-// (A3), and the control/dev buttons (A6) — is now owned by the `app_gadget_input`
+// (A3), and the control/dev buttons (A6) — is now owned by the `app::input::gadget_input`
 // retained list (one order = hit + draw, R7 complete). `hit_test_item` (the cameo
 // click→action map) stays public for the driver.
 

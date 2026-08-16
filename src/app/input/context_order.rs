@@ -4,7 +4,7 @@
 //! move, attack, garrison, deploy, harvest, rally point, etc. This is the decision tree
 //! that maps player intent to `Command` envelopes.
 //!
-//! Extracted from app_input.rs to separate order resolution from raw input handling.
+//! Split from the input dispatcher to separate order resolution from raw input handling.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

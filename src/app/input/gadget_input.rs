@@ -305,7 +305,7 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     }
     // Minimap region rect = the live minimap screen rect; disabled when the radar
     // is offline or the minimap is absent (the exact gate `is_cursor_over_minimap`
-    // uses, app_sidebar_render.rs).
+    // uses, `presentation::sidebar_render`).
     let minimap_available = state
         .match_state.match_presentation.radar_anim
         .as_ref()

@@ -3,7 +3,7 @@
 //! Builds the per-frame SpriteInstance vectors for each sidebar layer:
 //! background rectangles, chrome art, cameo icons, text labels, progress bars.
 //!
-//! Extracted from app_sidebar_render.rs to keep files under 400 lines.
+//! Split from `presentation::sidebar_render` to keep files under 400 lines.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

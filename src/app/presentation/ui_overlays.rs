@@ -1,6 +1,6 @@
 //! UI overlay instance builders — status bars, software cursor.
 //!
-//! Extracted from app_render.rs. Part of the app layer — may depend on everything.
+//! Split from the presentation render path. Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner_name;

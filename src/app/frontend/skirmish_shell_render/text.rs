@@ -589,7 +589,7 @@ pub(super) fn build_shell_text_draws(
     }
 
     // Resolve all three static strings from the single shared source so the
-    // reveal-start trigger (app_shell_transition) and this renderer agree on the
+    // reveal-start trigger (`frontend::shell_transition`) and this renderer agree on the
     // exact text whose length sets the reveal target.
     let (title, game_type, map_label) = skirmish_right_panel_label_strings(state);
     push_static_label_draw(

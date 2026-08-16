@@ -3,7 +3,7 @@
 //! Handles click and box selection logic, enemy target picking for attack
 //! commands, and hover-target classification (friendly/enemy/structure/unit).
 //!
-//! Extracted from app_render.rs to keep files under 400 lines.
+//! Split from the presentation render path to keep files under 400 lines.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

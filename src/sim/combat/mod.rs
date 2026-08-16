@@ -1350,7 +1350,7 @@ pub(crate) fn object_world_z_leptons(
 /// equivalent single value, and every consumer reads it rather than deriving
 /// its own: the AoE object-layer selector, the bridge-damage Z gate, the
 /// persistent-projectile impact coordinate, the impact-animation height, and
-/// (through `app_fire_effects`) the pixel the tracer ends on. A second
+/// (through `app::presentation::fire_effects`) the pixel the tracer ends on. A second
 /// derivation could only agree with this one by coincidence.
 ///
 /// Three native quantities sit close together here and are not the same

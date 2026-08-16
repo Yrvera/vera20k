@@ -8030,13 +8030,11 @@ fn coordinate_runtime_trace_miner_arrival_and_extraction_four_directions() {
             if state == MinerState::Harvest && first_harvest_tick.is_none() {
                 eprintln!(
                     "MINER_TRACE approach={label} event=enter_harvest trace_tick={trace_tick} \
-                     sim_tick={} cell=({},{}) sub=({sub_x},{sub_y}) screen=({:.1},{:.1}) \
+                     sim_tick={} cell=({},{}) sub=({sub_x},{sub_y}) \
                      target={target:?} movement_target={}",
                     sim.session.tick,
                     entity.position.rx,
                     entity.position.ry,
-                    crate::render::locomotor_visual::screen_position(entity).0,
-                    crate::render::locomotor_visual::screen_position(entity).1,
                     entity.movement_target.is_some(),
                 );
                 assert_eq!(

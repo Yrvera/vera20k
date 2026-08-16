@@ -129,7 +129,7 @@ fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
 }
 
 /// Advance one tick, draining any pending commands first (mirrors the
-/// production app_sim_tick loop).
+/// production app sim-tick loop).
 fn step(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16, u16), u8>) {
     let due = sim.take_due_commands();
     sim.advance_tick(&due, Some(rules), heights, None, None, 67);

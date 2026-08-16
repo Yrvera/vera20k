@@ -93,7 +93,7 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     // ScrollRate is read at startup and consumed directly by the camera each
     // frame, so nothing has to be pushed from this close path.
     // The remaining two are persist-only; no render behavior is fabricated:
-    //   ToolTips    -> the tooltip service (app_tooltips.rs) has no enable gate to flip.
+    //   ToolTips    -> the tooltip service (`input::tooltips`) has no enable gate to flip.
     // DetailLevel is consumed directly by the per-frame lighting refresh, so
     // it needs no close-time push beyond the stored option changing.
     //   ShowHidden  -> a debug byte with no standard consumer.

@@ -73,7 +73,7 @@ pub struct UnitSpriteKey {
     pub frame: u32,
     /// Terrain slope type (0–16). 0 = flat, 1-4 = edge ramps, 5-8 = corner
     /// ramps, 9-12 = corner tilt at NW/NE/SE/SW (alias of 5-8 in gamemd.exe),
-    /// 13-16 = edge tilt at NW/NE/SE/SW. The consumer in app_instances/units.rs
+    /// 13-16 = edge tilt at NW/NE/SE/SW. The consumer in app/presentation/instances/units.rs
     /// clamps any value ≥ 17 to 0 before constructing this key. Different
     /// slopes produce distinct pre-rendered sprites with tilted models.
     pub slope_type: u8,

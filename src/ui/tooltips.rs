@@ -2,7 +2,7 @@
 //! equivalent consumed by BOTH the in-game sidebar and the front-end shells.
 //!
 //! Pure and clock-injected: every entry point takes `now_ms: u64`; the app
-//! driver (`app_tooltips.rs`) is the only place that reads the wall clock.
+//! driver (`app::input::tooltips`) is the only place that reads the wall clock.
 //! Timer semantics reproduce the native single-timer state machine: one
 //! deadline serves both the show delay and the visible-tip duration; polling
 //! once per frame lands edges within a frame of the wall-clock deadline —

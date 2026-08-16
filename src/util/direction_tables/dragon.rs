@@ -2,7 +2,7 @@
 //! `0x007F4890` = `i32[32]` where `table[i] = (28 - i) & 31` (study Verification
 //! Log #4, read_memory 0x007F4890 len128). Used for `Rotates=yes` projectiles
 //! (DRAGON / AAHeatSeeker2). Rust previously lacked it (closes DRIFT D3 at the
-//! data layer; the app_fire_effects cutover is a later slice).
+//! data layer; the `app::presentation::fire_effects` cutover is a later slice).
 
 /// gamemd DRAGON 32-way frame map `0x007F4890`: `table[i] = (28 - i) & 31`,
 /// i.e. `[28,27,…,1,0,31,30,29]`. `&31` on i32 wraps the negative tail correctly

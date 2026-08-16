@@ -1,7 +1,7 @@
 //! Shared helpers for instance builders — depth sorting, interpolation, visibility.
 //!
 //! These utilities are used by the unit, SHP, and overlay instance builders.
-//! Extracted from app_instances.rs to keep files under the 600-line limit.
+//! Split from `presentation::instances` to keep files under the 600-line limit.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

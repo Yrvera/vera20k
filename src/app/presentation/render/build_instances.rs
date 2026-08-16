@@ -5,7 +5,7 @@
 //! scannable: build world → build debug → build UI → build sidebar → build fog.
 //!
 //! ## Dependency rules
-//! - Internal to app_render — only called from mod.rs.
+//! - Internal to `presentation::render` — only called from mod.rs.
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner;

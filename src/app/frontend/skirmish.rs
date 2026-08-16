@@ -1,6 +1,6 @@
 //! Skirmish opening seeding, deployable building detection, and overlay atlas construction.
 //!
-//! Extracted from app_init_helpers.rs for file-size limits.
+//! Split from `loading::init_helpers` for file-size limits.
 
 use std::collections::{BTreeMap, HashMap};
 

@@ -179,13 +179,13 @@ pub(crate) struct MatchPresentationState {
     /// One entry per `SidebarTab` variant.
     pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Shared tooltip service (study S1) — the model is clock-injected; only
-    /// `app_tooltips` reads the wall clock.
+    /// `input::tooltips` reads the wall clock.
     pub(crate) tooltips: crate::ui::tooltips::TooltipService,
     /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
     /// app construction).
     pub(crate) tooltip_epoch: Instant,
     /// In-game chat/system message surface (study §3.1) — re-anchored to the
-    /// tactical viewport per frame by `app_messages`.
+    /// tactical viewport per frame by `input::messages`.
     pub(crate) message_list: crate::ui::messages::MessageList,
     /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
     /// §4.3: the native composite timer freezes during pause). Fed pause

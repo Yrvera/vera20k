@@ -651,7 +651,7 @@ mod tests {
     /// `OverlayGrid`), bridges would visually stay healthy after they collapse
     /// — and nothing else would catch it.
     ///
-    /// Lives here (app_instances/bridges.rs) rather than under `sim/world/`
+    /// Lives here (`presentation/instances/bridges.rs`) rather than under `sim/world/`
     /// because it imports render-layer types (`BridgeAtlasLookup`,
     /// `OverlaySpriteEntry`, `SpriteInstance`) and sim/ must never depend on
     /// render/. The bridge state is built directly via `test_seed_cell` to

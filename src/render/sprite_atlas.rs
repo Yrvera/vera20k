@@ -490,7 +490,7 @@ pub fn build_sprite_atlas(
                 });
                 // CanBeOccupied buildings need frames 0..3 for the occupancy +
                 // damage-tier frame swap (see building_frame_index in
-                // app_instances/shp.rs). SHPs with fewer frames silently skip
+                // app/presentation/instances/shp.rs). SHPs with fewer frames silently skip
                 // missing entries; the renderer falls back to frame 0.
                 let can_be_occupied = rules
                     .and_then(|r| r.object(type_str))

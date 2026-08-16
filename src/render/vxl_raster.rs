@@ -1269,7 +1269,7 @@ mod tests {
         // gamemd has no matrix populated for slopes 17-20 (BSS-zero region
         // at DAT_00b454B8). We deliberately diverge from gamemd's invisible-
         // unit failure mode and clamp these to identity (flat) at the
-        // renderer. The consumer clamp in app_instances/units.rs is the
+        // renderer. The consumer clamp in app/presentation/instances/units.rs is the
         // primary boundary; this defensive arm catches any value that
         // bypasses it.
         for slope in 17..=20u8 {

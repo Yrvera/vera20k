@@ -23,7 +23,7 @@ mod platform;
 pub(crate) use platform::PlatformState;
 
 /// All initialized state. Created in `resumed()` when the window is available.
-/// pub(crate) so app_render.rs can access fields.
+/// pub(crate) so the app presentation/render paths can access fields.
 pub(crate) struct AppState {
     pub(crate) platform: PlatformState,
     /// Process-wide renderer owner (F12): GPU context, batch renderer,

@@ -1,7 +1,7 @@
 //! Building animation lifecycle, sidebar UI tick, and sound playback.
 //!
 //! These are per-frame runtime updates that run after the sim tick advances.
-//! Extracted from app_sim_tick.rs to separate animation/audio/UI concerns from
+//! Split from `match_runtime::sim_tick` to separate animation/audio/UI concerns from
 //! core simulation advancement.
 //!
 //! ## Dependency rules

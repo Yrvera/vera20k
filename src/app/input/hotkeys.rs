@@ -2,7 +2,7 @@
 //!
 //! This app-layer module translates winit's logical keys into the encoded
 //! Win32 key words stored in `KEYBOARDMD.INI`. It deliberately stops at
-//! semantic command names; gameplay effects remain in `app_input`.
+//! semantic command names; gameplay effects remain in `input::dispatch`.
 
 use std::collections::BTreeMap;
 

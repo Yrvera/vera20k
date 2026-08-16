@@ -385,7 +385,7 @@ impl App {
                     }
                 }
                 // All sidebar text (credits, Ready labels, queue counts) is now
-                // GAME.FNT sprite geometry built in app_render; egui in-game
+                // GAME.FNT sprite geometry built in presentation::render; egui in-game
                 // carries only the dev/debug overlays.
                 state.renderer.egui.begin_frame(&state.platform.window);
                 // Debug panels use a light/.NET theme — push light visuals

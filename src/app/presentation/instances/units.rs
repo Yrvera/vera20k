@@ -1,7 +1,7 @@
 //! Voxel unit instance builders — per-frame SpriteInstance generation for VXL entities.
 //!
 //! Handles turret/barrel separation, harvest overlays, and VXL animation frames.
-//! Extracted from app_instances.rs to keep files under the 600-line limit.
+//! Split from `presentation::instances` to keep files under the 600-line limit.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

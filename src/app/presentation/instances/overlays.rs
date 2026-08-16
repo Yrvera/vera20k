@@ -2,7 +2,7 @@
 //!
 //! Generates SpriteInstances for map overlays (ore/gems, bridges, terrain objects),
 //! world-position effects (warp sparkles), and fog-of-war building snapshots.
-//! Extracted from app_instances.rs to keep files under the 600-line limit.
+//! Split from `presentation::instances` to keep files under the 600-line limit.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

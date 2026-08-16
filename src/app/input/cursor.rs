@@ -1,7 +1,7 @@
 //! Cursor feedback analysis and software cursor frame selection.
 //!
 //! Determines what cursor state to show based on hover target, selection,
-//! and game mode. Extracted from app_ui_overlays.rs for file-size limits.
+//! and game mode. Split from `presentation::ui_overlays` for file-size limits.
 
 use std::time::Instant;
 
@@ -449,7 +449,7 @@ fn capability_cursor_for_hover(
             //    Matches gamemd action 0x1A (TechnoClass dock branch). Alliance
             //    gate comes from HoverTargetKind::FriendlyStructure; refinery
             //    detection from RuleSet::is_refinery_type (same key used by
-            //    the click pipeline in app_context_order.rs).
+            //    the click pipeline in `input::context_order`).
             if sel_entity.miner.is_some()
                 && matches!(hover.kind, HoverTargetKind::FriendlyStructure)
                 && hovered_entity.is_some_and(|e| {
@@ -461,7 +461,7 @@ fn capability_cursor_for_hover(
 
             // Service depot — a damaged own vehicle over an own UnitRepair
             // building shows the enter/dock cursor (the click issues
-            // RepairAtDepot; see app_context_order.rs).
+            // RepairAtDepot; see `input::context_order`).
             if sel_entity.category == EntityCategory::Unit
                 && sel_entity.health.current < sel_entity.health.max
                 && matches!(hover.kind, HoverTargetKind::FriendlyStructure)

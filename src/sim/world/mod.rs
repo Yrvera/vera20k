@@ -6186,7 +6186,7 @@ impl Simulation {
 
 #[cfg(test)]
 #[path = "world_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "smudge_integration_tests.rs"]

@@ -1,6 +1,6 @@
 //! Build and production commands — queuing builds, placing buildings, owner management.
 //!
-//! Extracted from app_render.rs. Part of the app layer — may depend on everything.
+//! Split from the presentation render path. Part of the app layer — may depend on everything.
 
 use std::collections::HashMap;
 
@@ -158,7 +158,7 @@ fn own_building_id(state: &AppState, stable_id: u64) -> Option<u64> {
 }
 
 /// Stable id of the local player's own building under the given world point, if
-/// any. Shared by the repair/sell cursor feedback (`app_cursor`) and the
+/// any. Shared by the repair/sell cursor feedback (`input::cursor`) and the
 /// repair/sell click handler below so the two can never disagree about what is
 /// an eligible building target. Only OWN structures qualify — allied buildings
 /// are not repairable/sellable by the local player (the sim `ToggleRepair` /

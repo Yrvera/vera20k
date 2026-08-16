@@ -466,7 +466,7 @@ pub(crate) fn build_selection_bracket_instances(
         // are Z-tested by `Surface__DrawLine_ABufModulated_ZClipped` and
         // building bodies write Z, so the ground marks would lose against the
         // art standing over them. That is a hypothesis. An implementation of it
-        // (the depth stamp in `app_render/draw_passes.rs`) did not hide them,
+        // (the depth stamp in `presentation/render/draw_passes.rs`) did not hide them,
         // which is evidence the hypothesis is at least incomplete.
         //
         // So this emits the observed subset directly rather than the full set

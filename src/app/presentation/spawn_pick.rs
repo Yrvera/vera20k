@@ -183,7 +183,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
     }
 }
 
-/// Register non-local playable houses as AI opponents (same logic as app_init).
+/// Register non-local playable houses as AI opponents (same logic as `loading::init`).
 /// Render the SpawnPick phase: full map visible, no fog, no simulation tick.
 ///
 /// Temporarily enables sandbox visibility so the entire map is shown.

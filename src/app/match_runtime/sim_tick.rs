@@ -1,7 +1,7 @@
 //! In-game update phase — advances fixed-step simulation, triggers, path grids, and atlases.
 //!
-//! Camera control lives in app_camera.rs. Building animations, damage fires, sidebar
-//! UI tick, and sound playback live in app_building_anim.rs.
+//! Camera control lives in `input::camera`. Building animations, damage fires, sidebar
+//! UI tick, and sound playback live in `presentation::building_anim`.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

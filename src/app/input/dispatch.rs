@@ -2,7 +2,7 @@
 //! control groups, and selection commands.
 //!
 //! Context-sensitive order resolution (click → command) lives in
-//! app_context_order.rs. This file handles raw input dispatch and UI state.
+//! `input::context_order`. This file handles raw input dispatch and UI state.
 //!
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.

@@ -2250,7 +2250,7 @@ pub struct RuleSet {
     /// Smudge type registry parsed from `[SmudgeTypes]` and per-name sections.
     /// Populated by `RuleSet::from_ini` from rulesmd.ini.
     pub smudge_types: SmudgeTypeRegistry,
-    /// Retained art.ini registry. Populated by app_init after `merge_art_data`
+    /// Retained art.ini registry. Populated by the app loading path (`app::loading::init`) after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
     /// GPU-independent SHP frame counts used by authoritative world-effect

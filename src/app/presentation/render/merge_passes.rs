@@ -5,7 +5,7 @@
 //! residual families retain their existing depth merge.
 //!
 //! ## Dependency rules
-//! - Internal to app_render — only called from draw_passes.rs.
+//! - Internal to `presentation::render` — only called from draw_passes.rs.
 
 use crate::render::batch::{BatchRenderer, BatchTexture, InstanceBufferPool, SpriteInstance};
 use crate::render::overlay_atlas::OverlayAtlas;

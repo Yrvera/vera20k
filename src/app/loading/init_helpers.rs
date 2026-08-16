@@ -1,7 +1,7 @@
 //! App init helper functions — map file loading, atlas building, rules/art loading,
 //! skirmish seeding, overlay atlas construction.
 //!
-//! Extracted from app_init.rs for file-size limits.
+//! Split from `loading::init` for file-size limits.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
