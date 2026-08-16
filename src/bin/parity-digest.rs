@@ -9,11 +9,12 @@
 //!   `Simulation` state serialises and survives the consumer's strict parsing — it says
 //!   nothing about parity, because the scenario has no counterpart in gamemd.
 //!
-//! **What a real-map run does and does not contain.** Terrain, ore, rules and the RNG
-//! streams are real and seeded. Map-placed units, structures and houses are NOT spawned
-//! (see `headless_scenario`), so entity and credit dimensions stay empty until that lands.
-//! A comparison today can exercise frame alignment and the RNG cursors; it cannot yet
-//! localise a gameplay divergence.
+//! **What a real-map run contains (F09).** The scenario is constructed through the same
+//! GPU-free funnel the app uses (see `headless_scenario`): map-roster houses, map-placed
+//! units and structures, bridge state, wall ownership, smudges, and the seeded RNG
+//! streams are all real. What it still lacks versus an app launch is the skirmish
+//! *session* — player houses, start-position placement — so digests represent a
+//! spectatorless load of the map as authored, not a played skirmish opening.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

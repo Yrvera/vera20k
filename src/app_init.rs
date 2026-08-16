@@ -24,9 +24,10 @@ use crate::app_skirmish::{
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
-use crate::sim::scenario_bootstrap::{initialize_map_roster_houses, 
+use crate::sim::scenario_bootstrap::{
     PreloadedBattleStartPlan, ScenarioBootstrapRng, apply_explicit_skirmish_launch_session,
-    apply_preloaded_battle_launch_session, initialize_skirmish_launch_houses,
+    apply_preloaded_battle_launch_session, initialize_map_roster_houses,
+    initialize_skirmish_launch_houses,
 };
 
 use crate::assets::asset_manager::AssetManager;
@@ -1823,8 +1824,17 @@ pub(crate) fn load_map_from_initial(
     // F09: the shared post-funnel finalization — spawner seed, map-wall owner
     // reconstruction, overlay-grid installation, smudge-grid seeding, and the
     // authoritative post-map tail — runs through the same sim-owned function
-    // the headless loader uses. The overlay render entries are then re-filtered
-    // against the installed grid (a presentation concern that stays app-side).
+    // the headless loader uses.
+    //
+    // The overlay render entries are filtered BEFORE the call, against the
+    // grid state the entries were derived from: the shared finalization's only
+    // pre-install grid mutation is wall-owner reconstruction (wall_owner
+    // fields, never overlay ids), while its post-map tail may place
+    // scenario-start crates — new overlay occupancy this presentation filter
+    // must not react to.
+    overlays_connected.retain(|entry| {
+        overlay_grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id)
+    });
     let rules_for_post_map = rules
         .as_ref()
         .expect("merged rules were installed before post-map finalization");
@@ -1838,10 +1848,6 @@ pub(crate) fn load_map_from_initial(
             &house_roster,
             skirmish_launch_session,
         );
-        if let Some(grid) = sim.overlay_grid.as_ref() {
-            overlays_connected
-                .retain(|entry| grid.cell(entry.rx, entry.ry).overlay_id == Some(entry.overlay_id));
-        }
         if let Some(stats) = output.tiberium_queues {
             log::info!(
                 "Native tiberium queues rebuilt: {} growth entries, {} spread entries",
