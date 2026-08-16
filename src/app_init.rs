@@ -14,7 +14,7 @@ use anyhow::Result;
 use crate::app_init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
-    scheduler_anim_roots, spawn_entities, theater_ext_for,
+    scheduler_anim_roots, theater_ext_for,
 };
 use crate::app_list_maps::{
     LoadedMap, LoadedMapSource, load_map_by_name_or_path_with_assets, try_load_mmx,
@@ -1625,9 +1625,23 @@ pub(crate) fn load_map_from_initial(
             initialize_map_roster_houses(sim, &house_roster, rules.as_ref());
         }
     };
-    let (simulation, mut unit_atlas, mut sprite_atlas, mut palette_set) = spawn_entities(
+    // F09 seam: GPU-free construction first, then the presentation manifest
+    // is derived from the constructed simulation — never fed back into it.
+    let constructed = crate::app_init_helpers::construct_app_scenario(
         &map_data,
         &resolved_terrain,
+        &asset_manager,
+        &map_data.header.theater,
+        rules.as_ref(),
+        art.as_ref(),
+        &height_map,
+        bridge_destroyability_mode,
+        &scenario_descriptor,
+        bootstrap_rng,
+        initialize_houses_before_objects,
+    );
+    let manifest = crate::app_init_helpers::build_presentation_manifest(
+        &constructed,
         &asset_manager,
         gpu,
         batch,
@@ -1636,14 +1650,14 @@ pub(crate) fn load_map_from_initial(
         rules.as_ref(),
         art.as_ref(),
         &house_color_map,
-        &height_map,
         unit_palette.as_ref(),
         overlay_iso_palette.as_ref(),
         vxl_compute.as_deref_mut(),
-        bridge_destroyability_mode,
-        &scenario_descriptor,
-        bootstrap_rng,
-        initialize_houses_before_objects,
+    );
+    let (mut unit_atlas, mut sprite_atlas, mut palette_set) = (
+        manifest.unit_atlas,
+        manifest.sprite_atlas,
+        manifest.palette_set,
     );
     // Terrain/tiberium + units/infantry/buildings created from the map
     // (gamemd terrain/units/objects/buildings milestones).
@@ -1651,7 +1665,7 @@ pub(crate) fn load_map_from_initial(
     progress.milestone(74);
     progress.milestone(76);
     progress.milestone(78);
-    let mut simulation = simulation;
+    let mut simulation = Some(constructed);
     // Pre-intern all rule type IDs so that build_option_for_owner can resolve
     // InternedIds for types that haven't been spawned yet (e.g. GAPOWR).
     // Without this, sidebar cameo lookups fail because unspawned types get

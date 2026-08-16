@@ -478,32 +478,31 @@ pub(crate) fn scheduler_anim_roots(
 }
 
 
-/// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
-pub(crate) fn spawn_entities<F>(
+/// The presentation-side atlas bundle the app builds AFTER GPU-free scenario
+/// construction (F09): derived from immutable resources plus the constructed
+/// simulation, never fed back into it.
+pub(crate) struct PresentationManifest {
+    pub(crate) unit_atlas: Option<UnitAtlas>,
+    pub(crate) sprite_atlas: Option<SpriteAtlas>,
+    pub(crate) palette_set: Option<crate::render::palette_textures::PaletteSet>,
+}
+
+/// The GPU-free half of the app scenario load (F09): the shared construction
+/// funnel plus the HVA frame-count catalog, with no atlas or GPU involvement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn construct_app_scenario<F>(
     map_data: &MapFile,
     resolved_terrain: &ResolvedTerrainGrid,
     asset_manager: &AssetManager,
-    gpu: &GpuContext,
-    batch: &BatchRenderer,
-    theater_ext: &str,
     theater_name: &str,
     rules: Option<&RuleSet>,
     art: Option<&ArtRegistry>,
-    house_colors: &HouseColorMap,
     height_map: &BTreeMap<(u16, u16), u8>,
-    theater_unit_palette: Option<&Palette>,
-    theater_iso_palette: Option<&Palette>,
-    vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     bridge_destroyability_mode: BridgeDestroyabilityMode,
     descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
     bootstrap_rng: crate::sim::scenario_bootstrap::ScenarioBootstrapRng,
     initialize_houses_before_objects: F,
-) -> (
-    Option<Simulation>,
-    Option<UnitAtlas>,
-    Option<SpriteAtlas>,
-    Option<crate::render::palette_textures::PaletteSet>,
-)
+) -> Simulation
 where
     F: FnOnce(&mut Simulation),
 {
@@ -530,8 +529,27 @@ where
         art,
     );
     sim.update_voxel_anim_frame_counts(&frame_catalog);
-    let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
-        &sim,
+    sim
+}
+
+/// Build voxel + SHP sprite atlases for an already-constructed simulation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_presentation_manifest(
+    sim: &Simulation,
+    asset_manager: &AssetManager,
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    theater_ext: &str,
+    theater_name: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+    house_colors: &HouseColorMap,
+    theater_unit_palette: Option<&Palette>,
+    theater_iso_palette: Option<&Palette>,
+    vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
+) -> PresentationManifest {
+    let (unit_atlas, sprite_atlas, palette_set) = build_entity_atlases(
+        sim,
         asset_manager,
         gpu,
         batch,
@@ -544,7 +562,11 @@ where
         theater_iso_palette,
         vxl_compute,
     );
-    (Some(sim), unit_atlas, shp_atlas, palette_set)
+    PresentationManifest {
+        unit_atlas,
+        sprite_atlas,
+        palette_set,
+    }
 }
 
 pub(crate) fn build_entity_atlases(
