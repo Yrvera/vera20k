@@ -13,7 +13,7 @@ use super::{
     RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, SkirmishSettings,
-    SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
+    SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
     UnitAtlas, Waypoint, app_render, frontend::startup_splash,
 };
 
@@ -350,17 +350,9 @@ pub(crate) struct AppState {
     /// Explicit local owner preference for HUD/commands (set by debug actions).
     /// Only consulted when `local_player_owner` is `None` (sandbox/dev flows).
     pub(crate) local_owner_override: Option<String>,
-    /// EVA edge-detection: local player was in low-power state last frame.
-    pub(crate) eva_low_power_active: bool,
-    /// EVA edge-detection: a local factory was in an underfunded stall last frame.
-    pub(crate) eva_funds_stalled: bool,
-    /// EVA edge-detection: local mobile entities whose death has already been
-    /// announced (pruned as the corpses despawn).
-    pub(crate) eva_announced_dying: std::collections::HashSet<u64>,
-    /// Sim tick until which the under-attack EVA voice is suppressed. The
-    /// native per-house attack-voice repeat delay is UNVERIFIED-pending-trace;
-    /// ~30 s is a conservative interim so sustained fire doesn't spam the line.
-    pub(crate) eva_under_attack_block_until_tick: u64,
+    /// Per-match audio owner (F11): sound event queue + EVA latches; resets
+    /// on every match install and on leaving a match for the shell.
+    pub(crate) match_audio: crate::app::match_audio::MatchAudioState,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
     /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
@@ -410,8 +402,6 @@ pub(crate) struct AppState {
     /// EVA announcement registry from eva.ini / evamd.ini.
     /// Maps EVA event names to per-faction audio.bag sound IDs.
     pub(crate) eva_registry: crate::rules::sound_ini::EvaRegistry,
-    /// Pending sound events from the current sim tick, drained each frame.
-    pub(crate) sound_events: SoundEventQueue,
     /// Fire events from the current sim tick — position data for future muzzle
     /// flash rendering and projectile origin computation. Drained each frame.
     pub(crate) pending_fire_effects: Vec<crate::sim::world::SimFireEvent>,

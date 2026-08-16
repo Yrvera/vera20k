@@ -41,6 +41,19 @@ impl App {
         if let Some(ref mut player) = state.music_player {
             player.stop();
         }
+        // F11: leaving a match silences match audio completely. Previously
+        // only music stopped — live SFX, the voice player, and queued EVA
+        // lines survived and played over the main menu, and the SFX output
+        // scale stayed wherever the exit cascade left it (this Esc route
+        // bypasses drive_scenario_exit entirely).
+        if let Some(ref mut sfx) = state.sfx_player {
+            sfx.stop_all();
+            sfx.set_output_scale(1.0);
+        }
+        if let Some(ref mut player) = state.music_player {
+            player.set_output_scale(1.0);
+        }
+        state.match_audio.reset_for_new_match();
         state.screen = GameScreen::MainMenu;
         Self::enter_shell_window_mode(state);
         state.zoom_level = 1.0;

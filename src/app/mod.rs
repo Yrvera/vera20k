@@ -64,6 +64,7 @@ mod frame;
 mod handler;
 mod initialize;
 mod in_game;
+pub(crate) mod match_audio;
 pub(crate) mod match_diagnostics;
 pub(crate) mod persistence;
 pub(crate) mod process_assets;

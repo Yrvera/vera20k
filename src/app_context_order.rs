@@ -202,7 +202,7 @@ fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &
             sound_id: id.clone(),
         }
     };
-    state.sound_events.push(event);
+    state.match_audio.sound_events.push(event);
 }
 
 /// Commit a resolved order batch: one voice line, the action lines, the queue.

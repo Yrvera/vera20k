@@ -170,7 +170,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
     use crate::audio::events::GameSoundEvent;
     use crate::audio::sfx::calc_spatial_volume;
 
-    let events = state.sound_events.drain();
+    let events = state.match_audio.sound_events.drain();
     if events.is_empty() {
         if let Some(sfx) = &mut state.sfx_player {
             sfx.advance_voice_queue();

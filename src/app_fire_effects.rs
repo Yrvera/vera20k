@@ -563,7 +563,7 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
     state.weapon_muzzle_flashes.extend(flashes);
     state.projectile_visuals.extend(projectiles);
     for sound in sounds {
-        state.sound_events.push(sound);
+        state.match_audio.sound_events.push(sound);
     }
 }
 

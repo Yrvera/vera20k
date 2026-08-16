@@ -367,10 +367,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // override/heuristic path resolves the owner instead.
     state.local_player_owner = result.initial_local_owner.clone();
     state.local_owner_override = result.initial_local_owner;
-    // Reset per-match EVA edge-detection trackers.
-    state.eva_low_power_active = false;
-    state.eva_funds_stalled = false;
-    state.eva_announced_dying.clear();
+    // F11: reset the whole per-match audio owner. The old reset cleared only
+    // three EVA latches — the tick-indexed under-attack suppression window
+    // carried into the new match (whose tick counter restarts at 0) and
+    // silenced the under-attack EVA line for its first ~30 seconds, and the
+    // sound-event queue kept the previous match's undrained events.
+    state.match_audio.reset_for_new_match();
     state.sandbox_full_visibility = result.sandbox_full_visibility;
     state.spawn_pick_pending = result.spawn_pick_pending;
 

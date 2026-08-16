@@ -2387,7 +2387,7 @@ fn emit_selection_voice(state: &mut AppState, entity_id: u64) {
     let Some(rules) = state.rules().map(|r| r) else { return };
 
     if let Some(event) = selection_voice_event(sim, rules, entity_id) {
-        state.sound_events.push(event);
+        state.match_audio.sound_events.push(event);
     }
 }
 

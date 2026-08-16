@@ -160,28 +160,29 @@ fn announce_local_state_evas(state: &mut AppState) {
         let newly_dying: Vec<u64> = current_dying
             .iter()
             .copied()
-            .filter(|id| !state.eva_announced_dying.contains(id))
+            .filter(|id| !state.match_audio.eva_announced_dying.contains(id))
             .collect();
         (low_power, funds_stalled, current_dying, newly_dying)
     };
 
     let mut cues: Vec<(&'static str, &'static str)> = Vec::new();
-    if low_power && !state.eva_low_power_active {
+    if low_power && !state.match_audio.eva_low_power_active {
         cues.push(("EVA_LowPower", "ceva053"));
     }
-    state.eva_low_power_active = low_power;
-    if funds_stalled && !state.eva_funds_stalled {
+    state.match_audio.eva_low_power_active = low_power;
+    if funds_stalled && !state.match_audio.eva_funds_stalled {
         cues.push(("EVA_InsufficientFunds", "ceva050"));
     }
-    state.eva_funds_stalled = funds_stalled;
+    state.match_audio.eva_funds_stalled = funds_stalled;
     if !newly_dying.is_empty() {
         cues.push(("EVA_UnitLost", "ceva064"));
     }
     // Prune despawned corpses, then record this frame's announcements.
     state
+        .match_audio
         .eva_announced_dying
         .retain(|id| current_dying.contains(id));
-    state.eva_announced_dying.extend(newly_dying);
+    state.match_audio.eva_announced_dying.extend(newly_dying);
 
     if cues.is_empty() {
         return;
@@ -1315,10 +1316,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Repeat cooldown across both cue kinds (the native
                         // per-house attack-voice delay is UNVERIFIED — see the
                         // field doc on AppState).
-                        if sim.session.tick < state.eva_under_attack_block_until_tick {
+                        if sim.session.tick < state.match_audio.eva_under_attack_block_until_tick {
                             continue;
                         }
-                        state.eva_under_attack_block_until_tick =
+                        state.match_audio.eva_under_attack_block_until_tick =
                             sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
                         let faction = crate::app_building_anim::eva_faction_key(
                             owner_str,
@@ -1352,7 +1353,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                     }
                 };
-                state.sound_events.push(app_event);
+                state.match_audio.sound_events.push(app_event);
             }
             if tick_result.destroyed_structure {
                 refresh_atlases_after_tick = true;
