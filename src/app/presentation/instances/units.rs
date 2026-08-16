@@ -235,7 +235,7 @@ pub(crate) fn build_unit_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.unit_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.unit_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -841,7 +841,7 @@ fn emit_harvest_overlay(
     tint: [f32; 3],
     draw_state: DrawState,
 ) -> Option<(usize, SpriteInstance)> {
-    let sprite_atlas = match &state.sprite_atlas {
+    let sprite_atlas = match &state.match_presentation.sprite_atlas {
         Some(a) => a,
         None => return None,
     };

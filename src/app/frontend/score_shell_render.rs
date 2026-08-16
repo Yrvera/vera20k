@@ -310,7 +310,7 @@ fn parent_background_instances(
 }
 
 fn cursor_instance(state: &AppState) -> Option<SpriteInstance> {
-    let cursor = state.software_cursor.as_ref()?;
+    let cursor = state.match_presentation.software_cursor.as_ref()?;
     let sequence = cursor.get(crate::app::types::CursorId::Default)?;
     let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
@@ -428,7 +428,7 @@ fn render_score_shell_to_target(
         .renderer.batch_renderer
         .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     let cursor_texture = state
-        .software_cursor
+        .match_presentation.software_cursor
         .as_ref()
         .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())

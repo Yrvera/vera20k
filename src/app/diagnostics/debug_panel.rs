@@ -174,7 +174,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             );
 
             // --- VXL render pipeline ---
-            if let Some(atlas) = &state.unit_atlas {
+            if let Some(atlas) = &state.match_presentation.unit_atlas {
                 ui.separator();
                 if atlas.gpu_rendered > 0 {
                     ui.colored_label(

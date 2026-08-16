@@ -111,7 +111,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // A loaded world is not timed until the launch handoff actually reaches
     // InGame (SpawnPick remains outside the scenario elapsed span).
     state.scenario_elapsed_clock.reset();
-    state.tile_atlas = result.presentation.tile_atlas;
+    state.match_presentation.tile_atlas = result.presentation.tile_atlas;
     crate::app::loading::pump::clear_loading_state(state);
     state.map_basic = result.scenario.basic;
     state.loaded_map_source = Some(result.scenario.map_source);
@@ -144,14 +144,14 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.set_input_delay_ticks(state.configured_input_delay_ticks);
     }
-    state.unit_atlas = result.presentation.unit_atlas;
-    state.palette_set = result.presentation.palette_set;
-    state.sprite_atlas = result.presentation.sprite_atlas;
-    state.overlay_atlas = result.presentation.overlay_atlas;
-    state.bridge_atlas = result.presentation.bridge_atlas;
-    state.bridge_railing_atlas = result.presentation.bridge_railing_atlas;
-    state.sidebar_cameo_atlas = result.presentation.sidebar_cameo_atlas;
-    state.sidebar_chrome = result.presentation.sidebar_chrome;
+    state.match_presentation.unit_atlas = result.presentation.unit_atlas;
+    state.match_presentation.palette_set = result.presentation.palette_set;
+    state.match_presentation.sprite_atlas = result.presentation.sprite_atlas;
+    state.match_presentation.overlay_atlas = result.presentation.overlay_atlas;
+    state.match_presentation.bridge_atlas = result.presentation.bridge_atlas;
+    state.match_presentation.bridge_railing_atlas = result.presentation.bridge_railing_atlas;
+    state.match_presentation.sidebar_cameo_atlas = result.presentation.sidebar_cameo_atlas;
+    state.match_presentation.sidebar_chrome = result.presentation.sidebar_chrome;
     if let Some(ref fnt) = result.presentation.fnt_file {
         state.renderer.bit_font =
             crate::render::bit_font::BitFont::from_fnt(&state.renderer.gpu, &state.renderer.batch_renderer, fnt);
@@ -161,7 +161,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // Uses pre-rendered radar.shp frames for the 33-frame open/close animation.
     // Also extract content insets derived from the transparent opening in frame 0.
     let allied_radar = state
-        .sidebar_chrome
+        .match_presentation.sidebar_chrome
         .as_ref()
         .and_then(|set| set.resolve_theme(crate::render::sidebar_chrome::SidebarTheme::Allied))
         .map(|resolved| {
@@ -189,7 +189,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     }
     state.has_radar = false;
 
-    state.software_cursor = result.presentation.software_cursor;
+    state.match_presentation.software_cursor = result.presentation.software_cursor;
     state.overlays.replace_from_source(result.scenario.overlays);
     state.terrain_objects = result.scenario.terrain_objects;
     state.waypoints = result.scenario.waypoints;
@@ -291,7 +291,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state
         .platform
         .window
-        .set_cursor_visible(state.software_cursor.is_none());
+        .set_cursor_visible(state.match_presentation.software_cursor.is_none());
 
     // Create minimap from terrain grid with overlay data.
     if let Some(grid) = &state.terrain_grid {

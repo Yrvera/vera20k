@@ -145,7 +145,7 @@ fn overlay_display_identity(
 /// Appends to the SHP instance list so they draw in the same depth-sorted pass.
 /// Each effect's current frame is looked up in the SHP atlas.
 pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -268,7 +268,7 @@ pub(crate) fn build_anim_class_instances(
     ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -450,7 +450,7 @@ fn anim_instance_alpha_with_flags(
 /// the atlas has no matching shape.
 fn anim_shp_frame_count(state: &AppState, type_name: &str) -> i32 {
     state
-        .sprite_atlas
+        .match_presentation.sprite_atlas
         .as_ref()
         .and_then(|atlas| presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name))
         .map(i32::from)
@@ -503,7 +503,7 @@ pub(crate) fn build_overlay_instances(
     ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
-    let atlas = match &state.overlay_atlas {
+    let atlas = match &state.match_presentation.overlay_atlas {
         Some(a) => a,
         None => return,
     };
@@ -773,7 +773,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let (atlas, art_reg) = match (&state.sprite_atlas, state.rules().map(|rules| &rules.art_registry)) {
+    let (atlas, art_reg) = match (&state.match_presentation.sprite_atlas, state.rules().map(|rules| &rules.art_registry)) {
         (Some(a), Some(r)) => (a, r),
         _ => return,
     };
@@ -880,7 +880,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let atlas = match &state.sprite_atlas {
+    let atlas = match &state.match_presentation.sprite_atlas {
         Some(a) => a,
         None => return,
     };
@@ -972,7 +972,7 @@ fn projectile_authoritative_screen_position(
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
 fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, rules, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r), &state.sprite_atlas) {
+    let (sim, rules, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r), &state.match_presentation.sprite_atlas) {
         (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
         _ => return,
     };
@@ -1051,7 +1051,7 @@ pub(crate) fn build_projectile_visual_instances(
     paged: &mut [Vec<SpriteInstance>],
 ) {
     build_authoritative_projectile_instances(state, paged);
-    let atlas = match &state.sprite_atlas {
+    let atlas = match &state.match_presentation.sprite_atlas {
         Some(a) => a,
         None => return,
     };
@@ -1166,7 +1166,7 @@ pub(crate) fn build_parachute_instances(
     /// frame-internal positioning, which our atlas doesn't replicate exactly.
     const CHUTE_Y_LIFT: f32 = 8.0;
 
-    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };

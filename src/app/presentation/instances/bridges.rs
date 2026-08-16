@@ -209,7 +209,7 @@ pub(crate) fn build_bridge_body_instances(
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.bridge_atlas.as_ref() else {
+    let Some(atlas) = state.match_presentation.bridge_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state
@@ -249,7 +249,7 @@ pub(crate) fn build_bridge_shadow_instances(
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.bridge_atlas.as_ref() else {
+    let Some(atlas) = state.match_presentation.bridge_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state
@@ -342,7 +342,7 @@ pub(crate) fn build_bridge_railing_instances(
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
         return;
     };
-    let Some(atlas) = state.bridge_railing_atlas.as_ref() else {
+    let Some(atlas) = state.match_presentation.bridge_railing_atlas.as_ref() else {
         return;
     };
     let (origin_y, world_height) = state

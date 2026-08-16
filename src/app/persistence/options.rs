@@ -140,7 +140,7 @@ pub(crate) fn in_game_options_close(state: &mut AppState) {
     persist_in_game_options(state, IN_GAME_OPTIONS_RESULT_BACK);
     state.paused = false;
     state.platform.frame_pacer.reset_for_immediate_frame();
-    if state.software_cursor.is_some() {
+    if state.match_presentation.software_cursor.is_some() {
         state.platform.window.set_cursor_visible(false);
     }
     log::info!(

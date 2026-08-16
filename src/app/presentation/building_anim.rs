@@ -389,7 +389,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             }
         };
         let frame_counts = state
-            .sprite_atlas
+            .match_presentation.sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         state
@@ -436,7 +436,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     };
     let empty_frame_counts = HashMap::new();
     let frame_counts = state
-        .sprite_atlas
+        .match_presentation.sprite_atlas
         .as_ref()
         .map(|atlas| &atlas.active_anim_frame_counts)
         .unwrap_or(&empty_frame_counts);

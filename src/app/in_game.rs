@@ -193,13 +193,13 @@ impl App {
         state.paused = next.is_open();
         if next.is_open() {
             // Show the OS cursor so the modal is clickable.
-            if state.software_cursor.is_some() {
+            if state.match_presentation.software_cursor.is_some() {
                 state.platform.window.set_cursor_visible(true);
             }
         } else {
             // Elapsed modal time must not cause a catch-up frame.
             state.platform.frame_pacer.reset_for_immediate_frame();
-            if state.software_cursor.is_some() {
+            if state.match_presentation.software_cursor.is_some() {
                 state.platform.window.set_cursor_visible(false);
             }
         }

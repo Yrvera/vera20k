@@ -90,7 +90,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.tile_atlas.as_ref(),
+        state.match_presentation.tile_atlas.as_ref(),
         "terrain",
     );
 
@@ -104,7 +104,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.overlay_atlas.as_ref(),
+        state.match_presentation.overlay_atlas.as_ref(),
         "smudge",
     );
 
@@ -113,7 +113,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.bridge_atlas.as_ref(),
+        state.match_presentation.bridge_atlas.as_ref(),
         "overlay_bridge_body",
     );
 
@@ -133,7 +133,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.overlay_atlas.as_ref(),
+        state.match_presentation.overlay_atlas.as_ref(),
         "overlay",
     );
 
@@ -153,7 +153,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.bridge_atlas.as_ref(),
+        state.match_presentation.bridge_atlas.as_ref(),
         "overlay_bridge_body_shadow",
     );
 
@@ -195,10 +195,10 @@ pub(super) fn dispatch_draw_passes(
         data.bridge_unit_pages,
         data.bridge_unit_transition_paged,
         data.bridge_shp_paged,
-        state.unit_atlas.as_ref(),
+        state.match_presentation.unit_atlas.as_ref(),
         &transition_cache,
-        state.sprite_atlas.as_ref(),
-        state.palette_set.as_ref(),
+        state.match_presentation.sprite_atlas.as_ref(),
+        state.match_presentation.palette_set.as_ref(),
     );
 
     // --- Step 5: Ground objects (native integer LayerClass order) ---
@@ -210,11 +210,11 @@ pub(super) fn dispatch_draw_passes(
         &state.renderer.batch_renderer,
         pool,
         data.ground,
-        state.overlay_atlas.as_ref(),
-        state.unit_atlas.as_ref(),
+        state.match_presentation.overlay_atlas.as_ref(),
+        state.match_presentation.unit_atlas.as_ref(),
         &transition_cache,
-        state.sprite_atlas.as_ref(),
-        state.palette_set.as_ref(),
+        state.match_presentation.sprite_atlas.as_ref(),
+        state.match_presentation.palette_set.as_ref(),
     );
 
     // Scheduler-owned effects not yet carrying verified class-specific
@@ -227,10 +227,10 @@ pub(super) fn dispatch_draw_passes(
         data.unit_pages,
         data.unit_transition_paged,
         data.shp_paged,
-        state.unit_atlas.as_ref(),
+        state.match_presentation.unit_atlas.as_ref(),
         &transition_cache,
-        state.sprite_atlas.as_ref(),
-        state.palette_set.as_ref(),
+        state.match_presentation.sprite_atlas.as_ref(),
+        state.match_presentation.palette_set.as_ref(),
     );
 
     if let (Some(overlay), Some((buffer, count))) =
@@ -259,7 +259,7 @@ pub(super) fn dispatch_draw_passes(
         &mut pass,
         &state.renderer.batch_renderer,
         pool,
-        state.bridge_railing_atlas.as_ref(),
+        state.match_presentation.bridge_railing_atlas.as_ref(),
         "overlay_bridge_railing",
     );
 
@@ -270,7 +270,7 @@ pub(super) fn dispatch_draw_passes(
     // and Y-sorted on the CPU, so no GPU depth read/write needed.
     const PARTICLE_KEYS: [&str; 4] = ["particle_p0", "particle_p1", "particle_p2", "particle_p3"];
     for (i, key) in PARTICLE_KEYS.iter().enumerate() {
-        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+        if let Some(page) = state.match_presentation.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {
                 if count == 0 {
                     continue;
@@ -313,7 +313,7 @@ pub(super) fn dispatch_draw_passes(
     // body flies over, so the residual is a cliff face standing in a *nearer*
     // iso row than the body's own cell, which its lifted sprite does not reach.
     if let (Some(unit_atlas), Some(palette_set)) =
-        (state.unit_atlas.as_ref(), state.palette_set.as_ref())
+        (state.match_presentation.unit_atlas.as_ref(), state.match_presentation.palette_set.as_ref())
     {
         if let Some((buf, count)) = pool.get("unit_top") {
             if count > 0 {
@@ -330,7 +330,7 @@ pub(super) fn dispatch_draw_passes(
             }
         }
     }
-    if let (Some(atlas), Some((buffer, count))) = (state.sprite_atlas.as_ref(), pool.get("shp_top"))
+    if let (Some(atlas), Some((buffer, count))) = (state.match_presentation.sprite_atlas.as_ref(), pool.get("shp_top"))
         && count > 0
     {
         merge_passes::draw_shp_atlas_page_runs(
@@ -451,7 +451,7 @@ pub(super) fn dispatch_draw_passes(
         "shp_selected_depth_p3",
     ];
     for (i, key) in SELECTED_DEPTH_KEYS.iter().enumerate() {
-        if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
+        if let Some(page) = state.match_presentation.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {
                 state.renderer.batch_renderer.draw_with_buffer_depth_stamp(
                     &mut pass,
@@ -540,7 +540,7 @@ pub(super) fn dispatch_draw_passes(
     draw_pooled_ui(&mut pass, &state.renderer.batch_renderer, pool, drag_tex, "drag");
     // Placement preview — world-space, uses world camera (zoom).
     let ghost_tex = state
-        .sprite_atlas
+        .match_presentation.sprite_atlas
         .as_ref()
         .and_then(|a| a.page(data.ghost_page as usize))
         .map(|p| &p.texture);
@@ -551,7 +551,7 @@ pub(super) fn dispatch_draw_passes(
         ghost_tex,
         "placement_ghost",
     );
-    let wall_ghost_tex = state.overlay_atlas.as_ref().map(|a| &a.texture);
+    let wall_ghost_tex = state.match_presentation.overlay_atlas.as_ref().map(|a| &a.texture);
     draw_pooled_no_depth(
         &mut pass,
         &state.renderer.batch_renderer,
@@ -645,7 +645,7 @@ pub(super) fn dispatch_draw_passes(
         &state.renderer.batch_renderer,
         pool,
         state
-            .sidebar_cameo_atlas
+            .match_presentation.sidebar_cameo_atlas
             .as_ref()
             .map(|atlas| &atlas.texture),
         "sidebar_cameo",

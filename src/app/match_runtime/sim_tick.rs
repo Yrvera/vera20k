@@ -1657,7 +1657,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         bound_rules.map(|rules| &rules.art_registry),
         Some(&sim.interner),
     );
-    let unit_rebuild: bool = match &state.unit_atlas {
+    let unit_rebuild: bool = match &state.match_presentation.unit_atlas {
         Some(atlas) => !atlas.has_all_keys(&unit_needed),
         None => !unit_needed.is_empty(),
     };
@@ -1674,7 +1674,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         &extra_buildings,
         Some(&sim.interner),
     );
-    let sprite_rebuild: bool = match &state.sprite_atlas {
+    let sprite_rebuild: bool = match &state.match_presentation.sprite_atlas {
         Some(atlas) => !sprite_atlas::atlas_covers_base_keys(atlas, &sprite_base_keys),
         None => !sprite_base_keys.is_empty(),
     };
@@ -1693,7 +1693,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
 
     if unit_rebuild {
         log::info!("Rebuilding unit atlas: new voxel entity types detected");
-        let existing = state.unit_atlas.take();
+        let existing = state.match_presentation.unit_atlas.take();
         if let Some(new_unit_atlas) = unit_atlas::build_unit_atlas(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
@@ -1705,13 +1705,13 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             state.renderer.vxl_compute.as_mut(),
             Some(&sim.interner),
         ) {
-            state.unit_atlas = Some(new_unit_atlas);
+            state.match_presentation.unit_atlas = Some(new_unit_atlas);
         }
     }
 
     if sprite_rebuild {
         log::warn!(">>> SPRITE ATLAS REBUILD TRIGGERED — new SHP entity types detected <<<");
-        let existing = state.sprite_atlas.take();
+        let existing = state.match_presentation.sprite_atlas.take();
         let cell_drawer_type_ids: HashSet<String> = sim
             .resolved_terrain
             .as_ref()
@@ -1737,7 +1737,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             existing,
             Some(&sim.interner),
         ) {
-            state.sprite_atlas = Some(new_sprite_atlas);
+            state.match_presentation.sprite_atlas = Some(new_sprite_atlas);
         }
     }
 }

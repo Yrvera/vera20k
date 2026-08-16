@@ -153,7 +153,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // a positive suffix remains absent instead of borrowing pristine UVs.
     let uv_fn_closure;
     let uv_fn: Option<&dyn Fn(u16, u8, u8) -> Option<TilePlacement>> = if let Some(atlas) =
-        &state.tile_atlas
+        &state.match_presentation.tile_atlas
     {
         uv_fn_closure = |tile_id: u16, sub_tile: u8, variant: u8| -> Option<TilePlacement> {
             let uv =
@@ -244,7 +244,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 
     // SHP sprites: buildings, infantry, effects — paged across sprite atlas pages.
     let shp_page_count: usize = state
-        .sprite_atlas
+        .match_presentation.sprite_atlas
         .as_ref()
         .map_or(1, |a| a.page_count().max(1));
     let mut shp_paged: Vec<Vec<SpriteInstance>> = vec![Vec::new(); shp_page_count];
@@ -500,7 +500,7 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
     let Some(resolved_terrain) = sim.resolved_terrain.as_ref() else {
         return Vec::new();
     };
-    let Some(atlas) = state.overlay_atlas.as_ref() else {
+    let Some(atlas) = state.match_presentation.overlay_atlas.as_ref() else {
         return Vec::new();
     };
     // Resolve (smudge_type_id, frame_offset) → atlas placement.
@@ -709,7 +709,7 @@ fn build_placement_preview(
                 let ghost_result =
                     crate::render::selection_overlay::SelectionOverlay::build_ghost_sprite(
                         preview,
-                        state.sprite_atlas.as_ref(),
+                        state.match_presentation.sprite_atlas.as_ref(),
                         hc,
                         &state.height_map(),
                         state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),

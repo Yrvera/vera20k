@@ -987,7 +987,7 @@ fn health_pip_variant(ratio: f32, condition_yellow: f32, condition_red: f32) -> 
 /// The id travels with the sequence because the animation phase is keyed on it —
 /// changing shape restarts the sequence at frame 0.
 fn active_cursor_sequence(state: &AppState) -> Option<(CursorId, &SoftwareCursorSequence)> {
-    let cursor = state.software_cursor.as_ref()?;
+    let cursor = state.match_presentation.software_cursor.as_ref()?;
     let id: CursorId = current_cursor_feedback_kind(state)
         .and_then(cursor_id_for_feedback)
         .unwrap_or(CursorId::Default);

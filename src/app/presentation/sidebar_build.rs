@@ -546,7 +546,7 @@ pub(crate) fn build_sidebar_cameo_instances(
     Vec<SpriteInstance>,
     Vec<SpriteInstance>,
 ) {
-    let Some(atlas) = state.sidebar_cameo_atlas.as_ref() else {
+    let Some(atlas) = state.match_presentation.sidebar_cameo_atlas.as_ref() else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
     let mut instances = Vec::new();

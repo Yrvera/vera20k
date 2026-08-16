@@ -12,6 +12,7 @@ pub(crate) mod overlay_index;
 pub(crate) mod radiation_light;
 pub(crate) mod render;
 pub(crate) mod selection_brackets;
+pub(crate) mod state;
 pub(crate) mod sidebar_build;
 pub(crate) mod sidebar_gadgets;
 pub(crate) mod sidebar_render;

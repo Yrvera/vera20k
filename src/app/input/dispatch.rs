@@ -911,7 +911,7 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
     let mut unrevealed_samples: Vec<(u16, u16)> = Vec::new();
 
     for cell in &grid.cells {
-        if let Some(atlas) = state.tile_atlas.as_ref() {
+        if let Some(atlas) = state.match_presentation.tile_atlas.as_ref() {
             let key = crate::map::theater::TileKey {
                 tile_id: cell.tile_id,
                 sub_tile: cell.sub_tile,
@@ -931,7 +931,7 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
                 continue;
             }
         }
-        if let Some(atlas) = state.tile_atlas.as_ref() {
+        if let Some(atlas) = state.match_presentation.tile_atlas.as_ref() {
             let key = crate::map::theater::TileKey {
                 tile_id: cell.tile_id,
                 sub_tile: cell.sub_tile,
@@ -1184,7 +1184,7 @@ fn handle_options_hotkey(state: &mut AppState) {
     if state.paused {
         state.paused = false;
         state.platform.frame_pacer.reset_for_immediate_frame();
-        if state.software_cursor.is_some() {
+        if state.match_presentation.software_cursor.is_some() {
             state.platform.window.set_cursor_visible(false);
         }
         log::info!("Game resumed");
@@ -1197,7 +1197,7 @@ fn handle_options_hotkey(state: &mut AppState) {
     } else {
         state.paused = true;
         state.in_game_options.on_open();
-        if state.software_cursor.is_some() {
+        if state.match_presentation.software_cursor.is_some() {
             state.platform.window.set_cursor_visible(true);
         }
         log::info!("Game paused");
@@ -1224,10 +1224,10 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
             if state.show_save_load_panel {
                 state.persistence.invalidate_save_list();
                 // Show OS cursor for egui interaction.
-                if state.software_cursor.is_some() {
+                if state.match_presentation.software_cursor.is_some() {
                     state.platform.window.set_cursor_visible(true);
                 }
-            } else if state.software_cursor.is_some() && !state.paused {
+            } else if state.match_presentation.software_cursor.is_some() && !state.paused {
                 // Re-hide OS cursor so the software cursor takes over.
                 state.platform.window.set_cursor_visible(false);
             }

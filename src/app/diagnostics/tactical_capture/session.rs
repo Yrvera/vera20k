@@ -660,23 +660,23 @@ impl TacticalCaptureSession {
 
         ensure!(
             state.rules().is_some()
-                && state.tile_atlas.is_some()
+                && state.match_presentation.tile_atlas.is_some()
                 && state.terrain_grid.is_some()
                 && state.terrain_template().is_some()
-                && state.unit_atlas.is_some()
-                && state.palette_set.is_some()
-                && state.sprite_atlas.is_some()
-                && state.overlay_atlas.is_some()
+                && state.match_presentation.unit_atlas.is_some()
+                && state.match_presentation.palette_set.is_some()
+                && state.match_presentation.sprite_atlas.is_some()
+                && state.match_presentation.overlay_atlas.is_some()
                 && state.minimap.is_some()
-                && state.sidebar_chrome.is_some()
-                && state.software_cursor.is_some()
+                && state.match_presentation.sidebar_chrome.is_some()
+                && state.match_presentation.software_cursor.is_some()
                 && sim.path_grid().is_some()
                 && state.process_assets.is_available(),
             "Rust L0 is missing one or more production render/simulation resources"
         );
         ensure!(
             state
-                .software_cursor
+                .match_presentation.software_cursor
                 .as_ref()
                 .and_then(|cursor| cursor.get(CursorId::Default))
                 .is_some(),

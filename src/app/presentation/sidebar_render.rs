@@ -174,7 +174,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         scroll_up_btn_size,
     );
     state.sidebar_scroll_rows = view.scroll_rows;
-    if let Some(atlas) = state.sidebar_cameo_atlas.as_ref() {
+    if let Some(atlas) = state.match_presentation.sidebar_cameo_atlas.as_ref() {
         for item in &mut view.items {
             item.has_cameo_art = atlas.get(&item.type_id).is_some();
         }
@@ -439,7 +439,7 @@ pub(crate) fn current_sidebar_theme(
 pub(crate) fn current_sidebar_chrome(
     state: &AppState,
 ) -> Option<&crate::render::sidebar_chrome::SidebarChromeAtlas> {
-    let set = state.sidebar_chrome.as_ref()?;
+    let set = state.match_presentation.sidebar_chrome.as_ref()?;
     let theme = current_sidebar_theme(state);
     set.for_theme(theme)
 }

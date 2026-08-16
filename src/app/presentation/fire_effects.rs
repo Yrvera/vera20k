@@ -551,7 +551,7 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
             return;
         };
         let frame_counts = state
-            .sprite_atlas
+            .match_presentation.sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         let (flashes, sounds) =

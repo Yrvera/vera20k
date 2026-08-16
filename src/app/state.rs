@@ -31,8 +31,9 @@ pub(crate) struct AppState {
     pub(crate) renderer: crate::app::renderer_state::RendererState,
     /// Match input owner (F12): camera, zoom, cursor, keys, hotkeys.
     pub(crate) input: crate::app::input::state::MatchInputState,
+    /// Match presentation owner (F12), part 1: per-match atlases + cursor.
+    pub(crate) match_presentation: crate::app::presentation::state::MatchPresentationState,
     pub(crate) combat_lights: crate::app::presentation::combat_lights::CombatLightRuntime,
-    pub(crate) tile_atlas: Option<TileAtlas>,
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
     pub(crate) loaded_map_source: Option<crate::app::frontend::list_maps::LoadedMapSource>,
@@ -44,13 +45,6 @@ pub(crate) struct AppState {
     /// App-owned diagnostic recording (F10) — never inside the simulation, so
     /// no load/install path can silently drop an unflushed segment.
     pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
-    pub(crate) unit_atlas: Option<UnitAtlas>,
-    /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
-    pub(crate) palette_set: Option<crate::render::palette_textures::PaletteSet>,
-    pub(crate) sprite_atlas: Option<SpriteAtlas>,
-    pub(crate) overlay_atlas: Option<OverlayAtlas>,
-    pub(crate) bridge_atlas: Option<BridgeAtlas>,
-    pub(crate) bridge_railing_atlas: Option<BridgeRailingAtlas>,
     /// Overlay entries from map for per-frame instance generation.
     pub(crate) overlays: crate::app::presentation::overlay_index::OverlayRenderIndex,
     /// Terrain objects from map for per-frame instance generation.
@@ -216,12 +210,6 @@ pub(crate) struct AppState {
     /// SHROUD.SHP brightness pixels blitted per-cell, then a full-screen multiply pass
     /// darkens the scene.
     pub(crate) shroud_buffer: Option<crate::render::shroud_buffer::ShroudBuffer>,
-    /// Packed cameo art used by the custom build sidebar.
-    pub(crate) sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
-    /// Original side-mix shell art used to skin the custom sidebar.
-    pub(crate) sidebar_chrome: Option<SidebarChromeSet>,
-    /// Asset-backed software cursor shown in-game when available.
-    pub(crate) software_cursor: Option<render::SoftwareCursor>,
     /// Selection drag state — tracks mouse drag for box-select.
     pub(crate) selection_state: SelectionState,
     /// Player-side `g_CurrentObjects` order. Selection commands update this
@@ -459,7 +447,7 @@ impl AppState {
     /// Whether the software cursor (mouse.shp) should be active this frame.
     /// Returns false when an egui interactive panel is open so the OS cursor shows.
     pub(crate) fn use_software_cursor(&self) -> bool {
-        self.software_cursor.is_some()
+        self.match_presentation.software_cursor.is_some()
             && !self.paused
             && !self.show_save_load_panel
             && !self.main_menu_dialog_open()
