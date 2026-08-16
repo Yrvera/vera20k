@@ -615,7 +615,7 @@ mod tests {
         }
 
         let entity = entities.get(1).expect("entity exists");
-        // After moving, the unit is drawn on cell (6, 5)'s diamond centre â€” half a
+        // After moving, the unit is drawn on cell (6, 5)'s diamond centre — half a
         // tile east and half a tile south of that cell's tile corner.
         let (corner_sx, corner_sy): (f32, f32) = terrain::iso_to_screen(6, 5, 0);
         let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);

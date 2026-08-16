@@ -565,7 +565,8 @@ fn sim_names_no_upper_layer_root_even_in_tests() {
     let sim_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sim");
     let mut offenders: Vec<String> = Vec::new();
     visit_rust_files(&sim_root, &mut |path| {
-        let source = fs::read_to_string(path).unwrap_or_default();
+        let source =
+            fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let blanked = blank_comments_and_literals(&source);
         for root in ["render", "net", "sidebar", "ui", "audio", "app"] {
             if contains_crate_ref(&blanked, root) || group_contains_root(&blanked, root) {

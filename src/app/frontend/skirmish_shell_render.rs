@@ -5,6 +5,10 @@
 
 mod chrome;
 mod controls;
+// Retained as executable documentation of the native shell draw order; its
+// items are exercised only by this file's tests since the F14 reexport
+// narrowing.
+#[cfg_attr(not(test), allow(dead_code))]
 mod draw_order;
 #[cfg(test)]
 use draw_order::{
