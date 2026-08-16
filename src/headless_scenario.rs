@@ -24,7 +24,6 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::theater;
 use crate::map::waypoints;
-use crate::rules::ruleset::RuleSet;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::Simulation;

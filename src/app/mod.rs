@@ -29,7 +29,7 @@ use crate::map::basic::BasicSection;
 use crate::map::cell_tags::CellTagMap;
 use crate::map::houses::{HouseColorMap, HouseRoster};
 use crate::map::lighting::{CellLightGrid, LightingConfig};
-use crate::map::overlay::{OverlayEntry, TerrainObject};
+use crate::map::overlay::TerrainObject;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tags::TagMap;

@@ -24,8 +24,8 @@ use crate::render::unit_atlas::{self, UnitAtlas};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerKind, RulesLayerStack};
 use crate::rules::ruleset::RuleSet;
-use crate::sim::anim_class::{AnimDrawRuntime, AnimWorldCoord};
-use crate::sim::components::AnimClassSpawnDescriptor;
+
+
 use crate::sim::world::Simulation;
 
 use crate::app_skirmish::deployable_building_types;
@@ -477,73 +477,6 @@ pub(crate) fn scheduler_anim_roots(
     roots.into_iter().collect()
 }
 
-/// Construct the post-map-section terrain-attached AnimClass set.
-///
-/// gamemd-derived: the final `MapClass::InitCellAttributes @ 0x00568BB0`
-/// anti-diagonal pass calls `CellClass::RecalcAttributes @ 0x0047D2B0`; the
-/// constructor row at 0x0047DA3B..0x0047DA5F supplies delay 0, signed loop -1,
-/// flags 0x1600 and constructor ZAdjust 0. The delay-zero constructor calls
-/// `Middle`, then the producer writes the tile ZAdjust; the descriptor carries
-/// the producer's explicit +0x196/+0x197 state into the Rust object.
-pub(crate) fn spawn_terrain_tile_animations(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    tile_animations: &[TerrainTileAnimation],
-) -> Vec<u64> {
-    const TILE_ANIM_DRAW_FLAGS: u32 = 0x1600;
-    let mut spawned = Vec::with_capacity(tile_animations.len());
-    for tile in tile_animations {
-        let type_name = sim.interner.intern(&tile.anim_name);
-        let descriptor = AnimClassSpawnDescriptor {
-            type_name,
-            rx: tile.rx,
-            ry: tile.ry,
-            sub_x: crate::util::fixed_math::SimFixed::from_num(
-                tile.world_x
-                    .wrapping_sub(i32::from(tile.rx).wrapping_mul(256)),
-            ),
-            sub_y: crate::util::fixed_math::SimFixed::from_num(
-                tile.world_y
-                    .wrapping_sub(i32::from(tile.ry).wrapping_mul(256)),
-            ),
-            z: u8::try_from(
-                tile.world_z
-                    .div_euclid(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS),
-            )
-            .unwrap_or(0),
-            delay: 0,
-            loop_count: -1,
-            draw_flags: TILE_ANIM_DRAW_FLAGS,
-            z_adjust: 0,
-            reverse: false,
-            use_cell_drawer: true,
-            terrain_attached: true,
-            draw_runtime: AnimDrawRuntime::default(),
-        };
-        let id = sim
-            .spawn_anim_at_world(
-                rules,
-                descriptor,
-                AnimWorldCoord {
-                    x: tile.world_x,
-                    y: tile.world_y,
-                    z: tile.world_z,
-                },
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "resolved terrain animation [{}] must be bound before map spawn: {error}",
-                    tile.anim_name
-                )
-            });
-        assert!(
-            sim.set_terrain_anim_z_adjust_after_construction(id, tile.z_adjust),
-            "terrain animation {id} disappeared before its producer ZAdjust write"
-        );
-        spawned.push(id);
-    }
-    spawned
-}
 
 /// Spawn map entities into ECS world and build voxel + SHP sprite atlases.
 pub(crate) fn spawn_entities<F>(
@@ -574,144 +507,18 @@ pub(crate) fn spawn_entities<F>(
 where
     F: FnOnce(&mut Simulation),
 {
-    let mut sim: Simulation = bootstrap_rng.into_simulation(descriptor);
-    // Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
-    // `ScenarioClass__Create_Houses @ 0x00687F10` before
-    // `TerrainClass__Read_Map_Section @ 0x0071CA70` and every Techno section.
-    // Keep the app-specific roster construction outside sim while making that
-    // order an explicit prerequisite of the shared object-construction funnel.
-    initialize_houses_before_objects(&mut sim);
-    // Frame tripwire: every MP start waypoint must sit inside the session
-    // bounds (= the fog window, cell-array frame). A start outside means the
-    // descriptor was fed wrong-frame bounds (e.g. raw [Map] Size=) and the
-    // player's own base would be permanently shrouded.
-    for (idx, (rx, ry)) in &descriptor.mp_start_waypoints {
-        if *rx >= descriptor.map_width || *ry >= descriptor.map_height {
-            log::error!(
-                "MP start waypoint {idx} at ({rx},{ry}) lies outside session bounds {}x{} — wrong coordinate frame?",
-                descriptor.map_width,
-                descriptor.map_height
-            );
-            debug_assert!(
-                false,
-                "start waypoint outside session bounds (coordinate-frame mismatch)"
-            );
-        }
-    }
-    sim.resolved_terrain = Some(resolved_terrain.clone());
-    // Wire the cliff/slope coefficients from [General] into the live World config;
-    // it otherwise holds compiled vanilla defaults and never sees a modded INI.
-    if let Some(rules) = rules {
-        sim.terrain_speed_config =
-            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::from_general(
-                rules.general.tracked_uphill,
-                rules.general.tracked_downhill,
-                rules.general.wheeled_uphill,
-                rules.general.wheeled_downhill,
-            );
-        sim.radar_events =
-            crate::sim::radar::RadarEventQueue::from_config(&rules.radar_event_config);
-    }
-    // The playfield diamond: [Map] Size width + the raw LocalSize rect, stored
-    // verbatim — the isometric transform lives in the validator's diamond test.
-    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
-        base: map_data.header.width as i32,
-        off_fc: map_data.header.local_left as i32,
-        off_100: map_data.header.local_top as i32,
-        off_104: map_data.header.local_width as i32,
-        off_108: map_data.header.local_height as i32,
-    });
-    let bridge_destroyable = map_data
-        .special_flags
-        .effective_destroyable_bridges(bridge_destroyability_mode);
-    let bridge_strength = rules
-        .map(|rules| rules.bridge_rules.strength)
-        .unwrap_or(1500);
-    sim.bridge_state = Some(
-        crate::sim::bridge_state::BridgeRuntimeState::from_resolved_terrain(
-            resolved_terrain,
-            bridge_destroyable,
-            bridge_strength,
-        ),
+    let mut sim = crate::sim::runtime::construct_scenario(
+        map_data,
+        resolved_terrain,
+        theater_name,
+        rules,
+        art,
+        height_map,
+        bridge_destroyability_mode,
+        descriptor,
+        bootstrap_rng,
+        initialize_houses_before_objects,
     );
-    sim.bridge_explosions = rules
-        .map(|r| {
-            r.bridge_rules
-                .explosions
-                .iter()
-                .map(|s| sim.interner.intern(s))
-                .collect()
-        })
-        .unwrap_or_default();
-    sim.metallic_debris = rules
-        .map(|r| {
-            r.general
-                .metallic_debris
-                .iter()
-                .map(|s| sim.interner.intern(s))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(art) = art {
-        let mut bridge_anim_sounds = BTreeMap::new();
-        for anim_id in sim
-            .bridge_explosions
-            .iter()
-            .chain(sim.metallic_debris.iter())
-            .copied()
-        {
-            let anim_name = sim.interner.resolve(anim_id);
-            if let Some(entry) = art.get(anim_name) {
-                let sound_name = entry.start_sound.as_ref().or(entry.report.as_ref());
-                if let Some(sound_name) = sound_name {
-                    let sound_id = sim.interner.intern(sound_name);
-                    bridge_anim_sounds.insert(anim_id, sound_id);
-                }
-            }
-        }
-        sim.bridge_anim_sounds = bridge_anim_sounds;
-    }
-    // gamemd `TerrainClass::Read_Map_Section` runs while the map sections are
-    // walked, ahead of `[Units]`/`[Aircraft]`/`[Infantry]`/`[Structures]`: every
-    // tree owns its cell before the first map object is placed on it. The
-    // ore-spawner animation index is attached later, once the terrain SHP frame
-    // counts are known.
-    if let Some(rules) = rules {
-        let constructed = crate::sim::terrain_spawn::construct_terrain_objects(
-            &mut sim,
-            &map_data.terrain_objects,
-            rules,
-            theater_name.eq_ignore_ascii_case("SNOW"),
-        );
-        if constructed > 0 {
-            log::info!("Constructed {constructed} map terrain objects before map entities");
-        }
-    } else {
-        log::warn!("No rules loaded — skipping terrain object construction");
-    }
-    if !map_data.entities.is_empty() {
-        let _count: u32 = sim.spawn_from_map_with_resolved(
-            &map_data.entities,
-            rules,
-            height_map,
-            Some(resolved_terrain),
-        );
-        let miner_count: usize = sim
-            .entities()
-            .values()
-            .filter(|e| e.miner.is_some())
-            .count();
-        log::info!("Miner components attached: {}", miner_count);
-    }
-    if !resolved_terrain.tile_animations().is_empty() {
-        let rules = rules.expect("resolved terrain animations require bound art/rules data");
-        let spawned =
-            spawn_terrain_tile_animations(&mut sim, rules, resolved_terrain.tile_animations());
-        log::info!(
-            "Spawned {} terrain-attached animations after map objects",
-            spawned.len()
-        );
-    }
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
         &sim,
         asset_manager,
@@ -841,9 +648,10 @@ mod retail_placement_oracle_tests;
 mod tests {
     use std::path::PathBuf;
 
+    use crate::sim::runtime::spawn_terrain_tile_animations;
     use super::{
         LoadedRules, compose_rules_layers, load_rules_with_merged_ini, scheduler_anim_roots,
-        spawn_terrain_tile_animations,
+        
     };
     use crate::assets::asset_manager::AssetManager;
     use crate::map::entities::EntityCategory;
