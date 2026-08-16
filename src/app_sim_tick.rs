@@ -1846,7 +1846,7 @@ pub(crate) fn upsert_occupied_overlay_render_entries(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
-    let synced = upsert_overlay_entries(&mut state.overlays, candidates);
+    let synced = state.overlays.upsert_occupied(candidates);
     if synced != 0 {
         log::trace!(
             "Synced {} occupied cells from OverlayGrid to state.overlays",

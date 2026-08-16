@@ -190,6 +190,8 @@ pub mod app_save_load_panel;
 // Developer overlay — egui panel with runtime knobs, diagnostics,
 // and save/load helpers. Toggled with backtick (`).
 pub mod app_dev_overlay;
+// Explicit presentation index over dynamic overlay cells (F08).
+pub mod app_overlay_index;
 // Source-level dependency guards for the domain-boundaries ledger.
 #[cfg(test)]
 mod architecture_guards;

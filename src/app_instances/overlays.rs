@@ -540,7 +540,7 @@ pub(crate) fn build_overlay_instances(
     // in the fixed cell overlay family, not the `LayerClass` object sort.
     let mut planned_cells = Vec::new();
     let mut next_draw_id = 0u64;
-    for entry in &state.overlays {
+    for entry in state.overlays.iter() {
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, entry.rx, entry.ry) {
                 continue;

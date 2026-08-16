@@ -98,7 +98,7 @@ impl SimRuntime {
     /// the bound immutable resources. Callers cannot substitute rules, maps,
     /// registries, definitions, or navigation (the simulation pins its own
     /// canonical path snapshot internally).
-    pub fn advance_frame(
+    pub(crate) fn advance_frame(
         &mut self,
         commands: &[crate::sim::command::CommandEnvelope],
         tick_ms: u32,

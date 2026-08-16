@@ -377,7 +377,7 @@ impl App {
             overlay_atlas: None,
             bridge_atlas: None,
             bridge_railing_atlas: None,
-            overlays: Vec::new(),
+            overlays: Default::default(),
             terrain_objects: Vec::new(),
             waypoints: HashMap::new(),
             cell_tags: HashMap::new(),

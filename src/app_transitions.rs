@@ -180,7 +180,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.has_radar = false;
 
     state.software_cursor = result.software_cursor;
-    state.overlays = result.overlays;
+    state.overlays.replace_from_source(result.overlays);
     state.terrain_objects = result.terrain_objects;
     state.waypoints = result.waypoints;
     state.cell_tags = result.cell_tags;
@@ -286,7 +286,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             u8,
             Option<[u8; 4]>,
         )> = build_minimap_overlay_data(
-            &state.overlays,
+            state.overlays.as_slice(),
             &state.terrain_objects,
             &state.overlay_names,
             state.rules(),

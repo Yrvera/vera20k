@@ -9,7 +9,7 @@ use super::{
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
     EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
-    MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayEntry, OverlayTypeRegistry,
+    MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayTypeRegistry,
     RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
     SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, SkirmishSettings,
@@ -51,7 +51,7 @@ pub(crate) struct AppState {
     pub(crate) bridge_atlas: Option<BridgeAtlas>,
     pub(crate) bridge_railing_atlas: Option<BridgeRailingAtlas>,
     /// Overlay entries from map for per-frame instance generation.
-    pub(crate) overlays: Vec<OverlayEntry>,
+    pub(crate) overlays: crate::app_overlay_index::OverlayRenderIndex,
     /// Terrain objects from map for per-frame instance generation.
     pub(crate) terrain_objects: Vec<TerrainObject>,
     pub(crate) waypoints: HashMap<u32, Waypoint>,

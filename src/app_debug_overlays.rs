@@ -272,7 +272,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
 
     // Overlay cells — re-compute iso_to_screen for each overlay entry so the
     // diamond outline uses the exact same formula as overlay rendering.
-    for entry in &state.overlays {
+    for entry in state.overlays.iter() {
         let z: u8 = state
             .height_map()
             .get(&(entry.rx, entry.ry))
