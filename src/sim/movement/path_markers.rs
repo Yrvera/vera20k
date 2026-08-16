@@ -476,7 +476,7 @@ pub(super) fn build_bridge_passability_search(
         .map_or(u16::from(mover.facing) << 8, |facing| {
             facing.current(native_frame)
         });
-    let direction = crate::sim::substrate::direction_tables::quantize::dir_from_facing16(facing);
+    let direction = crate::util::direction_tables::quantize::dir_from_facing16(facing);
     let current = (mover.current_cell.0 as i16, mover.current_cell.1 as i16);
     let probe = signed_cell_add(current, DIRECTION_DELTAS[direction as usize]);
     let current_level = signed_ground_level(grid, current);

@@ -38,8 +38,6 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 /// disappears from the source must also be deleted here, so the ratchet
 /// tightens monotonically.
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
-    // F05: pure direction tables move to util::direction_tables.
-    ("util/fixed_math.rs", "sim"),
     // F05: bridge facts / fixed cell indexing / passability move downward.
     ("map/resolved_terrain.rs", "sim"),
     ("map/theater.rs", "sim"),

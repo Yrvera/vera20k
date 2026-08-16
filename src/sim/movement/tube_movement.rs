@@ -719,7 +719,7 @@ fn advance_amount(
     z_step: i32,
     trig: &TrigTable,
 ) -> DriveCoord {
-    let facing = crate::sim::substrate::direction_tables::facing16_from_delta(
+    let facing = crate::util::direction_tables::facing16_from_delta(
         target.x.wrapping_sub(base.x),
         target.y.wrapping_sub(base.y),
     );

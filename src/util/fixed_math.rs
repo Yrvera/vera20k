@@ -277,7 +277,7 @@ pub fn isqrt_i64(val: i64) -> i64 {
 /// east and south are therefore 63 and 127; authored quarter-turn facings
 /// remain the exact table values 64 and 128.
 pub fn facing_from_delta_int(dx: i32, dy: i32) -> u8 {
-    crate::sim::substrate::direction_tables::facing8_from_delta(dx, dy)
+    crate::util::direction_tables::facing8_from_delta(dx, dy)
 }
 
 /// Full-word facing from a screen-relative coordinate delta.
@@ -285,7 +285,7 @@ pub fn facing_from_delta_int(dx: i32, dy: i32) -> u8 {
 /// This preserves the native lookup, float-store, quadrant, and 65,534-scale
 /// boundaries used before a value enters `FacingClass`.
 pub fn facing_from_delta_int_u16(dx: i32, dy: i32) -> u16 {
-    crate::sim::substrate::direction_tables::facing16_from_delta(dx, dy)
+    crate::util::direction_tables::facing16_from_delta(dx, dy)
 }
 
 /// Inverse of `facing_from_delta_int` for quantized 8-direction facings.
