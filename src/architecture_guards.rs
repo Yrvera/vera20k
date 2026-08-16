@@ -10,10 +10,12 @@
 //! appear here. `cfg(any(test, debug_assertions))` items are deliberately
 //! treated as production — they compile into debug builds.
 //!
-//! The `app` pseudo-root currently matches `crate::app::*`, root
-//! `crate::app_*` modules, and `crate::skirmish_scenarios`. F12 moves the
-//! remaining root app inventory under `src/app/`, after which `crate::app::`
-//! covers the whole layer and F14 adds the no-root-`app_*` guard.
+//! The `app` pseudo-root matches `crate::app::*`, bare `crate::app` imports,
+//! and root `crate::app_*` modules; the ui rules additionally keep the retired
+//! `skirmish_scenarios` root forbidden so it cannot be recreated. F12 moves
+//! the remaining root app inventory under `src/app/`, after which
+//! `crate::app::` covers the whole layer and F14 adds the no-root-`app_*`
+//! guard.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -26,7 +28,7 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
     ("assets", &["sim", "rules", "map", "render", "sidebar", "ui", "app"]),
     ("util", &["sim", "rules", "map", "render", "sidebar", "ui", "app"]),
     ("rules", &["sim", "map"]),
-    ("map", &["sim", "render"]),
+    ("map", &["sim", "render", "app"]),
     ("render", &["app"]),
     ("sidebar", &["app"]),
     ("ui", &["app", "skirmish_scenarios"]),
@@ -314,7 +316,9 @@ fn contains_crate_ref(text: &str, root: &str) -> bool {
         };
         let next = bytes.get(end).copied();
         let boundary_ok = match root {
-            "app" => matches!(next, Some(b':' | b'_')),
+            // ':' = crate::app::X, '_' = root app_* modules, ';'/' '/','/')' =
+            // bare module imports (`use crate::app;`, `use crate::app as x;`).
+            "app" => matches!(next, Some(b':' | b'_' | b';' | b' ' | b',' | b')') | None),
             _ => !matches!(next, Some(c) if c.is_ascii_alphanumeric() || c == b'_'),
         };
         if prev_ok && boundary_ok {
@@ -384,7 +388,12 @@ fn segment_is_root(segment: &str, root: &str) -> bool {
         return false;
     };
     match root {
-        "app" => rest.is_empty() || rest.starts_with(':') || rest.starts_with('_'),
+        "app" => {
+            rest.is_empty()
+                || rest.starts_with(':')
+                || rest.starts_with('_')
+                || rest.starts_with(' ')
+        }
         _ => rest.is_empty() || rest.starts_with(':') || rest.starts_with(' '),
     }
 }
@@ -405,4 +414,14 @@ fn brace_grouped_imports_cannot_evade_the_scan() {
 
     let renamed = "use crate::{sim as s};\n";
     assert!(group_contains_root(renamed, "sim"));
+}
+
+#[test]
+fn bare_and_aliased_app_imports_cannot_evade_the_scan() {
+    assert!(contains_crate_ref("use crate::app;\n", "app"));
+    assert!(contains_crate_ref("use crate::app as shell;\n", "app"));
+    assert!(contains_crate_ref("use crate::app::AppState;\n", "app"));
+    assert!(!contains_crate_ref("use crate::apple::pie;\n", "app"));
+    assert!(group_contains_root("use crate::{app as a, ui::x};\n", "app"));
+    assert!(!group_contains_root("use crate::{apple, ui::x};\n", "app"));
 }

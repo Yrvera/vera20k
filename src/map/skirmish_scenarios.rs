@@ -68,7 +68,7 @@ impl SkirmishScenarioRecord {
         file_name: &str,
         ini: &IniFile,
     ) -> Self {
-        let entry = crate::app_list_maps::read_map_menu_entry_from_ini(ini, file_name);
+        let entry = crate::map::scenario_menu::read_map_menu_entry_from_ini(ini, file_name);
         let basic = ini.section("Basic");
         Self {
             source_ordinal,

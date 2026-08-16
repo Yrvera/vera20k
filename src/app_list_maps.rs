@@ -13,11 +13,8 @@ use crate::assets::csf_file::CsfFile;
 use crate::assets::mix_archive::MixArchive;
 use crate::map::briefing::BriefingSection;
 use crate::map::map_file::{self, MapFile};
-use crate::map::preview::{PreviewSection, PreviewSourceBounds, PreviewStartPoint};
-use crate::map::waypoints::{
-    DEFAULT_SKIRMISH_PLAYER_CAPACITY, multiplayer_start_waypoints, parse_waypoints,
-    skirmish_player_capacity,
-};
+use crate::map::preview::PreviewSection;
+use crate::map::waypoints::DEFAULT_SKIRMISH_PLAYER_CAPACITY;
 use crate::rules::ini_parser::IniFile;
 use crate::map::skirmish_scenarios::{
     PktEntryFields, SkirmishScenarioRecord, SkirmishScenarioSource, parse_game_mode_list,
@@ -467,62 +464,10 @@ pub(crate) fn read_map_menu_entry(path: &Path, file_name: &str) -> MapMenuEntry 
     read_map_menu_entry_from_ini(&ini, file_name)
 }
 
-pub(crate) fn read_map_menu_entry_from_ini(ini: &IniFile, file_name: &str) -> MapMenuEntry {
-    let basic = crate::map::basic::parse_basic_section(ini);
-    let display_name = basic
-        .name
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| file_name.to_string());
+// The INI -> entry parser is map-owned (F06 critic fix); re-exported here for
+// the app map-listing callers.
+pub(crate) use crate::map::scenario_menu::read_map_menu_entry_from_ini;
 
-    MapMenuEntry {
-        file_name: file_name.to_string(),
-        display_name,
-        author: basic.author,
-        briefing: crate::map::briefing::parse_briefing_section(&ini),
-        preview: crate::map::preview::parse_preview_section(&ini),
-        multiplayer_start_waypoints: multiplayer_start_waypoints(&parse_waypoints(ini)),
-        player_capacity: skirmish_player_capacity(ini),
-        preview_source_bounds: preview_source_bounds_from_verified_source(ini),
-    }
-}
-
-fn preview_source_bounds_from_verified_source(ini: &IniFile) -> Option<PreviewSourceBounds> {
-    let header = ini.section("Header")?;
-    let origin_x = header.get_i32("StartX")?;
-    let origin_y = header.get_i32("StartY")?;
-    let width = header.get_i32("Width")?;
-    let height = header.get_i32("Height")?;
-    let count = header.get_i32("NumberStartingPoints")?;
-
-    if width <= 0 || height <= 0 || count <= 0 || count >= 9 {
-        return None;
-    }
-
-    let start_points = (1..=count)
-        .map(|idx| {
-            header
-                .get(&format!("Waypoint{idx}"))
-                .and_then(parse_preview_start_point)
-                .unwrap_or(PreviewStartPoint { x: 0, y: 0 })
-        })
-        .collect();
-
-    Some(PreviewSourceBounds {
-        origin_x,
-        origin_y,
-        width: width as u32,
-        height: height as u32,
-        start_points,
-    })
-}
-
-fn parse_preview_start_point(value: &str) -> Option<PreviewStartPoint> {
-    let mut parts = value.split(',').map(str::trim);
-    let x = parts.next()?.parse::<i32>().ok()?;
-    let y = parts.next()?.parse::<i32>().ok()?;
-    Some(PreviewStartPoint { x, y })
-}
 
 pub(crate) fn read_map_ini_for_metadata(path: &Path) -> Option<IniFile> {
     let bytes = std::fs::read(path).ok()?;
@@ -673,6 +618,7 @@ pub(crate) fn try_load_mmx(ra2_dir: &Path, names: &[&str]) -> Result<LoadedMap> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::preview::{PreviewSourceBounds, PreviewStartPoint};
     use crate::assets::mix_hash::mix_hash;
     use std::sync::atomic::{AtomicU64, Ordering};
 
