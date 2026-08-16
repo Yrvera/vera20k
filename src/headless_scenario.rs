@@ -5,12 +5,12 @@
 //! Depends on `assets`/`rules`/`map`/`sim` only; nothing here may reach into `render`,
 //! `ui`, `sidebar`, `audio` or `net`.
 //!
-//! **Scope.** This packages the *load* half of a match. Map-placed units and structures
-//! are not spawned: `app_init_helpers::spawn_entities` builds the sim and the voxel/SHP
-//! atlases in one pass and needs a `GpuContext`, so the sim half cannot be called from a
-//! headless binary until that function is split. Houses are likewise a launch-session
-//! concern, not a load concern. A scenario loaded here therefore has real terrain, real
-//! ore, real rules and a pinned RNG — and no combatants.
+//! **Scope.** Construction goes through the same GPU-free funnel the app uses
+//! (`sim::runtime::construct_scenario`): map-roster houses are created before objects,
+//! terrain objects before map entities, and map-placed units/structures spawn with
+//! terrain-attached animations. What a headless scenario still lacks versus an app
+//! launch is the launch *session* — skirmish player houses, start-position placement,
+//! and atlas-derived voxel animation frame counts (a GPU concern).
 //!
 //! The seed contract mirrors the original engine: one 32-bit word seeds the scenario and
 //! main streams identically, fixed before any setup-phase draw.
@@ -164,35 +164,38 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         ),
     };
 
-    let mut sim = Simulation::from_descriptor(&descriptor);
-    sim.terrain_speed_config =
-        crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::from_general(
-            rules.general.tracked_uphill,
-            rules.general.tracked_downhill,
-            rules.general.wheeled_uphill,
-            rules.general.wheeled_downhill,
-        );
-    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
-        base: map.header.width as i32,
-        off_fc: map.header.local_left as i32,
-        off_100: map.header.local_top as i32,
-        off_104: map.header.local_width as i32,
-        off_108: map.header.local_height as i32,
-    });
-
-    sim.resolved_terrain = Some(resolved);
-    sim.overlay_grid = Some(overlay_grid);
-    crate::sim::terrain_spawn::construct_terrain_objects(
-        &mut sim,
-        &map.terrain_objects,
-        &rules,
-        map.header.theater.eq_ignore_ascii_case("SNOW"),
+    // F09: the same GPU-free construction funnel the app uses — bootstrap
+    // RNG, map-roster houses before objects, terrain objects before map
+    // entities, entity spawn, and terrain-attached animations — then the
+    // app's exact post-funnel order: spawner seed, overlay grid, post-map.
+    // A parity run stands in for a stock skirmish load with bridges
+    // destructible, the retail skirmish default.
+    let mut sim = crate::sim::runtime::construct_scenario(
+        &map,
+        &resolved,
+        &map.header.theater,
+        Some(&rules),
+        Some(&rules.art_registry),
+        &height_map,
+        crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+            bridge_destruction: true,
+        },
+        &descriptor,
+        crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed),
+        |sim| {
+            crate::sim::scenario_bootstrap::initialize_map_roster_houses(
+                sim,
+                &house_roster,
+                Some(&rules),
+            );
+        },
     );
     crate::sim::terrain_spawn::seed_terrain_spawner_animation(
         &mut sim,
         &rules,
         &overlay_registry,
     );
+    sim.overlay_grid = Some(overlay_grid);
     let post_map = sim.finalize_scenario_post_map(
         crate::sim::scenario_post_map::ScenarioPostMapInput {
             map_width: map.header.width as u16,
@@ -212,9 +215,9 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         return Err("headless post-map navigation is unavailable".to_string());
     }
     // The production-side resource-node index is deliberately not seeded: its helper is
-    // `#[cfg(test)]`-gated, and nothing reads that index without miners, which this
-    // scenario has none of. Ore is still present as map overlays. Seed it here when unit
-    // spawning lands.
+    // `#[cfg(test)]`-gated. Map-placed entities now spawn, so a map that pre-places a
+    // miner would find no node index — a documented residual until the helper is
+    // promoted out of test gating. Ore is still present as map overlays.
 
     Ok(HeadlessScenario {
         runtime: crate::sim::runtime::SimRuntime {

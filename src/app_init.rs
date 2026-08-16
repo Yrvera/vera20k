@@ -24,7 +24,7 @@ use crate::app_skirmish::{
     seed_skirmish_opening_if_needed,
 };
 use crate::match_bootstrap::LoadingStartup;
-use crate::sim::scenario_bootstrap::{
+use crate::sim::scenario_bootstrap::{initialize_map_roster_houses, 
     PreloadedBattleStartPlan, ScenarioBootstrapRng, apply_explicit_skirmish_launch_session,
     apply_preloaded_battle_launch_session, initialize_skirmish_launch_houses,
 };
@@ -1273,55 +1273,6 @@ pub(crate) fn load_map_initial_with_assets(
     })
 }
 
-fn initialize_map_roster_houses(
-    sim: &mut Simulation,
-    house_roster: &HouseRoster,
-    rules: Option<&RuleSet>,
-) {
-    assert!(
-        sim.houses.is_empty()
-            && sim.session.house_order.is_empty()
-            && sim.entities().is_empty()
-            && sim.production.terrain_objects.is_empty(),
-        "scenario houses must be initialized before map objects"
-    );
-    for house in &house_roster.houses {
-        let fallback_side = crate::sim::house_state::side_index_from_name(house.side.as_deref());
-        let side_idx = rules.map_or(fallback_side, |rules| {
-            crate::sim::house_state::resolve_house_side_index(
-                rules,
-                house.country.as_deref(),
-                house.side.as_deref(),
-                fallback_side,
-            )
-        });
-        let player_control = house.player_control == Some(true);
-        let name_id = sim.interner.intern(&house.name);
-        let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
-        let mut house_state = crate::sim::house_state::HouseState::new(
-            name_id,
-            side_idx,
-            country_id,
-            false,
-            sim.session.game_options.starting_credits,
-            sim.session.game_options.tech_level,
-        );
-        house_state.player_control = player_control;
-        // HouseClass::Read_Scenario_INI reads `IQ=` from this exact named
-        // house section, defaults it to zero, and changes a value above
-        // MaxIQLevels to literal one before storing CurrentIQ (+0x24C).
-        house_state.current_iq = rules.map_or_else(
-            || house.iq.unwrap_or(0),
-            |rules| house.scenario_current_iq(rules.general.max_iq_levels),
-        );
-        // MultiplayPassive lives on the country/house type. A roster section
-        // with no `Country=` resolves through `[Countries]` entry zero.
-        house_state.multiplay_passive =
-            crate::sim::house_state::resolve_multiplay_passive(rules, house.country.as_deref());
-        sim.houses.insert(name_id, house_state);
-        sim.session.house_order.push(name_id);
-    }
-}
 
 pub(crate) fn load_map_from_initial(
     gpu: &GpuContext,
