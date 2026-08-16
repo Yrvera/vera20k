@@ -110,6 +110,9 @@ pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> b
 /// Bridge vertical clearance in leptons.
 /// 416 == 104 * 4 — the verified Foot-role Z distance from water surface to bridge deck.
 /// Added to braking distance when a ship passes under a bridge cell.
+/// Same physical fact as `sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS`
+/// (a `SimFixed` literal cannot be const-derived from it; the equality is
+/// pinned by `bridge_z_offset_matches_deck_height` below).
 pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("416");
 
 /// The on_bridge cell-flag predicate at a cell-boundary crossing.
@@ -729,5 +732,20 @@ mod tests {
         );
         assert!(!on_b);
         assert!(occ.is_none());
+    }
+}
+
+#[cfg(test)]
+mod bridge_constant_tests {
+    use super::*;
+
+    /// Ship braking clearance and the deck snap height are the same physical
+    /// fact; if `LEPTONS_PER_LEVEL` is ever corrected, both must move.
+    #[test]
+    fn bridge_z_offset_matches_deck_height() {
+        assert_eq!(
+            BRIDGE_Z_OFFSET,
+            SimFixed::from_num(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
+        );
     }
 }

@@ -406,22 +406,7 @@ fn build_score_screen_model(
 }
 
 fn anim_world_sound_screen(world: crate::sim::anim_class::AnimWorldCoord) -> (f32, f32) {
-    const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
-    const HEIGHT_LEVEL_LEPTONS: i32 = 128;
-    let rx = world
-        .x
-        .div_euclid(CELL_LEPTONS)
-        .clamp(0, i32::from(u16::MAX)) as u16;
-    let ry = world
-        .y
-        .div_euclid(CELL_LEPTONS)
-        .clamp(0, i32::from(u16::MAX)) as u16;
-    let sub_x = crate::util::fixed_math::SimFixed::from_num(world.x.rem_euclid(CELL_LEPTONS));
-    let sub_y = crate::util::fixed_math::SimFixed::from_num(world.y.rem_euclid(CELL_LEPTONS));
-    let z = world
-        .z
-        .div_euclid(HEIGHT_LEVEL_LEPTONS)
-        .clamp(0, i32::from(u8::MAX)) as u8;
+    let (rx, ry, sub_x, sub_y, z) = world.to_cell_sub_z();
     crate::util::lepton::lepton_to_screen(rx, ry, sub_x, sub_y, z)
 }
 

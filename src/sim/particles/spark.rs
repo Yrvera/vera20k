@@ -12,8 +12,10 @@ use crate::util::native_x87::{
     NativeF32Bits, NativeF64Bits, NativeX87Error, X87Chop53, X87Ordering, X87Value,
 };
 
-// Spark collision's verified structural-bridge role; keep independently named.
-const STRUCTURAL_BRIDGE_HEIGHT: i32 = 416;
+// Spark collision's verified structural-bridge role; keep independently named
+// (same retail value as `sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS`;
+// see the separation notes there and at `util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS`).
+const STRUCTURAL_BRIDGE_HEIGHT: i32 = crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 const ASCENDING_BRIDGE_DELETE_OFFSET: i32 = 20;
 const GROUND_CLAMP_DEPTH: i32 = 100;
 const BUILDING_CONTACT_HEIGHT_F32: NativeF32Bits = NativeF32Bits::from_bits(0x4316_0000);

@@ -30,6 +30,42 @@ pub struct AnimWorldCoord {
     pub z: i32,
 }
 
+impl AnimWorldCoord {
+    /// Decompose the absolute lepton coordinate into the (cell, sub-cell,
+    /// height-level) tuple the app projection consumes. The single owner of
+    /// the decomposition and of the anim Z scale
+    /// (`ANIM_HEIGHT_LEVEL_LEPTONS`): the anim sound path and the anim
+    /// sprite path must decompose identically or a sound drifts away from
+    /// its sprite.
+    pub(crate) fn to_cell_sub_z(
+        &self,
+    ) -> (
+        u16,
+        u16,
+        crate::util::fixed_math::SimFixed,
+        crate::util::fixed_math::SimFixed,
+        u8,
+    ) {
+        let rx = self
+            .x
+            .div_euclid(LEPTONS_PER_CELL)
+            .clamp(0, i32::from(u16::MAX)) as u16;
+        let ry = self
+            .y
+            .div_euclid(LEPTONS_PER_CELL)
+            .clamp(0, i32::from(u16::MAX)) as u16;
+        let sub_x =
+            crate::util::fixed_math::SimFixed::from_num(self.x.rem_euclid(LEPTONS_PER_CELL));
+        let sub_y =
+            crate::util::fixed_math::SimFixed::from_num(self.y.rem_euclid(LEPTONS_PER_CELL));
+        let z = self
+            .z
+            .div_euclid(ANIM_HEIGHT_LEVEL_LEPTONS)
+            .clamp(0, i32::from(u8::MAX)) as u8;
+        (rx, ry, sub_x, sub_y, z)
+    }
+}
+
 const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const ANIM_HEIGHT_LEVEL_LEPTONS: i32 = 128;
 const TRAILER_DRAW_FLAGS: u32 = 0x600;

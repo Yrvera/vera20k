@@ -42,7 +42,7 @@ const UNIT_FACING_STEP: u8 = 8;
 ///
 /// `u16` for arithmetic headroom against the step; `bucket * step` stays below 256, so
 /// the facing derived from a bucket is still a byte.
-const UNIT_FACING_BUCKETS: u16 = 32;
+const UNIT_FACING_BUCKETS: u16 = crate::render::vxl_raster::VOXEL_FACING_STEPS as u16;
 /// Turret/barrel facing quantization step: 8 = 32 buckets (11.25° per bucket).
 ///
 /// Turret and barrel matrices go through the same 5-bit facing quantization as the
@@ -50,7 +50,7 @@ const UNIT_FACING_BUCKETS: u16 = 32;
 /// simulation rotates them.
 const TURRET_FACING_STEP: u8 = 8;
 /// Number of pre-rendered facing directions for turret/barrel sprites.
-const TURRET_FACING_BUCKETS: u16 = 32;
+const TURRET_FACING_BUCKETS: u16 = crate::render::vxl_raster::VOXEL_FACING_STEPS as u16;
 
 // VxlLayer lives in sim::components — re-exported here for convenience.
 pub use crate::sim::components::VxlLayer;
