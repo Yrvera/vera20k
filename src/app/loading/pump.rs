@@ -557,7 +557,7 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
     clear_loading_state(state);
     let mut session = LoadingSession::from_request(request);
     session.job.ra2_dir = state
-        .game_config
+        .platform.game_config
         .as_ref()
         .map(|config| config.paths.ra2_dir.clone());
     // Retail has one process-global MIX list and LoadFileFromMIX cache. Lease
@@ -807,7 +807,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
-                        &mut state.tile_variant_selector_cache,
+                        &mut state.process_assets.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -829,7 +829,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
                         state.renderer.vxl_compute.as_mut(),
-                        &mut state.tile_variant_selector_cache,
+                        &mut state.process_assets.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
@@ -844,7 +844,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     false,
                     0,
                     state.renderer.vxl_compute.as_mut(),
-                    &mut state.tile_variant_selector_cache,
+                    &mut state.process_assets.tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
             };
@@ -899,7 +899,7 @@ fn ensure_session_job_asset_manager(
     if session.job.ra2_dir.is_none() {
         session.job.ra2_dir = Some(
             state
-                .game_config
+                .platform.game_config
                 .as_ref()
                 .map(|config| config.paths.ra2_dir.clone())
                 .ok_or_else(|| anyhow::anyhow!("missing game config for loading job assets"))?,
@@ -1105,7 +1105,7 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                 build_loading_composition(
                     initial.map_data(),
                     launch_session,
-                    state.csf.as_ref(),
+                    state.process_assets.csf.as_ref(),
                     render_size,
                     &assignments,
                 )
@@ -1122,7 +1122,7 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
                 );
                 build_random_map_loading_composition(
                     launch_session,
-                    state.csf.as_ref(),
+                    state.process_assets.csf.as_ref(),
                     render_size,
                     preview,
                     session

@@ -212,7 +212,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_presentation.last_lighting_view_fingerprint = None;
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
-    state.csf = result.presentation.csf;
+    state.process_assets.csf = result.presentation.csf;
     state.match_presentation.theater_name = result.scenario.theater_name;
     state.match_presentation.theater_ext = result.scenario.theater_ext;
 

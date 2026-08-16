@@ -32,7 +32,7 @@ use super::{
 
 pub(super) fn localized_label(state: &AppState, key: &str, fallback: &str) -> String {
     state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| csf.text(key).into_owned())
         .unwrap_or_else(|| fallback.to_string())

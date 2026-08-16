@@ -106,7 +106,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
     };
 
     // Resolve CSF display names (e.g., "Name:MTNK" → "Grizzly Battle Tank").
-    if let Some(csf) = &state.csf {
+    if let Some(csf) = &state.process_assets.csf {
         for opt in &mut build_options {
             opt.display_name = resolve_csf_name(csf, &opt.display_name);
         }

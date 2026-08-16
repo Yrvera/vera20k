@@ -100,7 +100,7 @@ fn tip_rect(r: crate::sidebar::Rect) -> TipRect {
 
 fn csf_text(state: &AppState, key: &str) -> String {
     state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| csf.text(key).into_owned())
         .unwrap_or_default()
@@ -155,7 +155,7 @@ fn sync_in_game_regions(state: &mut AppState) {
     // sidebar gadget ids, and registration order decides the hit here.
     let power_rect = crate::sidebar::power_bar_rect(&view.layout, state.match_presentation.sidebar_layout_spec);
     let power_text = state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| {
             format_csf(
@@ -219,16 +219,16 @@ fn sync_in_game_regions(state: &mut AppState) {
                 .as_deref()
                 .and_then(|section| state.rules()?.super_weapon(section))
                 .and_then(|sw| sw.ui_name.as_deref())
-                .and_then(|key| state.csf.as_ref().map(|csf| csf.text(key).into_owned()))
+                .and_then(|key| state.process_assets.csf.as_ref().map(|csf| csf.text(key).into_owned()))
                 .unwrap_or_else(|| item.display_name.clone())
         } else {
             let name = state.rules()
                 .and_then(|r| r.object(&item.type_id))
                 .and_then(|o| o.ui_name.as_deref())
-                .and_then(|key| state.csf.as_ref().map(|csf| csf.text(key).into_owned()))
+                .and_then(|key| state.process_assets.csf.as_ref().map(|csf| csf.text(key).into_owned()))
                 .unwrap_or_else(|| item.display_name.clone());
             let money_format = state
-                .csf
+                .process_assets.csf
                 .as_ref()
                 .map(|csf| csf.text(CAMEO_TIP_MONEY_FORMAT));
             cameo_tip_text(money_format.as_deref(), &name, item.cost)

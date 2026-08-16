@@ -364,14 +364,11 @@ impl App {
             map_basic: BasicSection::default(),
             sim_runtime: None,
             match_diagnostics: Default::default(),
-            game_config,
-            tile_variant_selector_cache: Default::default(),
             scenario_outcome: None,
             scenario_exit: None,
             loaded_map_source: None,
             loaded_map_hash: None,
-            csf: startup_csf,
-            platform: PlatformState::new(window),
+            platform: PlatformState::new(window, game_config),
             frontend: crate::app::frontend::state::FrontendState {
             screen: GameScreen::default(),
             available_maps,
@@ -551,6 +548,7 @@ impl App {
             sandbox_full_visibility: false,
             process_assets: crate::app::process_assets::ProcessAssets::from_startup(
                 startup_asset_manager,
+                startup_csf,
             ),
             audio: crate::app::audio_runtime::AppAudioRuntime {
                 music_player: startup_audio
@@ -605,7 +603,7 @@ impl App {
         // file/section/key is absent. Matches the original reading this at boot.
         if let Some(player) = state.audio.music_player.as_mut() {
             let saved_volume = state
-                .game_config
+                .platform.game_config
                 .as_ref()
                 .and_then(|config| {
                     crate::audio::music::read_score_volume_from_ra2md(&config.paths.ra2_dir)

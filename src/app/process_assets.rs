@@ -22,13 +22,25 @@ use crate::assets::asset_manager::AssetManager;
 pub(crate) struct ProcessAssets {
     manager: Option<AssetManager>,
     leased: bool,
+    /// CSF string table — localized display names for units, buildings, UI
+    /// text. Loaded once at startup from the retail archives; process-wide.
+    pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
+    /// Process-persistent terrain-load cache. Scenario teardown, failed
+    /// loads, reseeds, and save transitions must not clear it.
+    pub(crate) tile_variant_selector_cache:
+        crate::map::tile_variant_selector::TileVariantSelectorCache,
 }
 
 impl ProcessAssets {
-    pub(crate) fn from_startup(manager: Option<AssetManager>) -> Self {
+    pub(crate) fn from_startup(
+        manager: Option<AssetManager>,
+        csf: Option<crate::assets::csf_file::CsfFile>,
+    ) -> Self {
         Self {
             manager,
             leased: false,
+            csf,
+            tile_variant_selector_cache: Default::default(),
         }
     }
 
@@ -41,6 +53,18 @@ impl ProcessAssets {
     /// activation (the random-map dialog) mutates through this.
     pub(crate) fn manager_mut(&mut self) -> Option<&mut AssetManager> {
         self.manager.as_mut()
+    }
+
+    /// Field-level split borrow: the resident manager and the terrain-variant
+    /// cache live on the same owner, and the RMG preview path needs both at
+    /// once.
+    pub(crate) fn manager_mut_with_tile_cache(
+        &mut self,
+    ) -> (
+        Option<&mut AssetManager>,
+        &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
+    ) {
+        (self.manager.as_mut(), &mut self.tile_variant_selector_cache)
     }
 
     pub(crate) fn is_available(&self) -> bool {
@@ -107,12 +131,12 @@ mod tests {
     #[test]
     fn asset_manager_lease_returns_on_success_failure_and_cancel() {
         // Absent slot: nothing to lease, nothing available.
-        let mut absent = ProcessAssets::from_startup(None);
+        let mut absent = ProcessAssets::from_startup(None, None);
         assert!(!absent.is_available());
         assert!(absent.lease_for_loading().is_none());
 
         // Success-shaped cycle: lease out, manager comes home.
-        let mut assets = ProcessAssets::from_startup(Some(test_manager("cycle")));
+        let mut assets = ProcessAssets::from_startup(Some(test_manager("cycle")), None);
         assert!(assets.is_available());
         let leased = assets.lease_for_loading().expect("available manager leases");
         assert!(!assets.is_available(), "leased slot has no resident manager");

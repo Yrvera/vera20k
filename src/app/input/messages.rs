@@ -74,7 +74,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
     let measure = |s: &str| font.text_width(s) as i32;
     let outcome = add_type_select_feedback(
         &mut state.match_presentation.message_list,
-        state.csf.as_ref(),
+        state.process_assets.csf.as_ref(),
         csf_key,
         rgb,
         now,

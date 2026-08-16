@@ -33,16 +33,25 @@ pub(crate) struct PlatformState {
     pub(crate) frame_pacer_epoch: Instant,
     /// Local wall-clock admission state. Never serialized or read by the sim.
     pub(crate) frame_pacer: LocalFramePacer,
+    /// Loaded GameConfig — missing config.toml falls back to the executable
+    /// root; `None` only when config loading or executable-root discovery
+    /// fails. Set once at process start from `GameConfig::load()`; not
+    /// mutated afterwards.
+    pub(crate) game_config: Option<crate::util::config::GameConfig>,
 }
 
 impl PlatformState {
-    pub(crate) fn new(window: Arc<Window>) -> Self {
+    pub(crate) fn new(
+        window: Arc<Window>,
+        game_config: Option<crate::util::config::GameConfig>,
+    ) -> Self {
         Self {
             window,
             window_active: true,
             window_hidden: false,
             frame_pacer_epoch: Instant::now(),
             frame_pacer: LocalFramePacer::new(),
+            game_config,
         }
     }
 }

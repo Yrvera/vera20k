@@ -667,7 +667,7 @@ impl App {
 
     fn localized_status_help_text(state: &AppState, key: &str) -> String {
         state
-            .csf
+            .process_assets.csf
             .as_ref()
             .map(|csf| csf.text(key).into_owned())
             .unwrap_or_default()

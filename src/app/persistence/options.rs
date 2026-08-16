@@ -107,7 +107,7 @@ pub(crate) fn persist_in_game_options(state: &AppState, result: i32) {
     if !ModalResult::InGameOptions(result).options_persists() {
         return;
     }
-    let Some(config) = state.game_config.as_ref() else {
+    let Some(config) = state.platform.game_config.as_ref() else {
         return;
     };
     let path = config.paths.ra2_dir.join(RA2MD_INI_FILENAME);

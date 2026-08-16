@@ -56,7 +56,7 @@ pub(crate) enum ScoreShellRenderResult {
 }
 
 fn resolve_csf<'a>(state: &'a AppState, key: &str) -> std::borrow::Cow<'a, str> {
-    match state.csf.as_ref() {
+    match state.process_assets.csf.as_ref() {
         Some(csf) => csf.text(key),
         None => std::borrow::Cow::Owned(key.to_string()),
     }

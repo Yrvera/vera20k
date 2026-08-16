@@ -556,7 +556,7 @@ impl App {
     /// sections are added as the engine grows to model them. A write failure is
     /// logged, never fatal — a quit must not be blocked by a settings error.
     pub(super) fn persist_settings_on_quit(state: &AppState) {
-        let Some(config) = state.game_config.as_ref() else {
+        let Some(config) = state.platform.game_config.as_ref() else {
             return;
         };
         let Some(player) = state.audio.music_player.as_ref() else {

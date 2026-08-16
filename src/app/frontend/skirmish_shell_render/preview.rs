@@ -257,7 +257,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
     }
 
     let ra2_dir = state
-        .game_config
+        .platform.game_config
         .as_ref()
         .map(|config| config.paths.ra2_dir.as_path())
         .or_else(|| state.process_assets.manager().map(|assets| assets.ra2_dir()));

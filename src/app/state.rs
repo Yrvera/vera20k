@@ -43,16 +43,6 @@ pub(crate) struct AppState {
     /// App-owned diagnostic recording (F10) — never inside the simulation, so
     /// no load/install path can silently drop an unflushed segment.
     pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
-    /// Loaded GameConfig — missing config.toml falls back to the executable root;
-    /// None only when config loading or executable-root discovery fails.
-    /// Read at render time for cosmetic toggles (extra_animations) and other
-    /// per-session user preferences. Set in AppState::new() from the existing
-    /// GameConfig::load() call; not mutated afterwards.
-    pub(crate) game_config: Option<GameConfig>,
-    /// Process-persistent terrain-load cache. Scenario teardown, failed loads,
-    /// reseeds, and save transitions must not clear it.
-    pub(crate) tile_variant_selector_cache:
-        crate::map::tile_variant_selector::TileVariantSelectorCache,
     /// App-owned wall-clock outcome-EVA drain. The deterministic accepted
     /// result and SavourDelay target live in serialized `HouseState`.
     pub(crate) scenario_outcome: Option<crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait>,
@@ -60,8 +50,6 @@ pub(crate) struct AppState {
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
     pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
-    /// CSF string table — localized display names for units, buildings, UI text.
-    pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Match elapsed wall time for the retail score screen. App-local and never
     /// serialized, hashed, or read by deterministic simulation.
     pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,

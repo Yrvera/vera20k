@@ -447,7 +447,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
     // Cosmetic toggle — default to ON when config failed to load, matching
     // gamemd's default.
     let enable_extra_animations = state
-        .game_config
+        .platform.game_config
         .as_ref()
         .map_or(true, |c| c.graphics.extra_animations);
 
@@ -787,14 +787,14 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         .unwrap_or_default();
 
     let ready_text = state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| csf.text("TXT_READY"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("Ready"));
     // gamemd's strip draw pairs TXT_READY with TXT_HOLD ("On Hold"), shown on
     // the same cameo slot when production is suspended.
     let hold_text = state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| csf.text("TXT_HOLD"))
         .unwrap_or_else(|| std::borrow::Cow::Borrowed("On Hold"));

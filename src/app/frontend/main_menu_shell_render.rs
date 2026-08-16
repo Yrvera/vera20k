@@ -159,7 +159,7 @@ fn main_menu_paint_buttons(
 
 fn resolve_csf<'a>(state: &'a AppState, key: &'static str) -> std::borrow::Cow<'a, str> {
     state
-        .csf
+        .process_assets.csf
         .as_ref()
         .map(|csf| csf.text(key))
         .unwrap_or(std::borrow::Cow::Borrowed(key))

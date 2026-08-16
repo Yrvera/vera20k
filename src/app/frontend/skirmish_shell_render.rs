@@ -502,7 +502,7 @@ fn render_in_game_options_overlay_with_atlas(
     // atlas), so they ride their own buffer + draw call below.
     let mut text_instances = in_game_options::build_in_game_options_text_instances(
         &state.renderer.bit_font,
-        state.csf.as_ref(),
+        state.process_assets.csf.as_ref(),
         screen_w,
         screen_h,
         anchor,

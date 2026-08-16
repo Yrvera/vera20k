@@ -143,7 +143,8 @@ impl App {
         // A second Generate makes the previous dialog result stale immediately,
         // even when setup cannot progress far enough to spawn the worker.
         state.frontend.random_map_retention.begin_generation();
-        let Some(asset_manager) = state.process_assets.manager_mut() else {
+        let (manager, tile_cache) = state.process_assets.manager_mut_with_tile_cache();
+        let Some(asset_manager) = manager else {
             return false;
         };
         let settings = crate::map::rmg::RmgSettings::load(asset_manager);
@@ -154,12 +155,10 @@ impl App {
         };
         // Stock RMG preview publishes its resolved theater registry before the
         // later ordinary map load, even if generation subsequently fails.
-        state
-            .tile_variant_selector_cache
-            .complete_theater_registry_load(
-                theater.rmg_tiles.clear_tile,
-                theater.rmg_tiles.water_set,
-            );
+        tile_cache.complete_theater_registry_load(
+            theater.rmg_tiles.clear_tile,
+            theater.rmg_tiles.water_set,
+        );
         let terrain_rules = asset_manager
             .get_ref("rulesmd.ini")
             .and_then(|bytes| crate::rules::ini_parser::IniFile::from_bytes(bytes).ok())
@@ -390,8 +389,8 @@ impl App {
         // never sees.
         let resolved_terrain = {
             let frontend_main_rng = &mut state.frontend.frontend_main_rng;
-            let selector_cache = &mut state.tile_variant_selector_cache;
-            let asset_manager = state.process_assets.manager();
+            let (manager, selector_cache) = state.process_assets.manager_mut_with_tile_cache();
+            let asset_manager = manager.map(|m| &*m);
             let mut raw_draw = || frontend_main_rng.next_u32();
             let mut selector = selector_cache.begin_load(&mut raw_draw);
             // RMG InitMap supplies explicit Clear cells. Its preview never
@@ -460,7 +459,7 @@ impl App {
         preview: &crate::map::rmg::preview::PreviewImage,
     ) {
         let Some(ra2_dir) = state
-            .game_config
+            .platform.game_config
             .as_ref()
             .map(|config| config.paths.ra2_dir.clone())
         else {
@@ -498,7 +497,7 @@ impl App {
     /// own working file is written.
     fn saved_seed_dir(state: &AppState) -> Option<std::path::PathBuf> {
         state
-            .game_config
+            .platform.game_config
             .as_ref()
             .map(|config| config.paths.ra2_dir.clone())
     }
@@ -663,7 +662,7 @@ impl App {
         options: &crate::map::rmg::RmgOptions,
     ) -> anyhow::Result<()> {
         let ra2_dir = state
-            .game_config
+            .platform.game_config
             .as_ref()
             .map(|config| config.paths.ra2_dir.clone())
             .ok_or_else(|| anyhow::anyhow!("no game config; cannot locate the RA2 directory"))?;
@@ -831,7 +830,7 @@ impl App {
             .map(crate::map::rmg::RmgSettings::load)
             .unwrap_or_default();
         let description = state
-            .csf
+            .process_assets.csf
             .as_ref()
             .map(|csf| csf.text(RANDOM_MAP_DESCRIPTION_KEY).into_owned())
             .unwrap_or_else(|| RANDOM_MAP_DESCRIPTION_FALLBACK.to_string());

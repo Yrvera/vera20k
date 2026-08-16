@@ -171,7 +171,7 @@ impl TacticalCaptureSession {
         );
 
         let config = state
-            .game_config
+            .platform.game_config
             .as_ref()
             .context("tactical capture requires a loaded config.toml")?;
         ensure!(

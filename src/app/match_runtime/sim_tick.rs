@@ -355,7 +355,7 @@ fn build_score_screen_model(
                 .map(|rules| rules.country_display_name_sources(country))
                 .unwrap_or((None, None));
             let localized = ui_key
-                .zip(state.csf.as_ref())
+                .zip(state.process_assets.csf.as_ref())
                 .map(|(key, csf)| csf.text(key).into_owned())
                 .filter(|text| Some(text.as_str()) != ui_key);
             localized.or_else(|| plain.map(str::to_string))
