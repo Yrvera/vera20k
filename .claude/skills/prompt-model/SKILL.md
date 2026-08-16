@@ -10,6 +10,10 @@ Two modes:
 
 - **draft** — the user wants a prompt written or adapted for a named model.
   Produce the prompt text, applying the shared rules plus the model section.
+  End every draft with a one-line effort recommendation for this specific task,
+  picked from the target model's effort ladder and justified in a clause
+  (effort is a session/API setting, not prompt text — state it alongside the
+  prompt, e.g. "run at medium: routine mechanical fix, no deep search").
 - **audit** — the user names a file, skill, or prompt to check. Report findings
   (location, pattern, why it is outdated for the target model, proposed fix) and
   apply fixes only when asked.
