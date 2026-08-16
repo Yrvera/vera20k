@@ -33,7 +33,6 @@ pub(crate) struct AppState {
     pub(crate) input: crate::app::input::state::MatchInputState,
     /// Match presentation owner (F12), part 1: per-match atlases + cursor.
     pub(crate) match_presentation: crate::app::presentation::state::MatchPresentationState,
-    pub(crate) combat_lights: crate::app::presentation::combat_lights::CombatLightRuntime,
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
     pub(crate) loaded_map_source: Option<crate::app::frontend::list_maps::LoadedMapSource>,
@@ -148,17 +147,8 @@ pub(crate) struct AppState {
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
     pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
-    pub(crate) minimap: Option<MinimapRenderer>,
     /// True while left-dragging on minimap (camera pan mode).
     pub(crate) minimap_dragging: bool,
-    /// Animated radar chrome — plays 33-frame open/close animation when radar gained/lost.
-    pub(crate) radar_anim: Option<crate::render::radar_anim::RadarAnimState>,
-    /// Requested-versus-resolved atlas identity used to construct `radar_anim`.
-    ///
-    /// Kept beside the animation so tactical evidence never reconstructs
-    /// provenance from the currently selected sidebar theme.
-    pub(crate) radar_animation_source:
-        Option<crate::render::sidebar_chrome::ResolvedSidebarChromeIdentity>,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
     /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
@@ -184,19 +174,6 @@ pub(crate) struct AppState {
     /// Retained immutable sidebar view plus its per-owner animated credit state.
     /// Consumers read the snapshot; explicit transitions rebuild it.
     pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
-    /// Content insets [left, top, right, bottom] derived from the transparent opening
-    /// in radar.shp frame 0. Used to position the minimap inside the chrome housing.
-    /// Unscaled pixels — multiply by `ui_scale` at use site.
-    pub(crate) radar_content_insets: Option<[u32; 4]>,
-    /// Whether the local player currently has operational radar (power-gated).
-    pub(crate) has_radar: bool,
-    /// Selection overlay renderer — highlights and drag rectangle.
-    pub(crate) selection_overlay: Option<SelectionOverlay>,
-    /// Authentic SHROUD.SHP sprite-based shroud edge renderer.
-    /// GPU ABuffer — screen-resolution brightness texture for per-pixel shroud darkening.
-    /// SHROUD.SHP brightness pixels blitted per-cell, then a full-screen multiply pass
-    /// darkens the scene.
-    pub(crate) shroud_buffer: Option<crate::render::shroud_buffer::ShroudBuffer>,
     /// Selection drag state — tracks mouse drag for box-select.
     pub(crate) selection_state: SelectionState,
     /// Player-side `g_CurrentObjects` order. Selection commands update this
@@ -222,18 +199,9 @@ pub(crate) struct AppState {
     /// Number of matches finished this session — the score screen's `Game: n`.
     /// gamemd increments the same counter as it tears the scenario down.
     pub(crate) finished_game_count: u32,
-    /// Cell (rx, ry) -> high-bridge facts used by the tactical cursor inverse.
-    pub(crate) tactical_bridge_inverse_map:
-        BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
-    /// Active map theater name (e.g., DESERT).
-    pub(crate) theater_name: String,
-    /// Active map theater extension (e.g., des).
-    pub(crate) theater_ext: String,
     /// Match elapsed wall time for the retail score screen. App-local and never
     /// serialized, hashed, or read by deterministic simulation.
     pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,
-    /// Target/action lines — colored lines from selected units to command destinations.
-    pub(crate) target_lines: crate::app::presentation::target_lines::TargetLineState,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
     pub(crate) configured_input_delay_ticks: u64,
     /// Pending order mode for the next right-click command.
@@ -298,21 +266,6 @@ pub(crate) struct AppState {
     pub(crate) process_assets: crate::app::process_assets::ProcessAssets,
     /// Process-wide audio owner (F12): players and registries.
     pub(crate) audio: crate::app::audio_runtime::AppAudioRuntime,
-    /// Fire events from the current sim tick — position data for future muzzle
-    /// flash rendering and projectile origin computation. Drained each frame.
-    pub(crate) pending_fire_effects: Vec<crate::sim::world::SimFireEvent>,
-    /// Active garrison muzzle flash animations. Short-lived one-shot entries
-    /// spawned when a garrisoned building fires. Ticked each frame, removed on completion.
-    pub(crate) garrison_muzzle_flashes: Vec<crate::sim::components::GarrisonMuzzleFlash>,
-    /// Active non-garrison weapon muzzle flash animations spawned from weapon `Anim=`.
-    /// App-owned presentation state; combat only emits the fire facts.
-    pub(crate) weapon_muzzle_flashes: Vec<crate::sim::components::WeaponMuzzleFlash>,
-    /// Active render-only projectile sprites spawned from non-instant weapon fire.
-    pub(crate) projectile_visuals: Vec<crate::app::presentation::fire_effects::ProjectileVisual>,
-    /// Active parachute animations, one per descending paradropped infantry.
-    /// Polling-based lifecycle: spawned when an entity gains parachute_state
-    /// in the sim, removed on landing or death. Render-only; not snapshotted.
-    pub(crate) parachute_anims: Vec<crate::sim::components::ParachuteAnim>,
     /// True when the game is paused (an in-scenario modal is open, sim frozen).
     ///
     /// Derived from `in_game_menu` for every player-driven modal; the debug
@@ -337,23 +290,6 @@ pub(crate) struct AppState {
     pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Retail process-start splash, held until its post-present deadline.
     pub(crate) startup_splash: Option<startup_splash::StartupSplashPresentation>,
-    /// Global elapsed time for looping terrain overlay animations.
-    pub(crate) idle_anim_elapsed_ms: u32,
-    /// Logic frame on which each building's slot animations were created, by
-    /// entity id.
-    ///
-    /// gamemd gives every building animation slot its own animation object whose
-    /// frame timer is based at the frame it was constructed, so two identical
-    /// buildings placed at different times run out of phase with each other.
-    /// Presentation-only, so it lives here rather than on the entity.
-    ///
-    /// DRIFT: gamemd serializes each animation object with its own timer, so a
-    /// saved game restores the phases it was saved with. This map is not in the
-    /// snapshot, so loading re-stamps every surviving structure at the load
-    /// frame and the whole base pulses in unison again — the exact symptom the
-    /// per-building phase exists to remove. Fires once per save load, and only
-    /// unwinds as those buildings are replaced.
-    pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
     /// Show hotkey reference overlay. Toggle with F1.
     pub(crate) show_hotkey_help: bool,
     /// Save/load panel visible. Toggle with F5.
@@ -372,13 +308,6 @@ pub(crate) struct AppState {
     pub(crate) campaign_select: Option<crate::ui::main_menu_dialogs::CampaignSelectState>,
     /// Save repository, cached listing, and last save/load metadata.
     pub(crate) persistence: crate::app::persistence::PersistenceState,
-    // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
-    /// Overlay instance scratch vec — cleared and refilled each frame.
-    pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,
-    /// Unit (voxel) instance scratch vec — cleared and refilled each frame.
-    pub(crate) cached_unit_instances: Vec<crate::render::batch::SpriteInstance>,
-    /// UnitAtlas texture-page tags aligned with `cached_unit_instances`.
-    pub(crate) cached_unit_pages: Vec<usize>,
 }
 
 /// Drop app-owned scenario-exit runtime after a successful world replacement.

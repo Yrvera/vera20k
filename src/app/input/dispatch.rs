@@ -268,7 +268,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     state.rules(),
                                     Some(&sim.houses),
                                     &state.height_map(),
-                                    Some(&state.tactical_bridge_inverse_map),
+                                    Some(&state.match_presentation.tactical_bridge_inverse_map),
                                     Some(&sim.interner),
                                 );
                                 queued_selection = if let Some(clicked_id) = picked {
@@ -296,7 +296,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         state.rules(),
                                         Some(&sim.houses),
                                         &state.height_map(),
-                                        Some(&state.tactical_bridge_inverse_map),
+                                        Some(&state.match_presentation.tactical_bridge_inverse_map),
                                         Some(&sim.interner),
                                     )
                                 };
@@ -315,7 +315,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     state.rules(),
                                     Some(&sim.houses),
                                     &state.height_map(),
-                                    Some(&state.tactical_bridge_inverse_map),
+                                    Some(&state.match_presentation.tactical_bridge_inverse_map),
                                     Some(&sim.interner),
                                 );
                             }
@@ -1628,7 +1628,7 @@ fn commit_prepared_load(
         simulation,
     ));
     crate::app::loading::transitions::sync_in_game_options_speed_from_sim(state);
-    state.combat_lights.clear();
+    state.match_presentation.combat_lights.clear();
     crate::app::match_runtime::sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
 
     // F10: the fog view cache was discarded with the load (nonserialized) —
@@ -1640,10 +1640,10 @@ fn commit_prepared_load(
             sim.prepare_fog_view_for(&owner);
         }
     }
-    if let Some(shroud) = state.shroud_buffer.as_mut() {
+    if let Some(shroud) = state.match_presentation.shroud_buffer.as_mut() {
         shroud.mark_stale();
     }
-    if let Some(minimap) = state.minimap.as_mut() {
+    if let Some(minimap) = state.match_presentation.minimap.as_mut() {
         minimap.mark_stale();
     }
 
@@ -2368,7 +2368,7 @@ fn apply_selection_action_line_policy(state: &mut AppState, policy: SelectionAct
     let Some(tick) = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| sim.session.tick) else {
         return;
     };
-    apply_selection_action_line_policy_at_tick(&mut state.target_lines, tick, policy);
+    apply_selection_action_line_policy_at_tick(&mut state.match_presentation.target_lines, tick, policy);
 }
 
 fn apply_selection_action_line_policy_at_tick(

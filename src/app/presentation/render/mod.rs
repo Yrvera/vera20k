@@ -98,7 +98,7 @@ pub(crate) fn render_game(
         .as_ref()
         .and_then(|rt| rt.view().path_grid())
         .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
-    if let Some(ref mut shroud_buf) = state.shroud_buffer {
+    if let Some(ref mut shroud_buf) = state.match_presentation.shroud_buffer {
         if !state.sandbox_full_visibility {
             if let (Some(rt), Some(owner)) = (state.sim_runtime.as_ref(), &local_owner) {
                 let view = rt.view();
@@ -127,9 +127,9 @@ pub(crate) fn render_game(
 
     // Phase 6: Upload all instances to GPU buffer pool.
     upload_to_gpu(state, &world, &debug, &ui, &sidebar);
-    state.cached_overlay_instances = world.overlay;
+    state.match_presentation.cached_overlay_instances = world.overlay;
 
-    let combat_lights = state.combat_lights.draw_records();
+    let combat_lights = state.match_presentation.combat_lights.draw_records();
     state.renderer.combat_light_renderer.prepare(
         &state.renderer.gpu,
         &combat_lights,
@@ -161,8 +161,8 @@ pub(crate) fn render_game(
     );
     // Return unit instances vec to AppState (deferred until after the draw pass
     // because the multi-way merge needs the CPU-side Y values).
-    state.cached_unit_instances = world.unit;
-    state.cached_unit_pages = world.unit_pages;
+    state.match_presentation.cached_unit_instances = world.unit;
+    state.match_presentation.cached_unit_pages = world.unit_pages;
     Ok(GameRenderOutput {
         instance_counts: sidebar.emitted_instance_counts(),
         sidebar_view: sidebar.view,

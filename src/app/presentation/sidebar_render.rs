@@ -215,13 +215,13 @@ pub(crate) fn sync_targeting_mode(
 pub(crate) fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .radar_anim
+        .match_presentation.radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
         return false;
     }
-    let Some(minimap) = &state.minimap else {
+    let Some(minimap) = &state.match_presentation.minimap else {
         return false;
     };
     let rect = active_minimap_screen_rect(state);
@@ -333,7 +333,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
 /// Convert the current minimap cursor position to iso (rx, ry) coordinates.
 /// Returns None if no minimap is available.
 fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
-    let minimap = state.minimap.as_ref()?;
+    let minimap = state.match_presentation.minimap.as_ref()?;
     let (tactical_w, tactical_h) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let tactical_w = tactical_w as f32;
@@ -360,12 +360,12 @@ fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.tactical_bridge_inverse_map),
+        Some(&state.match_presentation.tactical_bridge_inverse_map),
     ))
 }
 
 pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
-    let Some(minimap) = &state.minimap else {
+    let Some(minimap) = &state.match_presentation.minimap else {
         return;
     };
     let sw = state.render_width() as f32;

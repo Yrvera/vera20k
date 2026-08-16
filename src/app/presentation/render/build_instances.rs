@@ -214,7 +214,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
     let mut ground_objects = Vec::new();
-    let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
+    let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.match_presentation.cached_overlay_instances);
     overlay.clear();
     instances::build_overlay_instances(
         state,
@@ -259,9 +259,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // VXL units (ground + bridge) — sorted by depth descending.
     // shp_paged is passed in so harvest overlays (OREGATH SHP) route to the
     // correct sprite atlas page instead of the voxel unit instance list.
-    let mut unit: Vec<SpriteInstance> = std::mem::take(&mut state.cached_unit_instances);
+    let mut unit: Vec<SpriteInstance> = std::mem::take(&mut state.match_presentation.cached_unit_instances);
     unit.clear();
-    let mut unit_pages: Vec<usize> = std::mem::take(&mut state.cached_unit_pages);
+    let mut unit_pages: Vec<usize> = std::mem::take(&mut state.match_presentation.cached_unit_pages);
     unit_pages.clear();
     let mut bridge_unit: Vec<SpriteInstance> = Vec::new();
     let mut bridge_unit_pages: Vec<usize> = Vec::new();
@@ -569,7 +569,7 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
-    if let (Some(minimap), Some(rt)) = (&mut state.minimap, state.sim_runtime.as_ref()) {
+    if let (Some(minimap), Some(rt)) = (&mut state.match_presentation.minimap, state.sim_runtime.as_ref()) {
         // F10 cone: render-feed reads go through SimView getters (the split
         // borrow against `&mut state.minimap` keeps the field chain to `rt`).
         let view = rt.view();
@@ -608,7 +608,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     let unit_status_fill = build_unit_status_fill_instances(state, sw, sh);
     let cargo_pip = build_cargo_pip_instances(state, sw, sh);
     let software_cursor = build_software_cursor_instances(state);
-    let drag = match &state.selection_overlay {
+    let drag = match &state.match_presentation.selection_overlay {
         Some(o) => o.build_drag_rect(&state.selection_state, state.input.camera_x, state.input.camera_y),
         None => Vec::new(),
     };
@@ -619,7 +619,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
 
     // Target/action lines from selected units to command destinations.
     let target_line = crate::app::presentation::target_lines::build_target_line_instances(
-        &state.target_lines,
+        &state.match_presentation.target_lines,
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         &state.height_map(),
     );
@@ -665,7 +665,7 @@ fn build_placement_preview(
     u8,
     Vec<SpriteInstance>,
 ) {
-    match (&state.selection_overlay, &state.building_placement_preview) {
+    match (&state.match_presentation.selection_overlay, &state.building_placement_preview) {
         (Some(o), Some(preview)) => {
             let preview_type_str = state
                 .sim_runtime
@@ -738,12 +738,12 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state
-        .radar_anim
+        .match_presentation.radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
 
     let minimap = if minimap_visible {
-        match &state.minimap {
+        match &state.match_presentation.minimap {
             Some(mm) => vec![mm.build_minimap_instance_in_rect(
                 state.input.camera_x,
                 state.input.camera_y,
@@ -760,7 +760,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let viewport_rect = if minimap_visible {
         // Viewport rect shows the visible world area — shrinks when zoomed in.
         let z = state.input.zoom_level;
-        match &state.minimap {
+        match &state.match_presentation.minimap {
             Some(mm) => mm.build_viewport_rect_in_rect(
                 state.input.camera_x,
                 state.input.camera_y,
@@ -856,7 +856,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
 /// Build a SpriteInstance for the animated radar chrome overlay.
 /// Positioned at the same location as the static radar.shp in the sidebar chrome.
 fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
-    let ra = match &state.radar_anim {
+    let ra = match &state.match_presentation.radar_anim {
         Some(ra) => ra,
         None => return Vec::new(),
     };

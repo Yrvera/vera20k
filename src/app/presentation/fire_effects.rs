@@ -560,8 +560,8 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
         (flashes, sounds, projectiles)
     };
 
-    state.weapon_muzzle_flashes.extend(flashes);
-    state.projectile_visuals.extend(projectiles);
+    state.match_presentation.weapon_muzzle_flashes.extend(flashes);
+    state.match_presentation.projectile_visuals.extend(projectiles);
     for sound in sounds {
         state.match_audio.sound_events.push(sound);
     }
@@ -579,8 +579,8 @@ fn presentation_effect_frame_count(
 }
 
 pub(crate) fn tick_weapon_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
-    tick_weapon_muzzle_flash_list(&mut state.weapon_muzzle_flashes, dt_ms);
-    tick_projectile_visuals(&mut state.projectile_visuals, dt_ms);
+    tick_weapon_muzzle_flash_list(&mut state.match_presentation.weapon_muzzle_flashes, dt_ms);
+    tick_projectile_visuals(&mut state.match_presentation.projectile_visuals, dt_ms);
 }
 
 fn tick_weapon_muzzle_flash_list(flashes: &mut Vec<WeaponMuzzleFlash>, dt_ms: u32) {

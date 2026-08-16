@@ -667,7 +667,7 @@ impl TacticalCaptureSession {
                 && state.match_presentation.palette_set.is_some()
                 && state.match_presentation.sprite_atlas.is_some()
                 && state.match_presentation.overlay_atlas.is_some()
-                && state.minimap.is_some()
+                && state.match_presentation.minimap.is_some()
                 && state.match_presentation.sidebar_chrome.is_some()
                 && state.match_presentation.software_cursor.is_some()
                 && sim.path_grid().is_some()
@@ -830,7 +830,7 @@ impl TacticalCaptureSession {
                 .is_some_and(|power| !power.is_low_power && power.power_blackout_remaining == 0);
         let radar_authority_active = crate::sim::radar::has_radar_for_owner(sim, rules, &owner);
         let radar_online = state
-            .radar_anim
+            .match_presentation.radar_anim
             .as_ref()
             .is_some_and(|radar| radar.phase() == RadarAnimPhase::Online);
         let match_ended = sim
@@ -923,17 +923,17 @@ impl TacticalCaptureSession {
         };
         let actual_theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
         let radar_phase_online = state
-            .radar_anim
+            .match_presentation.radar_anim
             .as_ref()
             .is_some_and(|radar| radar.phase() == RadarAnimPhase::Online);
         let radar_source = state
-            .radar_animation_source
+            .match_presentation.radar_animation_source
             .as_ref()
             .context("radar animation lacks construction provenance")?;
         let source_evidence = SidebarSourceEvidence::from_identity(radar_source);
         let aperture = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
         let insets = state
-            .radar_content_insets
+            .match_presentation.radar_content_insets
             .context("radar content insets are absent")?;
         let render_evidence = SidebarRenderEvidence::from_render_output(
             output,
@@ -998,7 +998,7 @@ impl TacticalCaptureSession {
         let ready = bound_structures_ready
             && power_ready
             && radar_authority
-            && state.has_radar
+            && state.match_presentation.has_radar
             && radar_phase_online
             && actual_theme == expected_theme
             && source_is_current_allied
@@ -1019,7 +1019,7 @@ impl TacticalCaptureSession {
                 "expected_theme": format!("{expected_theme:?}"),
                 "radar_phase": if radar_phase_online { "Online" } else { "NotOnline" },
                 "radar_authority_active": radar_authority,
-                "app_has_radar": state.has_radar,
+                "app_has_radar": state.match_presentation.has_radar,
                 "power_ready": power_ready,
                 "bound_structures_ready": bound_structures_ready,
                 "cursor_id": format!("{cursor_id:?}"),
@@ -1158,8 +1158,8 @@ impl TacticalCaptureSession {
                 "authority_active": state.rules().is_some_and(|rules| {
                     crate::sim::radar::has_radar_for_owner(sim, rules, owner)
                 }),
-                "app_has_radar": state.has_radar,
-                "phase": state.radar_anim.as_ref().map(|radar| format!("{:?}", radar.phase())),
+                "app_has_radar": state.match_presentation.has_radar,
+                "phase": state.match_presentation.radar_anim.as_ref().map(|radar| format!("{:?}", radar.phase())),
             },
             "script": {
                 "stage": script.stage(),

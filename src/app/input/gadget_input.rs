@@ -307,10 +307,10 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     // is offline or the minimap is absent (the exact gate `is_cursor_over_minimap`
     // uses, app_sidebar_render.rs).
     let minimap_available = state
-        .radar_anim
+        .match_presentation.radar_anim
         .as_ref()
         .is_none_or(|ra| ra.is_minimap_visible())
-        && state.minimap.is_some();
+        && state.match_presentation.minimap.is_some();
     let mini_rect = rect_px(crate::app::presentation::sidebar_render::active_minimap_screen_rect(state));
     if let Some(mh) = state.in_game_gadgets.minimap
         && let Some(g) = state.in_game_gadgets.list.get_mut(mh)

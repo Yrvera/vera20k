@@ -403,7 +403,7 @@ fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.tactical_bridge_inverse_map),
+        Some(&state.match_presentation.tactical_bridge_inverse_map),
     )
 }
 

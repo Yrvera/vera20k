@@ -232,7 +232,7 @@ fn finish_order(
         emit_resolved_order_voice(state, speaker_id, &queued);
     }
     let current_tick = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
-    crate::app::presentation::target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
+    crate::app::presentation::target_lines::record_command_lines(&mut state.match_presentation.target_lines, &queued, current_tick);
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.queue_commands(queued);
     }
@@ -491,7 +491,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             state.sandbox_full_visibility,
             Some(&resources.rules),
             &resources.height_map,
-            Some(&state.tactical_bridge_inverse_map),
+            Some(&state.match_presentation.tactical_bridge_inverse_map),
         );
 
         let only_miners_selected = mobile_count > 0 && selected_miner_ids.len() == mobile_count;
@@ -972,7 +972,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.tactical_bridge_inverse_map),
+                    Some(&state.match_presentation.tactical_bridge_inverse_map),
                 )
             } else {
                 pick_enemy_target_stable_id(
@@ -983,7 +983,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.tactical_bridge_inverse_map),
+                    Some(&state.match_presentation.tactical_bridge_inverse_map),
                 )
             };
             // Assign a shared group_id when multiple units move together.

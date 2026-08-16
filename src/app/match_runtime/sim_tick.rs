@@ -790,7 +790,7 @@ fn advance_in_game_runtime_mode(
             state,
             garrison_flash_elapsed_ticks.saturating_mul(u64::from(SIM_TICK_MS)) as u32,
         );
-        finish_fire_effect_batch(&mut state.pending_fire_effects);
+        finish_fire_effect_batch(&mut state.match_presentation.pending_fire_effects);
         crate::app::presentation::fire_effects::tick_weapon_muzzle_flashes(state, 16);
         crate::app::presentation::chute_anim::tick_parachute_anims(state);
     }
@@ -861,7 +861,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         }
     }
 
-    begin_fire_effect_batch(&mut state.pending_fire_effects);
+    begin_fire_effect_batch(&mut state.match_presentation.pending_fire_effects);
 
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
@@ -933,7 +933,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
             drained_fire_events = frame_fire_events;
-            append_fire_effect_batch(&mut state.pending_fire_effects, &drained_fire_events);
+            append_fire_effect_batch(&mut state.match_presentation.pending_fire_effects, &drained_fire_events);
             // Convert sim sound events to app-layer sound events for playback.
             for sim_event in frame_sound_events {
                 let app_event: GameSoundEvent = match sim_event {
@@ -1377,7 +1377,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             }
         }
         if frame_committed {
-            state.combat_lights.commit_frame(drained_combat_lights);
+            state.match_presentation.combat_lights.commit_frame(drained_combat_lights);
         }
         crate::app::input::dispatch::reconcile_selection_order_after_sim(state);
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
@@ -1387,10 +1387,10 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             match output {
                 LifecycleOutput::DetachAttachedAnims { stable_id } => {
                     state
-                        .garrison_muzzle_flashes
+                        .match_presentation.garrison_muzzle_flashes
                         .retain(|flash| flash.building_id != stable_id);
                     state
-                        .parachute_anims
+                        .match_presentation.parachute_anims
                         .retain(|anim| anim.target_id != stable_id);
                 }
                 LifecycleOutput::StopVoc { stable_id } => {
@@ -1685,7 +1685,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         return;
     }
 
-    let unit_palette = load_unit_palette(asset_manager, &state.theater_ext);
+    let unit_palette = load_unit_palette(asset_manager, &state.match_presentation.theater_ext);
     let Some(palette) = unit_palette else {
         log::warn!("Atlas refresh skipped: unit palette not found");
         return;
@@ -1719,15 +1719,15 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             .flat_map(|terrain| terrain.tile_animations())
             .map(|anim| anim.anim_name.to_ascii_uppercase())
             .collect();
-        let cell_palette = load_iso_palette(asset_manager, &state.theater_ext);
+        let cell_palette = load_iso_palette(asset_manager, &state.match_presentation.theater_ext);
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             sim.entities(),
             asset_manager,
             &palette,
-            &state.theater_ext,
-            &state.theater_name,
+            &state.match_presentation.theater_ext,
+            &state.match_presentation.theater_name,
             bound_rules,
             bound_rules.map(|rules| &rules.art_registry),
             &state.match_presentation.house_color_map,
@@ -1881,7 +1881,7 @@ pub(crate) fn screen_point_to_world_cell(
         world_x,
         world_y,
         &state.height_map(),
-        Some(&state.tactical_bridge_inverse_map),
+        Some(&state.match_presentation.tactical_bridge_inverse_map),
     )
 }
 

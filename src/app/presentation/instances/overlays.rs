@@ -717,7 +717,7 @@ pub(crate) fn build_overlay_instances(
         let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(name) {
             // RA2 terrain animation rate: ~83ms per frame (12 fps).
             const TERRAIN_ANIM_RATE_MS: u32 = 83;
-            let tick = state.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
+            let tick = state.match_presentation.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
             (tick % count as u32) as u8
         } else {
             0
@@ -790,7 +790,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
-    for flash in &state.garrison_muzzle_flashes {
+    for flash in &state.match_presentation.garrison_muzzle_flashes {
         if !in_view(
             flash.screen_x,
             flash.screen_y,
@@ -897,7 +897,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
-    for flash in &state.weapon_muzzle_flashes {
+    for flash in &state.match_presentation.weapon_muzzle_flashes {
         if !in_view(
             flash.screen_x,
             flash.screen_y,
@@ -1068,7 +1068,7 @@ pub(crate) fn build_projectile_visual_instances(
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
-    for projectile in &state.projectile_visuals {
+    for projectile in &state.match_presentation.projectile_visuals {
         let t = projectile.progress();
         let screen_x =
             projectile.start_screen_x + (projectile.end_screen_x - projectile.start_screen_x) * t;
@@ -1184,7 +1184,7 @@ pub(crate) fn build_parachute_instances(
         None => return,
     };
 
-    for anim in &state.parachute_anims {
+    for anim in &state.match_presentation.parachute_anims {
         let entity = match sim.entities().get(anim.target_id) {
             Some(e) => e,
             None => continue,

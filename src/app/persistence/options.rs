@@ -89,7 +89,7 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
         }
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).
-    apply_target_lines(&mut state.target_lines, &state.in_game_options);
+    apply_target_lines(&mut state.match_presentation.target_lines, &state.in_game_options);
     // ScrollRate is read at startup and consumed directly by the camera each
     // frame, so nothing has to be pushed from this close path.
     // The remaining two are persist-only; no render behavior is fabricated:

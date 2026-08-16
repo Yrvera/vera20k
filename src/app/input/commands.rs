@@ -140,7 +140,7 @@ fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> O
         state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.tactical_bridge_inverse_map),
+        Some(&state.match_presentation.tactical_bridge_inverse_map),
     )
     .map(|hover| hover.stable_id)
 }

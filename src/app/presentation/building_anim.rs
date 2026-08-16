@@ -23,7 +23,7 @@ const GARRISON_OCCUPANT_ANIM_Z_ADJUST: i32 = -200;
 /// Building one-shot overlays now advance inside the authoritative simulation
 /// frame; this independent timer only drives looping terrain presentation.
 pub(crate) fn tick_terrain_overlay_animations(state: &mut AppState, dt_ms: u32) {
-    state.idle_anim_elapsed_ms += dt_ms;
+    state.match_presentation.idle_anim_elapsed_ms += dt_ms;
 }
 
 pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames;
@@ -39,7 +39,7 @@ pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames
 /// logic frame the structure is seen.
 pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.building_anim_phase_base.clear();
+        state.match_presentation.building_anim_phase_base.clear();
         return;
     };
     let tick = sim.session.tick;
@@ -49,7 +49,7 @@ pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
         .filter(|(_, entity)| entity.category == crate::map::entities::EntityCategory::Structure)
         .map(|(id, _)| id)
         .collect();
-    record_building_anim_phase_bases(&mut state.building_anim_phase_base, &live, tick);
+    record_building_anim_phase_bases(&mut state.match_presentation.building_anim_phase_base, &live, tick);
 }
 
 /// Insert a phase base for every newly seen structure and forget the ones that
@@ -81,7 +81,7 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
         return 0;
     };
     state
-        .building_anim_phase_base
+        .match_presentation.building_anim_phase_base
         .get(&stable_id)
         .map(|base| sim.session.tick.saturating_sub(*base).min(u32::MAX as u64) as u32)
         .unwrap_or(0)
@@ -130,9 +130,9 @@ pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
         }
         _ => false,
     };
-    state.has_radar = new_has_radar;
+    state.match_presentation.has_radar = new_has_radar;
 
-    if let Some(ref mut ra) = state.radar_anim {
+    if let Some(ref mut ra) = state.match_presentation.radar_anim {
         ra.set_has_radar(new_has_radar);
         ra.tick(&state.renderer.gpu, dt_ms);
     }
@@ -370,21 +370,21 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
         let sim = match state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
             Some(s) => s,
             None => {
-                state.garrison_muzzle_flashes.clear();
+                state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
         let art_reg = match state.rules().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
-                state.garrison_muzzle_flashes.clear();
+                state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
         let rules = match state.rules() {
             Some(r) => r,
             None => {
-                state.garrison_muzzle_flashes.clear();
+                state.match_presentation.garrison_muzzle_flashes.clear();
                 return;
             }
         };
@@ -393,7 +393,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         state
-            .pending_fire_effects
+            .match_presentation.pending_fire_effects
             .iter()
             .filter_map(|ev| {
                 let anim_name = ev.occupant_anim.as_ref()?;
@@ -423,7 +423,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
             })
             .collect()
     };
-    state.garrison_muzzle_flashes.extend(new_flashes);
+    state.match_presentation.garrison_muzzle_flashes.extend(new_flashes);
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
@@ -431,7 +431,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
         .sim_runtime
         .as_ref()
         .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry)) else {
-        state.garrison_muzzle_flashes.clear();
+        state.match_presentation.garrison_muzzle_flashes.clear();
         return;
     };
     let empty_frame_counts = HashMap::new();
@@ -440,7 +440,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
         .as_ref()
         .map(|atlas| &atlas.active_anim_frame_counts)
         .unwrap_or(&empty_frame_counts);
-    state.garrison_muzzle_flashes.retain_mut(|flash| {
+    state.match_presentation.garrison_muzzle_flashes.retain_mut(|flash| {
         advance_garrison_muzzle_flash(flash, dt_ms, sim, art_reg, frame_counts)
     });
 }

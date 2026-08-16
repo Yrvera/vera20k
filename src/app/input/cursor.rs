@@ -115,7 +115,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.tactical_bridge_inverse_map),
+        Some(&state.match_presentation.tactical_bridge_inverse_map),
     );
     // gamemd's DetermineAction resolves ONE object for the whole selection and
     // shows that object's action, for the cell branch as well as the object
@@ -884,18 +884,18 @@ fn cursor_animation_start() -> &'static Instant {
 fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .radar_anim
+        .match_presentation.radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
         return false;
     }
-    let Some(_minimap) = &state.minimap else {
+    let Some(_minimap) = &state.match_presentation.minimap else {
         return false;
     };
     let rect = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
     state
-        .minimap
+        .match_presentation.minimap
         .as_ref()
         .unwrap()
         .contains_screen_point_in_rect(

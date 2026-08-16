@@ -85,7 +85,7 @@ struct BracketPixelFilter<'a> {
 impl<'a> BracketPixelFilter<'a> {
     fn from_state(state: &'a AppState) -> Self {
         Self {
-            shroud: state.shroud_buffer.as_ref(),
+            shroud: state.match_presentation.shroud_buffer.as_ref(),
             camera_x: state.input.camera_x,
             camera_y: state.input.camera_y,
             enabled: !state.sandbox_full_visibility,

@@ -139,7 +139,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             actions: result.scenario.actions,
         },
     });
-    state.combat_lights.clear();
+    state.match_presentation.combat_lights.clear();
     sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.set_input_delay_ticks(state.configured_input_delay_ticks);
@@ -173,21 +173,21 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             )
         });
     if let Some((identity, frames, [w, h], insets)) = allied_radar {
-        state.radar_animation_source = Some(identity);
-        state.radar_anim = crate::render::radar_anim::RadarAnimState::new(
+        state.match_presentation.radar_animation_source = Some(identity);
+        state.match_presentation.radar_anim = crate::render::radar_anim::RadarAnimState::new(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             frames,
             w,
             h,
         );
-        state.radar_content_insets = Some(insets);
+        state.match_presentation.radar_content_insets = Some(insets);
     } else {
-        state.radar_animation_source = None;
-        state.radar_anim = None;
-        state.radar_content_insets = None;
+        state.match_presentation.radar_animation_source = None;
+        state.match_presentation.radar_anim = None;
+        state.match_presentation.radar_content_insets = None;
     }
-    state.has_radar = false;
+    state.match_presentation.has_radar = false;
 
     state.match_presentation.software_cursor = result.presentation.software_cursor;
     state.match_presentation.overlays.replace_from_source(result.scenario.overlays);
@@ -202,7 +202,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_presentation.tiberium_radar_colors = result.presentation.tiberium_radar_colors;
     state.match_presentation.house_color_map = result.presentation.house_color_map;
     state.match_presentation.house_roster = result.scenario.house_roster;
-    state.tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
+    state.match_presentation.tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
     state.match_presentation.lighting_grid = result.presentation.lighting_grid;
     state.match_presentation.applied_lighting_sources.clear();
     state.match_presentation.applied_lighting_profile = None;
@@ -213,8 +213,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
     state.csf = result.presentation.csf;
-    state.theater_name = result.scenario.theater_name;
-    state.theater_ext = result.scenario.theater_ext;
+    state.match_presentation.theater_name = result.scenario.theater_name;
+    state.match_presentation.theater_ext = result.scenario.theater_ext;
 
     // The background loader has no access to the live renderer detail option.
     // Re-derive once at handoff so the first visible frame already uses the
@@ -308,12 +308,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             state.rules(),
             &state.match_presentation.tiberium_radar_colors,
         );
-        state.minimap = Some(MinimapRenderer::new(
+        state.match_presentation.minimap = Some(MinimapRenderer::new(
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             grid,
             &overlay_data,
-            &state.theater_name,
+            &state.match_presentation.theater_name,
         ));
     }
     state.minimap_dragging = false;
@@ -326,7 +326,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
 
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.
-    state.selection_overlay = Some(SelectionOverlay::new(
+    state.match_presentation.selection_overlay = Some(SelectionOverlay::new(
         &state.renderer.gpu,
         &state.renderer.batch_renderer,
         state.process_assets.manager(),
@@ -345,7 +345,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                 if let Ok(shp) = crate::assets::shp_file::ShpFile::from_bytes(shp_data) {
                     let (frame_pixels, cw, ch) =
                         crate::render::shroud_buffer::extract_shp_brightness(&shp);
-                    state.shroud_buffer = Some(crate::render::shroud_buffer::ShroudBuffer::new(
+                    state.match_presentation.shroud_buffer = Some(crate::render::shroud_buffer::ShroudBuffer::new(
                         &state.renderer.gpu,
                         state.render_width(),
                         state.render_height(),

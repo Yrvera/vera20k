@@ -101,8 +101,8 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     assets,
                     &state.renderer.gpu,
                     &state.renderer.batch_renderer,
-                    &state.theater_ext,
-                    &state.theater_name,
+                    &state.match_presentation.theater_ext,
+                    &state.match_presentation.theater_name,
                     bound_rules,
                     bound_rules.map(|rules| &rules.art_registry),
                     &state.match_presentation.house_color_map,
@@ -150,7 +150,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
 
     MapFile {
         header: MapHeader {
-            theater: state.theater_name.clone(),
+            theater: state.match_presentation.theater_name.clone(),
             fill: "Clear".to_string(),
             level: 0,
             width: 0,
