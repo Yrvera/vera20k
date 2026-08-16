@@ -67,6 +67,7 @@ mod initialize;
 mod in_game;
 pub(crate) mod match_audio;
 pub(crate) mod match_runtime;
+pub(crate) mod audio_runtime;
 pub(crate) mod diagnostics;
 pub(crate) mod loading;
 pub(crate) mod match_diagnostics;

@@ -172,14 +172,14 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 
     let events = state.match_audio.sound_events.drain();
     if events.is_empty() {
-        if let Some(sfx) = &mut state.sfx_player {
+        if let Some(sfx) = &mut state.audio.sfx_player {
             sfx.advance_voice_queue();
         }
         return;
     }
     let vp_w = state.render_width() as f32;
     let vp_h = state.render_height() as f32;
-    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) else {
+    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
         return;
     };
     let cam_x = state.camera_x;
@@ -194,9 +194,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             | GameSoundEvent::UnitAttackOrder { .. } => {
                 sfx.play_voice_sound(
                     event.sound_id(),
-                    &state.sound_registry,
+                    &state.audio.sound_registry,
                     assets,
-                    &state.audio_indices,
+                    &state.audio.audio_indices,
                 );
             }
             // STANDARD EVA cues are fire-and-forget: play only if voice is idle.
@@ -206,9 +206,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             | GameSoundEvent::OutcomeEva { .. } => {
                 sfx.play_standard_eva_sound(
                     event.sound_id(),
-                    &state.sound_registry,
+                    &state.audio.sound_registry,
                     assets,
-                    &state.audio_indices,
+                    &state.audio.audio_indices,
                 );
             }
             // Garrison EVA cues are evamd.ini Type=QUEUE.
@@ -216,18 +216,18 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             | GameSoundEvent::StructureAbandoned { .. } => {
                 sfx.queue_eva_sound(
                     event.sound_id(),
-                    &state.sound_registry,
+                    &state.audio.sound_registry,
                     assets,
-                    &state.audio_indices,
+                    &state.audio.audio_indices,
                 );
             }
             // UI events — always full volume (non-positional).
             GameSoundEvent::UiSound { .. } => {
                 sfx.play_sound(
                     event.sound_id(),
-                    &state.sound_registry,
+                    &state.audio.sound_registry,
                     assets,
-                    &state.audio_indices,
+                    &state.audio.audio_indices,
                 );
             }
             GameSoundEvent::AnimationStarted {
@@ -237,7 +237,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             } => {
                 let spatial_vol = if let Some((sx, sy)) = screen_pos {
                     let (range, min_vol) = state
-                        .sound_registry
+                        .audio.sound_registry
                         .get(sound_id)
                         .map(|entry| (entry.range, entry.min_volume))
                         .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -250,9 +250,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                         *anim_id,
                         sound_id,
                         spatial_vol,
-                        &state.sound_registry,
+                        &state.audio.sound_registry,
                         assets,
-                        &state.audio_indices,
+                        &state.audio.audio_indices,
                     );
                 }
             }
@@ -265,7 +265,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 if let Some(stop_sound_id) = stop_sound_id.as_deref().filter(|id| !id.is_empty()) {
                     let spatial_vol = if let Some((sx, sy)) = screen_pos {
                         let (range, min_vol) = state
-                            .sound_registry
+                            .audio.sound_registry
                             .get(stop_sound_id)
                             .map(|entry| (entry.range, entry.min_volume))
                             .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -277,9 +277,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                         sfx.play_sound_with_volume(
                             stop_sound_id,
                             spatial_vol,
-                            &state.sound_registry,
+                            &state.audio.sound_registry,
                             assets,
-                            &state.audio_indices,
+                            &state.audio.audio_indices,
                         );
                     }
                 }
@@ -292,7 +292,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 if !sound_id.is_empty() {
                     let spatial_vol = if let Some((sx, sy)) = screen_pos {
                         let (range, min_vol) = state
-                            .sound_registry
+                            .audio.sound_registry
                             .get(sound_id)
                             .map(|e| (e.range, e.min_volume))
                             .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -304,18 +304,18 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                         sfx.play_sound_with_volume(
                             sound_id,
                             spatial_vol,
-                            &state.sound_registry,
+                            &state.audio.sound_registry,
                             assets,
-                            &state.audio_indices,
+                            &state.audio.audio_indices,
                         );
                     }
                 }
                 if let Some(eva_sound_id) = eva_sound_id.as_deref().filter(|s| !s.is_empty()) {
                     sfx.play_standard_eva_sound(
                         eva_sound_id,
-                        &state.sound_registry,
+                        &state.audio.sound_registry,
                         assets,
-                        &state.audio_indices,
+                        &state.audio.audio_indices,
                     );
                 }
             }
@@ -324,9 +324,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                 // wait behind whatever EVA line is currently speaking.
                 let _ = sfx.queue_eva_sound(
                     eva_sound_id,
-                    &state.sound_registry,
+                    &state.audio.sound_registry,
                     assets,
-                    &state.audio_indices,
+                    &state.audio.audio_indices,
                 );
             }
             // Spatial events — apply distance-based volume scaling using
@@ -334,7 +334,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
             _ => {
                 let spatial_vol = if let Some((sx, sy)) = event.screen_pos() {
                     let (range, min_vol) = state
-                        .sound_registry
+                        .audio.sound_registry
                         .get(event.sound_id())
                         .map(|e| (e.range, e.min_volume))
                         .unwrap_or((crate::audio::sfx::DEFAULT_RANGE_CELLS, 0));
@@ -347,9 +347,9 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
                     sfx.play_sound_with_volume(
                         event.sound_id(),
                         spatial_vol,
-                        &state.sound_registry,
+                        &state.audio.sound_registry,
                         assets,
-                        &state.audio_indices,
+                        &state.audio.audio_indices,
                     );
                 }
             }

@@ -387,20 +387,8 @@ pub(crate) struct AppState {
     /// Process-wide asset ownership (F11): the one retail MIX manager for
     /// the process, leased to the loading pipeline and always returned.
     pub(crate) process_assets: crate::app::process_assets::ProcessAssets,
-    /// Background music player (rodio).
-    pub(crate) music_player: Option<MusicPlayer>,
-    /// Sound effect player (rodio) — plays one-shot SFX (weapons, voices, UI).
-    pub(crate) sfx_player: Option<SfxPlayer>,
-    /// sound.ini / soundmd.ini registry mapping IDs to .wav filenames.
-    pub(crate) sound_registry: SoundRegistry,
-    /// audio.idx/bag indices for bag-based sound lookup (voices, EVA).
-    /// Searched in order (YR audiomd first, then base audio).
-    pub(crate) audio_indices: Vec<crate::assets::audio_bag::AudioIndex>,
-    /// The process-start audio decision persisted for later scenario reloads.
-    pub(crate) audio_indices_enabled: bool,
-    /// EVA announcement registry from eva.ini / evamd.ini.
-    /// Maps EVA event names to per-faction audio.bag sound IDs.
-    pub(crate) eva_registry: crate::rules::sound_ini::EvaRegistry,
+    /// Process-wide audio owner (F12): players and registries.
+    pub(crate) audio: crate::app::audio_runtime::AppAudioRuntime,
     /// Fire events from the current sim tick — position data for future muzzle
     /// flash rendering and projectile origin computation. Drained each frame.
     pub(crate) pending_fire_effects: Vec<crate::sim::world::SimFireEvent>,
@@ -507,11 +495,11 @@ pub(crate) struct AppState {
 pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
     state.scenario_outcome = None;
     state.scenario_exit = None;
-    if let Some(player) = state.music_player.as_mut() {
+    if let Some(player) = state.audio.music_player.as_mut() {
         player.cancel_scenario_theme_request();
         player.set_output_scale(1.0);
     }
-    if let Some(player) = state.sfx_player.as_mut() {
+    if let Some(player) = state.audio.sfx_player.as_mut() {
         player.set_output_scale(1.0);
     }
 }

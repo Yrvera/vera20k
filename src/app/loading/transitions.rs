@@ -382,21 +382,21 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
 
     // Load sound.ini / soundmd.ini for SFX sound ID resolution.
     if let Some(assets) = state.process_assets.manager() {
-        state.sound_registry = load_sound_registry(assets);
-        state.audio_indices = if crate::app::should_load_audio_indices(state.audio_indices_enabled)
+        state.audio.sound_registry = load_sound_registry(assets);
+        state.audio.audio_indices = if crate::app::should_load_audio_indices(state.audio.audio_indices_enabled)
         {
             load_audio_indices(assets)
         } else {
             Vec::new()
         };
-        state.eva_registry = load_eva_registry(assets);
+        state.audio.eva_registry = load_eva_registry(assets);
     }
 
     // Start_Scenario resolves `[Basic] Theme` as a theme-section key, then
     // leaves the current shell stream in place while Theme owns its fade and
     // deferred QueueSong/automatic request.
     let music_now_ms = sim_tick::monotonic_frame_pacer_ms(state, std::time::Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
+    if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
         let request = player.resolve_scenario_theme(state.map_basic.theme.as_deref(), assets);
         player.request_scenario_theme(request, music_now_ms);
     }

@@ -38,7 +38,7 @@ impl App {
         Self::capture_returned_skirmish_rng(state);
         crate::app::loading::pump::clear_match_startup_state(state);
         state.scenario_elapsed_clock.reset();
-        if let Some(ref mut player) = state.music_player {
+        if let Some(ref mut player) = state.audio.music_player {
             player.stop();
         }
         // F11: leaving a match silences match audio completely. Previously
@@ -46,11 +46,11 @@ impl App {
         // lines survived and played over the main menu, and the SFX output
         // scale stayed wherever the exit cascade left it (this Esc route
         // bypasses drive_scenario_exit entirely).
-        if let Some(ref mut sfx) = state.sfx_player {
+        if let Some(ref mut sfx) = state.audio.sfx_player {
             sfx.stop_all();
             sfx.set_output_scale(1.0);
         }
-        if let Some(ref mut player) = state.music_player {
+        if let Some(ref mut player) = state.audio.music_player {
             player.set_output_scale(1.0);
         }
         state.match_audio.reset_for_new_match();
@@ -83,10 +83,10 @@ impl App {
         // stops/restores the primary DirectSound output through 0x00407020 /
         // 0x00407040 while secondary playback cursors continue. Keep this on
         // the same edge as the main-loop gate rather than pausing each stream.
-        if let Some(player) = state.music_player.as_mut() {
+        if let Some(player) = state.audio.music_player.as_mut() {
             player.set_focus_output_active(active);
         }
-        if let Some(player) = state.sfx_player.as_mut() {
+        if let Some(player) = state.audio.sfx_player.as_mut() {
             player.set_focus_output_active(active);
         }
         if active {
@@ -437,8 +437,8 @@ impl App {
         let mut info = DevOverlayInfo {
             sim_speed_tps: state.sim_speed_tps,
             paused: state.paused,
-            music_volume: state.music_player.as_ref().map_or(0.5, |p| p.volume()),
-            sfx_volume: state.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
+            music_volume: state.audio.music_player.as_ref().map_or(0.5, |p| p.volume()),
+            sfx_volume: state.audio.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
             show_pathgrid: state.debug_show_pathgrid,
             show_cell_grid: state.debug_show_cell_grid,
             show_heightmap: state.debug_show_heightmap,
@@ -481,12 +481,12 @@ impl App {
                 log::info!("Game speed reset to {} tps", state.sim_speed_tps);
             }
             DevOverlayAction::SetMusicVolume(v) => {
-                if let Some(p) = &mut state.music_player {
+                if let Some(p) = &mut state.audio.music_player {
                     p.set_volume(v);
                 }
             }
             DevOverlayAction::SetSfxVolume(v) => {
-                if let Some(p) = &mut state.sfx_player {
+                if let Some(p) = &mut state.audio.sfx_player {
                     p.set_volume(v);
                 }
             }
@@ -559,7 +559,7 @@ impl App {
         let Some(config) = state.game_config.as_ref() else {
             return;
         };
-        let Some(player) = state.music_player.as_ref() else {
+        let Some(player) = state.audio.music_player.as_ref() else {
             return;
         };
         if let Err(err) =
@@ -574,7 +574,7 @@ impl App {
     /// calls this instead of exiting immediately; `render_frame` drives it to
     /// completion and then exits the event loop.
     pub(super) fn start_quit_cascade(state: &mut AppState) {
-        let start_volume = state.music_player.as_ref().map_or(0.0, |p| p.volume());
+        let start_volume = state.audio.music_player.as_ref().map_or(0.0, |p| p.volume());
         state.quit_cascade = Some(crate::app::frontend::quit_cascade::QuitCascade::start(
             Instant::now(),
             start_volume,
@@ -591,7 +591,7 @@ impl App {
             .is_some_and(|exit| exit.needs_voice_poll(wall_ms));
         let voices_active = poll_voices
             && state
-                .sfx_player
+                .audio.sfx_player
                 .as_mut()
                 .is_some_and(|sfx| sfx.pump_and_check_voices());
         let tick = state
@@ -601,21 +601,21 @@ impl App {
             .tick(wall_ms, voices_active);
 
         if let Some(scale) = tick.music_output_scale {
-            if let Some(player) = state.music_player.as_mut() {
+            if let Some(player) = state.audio.music_player.as_mut() {
                 player.set_output_scale(scale);
             }
         }
         if let Some(scale) = tick.sfx_output_scale {
-            if let Some(player) = state.sfx_player.as_mut() {
+            if let Some(player) = state.audio.sfx_player.as_mut() {
                 player.set_output_scale(scale);
             }
         }
         if tick.stop_audio {
-            if let Some(player) = state.music_player.as_mut() {
+            if let Some(player) = state.audio.music_player.as_mut() {
                 player.stop();
                 player.set_output_scale(1.0);
             }
-            if let Some(player) = state.sfx_player.as_mut() {
+            if let Some(player) = state.audio.sfx_player.as_mut() {
                 player.stop_all();
                 player.set_output_scale(1.0);
             }
@@ -625,7 +625,7 @@ impl App {
         // hard stop and output-scale restoration so ScoreX begins audible.
         if let Some(crate::app::match_runtime::scenario_exit::ScenarioExitAudioAction::PlayTheme(theme)) =
             tick.after_stop
-            && let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager())
+            && let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager())
         {
             let _ = player.play_track(theme, assets);
         }
@@ -672,16 +672,16 @@ impl App {
                     _ => "ceva015",
                 };
                 let sound_id = state
-                    .eva_registry
+                    .audio.eva_registry
                     .get("EVA_BattleControlTerminated", faction)
                     .unwrap_or(fallback)
                     .to_string();
-                if let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) {
+                if let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) {
                     let _ = sfx.interrupt_eva_sound(
                         &sound_id,
-                        &state.sound_registry,
+                        &state.audio.sound_registry,
                         assets,
-                        &state.audio_indices,
+                        &state.audio.audio_indices,
                     );
                 }
             }

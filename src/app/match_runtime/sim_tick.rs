@@ -192,21 +192,21 @@ fn announce_local_state_evas(state: &mut AppState) {
         .iter()
         .map(|(cue, fallback)| {
             state
-                .eva_registry
+                .audio.eva_registry
                 .get(cue, faction)
                 .unwrap_or(fallback)
                 .to_string()
         })
         .collect();
-    let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) else {
+    let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
         return;
     };
     for sound_id in &sound_ids {
         sfx.queue_eva_sound(
             sound_id,
-            &state.sound_registry,
+            &state.audio.sound_registry,
             assets,
-            &state.audio_indices,
+            &state.audio.audio_indices,
         );
     }
 }
@@ -241,7 +241,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
     }
 
     let voices_active = state
-        .sfx_player
+        .audio.sfx_player
         .as_mut()
         .is_some_and(|sfx| sfx.pump_and_check_voices());
     let finished = state
@@ -805,7 +805,7 @@ fn advance_in_game_runtime_mode(
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
-    if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
+    if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
         player.update(assets, music_now_ms);
     }
     if decision.tactical_mutation {
@@ -1043,7 +1043,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &state.house_roster,
                         );
                         let sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get("EVA_ConstructionComplete", faction)
                             .unwrap_or("ceva048")
                             .to_string();
@@ -1070,7 +1070,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &state.house_roster,
                         );
                         let sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get("EVA_UnitReady", faction)
                             .unwrap_or("ceva062")
                             .to_string();
@@ -1090,7 +1090,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         );
                         let (eva_key, fallback) = outcome_eva_entry(kind, faction);
                         let eva_sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get(eva_key, faction)
                             .unwrap_or(fallback)
                             .to_string();
@@ -1120,7 +1120,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &state.house_roster,
                         );
                         let sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get("EVA_CannotDeployHere", faction)
                             .unwrap_or("ceva063")
                             .to_string();
@@ -1140,7 +1140,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &state.house_roster,
                         );
                         let sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get("EVA_StructureGarrisoned", faction)
                             .unwrap_or("ceva107")
                             .to_string();
@@ -1159,7 +1159,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             &state.house_roster,
                         );
                         let sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get("EVA_StructureAbandoned", faction)
                             .unwrap_or("ceva108")
                             .to_string();
@@ -1283,7 +1283,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                                 &state.house_roster,
                             );
                             state
-                                .eva_registry
+                                .audio.eva_registry
                                 .get("EVA_BridgeRepaired", faction)
                                 .map(|s| s.to_string())
                         } else {
@@ -1331,7 +1331,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             ("EVA_OurBaseIsUnderAttack", "ceva054")
                         };
                         let eva_sound_id = state
-                            .eva_registry
+                            .audio.eva_registry
                             .get(cue, faction)
                             .unwrap_or(fallback)
                             .to_string();
@@ -1394,7 +1394,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         .retain(|anim| anim.target_id != stable_id);
                 }
                 LifecycleOutput::StopVoc { stable_id } => {
-                    if let Some(sfx) = state.sfx_player.as_mut() {
+                    if let Some(sfx) = state.audio.sfx_player.as_mut() {
                         sfx.stop_animation_sound(stable_id);
                     }
                 }

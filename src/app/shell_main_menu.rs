@@ -504,7 +504,7 @@ impl App {
             return;
         }
         let now_ms = crate::app::match_runtime::sim_tick::monotonic_frame_pacer_ms(state, Instant::now());
-        if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
+        if let (Some(player), Some(assets)) = (&mut state.audio.music_player, state.process_assets.manager()) {
             player.play_menu_theme(assets);
             player.update(assets, now_ms);
         }
@@ -514,14 +514,14 @@ impl App {
         let Some(sound_id) = sound_id else {
             return;
         };
-        let (Some(sfx), Some(assets)) = (&mut state.sfx_player, state.process_assets.manager()) else {
+        let (Some(sfx), Some(assets)) = (&mut state.audio.sfx_player, state.process_assets.manager()) else {
             return;
         };
         sfx.play_sound(
             sound_id,
-            &state.sound_registry,
+            &state.audio.sound_registry,
             assets,
-            &state.audio_indices,
+            &state.audio.audio_indices,
         );
     }
 

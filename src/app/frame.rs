@@ -93,7 +93,7 @@ impl App {
         if state.quit_cascade.is_some() {
             let now = Instant::now();
             let voices_active = state
-                .sfx_player
+                .audio.sfx_player
                 .as_ref()
                 .is_some_and(|sfx| sfx.voices_active());
             let tick = state
@@ -101,11 +101,11 @@ impl App {
                 .as_mut()
                 .expect("cascade present")
                 .tick(now, voices_active);
-            if let (Some(vol), Some(player)) = (tick.music_volume, state.music_player.as_mut()) {
+            if let (Some(vol), Some(player)) = (tick.music_volume, state.audio.music_player.as_mut()) {
                 player.set_volume(vol);
             }
             if tick.stop_music {
-                if let Some(player) = state.music_player.as_mut() {
+                if let Some(player) = state.audio.music_player.as_mut() {
                     player.stop();
                 }
             }

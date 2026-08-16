@@ -530,18 +530,20 @@ impl App {
             process_assets: crate::app::process_assets::ProcessAssets::from_startup(
                 startup_asset_manager,
             ),
-            music_player: startup_audio
-                .initialize_music_output
-                .then(MusicPlayer::new)
-                .flatten(),
-            sfx_player: startup_audio
-                .initialize_sfx_output
-                .then(SfxPlayer::new)
-                .flatten(),
-            sound_registry: startup_sound_registry,
-            audio_indices: startup_audio_indices,
-            audio_indices_enabled: startup_audio.load_audio_indices,
-            eva_registry: startup_eva_registry,
+            audio: crate::app::audio_runtime::AppAudioRuntime {
+                music_player: startup_audio
+                    .initialize_music_output
+                    .then(MusicPlayer::new)
+                    .flatten(),
+                sfx_player: startup_audio
+                    .initialize_sfx_output
+                    .then(SfxPlayer::new)
+                    .flatten(),
+                sound_registry: startup_sound_registry,
+                audio_indices: startup_audio_indices,
+                audio_indices_enabled: startup_audio.load_audio_indices,
+                eva_registry: startup_eva_registry,
+            },
             pending_fire_effects: Vec::new(),
             garrison_muzzle_flashes: Vec::new(),
             weapon_muzzle_flashes: Vec::new(),
@@ -591,7 +593,7 @@ impl App {
         // Seed the live music volume from the user's saved RA2MD.INI
         // [Audio] ScoreVolume, falling back to the engine default when the
         // file/section/key is absent. Matches the original reading this at boot.
-        if let Some(player) = state.music_player.as_mut() {
+        if let Some(player) = state.audio.music_player.as_mut() {
             let saved_volume = state
                 .game_config
                 .as_ref()
