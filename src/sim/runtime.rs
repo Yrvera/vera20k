@@ -13,12 +13,36 @@
 use crate::sim::world::Simulation;
 
 /// Immutable per-match resources bound at construction (F07 cones land here).
-#[derive(Default)]
+
 pub struct SimResources {
     /// Fixed per-cell terrain heights parsed from the loaded map.
     pub height_map: std::collections::BTreeMap<(u16, u16), u8>,
     /// Bridge-deck heights layered above the terrain heights.
     pub bridge_height_map: std::collections::BTreeMap<(u16, u16), u8>,
+    /// Rules-semantic overlay registry for the loaded match.
+    pub overlay_registry: crate::rules::overlay_types::OverlayTypeRegistry,
+    /// Immutable trigger definitions parsed from the map; the runtime state
+    /// machine lives in the simulation, these are bound once (F07: the app
+    /// no longer passes definitions each frame).
+    pub trigger_graph: crate::map::trigger_graph::TriggerGraph,
+    pub triggers: crate::map::triggers::TriggerMap,
+    pub events: crate::map::events::EventMap,
+    pub actions: crate::map::actions::ActionMap,
+}
+
+impl SimResources {
+    /// Empty pre-bind resources for fixture and fallback construction.
+    pub fn empty() -> Self {
+        Self {
+            height_map: std::collections::BTreeMap::new(),
+            bridge_height_map: std::collections::BTreeMap::new(),
+            overlay_registry: crate::rules::overlay_types::OverlayTypeRegistry::empty(),
+            trigger_graph: Default::default(),
+            triggers: Default::default(),
+            events: Default::default(),
+            actions: Default::default(),
+        }
+    }
 }
 
 /// The runtime owner: one deterministic simulation plus its bound resources.
@@ -33,7 +57,7 @@ impl SimRuntime {
     pub fn from_simulation(simulation: Simulation) -> Self {
         Self {
             simulation,
-            resources: SimResources::default(),
+            resources: SimResources::empty(),
         }
     }
 

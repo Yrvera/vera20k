@@ -186,7 +186,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // resolved object's harvester flags, not the whole selection.
     let has_ore = match (
         sim.overlay_grid.as_ref(),
-        state.overlay_registry.as_ref(),
+        state.overlay_registry(),
         state.rules.as_ref(),
     ) {
         (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {

@@ -417,7 +417,7 @@ impl App {
         // growth stage indexes the frame list and the frame header carries the
         // radar triple. The artwork is never sampled for it, so there is no
         // substitute for loading the file.
-        let overlay_registry = state.overlay_registry.as_ref();
+        let overlay_registry = state.overlay_registry();
         let assets = state.asset_manager.as_ref();
         let theater_ext = job.theater.extension;
         let overlay_radar = |overlay_id: u8, stage: u8| -> Option<[u8; 3]> {

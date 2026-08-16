@@ -182,7 +182,7 @@ pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
     let Some(owner) = preferred_local_owner(state) else {
         return false;
     };
-    match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.overlay_registry) {
+    match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
         (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
             sim,
             overlays,
@@ -273,7 +273,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         let Some(owner) = preferred_local_owner(state) else {
             return true;
         };
-        let payload = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.overlay_registry) {
+        let payload = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.overlay_registry()) {
             (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
                 sim,
                 overlays,

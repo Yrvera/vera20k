@@ -575,7 +575,7 @@ pub(crate) fn build_overlay_instances(
         else {
             continue;
         };
-        let overlay_registry = state.overlay_registry.as_ref();
+        let overlay_registry = state.overlay_registry();
         let overlay_flags = overlay_registry.and_then(|reg| reg.flags(live_overlay_id));
         let slope_type = state
             .resolved_terrain

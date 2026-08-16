@@ -516,7 +516,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         let clicked_ore = cell_context_enabled
             && match (
                 sim.overlay_grid.as_ref(),
-                state.overlay_registry.as_ref(),
+                Some(&resources.overlay_registry),
                 state.rules.as_ref(),
             ) {
                 (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {

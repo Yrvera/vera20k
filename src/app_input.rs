@@ -1566,7 +1566,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             state.loaded_map_hash,
             state.rules.as_ref(),
             state.resolved_terrain.as_ref(),
-            state.overlay_registry.as_ref(),
+            state.overlay_registry(),
             crate::app::persistence::MatchStartupStateView::new(
                 &state.active_loading_correlation,
                 &state.loaded_startup,

@@ -114,11 +114,17 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
+    state.shell_preview_overlay_registry = Some(result.overlay_registry.clone());
     state.sim_runtime = result.simulation.map(|simulation| crate::sim::runtime::SimRuntime {
         simulation,
         resources: crate::sim::runtime::SimResources {
             height_map: result.height_map,
             bridge_height_map: result.bridge_height_map,
+            overlay_registry: result.overlay_registry,
+            trigger_graph: result.trigger_graph,
+            triggers: result.triggers,
+            events: result.events,
+            actions: result.actions,
         },
     });
     state.combat_lights.clear();
@@ -177,16 +183,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.waypoints = result.waypoints;
     state.cell_tags = result.cell_tags;
     state.tags = result.tags;
-    state.triggers = result.triggers;
-    state.events = result.events;
-    state.actions = result.actions;
-    state.trigger_graph = result.trigger_graph;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.trigger_runtime = result.trigger_runtime;
     }
     state.overlay_names = result.overlay_names;
     state.tiberium_radar_colors = result.tiberium_radar_colors;
-    state.overlay_registry = Some(result.overlay_registry);
     state.house_color_map = result.house_color_map;
     state.house_roster = result.house_roster;
     state.tactical_bridge_inverse_map = result.tactical_bridge_inverse_map;

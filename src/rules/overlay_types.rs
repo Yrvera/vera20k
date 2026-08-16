@@ -216,6 +216,7 @@ impl OverlayTypeFlags {
 ///
 /// Built from the [OverlayTypes] section of rules.ini.
 /// Overlay IDs 0..N map to the names listed in order.
+#[derive(Clone)]
 pub struct OverlayTypeRegistry {
     /// Overlay ID -> name (indexed by preserved internal [OverlayTypes] IDs).
     names: Vec<String>,

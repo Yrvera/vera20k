@@ -5,16 +5,16 @@
 //! extracted group; unrelated presentation, input, and match state stay flat.
 
 use super::{
-    ActionMap, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
+    AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
-    EguiIntegration, EventMap, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
+    EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
     MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayEntry, OverlayTypeRegistry,
     RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
     SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
-    SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, Simulation, SkirmishSettings,
+    SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, SkirmishSettings,
     SoundEventQueue, SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
-    TriggerGraph, TriggerMap, UnitAtlas, Waypoint, app_render, frontend::startup_splash,
+    UnitAtlas, Waypoint, app_render, frontend::startup_splash,
 };
 
 mod platform;
@@ -58,18 +58,16 @@ pub(crate) struct AppState {
     pub(crate) waypoints: HashMap<u32, Waypoint>,
     pub(crate) cell_tags: CellTagMap,
     pub(crate) tags: TagMap,
-    pub(crate) triggers: TriggerMap,
-    pub(crate) events: EventMap,
-    pub(crate) actions: ActionMap,
-    pub(crate) trigger_graph: TriggerGraph,
     /// Overlay ID → type name mapping for atlas lookups at render time.
     pub(crate) overlay_names: BTreeMap<u8, String>,
     /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
     /// extracted from SHP frames for minimap radar display.
     pub(crate) tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
-    /// Registry of overlay types from rules.ini — needed at runtime to look up
-    /// overlay_id by name when a wall is placed via production.
-    pub(crate) overlay_registry: Option<OverlayTypeRegistry>,
+    /// Shell-retained overlay registry for the random-map preview: keeps the
+    /// last-loaded match registry across scenario exit, matching the pre-F07
+    /// persistence of the old app field. Match paths read the runtime-bound
+    /// copy via `overlay_registry()`.
+    pub(crate) shell_preview_overlay_registry: Option<OverlayTypeRegistry>,
     /// Loaded GameConfig — missing config.toml falls back to the executable root;
     /// None only when config loading or executable-root discovery fails.
     /// Read at render time for cosmetic toggles (extra_animations) and other
@@ -600,5 +598,16 @@ impl AppState {
             .as_ref()
             .map(|rt| &rt.resources.bridge_height_map)
             .unwrap_or_else(|| EMPTY.get_or_init(BTreeMap::new))
+    }
+}
+
+impl AppState {
+    /// The overlay registry: runtime-bound during a match, shell-retained
+    /// (last loaded) otherwise — exactly the old field's lifecycle.
+    pub(crate) fn overlay_registry(&self) -> Option<&OverlayTypeRegistry> {
+        self.sim_runtime
+            .as_ref()
+            .map(|rt| &rt.resources.overlay_registry)
+            .or(self.shell_preview_overlay_registry.as_ref())
     }
 }

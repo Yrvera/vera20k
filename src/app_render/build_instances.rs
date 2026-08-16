@@ -435,7 +435,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
     let Some(resolved) = state.resolved_terrain.as_ref() else {
         return Vec::new();
     };
-    let Some(overlay_registry) = state.overlay_registry.as_ref() else {
+    let Some(overlay_registry) = state.overlay_registry() else {
         return Vec::new();
     };
     let Some(overlays) = sim.overlay_grid.as_ref() else {

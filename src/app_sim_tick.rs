@@ -923,7 +923,9 @@ fn should_record_replay_tick(
 
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_atlases_after_tick = false;
-    let runtime_active = state.sim_runtime.is_some() || !state.trigger_graph.triggers.is_empty();
+    // Trigger definitions are runtime-bound (F07), so a live runtime is the
+    // only activity source; the old trigger-only fixture mode is unrepresentable.
+    let runtime_active = state.sim_runtime.is_some();
     if !runtime_active {
         return false;
     }
@@ -948,13 +950,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     for _ in 0..1 {
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
-        let trigger_inputs = TriggerInputs {
-            graph: &state.trigger_graph,
-            triggers: &state.triggers,
-            events: &state.events,
-            actions: &state.actions,
-        };
-
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
@@ -987,10 +982,15 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 &due_commands,
                 state.rules.as_ref(),
                 &resources.height_map,
-                state.overlay_registry.as_ref(),
+                Some(&resources.overlay_registry),
                 SIM_TICK_MS,
                 tick_lane,
-                Some(trigger_inputs),
+                Some(TriggerInputs {
+                    graph: &resources.trigger_graph,
+                    triggers: &resources.triggers,
+                    events: &resources.events,
+                    actions: &resources.actions,
+                }),
             );
             trigger_effects = frame_trigger_effects;
             frame_overlay_updates = overlay_updates;
@@ -1736,7 +1736,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         ry,
         sim.path_grid(),
         &state.height_map(),
-        state.overlay_registry.as_ref(),
+        state.overlay_registry(),
     );
 }
 
