@@ -482,7 +482,7 @@ impl ApplicationHandler for App {
                 if !egui_consumed
                     && state.screen == GameScreen::MainMenu
                     && !state.main_menu_shell_failed
-                    && !state.main_menu_show_skirmish_setup
+                   
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
                     // While the SHP quit-confirm modal owns the controller, the menu
@@ -517,7 +517,7 @@ impl ApplicationHandler for App {
                     if state.exit_confirm_modal.is_some()
                         && state.screen == GameScreen::MainMenu
                         && !state.main_menu_shell_failed
-                        && !state.main_menu_show_skirmish_setup
+                       
                         && button == MouseButton::Left
                     {
                         if btn_state.is_pressed() {
@@ -554,7 +554,7 @@ impl ApplicationHandler for App {
                     }
                 } else if state.screen == GameScreen::MainMenu
                     && !state.main_menu_shell_failed
-                    && !state.main_menu_show_skirmish_setup
+                   
                     && !egui_consumed
                 {
                     if button == MouseButton::Left {

@@ -16,7 +16,7 @@ impl App {
 
     pub(super) fn native_skirmish_shell_active(state: &AppState) -> bool {
         state.screen == GameScreen::MainMenu
-            && (state.main_menu_show_native_skirmish_shell || state.dev_skirmish_shell_enabled)
+            && (state.shell_route.skirmish() || state.dev_skirmish_shell_enabled)
     }
     fn skirmish_shell_layout(state: &AppState) -> crate::ui::skirmish_shell::SkirmishShellLayout {
         crate::ui::skirmish_shell::compute_layout(state.render_width(), state.render_height())
@@ -56,9 +56,8 @@ impl App {
     }
 
     fn close_native_skirmish_shell(state: &mut AppState) {
-        state.main_menu_show_native_skirmish_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
-        state.skirmish_shell_return_to_single_player_shell = false;
         state.dev_skirmish_shell_enabled = false;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
@@ -189,9 +188,7 @@ impl App {
     }
 
     pub(super) fn teardown_skirmish_shell_for_start(state: &mut AppState) {
-        state.main_menu_show_native_skirmish_shell = false;
-        state.main_menu_show_single_player_shell = false;
-        state.skirmish_shell_return_to_single_player_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
@@ -213,8 +210,7 @@ impl App {
             .unwrap_or_else(|| "auto".to_string());
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
-        state.main_menu_show_single_player_shell = false;
-        state.skirmish_shell_return_to_single_player_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         let request = crate::app_loading::LoadingRequest::generic_map_load(
             map_name,
@@ -271,9 +267,7 @@ impl App {
         .with_retained_random_map(retained_random_map);
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
-        state.main_menu_show_single_player_shell = false;
-        state.skirmish_shell_return_to_single_player_shell = false;
-        state.main_menu_show_native_skirmish_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         state.skirmish_preview_texture = None;
         crate::app_loading::begin_loading(state, request);
@@ -382,7 +376,7 @@ impl App {
                         log::warn!("Could not pack raw Skirmish Back session: {err:?}");
                     }
                 }
-                if state.skirmish_shell_return_to_single_player_shell {
+                if state.shell_route.skirmish_returns_to_single_player() {
                     Self::return_from_skirmish_to_single_player_shell(state);
                 } else if Self::native_skirmish_shell_active(state) {
                     Self::close_native_skirmish_shell(state);

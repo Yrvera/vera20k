@@ -297,10 +297,11 @@ impl MainMenuCaptureSnapshot {
             height: state.gpu.config.height,
             main_menu_screen: state.screen == GameScreen::MainMenu,
             shell_failed: state.main_menu_shell_failed,
-            single_player_active: state.main_menu_show_single_player_shell,
-            skirmish_active: state.main_menu_show_native_skirmish_shell
-                || state.dev_skirmish_shell_enabled,
-            legacy_skirmish_setup_active: state.main_menu_show_skirmish_setup,
+            single_player_active: state.shell_route.single_player(),
+            skirmish_active: state.shell_route.skirmish() || state.dev_skirmish_shell_enabled,
+            // The legacy skirmish-setup flag was write-dead (never set after
+            // startup); the capture snapshot keeps the field as literal false.
+            legacy_skirmish_setup_active: false,
             modal_open: state.main_menu_dialog_open(),
             quit_active: state.quit_cascade.is_some(),
             first_paint_slide_active: state.shell_first_paint_slide.is_some(),

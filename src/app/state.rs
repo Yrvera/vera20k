@@ -185,10 +185,9 @@ pub(crate) struct AppState {
     /// Numeric internal-version string used by the bottom-right main-menu line.
     /// Resolution follows the retail 16-byte/CR-only cached contract.
     pub(crate) version_txt: String,
-    pub(crate) main_menu_show_single_player_shell: bool,
-    pub(crate) main_menu_show_skirmish_setup: bool,
-    pub(crate) main_menu_show_native_skirmish_shell: bool,
-    pub(crate) skirmish_shell_return_to_single_player_shell: bool,
+    /// Which shell surface owns the MainMenu screen (F11): structural
+    /// exclusivity replaces the old boolean triple.
+    pub(crate) shell_route: crate::app::shell_route::ShellRoute,
     /// Active shell first-paint controls-reveal slide (presentation only). gamemd
     /// plays this on the first paint of every shell dialog (menu / single-player /
     /// skirmish); the wave swaps each owner-draw button's SDBTNANM frame index.

@@ -70,6 +70,7 @@ pub(crate) mod persistence;
 pub(crate) mod process_assets;
 mod shell_main_menu;
 mod shell_random_map;
+pub(crate) mod shell_route;
 mod shell_skirmish;
 pub(crate) mod sidebar_projection;
 mod state;

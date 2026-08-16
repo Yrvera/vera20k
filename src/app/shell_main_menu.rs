@@ -2,7 +2,7 @@ use super::*;
 
 impl App {
     pub(super) fn single_player_shell_active(state: &AppState) -> bool {
-        state.screen == GameScreen::MainMenu && state.main_menu_show_single_player_shell
+        state.screen == GameScreen::MainMenu && state.shell_route.single_player()
     }
 
     /// The end-of-match score screen owns input whenever it has both a resolved
@@ -87,9 +87,7 @@ impl App {
         // and incorrectly preserve the old main-menu movie timeline.
         crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
-        state.main_menu_show_single_player_shell = true;
-        state.main_menu_show_native_skirmish_shell = false;
-        state.skirmish_shell_return_to_single_player_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::SinglePlayer;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
         state.single_player_shell_state.hover_started_at = None;
@@ -102,7 +100,7 @@ impl App {
         // the source dialog's movie session.
         crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
         crate::app_shell_transition::invalidate_main_menu_dialog_instance(state);
-        state.main_menu_show_single_player_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.single_player_shell_state.pressed_owner_draw_button = None;
         state.single_player_shell_state.hovered_owner_draw_button = None;
         state.single_player_shell_state.hover_started_at = None;
@@ -121,9 +119,9 @@ impl App {
         // constructing 0x102. Drop the hidden Rust session as well so returning
         // to 0x100 cannot continue the pre-Skirmish RA2TS timeline.
         crate::app_main_menu_shell_render::clear_ra2ts_movie_session(state);
-        state.main_menu_show_single_player_shell = false;
-        state.main_menu_show_native_skirmish_shell = true;
-        state.skirmish_shell_return_to_single_player_shell = true;
+        state.shell_route = crate::app::shell_route::ShellRoute::Skirmish {
+            return_to_single_player: true,
+        };
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
         Self::ensure_active_cooperative_shell_selection(state);
@@ -135,9 +133,8 @@ impl App {
     }
 
     pub(super) fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {
-        state.main_menu_show_native_skirmish_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
-        state.skirmish_shell_return_to_single_player_shell = false;
         state.skirmish_shell_state.choose_map_modal = None;
         state.skirmish_shell_state.validation_modal = None;
         state.skirmish_shell_state.open_combo_dropdown = None;

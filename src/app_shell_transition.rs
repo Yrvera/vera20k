@@ -303,11 +303,11 @@ pub(crate) fn current_shell_slide_target(state: &AppState) -> Option<ShellSlideK
         return None;
     }
     let candidate =
-        if state.main_menu_show_native_skirmish_shell || state.dev_skirmish_shell_enabled {
+        if state.shell_route.skirmish() || state.dev_skirmish_shell_enabled {
             ShellSlideKind::Skirmish
-        } else if state.main_menu_show_single_player_shell {
+        } else if state.shell_route.single_player() {
             ShellSlideKind::SinglePlayer
-        } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
+        } else if !state.main_menu_shell_failed {
             ShellSlideKind::MainMenu
         } else {
             return None;

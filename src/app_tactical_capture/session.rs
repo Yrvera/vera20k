@@ -274,9 +274,7 @@ impl TacticalCaptureSession {
 
         state.skirmish_shell_state.pressed_owner_draw_button = None;
         state.skirmish_shell_last_painted_pressed_button = None;
-        state.main_menu_show_single_player_shell = false;
-        state.skirmish_shell_return_to_single_player_shell = false;
-        state.main_menu_show_native_skirmish_shell = false;
+        state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         state.skirmish_preview_texture = None;
         let request = crate::app_loading::LoadingRequest::accepted_skirmish(

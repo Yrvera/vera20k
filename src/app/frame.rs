@@ -247,7 +247,7 @@ impl App {
                             )?;
                         }
                     }
-                } else if !state.main_menu_shell_failed && !state.main_menu_show_skirmish_setup {
+                } else if !state.main_menu_shell_failed {
                     match crate::app_main_menu_shell_render::render_main_menu_shell(
                         state,
                         &mut encoder,
