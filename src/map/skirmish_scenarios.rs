@@ -4,7 +4,7 @@
 //! This module models that list separately from the legacy display-sorted
 //! `available_maps` menu list.
 
-use crate::app_init::MapMenuEntry;
+use crate::map::scenario_menu::MapMenuEntry;
 use crate::map::briefing::BriefingSection;
 use crate::map::preview::{PreviewSection, PreviewSourceBounds};
 use crate::map::waypoints::Waypoint;

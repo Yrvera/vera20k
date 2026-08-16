@@ -1,10 +1,119 @@
 use std::collections::HashMap;
 
-use crate::app_types::CursorId;
+/// Identifies a visual cursor from mouse.sha. Used as HashMap key in SoftwareCursor.
+/// Frame ranges are hardcoded constants matching the vanilla RA2 exe (not INI-driven).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CursorId {
+    Default,
+    Select,
+    Move,
+    NoMove,
+    Attack,
+    /// Cursor table row 21. Shared by out-of-range attack and by the harvest
+    /// action — the action switch routes both to the same row, so they must
+    /// stay one id or switching between them would restart the animation.
+    AttackOutOfRange,
+    AttackMove,
+    /// Cursor table row 22 — the guard-area reticle.
+    GuardArea,
+    Deploy,
+    NoDeploy,
+    // Directional scroll cursors (move-allowed).
+    ScrollN,
+    ScrollNE,
+    ScrollE,
+    ScrollSE,
+    ScrollS,
+    ScrollSW,
+    ScrollW,
+    ScrollNW,
+    // Directional scroll cursors (can't-scroll-further).
+    NoMoveN,
+    NoMoveNE,
+    NoMoveE,
+    NoMoveSE,
+    NoMoveS,
+    NoMoveSW,
+    NoMoveW,
+    NoMoveNW,
+    MinimapMove,
+    Enter,
+    NoEnter,
+    EngineerRepair,
+    TogglePower,
+    NoTogglePower,
+    /// 4-way pan cursor (frame 385 in mouse.sha).
+    Pan,
+    // Sell / repair mode cursors.
+    Sell,
+    SellUnit,
+    NoSell,
+    Repair,
+    NoRepair,
+    // Special unit cursors.
+    DesolatorDeploy,
+    GIDeploy,
+    Crush,
+    Tote,
+    IvanBomb,
+    Detonate,
+    Demolish,
+    Disarm,
+    InfantryHeal,
+    // Spy / infiltration cursors.
+    Disguise,
+    SpyTech,
+    SpyPower,
+    // Mind control cursors.
+    MindControl,
+    NoMindControl,
+    RemoveSquid,
+    InfantryAbsorb,
+    // Superweapon cursors.
+    Nuke,
+    Chronosphere,
+    IronCurtain,
+    LightningStorm,
+    Paradrop,
+    ForceShield,
+    NoForceShield,
+    GeneticMutator,
+    AirStrike,
+    PsychicDominator,
+    PsychicReveal,
+    SpyPlane,
+    Beacon,
+}
+
+/// All loaded cursor animation sequences from mouse.sha, keyed by CursorId.
+pub(crate) struct SoftwareCursor {
+    pub(crate) sequences: HashMap<CursorId, SoftwareCursorSequence>,
+}
+
+impl SoftwareCursor {
+    /// Look up a cursor sequence by id, falling back to Default if not found.
+    pub(crate) fn get(&self, id: CursorId) -> Option<&SoftwareCursorSequence> {
+        self.sequences
+            .get(&id)
+            .or_else(|| self.sequences.get(&CursorId::Default))
+    }
+}
+
+pub(crate) struct SoftwareCursorFrame {
+    pub(crate) texture: BatchTexture,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
+pub(crate) struct SoftwareCursorSequence {
+    pub(crate) frames: Vec<SoftwareCursorFrame>,
+    pub(crate) interval_ms: u64,
+    pub(crate) hotspot: [f32; 2],
+}
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
 use crate::assets::shp_file::ShpFile;
-use crate::render::batch::BatchRenderer;
+use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use image::RgbaImage;
 use std::path::Path;
@@ -358,7 +467,7 @@ pub(crate) fn build_software_cursor(
     gpu: &GpuContext,
     batch: &BatchRenderer,
     asset_manager: &AssetManager,
-) -> Option<crate::app_render::SoftwareCursor> {
+) -> Option<SoftwareCursor> {
     let palette = asset_manager
         .get_ref("mousepal.pal")
         .and_then(|data| Palette::from_bytes(data).ok())?;
@@ -379,7 +488,7 @@ pub(crate) fn build_software_cursor(
 
     maybe_export_mouse_sheet(&shp, &palette);
 
-    let mut sequences: HashMap<CursorId, crate::app_render::SoftwareCursorSequence> =
+    let mut sequences: HashMap<CursorId, SoftwareCursorSequence> =
         HashMap::new();
     for &(id, start, count, interval_ms, hotspot) in CURSOR_DEFS {
         if let Some(seq) = build_cursor_sequence(
@@ -399,7 +508,7 @@ pub(crate) fn build_software_cursor(
         }
         // Non-default cursors that fail silently skip; SoftwareCursor::get() falls back to Default.
     }
-    Some(crate::app_render::SoftwareCursor { sequences })
+    Some(SoftwareCursor { sequences })
 }
 
 fn build_cursor_sequence(
@@ -411,7 +520,7 @@ fn build_cursor_sequence(
     count: usize,
     interval_ms: u64,
     hotspot: CursorHotspot,
-) -> Option<crate::app_render::SoftwareCursorSequence> {
+) -> Option<SoftwareCursorSequence> {
     let mut frames = Vec::new();
     for frame_idx in start..start + count {
         if let Some(frame) = build_cursor_frame(gpu, batch, shp, palette, frame_idx) {
@@ -421,7 +530,7 @@ fn build_cursor_sequence(
     if frames.is_empty() {
         return None;
     }
-    Some(crate::app_render::SoftwareCursorSequence {
+    Some(SoftwareCursorSequence {
         frames,
         interval_ms,
         hotspot: resolve_hotspot(hotspot, shp),
@@ -451,13 +560,13 @@ fn build_cursor_frame(
     shp: &ShpFile,
     palette: &Palette,
     frame_idx: usize,
-) -> Option<crate::app_render::SoftwareCursorFrame> {
+) -> Option<SoftwareCursorFrame> {
     if frame_idx >= shp.frames.len() {
         return None;
     }
     let rgba = frame_to_canvas_rgba(shp, frame_idx, palette).ok()?;
     let texture = batch.create_texture(gpu, &rgba, shp.width as u32, shp.height as u32);
-    Some(crate::app_render::SoftwareCursorFrame {
+    Some(SoftwareCursorFrame {
         texture,
         width: shp.width as f32,
         height: shp.height as f32,

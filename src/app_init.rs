@@ -33,7 +33,6 @@ use crate::assets::asset_manager::AssetManager;
 use crate::assets::shp_file::ShpFile;
 use crate::map::actions::ActionMap;
 use crate::map::basic::{BasicSection, BridgeDestroyabilityMode};
-use crate::map::briefing::BriefingSection;
 use crate::map::cell_tags::CellTagMap;
 use crate::map::events::EventMap;
 use crate::map::houses::{self, HouseColorMap, HouseRoster};
@@ -41,7 +40,6 @@ use crate::map::lighting::{self, CellLightGrid, LightingConfig, LightingProfileU
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
-use crate::map::preview::{PreviewSection, PreviewSourceBounds};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::tags::TagMap;
 use crate::map::terrain::{self, LocalBounds, TerrainGrid};
@@ -1099,27 +1097,8 @@ impl LightingFingerprint {
     }
 }
 
-/// Lightweight metadata used by the main-menu map selector.
-#[derive(Debug, Clone)]
-pub struct MapMenuEntry {
-    /// Actual file name/path token used to load the map later.
-    pub file_name: String,
-    /// Human-facing label derived from `[Basic] Name` when available.
-    pub display_name: String,
-    /// Optional author text from `[Basic]`.
-    pub author: Option<String>,
-    /// Ordered mission briefing lines from `[Briefing]`.
-    pub briefing: BriefingSection,
-    /// Lightweight preview metadata from `[Preview]` / `[PreviewPack]`.
-    pub preview: PreviewSection,
-    /// Multiplayer start waypoints 0..=7, sorted by waypoint index.
-    pub multiplayer_start_waypoints: Vec<Waypoint>,
-    /// Setup-shell player capacity from native waypoint counting, including
-    /// the `[RandomMap] NumPlayers` / eight-player fallback path.
-    pub player_capacity: i32,
-    /// Verified source bounds for projecting starts onto the preview surface.
-    pub preview_source_bounds: Option<PreviewSourceBounds>,
-}
+// Scenario-menu metadata is map-owned (F06); re-exported for app callers.
+pub use crate::map::scenario_menu::MapMenuEntry;
 
 pub(crate) fn load_map_initial_with_assets(
     ra2_dir: PathBuf,

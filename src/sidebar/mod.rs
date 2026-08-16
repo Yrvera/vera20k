@@ -19,6 +19,7 @@ pub use power_bar_anim::PowerBarAnimState;
 #[cfg(test)]
 pub(crate) use sidebar_view::build_sidebar_view;
 pub(crate) use sidebar_view::build_sidebar_view_with_spec;
+pub(crate) use sidebar_view::ArmedSidebarEntry;
 
 /// Original RA2 sidebar chrome width (all SHPs are 168px wide).
 pub const SIDEBAR_WIDTH: f32 = 168.0;

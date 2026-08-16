@@ -141,6 +141,15 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &sw_views,
         state.simulation.as_ref().map(|s| &s.interner),
     );
+    // App targeting state -> the sidebar-owned armed projection (F06 seam).
+    let armed_entry = state.targeting_mode.as_ref().map(|mode| match mode {
+        crate::app_types::TargetingMode::BuildingPlacement(section) => {
+            sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
+        }
+        crate::app_types::TargetingMode::SuperWeapon(section) => {
+            sidebar::ArmedSidebarEntry::SuperWeapon(section.clone())
+        }
+    });
     let mut view = sidebar::build_sidebar_view_with_spec(
         state.sidebar_layout_spec,
         state.render_width() as f32,
@@ -153,7 +162,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &queue_items,
         &build_options,
         &ready_buildings,
-        state.targeting_mode.as_ref(),
+        armed_entry.as_ref(),
         &producer_focus,
         state.sidebar_scroll_rows,
         state.simulation.as_ref().map(|sim| &sim.interner),

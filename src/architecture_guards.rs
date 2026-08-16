@@ -37,21 +37,7 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 /// REMOVED — by the ledger item that closes them — never added. An edge that
 /// disappears from the source must also be deleted here, so the ratchet
 /// tightens monotonically.
-const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
-    // F06: combat-light draw DTO moves to render.
-    ("render/combat_light.rs", "app"),
-    // F06: cursor ID / software-cursor DTOs move to render.
-    ("render/cursor_atlas.rs", "app"),
-    // F06: sidebar gets a concrete ArmedSidebarEntry instead of TargetingMode.
-    ("sidebar/sidebar_view.rs", "app"),
-    // F06: MapMenuEntry consolidates with the scenario catalog DTO.
-    ("ui/skirmish_shell/state/choose_map.rs", "skirmish_scenarios"),
-    ("ui/skirmish_shell/state/combos.rs", "app"),
-    ("ui/skirmish_shell/state/hit_test.rs", "app"),
-    ("ui/skirmish_shell/state/launch.rs", "app"),
-    ("ui/skirmish_shell/state/player_name.rs", "app"),
-    ("ui/skirmish_shell/state/trackbars.rs", "app"),
-];
+const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[];
 
 #[test]
 fn production_dependency_edges_match_frozen_ledger_inventory() {
@@ -106,7 +92,9 @@ fn scan_forbidden_edges(src_root: &Path) -> BTreeSet<(String, String)> {
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             let production = strip_test_items(&blank_comments_and_literals(&source));
             for root in *forbidden {
-                if contains_crate_ref(&production, root) {
+                if contains_crate_ref(&production, root)
+                    || group_contains_root(&production, root)
+                {
                     let rel = path
                         .strip_prefix(src_root)
                         .expect("scanned file under src")
@@ -335,4 +323,86 @@ fn contains_crate_ref(text: &str, root: &str) -> bool {
         start = abs + 1;
     }
     false
+}
+
+/// Brace-grouped `use crate::{...}` paths (`use crate::{app_init::X, ui::Y}`)
+/// hide the root from `contains_crate_ref`; walk each group's top-level
+/// segments. Found in the wild at ui/main_menu.rs before F06 closed it.
+fn group_contains_root(text: &str, root: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find("crate::{") {
+        let open = start + pos + "crate::".len();
+        let mut depth = 0usize;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let close = i.min(bytes.len());
+        let group = &text[(open + 1).min(close)..close];
+        let mut nest = 0usize;
+        let mut segment = String::new();
+        for ch in group.chars() {
+            match ch {
+                '{' => {
+                    nest += 1;
+                    segment.push(ch);
+                }
+                '}' => {
+                    nest = nest.saturating_sub(1);
+                    segment.push(ch);
+                }
+                ',' if nest == 0 => {
+                    if segment_is_root(segment.trim(), root) {
+                        return true;
+                    }
+                    segment.clear();
+                }
+                _ => segment.push(ch),
+            }
+        }
+        if segment_is_root(segment.trim(), root) {
+            return true;
+        }
+        start = close.max(start + pos + 1);
+    }
+    false
+}
+
+fn segment_is_root(segment: &str, root: &str) -> bool {
+    let Some(rest) = segment.strip_prefix(root) else {
+        return false;
+    };
+    match root {
+        "app" => rest.is_empty() || rest.starts_with(':') || rest.starts_with('_'),
+        _ => rest.is_empty() || rest.starts_with(':') || rest.starts_with(' '),
+    }
+}
+
+#[test]
+fn brace_grouped_imports_cannot_evade_the_scan() {
+    let evasive = "use crate::{app_init::MapMenuEntry, ui::client_theme};\n";
+    assert!(group_contains_root(evasive, "app"));
+    assert!(!contains_crate_ref(evasive, "app"));
+
+    let clean = "use crate::{map::terrain, rules::ruleset};\n";
+    assert!(!group_contains_root(clean, "app"));
+    assert!(!group_contains_root(clean, "sim"));
+
+    let nested = "use crate::{map::{terrain, overlay}, sim::rng};\n";
+    assert!(group_contains_root(nested, "sim"));
+    assert!(!group_contains_root(nested, "app"));
+
+    let renamed = "use crate::{sim as s};\n";
+    assert!(group_contains_root(renamed, "sim"));
 }

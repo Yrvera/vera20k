@@ -19,7 +19,7 @@ use crate::map::waypoints::{
     skirmish_player_capacity,
 };
 use crate::rules::ini_parser::IniFile;
-use crate::skirmish_scenarios::{
+use crate::map::skirmish_scenarios::{
     PktEntryFields, SkirmishScenarioRecord, SkirmishScenarioSource, parse_game_mode_list,
 };
 use crate::util::config::GameConfig;

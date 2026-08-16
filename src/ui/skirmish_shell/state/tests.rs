@@ -12,7 +12,7 @@ use crate::skirmish_launch::{
     SkirmishLaunchOptions,
 };
 use crate::skirmish_modes::stock_skirmish_modes;
-use crate::skirmish_scenarios::{
+use crate::map::skirmish_scenarios::{
     SkirmishScenarioKind, SkirmishScenarioRecord, SkirmishScenarioSource,
 };
 use crate::ui::skirmish_shell::layout::TRACKBAR_THUMB_W;

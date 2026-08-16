@@ -1027,7 +1027,7 @@ mod tests {
             .find(|record| {
                 matches!(
                     record.source,
-                    crate::skirmish_scenarios::SkirmishScenarioSource::MissionsMdPkt
+                    crate::map::skirmish_scenarios::SkirmishScenarioSource::MissionsMdPkt
                 ) && record.preview.has_packed_preview
             })
             .expect("official PKT-backed map with PreviewPack");

@@ -18,73 +18,12 @@
 
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
-use crate::sidebar::{Rect, SidebarView};
-
-/// Anchor row of the credits string on the sidebar surface, in native
-/// (unscaled) pixels. gamemd passes the literal `2`.
-pub const CREDITS_SURFACE_Y: f32 = 2.0;
-
-/// Render depth for the credits glyph quads. Shares the `sidebar_text` layer
-/// with the cameo Ready/queue labels, which is drawn from the GAME.FNT atlas
-/// above every sidebar chrome piece.
-pub const CREDITS_DEPTH: f32 = 0.00042;
-
-/// Format the credit total exactly as the normal-player branch of gamemd's
-/// credits draw does: the wide `"%ld"` literal applied to the *displayed*
-/// (animated) value, so a negative total keeps its leading minus sign. `%ld`
-/// and `%d` produce identical text for the 32-bit credit value.
-///
-/// The observer branch formats CSF `TXT_TIME_FORMAT_HOURS` instead; VERA has
-/// no observer view yet, so only the player branch is modelled here.
-pub fn format_credits(credits: i32) -> String {
-    credits.to_string()
-}
-
-/// Colour the credits counter is drawn in: the side-dependent sidebar text
-/// colour, the same one the cameo status labels use. gamemd packs that colour
-/// through the surface's loss/shift masks before the draw; VERA keeps it
-/// linear RGB. Named here so the choice is one testable decision rather than
-/// an argument the render lane happens to pass.
-pub fn credits_tint(theme: crate::render::sidebar_chrome::SidebarTheme) -> [f32; 3] {
-    crate::render::sidebar_text::side_highlight_color(theme)
-}
-
-/// Build the credits counter as GAME.FNT glyph quads.
-///
-/// `panel_rect` is the sidebar surface in screen space — its origin is the
-/// screen-top-left corner of the sidebar column, which is what gamemd measures
-/// `surface_width / 2` and `y = 2` against. Both `panel_rect` and `ui_scale`
-/// are already in scaled screen pixels, so the native `y = 2` is scaled here
-/// and the glyphs are emitted at `ui_scale`, matching the cameo text lane.
-pub fn build_credits_instances(
-    font: &BitFont,
-    credits: i32,
-    panel_rect: Rect,
-    ui_scale: f32,
-    tint: [f32; 3],
-    camera_offset: [f32; 2],
-) -> Vec<SpriteInstance> {
-    let text = format_credits(credits);
-    // Horizontal centre: gamemd's anchor is the surface midpoint and the
-    // h-centre flag pulls the *measured* string half its width to the left.
-    // `BitFont::text_width` is that same measurement (trailing inter-character
-    // spacing on every glyph), so the half-width offset lands where retail's
-    // does rather than on the visual ink centre.
-    //
-    // Both halvings are integer divisions, as in the native rect helper. In
-    // float they would land on a half-pixel for any odd surface width or odd
-    // measured width, and the counter would resolve to either of two columns
-    // as the fractional camera moved — a visible 1 px shimmer on a number that
-    // is on screen the whole match. The camera offset is added *after* the
-    // rounding, so panning never feeds back into the fixed UI geometry (the
-    // same convention `place_canvas_crop_in_slot` uses for cameo art).
-    let text_w = (font.text_width(&text) as f32 * ui_scale).round() as i32;
-    let surface_w = panel_rect.w.round() as i32;
-    let x = panel_rect.x.round() + (surface_w / 2 - text_w / 2) as f32;
-    let y = panel_rect.y.round() + (CREDITS_SURFACE_Y * ui_scale).round();
-    font.build_text(&text, x, y, ui_scale, CREDITS_DEPTH, tint, camera_offset)
-}
-
+use crate::sidebar::SidebarView;
+// Generic credit glyph generation is render-owned (F06); this module keeps
+// only the sidebar-view adapter below. Re-exported for existing callers.
+pub use crate::render::sidebar_text::{
+    CREDITS_DEPTH, CREDITS_SURFACE_Y, build_credits_instances, credits_tint, format_credits,
+};
 /// Per-frame wrapper over [`build_credits_instances`] taking the sidebar view.
 pub fn build_sidebar_credits_instances(
     font: &BitFont,
@@ -106,6 +45,7 @@ pub fn build_sidebar_credits_instances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidebar::Rect;
     use crate::render::bit_font::CHAR_SPACING;
     use crate::render::bit_font::tests::make_test_font;
 

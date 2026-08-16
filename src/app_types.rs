@@ -8,12 +8,10 @@
 //! ## Dependency rules
 //! - Part of the app layer — no sim/render dependencies.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use winit::keyboard::KeyCode;
 
-use crate::render::batch::BatchTexture;
 
 /// Background clear color — black, matching the shroud/fog of war in RA2.
 /// Areas outside the isometric terrain diamond are not visible in the original game.
@@ -151,116 +149,11 @@ impl TypeSelectOutcome {
     }
 }
 
-/// Identifies a visual cursor from mouse.sha. Used as HashMap key in SoftwareCursor.
-/// Frame ranges are hardcoded constants matching the vanilla RA2 exe (not INI-driven).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum CursorId {
-    Default,
-    Select,
-    Move,
-    NoMove,
-    Attack,
-    /// Cursor table row 21. Shared by out-of-range attack and by the harvest
-    /// action — the action switch routes both to the same row, so they must
-    /// stay one id or switching between them would restart the animation.
-    AttackOutOfRange,
-    AttackMove,
-    /// Cursor table row 22 — the guard-area reticle.
-    GuardArea,
-    Deploy,
-    NoDeploy,
-    // Directional scroll cursors (move-allowed).
-    ScrollN,
-    ScrollNE,
-    ScrollE,
-    ScrollSE,
-    ScrollS,
-    ScrollSW,
-    ScrollW,
-    ScrollNW,
-    // Directional scroll cursors (can't-scroll-further).
-    NoMoveN,
-    NoMoveNE,
-    NoMoveE,
-    NoMoveSE,
-    NoMoveS,
-    NoMoveSW,
-    NoMoveW,
-    NoMoveNW,
-    MinimapMove,
-    Enter,
-    NoEnter,
-    EngineerRepair,
-    TogglePower,
-    NoTogglePower,
-    /// 4-way pan cursor (frame 385 in mouse.sha).
-    Pan,
-    // Sell / repair mode cursors.
-    Sell,
-    SellUnit,
-    NoSell,
-    Repair,
-    NoRepair,
-    // Special unit cursors.
-    DesolatorDeploy,
-    GIDeploy,
-    Crush,
-    Tote,
-    IvanBomb,
-    Detonate,
-    Demolish,
-    Disarm,
-    InfantryHeal,
-    // Spy / infiltration cursors.
-    Disguise,
-    SpyTech,
-    SpyPower,
-    // Mind control cursors.
-    MindControl,
-    NoMindControl,
-    RemoveSquid,
-    InfantryAbsorb,
-    // Superweapon cursors.
-    Nuke,
-    Chronosphere,
-    IronCurtain,
-    LightningStorm,
-    Paradrop,
-    ForceShield,
-    NoForceShield,
-    GeneticMutator,
-    AirStrike,
-    PsychicDominator,
-    PsychicReveal,
-    SpyPlane,
-    Beacon,
-}
-
-/// All loaded cursor animation sequences from mouse.sha, keyed by CursorId.
-pub(crate) struct SoftwareCursor {
-    pub(crate) sequences: HashMap<CursorId, SoftwareCursorSequence>,
-}
-
-impl SoftwareCursor {
-    /// Look up a cursor sequence by id, falling back to Default if not found.
-    pub(crate) fn get(&self, id: CursorId) -> Option<&SoftwareCursorSequence> {
-        self.sequences
-            .get(&id)
-            .or_else(|| self.sequences.get(&CursorId::Default))
-    }
-}
-
-pub(crate) struct SoftwareCursorFrame {
-    pub(crate) texture: BatchTexture,
-    pub(crate) width: f32,
-    pub(crate) height: f32,
-}
-
-pub(crate) struct SoftwareCursorSequence {
-    pub(crate) frames: Vec<SoftwareCursorFrame>,
-    pub(crate) interval_ms: u64,
-    pub(crate) hotspot: [f32; 2],
-}
+// Cursor identity and software-cursor DTOs are render-owned (F06);
+// re-exported so app consumers (and the app_render glob) keep their paths.
+pub(crate) use crate::render::cursor_atlas::{
+    CursorId, SoftwareCursor, SoftwareCursorFrame, SoftwareCursorSequence,
+};
 
 #[cfg(test)]
 mod tests {

@@ -124,7 +124,7 @@ pub(crate) struct AppState {
     /// MPModes rows used by the native Choose Map modal.
     pub(crate) skirmish_modes: Vec<crate::skirmish_modes::SkirmishGameMode>,
     /// Scenario records used by the native Choose Map modal.
-    pub(crate) skirmish_scenario_records: Vec<crate::skirmish_scenarios::SkirmishScenarioRecord>,
+    pub(crate) skirmish_scenario_records: Vec<crate::map::skirmish_scenarios::SkirmishScenarioRecord>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,

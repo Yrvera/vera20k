@@ -1,6 +1,6 @@
 //! Player-name edit state and input helpers for the skirmish shell.
 
-use crate::app_init::MapMenuEntry;
+use crate::map::scenario_menu::MapMenuEntry;
 use crate::sim::game_options::GameOptions;
 use crate::skirmish_launch::{SKIRMISH_PLAYER_SLOT_COUNT, SkirmishLaunchOptions};
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};

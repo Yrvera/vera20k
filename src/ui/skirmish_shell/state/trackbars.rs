@@ -1,6 +1,6 @@
 //! Trackbar and skirmish shell option input helpers.
 
-use crate::app_init::MapMenuEntry;
+use crate::map::scenario_menu::MapMenuEntry;
 use crate::rules::ini_parser::IniFile;
 
 use super::super::layout::{

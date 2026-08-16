@@ -33,12 +33,7 @@ pub(crate) struct CombatLight {
     pub flags: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CombatLightDrawRecord {
-    pub coord: ProjectileCoord,
-    pub surface_index: u8,
-    pub flags: u32,
-}
+pub(crate) use crate::render::combat_light::CombatLightDrawRecord;
 
 #[derive(Debug, Default)]
 pub(crate) struct CombatLightRuntime {

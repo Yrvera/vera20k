@@ -9,7 +9,14 @@
 
 use wgpu::util::DeviceExt;
 
-use crate::app_combat_lights::CombatLightDrawRecord;
+/// One combat light the tactical pass draws this frame. Render-owned draw DTO
+/// (F06); the app runtime that ages and drains lights produces these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CombatLightDrawRecord {
+    pub coord: crate::sim::projectile::ProjectileCoord,
+    pub surface_index: u8,
+    pub flags: u32,
+}
 use crate::render::batch::CameraUniform;
 use crate::render::gpu::GpuContext;
 

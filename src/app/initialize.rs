@@ -247,7 +247,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(idx, map)| {
-                    crate::skirmish_scenarios::SkirmishScenarioRecord::from_map_menu_entry(idx, map)
+                    crate::map::skirmish_scenarios::SkirmishScenarioRecord::from_map_menu_entry(idx, map)
                 })
                 .collect()
         } else {
@@ -255,7 +255,7 @@ impl App {
         };
         let skirmish_shell_maps: Vec<MapMenuEntry> = skirmish_scenario_records
             .iter()
-            .map(crate::skirmish_scenarios::SkirmishScenarioRecord::to_map_menu_entry)
+            .map(crate::map::skirmish_scenarios::SkirmishScenarioRecord::to_map_menu_entry)
             .collect();
         let skirmish_modes = startup_asset_manager
             .as_ref()

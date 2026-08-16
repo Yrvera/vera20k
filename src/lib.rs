@@ -80,7 +80,6 @@ pub mod skirmish_cooperative;
 pub mod skirmish_launch;
 pub mod skirmish_modes;
 pub mod skirmish_persistence;
-pub mod skirmish_scenarios;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
