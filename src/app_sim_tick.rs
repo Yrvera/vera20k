@@ -1855,33 +1855,18 @@ pub(crate) fn upsert_occupied_overlay_render_entries(
     }
 }
 
-/// Upsert authoritative occupied cells by coordinate. Returns the number of
-/// entries inserted or changed.
+
+// The slot-retaining coordinate upsert lives on OverlayRenderIndex (F08);
+// its contract tests moved with it. Tests here drive the index directly.
+#[cfg(test)]
 fn upsert_overlay_entries(
     existing: &mut Vec<crate::map::overlay::OverlayEntry>,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) -> usize {
-    let mut by_coordinate: std::collections::HashMap<(u16, u16), usize> = existing
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| ((entry.rx, entry.ry), index))
-        .collect();
-    let mut synced = 0;
-    for candidate in candidates {
-        let coordinate = (candidate.rx, candidate.ry);
-        if let Some(&index) = by_coordinate.get(&coordinate) {
-            let entry = &mut existing[index];
-            if entry.overlay_id != candidate.overlay_id || entry.frame != candidate.frame {
-                entry.overlay_id = candidate.overlay_id;
-                entry.frame = candidate.frame;
-                synced += 1;
-            }
-        } else {
-            by_coordinate.insert(coordinate, existing.len());
-            existing.push(candidate);
-            synced += 1;
-        }
-    }
+    let mut index = crate::app_overlay_index::OverlayRenderIndex::default();
+    index.replace_from_source(std::mem::take(existing));
+    let synced = index.upsert_occupied(candidates);
+    *existing = index.as_slice().to_vec();
     synced
 }
 

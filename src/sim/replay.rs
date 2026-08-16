@@ -767,32 +767,42 @@ impl ReplayLog {
 pub struct ReplayRunner;
 
 impl ReplayRunner {
-    /// Re-run diagnostic-log ticks through the bound runtime (F09): rules,
-    /// heights, overlay registry, and trigger definitions come from the
-    /// runtime resources and navigation is the simulation-pinned snapshot -
-    /// nothing is caller-substitutable.
+    /// Re-run diagnostic-log ticks through the bound runtime (F09): every
+    /// tick runs the exact production frame transaction, so rules, heights,
+    /// overlay registry, and trigger definitions come from the runtime
+    /// resources and navigation re-snapshots per frame just as a recorded
+    /// app session did - nothing is caller-substitutable and a mid-match
+    /// path-grid change replays faithfully.
     pub fn run_runtime(
         runtime: &mut crate::sim::runtime::SimRuntime,
         replay: &ReplayLog,
         tick_ms: u32,
     ) -> Vec<u64> {
-        let path_grid = runtime.simulation.path_grid_snapshot();
-        let resources = &runtime.resources;
-        Self::run_master_frame(
-            &mut runtime.simulation,
-            replay,
-            Some(&resources.rules),
-            &resources.height_map,
-            path_grid.as_deref(),
-            Some(&resources.overlay_registry),
-            tick_ms,
-            Some(TriggerInputs {
-                graph: &resources.trigger_graph,
-                triggers: &resources.triggers,
-                events: &resources.events,
-                actions: &resources.actions,
-            }),
-        )
+        debug_assert_eq!(
+            runtime.simulation.session.seed, replay.header.seed,
+            "replay playback sim must be constructed from header.seed"
+        );
+        let current = runtime.resources.rules.simulation_config_hash();
+        if replay.header.rules_hash != 0 && replay.header.rules_hash != current {
+            log::warn!(
+                "replay rules_hash mismatch (header {:#018x} vs current \n                 {:#018x}) - recorded under a different rules set; \n                 playback will desync",
+                replay.header.rules_hash,
+                current
+            );
+        }
+        let mut hashes: Vec<u64> = Vec::with_capacity(replay.ticks.len());
+        for entry in &replay.ticks {
+            let due_commands = runtime
+                .simulation
+                .take_due_replay_commands(entry.commands.iter().cloned());
+            let output = runtime.advance_frame(
+                &due_commands,
+                tick_ms,
+                crate::sim::world::TickLane::Ordinary,
+            );
+            hashes.push(output.tick.state_hash);
+        }
+        hashes
     }
 
     /// Re-run diagnostic-log ticks and return the resulting hash timeline.

@@ -66,7 +66,8 @@ pub struct SimRuntime {
 impl SimRuntime {
     /// Wrap an already-constructed simulation. Scenario construction moves
     /// here in F09; this keeps the F07 slot move atomic and behavior-free.
-    pub fn from_simulation(simulation: Simulation) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_simulation(simulation: Simulation) -> Self {
         Self {
             simulation,
             resources: SimResources::empty(),

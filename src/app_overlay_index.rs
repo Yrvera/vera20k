@@ -11,7 +11,8 @@
 //! - reoccupation with a different ID reuses the slot and reads the new live
 //!   value;
 //! - full restore appends only missing occupied coordinates in restore-output
-//!   order.
+//!   order (an existing coordinate additionally refreshes its source-seed
+//!   identity, which is invisible in-match because the live grid wins);
 //!
 //! Residual (recorded, not silent): entries still carry the source-seed
 //! `overlay_id`/`frame` as the pre-runtime display fallback (shell/loading
