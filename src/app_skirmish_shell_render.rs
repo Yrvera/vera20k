@@ -726,8 +726,7 @@ fn render_skirmish_shell_with_atlas(
         None
     };
     let color_schemes = state
-        .rules
-        .as_ref()
+        .rules()
         .map(|rules| rules.color_schemes.as_slice())
         .unwrap_or(&[]);
     let validation_ok_pressed = state.shell_controller.top_id()

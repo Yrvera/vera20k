@@ -187,9 +187,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         };
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
-        let cfg: Option<&AnimTypeRuntimeConfig> = state
-            .rules
-            .as_ref()
+        let cfg: Option<&AnimTypeRuntimeConfig> = state.rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(shp_name));
         // Anim SHP draws carry the type's ZAdjust= sort bias plus the
         // constant -2px anim bias (negative = toward camera).
@@ -289,9 +287,7 @@ pub(crate) fn build_anim_class_instances(
             continue;
         }
         let type_name: &str = sim.interner.resolve(anim.type_id);
-        let config = state
-            .rules
-            .as_ref()
+        let config = state.rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(type_name));
         if !crate::sim::anim_class::anim_draw_detail_visible(
             crate::sim::anim_class::AnimDrawDetailInput {
@@ -578,8 +574,7 @@ pub(crate) fn build_overlay_instances(
         let overlay_registry = state.overlay_registry();
         let overlay_flags = overlay_registry.and_then(|reg| reg.flags(live_overlay_id));
         let slope_type = state
-            .resolved_terrain
-            .as_ref()
+            .terrain_template()
             .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
             .map(|cell| cell.slope_type);
         let (display_overlay_id, live_overlay_data) = overlay_display_identity(
@@ -589,7 +584,7 @@ pub(crate) fn build_overlay_instances(
             entry.ry,
             slope_type,
             overlay_registry,
-            state.rules.as_ref().map(|rules| &rules.tiberium_types),
+            state.rules().map(|rules| &rules.tiberium_types),
         );
         let name = if display_overlay_id == live_overlay_id {
             state.overlay_names.get(&live_overlay_id).cloned()
@@ -734,9 +729,7 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = atlas.get(&key) else { continue };
 
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
-        let spawns_tiberium = state
-            .rules
-            .as_ref()
+        let spawns_tiberium = state.rules()
             .and_then(|rules| rules.terrain_object_type_case_insensitive(name))
             .map(|terrain_type| terrain_type.spawns_tiberium)
             .unwrap_or(false);
@@ -780,7 +773,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let (atlas, art_reg) = match (&state.sprite_atlas, state.rules.as_ref().map(|rules| &rules.art_registry)) {
+    let (atlas, art_reg) = match (&state.sprite_atlas, state.rules().map(|rules| &rules.art_registry)) {
         (Some(a), Some(r)) => (a, r),
         _ => return,
     };
@@ -922,9 +915,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let cfg: Option<&AnimTypeRuntimeConfig> = state
-            .rules
-            .as_ref()
+        let cfg: Option<&AnimTypeRuntimeConfig> = state.rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(&flash.shp_name));
         let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
@@ -981,7 +972,7 @@ fn projectile_authoritative_screen_position(
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
 fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, rules, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules, &state.sprite_atlas) {
+    let (sim, rules, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r), &state.sprite_atlas) {
         (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
         _ => return,
     };
@@ -1186,9 +1177,7 @@ pub(crate) fn build_parachute_instances(
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
-    let config = match state
-        .rules
-        .as_ref()
+    let config = match state.rules()
         .and_then(|r| r.general.parachute_render.as_ref())
     {
         Some(c) => c,

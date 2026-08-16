@@ -113,14 +113,16 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.loaded_map_source = Some(result.map_source);
     state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
-    state.resolved_terrain = result.resolved_terrain;
     state.shell_preview_overlay_registry = Some(result.overlay_registry.clone());
-    state.sim_runtime = result.simulation.map(|simulation| crate::sim::runtime::SimRuntime {
+    let match_rules = result.rules;
+    state.sim_runtime = result.simulation.zip(match_rules).map(|(simulation, rules)| crate::sim::runtime::SimRuntime {
         simulation,
         resources: crate::sim::runtime::SimResources {
             height_map: result.height_map,
             bridge_height_map: result.bridge_height_map,
             overlay_registry: result.overlay_registry,
+            terrain_template: result.resolved_terrain,
+            rules,
             trigger_graph: result.trigger_graph,
             triggers: result.triggers,
             events: result.events,
@@ -198,7 +200,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.pending_lighting_refresh = None;
     state.map_lighting_config = result.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
-    state.rules = result.rules;
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
     state.csf = result.csf;
@@ -209,9 +210,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Re-derive once at handoff so the first visible frame already uses the
     // selected detail mask and its corresponding building-light gate.
     let initial_lighting = match (
-        state.resolved_terrain.as_ref(),
+        state.terrain_template(),
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-        state.rules.as_ref(),
+        state.rules(),
     ) {
         (Some(terrain), Some(sim), Some(rules)) => {
             let view = crate::app_init::derive_lighting_view(
@@ -288,7 +289,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             &state.overlays,
             &state.terrain_objects,
             &state.overlay_names,
-            state.rules.as_ref(),
+            state.rules(),
             &state.tiberium_radar_colors,
         );
         state.minimap = Some(MinimapRenderer::new(

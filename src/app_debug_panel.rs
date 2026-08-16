@@ -283,7 +283,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
                 }
 
                 // Show building footprint info for structures near cursor.
-                if let Some(rules) = &state.rules {
+                if let Some(rules) = state.rules().map(|r| r) {
                     for entity in sim.entities().values() {
                         if entity.category != EntityCategory::Structure {
                             continue;

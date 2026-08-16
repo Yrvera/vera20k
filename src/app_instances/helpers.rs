@@ -160,7 +160,7 @@ fn tactical_bounded_entity_encounter_order(
 
     compose_tactical_screen_entity_encounter_order(
         sim,
-        state.rules.as_ref(),
+        state.rules(),
         (min_x, min_y, max_x, max_y),
         local_owner.as_deref(),
         local_owner_id,

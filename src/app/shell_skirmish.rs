@@ -1050,8 +1050,7 @@ impl App {
         sound: crate::ui::skirmish_shell::SkirmishShellUiSound,
     ) {
         let sound_id = state
-            .rules
-            .as_ref()
+            .rules()
             .and_then(|rules| Self::skirmish_shell_ui_sound_id(&rules.general, sound))
             .map(str::to_string);
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());

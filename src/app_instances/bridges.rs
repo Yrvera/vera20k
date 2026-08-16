@@ -427,7 +427,7 @@ fn resolve_bridge_kind_and_sub_idx(
     } else {
         return None;
     };
-    let terrain_cell = state.resolved_terrain.as_ref()?.cell(rx, ry)?;
+    let terrain_cell = state.terrain_template()?.cell(rx, ry)?;
     let tile_index = terrain_cell.final_tile_index;
     let caller_sub_tile = terrain_cell.final_sub_tile;
     Some((kind, tile_index, caller_sub_tile))

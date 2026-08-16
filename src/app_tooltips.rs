@@ -217,14 +217,12 @@ fn sync_in_game_regions(state: &mut AppState) {
             // are absent (assetless dev run).
             item.super_weapon_section
                 .as_deref()
-                .and_then(|section| state.rules.as_ref()?.super_weapon(section))
+                .and_then(|section| state.rules()?.super_weapon(section))
                 .and_then(|sw| sw.ui_name.as_deref())
                 .and_then(|key| state.csf.as_ref().map(|csf| csf.text(key).into_owned()))
                 .unwrap_or_else(|| item.display_name.clone())
         } else {
-            let name = state
-                .rules
-                .as_ref()
+            let name = state.rules()
                 .and_then(|r| r.object(&item.type_id))
                 .and_then(|o| o.ui_name.as_deref())
                 .and_then(|key| state.csf.as_ref().map(|csf| csf.text(key).into_owned()))

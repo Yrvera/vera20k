@@ -368,7 +368,6 @@ impl App {
             tile_atlas: None,
             map_basic: BasicSection::default(),
             terrain_grid: None,
-            resolved_terrain: None,
             sim_runtime: None,
             unit_atlas: None,
             vxl_slope_transition_cache: RefCell::new(Default::default()),
@@ -491,7 +490,7 @@ impl App {
                     None
                 }
             },
-            rules: startup_rules,
+            frontend_rules: startup_rules,
             csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),

@@ -68,7 +68,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         power_drained,
         sw_views,
     )) = (|| {
-        let (sim, rules) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules.as_ref()?);
+        let (sim, rules) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules()?);
         let producer_focus = [
             production::ProductionCategory::Building,
             production::ProductionCategory::Defense,

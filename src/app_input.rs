@@ -265,7 +265,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     world_x,
                                     world_y,
                                     CLICK_SELECT_RADIUS,
-                                    state.rules.as_ref(),
+                                    state.rules(),
                                     Some(&sim.houses),
                                     &state.height_map(),
                                     Some(&state.tactical_bridge_inverse_map),
@@ -279,7 +279,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         clicked_id,
                                         shift,
                                         preferred_local_owner_name(state).as_deref(),
-                                        state.rules.as_ref(),
+                                        state.rules(),
                                         Some(&sim.interner),
                                     ))
                                 } else {
@@ -293,7 +293,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                         world_y,
                                         CLICK_SELECT_RADIUS,
                                         shift,
-                                        state.rules.as_ref(),
+                                        state.rules(),
                                         Some(&sim.houses),
                                         &state.height_map(),
                                         Some(&state.tactical_bridge_inverse_map),
@@ -312,7 +312,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     world_y,
                                     CLICK_SELECT_RADIUS,
                                     shift,
-                                    state.rules.as_ref(),
+                                    state.rules(),
                                     Some(&sim.houses),
                                     &state.height_map(),
                                     Some(&state.tactical_bridge_inverse_map),
@@ -346,7 +346,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     max_x,
                                     max_y,
                                     shift,
-                                    state.rules.as_ref(),
+                                    state.rules(),
                                     Some(&sim.interner),
                                 ));
                                 held_type_select_batch = true;
@@ -366,7 +366,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                     max_x,
                                     max_y,
                                     shift,
-                                    state.rules.as_ref(),
+                                    state.rules(),
                                     Some(&sim.houses),
                                     Some(&sim.interner),
                                 );
@@ -1073,7 +1073,7 @@ fn execute_type_select_tap(state: &mut AppState) {
             &current,
             fog,
             preferred_local_owner_name(state).as_deref(),
-            state.rules.as_ref(),
+            state.rules(),
             Some(&sim.interner),
             state.type_select.across_map,
         )
@@ -1332,7 +1332,7 @@ fn quicksave(state: &mut AppState) {
         log::warn!("Quicksave: active world has no authoritative source-map digest");
         return;
     };
-    let Some(rules) = state.rules.as_ref() else {
+    let Some(rules) = state.rules() else {
         log::warn!("Quicksave: active rules are unavailable");
         return;
     };
@@ -1393,7 +1393,7 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::warn!("Save As: active world has no authoritative source-map digest");
         return;
     };
-    let Some(rules) = state.rules.as_ref() else {
+    let Some(rules) = state.rules() else {
         log::warn!("Save As: active rules are unavailable");
         return;
     };
@@ -1564,8 +1564,8 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
             &state.persistence.repository,
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.loaded_map_hash,
-            state.rules.as_ref(),
-            state.resolved_terrain.as_ref(),
+            state.rules(),
+            state.terrain_template(),
             state.overlay_registry(),
             crate::app::persistence::MatchStartupStateView::new(
                 &state.active_loading_correlation,
@@ -1635,12 +1635,12 @@ fn commit_prepared_load(
 
     // Rebuild transient lighting from the loaded live entity set so destroyed
     // light-source buildings do not leave stale point lights behind.
-    if let Some(resolved_terrain) = state.resolved_terrain.as_ref() {
+    if let Some(resolved_terrain) = state.terrain_template() {
         state.lighting_grid = crate::app_init::rebuild_lighting_grid_from_sim(
             resolved_terrain,
             &state.map_lighting_config,
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-            state.rules.as_ref(),
+            state.rules(),
             state.in_game_options.detail_level,
         );
         state.pending_lighting_refresh = None;
@@ -1757,7 +1757,7 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
     if !state.selection_order_pending {
         for entity in sim.entities().values() {
             if entity.selected && !ordered.contains(&entity.stable_id) {
-                insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules.as_ref());
+                insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules());
             }
         }
     }
@@ -1812,7 +1812,7 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
     let lifecycle_removed = reconciled.len() < prior_len;
     for entity in sim.entities().values() {
         if entity.selected && !reconciled.contains(&entity.stable_id) {
-            insert_selected_id(&mut reconciled, entity.stable_id, sim, state.rules.as_ref());
+            insert_selected_id(&mut reconciled, entity.stable_id, sim, state.rules());
         }
     }
     if lifecycle_removed {
@@ -1855,16 +1855,14 @@ fn apply_selection_mutation(
                 .teleport_state
                 .as_ref()
                 .is_some_and(|teleport| teleport.warp_out_active())
-            && state
-                .rules
-                .as_ref()
+            && state.rules()
                 .is_none_or(|rules| rules.object(type_id).is_none_or(|object| object.selectable));
         if !admitted || ordered.contains(&id) {
             continue;
         }
         successful_adds.push(id);
         native_selection_mode_reset = true;
-        insert_selected_id(&mut ordered, id, sim, state.rules.as_ref());
+        insert_selected_id(&mut ordered, id, sim, state.rules());
     }
 
     if reset_type_select_scope {
@@ -2092,7 +2090,7 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
     // Collect commands first to avoid borrow conflict with schedule_command.
     let mut commands: Vec<Command> = Vec::new();
     {
-        let rules = state.rules.as_ref();
+        let rules = state.rules();
         for &entity_id in &selected_ids {
             let Some(entity) = sim.entities().get(entity_id) else {
                 continue;
@@ -2368,7 +2366,7 @@ fn apply_selection_action_line_policy_at_tick(
 /// Emit the modeled VoiceSelect side effect for one successful Select call.
 fn emit_selection_voice(state: &mut AppState, entity_id: u64) {
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
-    let Some(rules) = &state.rules else { return };
+    let Some(rules) = state.rules().map(|r| r) else { return };
 
     if let Some(event) = selection_voice_event(sim, rules, entity_id) {
         state.sound_events.push(event);
@@ -2397,7 +2395,7 @@ fn jump_camera_to_base(state: &mut AppState) {
 
     // Collect the target cell from simulation entities before mutating state.
     let target: Option<(u16, u16)> = state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
-        let rules = state.rules.as_ref();
+        let rules = state.rules();
         // First pass: look for a ConYard (structure with UndeploysInto=).
         let conyard = sim.entities().values().find(|e| {
             e.category == EntityCategory::Structure

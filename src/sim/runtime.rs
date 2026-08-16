@@ -21,6 +21,13 @@ pub struct SimResources {
     pub bridge_height_map: std::collections::BTreeMap<(u16, u16), u8>,
     /// Rules-semantic overlay registry for the loaded match.
     pub overlay_registry: crate::rules::overlay_types::OverlayTypeRegistry,
+    /// The immutable base resolved-terrain template: source-derived, used for
+    /// static rendering and snapshot restore. Never the live runtime grid -
+    /// the simulation owns and rebuilds its own live resolved terrain (F08
+    /// naming, bound as an F07 cone).
+    pub terrain_template: Option<crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    /// The complete immutable match rules (including the sole ArtRegistry).
+    pub rules: crate::rules::ruleset::RuleSet,
     /// Immutable trigger definitions parsed from the map; the runtime state
     /// machine lives in the simulation, these are bound once (F07: the app
     /// no longer passes definitions each frame).
@@ -37,6 +44,11 @@ impl SimResources {
             height_map: std::collections::BTreeMap::new(),
             bridge_height_map: std::collections::BTreeMap::new(),
             overlay_registry: crate::rules::overlay_types::OverlayTypeRegistry::empty(),
+            rules: crate::rules::ruleset::RuleSet::from_ini(
+                &crate::rules::ini_parser::IniFile::from_str(""),
+            )
+            .expect("empty rules parse"),
+            terrain_template: None,
             trigger_graph: Default::default(),
             triggers: Default::default(),
             events: Default::default(),
@@ -78,5 +90,33 @@ pub struct SimView<'a> {
 impl<'a> SimView<'a> {
     pub fn simulation(&self) -> &'a Simulation {
         self.simulation
+    }
+}
+
+impl SimRuntime {
+    /// The production frame transaction: advance one lane-tagged frame using
+    /// the bound immutable resources. Callers cannot substitute rules, maps,
+    /// registries, definitions, or navigation (the simulation pins its own
+    /// canonical path snapshot internally).
+    pub fn advance_frame(
+        &mut self,
+        commands: &[crate::sim::command::CommandEnvelope],
+        tick_ms: u32,
+        lane: crate::sim::world::TickLane,
+    ) -> crate::sim::world::SimFrameOutput {
+        self.simulation.advance_app_frame(
+            commands,
+            Some(&self.resources.rules),
+            &self.resources.height_map,
+            Some(&self.resources.overlay_registry),
+            tick_ms,
+            lane,
+            Some(crate::sim::world::TriggerInputs {
+                graph: &self.resources.trigger_graph,
+                triggers: &self.resources.triggers,
+                events: &self.resources.events,
+                actions: &self.resources.actions,
+            }),
+        )
     }
 }

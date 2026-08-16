@@ -36,9 +36,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // Sidebar/minimap hits are already short-circuited above, so the SW reticle
     // only renders on the tactical map.
     if let Some(section) = state.armed_super_weapon_type() {
-        let cursor_id = state
-            .rules
-            .as_ref()
+        let cursor_id = state.rules()
             .and_then(|r| r.super_weapon(section))
             .and_then(|sw| sw.action.as_deref())
             .and_then(super_weapon_cursor_id)
@@ -115,7 +113,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         world_y,
         &owner,
         state.sandbox_full_visibility,
-        state.rules.as_ref(),
+        state.rules(),
         &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     );
@@ -129,7 +127,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         .map_or(ActionDistanceTarget::CellCentre(hover_rx, hover_ry), |e| {
             ActionDistanceTarget::Object(e.stable_id)
         });
-    let best_id = select_best_for_action(sim, &selected, action_target, state.rules.as_ref());
+    let best_id = select_best_for_action(sim, &selected, action_target, state.rules());
 
     // Force-fire override: with Ctrl held the cell path takes the attack branch
     // over allies, own units and empty ground. Ctrl+Shift is attack-move and
@@ -140,9 +138,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
                 let type_str = sim.interner.resolve(e.type_ref);
-                state
-                    .rules
-                    .as_ref()
+                state.rules()
                     .and_then(|r| r.object(type_str))
                     .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
             })
@@ -161,7 +157,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             &selected,
             best_id,
             hover,
-            state.rules.as_ref(),
+            state.rules(),
             sim.path_grid(),
         );
         return Some(kind);
@@ -187,7 +183,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     let has_ore = match (
         sim.overlay_grid.as_ref(),
         state.overlay_registry(),
-        state.rules.as_ref(),
+        state.rules(),
     ) {
         (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {
             crate::sim::tiberium::tiberium_cell_view(

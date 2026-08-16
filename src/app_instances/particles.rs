@@ -39,7 +39,7 @@ const PARTICLE_Y_LIFT: f32 = 15.0;
 /// `state.sprite_atlas.page_count()`). This function appends; sorting is the
 /// caller's responsibility (see `build_world_instances`).
 pub(crate) fn build_particle_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas, &state.rules) {
+    let (sim, atlas, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas, state.rules().map(|r| r)) {
         (Some(s), Some(a), Some(r)) => (s, a, r),
         _ => return,
     };

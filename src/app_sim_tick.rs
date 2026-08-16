@@ -28,7 +28,7 @@ use crate::sim::production;
 use crate::sim::replay::{ReplayHeader, ReplayLog};
 use crate::sim::trigger_runtime::TriggerEffect;
 use crate::sim::world::{
-    LifecycleOutput, SimFireEvent, SimFrameOutput, SimSoundEvent, TickLane, TriggerInputs,
+    LifecycleOutput, SimFireEvent, SimFrameOutput, SimSoundEvent, TickLane,
 };
 use crate::ui::game_screen::GameScreen;
 
@@ -434,9 +434,7 @@ fn build_score_screen_model(
         let owner_name = sim.interner.resolve(raw.owner).to_string();
         let country_name = raw.country.and_then(|country| {
             let country = sim.interner.resolve(country);
-            let (ui_key, plain) = state
-                .rules
-                .as_ref()
+            let (ui_key, plain) = state.rules()
                 .map(|rules| rules.country_display_name_sources(country))
                 .unwrap_or((None, None));
             let localized = ui_key
@@ -458,9 +456,7 @@ fn build_score_screen_model(
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
         // Shade 0 is the brightest band of the scheme ramp — the same colour
         // the radar draws this house's dots with.
-        let rgb = state
-            .rules
-            .as_ref()
+        let rgb = state.rules()
             .map(|rules| {
                 let color = rules.house_color_ramps.ramp(color_index)[0];
                 [color.r, color.g, color.b]
@@ -931,7 +927,9 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
     }
     let mut frame_committed = state.sim_runtime.is_none();
 
-    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+    if let Some(rt) = state.sim_runtime.as_mut() {
+        let bound_rules_hash = rules_hash(&rt.resources.rules);
+        let sim = &mut rt.simulation;
         if sim.replay_log.is_none() {
             sim.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
@@ -940,7 +938,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 // Scenario identity is session state — the header derives
                 // from the sim, not from app-resident view fields.
                 map_name: sim.session.map_name.clone(),
-                rules_hash: state.rules.as_ref().map(rules_hash).unwrap_or(0),
+                rules_hash: bound_rules_hash,
             }));
         }
     }
@@ -960,7 +958,6 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
         if let Some(rt) = state.sim_runtime.as_mut() {
-            let resources = &rt.resources;
             let sim = &mut rt.simulation;
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
@@ -970,6 +967,8 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             } else {
                 Vec::new()
             };
+            // F07: the runtime is the one production frame API — bound
+            // resources, no caller-substitutable inputs.
             let SimFrameOutput {
                 tick: tick_result,
                 trigger_effects: frame_trigger_effects,
@@ -978,27 +977,16 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                 sound_events: frame_sound_events,
                 fire_events: frame_fire_events,
                 invulnerability_impacts,
-            } = sim.advance_app_frame(
-                &due_commands,
-                state.rules.as_ref(),
-                &resources.height_map,
-                Some(&resources.overlay_registry),
-                SIM_TICK_MS,
-                tick_lane,
-                Some(TriggerInputs {
-                    graph: &resources.trigger_graph,
-                    triggers: &resources.triggers,
-                    events: &resources.events,
-                    actions: &resources.actions,
-                }),
-            );
+            } = rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane);
+            let resources = &rt.resources;
+            let sim = &mut rt.simulation;
             trigger_effects = frame_trigger_effects;
             frame_overlay_updates = overlay_updates;
             frame_committed = tick_result.frame_committed;
             if tick_result.frame_committed {
                 drained_combat_lights = crate::app_combat_lights::materialize_simulation_impacts(
                     invulnerability_impacts,
-                    state.rules.as_ref(),
+                    Some(&resources.rules),
                     &sim.interner,
                 );
             }
@@ -1196,7 +1184,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         let Some(event) = wall_sell_sound_for_local(
                             receiver_name,
                             local_owner_name.as_deref(),
-                            state.rules.as_ref(),
+                            Some(&resources.rules),
                         ) else {
                             continue;
                         };
@@ -1270,9 +1258,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             continue;
                         }
-                        let sound_id = match state
-                            .rules
-                            .as_ref()
+                        let sound_id = match Some(&resources.rules)
                             .and_then(|r| r.general.building_garrisoned_sound.as_deref())
                         {
                             Some(s) if !s.is_empty() => s.to_string(),
@@ -1285,9 +1271,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                     }
                     SimSoundEvent::ChuteSound { rx, ry } => {
-                        let sound_id = match state
-                            .rules
-                            .as_ref()
+                        let sound_id = match Some(&resources.rules)
                             .and_then(|r| r.general.chute_sound.as_deref())
                         {
                             Some(s) if !s.is_empty() => s.to_string(),
@@ -1310,9 +1294,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Positional SFX from [AudioVisual] BunkerWallsDownSound.
                         // Skip when rules don't configure the sound (matches
                         // gamemd's `RulesClass+0x244 != -1` guard).
-                        let sound_id = match state
-                            .rules
-                            .as_ref()
+                        let sound_id = match Some(&resources.rules)
                             .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
                         {
                             Some(s) if !s.is_empty() => s.to_string(),
@@ -1326,9 +1308,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                     SimSoundEvent::BunkerWallsUp { rx, ry } => {
                         // Walls-up cue on install; skip when the rules key is empty.
-                        let sound_id = match state
-                            .rules
-                            .as_ref()
+                        let sound_id = match Some(&resources.rules)
                             .and_then(|r| r.general.bunker_walls_up_sound.as_deref())
                         {
                             Some(s) if !s.is_empty() => s.to_string(),
@@ -1342,9 +1322,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                     }
                     SimSoundEvent::BunkerWallsDown { rx, ry } => {
                         // Walls-down cue on normal exit / clear teardown.
-                        let sound_id = match state
-                            .rules
-                            .as_ref()
+                        let sound_id = match Some(&resources.rules)
                             .and_then(|r| r.general.bunker_walls_down_sound.as_deref())
                         {
                             Some(s) if !s.is_empty() => s.to_string(),
@@ -1365,9 +1343,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         // Spatial SFX gated on rules.bridge_rules.repair_sound
                         // being set (the original game gates on
                         // `RulesClass+0x248 != -1`).
-                        let sound_id = state
-                            .rules
-                            .as_ref()
+                        let sound_id = Some(&resources.rules)
                             .and_then(|r| r.bridge_rules.repair_sound.clone())
                             .unwrap_or_default();
                         let screen_pos = if sound_id.is_empty() {
@@ -1556,8 +1532,8 @@ fn refresh_cell_lighting(state: &mut AppState) {
     let changed_view = {
         let (Some(sim), Some(rules), Some(terrain)) = (
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-            state.rules.as_ref(),
-            state.resolved_terrain.as_ref(),
+            state.rules(),
+            state.terrain_template(),
         ) else {
             return;
         };
@@ -1694,7 +1670,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         return;
     };
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
         state.building_placement_preview = None;
         return;
     };
@@ -1748,7 +1724,9 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Reuses `state.asset_manager` instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
+    let Some(rt) = state.sim_runtime.as_ref() else { return };
+    let sim = &rt.simulation;
+    let bound_rules = Some(&rt.resources.rules);
     let Some(asset_manager) = &state.asset_manager else {
         log::warn!("Atlas refresh skipped: no asset manager available");
         return;
@@ -1758,8 +1736,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     let unit_needed = unit_atlas::collect_needed_unit_keys(
         sim.entities(),
         asset_manager,
-        state.rules.as_ref(),
-        state.rules.as_ref().map(|rules| &rules.art_registry),
+        bound_rules,
+        bound_rules.map(|rules| &rules.art_registry),
         Some(&sim.interner),
     );
     let unit_rebuild: bool = match &state.unit_atlas {
@@ -1770,7 +1748,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     // Check if sprite atlas needs rebuilding (new SHP entity types appeared).
     let extra_buildings: Vec<&str> = crate::app_skirmish::deployable_building_types(
         sim.entities(),
-        state.rules.as_ref(),
+        bound_rules,
         Some(&sim.interner),
     );
     let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
@@ -1804,8 +1782,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.batch_renderer,
             sim.entities(),
             asset_manager,
-            state.rules.as_ref(),
-            state.rules.as_ref().map(|rules| &rules.art_registry),
+            bound_rules,
+            bound_rules.map(|rules| &rules.art_registry),
             existing,
             state.vxl_compute.as_mut(),
             Some(&sim.interner),
@@ -1833,8 +1811,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &palette,
             &state.theater_ext,
             &state.theater_name,
-            state.rules.as_ref(),
-            state.rules.as_ref().map(|rules| &rules.art_registry),
+            bound_rules,
+            bound_rules.map(|rules| &rules.art_registry),
             &state.house_color_map,
             &extra_buildings,
             &cell_drawer_type_ids,

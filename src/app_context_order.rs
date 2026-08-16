@@ -177,7 +177,7 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
 /// needs to name the speaker explicitly.
 fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &str) {
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
-    let Some(rules) = &state.rules else { return };
+    let Some(rules) = state.rules().map(|r| r) else { return };
     let Some(entity) = sim.entities().get(speaker_id) else {
         return;
     };
@@ -454,7 +454,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         // selected object can accept an attack-move order. The walk covers the
         // whole selection, so a selected building or aircraft kills the chord.
         if modifier == OrderModifier::AttackMove
-            && !selection_can_attack_move(sim, state.rules.as_ref(), &selected_ids)
+            && !selection_can_attack_move(sim, Some(&resources.rules), &selected_ids)
         {
             modifier = OrderModifier::Normal;
         }
@@ -489,7 +489,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             world_y,
             &owner,
             state.sandbox_full_visibility,
-            state.rules.as_ref(),
+            Some(&resources.rules),
             &resources.height_map,
             Some(&state.tactical_bridge_inverse_map),
         );
@@ -501,7 +501,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if target.kind != HoverTargetKind::FriendlyStructure {
                         return None;
                     }
-                    let rules = state.rules.as_ref()?;
+                    let rules = Some(&resources.rules)?;
                     sim.entities().get(target.stable_id).and_then(|e| {
                         rules
                             .is_refinery_type(sim.interner.resolve(e.type_ref))
@@ -517,7 +517,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             && match (
                 sim.overlay_grid.as_ref(),
                 Some(&resources.overlay_registry),
-                state.rules.as_ref(),
+                Some(&resources.rules),
             ) {
                 (Some(grid), Some(registry), Some(rules)) if !rules.tiberium_types.is_empty() => {
                     crate::sim::tiberium::tiberium_cell_view(
@@ -593,9 +593,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if selected_ids.contains(&target.stable_id) {
                         if let Some(entity) = sim.entities().get(target.stable_id) {
                             if entity.category == EntityCategory::Structure {
-                                let obj = state
-                                    .rules
-                                    .as_ref()
+                                let obj = Some(&resources.rules)
                                     .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
                                 let cmd = if obj.map_or(false, |o| o.can_be_occupied)
                                     && entity.passenger_role.cargo().is_some_and(|c| !c.is_empty())
@@ -608,7 +606,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                     Some(Command::EjectBunker {
                                         bunker_id: target.stable_id,
                                     })
-                                } else if state.rules.as_ref().is_some_and(|rules| {
+                                } else if Some(&resources.rules).is_some_and(|rules| {
                                     sim.should_show_undeploy_building_command(
                                         target.stable_id,
                                         rules,
@@ -679,7 +677,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .iter()
                         .copied()
                         .filter(|&sid| {
-                            state.rules.as_ref().is_some_and(|rules| {
+                            Some(&resources.rules).is_some_and(|rules| {
                                 crate::sim::passenger::can_entity_enter_garrison(
                                     sim,
                                     rules,
@@ -714,7 +712,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if !matches!(target.kind, HoverTargetKind::EnemyStructure) {
                         return None;
                     }
-                    let rules = state.rules.as_ref()?;
+                    let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
                     let obj = rules.object(sim.interner.resolve(building.type_ref))?;
                     if !obj.can_c4 || obj.invisible_in_game {
@@ -737,9 +735,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .filter(|&sid| {
                             sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
-                                    && state
-                                        .rules
-                                        .as_ref()
+                                    && Some(&resources.rules)
                                         .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
                                         .map_or(false, |o| o.c4)
                             })
@@ -769,7 +765,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if !matches!(target.kind, HoverTargetKind::EnemyStructure) {
                         return None;
                     }
-                    let rules = state.rules.as_ref()?;
+                    let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
                     let btype_str = sim.interner.resolve(building.type_ref);
                     let bowner_str = sim.interner.resolve(building.owner);
@@ -793,9 +789,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .filter(|&sid| {
                             sim.entities().get(sid).is_some_and(|e| {
                                 e.category == EntityCategory::Infantry
-                                    && state
-                                        .rules
-                                        .as_ref()
+                                    && Some(&resources.rules)
                                         .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
                                         .map_or(false, |o| o.engineer)
                             })
@@ -825,7 +819,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     if !matches!(target.kind, HoverTargetKind::FriendlyStructure) {
                         return None;
                     }
-                    let rules = state.rules.as_ref()?;
+                    let rules = Some(&resources.rules)?;
                     let building = sim.entities().get(target.stable_id)?;
                     let obj = rules.object(sim.interner.resolve(building.type_ref))?;
                     obj.unit_repair.then_some(target.stable_id)
@@ -874,7 +868,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 if let Some(bunker_id) = bunker_target {
                     let unit_id = selected_units.iter().copied().find(|&sid| {
                         sim.entities().get(sid).is_some_and(|e| !e.is_deployed())
-                            && state.rules.as_ref().is_some_and(|rules| {
+                            && Some(&resources.rules).is_some_and(|rules| {
                                 crate::sim::docking::bunker_link::can_auto_deploy_here(
                                     sim, sid, rules,
                                 )
@@ -902,9 +896,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                 if let Some(target) = hover.as_ref() {
                     if selected_ids.contains(&target.stable_id) {
                         if let Some(entity) = sim.entities().get(target.stable_id) {
-                            let obj = state
-                                .rules
-                                .as_ref()
+                            let obj = Some(&resources.rules)
                                 .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)));
                             let cmd = if entity.category == EntityCategory::Structure {
                                 // Garrisoned building → unload occupants.
@@ -915,7 +907,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                         transport_id: target.stable_id,
                                     })
                                 // ConYard → MCV
-                                } else if state.rules.as_ref().is_some_and(|rules| {
+                                } else if Some(&resources.rules).is_some_and(|rules| {
                                     sim.should_show_undeploy_building_command(
                                         target.stable_id,
                                         rules,
@@ -978,7 +970,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     world_x,
                     world_y,
                     state.sandbox_full_visibility,
-                    state.rules.as_ref(),
+                    Some(&resources.rules),
                     &resources.height_map,
                     Some(&state.tactical_bridge_inverse_map),
                 )
@@ -989,7 +981,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     world_y,
                     &owner,
                     state.sandbox_full_visibility,
-                    state.rules.as_ref(),
+                    Some(&resources.rules),
                     &resources.height_map,
                     Some(&state.tactical_bridge_inverse_map),
                 )
@@ -1037,7 +1029,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     object_click_payload(
                         order_mode,
                         force_fire,
-                        entity_can_attack_move(sim, state.rules.as_ref(), stable_id),
+                        entity_can_attack_move(sim, Some(&resources.rules), stable_id),
                         stable_id,
                         target_id,
                         goal_rx,
@@ -1054,9 +1046,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         .get(stable_id)
                         .and_then(|e| {
                             let type_str = sim.interner.resolve(e.type_ref);
-                            state
-                                .rules
-                                .as_ref()
+                            Some(&resources.rules)
                                 .and_then(|r| r.object(type_str))
                                 .map(|obj| obj.primary.is_some() || obj.secondary.is_some())
                         })
@@ -1124,7 +1114,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             // committed, even when the rest of the group
                             // attack-moves.
                             if order_mode == OrderMode::AttackMove
-                                && entity_can_attack_move(sim, state.rules.as_ref(), stable_id)
+                                && entity_can_attack_move(sim, Some(&resources.rules), stable_id)
                             {
                                 Command::AttackMove {
                                     entity_id: stable_id,

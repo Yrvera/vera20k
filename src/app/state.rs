@@ -39,7 +39,6 @@ pub(crate) struct AppState {
     /// generated/fallback worlds without an authoritative source-map payload.
     pub(crate) loaded_map_hash: Option<u64>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
-    pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
     pub(crate) sim_runtime: Option<crate::sim::runtime::SimRuntime>,
     pub(crate) unit_atlas: Option<UnitAtlas>,
     pub(crate) vxl_slope_transition_cache:
@@ -281,7 +280,9 @@ pub(crate) struct AppState {
     /// capture run stays identical to an uncaptured one.
     pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
-    pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
+    /// Startup-shell rules loaded at boot for menu presentation; match paths
+    /// read the runtime-bound copy via `rules()`.
+    pub(crate) frontend_rules: Option<crate::rules::ruleset::RuleSet>,
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Owner name → house color index mapping for atlas key lookups.
@@ -609,5 +610,26 @@ impl AppState {
             .as_ref()
             .map(|rt| &rt.resources.overlay_registry)
             .or(self.shell_preview_overlay_registry.as_ref())
+    }
+}
+
+impl AppState {
+    /// The active rules: runtime-bound during a match, startup-shell rules
+    /// otherwise. Matches the old field's Option shape at every consumer.
+    pub(crate) fn rules(&self) -> Option<&crate::rules::ruleset::RuleSet> {
+        self.sim_runtime
+            .as_ref()
+            .map(|rt| &rt.resources.rules)
+            .or(self.frontend_rules.as_ref())
+    }
+}
+
+impl AppState {
+    /// The immutable base resolved-terrain template for the active match
+    /// (static rendering + restore); never the live sim grid.
+    pub(crate) fn terrain_template(&self) -> Option<&ResolvedTerrainGrid> {
+        self.sim_runtime
+            .as_ref()
+            .and_then(|rt| rt.resources.terrain_template.as_ref())
     }
 }

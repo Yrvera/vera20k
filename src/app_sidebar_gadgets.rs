@@ -32,7 +32,7 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
-    let Some(rules) = state.rules.as_ref() else {
+    let Some(rules) = state.rules() else {
         return;
     };
     let owner = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());

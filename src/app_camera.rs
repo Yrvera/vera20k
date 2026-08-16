@@ -704,8 +704,7 @@ pub(crate) fn update_camera(state: &mut AppState) {
         let movement_allowed = requested_direction
             .is_none_or(|direction| camera_scroll_direction_allowed(state, direction, sw, sh));
         let scroll_multiplier = state
-            .rules
-            .as_ref()
+            .rules()
             .map_or(DEFAULT_SCROLL_MULTIPLIER, |rules| {
                 rules.general.scroll_multiplier
             });

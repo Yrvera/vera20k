@@ -138,7 +138,7 @@ fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> O
         world_y,
         &owner,
         state.sandbox_full_visibility,
-        state.rules.as_ref(),
+        state.rules(),
         &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )
@@ -394,7 +394,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
 
 pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
     let owner: String = resolve_owner(state);
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules()) else {
         return;
     };
     let opening = [
@@ -457,11 +457,12 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid_snapshot);
-    let (Some(rt), Some(rules)) = (state.sim_runtime.as_mut(), &state.rules) else {
+    let Some(rt) = state.sim_runtime.as_mut() else {
         return;
     };
     let resources = &rt.resources;
     let sim = &mut rt.simulation;
+    let rules = &resources.rules;
     if let Some(grid) = path_grid.as_deref() {
         (base_rx, base_ry) = crate::app_sim_tick::clamp_cell_to_grid(grid, (base_rx, base_ry));
     }
@@ -613,7 +614,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
         let mut ranked: Vec<(usize, String)> = structure_counts
             .into_iter()
             .filter_map(|(owner, count)| {
-                let strict_buildable = state.rules.as_ref().is_some_and(|rules| {
+                let strict_buildable = state.rules().is_some_and(|rules| {
                     production::has_strict_build_option_for_owner(sim, rules, &owner)
                 });
                 strict_buildable.then_some((count, owner))

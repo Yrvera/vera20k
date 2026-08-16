@@ -22,11 +22,11 @@ use crate::sim::components::ParachuteAnim;
 /// 3. **Advance:** accumulate reached frames; advance at `frame_delay`;
 ///    wrap on `frame >= end_frame` to `loop_start`.
 pub(crate) fn tick_parachute_anims(state: &mut AppState) {
-    let Some(rules) = state.rules.as_ref() else {
-        state.parachute_anims.clear();
-        return;
-    };
-    let Some(config) = rules.general.parachute_render.as_ref() else {
+    let Some(config) = state
+        .rules()
+        .and_then(|rules| rules.general.parachute_render.as_ref())
+        .cloned()
+    else {
         state.parachute_anims.clear();
         return;
     };

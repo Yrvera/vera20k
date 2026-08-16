@@ -365,7 +365,7 @@ pub(crate) fn build_selection_bracket_instances(
         let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
 
         // Look up foundation and Height from rules/art.
-        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
+        let obj = state.rules().and_then(|r| r.object(type_str));
         let (fw_u, fh_u) = obj
             .map(|o| crate::rules::foundation::foundation_dimensions(&o.foundation))
             .unwrap_or((2, 2));
@@ -378,9 +378,7 @@ pub(crate) fn build_selection_bracket_instances(
                 if img.is_empty() { o.id.as_str() } else { img }
             })
             .unwrap_or(type_str);
-        let art_height: f32 = state
-            .rules
-            .as_ref()
+        let art_height: f32 = state.rules()
             .and_then(|rules| rules.art_registry.get(art_key))
             .map(|entry| entry.height as f32)
             .unwrap_or(2.0);

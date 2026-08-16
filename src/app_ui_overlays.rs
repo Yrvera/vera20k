@@ -37,9 +37,7 @@ const PIP_HEIGHT_FACTOR: f32 = 15.0;
 
 /// Get INI-driven health condition thresholds, falling back to RA2 defaults.
 fn condition_thresholds(state: &AppState) -> (f32, f32) {
-    state
-        .rules
-        .as_ref()
+    state.rules()
         .map(|r| (r.general.condition_yellow, r.general.condition_red))
         .unwrap_or((0.5, 0.25))
 }
@@ -64,7 +62,7 @@ fn health_bar_hover_target(
         world_y,
         local_owner,
         state.sandbox_full_visibility,
-        state.rules.as_ref(),
+        state.rules(),
         &state.height_map(),
         Some(&state.tactical_bridge_inverse_map),
     )?;
@@ -168,7 +166,7 @@ pub(crate) fn build_building_status_instances(
         let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
         // Foundation= is merged from art.ini into ObjectType by merge_art_data().
         // Height= is an art.ini property, looked up via Image= redirect.
-        let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
+        let obj = state.rules().and_then(|r| r.object(type_str));
         let foundation: (u32, u32) = obj
             .map(|o| {
                 let (w, h) = crate::rules::foundation::foundation_dimensions(&o.foundation);
@@ -186,9 +184,7 @@ pub(crate) fn build_building_status_instances(
                 if img.is_empty() { o.id.as_str() } else { img }
             })
             .unwrap_or(type_str);
-        let art_height: f32 = state
-            .rules
-            .as_ref()
+        let art_height: f32 = state.rules()
             .and_then(|rules| rules.art_registry.get(art_key))
             .map(|entry| entry.height as f32)
             .unwrap_or(2.0);
@@ -343,7 +339,7 @@ pub(crate) fn build_occupant_pip_instances(
     let local_owner = preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.sandbox_full_visibility;
-    let rules = state.rules.as_ref();
+    let rules = state.rules();
     let mut instances = Vec::new();
 
     for e in sim.entities().values() {
@@ -488,9 +484,7 @@ pub(crate) fn build_unit_status_bg_instances(
                 overlay.pipbrd_vehicle_uv().1,
             )
         };
-        let bracket_delta: f32 = state
-            .rules
-            .as_ref()
+        let bracket_delta: f32 = state.rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
@@ -577,9 +571,7 @@ pub(crate) fn build_unit_status_fill_instances(
         } else {
             UNIT_PIPS_VEHICLE
         };
-        let bracket_delta: f32 = state
-            .rules
-            .as_ref()
+        let bracket_delta: f32 = state.rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)))
             .map(|obj| obj.pixel_selection_bracket_delta as f32)
             .unwrap_or(0.0);
@@ -708,9 +700,7 @@ pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> V
         if !e.selected {
             continue;
         }
-        let obj = state
-            .rules
-            .as_ref()
+        let obj = state.rules()
             .and_then(|r| r.object(sim.interner.resolve(e.type_ref)));
         let is_tiberium_scale = obj
             .map(|o| o.pip_scale == crate::rules::object_type::PipScale::Tiberium)
@@ -845,7 +835,7 @@ pub(crate) fn build_building_radius_ring_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);

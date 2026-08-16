@@ -432,7 +432,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
-    let Some(resolved) = state.resolved_terrain.as_ref() else {
+    let Some(resolved) = state.terrain_template() else {
         return Vec::new();
     };
     let Some(overlay_registry) = state.overlay_registry() else {
@@ -488,7 +488,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// frame once even though native recenters an identical draw from every
 /// occupied footprint cell.
 fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (sim, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) {
+    let (sim, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules()) {
         (Some(s), Some(r)) => (s, r),
         _ => return Vec::new(),
     };
@@ -567,7 +567,8 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
-    if let (Some(minimap), Some(sim)) = (&mut state.minimap, state.sim_runtime.as_ref().map(|rt| &rt.simulation)) {
+    if let (Some(minimap), Some(rt)) = (&mut state.minimap, state.sim_runtime.as_ref()) {
+        let sim = &rt.simulation;
         minimap.update_unit_dots(
             &state.gpu,
             &state.batch_renderer,
@@ -581,7 +582,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
                     .as_deref()
                     .and_then(|owner| sim.interner.get(owner).map(|id| (id, &sim.fog)))
             },
-            state.rules.as_ref(),
+            Some(&rt.resources.rules),
             Some(&sim.radar_events),
             Some(&sim.interner),
             sim.bridge_state.as_ref(),
@@ -619,7 +620,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     );
     let factory_rally = crate::app_target_lines::build_factory_rally_line_instances(
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-        state.rules.as_ref(),
+        state.rules(),
         &state.height_map(),
         &state.house_color_map,
         preferred_local_owner(state).as_deref(),
@@ -667,9 +668,7 @@ fn build_placement_preview(
                 .map(|rt| &rt.simulation)
                 .map(|s| s.interner.resolve(preview.type_id).to_string())
                 .unwrap_or_default();
-            let is_wall: bool = state
-                .rules
-                .as_ref()
+            let is_wall: bool = state.rules()
                 .and_then(|r| r.object(&preview_type_str))
                 .map(|obj| obj.wall)
                 .unwrap_or(false);

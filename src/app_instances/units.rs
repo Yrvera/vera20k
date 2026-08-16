@@ -129,8 +129,7 @@ fn clamp_slope_for_render(slope: u8) -> u8 {
 
 fn terrain_slope_for_render(state: &AppState, rx: u16, ry: u16) -> u8 {
     state
-        .resolved_terrain
-        .as_ref()
+        .terrain_template()
         .and_then(|t| t.cell(rx, ry))
         .map(|c| {
             let raw = c.slope_type;
@@ -250,10 +249,10 @@ pub(crate) fn build_unit_instances(
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules.as_ref().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
 
     let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
+        super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -270,9 +269,7 @@ pub(crate) fn build_unit_instances(
         // miner dock sub-FSM's UnloadingClass (HORV/CMON) hint.
         let active_disguise = entity.disguise.as_ref().filter(|state| state.disguised);
         let base_type = sim.interner.resolve(entity.type_ref);
-        let no_spawn_alt = state
-            .rules
-            .as_ref()
+        let no_spawn_alt = state.rules()
             .and_then(|rules| rules.object(base_type))
             .is_some_and(|object| object.no_spawn_alt);
         let no_spawn_alt_type =
@@ -336,13 +333,9 @@ pub(crate) fn build_unit_instances(
             &state.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
-            state
-                .rules
-                .as_ref()
+            state.rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state
-                .rules
-                .as_ref()
+            state.rules()
                 .map_or(0, |rules| rules.general.extra_aircraft_light),
         );
         let center_x: f32 = sx;
@@ -491,9 +484,7 @@ pub(crate) fn build_unit_instances(
                 z: i32::from(pos.z),
             };
             let parent = if entity.category == EntityCategory::Structure {
-                state
-                    .rules
-                    .as_ref()
+                state.rules()
                     .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)))
                     .and_then(|object_type| {
                         ground_order.building_object_draw(
@@ -618,8 +609,8 @@ fn unit_entry_for_slope_state(
                     &state.gpu,
                     &state.batch_renderer,
                     asset_manager,
-                    state.rules.as_ref(),
-                    state.rules.as_ref().map(|rules| &rules.art_registry),
+                    state.rules(),
+                    state.rules().map(|rules| &rules.art_registry),
                     transition_key,
                 )
             {

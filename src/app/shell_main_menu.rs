@@ -480,8 +480,7 @@ impl App {
 
     pub(super) fn play_main_menu_button_sound(state: &mut AppState) {
         let sound_id = state
-            .rules
-            .as_ref()
+            .rules()
             .and_then(|rules| rules.general.gui_main_button_sound.as_deref())
             .map(str::to_string);
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());
@@ -492,8 +491,7 @@ impl App {
     /// dialog's controls-reveal slide. A no-op when the key is empty/unset.
     pub(crate) fn play_shell_slide_in_sound(state: &mut AppState) {
         let sound_id = state
-            .rules
-            .as_ref()
+            .rules()
             .and_then(|rules| rules.general.gui_move_in_sound.as_deref())
             .map(str::to_string);
         Self::play_shell_ui_sound_by_id(state, sound_id.as_deref());

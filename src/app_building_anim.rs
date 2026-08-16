@@ -91,7 +91,7 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);
     let (power_produced, power_drained) =
-        match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules, owner_name.as_deref()) {
+        match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules(), owner_name.as_deref()) {
             (Some(sim), Some(rules), Some(owner)) => {
                 production::power_balance_for_owner(sim, rules, owner)
             }
@@ -122,7 +122,7 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
 pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     let new_has_radar: bool = match (
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
-        &state.rules,
+        state.rules(),
         preferred_local_owner_name(state).as_deref(),
     ) {
         (Some(sim), Some(rules), Some(owner)) => {
@@ -374,14 +374,14 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                 return;
             }
         };
-        let art_reg = match state.rules.as_ref().map(|rules| &rules.art_registry) {
+        let art_reg = match state.rules().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
                 state.garrison_muzzle_flashes.clear();
                 return;
             }
         };
-        let rules = match &state.rules {
+        let rules = match state.rules() {
             Some(r) => r,
             None => {
                 state.garrison_muzzle_flashes.clear();
@@ -427,7 +427,10 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
-    let (Some(sim), Some(art_reg)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules.as_ref().map(|rules| &rules.art_registry)) else {
+    let Some((sim, art_reg)) = state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| (&rt.simulation, &rt.resources.rules.art_registry)) else {
         state.garrison_muzzle_flashes.clear();
         return;
     };

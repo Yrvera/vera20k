@@ -560,7 +560,7 @@ pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
     session.job.asset_manager = state.asset_manager.take();
     // Resolve the backing fill from the live rules `[Colors]` schemes now that
     // `state.rules` is reachable (the native ctor only sees the launch session).
-    if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules.as_ref()) {
+    if let (Some(native), Some(rules)) = (session.native.as_mut(), state.rules()) {
         native.resolve_player_colors(&rules.color_schemes, &rules.house_color_ramps);
     }
     state.loading_session = Some(session);
@@ -1220,7 +1220,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
         .as_ref()
         .and_then(|session| session.native.as_ref())
         .and_then(|native| native.composition.as_ref())
-        .zip(state.rules.as_ref())
+        .zip(state.rules())
         .map(|(composition, rules)| {
             composition
                 .markers

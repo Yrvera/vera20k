@@ -482,8 +482,7 @@ fn apply_cameo_hover_tooltip(state: &mut AppState) {
 /// consumed strip-scroll click (even when the scroll is clamped at an end).
 fn play_gui_tab_sound(state: &mut AppState) {
     let sound = state
-        .rules
-        .as_ref()
+        .rules()
         .and_then(|r| r.general.gui_tab_sound.clone());
     crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
 }
@@ -492,8 +491,7 @@ fn play_gui_tab_sound(state: &mut AppState) {
 /// sound (the same event the main-menu shell buttons play).
 fn play_gui_main_button_sound(state: &mut AppState) {
     let sound = state
-        .rules
-        .as_ref()
+        .rules()
         .and_then(|r| r.general.gui_main_button_sound.clone());
     crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
 }

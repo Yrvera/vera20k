@@ -55,9 +55,7 @@ pub(crate) fn post_system_message(state: &mut AppState, text: &str) {
         &measure,
     );
     if outcome.play_sound {
-        let sound = state
-            .rules
-            .as_ref()
+        let sound = state.rules()
             .and_then(|r| r.general.incoming_message_sound.clone());
         crate::app::App::play_shell_ui_sound_by_id(state, sound.as_deref());
     }
@@ -70,7 +68,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
     let rgb = type_select_message_rgb(
         crate::app_commands::preferred_local_owner_name(state).as_deref(),
         &state.house_color_map,
-        state.rules.as_ref().map(|rules| &rules.house_color_ramps),
+        state.rules().map(|rules| &rules.house_color_ramps),
     );
     let font = &state.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;

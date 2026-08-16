@@ -473,9 +473,7 @@ impl TacticalCaptureSession {
             .as_ref()
             .map(|rt| &rt.simulation)
             .context("Rust L0 requires live simulation")?;
-        let rules = state
-            .rules
-            .as_ref()
+        let rules = state.rules()
             .context("Rust L0 requires live rules")?;
         let owner = &profile.launch.player_name;
 
@@ -663,10 +661,10 @@ impl TacticalCaptureSession {
         validate_houses_and_slots(sim, profile)?;
 
         ensure!(
-            state.rules.is_some()
+            state.rules().is_some()
                 && state.tile_atlas.is_some()
                 && state.terrain_grid.is_some()
-                && state.resolved_terrain.is_some()
+                && state.terrain_template().is_some()
                 && state.unit_atlas.is_some()
                 && state.palette_set.is_some()
                 && state.sprite_atlas.is_some()
@@ -754,9 +752,7 @@ impl TacticalCaptureSession {
             .as_ref()
             .map(|rt| &rt.simulation)
             .context("tactical observation requires live simulation")?;
-        let rules = state
-            .rules
-            .as_ref()
+        let rules = state.rules()
             .context("tactical observation requires live rules")?;
         let entities = sim
             .entities()
@@ -968,9 +964,7 @@ impl TacticalCaptureSession {
                 && !power.is_low_power
                 && power.power_blackout_remaining == 0
         });
-        let radar_authority = state
-            .rules
-            .as_ref()
+        let radar_authority = state.rules()
             .is_some_and(|rules| crate::sim::radar::has_radar_for_owner(sim, rules, owner));
         let bound_structures_ready = self.bound_structures_ready(state)?;
         let no_modal_or_debug = !state.paused
@@ -1163,7 +1157,7 @@ impl TacticalCaptureSession {
                 "blackout_remaining": power.power_blackout_remaining,
             },
             "radar": {
-                "authority_active": state.rules.as_ref().is_some_and(|rules| {
+                "authority_active": state.rules().is_some_and(|rules| {
                     crate::sim::radar::has_radar_for_owner(sim, rules, owner)
                 }),
                 "app_has_radar": state.has_radar,

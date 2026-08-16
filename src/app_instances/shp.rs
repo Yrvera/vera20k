@@ -100,10 +100,10 @@ pub(crate) fn build_shp_instances(
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules.as_ref().map(|rules| &rules.art_registry);
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);
 
     let encounter_order =
-        super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
+        super::helpers::tactical_entity_encounter_order(sim, state.rules());
     for stable_id in encounter_order {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
@@ -127,9 +127,7 @@ pub(crate) fn build_shp_instances(
         // wall overlay instances in the unified merge (draw_merged_object_pass),
         // not here. Skip them to avoid drawing frame 0 (isolated pillar).
         if entity.category == EntityCategory::Structure {
-            let is_wall = state
-                .rules
-                .as_ref()
+            let is_wall = state.rules()
                 .and_then(|r| r.object(type_str))
                 .map(|o| o.wall)
                 .unwrap_or(false);
@@ -216,7 +214,7 @@ pub(crate) fn build_shp_instances(
         } else {
             match entity.category {
                 EntityCategory::Structure => {
-                    let obj = state.rules.as_ref().and_then(|r| r.object(type_str));
+                    let obj = state.rules().and_then(|r| r.object(type_str));
                     let frame = if obj.map(|o| o.can_be_occupied).unwrap_or(false) {
                         let occupant_count = entity
                             .passenger_role
@@ -224,9 +222,7 @@ pub(crate) fn build_shp_instances(
                             .map(|c| c.count())
                             .unwrap_or(0);
                         let tech_level = obj.map(|o| o.tech_level).unwrap_or(-1);
-                        let (cy, cr) = state
-                            .rules
-                            .as_ref()
+                        let (cy, cr) = state.rules()
                             .map(|r| (r.general.condition_yellow, r.general.condition_red))
                             .unwrap_or((0.5, 0.25));
                         rendered_garrison_body_frame_index(
@@ -261,9 +257,7 @@ pub(crate) fn build_shp_instances(
             Some(e) => e,
             None if shp_frame != 0
                 && entity.category == EntityCategory::Structure
-                && state
-                    .rules
-                    .as_ref()
+                && state.rules()
                     .and_then(|r| r.object(type_str))
                     .map(|o| o.can_be_occupied)
                     .unwrap_or(false) =>
@@ -312,13 +306,9 @@ pub(crate) fn build_shp_instances(
             &state.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
-            state
-                .rules
-                .as_ref()
+            state.rules()
                 .map_or(0, |rules| rules.general.extra_unit_light),
-            state
-                .rules
-                .as_ref()
+            state.rules()
                 .map_or(0, |rules| rules.general.extra_infantry_light),
         );
         let under_bridge = is_under_bridge_render_state(state, entity)
@@ -411,7 +401,7 @@ pub(crate) fn build_shp_instances(
                     &mut building_pieces,
                     atlas,
                     art,
-                    state.rules.as_ref(),
+                    state.rules(),
                     type_str,
                     hc,
                     sx,
@@ -436,7 +426,7 @@ pub(crate) fn build_shp_instances(
                     &mut building_pieces,
                     atlas,
                     art,
-                    state.rules.as_ref(),
+                    state.rules(),
                     type_str,
                     hc,
                     sx,
@@ -458,7 +448,7 @@ pub(crate) fn build_shp_instances(
                 );
             }
             // Emit VXL turret on top of building (e.g., SAM site, Prism Tower).
-            if let Some(rules_obj) = state.rules.as_ref().and_then(|r| r.object(type_str)) {
+            if let Some(rules_obj) = state.rules().and_then(|r| r.object(type_str)) {
                 if rules_obj.turret_anim_is_voxel {
                     if let Some(turret_id) = &rules_obj.turret_anim {
                         if let Some((page, instance)) = emit_building_turret_vxl(
@@ -498,9 +488,7 @@ pub(crate) fn build_shp_instances(
                 y: i32::from(pos.ry) * 256 + crate::util::fixed_math::sim_to_i32(pos.sub_y),
                 z: i32::from(pos.z),
             };
-            let actual_type = state
-                .rules
-                .as_ref()
+            let actual_type = state.rules()
                 .and_then(|rules| rules.object(sim.interner.resolve(entity.type_ref)));
             if let Some(parent) = actual_type.and_then(|object_type| {
                 ground_order.building_object_draw(
@@ -1013,9 +1001,7 @@ fn resolve_infantry_shp_frame(
     // Pass raw facing (not canonical) to resolve_shp_frame so the
     // facing-to-index division works correctly for any facing count
     // (6, 8, 10, etc.). The absolute frame index encodes the direction.
-    let sequence_set = state
-        .rules
-        .as_ref()
+    let sequence_set = state.rules()
         .and_then(|rules| rules.animation_sequence(type_id));
     if entity.category == EntityCategory::Unit
         && !entity.is_voxel

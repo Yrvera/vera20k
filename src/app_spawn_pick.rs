@@ -66,8 +66,9 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Build temp map data before borrowing state.simulation mutably.
     let temp_map = build_temp_map_data_for_seeding(state);
     let seeded_owner: Option<String> =
-        if let (Some(rt), Some(ruleset)) = (state.sim_runtime.as_mut(), state.rules.as_ref()) {
+        if let Some(rt) = state.sim_runtime.as_mut() {
             let resources = &rt.resources;
+            let ruleset = &resources.rules;
             let sim = &mut rt.simulation;
             seed_skirmish_opening_if_needed(
                 sim,
@@ -93,7 +94,9 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
             }
         }
         // Rebuild entity atlases to include the newly spawned MCVs.
-        if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+        if let Some(rt) = state.sim_runtime.as_ref() {
+            let sim = &rt.simulation;
+            let bound_rules = Some(&rt.resources.rules);
             let asset_manager = state.asset_manager.as_ref();
             if let Some(assets) = asset_manager {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
@@ -103,8 +106,8 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     &state.batch_renderer,
                     &state.theater_ext,
                     &state.theater_name,
-                    state.rules.as_ref(),
-                    state.rules.as_ref().map(|rules| &rules.art_registry),
+                    bound_rules,
+                    bound_rules.map(|rules| &rules.art_registry),
                     &state.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
                     None, // cell palette reloads from the active theater archive
