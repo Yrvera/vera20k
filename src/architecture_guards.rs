@@ -487,12 +487,28 @@ fn app_state_contains_only_named_owners() {
 
     let mut fields: Vec<&str> = Vec::new();
     for line in body.lines() {
-        let line = line.trim_start();
-        if let Some(rest) = line.strip_prefix("pub(crate) ") {
-            if let Some((name, _)) = rest.split_once(':') {
-                if !name.contains('(') {
-                    fields.push(name.trim());
-                }
+        let line = line.trim();
+        if line.starts_with("//") {
+            continue;
+        }
+        // Any visibility (or none) counts — a private or `pub` flat field must
+        // not evade the owner inventory.
+        let stripped = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        if let Some((name, rest)) = stripped.split_once(':') {
+            if rest.starts_with(':') {
+                continue; // `::` — a path inside a wrapped type, not a field
+            }
+            let name = name.trim();
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                fields.push(name);
             }
         }
     }

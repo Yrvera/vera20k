@@ -486,6 +486,12 @@ impl App {
             local_owner_override: None,
             sandbox_full_visibility: false,
             paused: false,
+            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
+            // (in the presentation owner) is the single source of truth; seed it
+            // from the skirmish-setup speed (internal 1) and derive
+            // `sim_speed_tps` from the same value, so the Options slider
+            // reflects the current pace. The resulting tps is unchanged from
+            // the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
             sim_speed_tps: crate::app::types::tps_for_game_speed(
                 crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
             ),
@@ -570,11 +576,6 @@ impl App {
                 audio_indices_enabled: startup_audio.load_audio_indices,
                 eva_registry: startup_eva_registry,
             },
-            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
-            // is the single source of truth; seed it from the skirmish-setup speed
-            // (internal 1) and derive `sim_speed_tps` from the same value, so the
-            // Options slider reflects the current pace. The resulting tps is
-            // unchanged from the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
             persistence: crate::app::persistence::PersistenceState::new(),
             diag: crate::app::diagnostics::state::DiagnosticsState {
                 debug_frame_step_requested: false,

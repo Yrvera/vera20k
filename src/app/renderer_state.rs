@@ -23,7 +23,7 @@ pub(crate) struct RendererState {
     /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
     pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
     /// egui integration — input handling + GPU rendering.
-    pub(crate) egui: EguiIntegration,
+    pub(super) egui: EguiIntegration,
     pub(crate) vxl_compute: Option<crate::render::vxl_compute::VxlComputeRenderer>,
     /// GAME.FNT bitmap font (falls back to the built-in 5x7 face).
     pub(crate) bit_font: BitFont,
