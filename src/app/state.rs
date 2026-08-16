@@ -40,23 +40,10 @@ pub(crate) struct AppState {
     /// Deterministic digest of the parsed source map INI. `None` only for
     /// generated/fallback worlds without an authoritative source-map payload.
     pub(crate) loaded_map_hash: Option<u64>,
-    pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) sim_runtime: Option<crate::sim::runtime::SimRuntime>,
     /// App-owned diagnostic recording (F10) — never inside the simulation, so
     /// no load/install path can silently drop an unflushed segment.
     pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
-    /// Overlay entries from map for per-frame instance generation.
-    pub(crate) overlays: crate::app::presentation::overlay_index::OverlayRenderIndex,
-    /// Terrain objects from map for per-frame instance generation.
-    pub(crate) terrain_objects: Vec<TerrainObject>,
-    pub(crate) waypoints: HashMap<u32, Waypoint>,
-    pub(crate) cell_tags: CellTagMap,
-    pub(crate) tags: TagMap,
-    /// Overlay ID → type name mapping for atlas lookups at render time.
-    pub(crate) overlay_names: BTreeMap<u8, String>,
-    /// Precomputed average pixel color for each tiberium overlay (id, frame) pair,
-    /// extracted from SHP frames for minimap radar display.
-    pub(crate) tiberium_radar_colors: HashMap<(u8, u8), [u8; 3]>,
     /// Shell-retained overlay registry for the random-map preview: keeps the
     /// last-loaded match registry across scenario exit, matching the pre-F07
     /// persistence of the old app field. Match paths read the runtime-bound
@@ -226,9 +213,6 @@ pub(crate) struct AppState {
     pub(crate) frontend_rules: Option<crate::rules::ruleset::RuleSet>,
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
-    /// Owner name → house color index mapping for atlas key lookups.
-    pub(crate) house_color_map: HouseColorMap,
-    pub(crate) house_roster: HouseRoster,
     /// End-of-match score presentation, decorated from the sim-owned terminal
     /// snapshot and held until the player leaves the screen. `None` for result
     /// screens with no native score analogue (a load failure, a trigger-driven
@@ -241,23 +225,6 @@ pub(crate) struct AppState {
     /// Cell (rx, ry) -> high-bridge facts used by the tactical cursor inverse.
     pub(crate) tactical_bridge_inverse_map:
         BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
-    /// Cell (rx, ry) -> map lighting bundle. Render paths look up compatibility tints per-frame.
-    pub(crate) lighting_grid: CellLightGrid,
-    /// Complete source list behind the visible grid. Retained so source
-    /// transitions can enumerate only old/new affected areas.
-    pub(crate) applied_lighting_sources: Vec<crate::map::lighting::PointLight>,
-    /// Exact ScenarioClass profile behind the visible grid.
-    pub(crate) applied_lighting_profile: Option<crate::map::lighting::LightingProfileUnits>,
-    /// Native detail mask behind the visible grid.
-    pub(crate) applied_lighting_detail_level: u32,
-    /// YR LightSourceClass-style sampled records. The active grid changes only
-    /// after the complete pending refresh has gathered.
-    pub(crate) pending_lighting_refresh: Option<crate::map::lighting::DeferredCellLightRefresh>,
-    /// Complete derived light-view fingerprint applied to `lighting_grid`.
-    /// App view-state only — never serialized or hashed.
-    pub(crate) last_lighting_view_fingerprint: Option<u64>,
-    /// Parsed map [Lighting] config used to rebuild transient app lighting after load.
-    pub(crate) map_lighting_config: LightingConfig,
     /// Active map theater name (e.g., DESERT).
     pub(crate) theater_name: String,
     /// Active map theater extension (e.g., des).

@@ -193,7 +193,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         // constant -2px anim bias (negative = toward camera).
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
         let world_height: f32 = state
-            .terrain_grid
+            .match_presentation.terrain_grid
             .as_ref()
             .map(|g| g.world_height)
             .unwrap_or(1.0);
@@ -202,7 +202,7 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
             world_height,
         );
-        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((fx.rx, fx.ry), cfg);
+        let tint: [f32; 3] = state.match_presentation.lighting_grid.anim_tint_at((fx.rx, fx.ry), cfg);
         // Source-pixel weight the native blitter family gives this frame:
         // a fixed 25/50/75 stage from `Translucency=`, or the progressive
         // `Translucent=yes` fade keyed on the frame against the type's End.
@@ -312,7 +312,7 @@ pub(crate) fn build_anim_class_instances(
         ) {
             continue;
         }
-        let tint = state.lighting_grid.anim_tint_at((rx, ry), config);
+        let tint = state.match_presentation.lighting_grid.anim_tint_at((rx, ry), config);
         let key = ShpSpriteKey {
             type_id: type_name.to_string(),
             facing: 0,
@@ -336,7 +336,7 @@ pub(crate) fn build_anim_class_instances(
             continue;
         };
         let (origin_y, world_height) = state
-            .terrain_grid
+            .match_presentation.terrain_grid
             .as_ref()
             .map(|grid| (grid.origin_y, grid.world_height))
             .unwrap_or((0.0, 1.0));
@@ -509,13 +509,13 @@ pub(crate) fn build_overlay_instances(
     };
     let (cam_x, cam_y) = (state.input.camera_x, state.input.camera_y);
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
     // Playable area bounds — skip overlays outside LocalSize (border filler).
-    let local_bounds = state.terrain_grid.as_ref().and_then(|g| g.local_bounds);
+    let local_bounds = state.match_presentation.terrain_grid.as_ref().and_then(|g| g.local_bounds);
 
     // Cell visibility for the local owner — used to cull overlays and terrain
     // objects in unrevealed cells. The shroud multiply pass darkens per-pixel,
@@ -540,14 +540,14 @@ pub(crate) fn build_overlay_instances(
     // in the fixed cell overlay family, not the `LayerClass` object sort.
     let mut planned_cells = Vec::new();
     let mut next_draw_id = 0u64;
-    for entry in state.overlays.iter() {
+    for entry in state.match_presentation.overlays.iter() {
         if let Some((owner_id, fog)) = cell_visibility_fog {
             if !fog.is_cell_revealed(owner_id, entry.rx, entry.ry) {
                 continue;
             }
         }
 
-        let Some(static_name) = state.overlay_names.get(&entry.overlay_id) else {
+        let Some(static_name) = state.match_presentation.overlay_names.get(&entry.overlay_id) else {
             continue;
         };
 
@@ -587,7 +587,7 @@ pub(crate) fn build_overlay_instances(
             state.rules().map(|rules| &rules.tiberium_types),
         );
         let name = if display_overlay_id == live_overlay_id {
-            state.overlay_names.get(&live_overlay_id).cloned()
+            state.match_presentation.overlay_names.get(&live_overlay_id).cloned()
         } else {
             overlay_registry
                 .and_then(|registry| registry.name(display_overlay_id).map(str::to_owned))
@@ -644,7 +644,7 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = spr else { continue };
         let depth_z: u8 = z;
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
-        let tint: [f32; 3] = state.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
+        let tint: [f32; 3] = state.match_presentation.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
         planned_cells.push(crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
             draw: crate::render::tactical_draw_plan::CellDraw {
                 id: next_draw_id,
@@ -734,7 +734,7 @@ pub(crate) fn build_overlay_instances(
             .map(|terrain_type| terrain_type.spawns_tiberium)
             .unwrap_or(false);
         let tint: [f32; 3] = state
-            .lighting_grid
+            .match_presentation.lighting_grid
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
         let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
@@ -785,7 +785,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -819,7 +819,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         };
         let fx: f32 = flash.screen_x + entry.offset_x;
         let fy: f32 = flash.screen_y + entry.offset_y;
-        let tint: [f32; 3] = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
+        let tint: [f32; 3] = state.match_presentation.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         let depth: f32 = garrison_flash_depth(
             origin_y,
             world_height,
@@ -892,7 +892,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -917,7 +917,7 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         };
         let cfg: Option<&AnimTypeRuntimeConfig> = state.rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(&flash.shp_name));
-        let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
+        let tint = state.match_presentation.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
@@ -984,7 +984,7 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|grid| (grid.origin_y, grid.world_height))
         .unwrap_or((0.0, 1.0));
@@ -1063,7 +1063,7 @@ pub(crate) fn build_projectile_visual_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));

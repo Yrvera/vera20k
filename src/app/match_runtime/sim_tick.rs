@@ -187,7 +187,7 @@ fn announce_local_state_evas(state: &mut AppState) {
     if cues.is_empty() {
         return;
     }
-    let faction = crate::app::presentation::building_anim::eva_faction_key(&owner, &state.house_roster);
+    let faction = crate::app::presentation::building_anim::eva_faction_key(&owner, &state.match_presentation.house_roster);
     let sound_ids: Vec<String> = cues
         .iter()
         .map(|(cue, fallback)| {
@@ -367,7 +367,7 @@ fn build_score_screen_model(
             country_name.as_deref(),
         );
         let color_index = state
-            .house_color_map
+            .match_presentation.house_color_map
             .get(&owner_name)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -1040,7 +1040,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1067,7 +1067,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1086,7 +1086,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let (eva_key, fallback) = outcome_eva_entry(kind, faction);
                         let eva_sound_id = state
@@ -1117,7 +1117,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1137,7 +1137,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1156,7 +1156,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         }
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let sound_id = state
                             .audio.eva_registry
@@ -1280,7 +1280,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                         {
                             let faction = crate::app::presentation::building_anim::eva_faction_key(
                                 owner_str,
-                                &state.house_roster,
+                                &state.match_presentation.house_roster,
                             );
                             state
                                 .audio.eva_registry
@@ -1323,7 +1323,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
                             sim.session.tick + EVA_UNDER_ATTACK_COOLDOWN_TICKS;
                         let faction = crate::app::presentation::building_anim::eva_faction_key(
                             owner_str,
-                            &state.house_roster,
+                            &state.match_presentation.house_roster,
                         );
                         let (cue, fallback) = if miner {
                             ("EVA_OreMinerUnderAttack", "ceva037")
@@ -1455,16 +1455,16 @@ fn refresh_cell_lighting(state: &mut AppState) {
             return;
         };
         let view = crate::app::loading::init::derive_lighting_view(
-            &state.map_lighting_config,
+            &state.match_presentation.map_lighting_config,
             Some(sim),
             Some(rules),
             state.in_game_options.detail_level,
         );
-        if state.last_lighting_view_fingerprint == Some(view.fingerprint) {
+        if state.match_presentation.last_lighting_view_fingerprint == Some(view.fingerprint) {
             None
         } else {
-            let profile_changed = state.applied_lighting_profile != Some(view.profile)
-                || state.applied_lighting_detail_level != view.detail_level;
+            let profile_changed = state.match_presentation.applied_lighting_profile != Some(view.profile)
+                || state.match_presentation.applied_lighting_detail_level != view.detail_level;
             let affected_cells = if profile_changed {
                 terrain
                     .iter()
@@ -1477,7 +1477,7 @@ fn refresh_cell_lighting(state: &mut AppState) {
                 let mut seen = std::collections::BTreeSet::new();
                 let mut cells = Vec::new();
                 for source in state
-                    .applied_lighting_sources
+                    .match_presentation.applied_lighting_sources
                     .iter()
                     .chain(view.point_lights.iter())
                 {
@@ -1500,16 +1500,16 @@ fn refresh_cell_lighting(state: &mut AppState) {
 
     if let Some((view, affected_cells)) = changed_view {
         // A new queued source flushes the old batch before its area is enumerated.
-        if let Some(mut pending) = state.pending_lighting_refresh.take() {
+        if let Some(mut pending) = state.match_presentation.pending_lighting_refresh.take() {
             pending.gather_all();
-            let committed = pending.commit_into(&mut state.lighting_grid);
+            let committed = pending.commit_into(&mut state.match_presentation.lighting_grid);
             debug_assert!(committed);
         }
-        state.last_lighting_view_fingerprint = Some(view.fingerprint);
-        state.applied_lighting_profile = Some(view.profile);
-        state.applied_lighting_detail_level = view.detail_level;
-        state.applied_lighting_sources = view.point_lights.clone();
-        state.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
+        state.match_presentation.last_lighting_view_fingerprint = Some(view.fingerprint);
+        state.match_presentation.applied_lighting_profile = Some(view.profile);
+        state.match_presentation.applied_lighting_detail_level = view.detail_level;
+        state.match_presentation.applied_lighting_sources = view.point_lights.clone();
+        state.match_presentation.pending_lighting_refresh = (!affected_cells.is_empty()).then(|| {
             crate::map::lighting::DeferredCellLightRefresh::new_with_profile(
                 affected_cells,
                 view.profile,
@@ -1520,15 +1520,15 @@ fn refresh_cell_lighting(state: &mut AppState) {
     }
 
     let completed = state
-        .pending_lighting_refresh
+        .match_presentation.pending_lighting_refresh
         .as_mut()
         .is_some_and(|pending| pending.gather(CELL_LIGHT_GATHER_BUDGET));
     if completed {
         let pending = state
-            .pending_lighting_refresh
+            .match_presentation.pending_lighting_refresh
             .take()
             .expect("completed lighting refresh remains installed");
-        let committed = pending.commit_into(&mut state.lighting_grid);
+        let committed = pending.commit_into(&mut state.match_presentation.lighting_grid);
         debug_assert!(committed, "completed lighting refresh commits atomically");
     }
 }
@@ -1569,7 +1569,7 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
 }
 
 fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
-    let Some(waypoint) = state.waypoints.get(&waypoint_index) else {
+    let Some(waypoint) = state.match_presentation.waypoints.get(&waypoint_index) else {
         log::warn!(
             "Trigger action requested missing waypoint {} for camera centering",
             waypoint_index
@@ -1670,7 +1670,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
     );
     let sprite_base_keys = sprite_atlas::collect_needed_base_keys(
         sim.entities(),
-        &state.house_color_map,
+        &state.match_presentation.house_color_map,
         &extra_buildings,
         Some(&sim.interner),
     );
@@ -1730,7 +1730,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.theater_name,
             bound_rules,
             bound_rules.map(|rules| &rules.art_registry),
-            &state.house_color_map,
+            &state.match_presentation.house_color_map,
             &extra_buildings,
             &cell_drawer_type_ids,
             cell_palette.as_ref(),
@@ -1763,7 +1763,7 @@ pub(crate) fn upsert_occupied_overlay_render_entries(
     state: &mut AppState,
     candidates: Vec<crate::map::overlay::OverlayEntry>,
 ) {
-    let synced = state.overlays.upsert_occupied(candidates);
+    let synced = state.match_presentation.overlays.upsert_occupied(candidates);
     if synced != 0 {
         log::trace!(
             "Synced {} occupied cells from OverlayGrid to state.overlays",

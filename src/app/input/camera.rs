@@ -898,7 +898,7 @@ fn clamp_camera_point_for_state(
     sw: f32,
     sh: f32,
 ) -> (f32, f32) {
-    let Some(grid) = &state.terrain_grid else {
+    let Some(grid) = &state.match_presentation.terrain_grid else {
         return point;
     };
     let (area_x, area_y, area_w, area_h) = match grid.local_bounds {
@@ -958,7 +958,7 @@ fn camera_scroll_direction_allowed(
     sw: f32,
     sh: f32,
 ) -> bool {
-    if state.terrain_grid.is_none() {
+    if state.match_presentation.terrain_grid.is_none() {
         return true;
     }
     let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];

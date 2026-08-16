@@ -646,7 +646,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
 
 pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
     let mut owners: Vec<String> = state
-        .house_roster
+        .match_presentation.house_roster
         .houses
         .iter()
         .filter(|house| is_playable_house_name(&house.name))

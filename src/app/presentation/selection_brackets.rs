@@ -48,7 +48,7 @@ struct BracketDepthCtx {
 impl BracketDepthCtx {
     fn from_state(state: &AppState, cell_z: u8) -> Self {
         let (origin_y, world_height) = state
-            .terrain_grid
+            .match_presentation.terrain_grid
             .as_ref()
             .map(|g| (g.origin_y, g.world_height))
             .unwrap_or((0.0, 1.0));

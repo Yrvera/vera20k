@@ -22,7 +22,7 @@ const WAYPOINT_CLICK_RADIUS: f32 = 40.0;
 
 /// Check if the cursor is over a waypoint marker and return its index if so.
 pub(crate) fn hovered_waypoint(state: &AppState) -> Option<usize> {
-    let starts = waypoints::multiplayer_start_waypoints(&state.waypoints);
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
     let cx: f32 = state.input.cursor_x;
     let cy: f32 = state.input.cursor_y;
 
@@ -48,7 +48,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
         return false;
     };
 
-    let starts = waypoints::multiplayer_start_waypoints(&state.waypoints);
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
     if wp_idx >= starts.len() {
         return false;
     }
@@ -73,7 +73,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
             seed_skirmish_opening_if_needed(
                 sim,
                 &temp_map,
-                &state.house_roster,
+                &state.match_presentation.house_roster,
                 ruleset,
                 &resources.height_map,
                 &state.skirmish_settings,
@@ -86,7 +86,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     if let Some(ref local_owner) = seeded_owner {
         if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
             // F10: sim owns both writes; the app only names the local owner.
-            sim.register_ai_players_from_roster(&state.house_roster, local_owner);
+            sim.register_ai_players_from_roster(&state.match_presentation.house_roster, local_owner);
             // Ensure the local player is marked human even if the map lacks PlayerControl=yes.
             sim.mark_house_human(local_owner);
         }
@@ -105,7 +105,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     &state.theater_name,
                     bound_rules,
                     bound_rules.map(|rules| &rules.art_registry),
-                    &state.house_color_map,
+                    &state.match_presentation.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
                     None, // cell palette reloads from the active theater archive
                     state.renderer.vxl_compute.as_mut(),
@@ -170,7 +170,7 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
         overlay_data: crate::map::overlay::OverlayDataPack::default(),
         smudges: Vec::new(),
         terrain_objects: Vec::new(),
-        waypoints: state.waypoints.clone(),
+        waypoints: state.match_presentation.waypoints.clone(),
         cell_tags: std::collections::HashMap::new(),
         tags: std::collections::HashMap::new(),
         triggers: std::collections::HashMap::new(),
@@ -220,7 +220,7 @@ pub(crate) fn render_spawn_pick(
 
 /// Draw the SpawnPick egui overlay: instructions + hovered waypoint info.
 pub(crate) fn draw_spawn_pick_overlay(ctx: &egui::Context, state: &AppState) {
-    let starts = waypoints::multiplayer_start_waypoints(&state.waypoints);
+    let starts = waypoints::multiplayer_start_waypoints(&state.match_presentation.waypoints);
     let hovered = hovered_waypoint(state);
 
     // Top-center banner with instructions.

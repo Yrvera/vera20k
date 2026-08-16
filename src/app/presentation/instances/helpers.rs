@@ -340,7 +340,7 @@ pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
 /// Higher elevation (z) → slightly smaller depth (closer to camera).
 pub(crate) fn compute_sprite_depth(state: &AppState, screen_y: f32, z: u8) -> f32 {
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));

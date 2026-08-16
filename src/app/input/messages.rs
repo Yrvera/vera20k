@@ -67,7 +67,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
     let now = message_now_ms(state);
     let rgb = type_select_message_rgb(
         crate::app::input::commands::preferred_local_owner_name(state).as_deref(),
-        &state.house_color_map,
+        &state.match_presentation.house_color_map,
         state.rules().map(|rules| &rules.house_color_ramps),
     );
     let font = &state.renderer.bit_font;

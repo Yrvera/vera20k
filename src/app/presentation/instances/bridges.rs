@@ -213,16 +213,16 @@ pub(crate) fn build_bridge_body_instances(
         return;
     };
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
     build_bridge_body_instances_inner(
         bridge_state,
         atlas,
-        &state.overlay_names,
+        &state.match_presentation.overlay_names,
         &state.height_map(),
-        &state.lighting_grid,
+        &state.match_presentation.lighting_grid,
         origin_y,
         world_height,
         state.input.camera_x,
@@ -253,7 +253,7 @@ pub(crate) fn build_bridge_shadow_instances(
         return;
     };
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -267,7 +267,7 @@ pub(crate) fn build_bridge_shadow_instances(
             continue;
         };
         let Some(axis) = cell.axis else { continue };
-        let Some(name) = state.overlay_names.get(&cell.overlay_byte) else {
+        let Some(name) = state.match_presentation.overlay_names.get(&cell.overlay_byte) else {
             continue;
         };
         if !is_high_bridge_body_name(name) {
@@ -346,7 +346,7 @@ pub(crate) fn build_bridge_railing_instances(
         return;
     };
     let (origin_y, world_height) = state
-        .terrain_grid
+        .match_presentation.terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -414,7 +414,7 @@ fn resolve_bridge_kind_and_sub_idx(
     cell: &BridgeRuntimeCell,
 ) -> Option<(BridgeKind, i32, u8)> {
     let name = state
-        .overlay_names
+        .match_presentation.overlay_names
         .get(&cell.overlay_byte)?
         .to_ascii_uppercase();
     let kind = if matches!(

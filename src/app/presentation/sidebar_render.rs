@@ -431,7 +431,7 @@ pub(crate) fn current_sidebar_theme(
 ) -> crate::render::sidebar_chrome::SidebarTheme {
     preferred_local_owner_name(state)
         .and_then(|owner| {
-            sidebar_theme_for_owner_sources(state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.house_roster, &owner)
+            sidebar_theme_for_owner_sources(state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_presentation.house_roster, &owner)
         })
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }

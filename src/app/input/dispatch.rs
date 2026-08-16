@@ -888,7 +888,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
 /// missing from the atlas. Both look identical on screen, so this counts them separately
 /// instead of leaving the diagnosis to guesswork.
 pub(crate) fn report_black_cell_causes(state: &mut AppState) {
-    let Some(grid) = state.terrain_grid.as_ref() else {
+    let Some(grid) = state.match_presentation.terrain_grid.as_ref() else {
         log::info!("Black-cell report: no terrain grid loaded");
         return;
     };
@@ -1654,18 +1654,18 @@ fn commit_prepared_load(
     // Rebuild transient lighting from the loaded live entity set so destroyed
     // light-source buildings do not leave stale point lights behind.
     if let Some(resolved_terrain) = state.terrain_template() {
-        state.lighting_grid = crate::app::loading::init::rebuild_lighting_grid_from_sim(
+        state.match_presentation.lighting_grid = crate::app::loading::init::rebuild_lighting_grid_from_sim(
             resolved_terrain,
-            &state.map_lighting_config,
+            &state.match_presentation.map_lighting_config,
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.rules(),
             state.in_game_options.detail_level,
         );
-        state.pending_lighting_refresh = None;
-        state.applied_lighting_sources.clear();
-        state.applied_lighting_profile = None;
-        state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
-        state.last_lighting_view_fingerprint = None;
+        state.match_presentation.pending_lighting_refresh = None;
+        state.match_presentation.applied_lighting_sources.clear();
+        state.match_presentation.applied_lighting_profile = None;
+        state.match_presentation.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+        state.match_presentation.last_lighting_view_fingerprint = None;
     }
 
     // Reset timing to prevent a burst of ticks after the load.
@@ -2467,7 +2467,7 @@ fn jump_camera_to_base(state: &mut AppState) {
     }
 
     // Fallback: jump to the first multiplayer start waypoint.
-    if let Some(wp) = crate::map::waypoints::first_multiplayer_start(&state.waypoints) {
+    if let Some(wp) = crate::map::waypoints::first_multiplayer_start(&state.match_presentation.waypoints) {
         log::info!(
             "H: falling back to start waypoint at ({}, {})",
             wp.rx,

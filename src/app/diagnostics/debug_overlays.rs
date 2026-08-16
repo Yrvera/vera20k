@@ -242,7 +242,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
     const GRID_DEPTH: f32 = 0.0003;
 
     // Terrain grid cells.
-    if let Some(grid) = &state.terrain_grid {
+    if let Some(grid) = &state.match_presentation.terrain_grid {
         for cell in &grid.cells {
             if !in_view(
                 cell.screen_x,
@@ -272,7 +272,7 @@ pub(crate) fn build_cell_grid_overlay_instances(
 
     // Overlay cells — re-compute iso_to_screen for each overlay entry so the
     // diamond outline uses the exact same formula as overlay rendering.
-    for entry in state.overlays.iter() {
+    for entry in state.match_presentation.overlays.iter() {
         let z: u8 = state
             .height_map()
             .get(&(entry.rx, entry.ry))

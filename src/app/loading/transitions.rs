@@ -116,7 +116,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.map_basic = result.scenario.basic;
     state.loaded_map_source = Some(result.scenario.map_source);
     state.loaded_map_hash = result.scenario.map_hash;
-    state.terrain_grid = result.scenario.terrain_grid;
+    state.match_presentation.terrain_grid = result.scenario.terrain_grid;
     state.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
     // F10 lifecycle: a new match install closes the outgoing diagnostic
     // segment before the runtime slot is overwritten — the old install
@@ -190,26 +190,26 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.has_radar = false;
 
     state.match_presentation.software_cursor = result.presentation.software_cursor;
-    state.overlays.replace_from_source(result.scenario.overlays);
-    state.terrain_objects = result.scenario.terrain_objects;
-    state.waypoints = result.scenario.waypoints;
-    state.cell_tags = result.scenario.cell_tags;
-    state.tags = result.scenario.tags;
+    state.match_presentation.overlays.replace_from_source(result.scenario.overlays);
+    state.match_presentation.terrain_objects = result.scenario.terrain_objects;
+    state.match_presentation.waypoints = result.scenario.waypoints;
+    state.match_presentation.cell_tags = result.scenario.cell_tags;
+    state.match_presentation.tags = result.scenario.tags;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.install_trigger_runtime(result.scenario.trigger_runtime);
     }
-    state.overlay_names = result.presentation.overlay_names;
-    state.tiberium_radar_colors = result.presentation.tiberium_radar_colors;
-    state.house_color_map = result.presentation.house_color_map;
-    state.house_roster = result.scenario.house_roster;
+    state.match_presentation.overlay_names = result.presentation.overlay_names;
+    state.match_presentation.tiberium_radar_colors = result.presentation.tiberium_radar_colors;
+    state.match_presentation.house_color_map = result.presentation.house_color_map;
+    state.match_presentation.house_roster = result.scenario.house_roster;
     state.tactical_bridge_inverse_map = result.scenario.tactical_bridge_inverse_map;
-    state.lighting_grid = result.presentation.lighting_grid;
-    state.applied_lighting_sources.clear();
-    state.applied_lighting_profile = None;
-    state.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
-    state.pending_lighting_refresh = None;
-    state.map_lighting_config = result.scenario.map_lighting_config;
-    state.last_lighting_view_fingerprint = None;
+    state.match_presentation.lighting_grid = result.presentation.lighting_grid;
+    state.match_presentation.applied_lighting_sources.clear();
+    state.match_presentation.applied_lighting_profile = None;
+    state.match_presentation.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+    state.match_presentation.pending_lighting_refresh = None;
+    state.match_presentation.map_lighting_config = result.scenario.map_lighting_config;
+    state.match_presentation.last_lighting_view_fingerprint = None;
     // F04: the app no longer stores a second ArtRegistry; presentation
     // borrows the sole copy owned by RuleSet (state.rules).
     state.csf = result.presentation.csf;
@@ -226,7 +226,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     ) {
         (Some(terrain), Some(sim), Some(rules)) => {
             let view = crate::app::loading::init::derive_lighting_view(
-                &state.map_lighting_config,
+                &state.match_presentation.map_lighting_config,
                 Some(sim),
                 Some(rules),
                 state.in_game_options.detail_level,
@@ -241,11 +241,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         _ => None,
     };
     if let Some((fingerprint, profile, detail_level, point_lights, grid)) = initial_lighting {
-        state.lighting_grid = grid;
-        state.last_lighting_view_fingerprint = Some(fingerprint);
-        state.applied_lighting_profile = Some(profile);
-        state.applied_lighting_detail_level = detail_level;
-        state.applied_lighting_sources = point_lights;
+        state.match_presentation.lighting_grid = grid;
+        state.match_presentation.last_lighting_view_fingerprint = Some(fingerprint);
+        state.match_presentation.applied_lighting_profile = Some(profile);
+        state.match_presentation.applied_lighting_detail_level = detail_level;
+        state.match_presentation.applied_lighting_sources = point_lights;
     }
     // Map load hands over a world anchor point; the transition applies the
     // active tactical rectangle and live zoom.
@@ -294,7 +294,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         .set_cursor_visible(state.match_presentation.software_cursor.is_none());
 
     // Create minimap from terrain grid with overlay data.
-    if let Some(grid) = &state.terrain_grid {
+    if let Some(grid) = &state.match_presentation.terrain_grid {
         let overlay_data: Vec<(
             u16,
             u16,
@@ -302,11 +302,11 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             u8,
             Option<[u8; 4]>,
         )> = build_minimap_overlay_data(
-            state.overlays.as_slice(),
-            &state.terrain_objects,
-            &state.overlay_names,
+            state.match_presentation.overlays.as_slice(),
+            &state.match_presentation.terrain_objects,
+            &state.match_presentation.overlay_names,
             state.rules(),
-            &state.tiberium_radar_colors,
+            &state.match_presentation.tiberium_radar_colors,
         );
         state.minimap = Some(MinimapRenderer::new(
             &state.renderer.gpu,

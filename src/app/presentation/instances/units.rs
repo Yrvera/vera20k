@@ -296,7 +296,7 @@ pub(crate) fn build_unit_instances(
             .map(|id| sim.interner.resolve(id))
             .unwrap_or(owner_str);
         let hc: HouseColorIndex = state
-            .house_color_map
+            .match_presentation.house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or_default();
@@ -330,7 +330,7 @@ pub(crate) fn build_unit_instances(
         }
         let draw_state = draw_decision.state;
         let tint = vxl_body_tint(
-            &state.lighting_grid,
+            &state.match_presentation.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
             state.rules()

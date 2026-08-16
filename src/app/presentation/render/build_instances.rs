@@ -169,7 +169,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     } else {
         None
     };
-    let terrain = if let Some(grid) = &state.terrain_grid {
+    let terrain = if let Some(grid) = &state.match_presentation.terrain_grid {
         // Skip terrain for fully shrouded cells — matches gamemd which doesn't
         // render terrain under shroud. The multiply pass still darkens edges.
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
@@ -191,7 +191,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .and_then(|rt| rt.view().bridge_state());
         crate::render::terrain_instances::build_visible_instances(
             grid,
-            Some(&state.lighting_grid),
+            Some(&state.match_presentation.lighting_grid),
             state.input.camera_x,
             state.input.camera_y,
             sw,
@@ -374,7 +374,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // One-time first-frame statistics.
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        let total_grid: usize = state.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
+        let total_grid: usize = state.match_presentation.terrain_grid.as_ref().map_or(0, |g| g.cells.len());
         log::info!(
             "First frame: {} terrain tiles (of {} cells) + {} fixed overlays + {} Ground sprites + {} residual SHP",
             terrain.normal.len(),
@@ -578,7 +578,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             view.entities(),
-            &state.house_color_map,
+            &state.match_presentation.house_color_map,
             view.session().tick,
             if state.sandbox_full_visibility {
                 None
@@ -627,7 +627,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
         state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules(),
         &state.height_map(),
-        &state.house_color_map,
+        &state.match_presentation.house_color_map,
         preferred_local_owner(state).as_deref(),
     );
 
@@ -696,7 +696,7 @@ fn build_placement_preview(
             } else {
                 let (valid, invalid) = o.build_building_preview(preview, &state.height_map());
                 let hc: crate::rules::house_colors::HouseColorIndex = state
-                    .house_color_map
+                    .match_presentation.house_color_map
                     .get(
                         &crate::app::input::commands::preferred_local_owner(state)
                             .unwrap_or_else(|| "Americans".to_string()),

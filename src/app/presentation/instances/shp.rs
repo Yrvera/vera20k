@@ -137,7 +137,7 @@ pub(crate) fn build_shp_instances(
         }
         let pos = &entity.position;
         let hc: HouseColorIndex = state
-            .house_color_map
+            .match_presentation.house_color_map
             .get(remap_owner)
             .copied()
             .unwrap_or(crate::rules::house_colors::NO_REMAP);
@@ -303,7 +303,7 @@ pub(crate) fn build_shp_instances(
             parachute_body_depths.insert(entity.stable_id, depth);
         }
         let tint = shp_body_tint(
-            &state.lighting_grid,
+            &state.match_presentation.lighting_grid,
             (pos.rx, pos.ry),
             entity.category,
             state.rules()
@@ -418,7 +418,7 @@ pub(crate) fn build_shp_instances(
                 let is_garrisoned = entity.passenger_role.cargo().is_some_and(|c| !c.is_empty());
                 let is_player_owned = !crate::rules::house_colors::is_non_player_house(owner_str);
                 let world_height: f32 = state
-                    .terrain_grid
+                    .match_presentation.terrain_grid
                     .as_ref()
                     .map(|g| g.world_height)
                     .unwrap_or(1.0);

@@ -1,12 +1,16 @@
 //! Determinism and replay parity tests for fixed-step simulation.
+//!
+//! Migrated from `tests/determinism_replay.rs` (F12): the fixture entry points
+//! (`Simulation::advance_tick`, `ReplayRunner::run_fixture`) are `#[cfg(test)]`
+//! since F09, so this coverage must live inside the lib test harness.
 
 use std::collections::BTreeMap;
 
-use vera20k::map::entities::{EntityCategory, MapEntity};
-use vera20k::sim::command::{Command, CommandEnvelope};
-use vera20k::sim::pathfinding::PathGrid;
-use vera20k::sim::replay::{ReplayHeader, ReplayLog, ReplayRunner};
-use vera20k::sim::world::Simulation;
+use crate::map::entities::{EntityCategory, MapEntity};
+use crate::sim::command::{Command, CommandEnvelope};
+use crate::sim::pathfinding::PathGrid;
+use crate::sim::replay::{ReplayHeader, ReplayLog, ReplayRunner};
+use crate::sim::world::Simulation;
 
 const TICK_MS: u32 = 33;
 
@@ -32,7 +36,7 @@ fn make_test_sim() -> Simulation {
 
 fn make_move_command() -> CommandEnvelope {
     CommandEnvelope::new(
-        vera20k::sim::intern::test_intern("Americans"),
+        crate::sim::intern::test_intern("Americans"),
         1,
         Command::Move {
             entity_id: 1,
@@ -113,7 +117,7 @@ fn determinism_repeatability_same_inputs() {
 /// reproduce it. Proves the recorded seed is the playback authority.
 #[test]
 fn replay_reapplies_header_seed() {
-    use vera20k::sim::scenario_session::ScenarioDescriptor;
+    use crate::sim::scenario_session::ScenarioDescriptor;
 
     fn sim_with_unit(desc: &ScenarioDescriptor) -> Simulation {
         let mut sim = Simulation::from_descriptor(desc);
@@ -180,7 +184,7 @@ fn replay_reapplies_header_seed() {
         ..Default::default()
     };
     let mut playback = sim_with_unit(&descriptor_from_header(&replay.header));
-    let replayed = ReplayRunner::run(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
+    let replayed = ReplayRunner::run_fixture(&mut playback, &replay, None, &heights, Some(&grid), TICK_MS);
     assert_eq!(
         live, replayed,
         "playback from header.seed must match the recorded timeline"
@@ -190,7 +194,7 @@ fn replay_reapplies_header_seed() {
     let mut corrupted = replay.clone();
     corrupted.header.seed ^= 1;
     let mut wrong = sim_with_unit(&descriptor_from_header(&corrupted.header));
-    let diverged = ReplayRunner::run(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
+    let diverged = ReplayRunner::run_fixture(&mut wrong, &corrupted, None, &heights, Some(&grid), TICK_MS);
     assert_ne!(
         live, diverged,
         "a corrupted header seed must not reproduce the timeline"
@@ -204,7 +208,7 @@ fn replay_playback_matches_live_hash_timeline() {
     let mut replay_sim = make_test_sim();
     let grid = PathGrid::new(32, 32);
     let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-    let playback_timeline = ReplayRunner::run(
+    let playback_timeline = ReplayRunner::run_fixture(
         &mut replay_sim,
         &replay,
         None,
