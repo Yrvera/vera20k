@@ -14,14 +14,8 @@ pub trait RandomRanged {
     fn ranged(&mut self, min: i32, max: i32) -> i32;
 }
 
-impl RandomRanged for crate::sim::rng::SimRng {
-    fn ranged(&mut self, min: i32, max: i32) -> i32 {
-        let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
-        let span = (i64::from(hi) - i64::from(lo)) as u32;
-        lo.wrapping_add(self.next_range_u32_inclusive(0, span) as i32)
-    }
-}
-
+// The SimRng binding lives with the ui adapter (random_map_setup, F05): map
+// stays sim-independent and callers supply any RandomRanged source.
 /// Map-type buckets: archipelago, continent, team continent, inland, mountainous.
 const MAP_TYPES: usize = 5;
 

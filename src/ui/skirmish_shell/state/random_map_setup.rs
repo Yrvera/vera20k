@@ -7,6 +7,16 @@
 use crate::map::rmg::options::RmgOptions;
 use crate::map::rmg::preview::PreviewImage;
 use crate::map::rmg::randomize::{RandomRanged, derive_from_map_type, randomize};
+
+/// The production dialog rng: app supplies a frontend SimRng; map stays
+/// sim-independent (F05), so the binding lives with this ui adapter.
+impl RandomRanged for crate::sim::rng::SimRng {
+    fn ranged(&mut self, min: i32, max: i32) -> i32 {
+        let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+        let span = (i64::from(hi) - i64::from(lo)) as u32;
+        lo.wrapping_add(self.next_range_u32_inclusive(0, span) as i32)
+    }
+}
 use crate::map::rmg::settings::RmgSettings;
 
 use super::super::layout::RandomMapSetupControl;

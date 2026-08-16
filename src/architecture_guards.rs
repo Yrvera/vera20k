@@ -38,12 +38,6 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 /// disappears from the source must also be deleted here, so the ratchet
 /// tightens monotonically.
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
-    // F05: sim fog/bridge reads leave map terrain projection.
-    ("map/terrain.rs", "sim"),
-    // F05: visible instance construction moves to render::terrain_instances.
-    ("map/terrain.rs", "render"),
-    // F05: map-owned SimRng adapter is replaced by the generic RNG input.
-    ("map/rmg/randomize.rs", "sim"),
     // F06: combat-light draw DTO moves to render.
     ("render/combat_light.rs", "app"),
     // F06: cursor ID / software-cursor DTOs move to render.
