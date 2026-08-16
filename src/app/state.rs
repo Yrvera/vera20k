@@ -147,8 +147,6 @@ pub(crate) struct AppState {
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
     pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
-    /// True while left-dragging on minimap (camera pan mode).
-    pub(crate) minimap_dragging: bool,
     /// Animated power bar — segment-by-segment transition matching original PowerClass.
     pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
     /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
@@ -174,16 +172,6 @@ pub(crate) struct AppState {
     /// Retained immutable sidebar view plus its per-owner animated credit state.
     /// Consumers read the snapshot; explicit transitions rebuild it.
     pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
-    /// Selection drag state — tracks mouse drag for box-select.
-    pub(crate) selection_state: SelectionState,
-    /// Player-side `g_CurrentObjects` order. Selection commands update this
-    /// immediately; the post-sim reconciliation removes lifecycle departures.
-    pub(crate) selection_order: Vec<u64>,
-    /// A queued selection command has not yet reached the simulation tick.
-    pub(crate) selection_order_pending: bool,
-    /// Existing selection paths speak by default; held TypeSelect batches
-    /// temporarily suppress and restore this latch.
-    pub(crate) selection_voice_enabled: bool,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     /// Startup-shell rules loaded at boot for menu presentation; match paths
     /// read the runtime-bound copy via `rules()`.
@@ -204,15 +192,6 @@ pub(crate) struct AppState {
     pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
     pub(crate) configured_input_delay_ticks: u64,
-    /// Pending order mode for the next right-click command.
-    pub(crate) queued_order_mode: render::OrderMode,
-    /// Control group slots (0-9) storing stable entity ids.
-    pub(crate) control_groups: Vec<Vec<u64>>,
-    /// Slot and wall-clock instant of the last plain control-group recall, for
-    /// the 800 ms double-tap that centres the camera. Wall clock, never sim
-    /// state: the original stamps `timeGetTime()` here and only a recall writes
-    /// it — assigning with Ctrl+digit never does.
-    pub(crate) last_control_group_press: Option<(usize, std::time::Instant)>,
     /// Match-scoped local player identity, pinned ONCE at match launch
     /// (skirmish session / spawn-pick) and never rewritten mid-match. All
     /// command/HUD owner resolution reads this first — selection must never
@@ -231,14 +210,6 @@ pub(crate) struct AppState {
     pub(crate) diag: crate::app::diagnostics::state::DiagnosticsState,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
-    /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
-    pub(crate) spawn_pick_pending: bool,
-    /// Mutually-exclusive cursor-on-tactical-map targeting mode (building
-    /// placement OR superweapon). Right-click and Esc clear; arming one
-    /// kind clears the other.
-    pub(crate) targeting_mode: Option<crate::app::types::TargetingMode>,
-    /// Current placement preview for the armed building, if any.
-    pub(crate) building_placement_preview: Option<BuildingPlacementPreview>,
     /// Active tab for the custom in-game sidebar.
     pub(crate) active_sidebar_tab: SidebarTab,
     /// Optional local override for chrome positioning loaded from sidebar_layout.ron.
@@ -369,7 +340,7 @@ impl AppState {
     /// Return the building-placement section name if the targeting mode
     /// is set to `BuildingPlacement`, else `None`.
     pub(crate) fn armed_building_type(&self) -> Option<&str> {
-        self.targeting_mode
+        self.input.targeting_mode
             .as_ref()
             .and_then(crate::app::types::TargetingMode::as_building_placement)
     }
@@ -377,7 +348,7 @@ impl AppState {
     /// Return the SW section name if the targeting mode is set to
     /// `SuperWeapon`, else `None`.
     pub(crate) fn armed_super_weapon_type(&self) -> Option<&str> {
-        self.targeting_mode
+        self.input.targeting_mode
             .as_ref()
             .and_then(crate::app::types::TargetingMode::as_super_weapon)
     }

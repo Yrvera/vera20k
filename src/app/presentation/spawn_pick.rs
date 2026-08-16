@@ -121,7 +121,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // here too (same contract as the skirmish-session launch path).
     state.local_player_owner = seeded_owner.clone();
     state.local_owner_override = seeded_owner;
-    state.spawn_pick_pending = false;
+    state.input.spawn_pick_pending = false;
 
     // Center camera on the chosen spawn position, using the tactical viewport
     // (window minus the sidebar column) rather than the whole window.

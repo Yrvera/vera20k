@@ -617,8 +617,8 @@ fn update_right_drag_pan(state: &mut AppState) {
     if !state.input.tactical_mouse.right_pan_engaged {
         // A live band box wins the race: the original cancels the drag instead
         // of engaging the pan, and only engages on a later frame.
-        if state.selection_state.is_band_box_active() {
-            state.selection_state.cancel_drag();
+        if state.input.selection_state.is_band_box_active() {
+            state.input.selection_state.cancel_drag();
             return;
         }
         state.input.tactical_mouse.right_pan_engaged = true;
@@ -694,7 +694,7 @@ pub(crate) fn update_camera(state: &mut AppState) {
     // the capture, so the map is frozen for the whole of a band-box or
     // right-drag gesture. The minimap-drag inhibit is VERA-internal: gamemd's
     // minimap re-centres only on press, while this flag owns the gesture here.
-    if !state.input.tactical_mouse.captured && !state.minimap_dragging {
+    if !state.input.tactical_mouse.captured && !state.input.minimap_dragging {
         let now = state.input.edge_scroll.radar_timer();
         let scroll_rate = state.in_game_options.scroll_rate;
         let active_direction =

@@ -24,7 +24,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             CursorFeedbackKind::Scroll(dir)
         });
     }
-    if state.minimap_dragging || is_cursor_over_minimap(state) {
+    if state.input.minimap_dragging || is_cursor_over_minimap(state) {
         // Show the minimap-specific Move cursor when hovering over the minimap
         // (reference §7.4 — MiniFrame/MiniCount for the Move cursor = frames 42–51).
         return Some(CursorFeedbackKind::MinimapMove);
@@ -43,7 +43,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             .unwrap_or(CursorId::Default);
         return Some(CursorFeedbackKind::SuperWeaponTarget(cursor_id));
     }
-    if let Some(preview) = state.building_placement_preview.as_ref() {
+    if let Some(preview) = state.input.building_placement_preview.as_ref() {
         return Some(if preview.valid {
             CursorFeedbackKind::PlaceValid
         } else {
@@ -96,7 +96,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         // Over shrouded/fogged cells the player can still issue move orders,
         // so show the queued-order-mode cursor (Move / AttackMove / Guard)
         // instead of reverting to the default arrow.
-        return Some(match state.queued_order_mode {
+        return Some(match state.input.queued_order_mode {
             crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
             crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
             crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
@@ -201,7 +201,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     {
         return Some(CursorFeedbackKind::Harvest);
     }
-    Some(match state.queued_order_mode {
+    Some(match state.input.queued_order_mode {
         crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
         crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
         crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,

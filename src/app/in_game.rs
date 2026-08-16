@@ -123,7 +123,7 @@ impl App {
     /// open and a placement/targeting or repair/sell mode is armed, Escape
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
-        let in_world_mode_armed = state.targeting_mode.is_some()
+        let in_world_mode_armed = state.input.targeting_mode.is_some()
             || state.sidebar_gadget_state.repair_mode_on
             || state.sidebar_gadget_state.sell_mode_on;
         crate::ui::pause_menu::escape_belongs_to_modal_machine(

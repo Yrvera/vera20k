@@ -609,7 +609,7 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     let cargo_pip = build_cargo_pip_instances(state, sw, sh);
     let software_cursor = build_software_cursor_instances(state);
     let drag = match &state.match_presentation.selection_overlay {
-        Some(o) => o.build_drag_rect(&state.selection_state, state.input.camera_x, state.input.camera_y),
+        Some(o) => o.build_drag_rect(&state.input.selection_state, state.input.camera_x, state.input.camera_y),
         None => Vec::new(),
     };
 
@@ -665,7 +665,7 @@ fn build_placement_preview(
     u8,
     Vec<SpriteInstance>,
 ) {
-    match (&state.match_presentation.selection_overlay, &state.building_placement_preview) {
+    match (&state.match_presentation.selection_overlay, &state.input.building_placement_preview) {
         (Some(o), Some(preview)) => {
             let preview_type_str = state
                 .sim_runtime

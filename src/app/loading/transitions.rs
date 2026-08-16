@@ -269,8 +269,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     if let Some(manager) = result.asset_manager {
         state.process_assets.return_from_loading(manager);
     }
-    state.targeting_mode = None;
-    state.building_placement_preview = None;
+    state.input.targeting_mode = None;
+    state.input.building_placement_preview = None;
     state.active_sidebar_tab = SidebarTab::default_active_tab();
     state.sidebar_scroll_rows = 0;
     state.sidebar_scroll_rows_parked = [0; 4];
@@ -316,7 +316,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             &state.match_presentation.theater_name,
         ));
     }
-    state.minimap_dragging = false;
+    state.input.minimap_dragging = false;
     state.input.tactical_mouse = Default::default();
     state.input.keys_held.clear();
     let (tactical_width, tactical_height) =
@@ -362,8 +362,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     }
 
     state.platform.frame_pacer.reset_for_immediate_frame();
-    state.queued_order_mode = render::OrderMode::Move;
-    for group in &mut state.control_groups {
+    state.input.queued_order_mode = render::OrderMode::Move;
+    for group in &mut state.input.control_groups {
         group.clear();
     }
     // Pin the match-scoped local player once at launch. When the launch flow
@@ -378,7 +378,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // sound-event queue kept the previous match's undrained events.
     state.match_audio.reset_for_new_match();
     state.sandbox_full_visibility = result.scenario.sandbox_full_visibility;
-    state.spawn_pick_pending = result.scenario.spawn_pick_pending;
+    state.input.spawn_pick_pending = result.scenario.spawn_pick_pending;
 
     // Load sound.ini / soundmd.ini for SFX sound ID resolution.
     if let Some(assets) = state.process_assets.manager() {
@@ -401,7 +401,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         player.request_scenario_theme(request, music_now_ms);
     }
 
-    if state.spawn_pick_pending {
+    if state.input.spawn_pick_pending {
         crate::app::loading::pump::clear_match_startup_state(state);
         state.screen = GameScreen::SpawnPick;
         if returns_scenario_rng_to_offline_shell {
@@ -428,7 +428,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                         active_correlation,
                         prior_receipt: state.rust_l0_receipt.as_ref(),
                         screen_is_loading: matches!(state.screen, GameScreen::Loading),
-                        spawn_pick_active: state.spawn_pick_pending,
+                        spawn_pick_active: state.input.spawn_pick_pending,
                     }
                     .acknowledge()
                     .map_err(|err| err.to_string())

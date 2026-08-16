@@ -281,8 +281,8 @@ impl ApplicationHandler for App {
                     // anchor-relative step every frame and edge scroll stays
                     // inhibited until the player right-clicks again.
                     state.input.tactical_mouse = Default::default();
-                    state.selection_state.cancel_drag();
-                    state.minimap_dragging = false;
+                    state.input.selection_state.cancel_drag();
+                    state.input.minimap_dragging = false;
                 }
                 Self::set_window_active(state, active);
             }

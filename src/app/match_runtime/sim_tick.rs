@@ -1583,12 +1583,12 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     let Some(type_id) = state.armed_building_type() else {
-        state.building_placement_preview = None;
+        state.input.building_placement_preview = None;
         return;
     };
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r)) else {
-        state.building_placement_preview = None;
+        state.input.building_placement_preview = None;
         return;
     };
     // Offset so the foundation shadow centers on the cursor, not top-left corner.
@@ -1620,7 +1620,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // `build_ghost_sprite` derives the preview from the same helper, so the
     // preview and the placed building always align.
     let (rx, ry) = screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y);
-    state.building_placement_preview = production::placement_preview_for_owner_with_overlays(
+    state.input.building_placement_preview = production::placement_preview_for_owner_with_overlays(
         sim,
         rules,
         &owner,

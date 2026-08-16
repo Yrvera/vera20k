@@ -37,4 +37,33 @@ pub(crate) struct MatchInputState {
     pub(crate) type_select: crate::app::types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
+    /// True while left-dragging on minimap (camera pan mode).
+    pub(crate) minimap_dragging: bool,
+    /// Selection drag state — tracks mouse drag for box-select.
+    pub(crate) selection_state: crate::sim::selection::SelectionState,
+    /// Player-side `g_CurrentObjects` order. Selection commands update this
+    /// immediately; the post-sim reconciliation removes lifecycle departures.
+    pub(crate) selection_order: Vec<u64>,
+    /// A queued selection command has not yet reached the simulation tick.
+    pub(crate) selection_order_pending: bool,
+    /// Existing selection paths speak by default; held TypeSelect batches
+    /// temporarily suppress and restore this latch.
+    pub(crate) selection_voice_enabled: bool,
+    /// Pending order mode for the next right-click command.
+    pub(crate) queued_order_mode: crate::app::presentation::render::OrderMode,
+    /// Control group slots (0-9) storing stable entity ids.
+    pub(crate) control_groups: Vec<Vec<u64>>,
+    /// Slot and wall-clock instant of the last plain control-group recall, for
+    /// the 800 ms double-tap that centres the camera. Wall clock, never sim
+    /// state: the original stamps `timeGetTime()` here and only a recall writes
+    /// it — assigning with Ctrl+digit never does.
+    pub(crate) last_control_group_press: Option<(usize, std::time::Instant)>,
+    /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
+    pub(crate) spawn_pick_pending: bool,
+    /// Mutually-exclusive cursor-on-tactical-map targeting mode (building
+    /// placement OR superweapon). Right-click and Esc clear; arming one
+    /// kind clears the other.
+    pub(crate) targeting_mode: Option<crate::app::types::TargetingMode>,
+    /// Current placement preview for the armed building, if any.
+    pub(crate) building_placement_preview: Option<crate::sim::production::BuildingPlacementPreview>,
 }

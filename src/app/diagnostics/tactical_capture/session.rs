@@ -971,10 +971,10 @@ impl TacticalCaptureSession {
             && !state.diag.debug_show_pathgrid
             && !state.diag.debug_unit_inspector
             && !state.show_hotkey_help
-            && state.targeting_mode.is_none()
-            && state.building_placement_preview.is_none()
+            && state.input.targeting_mode.is_none()
+            && state.input.building_placement_preview.is_none()
             && state.input.keys_held.is_empty()
-            && !state.minimap_dragging
+            && !state.input.minimap_dragging
             && !state.sidebar_gadget_state.repair_mode_on
             && !state.sidebar_gadget_state.sell_mode_on;
         let counts_ready = output.instance_counts.minimap > 0

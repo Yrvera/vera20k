@@ -135,14 +135,14 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         )
     };
     sync_targeting_mode(
-        &mut state.targeting_mode,
-        &mut state.building_placement_preview,
+        &mut state.input.targeting_mode,
+        &mut state.input.building_placement_preview,
         &ready_buildings,
         &sw_views,
         state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
     );
     // App targeting state -> the sidebar-owned armed projection (F06 seam).
-    let armed_entry = state.targeting_mode.as_ref().map(|mode| match mode {
+    let armed_entry = state.input.targeting_mode.as_ref().map(|mode| match mode {
         crate::app::types::TargetingMode::BuildingPlacement(section) => {
             sidebar::ArmedSidebarEntry::BuildingPlacement(section.clone())
         }
@@ -244,8 +244,8 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
     if minimap_move_order_if_selected(state) {
         return true;
     }
-    state.minimap_dragging = true;
-    state.selection_state.cancel_drag();
+    state.input.minimap_dragging = true;
+    state.input.selection_state.cancel_drag();
     update_camera_from_minimap_cursor(state);
     true
 }
@@ -269,7 +269,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         .unwrap_or_else(|| "Americans".to_string());
     let owner_id = sim.interner.get(&owner).unwrap_or_default();
     let execute_tick = sim.session.tick;
-    let order_mode = state.queued_order_mode;
+    let order_mode = state.input.queued_order_mode;
     let shift_held: bool = crate::app::input::dispatch::is_shift_held(state);
     let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();
     for &entity_id in &selected_ids {
@@ -316,7 +316,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     }
     // Reset order mode after issuing the command (like the main viewport does).
     if order_mode != crate::app::presentation::render::OrderMode::Move {
-        state.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
+        state.input.queued_order_mode = crate::app::presentation::render::OrderMode::Move;
     }
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         let queued = queued

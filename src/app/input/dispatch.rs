@@ -146,14 +146,14 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // freezes edge auto-scroll for the length of the gesture.
                 state.input.tactical_mouse.left_held = true;
                 state.input.tactical_mouse.captured = true;
-                if state.targeting_mode.is_some()
+                if state.input.targeting_mode.is_some()
                     || state.sidebar_gadget_state.repair_mode_on
                     || state.sidebar_gadget_state.sell_mode_on
                 {
                     return; // suppress selection drag while a targeting / repair / sell mode is active
                 }
                 state
-                    .selection_state
+                    .input.selection_state
                     .begin_drag(state.input.cursor_x, state.input.cursor_y);
             } else {
                 state.input.tactical_mouse.left_held = false;
@@ -175,7 +175,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // Only an active band box owns a clamped tactical endpoint.
                 // A pending press is still an ordinary click at the actual
                 // release point, including after sticky capture routing.
-                let release_point = if state.selection_state.is_band_box_active() {
+                let release_point = if state.input.selection_state.is_band_box_active() {
                     let (tactical_width, tactical_height) =
                         crate::app::input::camera::tactical_viewport_size_px(
                             state.render_width(),
@@ -191,7 +191,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     (state.input.cursor_x, state.input.cursor_y)
                 };
                 let mut action: SelectAction = state
-                    .selection_state
+                    .input.selection_state
                     .end_drag(release_point.0, release_point.1);
                 let shift = is_shift_held(state);
                 // A band box that caught no drawn object leaves the selection
@@ -385,15 +385,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                                 ORDINARY_SELECTION_VOICE_POLICY,
                             );
                         } else {
-                            let prior = state.selection_voice_enabled;
-                            state.selection_voice_enabled = false;
+                            let prior = state.input.selection_voice_enabled;
+                            state.input.selection_voice_enabled = false;
                             apply_selection_mutation(
                                 state,
                                 mutation,
                                 false,
                                 HELD_TYPE_SELECT_VOICE_POLICY,
                             );
-                            state.selection_voice_enabled = prior;
+                            state.input.selection_voice_enabled = prior;
                         }
                     } else {
                         apply_selection_mutation(
@@ -437,7 +437,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                         right_click_cancel_ladder(state);
                     }
                     // The native release tears the band rectangle down too.
-                    state.selection_state.cancel_drag();
+                    state.input.selection_state.cancel_drag();
                 }
             }
         }
@@ -453,9 +453,9 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
 /// the repair/sell cursor). The final rung — clear the selection — is retail
 /// behaviour, not a VERA deviation.
 fn right_click_cancel_ladder(state: &mut AppState) {
-    if state.targeting_mode.is_some() {
-        state.targeting_mode = None;
-        state.building_placement_preview = None;
+    if state.input.targeting_mode.is_some() {
+        state.input.targeting_mode = None;
+        state.input.building_placement_preview = None;
         return;
     }
     if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
@@ -507,8 +507,8 @@ pub(crate) fn minimap_mouse(state: &mut AppState, button: MouseButton, btn_state
         MouseButton::Left => {
             if btn_state.is_pressed() {
                 crate::app::presentation::sidebar_render::try_begin_minimap_drag(state);
-            } else if state.minimap_dragging {
-                state.minimap_dragging = false;
+            } else if state.input.minimap_dragging {
+                state.input.minimap_dragging = false;
             }
         }
         MouseButton::Right => {
@@ -551,7 +551,7 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // (decompile 0x006539D0: `param_1 & 0x22` early-out). While a minimap press
     // is held we do NOT follow the cursor — but still swallow the move so it
     // doesn't begin a unit selection-drag.
-    if state.minimap_dragging {
+    if state.input.minimap_dragging {
         return;
     }
     // Clamp drag position to the tactical viewport (exclude sidebar area).
@@ -570,10 +570,10 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // The threshold is measured from the live mouse point. Once active, the
     // rendered/stored endpoint is restricted to the tactical surface.
     state
-        .selection_state
+        .input.selection_state
         .update_drag(state.input.cursor_x, state.input.cursor_y);
-    if state.selection_state.is_band_box_active() {
-        state.selection_state.drag_current = Some(clamped_endpoint);
+    if state.input.selection_state.is_band_box_active() {
+        state.input.selection_state.drag_current = Some(clamped_endpoint);
     }
 }
 
@@ -806,19 +806,19 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             queue_build_by_type(state, &type_id);
         }
         SidebarAction::ArmPlacement(type_id) => {
-            state.targeting_mode =
+            state.input.targeting_mode =
                 Some(crate::app::types::TargetingMode::BuildingPlacement(type_id));
             state.sidebar_gadget_state.repair_mode_on = false;
             state.sidebar_gadget_state.sell_mode_on = false;
         }
         SidebarAction::ClearPlacementMode => {
-            state.targeting_mode = None;
-            state.building_placement_preview = None;
+            state.input.targeting_mode = None;
+            state.input.building_placement_preview = None;
         }
         SidebarAction::ArmSuperWeapon(section) => {
-            state.targeting_mode = Some(crate::app::types::TargetingMode::SuperWeapon(section));
+            state.input.targeting_mode = Some(crate::app::types::TargetingMode::SuperWeapon(section));
             // Mutual exclusion: clear building-placement preview AND repair/sell modes.
-            state.building_placement_preview = None;
+            state.input.building_placement_preview = None;
             state.sidebar_gadget_state.repair_mode_on = false;
             state.sidebar_gadget_state.sell_mode_on = false;
             log::info!(
@@ -827,7 +827,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             );
         }
         SidebarAction::ClearSuperWeaponMode => {
-            state.targeting_mode = None;
+            state.input.targeting_mode = None;
             log::info!("SuperWeapon targeting cleared");
         }
         SidebarAction::TogglePauseQueue(category) => {
@@ -856,8 +856,8 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             g.repair_mode_on = !g.repair_mode_on;
             if g.repair_mode_on {
                 g.sell_mode_on = false;
-                state.targeting_mode = None;
-                state.building_placement_preview = None;
+                state.input.targeting_mode = None;
+                state.input.building_placement_preview = None;
             }
         }
         SidebarAction::ToggleSellMode => {
@@ -865,8 +865,8 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             g.sell_mode_on = !g.sell_mode_on;
             if g.sell_mode_on {
                 g.repair_mode_on = false;
-                state.targeting_mode = None;
-                state.building_placement_preview = None;
+                state.input.targeting_mode = None;
+                state.input.building_placement_preview = None;
             }
         }
         SidebarAction::Deploy => {
@@ -1112,7 +1112,7 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::StopObject => queue_stop_for_selected(state),
         HotkeyCommand::DeployObject => queue_deploy_undeploy_for_selected(state),
         HotkeyCommand::GuardObject => {
-            state.queued_order_mode = OrderMode::Guard;
+            state.input.queued_order_mode = OrderMode::Guard;
             log::info!("Order mode armed: Guard");
         }
         HotkeyCommand::StructureTab => {
@@ -1188,9 +1188,9 @@ fn handle_options_hotkey(state: &mut AppState) {
             state.platform.window.set_cursor_visible(false);
         }
         log::info!("Game resumed");
-    } else if state.targeting_mode.is_some() {
-        state.targeting_mode = None;
-        state.building_placement_preview = None;
+    } else if state.input.targeting_mode.is_some() {
+        state.input.targeting_mode = None;
+        state.input.building_placement_preview = None;
     } else if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
         state.sidebar_gadget_state.repair_mode_on = false;
         state.sidebar_gadget_state.sell_mode_on = false;
@@ -1235,11 +1235,11 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         // Interim order-mode arms until the stock click modifiers
         // (Ctrl+Shift+click attack move, beacon key) are implemented.
         KeyCode::KeyA => {
-            state.queued_order_mode = OrderMode::AttackMove;
+            state.input.queued_order_mode = OrderMode::AttackMove;
             log::info!("Order mode armed: AttackMove");
         }
         KeyCode::KeyB => {
-            state.queued_order_mode = OrderMode::Move;
+            state.input.queued_order_mode = OrderMode::Move;
         }
         KeyCode::KeyL => {
             state.diag.debug_show_cell_grid = !state.diag.debug_show_cell_grid;
@@ -1765,14 +1765,14 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
         return Vec::new();
     };
     let mut ordered = Vec::new();
-    for &id in &state.selection_order {
+    for &id in &state.input.selection_order {
         if let Some(entity) = sim.entities().get(id) {
-            if state.selection_order_pending || entity.selected {
+            if state.input.selection_order_pending || entity.selected {
                 ordered.push(id);
             }
         }
     }
-    if !state.selection_order_pending {
+    if !state.input.selection_order_pending {
         for entity in sim.entities().values() {
             if entity.selected && !ordered.contains(&entity.stable_id) {
                 insert_selected_id(&mut ordered, entity.stable_id, sim, state.rules());
@@ -1786,18 +1786,18 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
 /// removals have committed for this frame.
 pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
-        state.selection_order.clear();
-        state.selection_order_pending = false;
+        state.input.selection_order.clear();
+        state.input.selection_order_pending = false;
         return;
     };
-    if state.selection_order_pending {
-        let before_retain = state.selection_order.len();
-        state.selection_order.retain(|id| {
+    if state.input.selection_order_pending {
+        let before_retain = state.input.selection_order.len();
+        state.input.selection_order.retain(|id| {
             sim.entities()
                 .get(*id)
                 .is_some_and(|entity| entity.lifecycle.object_alive)
         });
-        if state.selection_order.len() != before_retain {
+        if state.input.selection_order.len() != before_retain {
             state.input.type_select.reset_scope();
         }
         let committed: Vec<u64> = sim
@@ -1806,19 +1806,19 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
             .filter(|entity| entity.selected)
             .map(|entity| entity.stable_id)
             .collect();
-        let same_membership = committed.len() == state.selection_order.len()
+        let same_membership = committed.len() == state.input.selection_order.len()
             && committed
                 .iter()
-                .all(|id| state.selection_order.contains(id));
+                .all(|id| state.input.selection_order.contains(id));
         if !same_membership {
             return;
         }
-        state.selection_order_pending = false;
+        state.input.selection_order_pending = false;
         return;
     }
-    let prior_len = state.selection_order.len();
+    let prior_len = state.input.selection_order.len();
     let mut reconciled: Vec<u64> = state
-        .selection_order
+        .input.selection_order
         .iter()
         .copied()
         .filter(|id| {
@@ -1836,8 +1836,8 @@ pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
     if lifecycle_removed {
         state.input.type_select.reset_scope();
     }
-    state.selection_order = reconciled;
-    state.selection_order_pending = false;
+    state.input.selection_order = reconciled;
+    state.input.selection_order_pending = false;
 }
 
 fn apply_selection_mutation(
@@ -1890,13 +1890,13 @@ fn apply_selection_mutation(
     }
     for id in selection_voice_recipients(
         voice_policy,
-        state.selection_voice_enabled,
+        state.input.selection_voice_enabled,
         &successful_adds,
     ) {
         emit_selection_voice(state, *id);
     }
-    state.selection_order = ordered.clone();
-    state.selection_order_pending = true;
+    state.input.selection_order = ordered.clone();
+    state.input.selection_order_pending = true;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     schedule_command(
         state,
@@ -2304,17 +2304,17 @@ fn handle_control_group_command(
     group_idx: usize,
     action_override: Option<GroupPressAction>,
 ) {
-    if group_idx >= state.control_groups.len() {
+    if group_idx >= state.input.control_groups.len() {
         return;
     }
-    let group = state.control_groups[group_idx].clone();
+    let group = state.input.control_groups[group_idx].clone();
     let selected = selected_stable_ids_in_order(state);
     // Only live members count towards "the selection is exactly the group" —
     // membership is derived by scanning live objects, so a dead unit has
     // already left its group.
     let live_group = live_group_members(state, &group);
     let last_press = state
-        .last_control_group_press
+        .input.last_control_group_press
         .map(|(slot, at)| (slot, at.elapsed()));
     let action = action_override.unwrap_or_else(|| {
         control_group_press_action(
@@ -2329,7 +2329,7 @@ fn handle_control_group_command(
 
     match action {
         GroupPressAction::Assign => {
-            assign_control_group(&mut state.control_groups, group_idx, selected);
+            assign_control_group(&mut state.input.control_groups, group_idx, selected);
         }
         GroupPressAction::Center => {
             // Alt+digit selects the group as well as centring; a bare
@@ -2351,7 +2351,7 @@ fn handle_control_group_command(
         GroupPressAction::Recall => {
             // A recall on an empty group still clears the selection: the
             // deselect-all runs before the select loop, unconditionally.
-            state.last_control_group_press = Some((group_idx, std::time::Instant::now()));
+            state.input.last_control_group_press = Some((group_idx, std::time::Instant::now()));
             queue_selection_snapshot_command(state, live_group, false);
             apply_selection_action_line_policy(state, ORDINARY_SELECTION_ACTION_LINE_POLICY);
         }

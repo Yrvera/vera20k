@@ -296,7 +296,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     let owner: String = resolve_owner(state);
     // Use the preview's stored (rx, ry) so the placed building exactly matches
     // the ghost the player saw, avoiding any cursor-movement drift between frames.
-    let (rx, ry) = if let Some(preview) = state.building_placement_preview.as_ref() {
+    let (rx, ry) = if let Some(preview) = state.input.building_placement_preview.as_ref() {
         log::info!(
             "Click placement: using preview ({},{}) size={}x{} type={}",
             preview.rx,
@@ -309,7 +309,7 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     } else {
         crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.input.cursor_x, state.input.cursor_y)
     };
-    if let Some(preview) = state.building_placement_preview.as_ref() {
+    if let Some(preview) = state.input.building_placement_preview.as_ref() {
         if !preview.valid {
             if let Some(reason) = &preview.reason {
                 log::warn!(
@@ -338,8 +338,8 @@ pub(crate) fn place_ready_building_at_cursor(state: &mut AppState, type_id: &str
     );
     // Clear placement mode immediately so the foundation preview stops following
     // the cursor after the order is issued.
-    state.targeting_mode = None;
-    state.building_placement_preview = None;
+    state.input.targeting_mode = None;
+    state.input.building_placement_preview = None;
     log::info!(
         "Ready building placement queued: owner={} type={} cell=({}, {}) execute_tick=current",
         owner,
@@ -382,7 +382,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
             target_ry: ry,
         },
     );
-    state.targeting_mode = None;
+    state.input.targeting_mode = None;
     log::info!(
         "SuperWeapon launch queued: owner={} section={} cell=({}, {}) issue_frame=current",
         owner,
@@ -569,7 +569,7 @@ pub(crate) fn cycle_local_owner(state: &mut AppState) {
     // Move out of Vec instead of cloning, then clone once for the override.
     let next = owners.swap_remove(next_idx);
     state.local_owner_override = Some(next.clone());
-    state.targeting_mode = None;
+    state.input.targeting_mode = None;
     log::info!("Local owner switched to {}", next);
 }
 

@@ -402,7 +402,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
         is_shift_held(state),
         is_alt_held(state),
     );
-    let order_mode = state.queued_order_mode;
+    let order_mode = state.input.queued_order_mode;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let owner_id: InternedId = state
         .sim_runtime
@@ -1149,8 +1149,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     if queued.is_empty() {
         return false;
     }
-    if consumed_order_mode && state.queued_order_mode != OrderMode::Move {
-        state.queued_order_mode = OrderMode::Move;
+    if consumed_order_mode && state.input.queued_order_mode != OrderMode::Move {
+        state.input.queued_order_mode = OrderMode::Move;
     }
     finish_order(state, queued, speaker_id)
 }
