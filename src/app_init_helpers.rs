@@ -519,6 +519,17 @@ where
         bootstrap_rng,
         initialize_houses_before_objects,
     );
+    // F09: HVA frame counts are sim metadata — parse them through the GPU-free
+    // catalog before any atlas exists, so the renderer never writes into the
+    // simulation. Atlas seeding derives its own copy from the same functions.
+    let frame_catalog = crate::sim::voxel_frame_catalog::build_voxel_frame_catalog(
+        sim.entities(),
+        &sim.interner,
+        asset_manager,
+        rules,
+        art,
+    );
+    sim.update_voxel_anim_frame_counts(&frame_catalog);
     let (unit_atlas, shp_atlas, palette_set) = build_entity_atlases(
         &sim,
         asset_manager,
@@ -533,10 +544,6 @@ where
         theater_iso_palette,
         vxl_compute,
     );
-    // Update VoxelAnimation frame counts from atlas HVA data.
-    if let Some(ref atlas) = unit_atlas {
-        sim.update_voxel_anim_frame_counts(&atlas.frame_counts);
-    }
     (Some(sim), unit_atlas, shp_atlas, palette_set)
 }
 

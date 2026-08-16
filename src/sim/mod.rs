@@ -129,6 +129,8 @@ pub mod debug_event_log;
 pub mod runtime;
 pub mod replay;
 pub mod selection;
+// GPU-independent HVA frame-count catalog shared with the renderer's atlas seeding (F09).
+pub mod voxel_frame_catalog;
 
 // --- Snapshot serialization (mid-match save/load) ---
 pub mod snapshot;

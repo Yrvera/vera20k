@@ -190,6 +190,17 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
             );
         },
     );
+    // F09: bind HVA-driven voxel animation frame counts through the same
+    // GPU-free catalog the app uses; headless previously ran every voxel
+    // animation at its 1-frame default.
+    let frame_catalog = crate::sim::voxel_frame_catalog::build_voxel_frame_catalog(
+        sim.entities(),
+        &sim.interner,
+        &assets,
+        Some(&rules),
+        Some(&rules.art_registry),
+    );
+    sim.update_voxel_anim_frame_counts(&frame_catalog);
     let post_map = crate::sim::runtime::finalize_constructed_scenario(
         &mut sim,
         &map,
@@ -236,5 +247,60 @@ impl HeadlessScenario {
         let _ = self
             .runtime
             .advance_frame(&[], SIM_TICK_MS, crate::sim::world::TickLane::Ordinary);
+    }
+}
+
+#[cfg(test)]
+mod retail_construction_tests {
+    use super::*;
+
+    /// F09 certification: the shared GPU-free funnel produces a deterministic,
+    /// fully populated headless scenario on a retail map. Two loads of the same
+    /// map and seed must yield identical parity digests at construction and on
+    /// every tick, and the construction gains the funnel promises — map-roster
+    /// houses, overlay/smudge/bridge authority, published navigation — must all
+    /// be present. App-vs-headless assembly drift is prevented structurally:
+    /// both call `construct_scenario` + `finalize_constructed_scenario`.
+    #[test]
+    #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+    fn retail_headless_funnel_construction_is_deterministic_and_populated() {
+        let ra2 = std::path::PathBuf::from(
+            std::env::var("RA2_DIR").expect("set RA2_DIR to the retail RA2/YR install directory"),
+        );
+        let seed = 0x00C0_FFEE;
+        let mut a = load(&ra2, "Dustbowl.mmx", seed).expect("first headless load");
+        let mut b = load(&ra2, "Dustbowl.mmx", seed).expect("second headless load");
+
+        assert_eq!(
+            a.sim().parity_digest(),
+            b.sim().parity_digest(),
+            "same map+seed must produce an identical construction fingerprint"
+        );
+        assert!(
+            !a.sim().houses.is_empty(),
+            "map-roster houses must be constructed before objects"
+        );
+        assert!(
+            a.sim().overlay_grid.is_some(),
+            "overlay authority must be installed by the shared finalization"
+        );
+        assert!(
+            a.sim().smudge_grid.is_some(),
+            "smudge authority must be installed by the shared finalization"
+        );
+        assert!(
+            a.sim().bridge_state.is_some(),
+            "bridge runtime state must be constructed by the funnel"
+        );
+
+        for tick in 0..30u32 {
+            a.tick();
+            b.tick();
+            assert_eq!(
+                a.sim().parity_digest(),
+                b.sim().parity_digest(),
+                "runtime-backed headless execution diverged at tick {tick}"
+            );
+        }
     }
 }
