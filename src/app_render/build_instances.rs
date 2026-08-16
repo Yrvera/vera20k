@@ -20,7 +20,7 @@ use crate::app_ui_overlays::{
     build_cargo_pip_instances, build_occupant_pip_instances, build_software_cursor_instances,
     build_unit_status_bg_instances, build_unit_status_fill_instances,
 };
-use crate::map::terrain::{self, TilePlacement};
+use crate::map::terrain::TilePlacement;
 use crate::map::theater::TileKey;
 use crate::render::batch::SpriteInstance;
 use crate::sidebar::SidebarView;
@@ -31,7 +31,7 @@ use crate::sidebar::SidebarView;
 
 /// Game-world sprite instances: terrain tiles, overlays, entities, bridges.
 pub(super) struct WorldInstances {
-    pub terrain: terrain::TerrainInstances,
+    pub terrain: crate::render::terrain_instances::TerrainInstances,
     pub overlay: Vec<SpriteInstance>,
     /// TerrainClass and Techno parents in exact signed Layer-2 order.
     pub ground: super::draw_plan_lowering::GroundObjectPass,
@@ -187,7 +187,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             .simulation
             .as_ref()
             .and_then(|sim| sim.bridge_state.as_ref());
-        terrain::build_visible_instances(
+        crate::render::terrain_instances::build_visible_instances(
             grid,
             Some(&state.lighting_grid),
             state.camera_x,
@@ -199,7 +199,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             bridge_state,
         )
     } else {
-        terrain::TerrainInstances { normal: Vec::new() }
+        crate::render::terrain_instances::TerrainInstances { normal: Vec::new() }
     };
 
     // Map overlays and walls remain in the fixed per-cell draw plan. Terrain

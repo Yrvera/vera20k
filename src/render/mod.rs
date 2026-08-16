@@ -34,6 +34,7 @@ pub mod minimap;
 mod minimap_helpers;
 pub mod native_surface_format;
 pub mod overlay_assets;
+pub mod terrain_instances;
 pub mod overlay_atlas;
 pub mod palette_textures;
 pub mod pixel_fx_sparkles;
