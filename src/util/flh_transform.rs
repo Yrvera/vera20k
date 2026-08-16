@@ -19,11 +19,11 @@
 
 /// Pixels per lepton along the isometric X axis (half tile width / leptons per cell).
 /// 60px tile width / 2 / 256 leptons = 30/256.
-const SCREEN_X_PER_LEPTON: f32 = 30.0 / 256.0;
+const HALF_SCREEN_X_PER_LEPTON: f32 = crate::util::lepton::SCREEN_X_PER_LEPTON / 2.0;
 
 /// Pixels per lepton along the isometric Y axis (half tile height / leptons per cell).
 /// 30px tile height / 2 / 256 leptons = 15/256.
-const SCREEN_Y_PER_LEPTON: f32 = 15.0 / 256.0;
+const HALF_SCREEN_Y_PER_LEPTON: f32 = crate::util::lepton::SCREEN_Y_PER_LEPTON / 2.0;
 
 /// Convert world Z leptons into gamemd-style screen-Y lift.
 pub fn adjust_for_z_leptons(z: i32) -> i32 {
@@ -56,9 +56,9 @@ pub fn flh_to_screen_offset(forward: i32, lateral: i32, height: i32, facing: u8)
     let world_x: f32 = f * sin + l * cos;
     let world_y: f32 = -f * cos + l * sin;
 
-    let screen_x: f32 = (world_x - world_y) * SCREEN_X_PER_LEPTON;
+    let screen_x: f32 = (world_x - world_y) * HALF_SCREEN_X_PER_LEPTON;
     let screen_y: f32 =
-        (world_x + world_y) * SCREEN_Y_PER_LEPTON - adjust_for_z_leptons(height) as f32;
+        (world_x + world_y) * HALF_SCREEN_Y_PER_LEPTON - adjust_for_z_leptons(height) as f32;
 
     (screen_x, screen_y)
 }

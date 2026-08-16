@@ -33,7 +33,7 @@ use crate::rules::ruleset::RuleSet;
 
 /// Padding between sprites in the atlas to prevent texture bleeding.
 const SPRITE_PADDING: u32 = 1;
-const INFANTRY_FACING_STEP: u8 = 32;
+const INFANTRY_FACING_STEP: u8 = crate::util::direction::FACING_UNITS_PER_DIRECTION;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
 
 fn register_effect_anim_frames(

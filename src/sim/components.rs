@@ -305,7 +305,7 @@ pub struct DriveCoord {
 
 impl DriveCoord {
     const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
-    const CELL_CENTER: i32 = 128;
+    const CELL_CENTER: i32 = crate::util::lepton::CELL_CENTER_LEPTON_I32;
 
     pub fn cell(rx: u16, ry: u16, z: i32) -> Self {
         Self {

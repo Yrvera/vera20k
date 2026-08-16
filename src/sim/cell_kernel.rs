@@ -10,7 +10,7 @@ use crate::util::lepton::{
 };
 
 pub const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
-pub const CELL_CENTER_LEPTONS: i32 = 128;
+pub const CELL_CENTER_LEPTONS: i32 = crate::util::lepton::CELL_CENTER_LEPTON_I32;
 pub const INFANTRY_OCCUPATION_VEHICLE_BIT: u8 = 0x20;
 pub const INFANTRY_OCCUPATION_OBJECT_BIT: u8 = 0x40;
 pub const INFANTRY_SUBCELL_OFFSETS: [(i32, i32, i32); 5] = [

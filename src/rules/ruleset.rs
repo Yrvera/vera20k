@@ -1889,7 +1889,11 @@ impl GeneralRules {
             // URepairRate= is in minutes. Convert to ticks: minutes * 60 * 15 ticks/sec.
             unit_repair_rate_ticks: general
                 .get_f32("URepairRate")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u32)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u32)
                 .unwrap_or(defaults.unit_repair_rate_ticks),
             repair_step: general
                 .get_i32("RepairStep")
@@ -1901,12 +1905,20 @@ impl GeneralRules {
                 .unwrap_or(defaults.repair_percent),
             reload_rate_ticks: general
                 .get_f32("ReloadRate")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u32)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u32)
                 .unwrap_or(defaults.reload_rate_ticks),
             // PathDelay= is in minutes. Convert to ticks: minutes * 60 * 15.
             path_delay_ticks: general
                 .get_f32("PathDelay")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u16)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u16)
                 .unwrap_or(defaults.path_delay_ticks),
             // BlockagePathDelay= is directly in frames (ticks).
             blockage_path_delay_ticks: general
@@ -2603,7 +2615,7 @@ impl RuleSet {
 
         // [CombatDamage] C4Delay = minutes (double). Default 0.03 = 27 ticks @ 15 fps.
         // Stored as integer ticks for lockstep-safe per-tick comparison.
-        const SIM_TICKS_PER_SECOND: u32 = 15;
+        const SIM_TICKS_PER_SECOND: u32 = crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND;
         let c4_delay_ticks: u32 = ini
             .section("CombatDamage")
             .and_then(|s| s.get("C4Delay"))

@@ -51,13 +51,17 @@ pub const SIM_EPSILON: SimFixed = SimFixed::DELTA;
 /// deterministic fixed-point rounding.
 #[inline]
 pub fn native_movement_frame_fraction() -> SimFixed {
-    SIM_ONE / SimFixed::from_num(15u8)
+    SIM_ONE / SimFixed::from_num(RA2_LOGIC_FRAMES_PER_SECOND as u8)
 }
 
-/// Canonical simulation tick rate in Hz — matches RA2's native 15 fps game
-/// logic rate. At 15 Hz every sim tick equals one RA2 game frame, so INI
-/// timing values (ROF, Speed, Rate, etc.) can be used directly without
-/// conversion.
+/// RA2's native game-logic frame rate at normal speed: 15 logic frames per
+/// second. The single authority for every INI minutes/seconds->frames
+/// conversion (ROF, ReloadRate, C4Delay, ore growth, trigger time, ...).
+pub const RA2_LOGIC_FRAMES_PER_SECOND: u32 = 15;
+
+/// VERA's fixed simulation step rate in Hz (22 ms per tick on the client;
+/// see `app::types::SIM_TICK_MS`). NOT the native logic-frame rate — INI
+/// timing conversions use `RA2_LOGIC_FRAMES_PER_SECOND` above.
 pub const SIM_TICK_HZ: u32 = 45;
 
 // ---------------------------------------------------------------------------
@@ -109,8 +113,8 @@ pub fn sim_from_f64(val: f64) -> SimFixed {
 
 /// Fixed-point delta time from a millisecond tick count.
 ///
-/// The sim runs at fixed 66ms ticks (`SIM_TICK_MS = 1000 / 15`). This converts
-/// that integer millisecond count to a fixed-point seconds value.
+/// Converts an integer millisecond tick count to a fixed-point seconds
+/// value (the client passes `SIM_TICK_MS` = 22 ms).
 ///
 /// Example: `dt_from_tick_ms(66)` ≈ 0.066 (stored as 4325/65536).
 #[inline]

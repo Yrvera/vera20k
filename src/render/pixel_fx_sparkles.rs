@@ -28,11 +28,10 @@ use crate::sim::vision::FogState;
 /// Matches the constant-depth pattern used by smudge::build_visible_instances.
 const SPARKLE_DEPTH: f32 = 0.5;
 
-/// Tile dimensions used by iso_to_screen — re-declared here so we can shift
-/// from cell NW corner to cell center without pulling in the entire
-/// `map::terrain` constant set.
-const TILE_WIDTH: f32 = 60.0;
-const TILE_HEIGHT: f32 = 30.0;
+/// Tile dimensions used by iso_to_screen — derived from the map-layer
+/// authority.
+const TILE_WIDTH: f32 = crate::map::terrain::TILE_WIDTH;
+const TILE_HEIGHT: f32 = crate::map::terrain::TILE_HEIGHT;
 
 /// Per-species sparkle parameters mirroring gamemd's
 /// g_PixelFXParams_Water (0x008367C8) and g_PixelFXParams_Ore (0x008367F0)

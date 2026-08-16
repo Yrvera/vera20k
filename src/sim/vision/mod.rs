@@ -174,7 +174,7 @@ const LEPTONS_PER_HEIGHT_LEVEL: i32 = 104;
 /// toward isometric north by however many whole cells of screen lift the
 /// viewer's height buys, so the revealed disc sits under the sprite rather than
 /// under its ground shadow.
-const CELL_HEIGHT_PX: i32 = 30;
+const CELL_HEIGHT_PX: i32 = crate::map::terrain::TILE_HEIGHT as i32;
 
 /// Percentage of base sight added per elevation step.
 ///

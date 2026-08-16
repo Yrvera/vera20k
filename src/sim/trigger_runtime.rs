@@ -43,7 +43,7 @@ const EVENT_LOCAL_IS_CLEAR: i32 = 37;
 const EVENT_ELAPSED_SCENARIO_TIME: i32 = 47;
 const EVENT_TECHTYPE_EXISTS: i32 = 60;
 const EVENT_TECHTYPE_DOES_NOT_EXIST: i32 = 61;
-const LOGICAL_FRAMES_PER_SECOND: i32 = 15;
+const LOGICAL_FRAMES_PER_SECOND: i32 = crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as i32;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TriggerEffect {

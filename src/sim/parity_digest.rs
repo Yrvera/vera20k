@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 
 /// Sub-cell resolution: one cell is 256 units on each axis, and a centred entity sits at
 /// 128. Both engines use this, which is what makes the X/Y fold comparable at all.
-const SUBCELL_UNITS_PER_CELL: i32 = 256;
+const SUBCELL_UNITS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 
 const FNV1A64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01B3;

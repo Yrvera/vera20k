@@ -30,15 +30,19 @@ pub const LEPTONS_PER_CELL_I32: i32 = 256;
 /// Lepton offset for the center of a cell (128). Default sub-cell position.
 pub const CELL_CENTER_LEPTON: SimFixed = SimFixed::lit("128");
 
+/// Integer form of the cell-centre offset — the authority for the value 128,
+/// like `LEPTONS_PER_CELL_I32` for 256. A test pins the two forms equal.
+pub const CELL_CENTER_LEPTON_I32: i32 = 128;
+
 /// Tile width in pixels (60.0) divided by leptons per cell (256).
 /// Pre-computed for efficient lepton → screen pixel conversion.
 /// = 60.0 / 256.0 = 0.234375
-const SCREEN_X_PER_LEPTON: f32 = 60.0 / 256.0;
+pub(crate) const SCREEN_X_PER_LEPTON: f32 = 60.0 / 256.0;
 
 /// Tile half-height in pixels (15.0) divided by leptons per cell (256).
 /// Pre-computed for efficient lepton → screen pixel conversion.
 /// = 30.0 / 256.0 = 0.1171875
-const SCREEN_Y_PER_LEPTON: f32 = 30.0 / 256.0;
+pub(crate) const SCREEN_Y_PER_LEPTON: f32 = 30.0 / 256.0;
 
 /// Screen-Y offset every VERA world layer carries relative to the original's
 /// absolute tactical pixel.
@@ -322,6 +326,7 @@ mod tests {
     #[test]
     fn integer_and_fixed_leptons_per_cell_agree() {
         assert_eq!(LEPTONS_PER_CELL, SimFixed::from_num(LEPTONS_PER_CELL_I32));
+        assert_eq!(CELL_CENTER_LEPTON, SimFixed::from_num(CELL_CENTER_LEPTON_I32));
     }
     use crate::map::terrain;
 
