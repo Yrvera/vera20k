@@ -176,7 +176,7 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
 /// entity; retail speaks the object that resolved the order, so order resolution
 /// needs to name the speaker explicitly.
 fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &str) {
-    let Some(sim) = &state.simulation else { return };
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
     let Some(rules) = &state.rules else { return };
     let Some(entity) = sim.entities().get(speaker_id) else {
         return;
@@ -215,7 +215,7 @@ fn finish_order(
     queued: Vec<CommandEnvelope>,
     speaker_id: Option<u64>,
 ) -> bool {
-    let queued = if let Some(sim) = state.simulation.as_ref() {
+    let queued = if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
         queued
             .into_iter()
             .filter_map(|envelope| {
@@ -231,9 +231,9 @@ fn finish_order(
     if let Some(speaker_id) = speaker_id {
         emit_resolved_order_voice(state, speaker_id, &queued);
     }
-    let current_tick = state.simulation.as_ref().map_or(0, |s| s.session.tick);
+    let current_tick = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
     crate::app_target_lines::record_command_lines(&mut state.target_lines, &queued, current_tick);
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.queue_commands(queued);
     }
     true
@@ -405,8 +405,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let order_mode = state.queued_order_mode;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let owner_id: InternedId = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(|s| s.interner.get(&owner))
         .unwrap_or_default();
 
@@ -417,7 +418,7 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let mut speaker_id: Option<u64> = None;
     let selected_ids = selected_stable_ids_in_order(state);
 
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         let execute_tick = sim.session.tick;
         if selected_ids.is_empty() {
             return false;

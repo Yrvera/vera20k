@@ -647,8 +647,9 @@ fn keyboard_scroll_distance(state: &AppState) -> f32 {
         (KEY_SCROLL_DISTANCE * KEY_SCROLL_SHIFT_MULTIPLIER).trunc()
     } else if crate::app_input::is_ctrl_held(state) {
         let cells = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map_or(0u32, |sim| u32::from(sim.fog.width.max(sim.fog.height)));
         (cells << KEY_SCROLL_CTRL_CELL_SHIFT) as f32
     } else {

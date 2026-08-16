@@ -43,7 +43,7 @@ pub(crate) fn advance_sidebar_credits_after_frame(
         return;
     }
     let owner_name = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let credits = production::credits_for_owner(sim, &owner_name);
@@ -68,7 +68,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         power_drained,
         sw_views,
     )) = (|| {
-        let (sim, rules) = (state.simulation.as_ref()?, state.rules.as_ref()?);
+        let (sim, rules) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation)?, state.rules.as_ref()?);
         let producer_focus = [
             production::ProductionCategory::Building,
             production::ProductionCategory::Defense,
@@ -139,7 +139,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &mut state.building_placement_preview,
         &ready_buildings,
         &sw_views,
-        state.simulation.as_ref().map(|s| &s.interner),
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
     );
     // App targeting state -> the sidebar-owned armed projection (F06 seam).
     let armed_entry = state.targeting_mode.as_ref().map(|mode| match mode {
@@ -165,7 +165,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         armed_entry.as_ref(),
         &producer_focus,
         state.sidebar_scroll_rows,
-        state.simulation.as_ref().map(|sim| &sim.interner),
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| &sim.interner),
         &sw_views,
         &state.sidebar_gadget_state,
         repair_btn_size,
@@ -254,7 +254,7 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
 /// click location and return true. Otherwise return false (caller does camera drag).
 fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     let selected_ids = crate::app_input::selected_stable_ids_in_order(state);
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
     if selected_ids.is_empty() {
@@ -318,7 +318,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
     if order_mode != crate::app_render::OrderMode::Move {
         state.queued_order_mode = crate::app_render::OrderMode::Move;
     }
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         let queued = queued
             .into_iter()
             .filter_map(|envelope| {
@@ -431,7 +431,7 @@ pub(crate) fn current_sidebar_theme(
 ) -> crate::render::sidebar_chrome::SidebarTheme {
     preferred_local_owner_name(state)
         .and_then(|owner| {
-            sidebar_theme_for_owner_sources(state.simulation.as_ref(), &state.house_roster, &owner)
+            sidebar_theme_for_owner_sources(state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.house_roster, &owner)
         })
         .unwrap_or(crate::render::sidebar_chrome::SidebarTheme::Allied)
 }

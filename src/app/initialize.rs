@@ -369,7 +369,7 @@ impl App {
             map_basic: BasicSection::default(),
             terrain_grid: None,
             resolved_terrain: None,
-            simulation: None,
+            sim_runtime: None,
             unit_atlas: None,
             vxl_slope_transition_cache: RefCell::new(Default::default()),
             palette_set: None,

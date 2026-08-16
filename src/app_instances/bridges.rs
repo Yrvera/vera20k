@@ -203,7 +203,7 @@ pub(crate) fn build_bridge_body_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
@@ -243,7 +243,7 @@ pub(crate) fn build_bridge_shadow_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {
@@ -336,7 +336,7 @@ pub(crate) fn build_bridge_railing_instances(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     let Some(bridge_state) = sim.bridge_state.as_ref() else {

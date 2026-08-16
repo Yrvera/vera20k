@@ -236,7 +236,7 @@ pub(crate) fn build_unit_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (&state.simulation, &state.unit_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.unit_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };

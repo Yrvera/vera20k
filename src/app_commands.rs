@@ -19,8 +19,9 @@ const DEFAULT_OWNER: &str = "Americans";
 /// no simulation yet.
 fn intern_in_sim(state: &mut AppState, s: &str) -> InternedId {
     state
-        .simulation
+        .sim_runtime
         .as_mut()
+        .map(|rt| &mut rt.simulation)
         .map(|sim| sim.interner.intern(s))
         .unwrap_or_default()
 }
@@ -129,7 +130,7 @@ pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
 
 /// Stable id of the visible object selected by the tactical object picker.
 fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> Option<u64> {
-    let sim = state.simulation.as_ref()?;
+    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let owner = preferred_local_owner(state)?;
     crate::app_entity_pick::hover_target_at_point(
         sim,
@@ -145,7 +146,7 @@ fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> O
 }
 
 fn own_building_id(state: &AppState, stable_id: u64) -> Option<u64> {
-    let sim = state.simulation.as_ref()?;
+    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let owner = preferred_local_owner(state)?;
     let entity = sim.entities().get(stable_id)?;
     (entity.category == EntityCategory::Structure
@@ -181,7 +182,7 @@ pub(crate) fn sell_wall_under_cursor_is_eligible(state: &AppState) -> bool {
     let Some(owner) = preferred_local_owner(state) else {
         return false;
     };
-    match (&state.simulation, &state.overlay_registry) {
+    match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.overlay_registry) {
         (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
             sim,
             overlays,
@@ -272,7 +273,7 @@ pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
         let Some(owner) = preferred_local_owner(state) else {
             return true;
         };
-        let payload = match (&state.simulation, &state.overlay_registry) {
+        let payload = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.overlay_registry) {
             (Some(sim), Some(overlays)) => sell_wall_command_for_cell(
                 sim,
                 overlays,
@@ -393,7 +394,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
 
 pub(crate) fn place_starter_base_for_local_owner(state: &mut AppState) {
     let owner: String = resolve_owner(state);
-    let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
         return;
     };
     let opening = [
@@ -452,10 +453,11 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     let (mut base_rx, mut base_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, sw * 0.5, sh * 0.5);
     let path_grid = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid_snapshot);
-    let (Some(sim), Some(rules)) = (&mut state.simulation, &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_mut().map(|rt| &mut rt.simulation), &state.rules) else {
         return;
     };
     if let Some(grid) = path_grid.as_deref() {
@@ -581,7 +583,7 @@ pub(crate) fn preferred_local_owner(state: &AppState) -> Option<String> {
     if let Some(owner) = &state.local_player_owner {
         return Some(owner.clone());
     }
-    let sim = state.simulation.as_ref()?;
+    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     // Sandbox fallback: prefer owner of selected unit first.
     for entity in sim.entities().values() {
         let owner_str = sim.interner.resolve(entity.owner);
@@ -648,7 +650,7 @@ pub(crate) fn collect_playable_owners(state: &AppState) -> Vec<String> {
         .filter(|house| house.player_control != Some(false))
         .map(|house| house.name.clone())
         .collect();
-    if let Some(sim) = &state.simulation {
+    if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
         for entity in sim.entities().values() {
             let owner_str = sim.interner.resolve(entity.owner);
             if is_playable_house_name(owner_str) {
@@ -773,8 +775,9 @@ pub(crate) fn try_schedule_command(
     payload: Command,
 ) -> Option<u64> {
     state
-        .simulation
+        .sim_runtime
         .as_mut()
+        .map(|rt| &mut rt.simulation)
         .and_then(|sim| schedule_command_in_sim(sim, owner, payload))
 }
 

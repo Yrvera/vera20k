@@ -86,7 +86,7 @@ pub(crate) fn build_shp_instances(
     ground_objects: &mut Vec<PlannedGroundObjectInstance>,
     ground_order: &NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };

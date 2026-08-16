@@ -55,8 +55,9 @@ pub(crate) fn resolve_debug_speed_type(state: &AppState) -> SpeedType {
         return st;
     }
     state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(|sim| {
             sim.entities()
                 .values()
@@ -76,7 +77,7 @@ pub(crate) fn build_terrain_cost_overlay_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         log::warn!("Terrain cost overlay: no simulation");
         return Vec::new();
     };
@@ -307,7 +308,7 @@ pub(crate) fn build_path_overlay_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
     let cam_x: f32 = state.camera_x;

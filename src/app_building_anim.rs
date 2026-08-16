@@ -38,7 +38,7 @@ pub(crate) use crate::sim::world::building_anim::building_anim_rate_logic_frames
 /// the app-side stand-in for that construction frame — recorded once, the first
 /// logic frame the structure is seen.
 pub(crate) fn refresh_building_anim_phase_bases(state: &mut AppState) {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         state.building_anim_phase_base.clear();
         return;
     };
@@ -77,7 +77,7 @@ fn record_building_anim_phase_bases(
 /// Falls back to zero for a structure with no recorded base, which renders the
 /// animation's first loop frame rather than an arbitrary one.
 pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u64) -> u32 {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return 0;
     };
     state
@@ -91,13 +91,13 @@ pub(crate) fn building_anim_elapsed_logic_frames(state: &AppState, stable_id: u6
 pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let owner_name = preferred_local_owner_name(state);
     let (power_produced, power_drained) =
-        match (&state.simulation, &state.rules, owner_name.as_deref()) {
+        match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules, owner_name.as_deref()) {
             (Some(sim), Some(rules), Some(owner)) => {
                 production::power_balance_for_owner(sim, rules, owner)
             }
             _ => (0, 0),
         };
-    let theoretical = match (&state.simulation, owner_name.as_deref()) {
+    let theoretical = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner_name.as_deref()) {
         (Some(sim), Some(owner)) => production::theoretical_power_for_owner(sim, owner),
         _ => 0,
     };
@@ -121,7 +121,7 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
 /// Update radar availability from ECS and tick the radar chrome animation.
 pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
     let new_has_radar: bool = match (
-        &state.simulation,
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         &state.rules,
         preferred_local_owner_name(state).as_deref(),
     ) {
@@ -367,7 +367,7 @@ pub(crate) fn drain_sound_events(state: &mut AppState) {
 pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
     // Phase 1: spawn new flashes from pending fire events.
     let new_flashes: Vec<GarrisonMuzzleFlash> = {
-        let sim = match &state.simulation {
+        let sim = match state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
             Some(s) => s,
             None => {
                 state.garrison_muzzle_flashes.clear();
@@ -427,7 +427,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
-    let (Some(sim), Some(art_reg)) = (&state.simulation, &state.rules.as_ref().map(|rules| &rules.art_registry)) else {
+    let (Some(sim), Some(art_reg)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules.as_ref().map(|rules| &rules.art_registry)) else {
         state.garrison_muzzle_flashes.clear();
         return;
     };

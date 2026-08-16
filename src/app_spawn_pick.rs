@@ -66,7 +66,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Build temp map data before borrowing state.simulation mutably.
     let temp_map = build_temp_map_data_for_seeding(state);
     let seeded_owner: Option<String> =
-        if let (Some(sim), Some(ruleset)) = (&mut state.simulation, state.rules.as_ref()) {
+        if let (Some(sim), Some(ruleset)) = (state.sim_runtime.as_mut().map(|rt| &mut rt.simulation), state.rules.as_ref()) {
             seed_skirmish_opening_if_needed(
                 sim,
                 &temp_map,
@@ -81,7 +81,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
 
     // Set up AI players and rebuild entity atlases now that MCVs are spawned.
     if let Some(ref local_owner) = seeded_owner {
-        if let Some(sim) = &mut state.simulation {
+        if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
             setup_ai_players_from_roster(sim, &state.house_roster, local_owner);
             // Ensure the local player is marked human even if the map lacks PlayerControl=yes.
             if let Some(owner_id) = sim.interner.get(local_owner) {
@@ -91,7 +91,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
             }
         }
         // Rebuild entity atlases to include the newly spawned MCVs.
-        if let Some(sim) = &state.simulation {
+        if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
             let asset_manager = state.asset_manager.as_ref();
             if let Some(assets) = asset_manager {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(

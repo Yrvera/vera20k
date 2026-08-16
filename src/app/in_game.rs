@@ -15,8 +15,9 @@ impl App {
     /// Hand the scenario RNG cursor back to the offline shell when a match ends.
     pub(super) fn capture_returned_skirmish_rng(state: &mut AppState) {
         let gameplay_rng = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map(crate::sim::world::Simulation::clone_scenario_rng);
         if let Some(gameplay_rng) = gameplay_rng
             && state
@@ -277,21 +278,24 @@ impl App {
         let local_owner = crate::app_commands::preferred_local_owner(state);
         let local_owner_id = local_owner.as_deref().and_then(|owner| {
             state
-                .simulation
+                .sim_runtime
                 .as_ref()
+                .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.interner.get(owner))
         });
         let local_outcome_exit_ready = local_owner_id.is_some_and(|owner| {
             state
-                .simulation
+                .sim_runtime
                 .as_ref()
+                .map(|rt| &rt.simulation)
                 .and_then(|sim| sim.houses.get(&owner))
                 .and_then(|house| house.outcome_state)
                 .is_some_and(|outcome| outcome.exit_ready)
         });
         let executed_owner = state
-            .simulation
+            .sim_runtime
             .as_mut()
+            .map(|rt| &mut rt.simulation)
             .and_then(|sim| sim.take_executed_exit_owner());
         let Some(executed_owner) = executed_owner else {
             return;
@@ -434,7 +438,7 @@ impl App {
             } else {
                 1000.0 / state.sim_speed_tps as f32
             },
-            entity_count: state.simulation.as_ref().map_or(0, |s| s.entities().len()),
+            entity_count: state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.entities().len()),
             save_name_buf: &mut save_name,
             last_save_tick: state.persistence.last_save_tick,
             last_save_age,

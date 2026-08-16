@@ -69,7 +69,7 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
     // Keep the UI readout in sync immediately. The sim-owned speed changes only
     // when the replayable transition is admitted before the next logic frame.
     state.sim_speed_tps = crate::app_types::tps_for_game_speed(state.in_game_options.game_speed);
-    if state.simulation.is_some() {
+    if state.sim_runtime.is_some() {
         let owner = crate::app_commands::preferred_local_owner_name(state);
         let speed = u8::try_from(state.in_game_options.game_speed).ok();
         let scheduled = match (owner, speed) {

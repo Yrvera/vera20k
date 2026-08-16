@@ -178,14 +178,15 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             &crate::sim::vision::FogState,
         )> = if state.sandbox_full_visibility {
             None
-        } else if let (Some(sim), Some(owner)) = (&state.simulation, &local_owner_name) {
+        } else if let (Some(sim), Some(owner)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner_name) {
             sim.interner.get(owner).map(|id| (id, &sim.fog))
         } else {
             None
         };
         let bridge_state = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .and_then(|sim| sim.bridge_state.as_ref());
         crate::render::terrain_instances::build_visible_instances(
             grid,
@@ -207,8 +208,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     // in `overlay`, while high bridge bodies use app_instances::bridges.
     let ground_order = super::draw_plan_lowering::NativeGroundOrder::new(
         state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map_or(&[], |sim| sim.tactical_registration_order()),
     );
     let mut ground_objects = Vec::new();
@@ -337,8 +339,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         &mut top_shp_pages,
         &mut top_shp_ids,
         state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map_or(&[], |sim| sim.tactical_registration_order()),
     );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
@@ -426,7 +429,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
     use crate::render::pixel_fx_sparkles::{SparkleInput, build_sparkle_instances};
 
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
     let Some(resolved) = state.resolved_terrain.as_ref() else {
@@ -485,7 +488,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// frame once even though native recenters an identical draw from every
 /// occupied footprint cell.
 fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (sim, rules) = match (&state.simulation, &state.rules) {
+    let (sim, rules) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) {
         (Some(s), Some(r)) => (s, r),
         _ => return Vec::new(),
     };
@@ -564,7 +567,7 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
-    if let (Some(minimap), Some(sim)) = (&mut state.minimap, &state.simulation) {
+    if let (Some(minimap), Some(sim)) = (&mut state.minimap, state.sim_runtime.as_ref().map(|rt| &rt.simulation)) {
         minimap.update_unit_dots(
             &state.gpu,
             &state.batch_renderer,
@@ -611,11 +614,11 @@ pub(super) fn build_ui_instances(state: &AppState, sw: f32, sh: f32) -> UiInstan
     // Target/action lines from selected units to command destinations.
     let target_line = crate::app_target_lines::build_target_line_instances(
         &state.target_lines,
-        state.simulation.as_ref(),
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         &state.height_map,
     );
     let factory_rally = crate::app_target_lines::build_factory_rally_line_instances(
-        state.simulation.as_ref(),
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules.as_ref(),
         &state.height_map,
         &state.house_color_map,
@@ -659,8 +662,9 @@ fn build_placement_preview(
     match (&state.selection_overlay, &state.building_placement_preview) {
         (Some(o), Some(preview)) => {
             let preview_type_str = state
-                .simulation
+                .sim_runtime
                 .as_ref()
+                .map(|rt| &rt.simulation)
                 .map(|s| s.interner.resolve(preview.type_id).to_string())
                 .unwrap_or_default();
             let is_wall: bool = state
@@ -704,7 +708,7 @@ fn build_placement_preview(
                         state.sprite_atlas.as_ref(),
                         hc,
                         &state.height_map,
-                        state.simulation.as_ref().map(|s| &s.interner),
+                        state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|s| &s.interner),
                     );
                 let (ghost, page) = match ghost_result {
                     Some((inst, p)) => (vec![inst], p),

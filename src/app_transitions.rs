@@ -31,8 +31,9 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 /// app's live match, including both fresh-map handoff and in-scenario load.
 pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
     let Some(game_speed) = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::projected_in_game_options_speed)
         .map(u32::from)
     else {
@@ -113,10 +114,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
     state.resolved_terrain = result.resolved_terrain;
-    state.simulation = result.simulation;
+    state.sim_runtime = result
+        .simulation
+        .map(crate::sim::runtime::SimRuntime::from_simulation);
     state.combat_lights.clear();
     sync_in_game_options_speed_from_sim(state);
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.input_delay_ticks = state.configured_input_delay_ticks;
     }
     state.unit_atlas = result.unit_atlas;
@@ -174,7 +177,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.events = result.events;
     state.actions = result.actions;
     state.trigger_graph = result.trigger_graph;
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.trigger_runtime = result.trigger_runtime;
     }
     state.overlay_names = result.overlay_names;
@@ -204,7 +207,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // selected detail mask and its corresponding building-light gate.
     let initial_lighting = match (
         state.resolved_terrain.as_ref(),
-        state.simulation.as_ref(),
+        state.sim_runtime.as_ref().map(|rt| &rt.simulation),
         state.rules.as_ref(),
     ) {
         (Some(terrain), Some(sim), Some(rules)) => {
@@ -313,8 +316,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // Loads SHROUD.SHP brightness data and the 256-byte edge LUT.
     if let Some(ref am) = state.asset_manager {
         if let Some(grid) = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .and_then(crate::sim::world::Simulation::path_grid)
         {
             if let Some(shp_data) = am.get_ref("shroud.shp") {
@@ -389,8 +393,9 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             crate::match_bootstrap::LoadingStartup::Accepted(prepared) => {
                 let receipt = (|| {
                     let simulation = state
-                        .simulation
+                        .sim_runtime
                         .as_ref()
+                        .map(|rt| &rt.simulation)
                         .ok_or_else(|| "accepted map load produced no Simulation".to_string())?;
                     let active_correlation = state.active_loading_correlation.ok_or_else(|| {
                         "accepted map load lost its active correlation".to_string()

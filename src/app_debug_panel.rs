@@ -146,8 +146,9 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
     let (cursor_rx, cursor_ry) =
         crate::app_sim_tick::screen_point_to_world_cell(state, state.cursor_x, state.cursor_y);
     let path_grid = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid);
 
     egui::Window::new("Terrain Debug")
@@ -217,7 +218,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
 
             // Show terrain cost for common SpeedTypes at cursor cell.
             // The active overlay SpeedType is highlighted.
-            if let Some(sim) = &state.simulation {
+            if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                 use crate::rules::locomotor_type::SpeedType;
                 let speed_types = [
                     (SpeedType::Foot, "Foot"),
@@ -252,7 +253,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             ui.separator();
 
             // --- Entities at cursor cell ---
-            if let Some(sim) = &state.simulation {
+            if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                 let mut found: Vec<String> = Vec::new();
                 for entity in sim.entities().values() {
                     if entity.position.rx == cursor_rx && entity.position.ry == cursor_ry {
@@ -319,7 +320,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             ui.separator();
 
             // --- Selected unit path info ---
-            if let Some(sim) = &state.simulation {
+            if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                 let selected: Vec<u64> = sim
                     .entities()
                     .values()
@@ -383,7 +384,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
             }
 
             // --- Miner debug info for selected harvesters ---
-            if let Some(sim) = &state.simulation {
+            if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                 for entity in sim.entities().values().filter(|e| e.selected) {
                     let Some(ref miner) = entity.miner else {
                         continue;
@@ -470,7 +471,7 @@ pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
     if !state.debug_unit_inspector {
         return;
     }
-    let Some(sim) = &state.simulation else { return };
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
 
     egui::Window::new("Event History")
         .default_pos([294.0, 4.0])

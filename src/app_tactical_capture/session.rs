@@ -357,8 +357,9 @@ impl TacticalCaptureSession {
             }) => {
                 let (owner_id, type_ref) = {
                     let sim = state
-                        .simulation
+                        .sim_runtime
                         .as_mut()
+                        .map(|rt| &mut rt.simulation)
                         .context("queue action requires live simulation")?;
                     (sim.interner.intern(&owner), sim.interner.intern(&type_id))
                 };
@@ -383,8 +384,9 @@ impl TacticalCaptureSession {
             }) => {
                 let (owner_id, type_ref) = {
                     let sim = state
-                        .simulation
+                        .sim_runtime
                         .as_mut()
+                        .map(|rt| &mut rt.simulation)
                         .context("placement action requires live simulation")?;
                     (
                         sim.interner.intern(&owner),
@@ -467,8 +469,9 @@ impl TacticalCaptureSession {
         self.validate_rust_l0(state)?;
         let profile = self.request.profile();
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("Rust L0 requires live simulation")?;
         let rules = state
             .rules
@@ -621,8 +624,9 @@ impl TacticalCaptureSession {
         );
 
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("Rust L0 simulation is absent")?;
         ensure!(
             sim.session.tick == 0
@@ -746,8 +750,9 @@ impl TacticalCaptureSession {
         let profile = self.request.profile();
         let owner = profile.launch.player_name.clone();
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("tactical observation requires live simulation")?;
         let rules = state
             .rules
@@ -912,8 +917,9 @@ impl TacticalCaptureSession {
     ) -> Result<(bool, Value)> {
         let profile = self.request.profile();
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("render readiness requires live simulation")?;
         let owner = &profile.launch.player_name;
         let owner_id = sim.interner.get(owner).unwrap_or_default();
@@ -1055,8 +1061,9 @@ impl TacticalCaptureSession {
     fn bound_structures_ready(&self, state: &AppState) -> Result<bool> {
         let script = self.script.as_ref().context("tactical script missing")?;
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("structure readiness requires live simulation")?;
         let bindings = script.structure_bindings();
         let required = [
@@ -1115,8 +1122,9 @@ impl TacticalCaptureSession {
         let profile = self.request.profile();
         let owner = &profile.launch.player_name;
         let sim = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .context("fingerprint requires live simulation")?;
         let owner_id = sim.interner.get(owner).unwrap_or_default();
         let house = sim

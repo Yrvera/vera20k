@@ -55,7 +55,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if state.armed_building_type().is_some() {
         return Some(CursorFeedbackKind::Invalid);
     }
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return None;
     };
     // Repair / Sell cursor modes take over the tactical map regardless of

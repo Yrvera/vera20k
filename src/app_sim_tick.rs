@@ -93,7 +93,7 @@ fn flush_replay_log_to(
 /// not duplicate it; any failure restores it for a later retry. Writes
 /// `replays/replay_tick{tick}_{unix_secs}.json`.
 pub(crate) fn flush_replay_log(state: &mut AppState) {
-    let Some(sim) = state.simulation.as_mut() else {
+    let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) else {
         return;
     };
     let now = std::time::SystemTime::now()
@@ -209,7 +209,7 @@ fn announce_local_state_evas(state: &mut AppState) {
     // Read phase (immutable sim borrow): compute this frame's states and the
     // newly-dying set; commit to the trackers after the borrow ends.
     let (low_power, funds_stalled, current_dying, newly_dying) = {
-        let Some(sim) = state.simulation.as_ref() else {
+        let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
         };
         let owner_id = sim.interner.get(&owner);
@@ -305,7 +305,7 @@ pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_m
         let Some(owner) = state.local_player_owner.as_deref() else {
             return;
         };
-        let outcome = state.simulation.as_ref().and_then(|sim| {
+        let outcome = state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
             crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
                 .and_then(|house| house.outcome_state)
                 .filter(|outcome| outcome.exit_ready)
@@ -422,7 +422,7 @@ fn build_score_screen_model(
     // clears LoadingSession instead of pinning the handle for the match, so the
     // ordinary fallback remains a recorded presentation residual.
     let local_handle = crate::app_loading::launch_player_name(state);
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return ScoreScreenModel::default();
     };
     let Some(raw_snapshot) = sim.terminal_score_snapshot().cloned() else {
@@ -755,8 +755,9 @@ pub(crate) fn advance_in_game_runtime_exact_step(
         return Err(ExactStepError::ScreenNotInGame);
     }
     let (tick_before, binary_frame_before) = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
 
@@ -765,8 +766,9 @@ pub(crate) fn advance_in_game_runtime_exact_step(
     state.platform.frame_pacer.reanchor(now_ms);
 
     let (tick_after, binary_frame_after) = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .map(|sim| (sim.session.tick, sim.session.binary_frame))
         .ok_or(ExactStepError::SimulationMissing)?;
     let receipt = ExactStepReceipt {
@@ -804,7 +806,7 @@ fn advance_in_game_runtime_mode(
         matches!(mode, RuntimeAdvanceMode::WallClock { .. }) && state.debug_frame_step_requested;
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
-            let game_speed = state.simulation.as_ref().map_or_else(
+            let game_speed = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or_else(
                 || state.in_game_options.game_speed.min(6) as u8,
                 |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
             );
@@ -836,8 +838,9 @@ fn advance_in_game_runtime_mode(
     if decision.run_sim {
         let tick_lane = decision.tick_lane;
         let garrison_flash_start_tick = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick)
             .unwrap_or(0);
         let frame_committed = advance_one_simulation_frame(state, tick_lane);
@@ -856,8 +859,9 @@ fn advance_in_game_runtime_mode(
         // unit lost) — app-side edge detection over sim state.
         announce_local_state_evas(state);
         let garrison_flash_elapsed_ticks = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .map(|sim| sim.session.tick.saturating_sub(garrison_flash_start_tick))
             .unwrap_or(0);
         crate::app_building_anim::drain_sound_events(state);
@@ -919,13 +923,13 @@ fn should_record_replay_tick(
 
 fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bool {
     let mut refresh_atlases_after_tick = false;
-    let runtime_active = state.simulation.is_some() || !state.trigger_graph.triggers.is_empty();
+    let runtime_active = state.sim_runtime.is_some() || !state.trigger_graph.triggers.is_empty();
     if !runtime_active {
         return false;
     }
-    let mut frame_committed = state.simulation.is_none();
+    let mut frame_committed = state.sim_runtime.is_none();
 
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         if sim.replay_log.is_none() {
             sim.replay_log = Some(ReplayLog::new(ReplayHeader {
                 version: 1,
@@ -960,7 +964,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         let mut trigger_effects: Vec<TriggerEffect> = Vec::new();
         // Carried out of the sim borrow so the census can read `state` freely below.
         let mut census_tick: Option<u64> = None;
-        if let Some(sim) = &mut state.simulation {
+        if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
             // `drain(..)` below still consumes every event exactly once.
@@ -1549,7 +1553,7 @@ const CELL_LIGHT_GATHER_BUDGET: usize = 8_192;
 fn refresh_cell_lighting(state: &mut AppState) {
     let changed_view = {
         let (Some(sim), Some(rules), Some(terrain)) = (
-            state.simulation.as_ref(),
+            state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.rules.as_ref(),
             state.resolved_terrain.as_ref(),
         ) else {
@@ -1688,7 +1692,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
         return;
     };
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
-    let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
         state.building_placement_preview = None;
         return;
     };
@@ -1742,7 +1746,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
 /// Reuses `state.asset_manager` instead of creating a new one (avoids re-opening
 /// all MIX archives from disk).
 pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
-    let Some(sim) = &state.simulation else { return };
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
     let Some(asset_manager) = &state.asset_manager else {
         log::warn!("Atlas refresh skipped: no asset manager available");
         return;

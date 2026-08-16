@@ -54,7 +54,7 @@ fn health_bar_hover_target(
     state: &AppState,
     local_owner: Option<&str>,
 ) -> Option<(u64, HoverTargetKind)> {
-    let sim = state.simulation.as_ref()?;
+    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let local_owner = local_owner?;
     let (world_x, world_y) =
         crate::app_sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
@@ -134,7 +134,7 @@ pub(crate) fn build_building_status_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (&state.simulation, &state.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.selection_overlay) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
@@ -330,7 +330,7 @@ pub(crate) fn build_occupant_pip_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (&state.simulation, &state.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.selection_overlay) else {
         return Vec::new();
     };
     let has_tex = overlay.occupant_pip_texture().is_some();
@@ -439,7 +439,7 @@ pub(crate) fn build_unit_status_bg_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (&state.simulation, &state.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.selection_overlay) else {
         return Vec::new();
     };
     if overlay.pipbrd_texture().is_none() {
@@ -531,7 +531,7 @@ pub(crate) fn build_unit_status_fill_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (&state.simulation, &state.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.selection_overlay) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);
@@ -683,7 +683,7 @@ const CARGO_PIP_STEP_X: f32 = 4.0;
 /// Empty slots shown as variant 0. Start at (sx - 15 + canvas_adj_x, sy + 10 + canvas_adj_y),
 /// step (+4, 0) per pip. Draw order: gem pips first, then ore pips, then empty slots.
 pub(crate) fn build_cargo_pip_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(overlay)) = (&state.simulation, &state.selection_overlay) else {
+    let (Some(sim), Some(overlay)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.selection_overlay) else {
         return Vec::new();
     };
     let Some(_tib_tex) = overlay.tiberium_pip_texture() else {
@@ -845,7 +845,7 @@ pub(crate) fn build_building_radius_ring_instances(
     sw: f32,
     sh: f32,
 ) -> Vec<SpriteInstance> {
-    let (Some(sim), Some(rules)) = (&state.simulation, &state.rules) else {
+    let (Some(sim), Some(rules)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules) else {
         return Vec::new();
     };
     let local_owner = preferred_local_owner_name(state);

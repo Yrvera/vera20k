@@ -336,7 +336,7 @@ pub(crate) fn build_selection_bracket_instances(
     sw: f32,
     sh: f32,
 ) -> SelectionBracketInstances {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return SelectionBracketInstances::default();
     };
     let local_owner = preferred_local_owner_name(state);

@@ -91,13 +91,14 @@ pub(crate) fn render_game(
     let rw = state.render_width();
     let rh = state.render_height();
     let shroud_height_grid = state
-        .simulation
+        .sim_runtime
         .as_ref()
+        .map(|rt| &rt.simulation)
         .and_then(crate::sim::world::Simulation::path_grid)
         .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
     if let Some(ref mut shroud_buf) = state.shroud_buffer {
         if !state.sandbox_full_visibility {
-            if let (Some(sim), Some(owner)) = (&state.simulation, &local_owner) {
+            if let (Some(sim), Some(owner)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner) {
                 let owner_id = sim.interner.get(owner).unwrap_or_default();
                 shroud_buf.rebuild_if_needed(
                     &state.gpu,

@@ -142,7 +142,7 @@ fn tactical_bounded_entity_encounter_order(
     state: &AppState,
     bulk_register_live_buildings: bool,
 ) -> Vec<u64> {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
     let zoom = state.zoom_level.max(f32::EPSILON);

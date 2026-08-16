@@ -267,7 +267,7 @@ pub(crate) fn resolve_non_garrison_fire_origin(
     state: &AppState,
     ev: &SimFireEvent,
 ) -> Option<FireOrigin> {
-    let sim = state.simulation.as_ref()?;
+    let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let rules = state.rules.as_ref()?;
     let art_reg = state.rules.as_ref().map(|rules| &rules.art_registry)?;
     resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
@@ -541,7 +541,7 @@ pub(crate) fn build_weapon_wave_visuals(
 
 pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[SimFireEvent]) {
     let (flashes, sounds, projectiles) = {
-        let Some(sim) = state.simulation.as_ref() else {
+        let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
         };
         let Some(rules) = state.rules.as_ref() else {

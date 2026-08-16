@@ -40,7 +40,7 @@ pub(crate) struct AppState {
     pub(crate) loaded_map_hash: Option<u64>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) resolved_terrain: Option<ResolvedTerrainGrid>,
-    pub(crate) simulation: Option<Simulation>,
+    pub(crate) sim_runtime: Option<crate::sim::runtime::SimRuntime>,
     pub(crate) unit_atlas: Option<UnitAtlas>,
     pub(crate) vxl_slope_transition_cache:
         RefCell<crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache>,

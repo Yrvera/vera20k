@@ -236,7 +236,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 }
                 let mut queued_selection: Option<SelectionMutation> = None;
                 let mut held_type_select_batch = false;
-                if let Some(sim) = &state.simulation {
+                if let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
                     let screen_order =
                         crate::app_instances::tactical_screen_entity_encounter_order(state);
                     let current_selection = selected_stable_ids_in_order(state);
@@ -476,7 +476,7 @@ fn band_caught_drawn_object(
     max_x: f32,
     max_y: f32,
 ) -> bool {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
     let z = state.zoom_level;
@@ -894,8 +894,8 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
     };
 
     let owner = crate::app_commands::preferred_local_owner_name(state)
-        .and_then(|name| state.simulation.as_ref()?.interner.get(&name));
-    let fog = match (&state.simulation, owner) {
+        .and_then(|name| state.sim_runtime.as_ref().map(|rt| &rt.simulation)?.interner.get(&name));
+    let fog = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner) {
         _ if state.sandbox_full_visibility => None,
         (Some(sim), Some(id)) => Some((id, &sim.fog)),
         _ => None,
@@ -967,7 +967,7 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
 
 pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     state.debug_unit_inspector = !state.debug_unit_inspector;
-    if let Some(sim) = &mut state.simulation {
+    if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         sim.debug_event_logging = state.debug_unit_inspector;
         if state.debug_unit_inspector {
             for entity in sim.entities_mut().values_mut() {
@@ -1059,7 +1059,7 @@ pub(crate) fn handle_type_select_key_edge(
 fn execute_type_select_tap(state: &mut AppState) {
     state.type_select.prepare_tap_scope();
     let result = {
-        let Some(sim) = &state.simulation else {
+        let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
             return;
         };
         let screen_order = crate::app_instances::tactical_screen_entity_encounter_order(state);
@@ -1142,8 +1142,9 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::CenterBase => jump_camera_to_base(state),
         HotkeyCommand::CenterOnRadarEvent => {
             let event = state
-                .simulation
+                .sim_runtime
                 .as_mut()
+                .map(|rt| &mut rt.simulation)
                 .and_then(|sim| sim.radar_events.cycle_event());
             if let Some((rx, ry)) = event {
                 crate::app_camera::center_camera_on_cell(state, rx, ry);
@@ -1323,7 +1324,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
 // ---------------------------------------------------------------------------
 
 fn quicksave(state: &mut AppState) {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         log::warn!("Quicksave: no active simulation");
         return;
     };
@@ -1384,7 +1385,7 @@ pub(crate) fn save_with_name(state: &mut AppState, raw_name: &str) {
         log::warn!("Save As: empty or whitespace-only name, ignored");
         return;
     }
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         log::warn!("Save As: no active simulation");
         return;
     };
@@ -1561,7 +1562,7 @@ pub(crate) fn load_save_file(state: &mut AppState, path: &std::path::Path) {
     let preparation = crate::app::persistence::PreparedLoad::from_repository(
         crate::app::persistence::LoadPreparationView::new(
             &state.persistence.repository,
-            state.simulation.as_ref(),
+            state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.loaded_map_hash,
             state.rules.as_ref(),
             state.resolved_terrain.as_ref(),
@@ -1623,7 +1624,7 @@ fn commit_prepared_load(
     );
 
     crate::app::reset_scenario_exit_runtime(state);
-    state.simulation = Some(simulation);
+    state.sim_runtime = Some(crate::sim::runtime::SimRuntime::from_simulation(simulation));
     crate::app_transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
     crate::app_sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
@@ -1638,7 +1639,7 @@ fn commit_prepared_load(
         state.lighting_grid = crate::app_init::rebuild_lighting_grid_from_sim(
             resolved_terrain,
             &state.map_lighting_config,
-            state.simulation.as_ref(),
+            state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.rules.as_ref(),
             state.in_game_options.detail_level,
         );
@@ -1742,7 +1743,7 @@ pub(crate) fn is_alt_held(state: &AppState) -> bool {
 /// sim tick, reconciliation trusts the committed selected bits and admits any
 /// lifecycle-transferred selection that was not issued by input.
 pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
     let mut ordered = Vec::new();
@@ -1766,7 +1767,7 @@ pub(crate) fn selected_stable_ids_in_order(state: &AppState) -> Vec<u64> {
 /// Synchronize the app ledger after the due selection commands and lifecycle
 /// removals have committed for this frame.
 pub(crate) fn reconcile_selection_order_after_sim(state: &mut AppState) {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         state.selection_order.clear();
         state.selection_order_pending = false;
         return;
@@ -1830,7 +1831,7 @@ fn apply_selection_mutation(
     if !mutation.clear && mutation.deselect.is_empty() && mutation.select.is_empty() {
         return false;
     }
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
     let mut ordered = selected_stable_ids_in_order(state);
@@ -2083,7 +2084,7 @@ fn queue_stop_for_selected(state: &mut AppState) {
 /// - Selected structure with `UndeploysInto` → `Command::UndeployBuilding` (ConYard → MCV)
 fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
     let selected_ids = selected_stable_ids_in_order(state);
-    let Some(sim) = &state.simulation else { return };
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
     if selected_ids.is_empty() {
         return;
     }
@@ -2248,7 +2249,7 @@ const LEPTONS_PER_CELL: i64 = 256;
 
 /// Live members of a control group, in the sim's iteration order.
 fn live_group_members(state: &AppState, group: &[u64]) -> Vec<u64> {
-    let Some(sim) = &state.simulation else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return Vec::new();
     };
     group
@@ -2262,7 +2263,7 @@ fn live_group_members(state: &AppState, group: &[u64]) -> Vec<u64> {
 /// arm must stay out of the lockstep stream.
 fn center_camera_on_group(state: &mut AppState, group: &[u64]) {
     let points: Vec<(i64, i64)> = {
-        let Some(sim) = &state.simulation else { return };
+        let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
         group
             .iter()
             .filter_map(|id| sim.entities().get(*id))
@@ -2348,7 +2349,7 @@ fn handle_control_group_command(
 /// flash their current orders for the 25-frame window. TypeSelect tap preserves
 /// the prior timer instead.
 fn apply_selection_action_line_policy(state: &mut AppState, policy: SelectionActionLinePolicy) {
-    let Some(tick) = state.simulation.as_ref().map(|sim| sim.session.tick) else {
+    let Some(tick) = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| sim.session.tick) else {
         return;
     };
     apply_selection_action_line_policy_at_tick(&mut state.target_lines, tick, policy);
@@ -2366,7 +2367,7 @@ fn apply_selection_action_line_policy_at_tick(
 
 /// Emit the modeled VoiceSelect side effect for one successful Select call.
 fn emit_selection_voice(state: &mut AppState, entity_id: u64) {
-    let Some(sim) = &state.simulation else { return };
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
     let Some(rules) = &state.rules else { return };
 
     if let Some(event) = selection_voice_event(sim, rules, entity_id) {
@@ -2395,7 +2396,7 @@ fn jump_camera_to_base(state: &mut AppState) {
     let owner_name = owner.as_deref();
 
     // Collect the target cell from simulation entities before mutating state.
-    let target: Option<(u16, u16)> = state.simulation.as_ref().and_then(|sim| {
+    let target: Option<(u16, u16)> = state.sim_runtime.as_ref().map(|rt| &rt.simulation).and_then(|sim| {
         let rules = state.rules.as_ref();
         // First pass: look for a ConYard (structure with UndeploysInto=).
         let conyard = sim.entities().values().find(|e| {

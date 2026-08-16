@@ -145,7 +145,7 @@ fn overlay_display_identity(
 /// Appends to the SHP instance list so they draw in the same depth-sorted pass.
 /// Each effect's current frame is looked up in the SHP atlas.
 pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -270,7 +270,7 @@ pub(crate) fn build_anim_class_instances(
     ground_objects: &mut Vec<crate::app_render::draw_plan_lowering::PlannedGroundObjectInstance>,
     ground_order: &crate::app_render::draw_plan_lowering::NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -534,7 +534,7 @@ pub(crate) fn build_overlay_instances(
         None
     } else {
         let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
-        match (&state.simulation, &local_owner_name) {
+        match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner_name) {
             (Some(sim), Some(owner)) => sim.interner.get(owner).map(|id| (id, &sim.fog)),
             _ => None,
         }
@@ -565,8 +565,9 @@ pub(crate) fn build_overlay_instances(
         // Low bridges remain in the ordinary overlay pass, but CellClass's
         // live identity—not the map-pack seed—selects damaged/collapsed art.
         let live_overlay_cell = state
-            .simulation
+            .sim_runtime
             .as_ref()
+            .map(|rt| &rt.simulation)
             .and_then(|sim| sim.overlay_grid.as_ref())
             .map(|grid| grid.cell(entry.rx, entry.ry));
         let Some((live_overlay_id, live_overlay_data)) =
@@ -685,7 +686,7 @@ pub(crate) fn build_overlay_instances(
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
 
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return;
     };
     for obj in sim.production.terrain_objects.values() {
@@ -980,7 +981,7 @@ fn projectile_authoritative_screen_position(
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
 fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, rules, atlas) = match (&state.simulation, &state.rules, &state.sprite_atlas) {
+    let (sim, rules, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.rules, &state.sprite_atlas) {
         (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
         _ => return,
     };
@@ -1112,7 +1113,7 @@ pub(crate) fn build_projectile_visual_instances(
 /// Build persistent WaveClass polygon edges from simulation registration state.
 pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstance> {
     let mut instances = Vec::new();
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return instances;
     };
     let observer = crate::app_commands::preferred_local_owner(state)
@@ -1174,7 +1175,7 @@ pub(crate) fn build_parachute_instances(
     /// frame-internal positioning, which our atlas doesn't replicate exactly.
     const CHUTE_Y_LIFT: f32 = 8.0;
 
-    let (sim, atlas) = match (&state.simulation, &state.sprite_atlas) {
+    let (sim, atlas) = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.sprite_atlas) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };

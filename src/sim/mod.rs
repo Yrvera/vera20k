@@ -126,6 +126,7 @@ pub mod trigger_runtime;
 // --- AI, replay, selection, debug ---
 pub mod ai;
 pub mod debug_event_log;
+pub mod runtime;
 pub mod replay;
 pub mod selection;
 

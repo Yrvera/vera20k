@@ -30,7 +30,7 @@ pub(crate) fn tick_parachute_anims(state: &mut AppState) {
         state.parachute_anims.clear();
         return;
     };
-    let Some(sim) = state.simulation.as_ref() else {
+    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         state.parachute_anims.clear();
         return;
     };
