@@ -59,6 +59,22 @@ impl EnterOrderCounter {
     }
 }
 
+/// The object kinds the LogicVector registration/removal dispatch
+/// distinguishes (F13). Classification probes the stores in this fixed order:
+/// anims → particle systems → terrain objects → projectiles → waves →
+/// entities — the exact probe order the pre-consolidation dispatch used at
+/// every site. Object IDs are unique across stores (one monotonic
+/// `next_stable_object_id` namespace), so at most one store can match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectKind {
+    Anim,
+    ParticleSystem,
+    Terrain,
+    Projectile,
+    Wave,
+    Entity,
+}
+
 /// Owns the active-object order and the substrate's monotonic counters. Field
 /// paths are `Simulation.substrate.*`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3360,6 +3360,77 @@ fn gsi_05_02_mixed_six_family_order_roundtrips_and_dispatches_every_slot() {
     restored.debug_assert_logic_membership_consistent();
 }
 
+/// F13: the centralized object-kind dispatch (`classify_object` +
+/// membership-flag get/set) preserves the exact pre-consolidation
+/// registration/removal contract across all six object families — member
+/// gate, tail append, first-match compacting erase, flag repair, and the
+/// unrepresented-id rejection.
+#[test]
+fn substrate_registration_and_removal_dispatch_is_order_identical() {
+    let (mut sim, mixed) = gsi_05_02_mixed_fixture();
+    let [terrain_id, entity_id, wave_id, anim_id, projectile_id, particle_id] = mixed;
+
+    // Re-registering an existing member of every family reports success and
+    // appends nothing (the membership gate short-circuits before the push).
+    for id in mixed {
+        assert!(sim.register_live_object(id), "member re-register {id}");
+    }
+    assert_eq!(sim.live_object_order_snapshot(), mixed);
+
+    // An id represented nowhere is rejected by both directions and leaves the
+    // order untouched.
+    let ghost = sim.allocate_stable_id();
+    assert!(!sim.register_live_object(ghost));
+    assert!(!sim.unregister_live_object(ghost));
+    assert_eq!(sim.live_object_order_snapshot(), mixed);
+
+    // First-match compacting erase from the middle: relative order of the
+    // survivors is preserved and only the removed object's flag is repaired.
+    assert!(sim.unregister_live_object(wave_id));
+    assert_eq!(
+        sim.live_object_order_snapshot(),
+        vec![terrain_id, entity_id, anim_id, projectile_id, particle_id]
+    );
+    assert!(!sim.waves.get(wave_id).unwrap().in_logic_vector);
+    assert!(
+        sim.production
+            .terrain_objects
+            .get(&terrain_id)
+            .unwrap()
+            .in_logic_vector
+    );
+    assert!(sim.substrate.entities.get(entity_id).unwrap().in_logic_vector);
+    assert!(sim.substrate.anims.get(anim_id).unwrap().in_logic_vector);
+    assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+    assert!(
+        sim.substrate
+            .particle_systems
+            .get(particle_id)
+            .unwrap()
+            .in_logic_vector
+    );
+
+    // The flag gates a second removal; re-registration tail-appends rather
+    // than restoring the old slot.
+    assert!(!sim.unregister_live_object(wave_id));
+    assert!(sim.register_live_object(wave_id));
+    assert_eq!(
+        sim.live_object_order_snapshot(),
+        vec![terrain_id, entity_id, anim_id, projectile_id, particle_id, wave_id]
+    );
+    assert!(sim.waves.get(wave_id).unwrap().in_logic_vector);
+
+    // The retire subset dispatches through the same classifier: Terrain /
+    // Bullet / Wave retire; Entity and Anim do not.
+    assert!(!sim.retire_non_entity_object(entity_id));
+    assert!(!sim.retire_non_entity_object(anim_id));
+    assert!(sim.retire_non_entity_object(terrain_id));
+    assert!(sim.substrate.pending_delete.contains(&terrain_id));
+    assert!(!sim.live_object_order_snapshot().contains(&terrain_id));
+
+    sim.debug_assert_logic_membership_consistent();
+}
+
 #[test]
 fn gsi_05_02_tail_appends_run_same_pass_and_terminal_current_skips_successor() {
     let mut sim = Simulation::new();

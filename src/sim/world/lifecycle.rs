@@ -24,6 +24,7 @@ use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{LEPTONS_PER_LEVEL, ground_height_leptons};
 
 use super::Simulation;
+use super::substrate::ObjectKind;
 
 /// Borrowed map authority carried through one synchronous ObjectClass UnInit
 /// tree. Ordinary entry points use the Simulation-owned terrain; combat uses
@@ -1176,82 +1177,122 @@ impl Simulation {
         stats
     }
 
+    /// Object-kind classification for the LogicVector dispatch (F13). Probes
+    /// the stores in the exact pre-consolidation order (anims → particle
+    /// systems → terrain → projectiles → waves → entities) and returns `None`
+    /// when the id is represented nowhere. Object IDs are unique across
+    /// stores, so first-match equals only-match.
+    pub(crate) fn classify_object(&self, stable_id: u64) -> Option<ObjectKind> {
+        if self.substrate.anims.contains_key(stable_id) {
+            Some(ObjectKind::Anim)
+        } else if self.substrate.particle_systems.contains_key(stable_id) {
+            Some(ObjectKind::ParticleSystem)
+        } else if self.production.terrain_objects.contains_key(&stable_id) {
+            Some(ObjectKind::Terrain)
+        } else if self.projectiles.get(stable_id).is_some() {
+            Some(ObjectKind::Projectile)
+        } else if self.waves.get(stable_id).is_some() {
+            Some(ObjectKind::Wave)
+        } else if self.substrate.entities.contains(stable_id) {
+            Some(ObjectKind::Entity)
+        } else {
+            None
+        }
+    }
+
+    /// Read the per-object `in_logic_vector` membership flag for a classified
+    /// object. The flag lives on the object in its own store; this is the
+    /// single dispatch the registration/removal contract reads through.
+    fn logic_membership_flag(&self, stable_id: u64, kind: ObjectKind) -> bool {
+        match kind {
+            ObjectKind::Anim => self
+                .substrate
+                .anims
+                .get(stable_id)
+                .is_some_and(|anim| anim.in_logic_vector),
+            ObjectKind::ParticleSystem => self
+                .substrate
+                .particle_systems
+                .get(stable_id)
+                .is_some_and(|system| system.in_logic_vector),
+            ObjectKind::Terrain => self
+                .production
+                .terrain_objects
+                .get(&stable_id)
+                .is_some_and(|terrain| terrain.in_logic_vector),
+            ObjectKind::Projectile => self
+                .projectiles
+                .get(stable_id)
+                .is_some_and(|projectile| projectile.in_logic_vector),
+            ObjectKind::Wave => self
+                .waves
+                .get(stable_id)
+                .is_some_and(|wave| wave.in_logic_vector),
+            ObjectKind::Entity => self
+                .substrate
+                .entities
+                .get(stable_id)
+                .is_some_and(|entity| entity.in_logic_vector),
+        }
+    }
+
+    /// Write the per-object `in_logic_vector` membership flag for a classified
+    /// object. The single dispatch the registration/removal contract repairs
+    /// the flag through.
+    fn set_logic_membership_flag(&mut self, stable_id: u64, kind: ObjectKind, member: bool) {
+        match kind {
+            ObjectKind::Anim => {
+                if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
+                    anim.in_logic_vector = member;
+                }
+            }
+            ObjectKind::ParticleSystem => {
+                if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
+                    system.in_logic_vector = member;
+                }
+            }
+            ObjectKind::Terrain => {
+                if let Some(terrain) = self.production.terrain_objects.get_mut(&stable_id) {
+                    terrain.in_logic_vector = member;
+                }
+            }
+            ObjectKind::Projectile => {
+                if let Some(projectile) = self.projectiles.get_mut(stable_id) {
+                    projectile.in_logic_vector = member;
+                }
+            }
+            ObjectKind::Wave => {
+                if let Some(wave) = self.waves.get_mut(stable_id) {
+                    wave.in_logic_vector = member;
+                }
+            }
+            ObjectKind::Entity => {
+                if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                    entity.in_logic_vector = member;
+                }
+            }
+        }
+    }
+
     /// gamemd-derived: active YR `LogicClass__RegisterObject @ 0x0055BAA0`
     /// gates on the object's membership flag, appends at the live tail, then
     /// sets the flag only after insertion succeeds.
     fn register_logic_object(&mut self, stable_id: u64) -> bool {
-        let is_anim = self.substrate.anims.contains_key(stable_id);
-        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
-        let is_terrain = self.production.terrain_objects.contains_key(&stable_id);
-        let is_projectile = self.projectiles.get(stable_id).is_some();
-        let is_wave = self.waves.get(stable_id).is_some();
-        let already_member = if is_anim {
-            self.substrate
-                .anims
-                .get(stable_id)
-                .is_some_and(|anim| anim.in_logic_vector)
-        } else if is_particle_system {
-            self.substrate
-                .particle_systems
-                .get(stable_id)
-                .is_some_and(|system| system.in_logic_vector)
-        } else if is_terrain {
-            self.production
-                .terrain_objects
-                .get(&stable_id)
-                .is_some_and(|terrain| terrain.in_logic_vector)
-        } else if is_projectile {
-            self.projectiles
-                .get(stable_id)
-                .is_some_and(|projectile| projectile.in_logic_vector)
-        } else if is_wave {
-            self.waves
-                .get(stable_id)
-                .is_some_and(|wave| wave.in_logic_vector)
-        } else {
-            self.substrate
-                .entities
-                .get(stable_id)
-                .is_some_and(|entity| entity.in_logic_vector)
-        };
-        if already_member {
-            return true;
+        let kind = self.classify_object(stable_id);
+        if let Some(kind) = kind {
+            if self.logic_membership_flag(stable_id, kind) {
+                return true;
+            }
         }
-        if (!is_anim
-            && !is_particle_system
-            && !is_terrain
-            && !is_projectile
-            && !is_wave
-            && !self.substrate.entities.contains(stable_id))
-            || self.substrate.logic.try_push(stable_id).is_err()
-        {
+        let Some(kind) = kind else {
+            return false;
+        };
+        if self.substrate.logic.try_push(stable_id).is_err() {
             return false;
         }
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::LogicAppended);
-        if is_anim {
-            if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
-                anim.in_logic_vector = true;
-            }
-        } else if is_particle_system {
-            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
-                system.in_logic_vector = true;
-            }
-        } else if is_terrain {
-            if let Some(terrain) = self.production.terrain_objects.get_mut(&stable_id) {
-                terrain.in_logic_vector = true;
-            }
-        } else if is_projectile {
-            if let Some(projectile) = self.projectiles.get_mut(stable_id) {
-                projectile.in_logic_vector = true;
-            }
-        } else if is_wave {
-            if let Some(wave) = self.waves.get_mut(stable_id) {
-                wave.in_logic_vector = true;
-            }
-        } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.in_logic_vector = true;
-        }
+        self.set_logic_membership_flag(stable_id, kind, true);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::LogicMembershipSet);
         true
@@ -1261,80 +1302,29 @@ impl Simulation {
     /// gates removal on the object's membership flag, performs the first-match
     /// stable erase, then repairs that flag.
     fn unregister_logic_object(&mut self, stable_id: u64) -> bool {
-        let is_anim = self.substrate.anims.contains_key(stable_id);
-        let is_particle_system = self.substrate.particle_systems.contains_key(stable_id);
-        let is_terrain = self.production.terrain_objects.contains_key(&stable_id);
-        let is_projectile = self.projectiles.get(stable_id).is_some();
-        let is_wave = self.waves.get(stable_id).is_some();
-        let flagged = if is_anim {
-            self.substrate
-                .anims
-                .get(stable_id)
-                .is_some_and(|anim| anim.in_logic_vector)
-        } else if is_particle_system {
-            self.substrate
-                .particle_systems
-                .get(stable_id)
-                .is_some_and(|system| system.in_logic_vector)
-        } else if is_terrain {
-            self.production
-                .terrain_objects
-                .get(&stable_id)
-                .is_some_and(|terrain| terrain.in_logic_vector)
-        } else if is_projectile {
-            self.projectiles
-                .get(stable_id)
-                .is_some_and(|projectile| projectile.in_logic_vector)
-        } else if is_wave {
-            self.waves
-                .get(stable_id)
-                .is_some_and(|wave| wave.in_logic_vector)
-        } else {
-            self.substrate
-                .entities
-                .get(stable_id)
-                .is_some_and(|entity| entity.in_logic_vector)
+        let Some(kind) = self.classify_object(stable_id) else {
+            return false;
         };
-        if !flagged {
+        if !self.logic_membership_flag(stable_id, kind) {
             return false;
         }
         let _ = self.substrate.logic.remove_first(stable_id);
-        if is_anim {
-            if let Some(anim) = self.substrate.anims.get_mut(stable_id) {
-                anim.in_logic_vector = false;
-            }
-        } else if is_particle_system {
-            if let Some(system) = self.substrate.particle_systems.get_mut(stable_id) {
-                system.in_logic_vector = false;
-            }
-        } else if is_terrain {
-            if let Some(terrain) = self.production.terrain_objects.get_mut(&stable_id) {
-                terrain.in_logic_vector = false;
-            }
-        } else if is_projectile {
-            if let Some(projectile) = self.projectiles.get_mut(stable_id) {
-                projectile.in_logic_vector = false;
-            }
-        } else if is_wave {
-            if let Some(wave) = self.waves.get_mut(stable_id) {
-                wave.in_logic_vector = false;
-            }
-        } else if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
-            entity.in_logic_vector = false;
-        }
+        self.set_logic_membership_flag(stable_id, kind, false);
         true
     }
 
-    /// Test-only access to the exact LogicVector helper ordering.
+    /// Test-only access to the exact LogicVector helper ordering. Returns the
+    /// dispatch outcome so order/gate tests can assert it directly.
     #[cfg(test)]
-    pub(crate) fn register_live_object(&mut self, stable_id: u64) {
-        let _ = self.register_logic_object(stable_id);
+    pub(crate) fn register_live_object(&mut self, stable_id: u64) -> bool {
+        self.register_logic_object(stable_id)
     }
 
-    /// Test-only access to the exact LogicVector helper ordering.
+    /// Test-only access to the exact LogicVector helper ordering. Returns the
+    /// dispatch outcome so order/gate tests can assert it directly.
     #[cfg(test)]
-    pub(crate) fn unregister_live_object(&mut self, stable_id: u64) {
-        let _ = self.unregister_logic_object(stable_id);
+    pub(crate) fn unregister_live_object(&mut self, stable_id: u64) -> bool {
+        self.unregister_logic_object(stable_id)
     }
 
     pub(crate) fn reveal_anim(&mut self, stable_id: u64) -> bool {
@@ -1390,9 +1380,10 @@ impl Simulation {
     /// gamemd-derived: active YR `DrainDeferredFinalizationQueue @ 0x00725C70`
     /// performs scalar destruction/freeing only after the frame commit.
     pub(crate) fn retire_non_entity_object(&mut self, stable_id: u64) -> bool {
-        let represented = self.production.terrain_objects.contains_key(&stable_id)
-            || self.projectiles.get(stable_id).is_some()
-            || self.waves.get(stable_id).is_some();
+        let represented = matches!(
+            self.classify_object(stable_id),
+            Some(ObjectKind::Terrain | ObjectKind::Projectile | ObjectKind::Wave)
+        );
         if !represented {
             return false;
         }
