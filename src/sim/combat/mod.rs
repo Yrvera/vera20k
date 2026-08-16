@@ -1877,7 +1877,7 @@ fn handle_entity_deaths(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     houses: &mut BTreeMap<InternedId, HouseState>,
     house_order: &[InternedId],
     alliances: &HouseAllianceMap,
@@ -2217,7 +2217,9 @@ fn handle_entity_deaths(
                     ry: *ry,
                     damage: (*dmg).min(i32::from(u16::MAX)) as u16,
                     warhead_ref: wh_iid,
-                    is_ion_cannon: wh_iid == handles.ion_cannon,
+                    is_ion_cannon: wh_iid == handles
+                        .expect("Simulation::resolve_type_handles must run before combat")
+                        .ion_cannon,
                     impact_z: *z as i32,
                 });
             }
@@ -2784,7 +2786,7 @@ pub(crate) fn commit_area_damage_receivers(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner);
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
     commit_area_damage_receivers_with_scenario(
         receivers,
         entities,
@@ -2817,7 +2819,7 @@ pub(crate) fn commit_area_damage_receivers_with_scenario(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     houses: &mut BTreeMap<InternedId, HouseState>,
     house_order: &[InternedId],
     alliances: &HouseAllianceMap,
@@ -3011,7 +3013,7 @@ pub(crate) fn commit_damage_events(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner);
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
     commit_damage_events_with_isolation(
         damage_events,
         None,
@@ -3046,7 +3048,7 @@ fn commit_damage_events_with_isolation(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     houses: &mut BTreeMap<InternedId, HouseState>,
     house_order: &[InternedId],
     alliances: &HouseAllianceMap,
@@ -3857,7 +3859,7 @@ fn emit_one_projectile_detonation(
     occupancy: &OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
@@ -4003,7 +4005,9 @@ fn emit_one_projectile_detonation(
                 ry: impact_ry,
                 damage,
                 warhead_ref: detonation.payload.warhead,
-                is_ion_cannon: detonation.payload.warhead == handles.ion_cannon,
+                is_ion_cannon: detonation.payload.warhead == handles
+                        .expect("Simulation::resolve_type_handles must run before combat")
+                        .ion_cannon,
                 impact_z,
             });
         }
@@ -4034,7 +4038,7 @@ fn emit_projectile_detonations(
     occupancy: &OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
@@ -4142,7 +4146,7 @@ fn emit_missile_detonations(
     occupancy: &OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     mut overlay_grid: Option<&mut OverlayGrid>,
     overlay_registry: Option<&OverlayTypeRegistry>,
@@ -4279,7 +4283,7 @@ pub fn tick_combat_with_fog(
     scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     // Test-convenience entry: resolve rule handles the way sim init does.
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner);
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
     let mut unused_main_rng = SimRng::new(0);
     let mut empty_houses = BTreeMap::new();
     tick_combat_with_fog_and_main_rng(
@@ -4321,7 +4325,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     fog: Option<&FogState>,
     power_states: &BTreeMap<InternedId, PowerState>,
     houses: &mut BTreeMap<InternedId, HouseState>,
@@ -4399,7 +4403,7 @@ pub(crate) fn commit_logic_projectile_detonations(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     houses: &mut BTreeMap<InternedId, HouseState>,
     house_order: &[InternedId],
     alliances: &HouseAllianceMap,
@@ -4497,7 +4501,7 @@ fn commit_projectile_detonations_inline(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     houses: &mut BTreeMap<InternedId, HouseState>,
     house_order: &[InternedId],
     alliances: &HouseAllianceMap,
@@ -4602,7 +4606,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     occupancy: &mut OccupancyGrid,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     fog: Option<&FogState>,
     power_states: &BTreeMap<InternedId, PowerState>,
     houses: &mut BTreeMap<InternedId, HouseState>,
@@ -5752,7 +5756,7 @@ pub(crate) fn resolve_attacker_fire(
     entities: &mut EntityStore,
     rules: &RuleSet,
     interner: &mut StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     resource_nodes: &mut BTreeMap<(u16, u16), ResourceNode>,
     fog: Option<&FogState>,
     occupancy: &OccupancyGrid,
@@ -6425,7 +6429,9 @@ pub(crate) fn resolve_attacker_fire(
                 ry: target_ry,
                 damage: base_damage.min(i32::from(u16::MAX)) as u16,
                 warhead_ref: wh_iid,
-                is_ion_cannon: wh_iid == handles.ion_cannon,
+                is_ion_cannon: wh_iid == handles
+                        .expect("Simulation::resolve_type_handles must run before combat")
+                        .ion_cannon,
                 impact_z,
             });
         }

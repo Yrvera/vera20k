@@ -634,7 +634,7 @@ impl Simulation {
             };
         }
 
-        let c4_warhead_id = self.rule_handles_or_resolve(rules).c4;
+        let c4_warhead_id = self.rule_handles().c4;
         for building_id in det_keys {
             let pending = self
                 .substrate
@@ -750,7 +750,7 @@ impl Simulation {
                 .source_entity_id
                 .unwrap_or(crate::sim::combat::RAD_NO_ATTACKER),
             None,
-            self.rule_handles_or_resolve(rules).c4,
+            self.rule_handles().c4,
             crate::sim::combat::ReceiverCallFlags {
                 ignore_defenses: true,
                 arg6: false,

@@ -28,7 +28,7 @@ pub struct TypeHandleTable {
 impl TypeHandleTable {
     /// Build from every string currently in the interner. Each id that resolves
     /// to an object (case-insensitively) gets its handle; the rest stay `None`.
-    /// Call after `RuleSet::intern_all_ids` so every type id is present.
+    /// Call after `Simulation::intern_rule_type_ids` so every type id is present.
     pub fn build(rules: &RuleSet, interner: &StringInterner) -> Self {
         let mut by_interned = Vec::with_capacity(interner.len());
         for idx in 0..interner.len() as u32 {

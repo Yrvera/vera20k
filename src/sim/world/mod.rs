@@ -1283,6 +1283,9 @@ impl Simulation {
         projectile_detonations: &[crate::sim::projectile::ProjectileDetonation],
         wave_damage_events: &[crate::sim::wave::WaveDamageEvent],
     ) -> crate::sim::combat::CombatTickResult {
+        // Resolve BEFORE the interner is taken below: the lazy arm must pin
+        // ids against the live interner, never the emptied placeholder.
+        let rule_handles = self.rule_handles;
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
         let mut interner = std::mem::take(&mut self.interner);
@@ -1307,7 +1310,6 @@ impl Simulation {
         let current_tick = u64::from(self.session.binary_frame);
         let binary_frame = self.session.binary_frame;
         let scenario_no_damage = self.session.no_damage;
-        let rule_handles = self.rule_handles_or_resolve(rules);
 
         let combat_result = {
             let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
@@ -1381,10 +1383,12 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         detonations: &[crate::sim::projectile::ProjectileDetonation],
     ) {
-        let rule_handles = self.rule_handles_or_resolve(rules);
         if detonations.is_empty() {
             return;
         }
+        // Resolve after the early-out (fixtures never intern warhead names
+        // they do not exercise) and BEFORE the interner is taken below.
+        let rule_handles = self.rule_handles;
 
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
@@ -1573,7 +1577,7 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
     ) {
-        let rule_handles = self.rule_handles_or_resolve(rules);
+        let rule_handles = self.rule_handles;
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
         let mut interner = std::mem::take(&mut self.interner);
@@ -1920,26 +1924,6 @@ impl Simulation {
         )
     }
 
-    /// Rule handles for this tick pass. Production sims resolve at init/load
-    /// via `resolve_type_handles`, so the lazy arm never fires there; a
-    /// fixture sim that skipped init pins the identical ids here on first use
-    /// (re-interning existing names is id-stable, so this is deterministic).
-    pub fn rule_handles_or_resolve(
-        &mut self,
-        rules: &RuleSet,
-    ) -> crate::sim::type_handle_table::ResolvedRuleHandles {
-        match self.rule_handles {
-            Some(handles) => handles,
-            None => {
-                let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
-                    rules,
-                    &mut self.interner,
-                );
-                self.rule_handles = Some(handles);
-                handles
-            }
-        }
-    }
 
     /// Resolve an entity's type to its `ObjectType` in one precomputed hop
     /// (two array indexes, no string allocation). Falls back to the name path

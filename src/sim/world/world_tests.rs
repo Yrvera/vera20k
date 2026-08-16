@@ -8750,3 +8750,31 @@ fn diag_short_range_group_reservation_trace() {
         );
     }
 }
+
+#[test]
+fn rule_handles_resolve_at_init_and_stay_none_for_unresolved_fixtures() {
+    let rules =
+        RuleSet::from_ini(&IniFile::from_str("")).expect("empty rules fixture parses");
+
+    // Init-path resolution pins the canonical warhead names.
+    let mut init_sim = Simulation::new();
+    init_sim.interner.intern("SOMETYPE");
+    init_sim.intern_rule_type_ids(&rules);
+    init_sim.resolve_type_handles(&rules);
+    let handles = init_sim.rule_handles();
+    assert_eq!(init_sim.interner.resolve(handles.crush), "Crush");
+    assert!(handles.is_crush(handles.crush));
+
+    // A fixture that skips init resolution keeps None — combat treats every
+    // warhead as non-crush and, critically, its interner is never mutated by
+    // a tick pass, so historical fixture hashes cannot shift.
+    let unresolved = Simulation::new();
+    assert!(unresolved.rule_handles.is_none());
+}
+
+#[test]
+#[should_panic(expected = "resolve_type_handles")]
+fn rule_handles_accessor_panics_before_resolution() {
+    let sim = Simulation::new();
+    let _ = sim.rule_handles();
+}

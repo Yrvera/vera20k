@@ -265,7 +265,7 @@ fn spawn_bolt(
     owner: InternedId,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) {
-    let handles = sim.rule_handles_or_resolve(rules);
+    let handles = sim.rule_handles;
     // 1. Pick a random bolt animation.
     let anim_idx = sim
         .superweapon_rng()

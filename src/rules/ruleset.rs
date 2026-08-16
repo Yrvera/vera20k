@@ -5483,7 +5483,7 @@ ZAdjust=-10
         );
 
         // Casing: a lowercased reference resolves to the same handle as the stored
-        // uppercase id. The interner is case-insensitive, so intern_all_ids("MTNK")
+        // uppercase id. The interner is case-insensitive, so the interning pass ("MTNK")
         // and a later get("mtnk") share one id.
         let mtnk_lower = interner
             .get("mtnk")

@@ -337,7 +337,7 @@ pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
     layer_context: AoELayerContext<'_>,
     terrain_objects: Option<TerrainCollectionView<'_>>,
 ) -> AoEDamageResult {
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner);
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
     apply_aoe_damage_with_terrain_and_scenario(
         entities,
         impact_rx,
@@ -364,7 +364,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     warhead: &WarheadType,
     rules: &RuleSet,
     interner: &StringInterner,
-    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
+    handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     origin: O,
     mut layer_context: AoELayerContext<'_>,
     terrain_objects: Option<TerrainCollectionView<'_>>,
@@ -381,7 +381,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     if origin.source_house.is_none() && origin.source_id != super::RAD_NO_ATTACKER {
         origin.source_house = entities.get(origin.source_id).map(|source| source.owner);
     }
-    let ground_source_admitted = handles.is_crush(origin.warhead_ref)
+    let ground_source_admitted = handles.is_some_and(|handles| handles.is_crush(origin.warhead_ref))
         || entities
             .get(origin.source_id)
             .and_then(|source| rules.object(interner.resolve(source.type_ref)))
@@ -1303,7 +1303,7 @@ mod tests {
             &warhead,
             &rules,
             &interner,
-            handles,
+            Some(handles),
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1383,7 +1383,7 @@ mod tests {
             &warhead,
             &rules,
             &interner,
-            handles,
+            Some(handles),
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1968,7 +1968,7 @@ mod tests {
             }
 
             let mut interner = test_interner();
-            let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+            let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let blast_ref = interner.intern("BlastWH");
             let mut scenario_rng = SimRng::new(1);
             let air_impact = Some(AoEAirImpact {
@@ -2138,7 +2138,7 @@ mod tests {
             .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(48, 48, cells);
         let mut interner = test_interner();
-        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let warhead_ref = interner.intern("WIDEWH");
 
         assert_eq!(
@@ -2575,7 +2575,7 @@ mod tests {
             let mut rules = RuleSet::from_ini(&ini).expect("receiver admission fixture");
             let warhead = rules.warhead(warhead_name).unwrap().clone();
             let mut interner = test_interner();
-            let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+            let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let warhead_ref = interner.intern(warhead_name);
             let source_house = interner.intern("SourceHouse");
             let ally_house = interner.intern("AllyHouse");

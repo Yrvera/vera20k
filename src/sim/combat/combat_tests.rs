@@ -228,7 +228,7 @@ fn run_combat_death_handoff(
         &mut occupancy,
         rules,
         interner,
-        handles,
+        Some(handles),
         &mut houses,
         &[],
         &HouseAllianceMap::new(),
@@ -292,7 +292,7 @@ fn gsi_04_10_projectile_inert_suppresses_bridge_ore_and_collector_rng() {
         &occupancy,
         &rules,
         &mut interner,
-        handles,
+        Some(handles),
         &mut resource_nodes,
         None,
         None,
@@ -926,7 +926,7 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
     .expect("bridge combat rules should parse");
     // Combat reads IonCannonWarhead at the bridge-damage emit boundary; tests
     // that drive tick_combat must resolve before invoking it.
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&bridge_rules, &mut interner);
+    let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&bridge_rules, &mut interner);
     let mut wall_store = EntityStore::new();
     wall_store.insert(make_entity(3, "MTNK", 5, 5, 300));
     wall_store.insert(make_entity(4, "MTNK", 8, 5, 300));
@@ -990,7 +990,7 @@ fn gsi_04_07_damage_wad_precedes_wall_and_wood_armor_routing() {
         entities.insert(make_entity(1, "MTNK", 5, 5, 300));
         entities.insert(make_entity(2, "MTNK", 8, 5, 300));
         let mut interner = test_interner();
-        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         issue_attack_command(&mut entities, 1, 2, None, &interner);
         let mut overlays = OverlayGrid::new(12, 12);
         overlays.place_overlay(8, 5, 0, 0);
@@ -1070,7 +1070,7 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     second.suspended_attack_target = Some(TargetKind::Entity(10));
     entities.insert(second);
     let mut interner = test_interner();
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     assert!(issue_attack_cell_command(
         &mut entities,
         10,
@@ -1188,7 +1188,7 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         entities.insert(later_attacker);
         entities.insert(make_entity(30, "TARGET", 5, 5, 100));
         let mut interner = test_interner();
-        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         assert!(issue_attack_cell_command(
             &mut entities,
             20,
@@ -1222,7 +1222,7 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
             &mut OccupancyGrid::new(),
             &rules,
             &mut interner,
-        handles,
+        Some(handles),
             None,
             &BTreeMap::new(),
             &mut houses,
@@ -1429,7 +1429,7 @@ fn gsi_04_07_damage_retaliation_is_receiver_synchronous_and_uses_mission_overrid
             &mut occupancy,
             &rules,
             &mut interner,
-        handles,
+        Some(handles),
             None,
             &BTreeMap::new(),
             &mut houses,
@@ -2458,7 +2458,7 @@ fn gsi_04_07_damage_repair_bullet_cellspread_zero_keeps_signed_area_record() {
         &occupancy,
         &rules,
         &mut interner,
-        handles,
+        Some(handles),
         &mut resources,
         None,
         None,
@@ -3258,7 +3258,6 @@ fn test_tick_combat_respects_cooldown() {
     // ROF is a native frame count. After 49 post-shot combat updates the
     // countdown is still 1, so no second shot has fired yet.
     for _ in 0..48 {
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         tick_combat(
             &mut store,
             &mut OccupancyGrid::new(),
@@ -3324,7 +3323,7 @@ fn selected_death_sounds_for(
         &mut OccupancyGrid::new(),
         rules,
         &mut interner,
-        handles,
+        Some(handles),
         &mut houses,
         &[owner],
         &HouseAllianceMap::new(),
@@ -3386,7 +3385,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
         &mut OccupancyGrid::new(),
         &rules,
         &mut interner,
-        handles,
+        Some(handles),
         None,
         &BTreeMap::new(),
         &mut houses,
@@ -5172,7 +5171,7 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
         &mut OccupancyGrid::new(),
         &rules,
         &mut interner,
-        handles,
+        Some(handles),
         None,
         &BTreeMap::new(),
         &mut houses,
@@ -6197,7 +6196,6 @@ fn under_attack_events_fire_for_enemy_hit_structures_and_miners_only() {
         store.insert(attacker);
         let mut interner = test_interner();
         issue_attack_command(&mut store, 1, 10, None, &interner);
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         tick_combat(
             &mut store,
             &mut OccupancyGrid::new(),
@@ -6352,7 +6350,7 @@ fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
         &mut occupancy,
         &rules,
         &mut interner,
-        handles,
+        Some(handles),
         None,
         &BTreeMap::new(),
         &mut houses,
