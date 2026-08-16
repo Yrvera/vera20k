@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
+use crate::app::input::commands::preferred_local_owner_name;
 use crate::app_instances::CellVisibilityState;
 use crate::app_types::{
     CursorFeedbackKind, CursorId, HoverTargetKind, ScrollDir, SoftwareCursorFrame,
@@ -17,7 +17,7 @@ use crate::sim::combat;
 pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFeedbackKind> {
     // The active band is the outermost pixel of the whole window, including
     // the sidebar. It wins even when that pixel overlaps a sidebar/minimap hit.
-    if let Some((dir, blocked)) = crate::app_camera::edge_scroll_cursor_state(state) {
+    if let Some((dir, blocked)) = crate::app::input::camera::edge_scroll_cursor_state(state) {
         return Some(if blocked {
             CursorFeedbackKind::ScrollBlocked(dir)
         } else {
@@ -67,15 +67,15 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         let repair = repair_mode;
         let (wx, wy) =
             crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
-        let valid = crate::app_commands::own_building_under_point(state, wx, wy).is_some()
-            || (!repair && crate::app_commands::sell_wall_under_cursor_is_eligible(state));
+        let valid = crate::app::input::commands::own_building_under_point(state, wx, wy).is_some()
+            || (!repair && crate::app::input::commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
             CursorFeedbackKind::RepairMode(valid)
         } else {
             CursorFeedbackKind::SellMode(valid)
         });
     }
-    let selected = crate::app_input::selected_stable_ids_in_order(state);
+    let selected = crate::app::input::dispatch::selected_stable_ids_in_order(state);
     if selected.is_empty() {
         return None;
     }
@@ -102,12 +102,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
             crate::app_render::OrderMode::Guard => CursorFeedbackKind::Guard,
         });
     }
-    let modifier = crate::app_context_order::resolve_order_modifiers(
-        crate::app_input::is_ctrl_held(state),
-        crate::app_input::is_shift_held(state),
-        crate::app_input::is_alt_held(state),
+    let modifier = crate::app::input::context_order::resolve_order_modifiers(
+        crate::app::input::dispatch::is_ctrl_held(state),
+        crate::app::input::dispatch::is_shift_held(state),
+        crate::app::input::dispatch::is_alt_held(state),
     );
-    let hover = crate::app_entity_pick::hover_target_at_point(
+    let hover = crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
@@ -134,7 +134,7 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // Ctrl+Alt is guard area — neither force-fires — so this reads the resolved
     // modifier verb rather than raw Ctrl. The armed test runs on the one
     // resolved object, matching gamemd's single-object dispatch.
-    if modifier == crate::app_context_order::OrderModifier::ForceFire {
+    if modifier == crate::app::input::context_order::OrderModifier::ForceFire {
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
                 let type_str = sim.interner.resolve(e.type_ref);
@@ -237,7 +237,7 @@ fn what_action_on_cell(
     best_id: Option<u64>,
     cell: (u16, u16),
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
-    modifier: crate::app_context_order::OrderModifier,
+    modifier: crate::app::input::context_order::OrderModifier,
 ) -> CellAction {
     use crate::sim::movement::locomotor::MovementLayer;
 
@@ -257,8 +257,8 @@ fn what_action_on_cell(
     }
     if matches!(
         modifier,
-        crate::app_context_order::OrderModifier::Queue
-            | crate::app_context_order::OrderModifier::ForceMove
+        crate::app::input::context_order::OrderModifier::Queue
+            | crate::app::input::context_order::OrderModifier::ForceMove
     ) {
         return CellAction::Move;
     }
@@ -296,7 +296,7 @@ fn capability_cursor_for_hover(
     sim: &crate::sim::world::Simulation,
     selected: &[u64],
     best_id: Option<u64>,
-    hover: &crate::app_entity_pick::HoverTargetKindWithId,
+    hover: &crate::app::input::entity_pick::HoverTargetKindWithId,
     rules: Option<&crate::rules::ruleset::RuleSet>,
     path_grid: Option<&crate::sim::pathfinding::PathGrid>,
 ) -> CursorFeedbackKind {
@@ -951,7 +951,7 @@ mod tests {
         ActionDistanceTarget, CellAction, capability_cursor_for_hover, select_best_for_action,
         super_weapon_cursor_id, what_action_on_cell,
     };
-    use crate::app_entity_pick::HoverTargetKindWithId;
+    use crate::app::input::entity_pick::HoverTargetKindWithId;
     use crate::app_types::{CursorFeedbackKind, CursorId, HoverTargetKind};
     use crate::rules::ini_parser::IniFile;
     use crate::rules::ruleset::RuleSet;
@@ -1189,7 +1189,7 @@ mod tests {
     /// constant over empty ground.
     #[test]
     fn blocked_cell_resolves_to_no_move() {
-        use crate::app_context_order::OrderModifier;
+        use crate::app::input::context_order::OrderModifier;
         use crate::sim::pathfinding::PathGrid;
 
         let (sim, _rules, tank) = sim_with_tank();
@@ -1212,7 +1212,7 @@ mod tests {
     /// cell at all.
     #[test]
     fn cell_outside_the_playfield_resolves_to_no_move() {
-        use crate::app_context_order::OrderModifier;
+        use crate::app::input::context_order::OrderModifier;
         use crate::sim::pathfinding::PathGrid;
 
         let (sim, _rules, tank) = sim_with_tank();
@@ -1228,7 +1228,7 @@ mod tests {
     /// occupancy probe, so both show the move cursor even over a blocked cell.
     #[test]
     fn shift_and_alt_skip_the_occupancy_probe() {
-        use crate::app_context_order::OrderModifier;
+        use crate::app::input::context_order::OrderModifier;
         use crate::sim::pathfinding::PathGrid;
 
         let (sim, _rules, tank) = sim_with_tank();

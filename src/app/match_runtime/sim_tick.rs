@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::app::AppState;
-use crate::app_commands::{preferred_local_owner, preferred_local_owner_name};
+use crate::app::input::commands::{preferred_local_owner, preferred_local_owner_name};
 
 /// Minimum ticks between under-attack EVA voice lines (~30 s at 67 ms/tick).
 /// The native per-house attack-voice repeat delay is UNVERIFIED-pending-trace.
@@ -119,7 +119,7 @@ fn replay_flush_facts(state: &AppState) -> (u64, u64) {
 /// remain a later parity surface (the queue bridge in `audio/sfx.rs` says the
 /// same) — this wires the producers only.
 fn announce_local_state_evas(state: &mut AppState) {
-    let Some(owner) = crate::app_commands::preferred_local_owner_name(state) else {
+    let Some(owner) = crate::app::input::commands::preferred_local_owner_name(state) else {
         return;
     };
     // Read phase (immutable sim borrow): compute this frame's states and the
@@ -334,7 +334,7 @@ fn build_score_screen_model(
 ) -> crate::ui::score_shell::ScoreScreenModel {
     use crate::ui::score_shell::{ScoreRow, ScoreScreenModel};
 
-    let local_owner = crate::app_commands::preferred_local_owner_name(state);
+    let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     // Use the launch handle while it is still available. Current map handoff
     // clears LoadingSession instead of pinning the handle for the match, so the
     // ordinary fallback remains a recorded presentation residual.
@@ -803,13 +803,13 @@ fn advance_in_game_runtime_mode(
     crate::app_building_anim::update_power_bar_anim(state);
     crate::app_sidebar_gadgets::update_sidebar_gadget_state(state);
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
-    crate::app_gadget_input::idle_tick(state);
+    crate::app::input::gadget_input::idle_tick(state);
     let music_now_ms = monotonic_frame_pacer_ms(state, Instant::now());
     if let (Some(player), Some(assets)) = (&mut state.music_player, state.process_assets.manager()) {
         player.update(assets, music_now_ms);
     }
     if decision.tactical_mutation {
-        crate::app_camera::update_camera(state);
+        crate::app::input::camera::update_camera(state);
         update_building_placement_preview(state);
     }
     let sw = state.render_width() as f32;
@@ -867,7 +867,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // Compute local owner before mutable borrow of simulation.
         let local_owner_for_fog = preferred_local_owner_name(state);
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
-        let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+        let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
@@ -1379,7 +1379,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         if frame_committed {
             state.combat_lights.commit_frame(drained_combat_lights);
         }
-        crate::app_input::reconcile_selection_order_after_sim(state);
+        crate::app::input::dispatch::reconcile_selection_order_after_sim(state);
         // Rendering is rebuilt from lifecycle facts every frame. Replay the
         // app-owned transactions in native emission order for state that has a
         // direct attachment or retained audio handle.
@@ -1418,7 +1418,7 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
         // early ticks missed the symptom entirely: the interesting state is a mostly-explored
         // map with holes left in it, which only appears well into a session.
         if census_tick.is_some_and(|tick| tick == 150 || (tick > 150 && tick % 900 == 0)) {
-            crate::app_input::report_black_cell_causes(state);
+            crate::app::input::dispatch::report_black_cell_causes(state);
         }
 
         apply_trigger_effects(state, &trigger_effects);
@@ -1556,7 +1556,7 @@ fn apply_trigger_effects(state: &mut AppState, effects: &[TriggerEffect]) {
                 // gamemd routes trigger text through the message list
                 // (contract lane §4.5: the native trigger-text path is a
                 // message-list producer).
-                crate::app_messages::post_system_message(state, text);
+                crate::app::input::messages::post_system_message(state, text);
             }
             TriggerEffect::MissionResult { title, detail } => {
                 state.screen = GameScreen::MissionResult {
@@ -1578,7 +1578,7 @@ fn center_camera_on_waypoint(state: &mut AppState, waypoint_index: u32) {
     };
     let (rx, ry) = (waypoint.rx, waypoint.ry);
     // Centres on the tactical viewport, not the window.
-    crate::app_camera::center_camera_on_cell(state, rx, ry);
+    crate::app::input::camera::center_camera_on_cell(state, rx, ry);
 }
 
 pub(crate) fn update_building_placement_preview(state: &mut AppState) {

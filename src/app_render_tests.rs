@@ -1,9 +1,9 @@
 use super::HoverTargetKind;
-use crate::app_entity_pick::{
+use crate::app::input::entity_pick::{
     compute_box_selection_snapshot, compute_click_selection_snapshot, hover_target_at_point,
     pick_enemy_target_stable_id,
 };
-use crate::app_input::CLICK_SELECT_RADIUS;
+use crate::app::input::dispatch::CLICK_SELECT_RADIUS;
 use crate::app_sidebar_render::sync_targeting_mode;
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
@@ -321,7 +321,7 @@ fn box_over_two(
     store: &EntityStore,
     a: u64,
     b: u64,
-) -> Option<crate::app_entity_pick::SelectionMutation> {
+) -> Option<crate::app::input::entity_pick::SelectionMutation> {
     let (ax, ay) = screen_of(store, a);
     let (bx, by) = screen_of(store, b);
     compute_box_selection_snapshot(
@@ -378,7 +378,7 @@ fn test_box_keeps_a_vehicle_that_drove_clear_of_its_factory() {
 /// bulk from the building array with no visibility test at all.
 #[test]
 fn test_band_emptiness_ignores_a_shrouded_unit_but_not_a_shrouded_building() {
-    use crate::app_entity_pick::band_rect_contains_drawn_object;
+    use crate::app::input::entity_pick::band_rect_contains_drawn_object;
 
     let mut alliances = HouseAllianceMap::default();
     alliances.insert(

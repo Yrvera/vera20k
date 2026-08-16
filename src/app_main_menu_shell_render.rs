@@ -397,7 +397,7 @@ pub(crate) fn ensure_movie_for_current_layout(
 fn menu_cursor_instance(state: &AppState) -> Option<SpriteInstance> {
     let cursor = state.software_cursor.as_ref()?;
     let sequence = cursor.get(crate::app_types::CursorId::Default)?;
-    let frame = crate::app_cursor::current_software_cursor_frame(sequence)?;
+    let frame = crate::app::input::cursor::current_software_cursor_frame(sequence)?;
     Some(SpriteInstance {
         position: [
             state.cursor_x - sequence.hotspot[0],

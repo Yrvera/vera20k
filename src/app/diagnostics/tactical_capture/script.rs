@@ -578,7 +578,7 @@ impl TacticalScript {
     /// Consume one renderer-free snapshot and yield at most one action.
     ///
     /// A returned command action must immediately be passed through
-    /// `app_commands::try_schedule_command`, followed by exactly one
+    /// `commands::try_schedule_command`, followed by exactly one
     /// `record_scheduled` call with its returned execute tick. Until then (and
     /// while a scheduled command is pending) no second command is emitted.
     pub(crate) fn next_action(

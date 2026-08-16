@@ -38,18 +38,18 @@ impl App {
             session.drive_before_render(state)?;
         }
         state.frame_timer.sample(Instant::now());
-        crate::app_tooltips::update(state);
+        crate::app::input::tooltips::update(state);
         // The message clock has to observe the focus freeze exactly as it
         // observes a modal pause: a banner on screen when the player Alt+Tabs
         // must survive the absence with its remaining lifetime intact, not
         // expire against wall time while the world is stopped. Park the clock
-        // and skip the expiry pass; `app_messages::update` closes the span and
+        // and skip the expiry pass; `messages::update` closes the span and
         // resumes ownership on the first foreground frame.
         if state.screen == GameScreen::InGame && !state.platform.window_active {
-            let wall = crate::app_tooltips::now_ms(state);
+            let wall = crate::app::input::tooltips::now_ms(state);
             state.message_clock.set_paused(true, wall);
         } else {
-            crate::app_messages::update(state);
+            crate::app::input::messages::update(state);
         }
         if state
             .startup_splash

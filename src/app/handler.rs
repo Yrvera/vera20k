@@ -3,10 +3,11 @@
 //! Event priority and consumption order are player-visible contracts; this
 //! module keeps the original handler body intact.
 
+use super::input::dispatch;
 use super::{
     ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
-    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId, app_input,
+    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId,
     auto_detect_ui_scale,
 };
 
@@ -365,7 +366,7 @@ impl ApplicationHandler for App {
                         return;
                     }
 
-                    if !crate::app_hotkeys::input_admitted_while_paused(
+                    if !crate::app::input::hotkeys::input_admitted_while_paused(
                         paused_at_event,
                         &event.logical_key,
                     ) {
@@ -392,7 +393,7 @@ impl ApplicationHandler for App {
                     }
 
                     let key_without_modifiers = event.key_without_modifiers();
-                    let binding_key = crate::app_hotkeys::binding_logical_key(
+                    let binding_key = crate::app::input::hotkeys::binding_logical_key(
                         &event.logical_key,
                         &key_without_modifiers,
                         event.location,
@@ -403,7 +404,7 @@ impl ApplicationHandler for App {
                         state.hotkey_modifiers,
                     );
                     if in_game && (is_escape || !egui_consumed) {
-                        let type_select_consumed = app_input::handle_type_select_key_edge(
+                        let type_select_consumed = dispatch::handle_type_select_key_edge(
                             state,
                             hotkey_resolution,
                             code,
@@ -411,7 +412,7 @@ impl ApplicationHandler for App {
                             event.repeat,
                         );
                         if event.state.is_pressed() && !event.repeat && !type_select_consumed {
-                            app_input::handle_hotkey_pressed(state, hotkey_resolution, code);
+                            dispatch::handle_hotkey_pressed(state, hotkey_resolution, code);
                         }
                     }
                     // A key received by the paused capture changes no held-key
@@ -419,10 +420,10 @@ impl ApplicationHandler for App {
                     if in_game && !paused_at_event && !egui_consumed {
                         if event.state.is_pressed() {
                             if let Some(scroll_key) =
-                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
+                                crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                             {
                                 state.keys_held.insert(scroll_key);
-                            } else if crate::app_hotkeys::physical_scroll_key(code).is_none() {
+                            } else if crate::app::input::hotkeys::physical_scroll_key(code).is_none() {
                                 state.keys_held.insert(code);
                             }
                         } else {
@@ -431,8 +432,8 @@ impl ApplicationHandler for App {
                             // while the key was held.
                             state.keys_held.remove(&code);
                             if let Some(scroll_key) =
-                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
-                                    .or_else(|| crate::app_hotkeys::physical_scroll_key(code))
+                                crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
+                                    .or_else(|| crate::app::input::hotkeys::physical_scroll_key(code))
                             {
                                 state.keys_held.remove(&scroll_key);
                             }
@@ -461,14 +462,14 @@ impl ApplicationHandler for App {
                 }
                 // Shared tooltip service: every move restarts the show delay
                 // and hides a visible tip (study S1).
-                crate::app_tooltips::on_mouse_move(state);
+                crate::app::input::tooltips::on_mouse_move(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 if !egui_consumed
                     && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
                 {
-                    app_input::handle_cursor_moved_in_game(state);
+                    dispatch::handle_cursor_moved_in_game(state);
                 }
                 if !egui_consumed && Self::native_skirmish_shell_active(state) {
                     Self::handle_skirmish_shell_mouse_move(state);
@@ -504,7 +505,7 @@ impl ApplicationHandler for App {
                 }
                 // Any button press/release kills a visible tooltip + pending
                 // timer (all buttons incl. middle — study S1).
-                crate::app_tooltips::on_button_event(state);
+                crate::app::input::tooltips::on_button_event(state);
                 if crate::app_shell_transition::blocks_shell_input(state) {
                     return;
                 }
@@ -566,7 +567,7 @@ impl ApplicationHandler for App {
                         crate::app_spawn_pick::handle_spawn_pick_click(state);
                     }
                 } else if !egui_consumed && state.screen == GameScreen::InGame {
-                    app_input::handle_mouse_input(state, button, btn_state);
+                    dispatch::handle_mouse_input(state, button, btn_state);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -593,7 +594,7 @@ impl ApplicationHandler for App {
                     // row, wherever the cursor is. gamemd routes the wheel
                     // message straight to the SidebarUp / SidebarDown commands
                     // and has no world zoom for it to reach.
-                    app_input::sidebar_wheel_scroll(state, lines);
+                    dispatch::sidebar_wheel_scroll(state, lines);
                 }
             }
             WindowEvent::RedrawRequested => {

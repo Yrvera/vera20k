@@ -18,7 +18,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
+use crate::app::input::commands::preferred_local_owner_name;
 use crate::sidebar::SidebarTab;
 
 /// Period (game ticks) of the per-tab pulse. Literal from gamemd

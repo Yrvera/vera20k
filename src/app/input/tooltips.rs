@@ -29,7 +29,7 @@ pub(crate) const CAMEO_TIP_ID_BASE: u32 = 1000;
 const CAMEO_TIP_MONEY_FORMAT: &str = "TXT_MONEY_FORMAT_2";
 
 /// CSF labels for the sidebar gadget tips. gamemd dispatches these by the same
-/// gadget ids we use (`app_gadget_input::ID_*`), passing the label in ECX; the
+/// gadget ids we use (`gadget_input::ID_*`), passing the label in ECX; the
 /// numbers previously mistaken for CSF ids at these call sites are the
 /// engine's `__LINE__` values.
 const TIP_LABEL_SCROLL_UP: &str = "Tip:ScrollUp";
@@ -179,18 +179,18 @@ fn sync_in_game_regions(state: &mut AppState) {
             .unwrap_or(TIP_LABELS_TAB[TIP_LABELS_TAB.len() - 1]);
         let text = with_disabled_suffix(state, csf_text(state, label), tab.disabled);
         regions.push(TipRegion {
-            id: crate::app_gadget_input::ID_TAB_BASE as u32 + i as u32,
+            id: crate::app::input::gadget_input::ID_TAB_BASE as u32 + i as u32,
             rect: tip_rect(tab.rect),
             text,
         });
     }
     regions.push(TipRegion {
-        id: crate::app_gadget_input::ID_REPAIR as u32,
+        id: crate::app::input::gadget_input::ID_REPAIR as u32,
         rect: tip_rect(view.repair_button.rect),
         text: csf_text(state, "TXT_REPAIR_MODE"),
     });
     regions.push(TipRegion {
-        id: crate::app_gadget_input::ID_SELL as u32,
+        id: crate::app::input::gadget_input::ID_SELL as u32,
         rect: tip_rect(view.sell_button.rect),
         text: csf_text(state, "TXT_SELL_MODE"),
     });
@@ -199,12 +199,12 @@ fn sync_in_game_regions(state: &mut AppState) {
         // `Tip:Disabled` branch is unreachable for this pair; the labels
         // themselves are the native ones.
         regions.push(TipRegion {
-            id: crate::app_gadget_input::ID_SCROLL_DOWN as u32,
+            id: crate::app::input::gadget_input::ID_SCROLL_DOWN as u32,
             rect: tip_rect(view.scroll_down_button.rect),
             text: csf_text(state, TIP_LABEL_SCROLL_DOWN),
         });
         regions.push(TipRegion {
-            id: crate::app_gadget_input::ID_SCROLL_UP as u32,
+            id: crate::app::input::gadget_input::ID_SCROLL_UP as u32,
             rect: tip_rect(view.scroll_up_button.rect),
             text: csf_text(state, TIP_LABEL_SCROLL_UP),
         });
@@ -517,9 +517,9 @@ mod tests {
     fn sidebar_gadget_tip_labels_are_the_native_ones() {
         // The ids are gamemd's, so the label table must line up with them:
         // tabs 0xCB..0xCE are Tab1..Tab4 in sidebar tab order.
-        assert_eq!(crate::app_gadget_input::ID_TAB_BASE, 0x00CB);
-        assert_eq!(crate::app_gadget_input::ID_SCROLL_UP, 0x00C8);
-        assert_eq!(crate::app_gadget_input::ID_SCROLL_DOWN, 0x00C9);
+        assert_eq!(crate::app::input::gadget_input::ID_TAB_BASE, 0x00CB);
+        assert_eq!(crate::app::input::gadget_input::ID_SCROLL_UP, 0x00C8);
+        assert_eq!(crate::app::input::gadget_input::ID_SCROLL_DOWN, 0x00C9);
         assert_eq!(
             TIP_LABELS_TAB,
             ["Tip:Tab1", "Tip:Tab2", "Tip:Tab3", "Tip:Tab4"]

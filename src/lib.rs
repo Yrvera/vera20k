@@ -75,7 +75,6 @@ pub mod skirmish_persistence;
 
 // Shared type definitions and constants used across app_* modules.
 // Extracted from app_render.rs to decouple type imports from rendering.
-pub mod app_hotkeys;
 pub mod app_types;
 
 // In-game rendering — terrain tiles, unit sprites, SHP sprites.
@@ -84,19 +83,15 @@ pub mod app_render;
 
 // In-game input handling — mouse clicks, hotkeys, sidebar interactions.
 // Extracted from app_render.rs to keep files under 400 lines.
-pub mod app_input;
 
 // Paused in-game Options (0xBBB) overlay mouse routing + the close/apply/persist
 // path (Slice 5a-iii interaction).
-pub mod app_in_game_options_input;
 
 // Context-sensitive order resolution — click-to-command decision tree.
 // Extracted from app_input.rs to separate order logic from raw input handling.
-pub mod app_context_order;
 
 // Entity picking, hover-target resolution, and selection snapshots.
 // Extracted from app_render.rs to keep files under 400 lines.
-pub mod app_entity_pick;
 
 // Sidebar rendering — view construction, minimap, chrome helpers.
 // Extracted from app_render.rs to keep files under 400 lines.
@@ -111,24 +106,19 @@ pub mod app_sidebar_gadgets;
 
 // In-game gadget substrate driver: retained sidebar button list, mouse-edge +
 // idle ticks, fired-ID application, pressed-bit publication.
-pub mod app_gadget_input;
 
 // Tooltip service driver: wall clock, event feeds, region sync, draw build.
-pub mod app_tooltips;
 
 // Chat/system message surface driver: posts, expiry, draw build.
-pub mod app_messages;
 
 // Build/production commands and owner management.
 // Extracted from app_render.rs.
-pub mod app_commands;
 
 // Simulation tick loop, triggers, atlas refresh, path grid rebuild.
 // Extracted from app_render.rs.
 
 // Camera positioning — keyboard scroll, edge scroll, clamping.
 // Extracted from app_sim_tick.rs.
-pub mod app_camera;
 
 // Building animation lifecycle, damage fires, sidebar UI tick, sound playback.
 // Extracted from app_sim_tick.rs.
@@ -146,7 +136,6 @@ pub mod app_chute_anim;
 // App state transitions: map loading, screen clearing.
 
 // Cursor feedback analysis and software cursor frame selection.
-pub mod app_cursor;
 
 // UI overlay builders — status bars, software cursor.
 // Extracted from app_render.rs.

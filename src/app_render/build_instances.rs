@@ -8,7 +8,7 @@
 //! - Internal to app_render — only called from mod.rs.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner;
+use crate::app::input::commands::preferred_local_owner;
 use crate::app::diagnostics::debug_overlays;
 use crate::app_instances;
 use crate::app_sidebar_render::{
@@ -172,7 +172,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let terrain = if let Some(grid) = &state.terrain_grid {
         // Skip terrain for fully shrouded cells — matches gamemd which doesn't
         // render terrain under shroud. The multiply pass still darkens edges.
-        let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+        let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         let fog_vis: Option<(
             crate::sim::intern::InternedId,
             &crate::sim::vision::FogState,
@@ -451,7 +451,7 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
         .as_ref()
         .map_or(true, |c| c.graphics.extra_animations);
 
-    let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+    let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = match (state.sandbox_full_visibility, &local_owner_name) {
         (false, Some(owner)) => sim.interner.get(owner),
         _ => None,
@@ -698,7 +698,7 @@ fn build_placement_preview(
                 let hc: crate::rules::house_colors::HouseColorIndex = state
                     .house_color_map
                     .get(
-                        &crate::app_commands::preferred_local_owner(state)
+                        &crate::app::input::commands::preferred_local_owner(state)
                             .unwrap_or_else(|| "Americans".to_string()),
                     )
                     .copied()
@@ -734,7 +734,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     let view = current_sidebar_view(state).cloned();
     let minimap_rect = active_minimap_screen_rect(state);
     let (tactical_w, tactical_h) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
 
     // Only show minimap when radar is online (or no radar_anim = legacy fallback).
     let minimap_visible: bool = state

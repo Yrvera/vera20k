@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn control_buttons_carry_their_actions() {
         // `sidebar::hit_test` was retired in A6 — the control/dev buttons moved
-        // onto the gadget list. The driver (`app_gadget_input::apply_gadget_result`)
+        // onto the gadget list. The driver (`gadget_input::apply_gadget_result`)
         // applies each button's own `SidebarAction`, so the wiring under test is
         // that the view builds those buttons with the right actions.
         let view = build_sidebar_view(

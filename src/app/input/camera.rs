@@ -643,9 +643,9 @@ fn update_right_drag_pan(state: &mut AppState) {
 /// held. The Ctrl distance is derived from the map's longer side; with no map
 /// loaded there is nothing to jump across and the distance is zero.
 fn keyboard_scroll_distance(state: &AppState) -> f32 {
-    if crate::app_input::is_shift_held(state) {
+    if crate::app::input::dispatch::is_shift_held(state) {
         (KEY_SCROLL_DISTANCE * KEY_SCROLL_SHIFT_MULTIPLIER).trunc()
-    } else if crate::app_input::is_ctrl_held(state) {
+    } else if crate::app::input::dispatch::is_ctrl_held(state) {
         let cells = state
             .sim_runtime
             .as_ref()

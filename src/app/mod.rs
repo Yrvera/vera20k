@@ -16,7 +16,7 @@ use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::loading::init::MapMenuEntry;
-use crate::app_input;
+use crate::app::input::dispatch;
 use crate::app_list_maps;
 use crate::app_render;
 use crate::app::match_runtime::sim_tick;
@@ -59,6 +59,7 @@ use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
 pub mod frontend;
+pub(crate) mod input;
 mod frame;
 mod handler;
 mod initialize;

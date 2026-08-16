@@ -529,7 +529,7 @@ pub(crate) fn build_overlay_instances(
     )> = if state.sandbox_full_visibility {
         None
     } else {
-        let local_owner_name = crate::app_commands::preferred_local_owner_name(state);
+        let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner_name) {
             (Some(sim), Some(owner)) => sim.interner.get(owner).map(|id| (id, &sim.fog)),
             _ => None,
@@ -1107,7 +1107,7 @@ pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstanc
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return instances;
     };
-    let observer = crate::app_commands::preferred_local_owner(state)
+    let observer = crate::app::input::commands::preferred_local_owner(state)
         .as_deref()
         .and_then(|owner| sim.interner.get(owner));
     for wave in crate::app_fire_effects::build_weapon_wave_visuals(sim, observer) {

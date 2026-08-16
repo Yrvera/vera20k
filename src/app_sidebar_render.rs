@@ -12,7 +12,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
+use crate::app::input::commands::preferred_local_owner_name;
 use crate::render::batch::BatchTexture;
 use crate::sidebar::{self, SidebarView};
 use crate::sim::production;
@@ -253,7 +253,7 @@ pub(crate) fn try_begin_minimap_drag(state: &mut AppState) -> bool {
 /// If there are selected mobile units, issue a move command to the minimap
 /// click location and return true. Otherwise return false (caller does camera drag).
 fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
-    let selected_ids = crate::app_input::selected_stable_ids_in_order(state);
+    let selected_ids = crate::app::input::dispatch::selected_stable_ids_in_order(state);
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return false;
     };
@@ -265,12 +265,12 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         Some(coords) => coords,
         None => return false,
     };
-    let owner = crate::app_commands::preferred_local_owner_name(state)
+    let owner = crate::app::input::commands::preferred_local_owner_name(state)
         .unwrap_or_else(|| "Americans".to_string());
     let owner_id = sim.interner.get(&owner).unwrap_or_default();
     let execute_tick = sim.session.tick;
     let order_mode = state.queued_order_mode;
-    let shift_held: bool = crate::app_input::is_shift_held(state);
+    let shift_held: bool = crate::app::input::dispatch::is_shift_held(state);
     let mut queued: Vec<crate::sim::command::CommandEnvelope> = Vec::new();
     for &entity_id in &selected_ids {
         let Some(entity) = sim.entities().get(entity_id) else {
@@ -322,7 +322,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
         let queued = queued
             .into_iter()
             .filter_map(|envelope| {
-                crate::app_commands::roundtrip_ordinary_local_move(sim, envelope)
+                crate::app::input::commands::roundtrip_ordinary_local_move(sim, envelope)
             })
             .collect::<Vec<_>>();
         sim.queue_commands(queued);
@@ -335,7 +335,7 @@ fn minimap_move_order_if_selected(state: &mut AppState) -> bool {
 fn minimap_cursor_to_iso(state: &AppState) -> Option<(u16, u16)> {
     let minimap = state.minimap.as_ref()?;
     let (tactical_w, tactical_h) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let tactical_w = tactical_w as f32;
     let tactical_h = tactical_h as f32;
     let z = state.zoom_level;
@@ -371,7 +371,7 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let (tactical_w, tactical_h) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let z = state.zoom_level;
     let rect = active_minimap_screen_rect(state);
     let (cx, cy) = minimap.camera_top_left_for_screen_point_in_rect(
@@ -386,7 +386,7 @@ pub(crate) fn update_camera_from_minimap_cursor(state: &mut AppState) {
     );
     state.camera_x = cx;
     state.camera_y = cy;
-    crate::app_camera::clamp_camera_to_playable_area(state, sw, sh);
+    crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
 }
 
 pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Rect {

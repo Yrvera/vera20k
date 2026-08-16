@@ -1927,13 +1927,13 @@ pub(crate) fn load_map_from_initial(
         });
     let (camera_anchor_x, camera_anchor_y): (f32, f32) = if let Some((rx, ry)) = local_start_cell {
         let z = height_map.get(&(rx, ry)).copied().unwrap_or(0);
-        crate::app_camera::cell_centre_world_point(rx, ry, z)
+        crate::app::input::camera::cell_centre_world_point(rx, ry, z)
     } else if let Some(start_wp) = waypoints::first_multiplayer_start(&map_data.waypoints) {
         let wp_z = height_map
             .get(&(start_wp.rx, start_wp.ry))
             .copied()
             .unwrap_or(0);
-        crate::app_camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
+        crate::app::input::camera::cell_centre_world_point(start_wp.rx, start_wp.ry, wp_z)
     } else {
         let (area_x, area_y, area_w, area_h) = match local_bounds {
             Some(b) => (b.pixel_x, b.pixel_y, b.pixel_w, b.pixel_h),

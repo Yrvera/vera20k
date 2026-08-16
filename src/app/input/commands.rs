@@ -132,7 +132,7 @@ pub(crate) fn cancel_build_by_type(state: &mut AppState, type_id: &str) {
 fn visible_object_under_point(state: &AppState, world_x: f32, world_y: f32) -> Option<u64> {
     let sim = state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
     let owner = preferred_local_owner(state)?;
-    crate::app_entity_pick::hover_target_at_point(
+    crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,
@@ -364,7 +364,7 @@ pub(crate) fn launch_super_weapon_at_cursor(state: &mut AppState, section: &str)
     // at a bogus off-map cell behind the sidebar panel; leave the mode
     // armed so the next real map click fires.
     if crate::app_sidebar_render::is_cursor_over_minimap(state)
-        || crate::app_cursor::current_sidebar_view_hit(state)
+        || crate::app::input::cursor::current_sidebar_view_hit(state)
     {
         return;
     }
@@ -535,7 +535,7 @@ pub(crate) fn spawn_test_units_for_local_owner(state: &mut AppState) {
     if spawned > 0 {
         crate::app::match_runtime::sim_tick::refresh_entity_atlases(state);
         if let Some((rx, ry)) = first_spawn {
-            crate::app_camera::center_camera_on_cell(state, rx, ry);
+            crate::app::input::camera::center_camera_on_cell(state, rx, ry);
         }
     }
     log::info!(

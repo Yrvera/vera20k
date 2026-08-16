@@ -3,8 +3,8 @@
 //! Extracted from app_render.rs. Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
-use crate::app_cursor::{
+use crate::app::input::commands::preferred_local_owner_name;
+use crate::app::input::cursor::{
     current_cursor_feedback_kind, cursor_id_for_feedback, software_cursor_frame_for,
 };
 use crate::app_instances::in_view;
@@ -56,7 +56,7 @@ fn health_bar_hover_target(
     let local_owner = local_owner?;
     let (world_x, world_y) =
         crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.cursor_x, state.cursor_y);
-    let hover = crate::app_entity_pick::hover_target_at_point(
+    let hover = crate::app::input::entity_pick::hover_target_at_point(
         sim,
         world_x,
         world_y,

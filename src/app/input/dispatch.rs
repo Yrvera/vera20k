@@ -11,19 +11,19 @@ use winit::event::{ElementState, MouseButton};
 use winit::keyboard::KeyCode;
 
 use crate::app::AppState;
-use crate::app_commands::{
+use crate::app::input::commands::{
     cancel_build_by_type, cancel_last_build, cycle_active_producer, cycle_local_owner,
     place_ready_building_at_cursor, place_starter_base_for_local_owner, preferred_local_owner,
     preferred_local_owner_name, queue_build_by_type, schedule_command,
     spawn_test_units_for_local_owner, toggle_pause_build_queue,
 };
-use crate::app_context_order::try_queue_context_order_at_screen_point;
-use crate::app_entity_pick::{
+use crate::app::input::context_order::try_queue_context_order_at_screen_point;
+use crate::app::input::entity_pick::{
     SelectionMutation, compute_box_selection_snapshot, compute_click_selection_snapshot,
     compute_type_select_box_mutation, compute_type_select_click_mutation, compute_type_select_tap,
     map_entity_creation_order, pick_entity_at_point,
 };
-use crate::app_hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
+use crate::app::input::hotkeys::{HotkeyCommand, HotkeyFallback, HotkeyResolution};
 use crate::app_sidebar_render::current_sidebar_view;
 use crate::app_types::OrderMode;
 use crate::audio::events::GameSoundEvent;
@@ -51,7 +51,7 @@ pub(crate) fn handle_mouse_input(
     button: MouseButton,
     btn_state: ElementState,
 ) {
-    use crate::app_gadget_input::GadgetConsume;
+    use crate::app::input::gadget_input::GadgetConsume;
     let pressed = btn_state.is_pressed();
     // Paused in-game Options overlay owns the mouse: route press/release/checkbox/
     // Back here and CONSUME the click so it never reaches the tactical viewport or
@@ -66,14 +66,14 @@ pub(crate) fn handle_mouse_input(
             state.tactical_mouse.right_held = false;
             state.tactical_mouse.release();
         }
-        crate::app_in_game_options_input::in_game_options_mouse(state, button, pressed);
+        crate::app::input::in_game_options::in_game_options_mouse(state, button, pressed);
         return;
     }
     // The stock tactical handler has no middle-button case.
     if button == MouseButton::Middle {
         return;
     }
-    match crate::app_gadget_input::handle_mouse_button_event(state, button, pressed) {
+    match crate::app::input::gadget_input::handle_mouse_button_event(state, button, pressed) {
         GadgetConsume::Tactical => tactical_mouse(state, button, btn_state),
         GadgetConsume::Minimap => minimap_mouse(state, button, btn_state),
         // Consumed (chrome/cameo/control button) → handled by the gadget.
@@ -161,11 +161,11 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // Repair / Sell cursor modes consume the click — toggle repair or
                 // sell the own building under the cursor. The mode stays active
                 // (sticky) so the player can act on several buildings in a row.
-                if crate::app_commands::try_repair_sell_mode_click(state) {
+                if crate::app::input::commands::try_repair_sell_mode_click(state) {
                     return;
                 }
                 if let Some(section) = state.armed_super_weapon_type().map(str::to_owned) {
-                    crate::app_commands::launch_super_weapon_at_cursor(state, &section);
+                    crate::app::input::commands::launch_super_weapon_at_cursor(state, &section);
                     return;
                 }
                 if let Some(type_id) = state.armed_building_type().map(str::to_owned) {
@@ -177,7 +177,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // release point, including after sticky capture routing.
                 let release_point = if state.selection_state.is_band_box_active() {
                     let (tactical_width, tactical_height) =
-                        crate::app_camera::tactical_viewport_size_px(
+                        crate::app::input::camera::tactical_viewport_size_px(
                             state.render_width(),
                             state.render_height(),
                         );
@@ -485,7 +485,7 @@ fn band_caught_drawn_object(
     } else {
         Some(&sim.fog)
     };
-    crate::app_entity_pick::band_rect_contains_drawn_object(
+    crate::app::input::entity_pick::band_rect_contains_drawn_object(
         sim.entities(),
         encounter_order,
         fog_ref,
@@ -544,7 +544,7 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     // cadence applies on close, KD-8) and swallow the move so it can't begin a
     // selection drag or camera pan behind the overlay.
     if state.paused {
-        crate::app_in_game_options_input::in_game_options_drag(state);
+        crate::app::input::in_game_options::in_game_options_drag(state);
         return;
     }
     // Minimap: gamemd re-centers only on press edges and ignores held motion
@@ -556,7 +556,7 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
     }
     // Clamp drag position to the tactical viewport (exclude sidebar area).
     let (tactical_width, tactical_height) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let clamped_endpoint = clamp_tactical_drag_endpoint(
         state.cursor_x,
         state.cursor_y,
@@ -604,8 +604,8 @@ mod drag_tests {
 #[cfg(test)]
 mod item83_click_route_tests {
     use super::{ClickActionRoute, route_click_action_before_type_select};
-    use crate::app_context_order::object_click_payload;
-    use crate::app_entity_pick::compute_type_select_click_mutation;
+    use crate::app::input::context_order::object_click_payload;
+    use crate::app::input::entity_pick::compute_type_select_click_mutation;
     use crate::app_types::OrderMode;
     use crate::map::entities::EntityCategory;
     use crate::sim::command::Command;
@@ -893,7 +893,7 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
         return;
     };
 
-    let owner = crate::app_commands::preferred_local_owner_name(state)
+    let owner = crate::app::input::commands::preferred_local_owner_name(state)
         .and_then(|name| state.sim_runtime.as_ref().map(|rt| &rt.simulation)?.interner.get(&name));
     let fog = match (state.sim_runtime.as_ref().map(|rt| &rt.simulation), owner) {
         _ if state.sandbox_full_visibility => None,
@@ -1074,7 +1074,7 @@ fn execute_type_select_tap(state: &mut AppState) {
     let across_map = result.across_map;
     apply_selection_mutation(state, result.mutation, false, TYPE_SELECT_TAP_VOICE_POLICY);
     state.type_select.finish_tap(outcome, across_map);
-    crate::app_messages::post_type_select_feedback(state, outcome.csf_key());
+    crate::app::input::messages::post_type_select_feedback(state, outcome.csf_key());
     // Native marks the tactical display dirty here but does not start action
     // lines. The visible-window event loop already requests a redraw from
     // `about_to_wait`, so the tap needs no duplicate redraw request.
@@ -1139,15 +1139,15 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
                 .map(|rt| &mut rt.simulation)
                 .and_then(|sim| sim.cycle_radar_event());
             if let Some((rx, ry)) = event {
-                crate::app_camera::center_camera_on_cell(state, rx, ry);
+                crate::app::input::camera::center_camera_on_cell(state, rx, ry);
             }
         }
         HotkeyCommand::ScreenCapture => {
             state.retail_screenshot_requested = true;
             state.platform.window.request_redraw();
         }
-        HotkeyCommand::View(slot) => crate::app_camera::recall_view_bookmark(state, slot),
-        HotkeyCommand::SetView(slot) => crate::app_camera::set_view_bookmark(state, slot),
+        HotkeyCommand::View(slot) => crate::app::input::camera::recall_view_bookmark(state, slot),
+        HotkeyCommand::SetView(slot) => crate::app::input::camera::set_view_bookmark(state, slot),
         HotkeyCommand::TeamSelect(slot) => handle_control_group_command(state, slot, None),
         HotkeyCommand::TeamAddSelect(slot) => {
             handle_control_group_command(state, slot, Some(GroupPressAction::AddToSelection))
@@ -1635,7 +1635,7 @@ fn commit_prepared_load(
     // rebuild it for the local owner BEFORE the first tactical render, and
     // invalidate the render dirty-gates: the view generation restarts from
     // zero, so an equal counter no longer proves an unchanged view.
-    if let Some(owner) = crate::app_commands::preferred_local_owner_name(state) {
+    if let Some(owner) = crate::app::input::commands::preferred_local_owner_name(state) {
         if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
             sim.prepare_fog_view_for(&owner);
         }
@@ -2296,7 +2296,7 @@ fn center_camera_on_group(state: &mut AppState, group: &[u64]) {
     };
     let rx = (cx / LEPTONS_PER_CELL).clamp(0, u16::MAX as i64) as u16;
     let ry = (cy / LEPTONS_PER_CELL).clamp(0, u16::MAX as i64) as u16;
-    crate::app_camera::center_camera_on_cell(state, rx, ry);
+    crate::app::input::camera::center_camera_on_cell(state, rx, ry);
 }
 
 fn handle_control_group_command(
@@ -2462,7 +2462,7 @@ fn jump_camera_to_base(state: &mut AppState) {
     });
 
     if let Some((rx, ry)) = target {
-        crate::app_camera::center_camera_on_cell(state, rx, ry);
+        crate::app::input::camera::center_camera_on_cell(state, rx, ry);
         return;
     }
 
@@ -2473,7 +2473,7 @@ fn jump_camera_to_base(state: &mut AppState) {
             wp.rx,
             wp.ry
         );
-        crate::app_camera::center_camera_on_cell(state, wp.rx, wp.ry);
+        crate::app::input::camera::center_camera_on_cell(state, wp.rx, wp.ry);
     } else {
         log::info!("H: no base or start waypoint found");
     }

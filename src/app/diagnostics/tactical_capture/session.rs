@@ -442,7 +442,7 @@ impl TacticalCaptureSession {
         owner: &str,
         command: Command,
     ) -> Result<()> {
-        let execute_tick = crate::app_commands::try_schedule_command(state, owner, command);
+        let execute_tick = crate::app::input::commands::try_schedule_command(state, owner, command);
         let script = self.script.as_mut().context("tactical script missing")?;
         match execute_tick {
             Some(execute_tick) => script
@@ -949,8 +949,8 @@ impl TacticalCaptureSession {
             && aperture.y >= 0.0
             && aperture.x + aperture.w <= sidebar.panel_rect.x + sidebar.panel_rect.w
             && aperture.y + aperture.h <= state.render_height() as f32;
-        let cursor_id = crate::app_cursor::current_cursor_feedback_kind(state)
-            .and_then(crate::app_cursor::cursor_id_for_feedback)
+        let cursor_id = crate::app::input::cursor::current_cursor_feedback_kind(state)
+            .and_then(crate::app::input::cursor::cursor_id_for_feedback)
             .unwrap_or(CursorId::Default);
         let cursor_ready = state.use_software_cursor()
             && cursor_id == CursorId::Default
@@ -1173,8 +1173,8 @@ impl TacticalCaptureSession {
             "cursor": {
                 "x": state.cursor_x,
                 "y": state.cursor_y,
-                "id": format!("{:?}", crate::app_cursor::current_cursor_feedback_kind(state)
-                    .and_then(crate::app_cursor::cursor_id_for_feedback)
+                "id": format!("{:?}", crate::app::input::cursor::current_cursor_feedback_kind(state)
+                    .and_then(crate::app::input::cursor::cursor_id_for_feedback)
                     .unwrap_or(CursorId::Default)),
             }
         }))

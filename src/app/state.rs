@@ -96,15 +96,15 @@ pub(crate) struct AppState {
     /// Screen-space position of the zoom anchor (cursor position when wheel fired).
     pub(crate) zoom_anchor_screen: [f32; 2],
     /// Mouse edge auto-scroll ramp state (gamemd's CoastLevel and its 16 ms timer).
-    pub(crate) edge_scroll: crate::app_camera::EdgeScrollState,
+    pub(crate) edge_scroll: crate::app::input::camera::EdgeScrollState,
     /// Tactical mouse capture and right-drag pan anchor.
-    pub(crate) tactical_mouse: crate::app_camera::TacticalMouseState,
+    pub(crate) tactical_mouse: crate::app::input::camera::TacticalMouseState,
     /// The four camera bookmarks (View1..4 / SetView1..4).
-    pub(crate) view_bookmarks: crate::app_camera::ViewBookmarks,
+    pub(crate) view_bookmarks: crate::app::input::camera::ViewBookmarks,
     pub(crate) cursor_x: f32,
     pub(crate) cursor_y: f32,
     pub(crate) keys_held: HashSet<KeyCode>,
-    pub(crate) hotkey_bindings: crate::app_hotkeys::HotkeyBindings,
+    pub(crate) hotkey_bindings: crate::app::input::hotkeys::HotkeyBindings,
     pub(crate) hotkey_modifiers: ModifiersState,
     /// Hybrid held/tap state for the retail TypeSelect command.
     pub(crate) type_select: crate::app_types::TypeSelectInputState,
@@ -227,7 +227,7 @@ pub(crate) struct AppState {
     pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
     /// In-game gadget substrate (study §6.1): retained sidebar button list +
     /// capture/focus state + reusable tick output + the mouse-held record.
-    pub(crate) in_game_gadgets: crate::app_gadget_input::InGameGadgets,
+    pub(crate) in_game_gadgets: crate::app::input::gadget_input::InGameGadgets,
     /// Shared tooltip service (study S1) — the model is clock-injected; only
     /// `app_tooltips` reads the wall clock.
     pub(crate) tooltips: crate::ui::tooltips::TooltipService,
@@ -239,7 +239,7 @@ pub(crate) struct AppState {
     pub(crate) message_list: crate::ui::messages::MessageList,
     /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
     /// §4.3: the native composite timer freezes during pause). Fed pause
-    /// edges by `app_messages::update`.
+    /// edges by `messages::update`.
     pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
     /// Retained immutable sidebar view plus its per-owner animated credit state.
     /// Consumers read the snapshot; explicit transitions rebuild it.
@@ -380,7 +380,7 @@ pub(crate) struct AppState {
     /// keeps every consumer reading one field while the position stops bleeding
     /// across tabs.
     pub(crate) sidebar_scroll_rows: usize,
-    /// Parked scroll row per sidebar tab, indexed by `app_input::tab_scroll_slot`.
+    /// Parked scroll row per sidebar tab, indexed by `core::tab_scroll_slot`.
     /// One entry per `SidebarTab` variant.
     pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Process-wide asset ownership (F11): the one retail MIX manager for

@@ -1,7 +1,7 @@
 //! Match-session focus, modal, return, save/load, and developer-overlay control.
 
 use super::{App, AppState, GameScreen, Instant, ModifiersState};
-use crate::app_input;
+use crate::app::input::dispatch;
 
 /// Caption gamemd loads onto the abort-mission confirmation's action button.
 /// Its two mode-dependent siblings (`GUI:Restart` in campaign, `GUI:Observe` in
@@ -267,11 +267,11 @@ impl App {
         if state.scenario_exit.is_some() {
             return;
         }
-        let Some(owner) = crate::app_commands::preferred_local_owner(state) else {
+        let Some(owner) = crate::app::input::commands::preferred_local_owner(state) else {
             log::warn!("Abort Mission confirmation has no local command owner");
             return;
         };
-        if crate::app_commands::try_schedule_command(
+        if crate::app::input::commands::try_schedule_command(
             state,
             &owner,
             crate::sim::command::Command::ExitMatch,
@@ -288,7 +288,7 @@ impl App {
     /// battle-abort teardown. A repeated drain without another dispatch is a
     /// no-op because the simulation edge is taken.
     pub(super) fn consume_executed_abort_exit(state: &mut AppState, wall_ms: u64) {
-        let local_owner = crate::app_commands::preferred_local_owner(state);
+        let local_owner = crate::app::input::commands::preferred_local_owner(state);
         let local_owner_id = local_owner.as_deref().and_then(|owner| {
             state
                 .sim_runtime
@@ -361,7 +361,7 @@ impl App {
 
         match action {
             SaveLoadAction::Load(path) => {
-                app_input::load_save_file(state, &path);
+                dispatch::load_save_file(state, &path);
             }
             SaveLoadAction::Delete(path) => {
                 if let Err(e) = state.persistence.repository.delete(&path) {
@@ -491,7 +491,7 @@ impl App {
                 }
             }
             DevOverlayAction::TogglePause => {
-                app_input::toggle_debug_pause(state);
+                dispatch::toggle_debug_pause(state);
             }
             DevOverlayAction::ReturnToMenu => {
                 Self::return_to_main_menu(state);
@@ -502,7 +502,7 @@ impl App {
                 }
             }
             DevOverlayAction::TogglePathGrid => {
-                app_input::toggle_pathgrid_overlay(state);
+                dispatch::toggle_pathgrid_overlay(state);
             }
             DevOverlayAction::ToggleCellGrid => {
                 state.debug_show_cell_grid = !state.debug_show_cell_grid;
@@ -511,7 +511,7 @@ impl App {
                 state.debug_show_heightmap = !state.debug_show_heightmap;
             }
             DevOverlayAction::ToggleUnitInspector => {
-                app_input::toggle_unit_inspector(state);
+                dispatch::toggle_unit_inspector(state);
             }
             DevOverlayAction::ToggleRevealMap => {
                 state.sandbox_full_visibility = !state.sandbox_full_visibility;
@@ -526,12 +526,12 @@ impl App {
             }
             DevOverlayAction::SaveAs => {
                 let name = std::mem::take(&mut state.dev_overlay_save_name);
-                app_input::save_with_name(state, &name);
+                dispatch::save_with_name(state, &name);
             }
             DevOverlayAction::ReloadLastLoad => {
                 if let Some(path) = state.persistence.last_loaded_save_path.clone() {
                     if state.persistence.repository.exists(&path) {
-                        app_input::load_save_file(state, &path);
+                        dispatch::load_save_file(state, &path);
                     } else {
                         log::warn!(
                             "Reload last load: file no longer exists: {}",
@@ -541,7 +541,7 @@ impl App {
                 }
             }
             DevOverlayAction::LoadSave(path) => {
-                app_input::load_save_file(state, &path);
+                dispatch::load_save_file(state, &path);
             }
         }
     }

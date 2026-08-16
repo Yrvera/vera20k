@@ -10,11 +10,11 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner;
-use crate::app_entity_pick::{
+use crate::app::input::commands::preferred_local_owner;
+use crate::app::input::entity_pick::{
     hover_target_at_point, pick_any_target_stable_id, pick_enemy_target_stable_id,
 };
-use crate::app_input::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order};
+use crate::app::input::dispatch::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order};
 use crate::app_types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -219,7 +219,7 @@ fn finish_order(
         queued
             .into_iter()
             .filter_map(|envelope| {
-                crate::app_commands::roundtrip_ordinary_local_move(sim, envelope)
+                crate::app::input::commands::roundtrip_ordinary_local_move(sim, envelope)
             })
             .collect::<Vec<_>>()
     } else {

@@ -82,7 +82,7 @@ pub(super) fn dispatch_draw_passes(
     // strip below side3 unpainted. Those are the holes live terrain, units and
     // any overhanging bracket or health bar were showing through. Clipped, the
     // region reads black, which is what opaque chrome looks like there.
-    let (tac_x, tac_y, tac_w, tac_h) = crate::app_camera::tactical_viewport_px(state);
+    let (tac_x, tac_y, tac_w, tac_h) = crate::app::input::camera::tactical_viewport_px(state);
     pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 
     // --- Step 1: Terrain (Z-depth pipeline for per-pixel depth from TMP Z-data) ---

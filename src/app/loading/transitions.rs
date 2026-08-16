@@ -250,8 +250,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // Map load hands over a world anchor point; the transition applies the
     // active tactical rectangle and live zoom.
     let (tactical_width, tactical_height) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
-    let (camera_x, camera_y) = crate::app_camera::tactical_camera_top_left(
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (camera_x, camera_y) = crate::app::input::camera::tactical_camera_top_left(
         (result.scenario.camera_anchor_x, result.scenario.camera_anchor_y),
         tactical_width as f32,
         tactical_height as f32,
@@ -261,7 +261,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.camera_y = camera_y;
     // gamemd's scenario reader fills all four camera bookmarks with the opening
     // view cell, so F1 before any Ctrl+F1 is a valid "go home".
-    crate::app_camera::seed_view_bookmarks_from_current_view(state);
+    crate::app::input::camera::seed_view_bookmarks_from_current_view(state);
     // F11 slot: only an actually-carried manager returns (Loading ->
     // Available). The fallback result carries None — the old unconditional
     // assignment wiped the manager the failure path had just restored,
@@ -320,7 +320,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.tactical_mouse = Default::default();
     state.keys_held.clear();
     let (tactical_width, tactical_height) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     state.cursor_x = tactical_width as f32 * 0.5;
     state.cursor_y = tactical_height as f32 * 0.5;
 

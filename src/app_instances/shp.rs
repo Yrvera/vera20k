@@ -97,7 +97,7 @@ pub(crate) fn build_shp_instances(
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
-    let local_owner = crate::app_commands::preferred_local_owner_name(state);
+    let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.sandbox_full_visibility;
     let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules().map(|rules| &rules.art_registry);

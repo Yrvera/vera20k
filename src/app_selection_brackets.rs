@@ -9,7 +9,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
+use crate::app::input::commands::preferred_local_owner_name;
 use crate::app_instances::in_view;
 use crate::map::entities::EntityCategory;
 use crate::render::batch::SpriteInstance;

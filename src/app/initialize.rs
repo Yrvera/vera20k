@@ -340,7 +340,7 @@ impl App {
             crate::render::cursor_atlas::build_software_cursor(&gpu, &batch_renderer, assets)
         });
         let hotkey_bindings =
-            crate::app_hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
+            crate::app::input::hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
         let saved_scroll_rate = game_config
             .as_ref()
             .and_then(|config| {
@@ -397,9 +397,9 @@ impl App {
             zoom_target: 1.0,
             zoom_anchor_world: [0.0, 0.0],
             zoom_anchor_screen: [0.0, 0.0],
-            edge_scroll: crate::app_camera::EdgeScrollState::default(),
-            tactical_mouse: crate::app_camera::TacticalMouseState::default(),
-            view_bookmarks: crate::app_camera::ViewBookmarks::default(),
+            edge_scroll: crate::app::input::camera::EdgeScrollState::default(),
+            tactical_mouse: crate::app::input::camera::TacticalMouseState::default(),
+            view_bookmarks: crate::app::input::camera::ViewBookmarks::default(),
             cursor_x: 0.0,
             cursor_y: 0.0,
             keys_held: HashSet::new(),
@@ -452,7 +452,7 @@ impl App {
             radar_animation_source: None,
             power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
             sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
-            in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
+            in_game_gadgets: crate::app::input::gadget_input::InGameGadgets::new(),
             tooltips: crate::ui::tooltips::TooltipService::new(),
             tooltip_epoch: Instant::now(),
             message_list: crate::ui::messages::MessageList::new(

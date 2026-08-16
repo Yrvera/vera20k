@@ -32,7 +32,7 @@ pub(crate) const ID_SCROLL_DOWN: u16 = 0x00C9; // +1 page, Kind 0
 pub(crate) const ID_SCROLL_UP: u16 = 0x00C8; // −1 page, Kind 0
 /// Cameo control id base (A2, study cameo lane §2): runtime id = 1000 + visible
 /// slot index. Mirrors the gamemd id space and the A4 tooltip id base
-/// (`app_tooltips::CAMEO_TIP_ID_BASE`).
+/// (`tooltips::CAMEO_TIP_ID_BASE`).
 pub(crate) const ID_CAMEO_BASE: u16 = 1000;
 /// Sidebar control/dev button id base (A6): 6 slots in a fixed order —
 /// cancel, cycle-owner, starter-base, spawn-test-units, pause, producer. These
@@ -52,7 +52,7 @@ const SCROLL_FLAGS: u16 = 0x0055;
 const IN_GAME_LIST: ListId = ListId(1);
 
 /// What the in-game gadget walk did with a mouse edge (A3 routing). The caller
-/// (`app_input::handle_mouse_input`) dispatches on this instead of a bare bool.
+/// (`core::handle_mouse_input`) dispatches on this instead of a bare bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GadgetConsume {
     /// Nothing on the list consumed it — fall through to the legacy path.
@@ -295,7 +295,7 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
     // no in-game map editor (gamemd registers it only when !g_IsMapEditor).
     let (tactical_width, tactical_height) =
-        crate::app_camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let play_rect = GadgetRect::new(0, 0, tactical_width as i32, tactical_height as i32);
     if let Some(th) = state.in_game_gadgets.tactical
         && let Some(g) = state.in_game_gadgets.list.get_mut(th)
@@ -414,9 +414,9 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
         mouse_y: cy,
         left_held: state.in_game_gadgets.left_held,
         right_held: state.in_game_gadgets.right_held,
-        shift: crate::app_input::is_shift_held(state),
-        ctrl: crate::app_input::is_ctrl_held(state),
-        alt: crate::app_input::is_alt_held(state),
+        shift: crate::app::input::dispatch::is_shift_held(state),
+        ctrl: crate::app::input::dispatch::is_ctrl_held(state),
+        alt: crate::app::input::dispatch::is_alt_held(state),
     };
     // The sticky tier dispatches the holder but does NOT set `consumed_by`, so
     // capture the pre-tick holder to route a captured drag/release back to its
@@ -504,15 +504,15 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
     match id {
         _ if (ID_TAB_BASE..ID_TAB_BASE + 4).contains(&id) => {
             let tab = SidebarTab::all()[(id - ID_TAB_BASE) as usize];
-            crate::app_input::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
+            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::SelectTab(tab));
             play_gui_tab_sound(state);
         }
         ID_REPAIR => {
-            crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);
+            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::ToggleRepairMode);
             play_gui_main_button_sound(state);
         }
         ID_SELL => {
-            crate::app_input::apply_sidebar_action(state, SidebarAction::ToggleSellMode);
+            crate::app::input::dispatch::apply_sidebar_action(state, SidebarAction::ToggleSellMode);
             play_gui_main_button_sound(state);
         }
         // One PAGE per click (G23: mask 0x55 has no held bits ⇒ no repeat).
@@ -541,7 +541,7 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
             if let Some(item) = view.items.get(slot) {
                 let right = (result & RESULT_RIGHT) != 0;
                 let action = crate::sidebar::hit_test_item(item, right);
-                crate::app_input::apply_sidebar_action(state, action);
+                crate::app::input::dispatch::apply_sidebar_action(state, action);
             }
         }
         // Control/dev button press (A6): apply the view button's own action.
@@ -557,7 +557,7 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
                 _ => None,
             };
             if let Some(action) = action {
-                crate::app_input::apply_sidebar_action(state, action);
+                crate::app::input::dispatch::apply_sidebar_action(state, action);
             }
         }
         _ => {}

@@ -31,7 +31,7 @@ use anyhow::Result;
 pub(crate) use crate::app_types::*;
 
 use crate::app::AppState;
-use crate::app_commands::preferred_local_owner_name;
+use crate::app::input::commands::preferred_local_owner_name;
 use crate::render::batch::InstanceBufferPool;
 use crate::sidebar::SidebarView;
 
@@ -182,12 +182,12 @@ fn upload_to_gpu(
 ) {
     // A5 chat/system message lines (GAME.FNT atlas) — chat draws before the
     // tooltip (O10). Built before the pool borrow (it reads &AppState).
-    let message_text = crate::app_messages::build_message_text_instances(state);
+    let message_text = crate::app::input::messages::build_message_text_instances(state);
 
     // A4 in-game tooltip: built before the pool borrow (it reads &AppState);
     // fill (darken texture) + text (GAME.FNT atlas), drawn after the chat
     // overlay and before the software cursor (O10).
-    let (tooltip_fill, tooltip_text) = crate::app_tooltips::build_tooltip_instances(state);
+    let (tooltip_fill, tooltip_text) = crate::app::input::tooltips::build_tooltip_instances(state);
 
     let pool: &mut InstanceBufferPool = &mut state.instance_pool;
 

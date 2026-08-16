@@ -31,10 +31,10 @@ const TYPE_SELECT_FALLBACK_SCHEME_ENTRY: crate::rules::house_colors::HouseColorI
 
 /// Pause-adjusted message `now` (contract §4.2 step 8 / §4.3): the wall clock
 /// minus every paused span. ALL message deadlines and expiry checks use this
-/// clock — never the raw `app_tooltips::now_ms` — so a pause freezes the
+/// clock — never the raw `tooltips::now_ms` — so a pause freezes the
 /// remaining lifetime of every visible row.
 pub(crate) fn message_now_ms(state: &AppState) -> u64 {
-    state.message_clock.now(crate::app_tooltips::now_ms(state))
+    state.message_clock.now(crate::app::input::tooltips::now_ms(state))
 }
 
 /// Post a system message (mission/trigger text, future house notifications).
@@ -66,7 +66,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
     sync_view(state);
     let now = message_now_ms(state);
     let rgb = type_select_message_rgb(
-        crate::app_commands::preferred_local_owner_name(state).as_deref(),
+        crate::app::input::commands::preferred_local_owner_name(state).as_deref(),
         &state.house_color_map,
         state.rules().map(|rules| &rules.house_color_ramps),
     );
@@ -138,7 +138,7 @@ pub(crate) fn update(state: &mut AppState) {
     if state.screen != GameScreen::InGame {
         return;
     }
-    let wall = crate::app_tooltips::now_ms(state);
+    let wall = crate::app::input::tooltips::now_ms(state);
     state.message_clock.set_paused(state.paused, wall);
     if state.paused {
         return;
