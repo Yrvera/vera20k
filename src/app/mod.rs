@@ -68,6 +68,7 @@ pub(crate) mod match_audio;
 pub(crate) mod match_diagnostics;
 pub(crate) mod persistence;
 pub(crate) mod process_assets;
+pub(crate) mod scenario_catalog;
 mod shell_main_menu;
 mod shell_random_map;
 pub(crate) mod shell_route;

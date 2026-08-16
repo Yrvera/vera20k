@@ -253,10 +253,10 @@ impl App {
         } else {
             skirmish_scenario_records
         };
-        let skirmish_shell_maps: Vec<MapMenuEntry> = skirmish_scenario_records
-            .iter()
-            .map(crate::map::skirmish_scenarios::SkirmishScenarioRecord::to_map_menu_entry)
-            .collect();
+        // F11: the catalog owns the records and derives the shell-map
+        // projection internally; nothing re-projects by hand anymore.
+        let scenario_catalog =
+            crate::app::scenario_catalog::ScenarioCatalog::from_records(skirmish_scenario_records);
         let skirmish_modes = startup_asset_manager
             .as_ref()
             .and_then(
@@ -298,7 +298,7 @@ impl App {
             );
         offline_skirmish_runtime.hydrate_shell(
             &mut skirmish_shell_state,
-            &skirmish_shell_maps,
+            scenario_catalog.shell_maps(),
             &skirmish_modes,
         );
         // Pre-fill the player-name field from the persistent profile name when
@@ -317,9 +317,10 @@ impl App {
         );
         crate::ui::skirmish_shell::initialize_rows_for_selected_map(
             &mut skirmish_shell_state,
-            &skirmish_shell_maps,
+            scenario_catalog.shell_maps(),
         );
-        let selected_shell_map = skirmish_shell_maps
+        let selected_shell_map = scenario_catalog
+            .shell_maps()
             .get(skirmish_shell_state.selected_map_idx)
             .map(|map| map.file_name.as_str());
         let mut skirmish_settings =
@@ -410,9 +411,8 @@ impl App {
             egui,
             screen: GameScreen::default(),
             available_maps,
-            skirmish_shell_maps,
+            scenario_catalog,
             skirmish_modes,
-            skirmish_scenario_records,
             skirmish_settings,
             loading_session: None,
             tile_variant_selector_cache: Default::default(),

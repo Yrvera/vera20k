@@ -247,7 +247,7 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         return;
     }
     let selected_map_idx = state.skirmish_shell_state.selected_map_idx;
-    let selected_entry = state.skirmish_shell_maps.get(selected_map_idx).cloned();
+    let selected_entry = state.scenario_catalog.shell_maps().get(selected_map_idx).cloned();
     let selected_is_random_sentinel = selected_entry
         .as_ref()
         .is_some_and(is_random_map_sentinel_entry);

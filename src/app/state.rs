@@ -119,12 +119,11 @@ pub(crate) struct AppState {
     pub(crate) screen: GameScreen,
     /// Available maps from the RA2 directory for menu selection.
     pub(crate) available_maps: Vec<MapMenuEntry>,
-    /// Source-ordered map entries projected from scenario records for the experimental shell.
-    pub(crate) skirmish_shell_maps: Vec<MapMenuEntry>,
+    /// Scenario records + their projected shell map entries (F11): one owner,
+    /// projection re-derived on every mutation so indices cannot drift.
+    pub(crate) scenario_catalog: crate::app::scenario_catalog::ScenarioCatalog,
     /// MPModes rows used by the native Choose Map modal.
     pub(crate) skirmish_modes: Vec<crate::skirmish_modes::SkirmishGameMode>,
-    /// Scenario records used by the native Choose Map modal.
-    pub(crate) skirmish_scenario_records: Vec<crate::map::skirmish_scenarios::SkirmishScenarioRecord>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
     pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,

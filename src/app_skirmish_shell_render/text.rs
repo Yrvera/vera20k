@@ -478,7 +478,7 @@ pub(crate) fn skirmish_right_panel_label_strings(state: &AppState) -> (String, S
         .map(|mode| localized_label(state, &mode.ui_name_key, &mode.ui_name_key))
         .unwrap_or_else(|| localized_label(state, "GUI:Battle", "Battle"));
     let map_label = state
-        .skirmish_shell_maps
+        .scenario_catalog.shell_maps()
         .get(shell.selected_map_idx)
         .map(|map| map.display_name.clone())
         .unwrap_or_else(|| "None".to_string());
@@ -1076,7 +1076,7 @@ pub(super) fn push_choose_map_modal_text_draws(
         .take(visible_map_rows)
         .enumerate()
     {
-        let Some(record) = state.skirmish_scenario_records.get(*record_idx) else {
+        let Some(record) = state.scenario_catalog.records().get(*record_idx) else {
             continue;
         };
         let row_rect = choose_map_listbox_row_rect(map_content, visible_row);

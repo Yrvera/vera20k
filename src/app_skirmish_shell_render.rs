@@ -672,7 +672,7 @@ fn render_skirmish_shell_with_atlas(
     update_owner_draw_button_paint_sound(state, mode);
     ensure_selected_preview_texture(state);
     let selected_entry = state
-        .skirmish_shell_maps
+        .scenario_catalog.shell_maps()
         .get(state.skirmish_shell_state.selected_map_idx);
     // Both the sentinel's RandMap.img and the setup dialog's generated image
     // already carry their start markers, so the overlay pass must not add them
@@ -741,7 +741,7 @@ fn render_skirmish_shell_with_atlas(
         validation_ok_pressed,
         &state.skirmish_shell_state,
         color_schemes,
-        &state.skirmish_shell_maps,
+        state.scenario_catalog.shell_maps(),
         &state.skirmish_modes,
         wave,
     );
@@ -763,7 +763,7 @@ fn render_skirmish_shell_with_atlas(
             &layout,
             validation_layout.as_ref(),
             &state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
         )
     };
     if let Some(choose_map_layout) = choose_map_layout.as_ref() {

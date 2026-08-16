@@ -79,14 +79,14 @@ impl App {
 
     fn selected_shell_map_file(state: &AppState) -> Option<String> {
         state
-            .skirmish_shell_maps
+            .scenario_catalog.shell_maps()
             .get(state.skirmish_shell_state.selected_map_idx)
             .map(|map| map.file_name.clone())
     }
 
     fn apply_selected_shell_map_file(state: &mut AppState, file_name: &str) -> bool {
         let Some(map_idx) = state
-            .skirmish_shell_maps
+            .scenario_catalog.shell_maps()
             .iter()
             .position(|map| map.file_name.eq_ignore_ascii_case(file_name))
         else {
@@ -101,7 +101,7 @@ impl App {
     /// the Choose Map dialog.
     fn apply_selected_shell_map_index(state: &mut AppState, map_idx: usize) -> bool {
         let Some(file_name) = state
-            .skirmish_shell_maps
+            .scenario_catalog.shell_maps()
             .get(map_idx)
             .map(|map| map.file_name.clone())
         else {
@@ -109,7 +109,7 @@ impl App {
         };
         crate::ui::skirmish_shell::accept_selected_map(
             &mut state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
             map_idx,
         );
         state.random_map_retention.select_map(&file_name);
@@ -136,7 +136,7 @@ impl App {
         };
         let chosen_map = match state
             .offline_skirmish_runtime
-            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+            .ensure_cooperative_selection(&file_name, state.scenario_catalog.shell_maps())
         {
             Ok(chosen_map) => chosen_map,
             Err(err) => {
@@ -159,14 +159,14 @@ impl App {
             return;
         }
         let Some(file_name) = record_index
-            .and_then(|index| state.skirmish_scenario_records.get(index))
+            .and_then(|index| state.scenario_catalog.records().get(index))
             .map(|record| record.file_name.clone())
         else {
             return;
         };
         if let Err(err) = state
             .offline_skirmish_runtime
-            .ensure_cooperative_selection(&file_name, &state.skirmish_shell_maps)
+            .ensure_cooperative_selection(&file_name, state.scenario_catalog.shell_maps())
         {
             log::warn!("Could not bind Cooperative Choose Map progress: {err}");
         }
@@ -311,20 +311,20 @@ impl App {
         let action = crate::ui::skirmish_shell::apply_action(
             &mut state.skirmish_shell_state,
             action,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
         );
 
         match action {
             crate::ui::skirmish_shell::SkirmishShellAction::StartGame => {
                 match crate::ui::skirmish_shell::launch_session(
                     &state.skirmish_shell_state,
-                    &state.skirmish_shell_maps,
+                    state.scenario_catalog.shell_maps(),
                     &state.skirmish_modes,
                 ) {
                     Ok(raw_session) => {
                         match state.offline_skirmish_runtime.close_shell_transaction(
                             &state.skirmish_shell_state,
-                            &state.skirmish_shell_maps,
+                            state.scenario_catalog.shell_maps(),
                             &state.skirmish_modes,
                             &raw_session,
                         ) {
@@ -356,13 +356,13 @@ impl App {
             crate::ui::skirmish_shell::SkirmishShellAction::BackOrExit => {
                 match crate::ui::skirmish_shell::pack_launch_session_without_start_validation(
                     &state.skirmish_shell_state,
-                    &state.skirmish_shell_maps,
+                    state.scenario_catalog.shell_maps(),
                     &state.skirmish_modes,
                 ) {
                     Ok(raw_session) => {
                         if let Err(err) = state.offline_skirmish_runtime.close_shell_transaction(
                             &state.skirmish_shell_state,
-                            &state.skirmish_shell_maps,
+                            state.scenario_catalog.shell_maps(),
                             &state.skirmish_modes,
                             &raw_session,
                         ) {
@@ -464,19 +464,19 @@ impl App {
                 state.skirmish_shell_state.selected_mode_id,
                 current_record_index,
                 &state.skirmish_modes,
-                &state.skirmish_scenario_records,
+                state.scenario_catalog.records(),
             ));
         Self::ensure_active_cooperative_modal_selection(state);
     }
 
     fn current_choose_map_record_index(state: &AppState) -> Option<usize> {
         let file_name = state
-            .skirmish_shell_maps
+            .scenario_catalog.shell_maps()
             .get(state.skirmish_shell_state.selected_map_idx)?
             .file_name
             .as_str();
         state
-            .skirmish_scenario_records
+            .scenario_catalog.records()
             .iter()
             .position(|record| record.file_name.eq_ignore_ascii_case(file_name))
     }
@@ -497,7 +497,7 @@ impl App {
         let Some(record_idx) = selection.record_index else {
             return false;
         };
-        let Some(record) = state.skirmish_scenario_records.get(record_idx) else {
+        let Some(record) = state.scenario_catalog.records().get(record_idx) else {
             return false;
         };
         let clicked_file_name = record.file_name.clone();
@@ -505,7 +505,7 @@ impl App {
             if Self::selected_skirmish_mode_is_cooperative(state, selection.mode_id) {
                 match state
                     .offline_skirmish_runtime
-                    .accept_cooperative_selection(&clicked_file_name, &state.skirmish_shell_maps)
+                    .accept_cooperative_selection(&clicked_file_name, state.scenario_catalog.shell_maps())
                 {
                     Ok(Some(chosen_map)) => chosen_map,
                     Ok(None) => clicked_file_name,
@@ -518,7 +518,7 @@ impl App {
                 clicked_file_name
             };
         let Some(map_idx) = state
-            .skirmish_shell_maps
+            .scenario_catalog.shell_maps()
             .iter()
             .position(|map| map.file_name.eq_ignore_ascii_case(&selected_file_name))
         else {
@@ -574,7 +574,7 @@ impl App {
         if modal.handle_listbox_mouse_down(
             &layout,
             &state.skirmish_modes,
-            &state.skirmish_scenario_records,
+            state.scenario_catalog.records(),
             x,
             y,
         ) {
@@ -682,7 +682,7 @@ impl App {
         let text = crate::ui::skirmish_shell::hovered_shell_control(
             layout,
             &state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
             x,
             y,
         )
@@ -879,7 +879,7 @@ impl App {
             crate::ui::skirmish_shell::handle_option_mouse_down(
                 &mut state.skirmish_shell_state,
                 &layout,
-                &state.skirmish_shell_maps,
+                state.scenario_catalog.shell_maps(),
                 x,
                 y,
             );
@@ -898,7 +898,7 @@ impl App {
             crate::ui::skirmish_shell::handle_option_mouse_down(
                 &mut state.skirmish_shell_state,
                 &layout,
-                &state.skirmish_shell_maps,
+                state.scenario_catalog.shell_maps(),
                 x,
                 y,
             );
@@ -979,7 +979,7 @@ impl App {
         crate::ui::skirmish_shell::handle_option_mouse_move(
             &mut state.skirmish_shell_state,
             &layout,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
             x,
             y,
         );
@@ -995,7 +995,7 @@ impl App {
         }
         let consumed = crate::ui::skirmish_shell::handle_option_mouse_wheel(
             &mut state.skirmish_shell_state,
-            &state.skirmish_shell_maps,
+            state.scenario_catalog.shell_maps(),
             lines,
         );
         Self::drain_skirmish_shell_ui_sounds(state);

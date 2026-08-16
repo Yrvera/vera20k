@@ -679,27 +679,21 @@ impl App {
         let Some(modal) = state.skirmish_shell_state.choose_map_modal.as_mut() else {
             return Ok(());
         };
-        let index = modal.create_random_map(
-            &mut state.skirmish_scenario_records,
-            &state.skirmish_modes,
-            display,
-            options.num_players,
-        );
+        // F11: the catalog's mutation guard re-projects the shell map entries
+        // on drop, so the loadable-map projection can never drift from the
+        // records — the old hand-patch by name-position is gone.
+        let index = {
+            let mut records = state.scenario_catalog.records_mut();
+            modal.create_random_map(
+                &mut records,
+                &state.skirmish_modes,
+                display,
+                options.num_players,
+            )
+        };
         let mode_id = modal.selected_mode_id;
         let _ = modal;
         if let Some(index) = index {
-            // The scenario record alone is not enough to play: committing a
-            // selection resolves it against the loadable map list, which has no
-            // entry for a seed file until one is put there.
-            let entry = state.skirmish_scenario_records[index].to_map_menu_entry();
-            match state
-                .skirmish_shell_maps
-                .iter()
-                .position(|map| map.file_name.eq_ignore_ascii_case(&entry.file_name))
-            {
-                Some(existing) => state.skirmish_shell_maps[existing] = entry,
-                None => state.skirmish_shell_maps.push(entry),
-            }
             let selection = crate::ui::skirmish_shell::ChooseMapSelection {
                 mode_id,
                 record_index: Some(index),
