@@ -432,20 +432,20 @@ impl App {
 
         // Temporarily move the save-name buffer out so it can be borrowed
         // mutably by the info struct without conflicting with state.
-        let mut save_name = std::mem::take(&mut state.dev_overlay_save_name);
+        let mut save_name = std::mem::take(&mut state.diag.dev_overlay_save_name);
 
         let mut info = DevOverlayInfo {
             sim_speed_tps: state.sim_speed_tps,
             paused: state.paused,
             music_volume: state.audio.music_player.as_ref().map_or(0.5, |p| p.volume()),
             sfx_volume: state.audio.sfx_player.as_ref().map_or(0.7, |p| p.volume()),
-            show_pathgrid: state.debug_show_pathgrid,
-            show_cell_grid: state.debug_show_cell_grid,
-            show_heightmap: state.debug_show_heightmap,
-            show_unit_inspector: state.debug_unit_inspector,
+            show_pathgrid: state.diag.debug_show_pathgrid,
+            show_cell_grid: state.diag.debug_show_cell_grid,
+            show_heightmap: state.diag.debug_show_heightmap,
+            show_unit_inspector: state.diag.debug_unit_inspector,
             reveal_map: state.sandbox_full_visibility,
-            fps: state.frame_timer.fps(),
-            frame_ms: state.frame_timer.frame_ms_mean(),
+            fps: state.diag.frame_timer.fps(),
+            frame_ms: state.diag.frame_timer.frame_ms_mean(),
             tick_budget_ms: if state.sim_speed_tps == 0 {
                 0.0
             } else {
@@ -463,7 +463,7 @@ impl App {
         let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(&state.egui.ctx, &mut info);
 
         // Restore the (possibly-edited) buffer.
-        state.dev_overlay_save_name = save_name;
+        state.diag.dev_overlay_save_name = save_name;
 
         match action {
             DevOverlayAction::None => {}
@@ -498,17 +498,17 @@ impl App {
             }
             DevOverlayAction::StepOneTick => {
                 if state.paused {
-                    state.debug_frame_step_requested = true;
+                    state.diag.debug_frame_step_requested = true;
                 }
             }
             DevOverlayAction::TogglePathGrid => {
                 dispatch::toggle_pathgrid_overlay(state);
             }
             DevOverlayAction::ToggleCellGrid => {
-                state.debug_show_cell_grid = !state.debug_show_cell_grid;
+                state.diag.debug_show_cell_grid = !state.diag.debug_show_cell_grid;
             }
             DevOverlayAction::ToggleHeightmap => {
-                state.debug_show_heightmap = !state.debug_show_heightmap;
+                state.diag.debug_show_heightmap = !state.diag.debug_show_heightmap;
             }
             DevOverlayAction::ToggleUnitInspector => {
                 dispatch::toggle_unit_inspector(state);
@@ -525,7 +525,7 @@ impl App {
                 );
             }
             DevOverlayAction::SaveAs => {
-                let name = std::mem::take(&mut state.dev_overlay_save_name);
+                let name = std::mem::take(&mut state.diag.dev_overlay_save_name);
                 dispatch::save_with_name(state, &name);
             }
             DevOverlayAction::ReloadLastLoad => {

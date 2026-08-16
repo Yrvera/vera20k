@@ -276,11 +276,6 @@ pub(crate) struct AppState {
     /// Existing selection paths speak by default; held TypeSelect batches
     /// temporarily suppress and restore this latch.
     pub(crate) selection_voice_enabled: bool,
-    /// Optional per-tick parity digest stream, opened only when the environment asks.
-    ///
-    /// Lives here rather than on `Simulation` so the sim tick performs no file I/O and a
-    /// capture run stays identical to an uncaptured one.
-    pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     /// Startup-shell rules loaded at boot for menu presentation; match paths
     /// read the runtime-bound copy via `rules()`.
@@ -352,6 +347,9 @@ pub(crate) struct AppState {
     /// Per-match audio owner (F11): sound event queue + EVA latches; resets
     /// on every match install and on leaving a match for the shell.
     pub(crate) match_audio: crate::app::match_audio::MatchAudioState,
+    /// Process diagnostics owner (F12): debug toggles, frame stepper,
+    /// parity digest sink, dev-overlay bookkeeping.
+    pub(crate) diag: crate::app::diagnostics::state::DiagnosticsState,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
     /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
@@ -413,8 +411,6 @@ pub(crate) struct AppState {
     /// variable. Owns the in-game menu, the abort-mission confirmation and the
     /// parent/child relationship with the `0xBBB` Options dialog.
     pub(crate) in_game_menu: crate::ui::pause_menu::InGameMenuState,
-    /// When true, advance exactly one sim tick while paused, then clear.
-    pub(crate) debug_frame_step_requested: bool,
     /// Effective simulation ticks per second — controls game speed.
     /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
@@ -447,18 +443,8 @@ pub(crate) struct AppState {
     /// per-building phase exists to remove. Fires once per save load, and only
     /// unwinds as those buildings are replaced.
     pub(crate) building_anim_phase_base: std::collections::BTreeMap<u64, u64>,
-    /// Debug overlay: show terrain cost / pathgrid overlay. Toggle with P / F9.
-    pub(crate) debug_show_pathgrid: bool,
-    /// SpeedType for terrain cost overlay. None = auto from selected unit (default Track).
-    pub(crate) debug_terrain_cost_speed_type: Option<crate::rules::locomotor_type::SpeedType>,
-    /// Debug overlay: show cell grid outlines (blue=terrain, yellow=overlay). Toggle with F8.
-    pub(crate) debug_show_cell_grid: bool,
-    /// Debug overlay: show height map elevation values. Toggle with H.
-    pub(crate) debug_show_heightmap: bool,
     /// Show hotkey reference overlay. Toggle with F1.
     pub(crate) show_hotkey_help: bool,
-    /// Debug unit inspector — shows event history for selected entities. Toggle with X.
-    pub(crate) debug_unit_inspector: bool,
     /// Save/load panel visible. Toggle with F5.
     pub(crate) show_save_load_panel: bool,
     /// Exit-Game confirm message box, open while the player is being asked to
@@ -473,13 +459,8 @@ pub(crate) struct AppState {
     /// Campaign selector dialog (Single Player -> New Campaign; launch mapping
     /// not decoded).
     pub(crate) campaign_select: Option<crate::ui::main_menu_dialogs::CampaignSelectState>,
-    /// Text-field buffer for the dev overlay's "Save As" name input.
-    /// Lives in AppState so the field persists across frames while open.
-    pub(crate) dev_overlay_save_name: String,
     /// Save repository, cached listing, and last save/load metadata.
     pub(crate) persistence: crate::app::persistence::PersistenceState,
-    /// Rolling FPS / frame-time tracker for the dev overlay readout.
-    pub(crate) frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer,
     // -- Reusable per-frame scratch buffers (avoid allocation each frame) --
     /// Overlay instance scratch vec — cleared and refilled each frame.
     pub(crate) cached_overlay_instances: Vec<crate::render::batch::SpriteInstance>,

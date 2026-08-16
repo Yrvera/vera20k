@@ -140,7 +140,7 @@ pub(crate) fn draw_hotkey_help(ctx: &egui::Context) {
 
 /// Draw the debug info panel as an egui window (top-left corner).
 ///
-/// Only call this when `state.debug_show_pathgrid` is true.
+/// Only call this when `state.diag.debug_show_pathgrid` is true.
 pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
     // Convert cursor screen position to world coordinates, then to iso cell.
     let (cursor_rx, cursor_ry) =
@@ -468,7 +468,7 @@ pub(crate) fn draw_debug_panel(ctx: &egui::Context, state: &AppState) {
 /// Positioned to the right of the Terrain Debug panel. Only shown when
 /// `debug_unit_inspector` is true (X hotkey).
 pub(crate) fn draw_event_history_panel(ctx: &egui::Context, state: &AppState) {
-    if !state.debug_unit_inspector {
+    if !state.diag.debug_unit_inspector {
         return;
     }
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };

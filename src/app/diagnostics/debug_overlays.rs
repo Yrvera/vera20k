@@ -51,7 +51,7 @@ fn cost_to_tint(cost: u8) -> [f32; 3] {
 ///
 /// Priority: manual override → first selected entity's locomotor → Track default.
 pub(crate) fn resolve_debug_speed_type(state: &AppState) -> SpeedType {
-    if let Some(st) = state.debug_terrain_cost_speed_type {
+    if let Some(st) = state.diag.debug_terrain_cost_speed_type {
         return st;
     }
     state

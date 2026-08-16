@@ -540,22 +540,22 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
 /// Build debug visualization instances (only when toggled on via hotkeys).
 pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> DebugInstances {
     DebugInstances {
-        pathgrid: if state.debug_show_pathgrid {
+        pathgrid: if state.diag.debug_show_pathgrid {
             debug_overlays::build_terrain_cost_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
-        cell_grid: if state.debug_show_cell_grid {
+        cell_grid: if state.diag.debug_show_cell_grid {
             debug_overlays::build_cell_grid_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
-        path: if state.debug_show_pathgrid {
+        path: if state.diag.debug_show_pathgrid {
             debug_overlays::build_path_overlay_instances(state, sw, sh)
         } else {
             Vec::new()
         },
-        heightmap: if state.debug_show_heightmap {
+        heightmap: if state.diag.debug_show_heightmap {
             debug_overlays::build_heightmap_overlay_instances(state, sw, sh)
         } else {
             Vec::new()

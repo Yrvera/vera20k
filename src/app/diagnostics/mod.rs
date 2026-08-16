@@ -3,6 +3,7 @@
 //! in `app::match_diagnostics`.
 
 pub(crate) mod debug_overlays;
+pub(crate) mod state;
 pub(crate) mod debug_panel;
 pub(crate) mod dev_overlay;
 pub(crate) mod shell_capture;

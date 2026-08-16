@@ -716,7 +716,7 @@ fn advance_in_game_runtime_mode(
     startup_admitted: bool,
 ) {
     let frame_stepping =
-        matches!(mode, RuntimeAdvanceMode::WallClock { .. }) && state.debug_frame_step_requested;
+        matches!(mode, RuntimeAdvanceMode::WallClock { .. }) && state.diag.debug_frame_step_requested;
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
             let game_speed = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or_else(
@@ -742,7 +742,7 @@ fn advance_in_game_runtime_mode(
         pacer_timing_admits,
     });
     if frame_stepping {
-        state.debug_frame_step_requested = false;
+        state.diag.debug_frame_step_requested = false;
         if let RuntimeAdvanceMode::WallClock { now_ms } = mode {
             state.platform.frame_pacer.reanchor(now_ms);
         }
@@ -912,12 +912,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             // authoritative animation and particle work, so this observes the
             // exact state covered by the returned frame hash.
             if tick_result.frame_committed {
-                if let Some(sink) = state.parity_digest_sink.as_mut() {
+                if let Some(sink) = state.diag.parity_digest_sink.as_mut() {
                     let digest = sim.parity_digest();
                     if let Err(error) = sink.write(&digest) {
                         // A failing diagnostic must never take the game down with it.
                         log::error!("parity digest write failed, disabling capture: {error}");
-                        state.parity_digest_sink = None;
+                        state.diag.parity_digest_sink = None;
                     }
                 }
             }

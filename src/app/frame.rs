@@ -37,7 +37,7 @@ impl App {
         if let Some(session) = tactical_capture.as_deref_mut() {
             session.drive_before_render(state)?;
         }
-        state.frame_timer.sample(Instant::now());
+        state.diag.frame_timer.sample(Instant::now());
         crate::app::input::tooltips::update(state);
         // The message clock has to observe the focus freeze exactly as it
         // observes a modal pause: a banner on screen when the player Alt+Tabs
@@ -390,8 +390,8 @@ impl App {
                 state.egui.begin_frame(&state.platform.window);
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
-                let any_debug_panel = state.debug_show_pathgrid
-                    || state.debug_unit_inspector
+                let any_debug_panel = state.diag.debug_show_pathgrid
+                    || state.diag.debug_unit_inspector
                     || state.show_hotkey_help;
                 let prev_visuals = if any_debug_panel {
                     Some(crate::app::diagnostics::debug_panel::push_debug_light_visuals(
@@ -400,7 +400,7 @@ impl App {
                 } else {
                     None
                 };
-                if state.debug_show_pathgrid {
+                if state.diag.debug_show_pathgrid {
                     crate::app::diagnostics::debug_panel::draw_debug_panel(&state.egui.ctx, state);
                 }
                 crate::app::diagnostics::debug_panel::draw_event_history_panel(&state.egui.ctx, state);

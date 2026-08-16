@@ -968,8 +968,8 @@ impl TacticalCaptureSession {
         let no_modal_or_debug = !state.paused
             && !state.show_save_load_panel
             && !state.main_menu_dialog_open()
-            && !state.debug_show_pathgrid
-            && !state.debug_unit_inspector
+            && !state.diag.debug_show_pathgrid
+            && !state.diag.debug_unit_inspector
             && !state.show_hotkey_help
             && state.targeting_mode.is_none()
             && state.building_placement_preview.is_none()

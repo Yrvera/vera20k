@@ -478,18 +478,6 @@ impl App {
             selection_voice_enabled: true,
             loaded_map_source: None,
             loaded_map_hash: None,
-            parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
-                Ok(sink) => {
-                    if let Some(sink) = sink.as_ref() {
-                        log::info!("parity digest capture -> {}", sink.path().display());
-                    }
-                    sink
-                }
-                Err(error) => {
-                    log::error!("parity digest sink could not be opened: {error}");
-                    None
-                }
-            },
             frontend_rules: startup_rules,
             csf: startup_csf,
             house_color_map: HashMap::new(),
@@ -551,7 +539,6 @@ impl App {
             parachute_anims: Vec::new(),
             paused: false,
             in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
-            debug_frame_step_requested: false,
             // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
             // is the single source of truth; seed it from the skirmish-setup speed
             // (internal 1) and derive `sim_speed_tps` from the same value, so the
@@ -570,20 +557,35 @@ impl App {
             startup_splash,
             idle_anim_elapsed_ms: 0,
             building_anim_phase_base: std::collections::BTreeMap::new(),
-            debug_show_pathgrid: false,
-            debug_terrain_cost_speed_type: None,
-            debug_show_cell_grid: false,
-            debug_show_heightmap: false,
             show_hotkey_help: false,
-            debug_unit_inspector: false,
             show_save_load_panel: false,
             exit_confirm_modal: None,
             options_dialog: None,
             movies_credits_dialog: None,
             campaign_select: None,
-            dev_overlay_save_name: String::new(),
             persistence: crate::app::persistence::PersistenceState::new(),
-            frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer::new(),
+            diag: crate::app::diagnostics::state::DiagnosticsState {
+                debug_frame_step_requested: false,
+                debug_show_pathgrid: false,
+                debug_terrain_cost_speed_type: None,
+                debug_show_cell_grid: false,
+                debug_show_heightmap: false,
+                debug_unit_inspector: false,
+                parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
+                    Ok(sink) => {
+                        if let Some(sink) = sink.as_ref() {
+                            log::info!("parity digest capture -> {}", sink.path().display());
+                        }
+                        sink
+                    }
+                    Err(error) => {
+                        log::error!("parity digest sink could not be opened: {error}");
+                        None
+                    }
+                },
+                dev_overlay_save_name: String::new(),
+                frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer::new(),
+            },
             sidebar_projection: Default::default(),
             cached_overlay_instances: Vec::new(),
             cached_unit_instances: Vec::new(),

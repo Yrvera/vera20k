@@ -877,7 +877,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
 
 /// Toggle the unit-inspector debug overlay.
 ///
-/// Beyond flipping `state.debug_unit_inspector`, this allocates per-entity
+/// Beyond flipping `state.diag.debug_unit_inspector`, this allocates per-entity
 /// debug logs on enable and frees them on disable, and sets the sim flag
 /// `debug_event_logging`. Called by both the X hotkey and the dev overlay
 /// checkbox so the two paths cannot drift.
@@ -966,31 +966,31 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
 }
 
 pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
-    state.debug_unit_inspector = !state.debug_unit_inspector;
+    state.diag.debug_unit_inspector = !state.diag.debug_unit_inspector;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
         // F10: sim owns the write; the app only requests the toggle.
-        sim.set_debug_event_logging(state.debug_unit_inspector);
+        sim.set_debug_event_logging(state.diag.debug_unit_inspector);
         log::info!(
             "Debug unit inspector: {}",
-            if state.debug_unit_inspector { "ON" } else { "OFF" }
+            if state.diag.debug_unit_inspector { "ON" } else { "OFF" }
         );
     }
 }
 
 /// Toggle the PathGrid / terrain-cost debug overlay.
 ///
-/// Beyond flipping `state.debug_show_pathgrid`, this resets the per-overlay
+/// Beyond flipping `state.diag.debug_show_pathgrid`, this resets the per-overlay
 /// SpeedType override to None when the overlay turns off, so reopening
 /// the overlay defaults back to "auto from selected unit". Called by both
 /// the F9/P hotkey and the dev overlay checkbox.
 pub(crate) fn toggle_pathgrid_overlay(state: &mut AppState) {
-    state.debug_show_pathgrid = !state.debug_show_pathgrid;
-    if !state.debug_show_pathgrid {
-        state.debug_terrain_cost_speed_type = None;
+    state.diag.debug_show_pathgrid = !state.diag.debug_show_pathgrid;
+    if !state.diag.debug_show_pathgrid {
+        state.diag.debug_terrain_cost_speed_type = None;
     }
     log::info!(
         "Debug terrain cost overlay: {}",
-        if state.debug_show_pathgrid {
+        if state.diag.debug_show_pathgrid {
             "ON"
         } else {
             "OFF"
@@ -1242,10 +1242,10 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
             state.queued_order_mode = OrderMode::Move;
         }
         KeyCode::KeyL => {
-            state.debug_show_cell_grid = !state.debug_show_cell_grid;
+            state.diag.debug_show_cell_grid = !state.diag.debug_show_cell_grid;
             log::info!(
                 "Debug cell grid overlay: {}",
-                if state.debug_show_cell_grid {
+                if state.diag.debug_show_cell_grid {
                     "ON (blue=terrain, yellow=overlay)"
                 } else {
                     "OFF"
@@ -1253,10 +1253,10 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
             );
         }
         KeyCode::KeyK => {
-            state.debug_show_heightmap = !state.debug_show_heightmap;
+            state.diag.debug_show_heightmap = !state.diag.debug_show_heightmap;
             log::info!(
                 "Debug height map overlay: {}",
-                if state.debug_show_heightmap {
+                if state.diag.debug_show_heightmap {
                     "ON (brighter = higher elevation, blue = bridge deck)"
                 } else {
                     "OFF"
@@ -1267,18 +1267,18 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
             toggle_pathgrid_overlay(state);
         }
         KeyCode::BracketRight => {
-            if state.debug_show_pathgrid {
+            if state.diag.debug_show_pathgrid {
                 let current = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
                 let next = current.cycle_next();
-                state.debug_terrain_cost_speed_type = Some(next);
+                state.diag.debug_terrain_cost_speed_type = Some(next);
                 log::info!("Terrain cost overlay: {}", next.name());
             }
         }
         KeyCode::BracketLeft => {
-            if state.debug_show_pathgrid {
+            if state.diag.debug_show_pathgrid {
                 let current = crate::app::diagnostics::debug_overlays::resolve_debug_speed_type(state);
                 let prev = current.cycle_prev();
-                state.debug_terrain_cost_speed_type = Some(prev);
+                state.diag.debug_terrain_cost_speed_type = Some(prev);
                 log::info!("Terrain cost overlay: {}", prev.name());
             }
         }
@@ -1304,7 +1304,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         }
         KeyCode::Period => {
             if state.paused {
-                state.debug_frame_step_requested = true;
+                state.diag.debug_frame_step_requested = true;
             }
         }
         _ => {}
