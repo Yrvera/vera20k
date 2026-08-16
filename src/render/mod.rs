@@ -33,6 +33,7 @@ pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;
 pub mod native_surface_format;
+pub mod overlay_assets;
 pub mod overlay_atlas;
 pub mod palette_textures;
 pub mod pixel_fx_sparkles;

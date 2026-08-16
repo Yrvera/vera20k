@@ -42,8 +42,6 @@ const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
     ("util/fixed_math.rs", "sim"),
     // F04: interned sim handles leave RuleSet (ResolvedRuleHandles).
     ("rules/ruleset.rs", "sim"),
-    // F04: rules-semantic OverlayTypeRegistry data moves under rules.
-    ("rules/ruleset.rs", "map"),
     // F05: bridge facts / fixed cell indexing / passability move downward.
     ("map/resolved_terrain.rs", "sim"),
     ("map/theater.rs", "sim"),

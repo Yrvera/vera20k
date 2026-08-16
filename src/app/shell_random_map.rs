@@ -432,7 +432,7 @@ impl App {
             // which is also what happens when the art is missing entirely.
             let from_art = (|| {
                 let name = registry.name(overlay_id)?;
-                let bytes = crate::map::overlay_types::overlay_shp_candidates(name, theater_ext)
+                let bytes = crate::render::overlay_assets::overlay_shp_candidates(name, theater_ext)
                     .iter()
                     .find_map(|candidate| assets?.get_ref(candidate))?;
                 let shp = crate::assets::shp_file::ShpFile::from_bytes(bytes).ok()?;

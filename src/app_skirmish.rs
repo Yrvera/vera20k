@@ -11,8 +11,8 @@ use crate::map::map_file::MapFile;
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
     OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
-    resolve_overlay_name_for_render,
 };
+use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::map::waypoints;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};

@@ -2858,7 +2858,7 @@ impl RuleSet {
     pub fn first_building_type_for_overlay(
         &self,
         overlay_id: u8,
-        overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+        overlays: &crate::rules::overlay_types::OverlayTypeRegistry,
     ) -> Option<&ObjectType> {
         self.object_list.iter().find(|object| {
             object.category == crate::rules::object_type::ObjectCategory::Building
@@ -5305,6 +5305,33 @@ ZAdjust=-10
         assert!(!building.crawls);
         assert_eq!(building.fire_up_frame, 0);
         assert_eq!(building.foundation, "2x2");
+    }
+
+    #[test]
+    fn wall_overlay_first_match_order_survives_registry_move() {
+        // F04: the overlay registry moved from map to rules. Pin the two
+        // orders wall selling depends on: `[OverlayTypes]` declaration order
+        // IS the overlay ID, and `first_building_type_for_overlay` returns
+        // the FIRST registered building even when a later one also matches.
+        let overlay_ini =
+            IniFile::from_str("[OverlayTypes]\n0=GASAND\n1=GAWALL\n2=CAWALL\n");
+        let overlays =
+            crate::rules::overlay_types::OverlayTypeRegistry::from_ini(&overlay_ini, None);
+        assert_eq!(overlays.id_for_name("GAWALL"), Some(1));
+        assert_eq!(overlays.id_for_name("CAWALL"), Some(2));
+
+        let rules_ini = IniFile::from_str(
+            "[BuildingTypes]\n0=GAWALL2\n1=GAWALL3\n[GAWALL2]\nCost=1\n[GAWALL3]\nCost=1\n",
+        );
+        let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        for object in rules.object_list.iter_mut() {
+            object.to_overlay = Some("GAWALL".to_string());
+        }
+        let first = rules
+            .first_building_type_for_overlay(1, &overlays)
+            .expect("first registered building wins");
+        assert_eq!(first.id, "GAWALL2");
+        assert!(rules.first_building_type_for_overlay(2, &overlays).is_none());
     }
 
     #[test]

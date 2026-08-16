@@ -16,6 +16,7 @@
 //! - rules/ does NOT depend on: sim/, render/, ui/, sidebar/, audio/, net/
 
 pub mod animation_sequence;
+pub mod overlay_types;
 pub mod art_data;
 pub mod bridge_warheads;
 pub mod color_add;
