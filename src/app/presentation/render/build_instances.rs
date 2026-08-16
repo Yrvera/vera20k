@@ -273,7 +273,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
     let mut top_unit: Vec<SpriteInstance> = Vec::new();
     let mut top_unit_pages: Vec<usize> = Vec::new();
     let transition_page_count = state
-        .vxl_slope_transition_cache
+        .renderer.vxl_slope_transition_cache
         .borrow()
         .page_count()
         .max(1);
@@ -575,8 +575,8 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
         let view = rt.view();
         let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
         minimap.update_unit_dots(
-            &state.gpu,
-            &state.batch_renderer,
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
             view.entities(),
             &state.house_color_map,
             view.session().tick,
@@ -824,7 +824,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
     if let Some(v) = view.as_ref() {
         let theme = crate::app::presentation::sidebar_render::current_sidebar_theme(state);
         text.extend(crate::app::presentation::sidebar_text::build_sidebar_credits_instances(
-            &state.bit_font,
+            &state.renderer.bit_font,
             v,
             state.ui_scale,
             crate::app::presentation::sidebar_text::credits_tint(theme),

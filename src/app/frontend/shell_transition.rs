@@ -434,8 +434,8 @@ pub(crate) fn render_shell_first_paint_slide(
                 state.shell_first_paint_slide = None;
                 return Ok(ShellFirstPaintRenderResult::NotRendered);
             }
-            let color = state.shell_surface_presenter.source_render_view();
-            let depth = state.depth_view.clone();
+            let color = state.renderer.shell_surface_presenter.source_render_view();
+            let depth = state.renderer.depth_view.clone();
             crate::app::frontend::skirmish_shell_render::render_skirmish_shell_to_target(
                 state,
                 encoder,
@@ -446,7 +446,7 @@ pub(crate) fn render_shell_first_paint_slide(
                 crate::app::frontend::skirmish_shell_render::ShellRenderMode::TransitionPreview,
             )?;
             state
-                .shell_surface_presenter
+                .renderer.shell_surface_presenter
                 .encode_present(encoder, destination);
             true
         }

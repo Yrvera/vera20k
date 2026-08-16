@@ -15,7 +15,7 @@ impl App {
     }
 
     fn score_shell_layout(state: &AppState) -> crate::ui::score_shell::ScoreShellLayout {
-        crate::ui::score_shell::compute_layout(state.gpu.config.width, state.gpu.config.height)
+        crate::ui::score_shell::compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height)
     }
 
     pub(super) fn handle_score_shell_mouse_move(state: &mut AppState) {
@@ -68,8 +68,8 @@ impl App {
         state: &AppState,
     ) -> crate::ui::single_player_shell::SinglePlayerShellLayout {
         crate::ui::single_player_shell::compute_layout(
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         )
     }
 
@@ -170,15 +170,15 @@ impl App {
         event_loop: &ActiveEventLoop,
     ) -> Result<()> {
         transitions::clear_screen(encoder, view);
-        state.egui.begin_frame(&state.platform.window);
+        state.renderer.egui.begin_frame(&state.platform.window);
         let action = main_menu::draw_main_menu_with_maps(
-            &state.egui.ctx,
+            &state.renderer.egui.ctx,
             &state.available_maps,
             &mut state.skirmish_settings,
         );
         let mut dev_shell_enabled = state.dev_skirmish_shell_enabled;
         let dev_shell_changed =
-            Self::draw_skirmish_shell_dev_toggle(&state.egui.ctx, &mut dev_shell_enabled);
+            Self::draw_skirmish_shell_dev_toggle(&state.renderer.egui.ctx, &mut dev_shell_enabled);
         if dev_shell_changed {
             Self::enter_shell_window_mode(state);
             if dev_shell_enabled {
@@ -203,8 +203,8 @@ impl App {
         // its own, so keep the OS cursor visible here rather than hiding it and
         // leaving the egui menu with no pointer at all.
         state
-            .egui
-            .end_frame_and_render(&state.gpu, encoder, view, &state.platform.window, false);
+            .renderer.egui
+            .end_frame_and_render(&state.renderer.gpu, encoder, view, &state.platform.window, false);
         if confirm {
             event_loop.exit();
             return Ok(());
@@ -296,8 +296,8 @@ impl App {
 
     pub(super) fn handle_main_menu_shell_mouse_down(state: &mut AppState) {
         let layout = crate::ui::main_menu_shell::compute_layout(
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
         let x = state.cursor_x.round() as i32;
@@ -318,8 +318,8 @@ impl App {
 
     pub(super) fn handle_main_menu_shell_mouse_move(state: &mut AppState) {
         let layout = crate::ui::main_menu_shell::compute_layout(
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
         let x = state.cursor_x.round() as i32;
@@ -336,8 +336,8 @@ impl App {
         event_loop: &ActiveEventLoop,
     ) {
         let layout = crate::ui::main_menu_shell::compute_layout(
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         );
         let feed = Self::main_menu_shell_button_feed(&layout);
         let x = state.cursor_x.round() as i32;
@@ -361,8 +361,8 @@ impl App {
         use crate::ui::shell::layout::LaidOutControl;
         use crate::ui::shell::modal;
         let layout = modal::quit_confirm_layout(
-            state.gpu.config.width as i32,
-            state.gpu.config.height as i32,
+            state.renderer.gpu.config.width as i32,
+            state.renderer.gpu.config.height as i32,
         );
         vec![
             LaidOutControl {
@@ -663,7 +663,7 @@ impl App {
 
         if render_exit_confirm_egui {
             if let Some(modal) = state.exit_confirm_modal.clone() {
-                match dialogs::draw_exit_confirm_modal(&state.egui.ctx, &modal) {
+                match dialogs::draw_exit_confirm_modal(&state.renderer.egui.ctx, &modal) {
                     dialogs::ExitConfirmAction::Confirm => {
                         // Persist BEFORE teardown (4b-i), then start the graceful
                         // cascade. Return false (not true) so exit is owned by the
@@ -686,7 +686,7 @@ impl App {
         if state.options_dialog.is_some() {
             let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
             if matches!(
-                dialogs::draw_options_dialog(&state.egui.ctx, &csf),
+                dialogs::draw_options_dialog(&state.renderer.egui.ctx, &csf),
                 dialogs::OptionsDialogAction::Close
             ) {
                 state.options_dialog = None;
@@ -696,7 +696,7 @@ impl App {
 
         if state.movies_credits_dialog.is_some() {
             let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-            match dialogs::draw_movies_credits_dialog(&state.egui.ctx, &csf) {
+            match dialogs::draw_movies_credits_dialog(&state.renderer.egui.ctx, &csf) {
                 dialogs::MoviesCreditsAction::Back => state.movies_credits_dialog = None,
                 // Sneak Preview / Movies / Credits playback is not implemented;
                 // the picker would derive entries only from artmd.ini [Movies],
@@ -711,7 +711,7 @@ impl App {
 
         if let Some(mut campaign) = state.campaign_select.take() {
             let csf = |key: &str, fallback: &str| Self::csf_label(state, key, fallback);
-            let action = dialogs::draw_campaign_select(&state.egui.ctx, &csf, &mut campaign);
+            let action = dialogs::draw_campaign_select(&state.renderer.egui.ctx, &csf, &mut campaign);
             match action {
                 // The side/difficulty -> scenario mapping and first-mission
                 // launch are not decoded; Back returns to the SP shell.
@@ -728,7 +728,7 @@ impl App {
 
     pub(super) fn invalidate_main_menu_movie_if_base_changed(state: &mut AppState) {
         let movie_base =
-            crate::ui::main_menu_shell::movie_base_for_screen_width(state.gpu.config.width);
+            crate::ui::main_menu_shell::movie_base_for_screen_width(state.renderer.gpu.config.width);
         if state
             .main_menu_movie_identity
             .is_some_and(|identity| identity.base() != movie_base)

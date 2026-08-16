@@ -153,8 +153,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.sidebar_cameo_atlas = result.presentation.sidebar_cameo_atlas;
     state.sidebar_chrome = result.presentation.sidebar_chrome;
     if let Some(ref fnt) = result.presentation.fnt_file {
-        state.bit_font =
-            crate::render::bit_font::BitFont::from_fnt(&state.gpu, &state.batch_renderer, fnt);
+        state.renderer.bit_font =
+            crate::render::bit_font::BitFont::from_fnt(&state.renderer.gpu, &state.renderer.batch_renderer, fnt);
     }
 
     // Initialize radar animation from the default (Allied) sidebar chrome atlas.
@@ -175,8 +175,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     if let Some((identity, frames, [w, h], insets)) = allied_radar {
         state.radar_animation_source = Some(identity);
         state.radar_anim = crate::render::radar_anim::RadarAnimState::new(
-            &state.gpu,
-            &state.batch_renderer,
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
             frames,
             w,
             h,
@@ -309,8 +309,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             &state.tiberium_radar_colors,
         );
         state.minimap = Some(MinimapRenderer::new(
-            &state.gpu,
-            &state.batch_renderer,
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
             grid,
             &overlay_data,
             &state.theater_name,
@@ -327,8 +327,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     // Create selection overlay for rendering highlights and drag rect.
     // Pass asset_manager so it can load pips.shp for authentic health bar pips.
     state.selection_overlay = Some(SelectionOverlay::new(
-        &state.gpu,
-        &state.batch_renderer,
+        &state.renderer.gpu,
+        &state.renderer.batch_renderer,
         state.process_assets.manager(),
     ));
 
@@ -346,7 +346,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                     let (frame_pixels, cw, ch) =
                         crate::render::shroud_buffer::extract_shp_brightness(&shp);
                     state.shroud_buffer = Some(crate::render::shroud_buffer::ShroudBuffer::new(
-                        &state.gpu,
+                        &state.renderer.gpu,
                         state.render_width(),
                         state.render_height(),
                         grid.width(),

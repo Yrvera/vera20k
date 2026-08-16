@@ -41,7 +41,7 @@ pub(crate) fn message_now_ms(state: &AppState) -> u64 {
 pub(crate) fn post_system_message(state: &mut AppState, text: &str) {
     sync_view(state);
     let now = message_now_ms(state);
-    let font = &state.bit_font;
+    let font = &state.renderer.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;
     let outcome = state.message_list.add_message(
         &crate::ui::messages::MessagePost {
@@ -70,7 +70,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
         &state.house_color_map,
         state.rules().map(|rules| &rules.house_color_ramps),
     );
-    let font = &state.bit_font;
+    let font = &state.renderer.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;
     let outcome = add_type_select_feedback(
         &mut state.message_list,
@@ -165,7 +165,7 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
         return Vec::new();
     }
     message_text_instances(
-        &state.bit_font,
+        &state.renderer.bit_font,
         &state.message_list,
         [state.camera_x, state.camera_y],
     )

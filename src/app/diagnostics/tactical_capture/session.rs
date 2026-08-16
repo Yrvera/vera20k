@@ -136,24 +136,24 @@ impl TacticalCaptureSession {
         let profile = self.request.profile();
         let capture = &profile.capture;
         ensure!(
-            state.gpu.config.width == capture.output_width
-                && state.gpu.config.height == capture.output_height,
+            state.renderer.gpu.config.width == capture.output_width
+                && state.renderer.gpu.config.height == capture.output_height,
             "tactical surface is {}x{}, expected {}x{}",
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
             capture.output_width,
             capture.output_height
         );
         ensure!(
             capture
                 .surface_formats
-                .contains(&format!("{:?}", state.gpu.config.format)),
+                .contains(&format!("{:?}", state.renderer.gpu.config.format)),
             "tactical surface format {:?} is outside the sealed profile",
-            state.gpu.config.format
+            state.renderer.gpu.config.format
         );
         ensure!(
             state
-                .gpu
+                .renderer.gpu
                 .config
                 .usage
                 .contains(wgpu::TextureUsages::COPY_SRC),
@@ -181,7 +181,7 @@ impl TacticalCaptureSession {
             "live graphics toggles differ from the sealed tactical profile"
         );
         ensure!(
-            state.upscale_pass.is_none(),
+            state.renderer.upscale_pass.is_none(),
             "tactical capture forbids the upscale pass"
         );
         ensure!(
@@ -1262,10 +1262,10 @@ impl TacticalCaptureSession {
         let profile = self.request.profile();
         let egui = state.capture_egui_observation();
         let graphics = GraphicsEvidence::from_observations(
-            state.gpu.capture_adapter_observation(),
+            state.renderer.gpu.capture_adapter_observation(),
             egui,
-            format!("{:?}", state.gpu.config.format),
-            [state.gpu.config.width, state.gpu.config.height],
+            format!("{:?}", state.renderer.gpu.config.format),
+            [state.renderer.gpu.config.width, state.renderer.gpu.config.height],
             state.ui_scale,
             inputs.font.clone(),
             inputs.sidebar_layout.clone(),

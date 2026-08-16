@@ -290,8 +290,8 @@ impl App {
 
         state.skirmish_shell_chrome =
             crate::render::skirmish_shell_chrome::build_skirmish_shell_chrome_atlas(
-                &state.gpu,
-                &state.batch_renderer,
+                &state.renderer.gpu,
+                &state.renderer.batch_renderer,
                 assets,
             );
         let ready = state.skirmish_shell_chrome.is_some();
@@ -654,7 +654,7 @@ impl App {
         let text_rect = crate::ui::skirmish_shell::player_name_edit_text_rect(layout.player_name);
         let prefix_width =
             state
-                .bit_font
+                .renderer.bit_font
                 .text_width(crate::ui::skirmish_shell::player_name_caret_prefix(
                     &state.skirmish_shell_state,
                 ));

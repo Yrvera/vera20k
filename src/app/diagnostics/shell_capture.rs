@@ -293,8 +293,8 @@ impl MainMenuCaptureSnapshot {
     fn from_state(state: &AppState) -> Self {
         let movie_identity = state.main_menu_movie_identity;
         Self {
-            width: state.gpu.config.width,
-            height: state.gpu.config.height,
+            width: state.renderer.gpu.config.width,
+            height: state.renderer.gpu.config.height,
             main_menu_screen: state.screen == GameScreen::MainMenu,
             shell_failed: state.main_menu_shell_failed,
             single_player_active: state.shell_route.single_player(),
@@ -749,7 +749,7 @@ impl ShellCaptureSession {
             );
             let pixels = item
                 .readback
-                .finish(&state.gpu.device, item.submission, remaining)?;
+                .finish(&state.renderer.gpu.device, item.submission, remaining)?;
             ensure!(
                 pixels.len() as u64 == FRAME_BYTE_LENGTH,
                 "entry-sequence tick {expected_tick} length mismatch: expected \
@@ -777,7 +777,7 @@ impl ShellCaptureSession {
                 .join(ENTRY_SEQUENCE_FRAMES_FILE_NAME),
             &payload,
         )?;
-        let manifest = entry_sequence_manifest(&self.request, state.gpu.config.format, generation);
+        let manifest = entry_sequence_manifest(&self.request, state.renderer.gpu.config.format, generation);
         let mut manifest_bytes =
             serde_json::to_vec_pretty(&manifest).context("serialize entry-sequence manifest")?;
         manifest_bytes.push(b'\n');

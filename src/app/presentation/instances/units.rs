@@ -605,9 +605,9 @@ fn unit_entry_for_slope_state(
     if let Some(transition_key) = transition_key_for_unit(key, slope_state) {
         if let Some(asset_manager) = state.process_assets.manager() {
             if let Some(TransitionUnitSpriteEntry { page, entry }) =
-                state.vxl_slope_transition_cache.borrow_mut().get_or_render(
-                    &state.gpu,
-                    &state.batch_renderer,
+                state.renderer.vxl_slope_transition_cache.borrow_mut().get_or_render(
+                    &state.renderer.gpu,
+                    &state.renderer.batch_renderer,
                     asset_manager,
                     state.rules(),
                     state.rules().map(|rules| &rules.art_registry),

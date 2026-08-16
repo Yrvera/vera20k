@@ -216,13 +216,13 @@ impl App {
         let outcome = match state.in_game_menu {
             InGameMenuState::Closed => ModalOutcome::Stay,
             InGameMenuState::Menu => {
-                pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.egui.ctx))
+                pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.renderer.egui.ctx))
             }
             InGameMenuState::AbortConfirm => {
                 let leave_label =
                     Self::csf_label(state, ABORT_CONFIRM_LEAVE_KEY, ABORT_CONFIRM_LEAVE_FALLBACK);
                 pause_menu::resolve_abort_action(pause_menu::draw_abort_confirm(
-                    &state.egui.ctx,
+                    &state.renderer.egui.ctx,
                     &leave_label,
                 ))
             }
@@ -355,7 +355,7 @@ impl App {
 
         state.persistence.refresh_save_list_if_dirty();
         let action = crate::app::persistence::save_load_panel::draw_save_load_panel(
-            &state.egui.ctx,
+            &state.renderer.egui.ctx,
             state.persistence.save_list_cache.entries(),
         );
 
@@ -460,7 +460,7 @@ impl App {
             recent_saves,
         };
 
-        let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(&state.egui.ctx, &mut info);
+        let action = crate::app::diagnostics::dev_overlay::draw_dev_overlay(&state.renderer.egui.ctx, &mut info);
 
         // Restore the (possibly-edited) buffer.
         state.diag.dev_overlay_save_name = save_name;

@@ -337,8 +337,8 @@ pub(crate) fn render_score_shell(
     if state.main_menu_shell_chrome.is_none() || state.score_screen.is_none() {
         return Ok(ScoreShellRenderResult::Fallback);
     }
-    let color = state.shell_surface_presenter.source_render_view();
-    let depth = state.depth_view.clone();
+    let color = state.renderer.shell_surface_presenter.source_render_view();
+    let depth = state.renderer.depth_view.clone();
     let result = render_score_shell_to_target(
         state,
         encoder,
@@ -349,7 +349,7 @@ pub(crate) fn render_score_shell(
     )?;
     if matches!(result, ScoreShellRenderResult::Rendered) {
         state
-            .shell_surface_presenter
+            .renderer.shell_surface_presenter
             .encode_present(encoder, destination);
     }
     Ok(result)
@@ -360,7 +360,7 @@ fn render_score_shell_to_target(
     encoder: &mut wgpu::CommandEncoder,
     target: ShellRenderTarget<'_>,
 ) -> Result<ScoreShellRenderResult> {
-    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     let Some(model) = state.score_screen.clone() else {
         return Ok(ScoreShellRenderResult::Fallback);
     };
@@ -395,38 +395,38 @@ fn render_score_shell_to_target(
     let time_text = format_elapsed(&model, resolve_csf(state, "TXT_TIME_FORMAT_HOURS").as_ref());
     let mut labels = build_labels(state, &layout, &model, &cells, &game_text, &time_text);
     bind_score_font_text(&mut labels);
-    let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
+    let text_draws = shell_paint::paint_labels(&state.renderer.bit_font, &labels);
     drop(labels);
 
-    state.batch_renderer.update_camera(
-        &state.gpu,
-        state.gpu.config.width as f32,
-        state.gpu.config.height as f32,
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
+        state.renderer.gpu.config.width as f32,
+        state.renderer.gpu.config.height as f32,
         0.0,
         0.0,
         1.0,
     );
     let background_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &background_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &background_instances);
     let chrome_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &chrome_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &chrome_instances);
     let button_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &button_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &button_instances);
     let text_buffers: Vec<_> = text_draws
         .iter()
         .map(|draw| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &draw.instances)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &draw.instances)
         })
         .collect();
     let cursor_instances: Vec<SpriteInstance> = cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &cursor_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     let cursor_texture = state
         .software_cursor
         .as_ref()
@@ -462,7 +462,7 @@ fn render_score_shell_to_target(
     });
     for buffer in [&background_buffer, &chrome_buffer, &button_buffer] {
         if let Some((buffer, count)) = buffer.as_ref() {
-            state.batch_renderer.draw_with_buffer_passthrough(
+            state.renderer.batch_renderer.draw_with_buffer_passthrough(
                 &mut pass,
                 &chrome.texture,
                 buffer,
@@ -480,17 +480,17 @@ fn render_score_shell_to_target(
             draw.scissor.w,
             draw.scissor.h,
         );
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
     }
-    pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    pass.set_scissor_rect(0, 0, state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
     }
     drop(pass);

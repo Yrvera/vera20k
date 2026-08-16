@@ -741,7 +741,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
             // split-borrows (gpu/depth_view/batch shared, vxl_compute &mut,
             // native.progress &mut, native.atlas shared, request shared) all
             // hold simultaneously.
-            let render_size = [state.gpu.config.width, state.gpu.config.height];
+            let render_size = [state.renderer.gpu.config.width, state.renderer.gpu.config.height];
             // The pre-parse swallowed the loader's raw 8 so it could not present
             // before the first frame; hand it over now. The random-map branch
             // pre-parses nothing, so its loader still emits raw 8 itself.
@@ -751,11 +751,11 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     .preloads_scenario_before_first_frame()
             {
                 advance_and_present_native_progress(
-                    &state.gpu,
-                    &state.shell_surface_presenter,
-                    &state.depth_view,
-                    &state.batch_renderer,
-                    &state.bit_font,
+                    &state.renderer.gpu,
+                    &state.renderer.shell_surface_presenter,
+                    &state.renderer.depth_view,
+                    &state.renderer.batch_renderer,
+                    &state.renderer.bit_font,
                     native,
                     8,
                     render_size,
@@ -782,11 +782,11 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     let atlas = native.atlas.as_ref().expect("atlas present checked above");
                     let composition = native.composition.as_ref();
                     let mut sink = RenderingProgressSink {
-                        gpu: &state.gpu,
-                        presenter: &state.shell_surface_presenter,
-                        depth_view: &state.depth_view,
-                        batch: &state.batch_renderer,
-                        font: &state.bit_font,
+                        gpu: &state.renderer.gpu,
+                        presenter: &state.renderer.shell_surface_presenter,
+                        depth_view: &state.renderer.depth_view,
+                        batch: &state.renderer.batch_renderer,
+                        font: &state.renderer.bit_font,
                         progress: &mut native.progress,
                         progress_row: &native.progress_row,
                         atlas,
@@ -797,8 +797,8 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         cadence,
                     };
                     init::load_map_from_initial(
-                        &state.gpu,
-                        &state.batch_renderer,
+                        &state.renderer.gpu,
+                        &state.renderer.batch_renderer,
                         asset_manager,
                         initial,
                         startup,
@@ -806,7 +806,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
-                        state.vxl_compute.as_mut(),
+                        state.renderer.vxl_compute.as_mut(),
                         &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
@@ -819,8 +819,8 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         cadence,
                     };
                     init::load_map_from_initial(
-                        &state.gpu,
-                        &state.batch_renderer,
+                        &state.renderer.gpu,
+                        &state.renderer.batch_renderer,
                         asset_manager,
                         initial,
                         startup,
@@ -828,14 +828,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         &session.request.fallback_skirmish_settings,
                         native_theater_cache_mismatch,
                         runtime_color_scheme_count,
-                        state.vxl_compute.as_mut(),
+                        state.renderer.vxl_compute.as_mut(),
                         &mut state.tile_variant_selector_cache,
                         &mut sink,
                     )
                 }
                 None => init::load_map_from_initial(
-                    &state.gpu,
-                    &state.batch_renderer,
+                    &state.renderer.gpu,
+                    &state.renderer.batch_renderer,
                     asset_manager,
                     initial,
                     startup,
@@ -843,7 +843,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     &session.request.fallback_skirmish_settings,
                     false,
                     0,
-                    state.vxl_compute.as_mut(),
+                    state.renderer.vxl_compute.as_mut(),
                     &mut state.tile_variant_selector_cache,
                     &mut NoopProgressSink,
                 ),
@@ -853,11 +853,11 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                     if let Some(native) = session.native.as_mut() {
                         let terminal_raw_percent = native.progress_cadence.terminal_raw_percent();
                         advance_and_present_native_progress(
-                            &state.gpu,
-                            &state.shell_surface_presenter,
-                            &state.depth_view,
-                            &state.batch_renderer,
-                            &state.bit_font,
+                            &state.renderer.gpu,
+                            &state.renderer.shell_surface_presenter,
+                            &state.renderer.depth_view,
+                            &state.renderer.batch_renderer,
+                            &state.renderer.bit_font,
                             native,
                             terminal_raw_percent,
                             render_size,
@@ -1092,7 +1092,7 @@ fn ensure_loading_composition_snapshot(state: &mut AppState) {
         let Some(launch_session) = session.request.skirmish_launch_session() else {
             return;
         };
-        let render_size = [state.gpu.config.width, state.gpu.config.height];
+        let render_size = [state.renderer.gpu.config.width, state.renderer.gpu.config.height];
         match native.progress_cadence {
             NativeLoadingProgressCadence::SelectedMap => {
                 let LoadingJobPhase::RemainingLegacyLoad(Some(initial)) = &session.job.phase else {
@@ -1219,7 +1219,7 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
             "native loading job has no asset manager after initialization"
         ));
     };
-    let width = LoadingScreenWidth::for_render_width(state.gpu.config.width);
+    let width = LoadingScreenWidth::for_render_width(state.renderer.gpu.config.width);
     let progress_ramp = state
         .loading_session
         .as_ref()
@@ -1266,8 +1266,8 @@ pub(crate) fn ensure_native_loading_atlas(state: &mut AppState) -> anyhow::Resul
                 marker_remaps: &marker_remaps,
             });
     let atlas = build_loading_screen_atlas_with_composition(
-        &state.gpu,
-        &state.batch_renderer,
+        &state.renderer.gpu,
+        &state.renderer.batch_renderer,
         &assets,
         variant,
         width,
@@ -1332,32 +1332,32 @@ pub(crate) fn render_loading_screen(
             "native Skirmish loading atlas was not available for render"
         ));
     };
-    let target = state.shell_surface_presenter.source_render_view();
+    let target = state.renderer.shell_surface_presenter.source_render_view();
 
     let frame_plan = build_native_loading_frame_plan(
-        &state.bit_font,
+        &state.renderer.bit_font,
         atlas,
         native.composition.as_ref(),
         &native.progress_row,
         &native.progress,
         native.backing_rgb,
         native.text_rgb,
-        [state.gpu.config.width, state.gpu.config.height],
+        [state.renderer.gpu.config.width, state.renderer.gpu.config.height],
     );
     let instances = frame_plan.instances;
     let text_draws = frame_plan.text_draws;
 
-    state.batch_renderer.update_camera(
-        &state.gpu,
-        state.gpu.config.width as f32,
-        state.gpu.config.height as f32,
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
+        state.renderer.gpu.config.width as f32,
+        state.renderer.gpu.config.height as f32,
         0.0,
         0.0,
         1.0,
     );
     let Some((buffer, count)) = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &instances)
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &instances)
     else {
         return LoadingRenderResult::NativeFailed(anyhow::anyhow!(
             "native Skirmish loading instances could not be uploaded"
@@ -1367,16 +1367,16 @@ pub(crate) fn render_loading_screen(
         .iter()
         .map(|draw| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &draw.backing)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &draw.backing)
         })
         .collect::<Vec<_>>();
     let text_buffers = text_draws
         .iter()
         .map(|draw| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &draw.text.instances)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &draw.text.instances)
         })
         .collect::<Vec<_>>();
 
@@ -1392,7 +1392,7 @@ pub(crate) fn render_loading_screen(
             },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: &state.depth_view,
+            view: &state.renderer.depth_view,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(1.0),
                 store: wgpu::StoreOp::Store,
@@ -1403,7 +1403,7 @@ pub(crate) fn render_loading_screen(
         occlusion_query_set: None,
     });
     state
-        .batch_renderer
+        .renderer.batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
     for ((draw, backing_buffer), text_buffer) in text_draws
         .iter()
@@ -1411,7 +1411,7 @@ pub(crate) fn render_loading_screen(
         .zip(text_buffers.iter())
     {
         if let Some((buffer, count)) = backing_buffer.as_ref() {
-            state.batch_renderer.draw_with_buffer_passthrough(
+            state.renderer.batch_renderer.draw_with_buffer_passthrough(
                 &mut pass,
                 &atlas.texture,
                 buffer,
@@ -1423,23 +1423,23 @@ pub(crate) fn render_loading_screen(
         };
         let Some(scissor) = clamp_loading_scissor(
             draw.text.scissor,
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         ) else {
             continue;
         };
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.w, scissor.h);
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
     }
-    pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    pass.set_scissor_rect(0, 0, state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     drop(pass);
     state
-        .shell_surface_presenter
+        .renderer.shell_surface_presenter
         .encode_present(encoder, destination);
     LoadingRenderResult::NativeRendered
 }

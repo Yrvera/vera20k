@@ -99,8 +99,8 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                 let (new_unit_atlas, new_sprite_atlas, new_palette_set) = build_entity_atlases(
                     sim,
                     assets,
-                    &state.gpu,
-                    &state.batch_renderer,
+                    &state.renderer.gpu,
+                    &state.renderer.batch_renderer,
                     &state.theater_ext,
                     &state.theater_name,
                     bound_rules,
@@ -108,7 +108,7 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
                     &state.house_color_map,
                     None, // entity_unit_palette — atlas builder loads it from assets
                     None, // cell palette reloads from the active theater archive
-                    state.vxl_compute.as_mut(),
+                    state.renderer.vxl_compute.as_mut(),
                 );
                 state.unit_atlas = new_unit_atlas;
                 state.sprite_atlas = new_sprite_atlas;
@@ -196,24 +196,24 @@ pub(crate) fn render_spawn_pick(
     // Temporarily enable sandbox visibility so the whole map is visible.
     let prev_visibility = state.sandbox_full_visibility;
     state.sandbox_full_visibility = true;
-    let result = if state.upscale_pass.is_some() {
-        let game_depth = state.upscale_pass.as_ref().unwrap().depth_view().clone();
-        let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
+    let result = if state.renderer.upscale_pass.is_some() {
+        let game_depth = state.renderer.upscale_pass.as_ref().unwrap().depth_view().clone();
+        let saved_depth = std::mem::replace(&mut state.renderer.depth_view, game_depth);
         let result = render::render_game(state, encoder);
-        state.depth_view = saved_depth;
+        state.renderer.depth_view = saved_depth;
         result
     } else {
         render::render_game(state, encoder)
     };
     state.sandbox_full_visibility = prev_visibility;
     result?;
-    if let Some(upscale) = state.upscale_pass.as_ref() {
+    if let Some(upscale) = state.renderer.upscale_pass.as_ref() {
         state
-            .combat_light_renderer
+            .renderer.combat_light_renderer
             .copy_to(encoder, upscale.color_texture());
         upscale.draw(encoder, destination_view);
     } else {
-        state.combat_light_renderer.copy_to(encoder, destination);
+        state.renderer.combat_light_renderer.copy_to(encoder, destination);
     }
     Ok(())
 }

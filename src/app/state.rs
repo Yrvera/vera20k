@@ -26,12 +26,10 @@ pub(crate) use platform::PlatformState;
 /// pub(crate) so app_render.rs can access fields.
 pub(crate) struct AppState {
     pub(crate) platform: PlatformState,
-    pub(crate) gpu: GpuContext,
-    pub(crate) batch_renderer: BatchRenderer,
-    pub(crate) combat_light_renderer: crate::render::combat_light::CombatLightRenderer,
+    /// Process-wide renderer owner (F12): GPU context, batch renderer,
+    /// pools, passes, egui, fonts, and rendering caches.
+    pub(crate) renderer: crate::app::renderer_state::RendererState,
     pub(crate) combat_lights: crate::app::presentation::combat_lights::CombatLightRuntime,
-    /// Reusable GPU instance buffers — avoids per-frame GPU buffer allocation.
-    pub(crate) instance_pool: crate::render::batch::InstanceBufferPool,
     pub(crate) tile_atlas: Option<TileAtlas>,
     pub(crate) map_basic: BasicSection,
     /// Exact source whose bytes produced the active parsed map.
@@ -45,11 +43,8 @@ pub(crate) struct AppState {
     /// no load/install path can silently drop an unflushed segment.
     pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
     pub(crate) unit_atlas: Option<UnitAtlas>,
-    pub(crate) vxl_slope_transition_cache:
-        RefCell<crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache>,
     /// Palette + per-house RGB ramp GPU resources for the voxel sprite shader.
     pub(crate) palette_set: Option<crate::render::palette_textures::PaletteSet>,
-    pub(crate) vxl_compute: Option<crate::render::vxl_compute::VxlComputeRenderer>,
     pub(crate) sprite_atlas: Option<SpriteAtlas>,
     pub(crate) overlay_atlas: Option<OverlayAtlas>,
     pub(crate) bridge_atlas: Option<BridgeAtlas>,
@@ -77,12 +72,6 @@ pub(crate) struct AppState {
     /// per-session user preferences. Set in AppState::new() from the existing
     /// GameConfig::load() call; not mutated afterwards.
     pub(crate) game_config: Option<GameConfig>,
-    /// GPU depth texture for back-to-front depth ordering. Recreated on window resize.
-    pub(crate) depth_view: wgpu::TextureView,
-    /// Encoded-byte RGB565 presentation boundary for stock shell/loading surfaces.
-    pub(crate) shell_surface_presenter: crate::render::shell_surface_present::ShellSurfacePresenter,
-    /// Optional Catmull-Rom bicubic upscale pass (render at lower res, upscale to window).
-    pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
     pub(crate) camera_x: f32,
     pub(crate) camera_y: f32,
     /// Current zoom level for the game viewport. 1.0 = native pixel scale,
@@ -111,11 +100,6 @@ pub(crate) struct AppState {
     pub(crate) type_select: crate::app::types::TypeSelectInputState,
     /// One-shot Shift+S request, consumed at the next render submission.
     pub(crate) retail_screenshot_requested: bool,
-    /// Previous presented pre-cursor composition, retained for input-time
-    /// screenshot parity.
-    pub(crate) retail_screenshot_frame_cache: crate::render::screenshot::PresentedFrameCache,
-    /// egui integration — input handling + GPU rendering.
-    pub(super) egui: EguiIntegration,
     /// Which screen is currently active (MainMenu, Loading, InGame).
     pub(crate) screen: GameScreen,
     /// Available maps from the RA2 directory for menu selection.
@@ -262,8 +246,6 @@ pub(crate) struct AppState {
     pub(crate) sidebar_cameo_atlas: Option<SidebarCameoAtlas>,
     /// Original side-mix shell art used to skin the custom sidebar.
     pub(crate) sidebar_chrome: Option<SidebarChromeSet>,
-    /// Bitmap font atlas used by the custom sidebar text path.
-    pub(crate) bit_font: BitFont,
     /// Asset-backed software cursor shown in-game when available.
     pub(crate) software_cursor: Option<render::SoftwareCursor>,
     /// Selection drag state — tracks mouse drag for box-select.
@@ -488,16 +470,16 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
 impl AppState {
     /// Effective render target width — intermediate texture when upscaling, else window.
     pub(crate) fn render_width(&self) -> u32 {
-        self.upscale_pass
+        self.renderer.upscale_pass
             .as_ref()
-            .map_or(self.gpu.config.width, |u| u.src_width())
+            .map_or(self.renderer.gpu.config.width, |u| u.src_width())
     }
 
     /// Effective render target height — intermediate texture when upscaling, else window.
     pub(crate) fn render_height(&self) -> u32 {
-        self.upscale_pass
+        self.renderer.upscale_pass
             .as_ref()
-            .map_or(self.gpu.config.height, |u| u.src_height())
+            .map_or(self.renderer.gpu.config.height, |u| u.src_height())
     }
 
     /// Whether the software cursor (mouse.shp) should be active this frame.
@@ -514,7 +496,7 @@ impl AppState {
     pub(crate) fn capture_egui_observation(
         &self,
     ) -> crate::render::egui_integration::EguiCaptureObservation<'_> {
-        self.egui.capture_observation(&self.platform.window)
+        self.renderer.egui.capture_observation(&self.platform.window)
     }
 
     /// Whether any main-menu modal dialog (exit confirm, options, movies,

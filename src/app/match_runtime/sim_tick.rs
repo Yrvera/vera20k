@@ -814,8 +814,8 @@ fn advance_in_game_runtime_mode(
     }
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
-    state.batch_renderer.update_camera(
-        &state.gpu,
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
         sw,
         sh,
         state.camera_x,
@@ -1695,14 +1695,14 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         log::info!("Rebuilding unit atlas: new voxel entity types detected");
         let existing = state.unit_atlas.take();
         if let Some(new_unit_atlas) = unit_atlas::build_unit_atlas(
-            &state.gpu,
-            &state.batch_renderer,
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
             sim.entities(),
             asset_manager,
             bound_rules,
             bound_rules.map(|rules| &rules.art_registry),
             existing,
-            state.vxl_compute.as_mut(),
+            state.renderer.vxl_compute.as_mut(),
             Some(&sim.interner),
         ) {
             state.unit_atlas = Some(new_unit_atlas);
@@ -1721,8 +1721,8 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             .collect();
         let cell_palette = load_iso_palette(asset_manager, &state.theater_ext);
         if let Some(new_sprite_atlas) = sprite_atlas::build_sprite_atlas(
-            &state.gpu,
-            &state.batch_renderer,
+            &state.renderer.gpu,
+            &state.renderer.batch_renderer,
             sim.entities(),
             asset_manager,
             &palette,

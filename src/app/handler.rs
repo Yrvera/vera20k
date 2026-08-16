@@ -13,9 +13,9 @@ use super::{
 
 impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
-        state.gpu.resize(size.width, size.height);
-        state.depth_view = state.gpu.create_depth_texture();
-        state.shell_surface_presenter.resize(&state.gpu);
+        state.renderer.gpu.resize(size.width, size.height);
+        state.renderer.depth_view = state.renderer.gpu.create_depth_texture();
+        state.renderer.shell_surface_presenter.resize(&state.renderer.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
@@ -235,7 +235,7 @@ impl ApplicationHandler for App {
 
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
-            state.egui.on_window_event(&state.platform.window, &event);
+            state.renderer.egui.on_window_event(&state.platform.window, &event);
 
         // In InGame mode, egui only renders non-interactive overlays
         // (mission banner). The custom sidebar handles its own hit-testing.
@@ -443,13 +443,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 // When upscaling, remap window coordinates to render-target coordinates.
-                let use_render_source_coords = state.upscale_pass.is_some()
+                let use_render_source_coords = state.renderer.upscale_pass.is_some()
                     && (state.screen == GameScreen::InGame
                         || state.screen == GameScreen::SpawnPick);
                 let (sx, sy) = if use_render_source_coords {
                     (
-                        state.render_width() as f32 / state.gpu.config.width as f32,
-                        state.render_height() as f32 / state.gpu.config.height as f32,
+                        state.render_width() as f32 / state.renderer.gpu.config.width as f32,
+                        state.render_height() as f32 / state.renderer.gpu.config.height as f32,
                     )
                 } else {
                     (1.0, 1.0)

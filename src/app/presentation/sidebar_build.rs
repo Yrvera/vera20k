@@ -618,16 +618,16 @@ pub(crate) fn build_sidebar_cameo_instances(
         // Dark strip overlay behind the cameo status text (alpha 0xAF).
         // When a queue badge is also present, the status strip shifts left.
         if let Some(status_text) = cameo_status_text(item, ready_text, hold_text)
-            && state.bit_font.darken_texture().is_some()
+            && state.renderer.bit_font.darken_texture().is_some()
         {
             let s = state.ui_scale;
             let ts = ready_text_scale(s);
-            let text_w = state.bit_font.text_width(status_text) as f32 * ts;
+            let text_w = state.renderer.bit_font.text_width(status_text) as f32 * ts;
             let strip_w = text_w + READY_PAD_X * 2.0 * ts;
             // gamemd `ComputeTextRect` uses `cell_height + 2*y_pad` for the
             // strip height (cell_height includes the 1 px inter-line gap that
             // gamemd extends below the glyphs).
-            let strip_h = (state.bit_font.cell_height() + READY_PAD_Y * 2.0) * ts;
+            let strip_h = (state.renderer.bit_font.cell_height() + READY_PAD_Y * 2.0) * ts;
             let strip_x = if has_queue_badge {
                 slot.x + co[0]
             } else {
@@ -648,12 +648,12 @@ pub(crate) fn build_sidebar_cameo_instances(
         // Dark strip overlay behind queue count badge (top-right, same alpha as Ready strip).
         // Original: ComputeTextRect(cameo_x+60, cameo_y+1, 0x242, x_pad=2, y_pad=1)
         // The dark rect extends x_pad (2px) past the cameo right edge.
-        if has_queue_badge && state.bit_font.darken_texture().is_some() {
+        if has_queue_badge && state.renderer.bit_font.darken_texture().is_some() {
             let ts = ready_text_scale(state.ui_scale);
             let count_str = format!("{}", item.queued_count);
-            let text_w = state.bit_font.text_width(&count_str) as f32 * ts;
+            let text_w = state.renderer.bit_font.text_width(&count_str) as f32 * ts;
             let strip_w = text_w + QUEUE_COUNT_PAD_X * 2.0 * ts;
-            let strip_h = (state.bit_font.cell_height() + QUEUE_COUNT_PAD_Y * 2.0) * ts;
+            let strip_h = (state.renderer.bit_font.cell_height() + QUEUE_COUNT_PAD_Y * 2.0) * ts;
             // Right-align anchor at cameo right edge; strip extends x_pad past it.
             let strip_x = slot.x + slot.w - text_w - QUEUE_COUNT_PAD_X * ts;
             overlay_instances.push(SpriteInstance {
@@ -682,7 +682,7 @@ pub(crate) fn build_sidebar_text_instances(
     hold_text: &str,
     ready_tint: [f32; 3],
 ) -> Vec<SpriteInstance> {
-    if state.bit_font.darken_texture().is_none() {
+    if state.renderer.bit_font.darken_texture().is_none() {
         // No FNT loaded — text will be rendered by egui fallback.
         return Vec::new();
     }
@@ -708,7 +708,7 @@ pub(crate) fn build_sidebar_text_instances(
         // avoid overlap (original: x = cameo_x+2, flags 0x42 vs centered
         // cameo_x+30, 0x142).
         if let Some(status_text) = cameo_status_text(item, ready_text, hold_text) {
-            let text_w = state.bit_font.text_width(status_text) as f32 * ts;
+            let text_w = state.renderer.bit_font.text_width(status_text) as f32 * ts;
             let text_x = if has_queue_badge {
                 slot.x + READY_PAD_X * ts
             } else {
@@ -717,7 +717,7 @@ pub(crate) fn build_sidebar_text_instances(
             // gamemd anchors text at `cameo_y + y_pad`; the strip extends
             // y_pad above and (cell_height - glyph_height + y_pad) below.
             let text_y = slot.y + READY_PAD_Y * ts;
-            instances.extend(state.bit_font.build_text(
+            instances.extend(state.renderer.bit_font.build_text(
                 status_text,
                 text_x,
                 text_y,
@@ -733,13 +733,13 @@ pub(crate) fn build_sidebar_text_instances(
         // 0x242 = right-align. Uses same side-dependent color as Ready text.
         if has_queue_badge {
             let count_str = format!("{}", item.queued_count);
-            let text_w = state.bit_font.text_width(&count_str) as f32 * ts;
+            let text_w = state.renderer.bit_font.text_width(&count_str) as f32 * ts;
             // Right-align: text right edge at cameo right edge (anchor = cameo_x + 60).
             let text_x = slot.x + slot.w - text_w;
             let text_y = slot.y + QUEUE_COUNT_PAD_Y * ts;
             instances.extend(
                 state
-                    .bit_font
+                    .renderer.bit_font
                     .build_text(&count_str, text_x, text_y, ts, 0.00042, ready_tint, co),
             );
         }

@@ -134,7 +134,7 @@ pub(crate) fn update_radar_state(state: &mut AppState, dt_ms: f32) {
 
     if let Some(ref mut ra) = state.radar_anim {
         ra.set_has_radar(new_has_radar);
-        ra.tick(&state.gpu, dt_ms);
+        ra.tick(&state.renderer.gpu, dt_ms);
     }
 }
 

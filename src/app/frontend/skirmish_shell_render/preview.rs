@@ -226,8 +226,8 @@ pub(super) fn ensure_random_map_setup_preview_texture(state: &mut AppState) -> b
         return true;
     }
 
-    let texture = state.batch_renderer.create_texture(
-        &state.gpu,
+    let texture = state.renderer.batch_renderer.create_texture(
+        &state.renderer.gpu,
         &preview.rgba,
         preview.width,
         preview.height,
@@ -270,8 +270,8 @@ pub(super) fn ensure_selected_preview_texture(state: &mut AppState) {
         return;
     };
 
-    let texture = state.batch_renderer.create_texture(
-        &state.gpu,
+    let texture = state.renderer.batch_renderer.create_texture(
+        &state.renderer.gpu,
         &decoded.rgba,
         decoded.width,
         decoded.height,

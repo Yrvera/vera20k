@@ -61,10 +61,10 @@ impl App {
                 .as_ref()
                 .expect("active startup splash exists");
             startup_splash::render_and_present(
-                &state.gpu,
-                &state.batch_renderer,
-                &state.shell_surface_presenter,
-                &state.depth_view,
+                &state.renderer.gpu,
+                &state.renderer.batch_renderer,
+                &state.renderer.shell_surface_presenter,
+                &state.renderer.depth_view,
                 splash,
             )?;
             state
@@ -174,14 +174,14 @@ impl App {
         }
 
         let output: wgpu::SurfaceTexture = state
-            .gpu
+            .renderer.gpu
             .surface
             .get_current_texture()
             .map_err(|e| anyhow::anyhow!("Surface texture: {}", e))?;
         let view: wgpu::TextureView = output.texture.create_view(&Default::default());
         let mut encoder: wgpu::CommandEncoder =
             state
-                .gpu
+                .renderer.gpu
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame"),
@@ -223,7 +223,7 @@ impl App {
                         &output.texture,
                     )? {
                         crate::app::frontend::single_player_shell_render::SinglePlayerShellRenderResult::Rendered => {
-                            state.egui.begin_frame(&state.platform.window);
+                            state.renderer.egui.begin_frame(&state.platform.window);
                             if state.show_save_load_panel {
                                 Self::handle_save_load_panel(state);
                             }
@@ -231,8 +231,8 @@ impl App {
                             // over the SP shell; confirm-quit cannot originate
                             // here, so its return value is ignored.
                             let _ = Self::draw_main_menu_dialogs(state, false);
-                            state.egui.end_frame_and_render(
-                                &state.gpu,
+                            state.renderer.egui.end_frame_and_render(
+                                &state.renderer.gpu,
                                 &mut encoder,
                                 &view,
                                 &state.platform.window,
@@ -258,21 +258,21 @@ impl App {
                             title_receipt,
                         } => {
                             pending_main_menu_title_receipt = title_receipt;
-                            state.egui.begin_frame(&state.platform.window);
+                            state.renderer.egui.begin_frame(&state.platform.window);
                             // The SHP shell renders the quit-confirm as an SHP
                             // overlay (and OK exits via its hit-test), so the egui
                             // exit-confirm is suppressed here; campaign/options/
                             // movies egui dialogs still draw. confirm_quit stays false.
                             let confirm_quit = Self::draw_main_menu_dialogs(state, false);
-                            state.egui.end_frame_and_render(
-                                &state.gpu,
+                            state.renderer.egui.end_frame_and_render(
+                                &state.renderer.gpu,
                                 &mut encoder,
                                 &view,
                                 &state.platform.window,
                                 state.use_software_cursor(),
                             );
                             if confirm_quit {
-                                state.gpu.queue.submit(std::iter::once(encoder.finish()));
+                                state.renderer.gpu.queue.submit(std::iter::once(encoder.finish()));
                                 output.present();
                                 if let Some(token) =
                                     pending_main_menu_entry_token.take()
@@ -321,10 +321,10 @@ impl App {
                             .unwrap_or("auto")
                             .to_string();
                         transitions::clear_screen(&mut encoder, &view);
-                        state.egui.begin_frame(&state.platform.window);
-                        main_menu::draw_loading_screen(&state.egui.ctx, &map_name_display);
-                        state.egui.end_frame_and_render(
-                            &state.gpu,
+                        state.renderer.egui.begin_frame(&state.platform.window);
+                        main_menu::draw_loading_screen(&state.renderer.egui.ctx, &map_name_display);
+                        state.renderer.egui.end_frame_and_render(
+                            &state.renderer.gpu,
                             &mut encoder,
                             &view,
                             &state.platform.window,
@@ -344,20 +344,20 @@ impl App {
                 }
             }
             GameScreen::InGame => {
-                let game_output = if state.upscale_pass.is_some() {
+                let game_output = if state.renderer.upscale_pass.is_some() {
                     // Render game to intermediate texture, then upscale to swapchain.
-                    let up = state.upscale_pass.as_ref().unwrap();
+                    let up = state.renderer.upscale_pass.as_ref().unwrap();
                     let game_depth = up.depth_view().clone();
-                    let saved_depth = std::mem::replace(&mut state.depth_view, game_depth);
+                    let saved_depth = std::mem::replace(&mut state.renderer.depth_view, game_depth);
                     let result = render::render_game(state, &mut encoder);
-                    state.depth_view = saved_depth;
+                    state.renderer.depth_view = saved_depth;
                     let render_output = result?;
-                    state.combat_light_renderer.copy_to(
+                    state.renderer.combat_light_renderer.copy_to(
                         &mut encoder,
-                        state.upscale_pass.as_ref().unwrap().color_texture(),
+                        state.renderer.upscale_pass.as_ref().unwrap().color_texture(),
                     );
                     state
-                        .upscale_pass
+                        .renderer.upscale_pass
                         .as_ref()
                         .unwrap()
                         .draw(&mut encoder, &view);
@@ -365,7 +365,7 @@ impl App {
                 } else {
                     let render_output = render::render_game(state, &mut encoder)?;
                     state
-                        .combat_light_renderer
+                        .renderer.combat_light_renderer
                         .copy_to(&mut encoder, &output.texture);
                     render_output
                 };
@@ -387,7 +387,7 @@ impl App {
                 // All sidebar text (credits, Ready labels, queue counts) is now
                 // GAME.FNT sprite geometry built in app_render; egui in-game
                 // carries only the dev/debug overlays.
-                state.egui.begin_frame(&state.platform.window);
+                state.renderer.egui.begin_frame(&state.platform.window);
                 // Debug panels use a light/.NET theme — push light visuals
                 // before rendering, then restore the original after.
                 let any_debug_panel = state.diag.debug_show_pathgrid
@@ -395,20 +395,20 @@ impl App {
                     || state.show_hotkey_help;
                 let prev_visuals = if any_debug_panel {
                     Some(crate::app::diagnostics::debug_panel::push_debug_light_visuals(
-                        &state.egui.ctx,
+                        &state.renderer.egui.ctx,
                     ))
                 } else {
                     None
                 };
                 if state.diag.debug_show_pathgrid {
-                    crate::app::diagnostics::debug_panel::draw_debug_panel(&state.egui.ctx, state);
+                    crate::app::diagnostics::debug_panel::draw_debug_panel(&state.renderer.egui.ctx, state);
                 }
-                crate::app::diagnostics::debug_panel::draw_event_history_panel(&state.egui.ctx, state);
+                crate::app::diagnostics::debug_panel::draw_event_history_panel(&state.renderer.egui.ctx, state);
                 if state.show_hotkey_help {
-                    crate::app::diagnostics::debug_panel::draw_hotkey_help(&state.egui.ctx);
+                    crate::app::diagnostics::debug_panel::draw_hotkey_help(&state.renderer.egui.ctx);
                 }
                 if let Some(prev) = prev_visuals {
-                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
+                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.renderer.egui.ctx, prev);
                 }
                 if state.show_save_load_panel {
                     Self::handle_save_load_panel(state);
@@ -421,12 +421,12 @@ impl App {
                     // The dev overlay rides along with any in-scenario modal —
                     // push its own light visuals so its chrome matches the
                     // debug panels.
-                    let prev = crate::app::diagnostics::debug_panel::push_debug_light_visuals(&state.egui.ctx);
+                    let prev = crate::app::diagnostics::debug_panel::push_debug_light_visuals(&state.renderer.egui.ctx);
                     Self::handle_dev_overlay(state);
-                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.egui.ctx, prev);
+                    crate::app::diagnostics::debug_panel::pop_debug_light_visuals(&state.renderer.egui.ctx, prev);
                 }
-                state.egui.end_frame_and_render(
-                    &state.gpu,
+                state.renderer.egui.end_frame_and_render(
+                    &state.renderer.gpu,
                     &mut encoder,
                     &view,
                     &state.platform.window,
@@ -456,9 +456,9 @@ impl App {
                 };
                 if !score_rendered {
                     transitions::clear_screen(&mut encoder, &view);
-                    state.egui.begin_frame(&state.platform.window);
+                    state.renderer.egui.begin_frame(&state.platform.window);
                     if crate::ui::mission_status::draw_mission_result_screen(
-                        &state.egui.ctx,
+                        &state.renderer.egui.ctx,
                         &title,
                         &detail,
                     ) {
@@ -466,8 +466,8 @@ impl App {
                         // is torn down, symmetric with return_to_main_menu.
                         Self::leave_mission_result_screen(state);
                     }
-                    state.egui.end_frame_and_render(
-                        &state.gpu,
+                    state.renderer.egui.end_frame_and_render(
+                        &state.renderer.gpu,
                         &mut encoder,
                         &view,
                         &state.platform.window,
@@ -482,10 +482,10 @@ impl App {
                     &output.texture,
                     &view,
                 )?;
-                state.egui.begin_frame(&state.platform.window);
-                crate::app::presentation::spawn_pick::draw_spawn_pick_overlay(&state.egui.ctx.clone(), state);
-                state.egui.end_frame_and_render(
-                    &state.gpu,
+                state.renderer.egui.begin_frame(&state.platform.window);
+                crate::app::presentation::spawn_pick::draw_spawn_pick_overlay(&state.renderer.egui.ctx.clone(), state);
+                state.renderer.egui.end_frame_and_render(
+                    &state.renderer.gpu,
                     &mut encoder,
                     &view,
                     &state.platform.window,
@@ -505,12 +505,12 @@ impl App {
         };
         let pending_entry_sequence = if entry_sequence_identity.is_some() {
             Some(crate::render::frame_readback::PendingBgra8Readback::encode(
-                &state.gpu.device,
+                &state.renderer.gpu.device,
                 &mut encoder,
                 &output.texture,
-                state.gpu.config.format,
-                state.gpu.config.width,
-                state.gpu.config.height,
+                state.renderer.gpu.config.format,
+                state.renderer.gpu.config.width,
+                state.renderer.gpu.config.height,
             )?)
         } else {
             None
@@ -525,12 +525,12 @@ impl App {
         let capture_current_frame = shell_capture_current_frame || tactical_capture_current_frame;
         let pending_capture = if capture_current_frame {
             Some(crate::render::frame_readback::PendingBgra8Readback::encode(
-                &state.gpu.device,
+                &state.renderer.gpu.device,
                 &mut encoder,
                 &output.texture,
-                state.gpu.config.format,
-                state.gpu.config.width,
-                state.gpu.config.height,
+                state.renderer.gpu.config.format,
+                state.renderer.gpu.config.width,
+                state.renderer.gpu.config.height,
             )?)
         } else {
             None
@@ -538,15 +538,15 @@ impl App {
         let retail_screenshot_current_frame =
             std::mem::take(&mut state.retail_screenshot_requested);
         let pending_retail_screenshot = state
-            .retail_screenshot_frame_cache
+            .renderer.retail_screenshot_frame_cache
             .capture_previous_if_requested(
                 retail_screenshot_current_frame,
-                &state.gpu.device,
+                &state.renderer.gpu.device,
                 &mut encoder,
-                state.gpu.config.format,
-                state.gpu.config.width,
-                state.gpu.config.height,
-                state.upscale_pass.as_ref(),
+                state.renderer.gpu.config.format,
+                state.renderer.gpu.config.width,
+                state.renderer.gpu.config.height,
+                state.renderer.upscale_pass.as_ref(),
             )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
@@ -563,9 +563,9 @@ impl App {
         } else {
             None
         };
-        let submission = state.gpu.queue.submit(std::iter::once(encoder.finish()));
+        let submission = state.renderer.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-        state.retail_screenshot_frame_cache.commit_presented();
+        state.renderer.retail_screenshot_frame_cache.commit_presented();
         if let Some(token) = pending_main_menu_entry_token.take() {
             crate::app::frontend::shell_transition::record_main_menu_entry_presented(state, token)?;
         }
@@ -587,11 +587,11 @@ impl App {
         }
         if let Some(pending_capture) = pending_capture {
             let pixels = pending_capture.finish(
-                &state.gpu.device,
+                &state.renderer.gpu.device,
                 submission.clone(),
                 capture_timeout.expect("capture timeout exists with pending readback"),
             )?;
-            let surface_format = state.gpu.config.format;
+            let surface_format = state.renderer.gpu.config.format;
             if shell_capture_current_frame {
                 shell_capture
                     .as_deref_mut()
@@ -607,14 +607,14 @@ impl App {
         }
         if let Some(pending_screenshot) = pending_retail_screenshot {
             match pending_screenshot.finish(
-                &state.gpu.device,
+                &state.renderer.gpu.device,
                 submission,
                 crate::render::screenshot::READBACK_TIMEOUT,
             ) {
                 Ok(pixels) => match crate::render::screenshot::write_retail_screenshot(
-                    state.gpu.config.width,
-                    state.gpu.config.height,
-                    state.gpu.config.format,
+                    state.renderer.gpu.config.width,
+                    state.renderer.gpu.config.height,
+                    state.renderer.gpu.config.format,
                     &pixels,
                 ) {
                     Ok(path) => log::info!("Saved screenshot {}", path.display()),

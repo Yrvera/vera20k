@@ -432,8 +432,8 @@ pub(crate) fn render_skirmish_shell(
     encoder: &mut wgpu::CommandEncoder,
     destination: &wgpu::Texture,
 ) -> anyhow::Result<SkirmishShellAction> {
-    let color = state.shell_surface_presenter.source_render_view();
-    let depth = state.depth_view.clone();
+    let color = state.renderer.shell_surface_presenter.source_render_view();
+    let depth = state.renderer.depth_view.clone();
     let action = render_skirmish_shell_to_target(
         state,
         encoder,
@@ -444,7 +444,7 @@ pub(crate) fn render_skirmish_shell(
         ShellRenderMode::Visible,
     )?;
     state
-        .shell_surface_presenter
+        .renderer.shell_surface_presenter
         .encode_present(encoder, destination);
     Ok(action)
 }
@@ -501,7 +501,7 @@ fn render_in_game_options_overlay_with_atlas(
     // They sample the BitFont atlas (a different texture from the owner-draw chrome
     // atlas), so they ride their own buffer + draw call below.
     let mut text_instances = in_game_options::build_in_game_options_text_instances(
-        &state.bit_font,
+        &state.renderer.bit_font,
         state.csf.as_ref(),
         screen_w,
         screen_h,
@@ -528,21 +528,21 @@ fn render_in_game_options_overlay_with_atlas(
     }
 
     let control_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &instances);
     let text_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &text_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &text_instances);
     let cursor_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &cursor_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     let cursor_texture = state
         .software_cursor
         .as_ref()
         .and_then(|cursor| cursor.get(crate::app::types::CursorId::Default))
         .and_then(|sequence| sequence.frames.first())
         .map(|frame| &frame.texture);
-    let depth = state.depth_view.clone();
+    let depth = state.renderer.depth_view.clone();
 
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("In-Game Options Overlay"),
@@ -570,7 +570,7 @@ fn render_in_game_options_overlay_with_atlas(
         occlusion_query_set: None,
     });
     if let Some((buffer, count)) = control_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_ui_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_ui_passthrough(
             &mut pass,
             &atlas.texture,
             buffer,
@@ -579,9 +579,9 @@ fn render_in_game_options_overlay_with_atlas(
     }
     // Text statics on top of the chrome, sampling the BitFont atlas.
     if let Some((buffer, count)) = text_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_ui_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_ui_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
@@ -589,7 +589,7 @@ fn render_in_game_options_overlay_with_atlas(
     // Default cursor on top of the chrome (the game cursor underneath is covered).
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_ui_passthrough(&mut pass, texture, buffer, *count);
     }
     drop(pass);
@@ -708,8 +708,8 @@ fn render_skirmish_shell_with_atlas(
     });
     let preview_buffer = preview_instance.as_ref().and_then(|instance| {
         state
-            .batch_renderer
-            .create_instance_buffer(&state.gpu, &[*instance])
+            .renderer.batch_renderer
+            .create_instance_buffer(&state.renderer.gpu, &[*instance])
     });
     let marker_instances = if draw_start_marker_overlays {
         build_start_marker_instances(atlas, &projected_start_positions)
@@ -717,8 +717,8 @@ fn render_skirmish_shell_with_atlas(
         Vec::new()
     };
     let marker_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &marker_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &marker_instances);
 
     let wave = if mode == ShellRenderMode::TransitionPreview {
         state.shell_first_paint_slide.as_ref()
@@ -734,7 +734,7 @@ fn render_skirmish_shell_with_atlas(
         && state.shell_controller.pressed() == Some(crate::ui::shell::modal::control::OK);
     let instances = build_skirmish_shell_instances(
         atlas,
-        &state.bit_font,
+        &state.renderer.bit_font,
         &layout,
         choose_map_layout.as_ref(),
         validation_layout.as_ref(),
@@ -805,10 +805,10 @@ fn render_skirmish_shell_with_atlas(
         Vec::new()
     };
     let marker_label_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &marker_label_instances);
-    state.batch_renderer.update_camera(
-        &state.gpu,
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &marker_label_instances);
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
         state.render_width() as f32,
         state.render_height() as f32,
         0.0,
@@ -817,27 +817,27 @@ fn render_skirmish_shell_with_atlas(
     );
 
     let Some((buffer, count)) = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &instances)
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &instances)
     else {
         clear_shell_target(state, encoder, target);
         return Ok(action);
     };
     let bare_text_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &bare_text_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &bare_text_instances);
     let scissored_text_buffers: Vec<_> = shell_draws
         .iter()
         .map(|d| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &d.instances)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &d.instances)
         })
         .collect();
     let cursor_instances: Vec<SpriteInstance> = shell_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &cursor_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     // Default-cursor frame-0 texture, borrowed for the duration of the pass.
     let cursor_texture = state
         .software_cursor
@@ -869,13 +869,13 @@ fn render_skirmish_shell_with_atlas(
         occlusion_query_set: None,
     });
     state
-        .batch_renderer
+        .renderer.batch_renderer
         .draw_with_buffer_passthrough(&mut pass, &atlas.texture, &buffer, count);
     if let (Some(preview), Some((buffer, count))) = (
         state.skirmish_preview_texture.as_ref(),
         preview_buffer.as_ref(),
     ) {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &preview.texture,
             buffer,
@@ -883,7 +883,7 @@ fn render_skirmish_shell_with_atlas(
         );
     }
     if let Some((buffer, count)) = marker_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &atlas.texture,
             buffer,
@@ -891,17 +891,17 @@ fn render_skirmish_shell_with_atlas(
         );
     }
     if let Some((buffer, count)) = marker_label_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
     }
     if let Some((buffer, count)) = bare_text_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
@@ -916,9 +916,9 @@ fn render_skirmish_shell_with_atlas(
             draw.scissor.w,
             draw.scissor.h,
         );
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
@@ -928,7 +928,7 @@ fn render_skirmish_shell_with_atlas(
     // Software cursor draws last, on top of all chrome/controls/modals.
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
     }
     drop(pass);

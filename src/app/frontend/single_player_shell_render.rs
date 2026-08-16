@@ -194,20 +194,20 @@ pub(crate) fn render_single_player_shell(
             .duration_since(state.main_menu_movie_last_step)
             .as_secs_f64();
         state.main_menu_movie_last_step = now;
-        if let Err(err) = movie.step(&state.gpu, elapsed) {
+        if let Err(err) = movie.step(&state.renderer.gpu, elapsed) {
             log::warn!("Failed to step single-player RA2TS movie: {err:#}");
             state.main_menu_shell_failed = true;
             return Ok(SinglePlayerShellRenderResult::Fallback);
         }
     }
 
-    let color = state.shell_surface_presenter.source_render_view();
-    let depth = state.depth_view.clone();
+    let color = state.renderer.shell_surface_presenter.source_render_view();
+    let depth = state.renderer.depth_view.clone();
     let target = ShellRenderTarget {
         color: &color,
         depth: &depth,
     };
-    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     // While a first-paint slide is live the buttons animate through their
     // SDBTNANM ramp frames; off-slide this is None and they paint steady-state.
     let wave = state.shell_first_paint_slide.clone();
@@ -239,37 +239,37 @@ pub(crate) fn render_single_player_shell(
     let button_instances =
         shell_paint::paint_buttons(chrome, &buttons, SP_BUTTON_POLICY, Instant::now(), None);
     let labels = sp_paint_labels(state, &layout);
-    let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
+    let text_draws = shell_paint::paint_labels(&state.renderer.bit_font, &labels);
 
-    state.batch_renderer.update_camera(
-        &state.gpu,
-        state.gpu.config.width as f32,
-        state.gpu.config.height as f32,
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
+        state.renderer.gpu.config.width as f32,
+        state.renderer.gpu.config.height as f32,
         0.0,
         0.0,
         1.0,
     );
     let movie_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &movie_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &movie_instances);
     let chrome_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &chrome_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &chrome_instances);
     let button_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &button_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &button_instances);
     let text_buffers: Vec<_> = text_draws
         .iter()
         .map(|draw| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &draw.instances)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &draw.instances)
         })
         .collect();
     let cursor_instances: Vec<SpriteInstance> = shell_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &cursor_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     // Default-cursor frame-0 texture, borrowed for the duration of the pass.
     let cursor_texture = state
         .software_cursor
@@ -302,11 +302,11 @@ pub(crate) fn render_single_player_shell(
     });
     if let Some((buffer, count)) = movie_buffer.as_ref() {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, movie_texture, buffer, *count);
     }
     if let Some((buffer, count)) = chrome_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &chrome.texture,
             buffer,
@@ -314,7 +314,7 @@ pub(crate) fn render_single_player_shell(
         );
     }
     if let Some((buffer, count)) = button_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &chrome.texture,
             buffer,
@@ -331,23 +331,23 @@ pub(crate) fn render_single_player_shell(
             draw.scissor.w,
             draw.scissor.h,
         );
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
     }
-    pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    pass.set_scissor_rect(0, 0, state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     // Software cursor draws last, on top of all chrome/controls.
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
     }
     drop(pass);
     state
-        .shell_surface_presenter
+        .renderer.shell_surface_presenter
         .encode_present(encoder, destination);
 
     Ok(SinglePlayerShellRenderResult::Rendered)
@@ -435,10 +435,10 @@ mod tests {
             .find("render_single_player_shell")
             .expect("single-player renderer call");
         let overlay = dispatch
-            .find("state.egui.end_frame_and_render")
+            .find("state.renderer.egui.end_frame_and_render")
             .expect("post-shell egui overlay");
         assert!(dispatch[shell_call..overlay].contains("&output.texture"));
-        assert!(dispatch[overlay..].starts_with("state.egui.end_frame_and_render"));
+        assert!(dispatch[overlay..].starts_with("state.renderer.egui.end_frame_and_render"));
         assert!(dispatch[overlay..].contains("&view"));
     }
 }

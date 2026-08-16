@@ -236,7 +236,7 @@ pub(super) fn push_text_draw_revealed(
     reveal: Option<Reveal>,
 ) {
     let draw = shell_text::draw_in_rect(
-        &state.bit_font,
+        &state.renderer.bit_font,
         label,
         text_rect,
         color,
@@ -420,7 +420,7 @@ fn push_combo_face_label_draw_with_color(
         return;
     }
     let fit_width = combo_face_text_fit_width(rect);
-    let label = truncate_owner_draw_label(&state.bit_font, label, fit_width);
+    let label = truncate_owner_draw_label(&state.renderer.bit_font, label, fit_width);
     push_text_draw(
         out,
         state,
@@ -507,8 +507,8 @@ pub(super) fn push_player_name_edit_text_draw(
     }
 
     let line_y =
-        rect.y as f32 + ((rect.h as f32 - state.bit_font.glyph_height()).max(0.0) / 2.0).floor();
-    let instances = state.bit_font.build_text(
+        rect.y as f32 + ((rect.h as f32 - state.renderer.bit_font.glyph_height()).max(0.0) / 2.0).floor();
+    let instances = state.renderer.bit_font.build_text(
         &shell.player_name_edit.text,
         (rect.x - shell.player_name_edit.scroll_x.max(0)) as f32,
         line_y,
@@ -782,7 +782,7 @@ pub(super) fn build_shell_text_draws(
                 }
                 let rect = combo_dropdown_text_rect_for_current_renderer(content, idx);
                 let fit_width = combo_dropdown_text_fit_width(content);
-                let label = truncate_combo_dropdown_label(&state.bit_font, &label, fit_width);
+                let label = truncate_combo_dropdown_label(&state.renderer.bit_font, &label, fit_width);
                 push_text_draw(
                     &mut shell_draws,
                     state,
@@ -1110,7 +1110,7 @@ pub(super) fn push_validation_modal_text_draws(
         path_a_reveal: None,
     }];
     out.extend(shell_paint::paint_labels_at_depth(
-        &state.bit_font,
+        &state.renderer.bit_font,
         &body,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00012,
     ));
@@ -1122,7 +1122,7 @@ pub(super) fn push_validation_modal_text_draws(
         path_a_reveal: None,
     }];
     out.extend(shell_paint::paint_labels_at_depth(
-        &state.bit_font,
+        &state.renderer.bit_font,
         &ok,
         SHELL_DROPDOWN_TEXT_DEPTH - 0.00013,
     ));
@@ -1137,7 +1137,7 @@ pub(super) fn push_start_marker_labels(
     for (idx, &(x, y)) in projected_positions.iter().enumerate() {
         let label = (idx + 1).to_string();
         let (label_x, label_y) = start_marker_label_origin(x, y);
-        out.extend(state.bit_font.build_text(
+        out.extend(state.renderer.bit_font.build_text(
             &label,
             label_x as f32,
             label_y as f32,

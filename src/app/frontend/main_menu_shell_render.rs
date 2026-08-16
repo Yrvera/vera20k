@@ -323,7 +323,7 @@ pub(crate) fn ensure_movie_for_current_layout(
     state: &mut AppState,
     requested_owner: Ra2tsDialogOwner,
 ) -> Result<()> {
-    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     let requested_identity = Ra2tsMovieSessionIdentity::new(requested_owner, layout.movie_base);
     if ra2ts_movie_session_is_reusable(
         state.main_menu_movie.is_some(),
@@ -365,8 +365,8 @@ pub(crate) fn ensure_movie_for_current_layout(
     }
 
     let movie = match crate::render::bink_movie::BinkMovieSurface::from_bytes(
-        &state.gpu,
-        &state.batch_renderer,
+        &state.renderer.gpu,
+        &state.renderer.batch_renderer,
         Arc::<[u8]>::from(bytes),
         source.to_string(),
         true,
@@ -428,8 +428,8 @@ pub(crate) fn render_main_menu_shell(
             Kind1PaintWindow::Retained(window) => (Some(window), None),
             Kind1PaintWindow::Due { window, receipt } => (Some(window), Some(receipt)),
         };
-    let color = state.shell_surface_presenter.source_render_view();
-    let depth = state.depth_view.clone();
+    let color = state.renderer.shell_surface_presenter.source_render_view();
+    let depth = state.renderer.depth_view.clone();
     let result = render_main_menu_shell_to_target_inner(
         state,
         encoder,
@@ -443,7 +443,7 @@ pub(crate) fn render_main_menu_shell(
     match result {
         MainMenuShellRenderResult::Rendered { .. } => {
             state
-                .shell_surface_presenter
+                .renderer.shell_surface_presenter
                 .encode_present(encoder, destination);
             Ok(MainMenuShellRenderResult::Rendered { title_receipt })
         }
@@ -457,8 +457,8 @@ pub(crate) fn render_main_menu_first_paint_frame(
     destination: &wgpu::Texture,
     frame: MainMenuEntryPaintFrame,
 ) -> Result<MainMenuEntryRenderResult> {
-    let color = state.shell_surface_presenter.source_render_view();
-    let depth = state.depth_view.clone();
+    let color = state.renderer.shell_surface_presenter.source_render_view();
+    let depth = state.renderer.depth_view.clone();
     let result = render_main_menu_shell_to_target_inner(
         state,
         encoder,
@@ -472,7 +472,7 @@ pub(crate) fn render_main_menu_first_paint_frame(
     match result {
         MainMenuShellRenderResult::Rendered { .. } => {
             state
-                .shell_surface_presenter
+                .renderer.shell_surface_presenter
                 .encode_present(encoder, destination);
             let token = state
                 .shell_first_paint_slide
@@ -506,14 +506,14 @@ fn render_main_menu_shell_to_target_inner(
             .duration_since(state.main_menu_movie_last_step)
             .as_secs_f64();
         state.main_menu_movie_last_step = now;
-        if let Err(err) = movie.step(&state.gpu, elapsed) {
+        if let Err(err) = movie.step(&state.renderer.gpu, elapsed) {
             log::warn!("Failed to step main-menu RA2TS movie: {err:#}");
             state.main_menu_shell_failed = true;
             return Ok(MainMenuShellRenderResult::Fallback);
         }
     }
 
-    let layout = compute_layout(state.gpu.config.width, state.gpu.config.height);
+    let layout = compute_layout(state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     let chrome = state
         .main_menu_shell_chrome
         .as_ref()
@@ -560,7 +560,7 @@ fn render_main_menu_shell_to_target_inner(
         &version_text,
         title_window,
     );
-    let text_draws = shell_paint::paint_labels(&state.bit_font, &labels);
+    let text_draws = shell_paint::paint_labels(&state.renderer.bit_font, &labels);
 
     // Quit-confirm SHP modal overlay (blocking; drawn over the menu, under the
     // cursor). `None` when the modal is closed or the skirmish atlas (which holds
@@ -568,38 +568,38 @@ fn render_main_menu_shell_to_target_inner(
     let modal_overlay = build_exit_confirm_modal_overlay(state);
     let skirmish_chrome = state.skirmish_shell_chrome.as_ref();
 
-    state.batch_renderer.update_camera(
-        &state.gpu,
-        state.gpu.config.width as f32,
-        state.gpu.config.height as f32,
+    state.renderer.batch_renderer.update_camera(
+        &state.renderer.gpu,
+        state.renderer.gpu.config.width as f32,
+        state.renderer.gpu.config.height as f32,
         0.0,
         0.0,
         1.0,
     );
     let background_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &background_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &background_instances);
     let movie_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &movie_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &movie_instances);
     let chrome_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &chrome_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &chrome_instances);
     let button_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &button_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &button_instances);
     let text_buffers: Vec<_> = text_draws
         .iter()
         .map(|draw| {
             state
-                .batch_renderer
-                .create_instance_buffer(&state.gpu, &draw.instances)
+                .renderer.batch_renderer
+                .create_instance_buffer(&state.renderer.gpu, &draw.instances)
         })
         .collect();
     let modal_sprite_buffer = modal_overlay.as_ref().and_then(|m| {
         state
-            .batch_renderer
-            .create_instance_buffer(&state.gpu, &m.sprites)
+            .renderer.batch_renderer
+            .create_instance_buffer(&state.renderer.gpu, &m.sprites)
     });
     let modal_text_buffers: Vec<_> = modal_overlay
         .as_ref()
@@ -608,16 +608,16 @@ fn render_main_menu_shell_to_target_inner(
                 .iter()
                 .map(|draw| {
                     state
-                        .batch_renderer
-                        .create_instance_buffer(&state.gpu, &draw.instances)
+                        .renderer.batch_renderer
+                        .create_instance_buffer(&state.renderer.gpu, &draw.instances)
                 })
                 .collect()
         })
         .unwrap_or_default();
     let cursor_instances: Vec<SpriteInstance> = menu_cursor_instance(state).into_iter().collect();
     let cursor_buffer = state
-        .batch_renderer
-        .create_instance_buffer(&state.gpu, &cursor_instances);
+        .renderer.batch_renderer
+        .create_instance_buffer(&state.renderer.gpu, &cursor_instances);
     // Default-cursor frame-0 texture, borrowed for the duration of the pass.
     let cursor_texture = state
         .software_cursor
@@ -642,8 +642,8 @@ fn render_main_menu_shell_to_target_inner(
                 let quad = [crate::render::batch::SpriteInstance {
                     position: [0.0, 0.0],
                     size: [
-                        state.gpu.config.width as f32,
-                        state.gpu.config.height as f32,
+                        state.renderer.gpu.config.width as f32,
+                        state.renderer.gpu.config.height as f32,
                     ],
                     uv_origin: white.uv_origin,
                     uv_size: white.uv_size,
@@ -655,8 +655,8 @@ fn render_main_menu_shell_to_target_inner(
                     ..Default::default()
                 }];
                 state
-                    .batch_renderer
-                    .create_instance_buffer(&state.gpu, &quad)
+                    .renderer.batch_renderer
+                    .create_instance_buffer(&state.renderer.gpu, &quad)
             })
     } else {
         None
@@ -685,7 +685,7 @@ fn render_main_menu_shell_to_target_inner(
         occlusion_query_set: None,
     });
     if let Some((buffer, count)) = background_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &chrome.texture,
             buffer,
@@ -694,11 +694,11 @@ fn render_main_menu_shell_to_target_inner(
     }
     if let Some((buffer, count)) = movie_buffer.as_ref() {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, movie_texture, buffer, *count);
     }
     if let Some((buffer, count)) = chrome_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &chrome.texture,
             buffer,
@@ -706,7 +706,7 @@ fn render_main_menu_shell_to_target_inner(
         );
     }
     if let Some((buffer, count)) = button_buffer.as_ref() {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &chrome.texture,
             buffer,
@@ -723,19 +723,19 @@ fn render_main_menu_shell_to_target_inner(
             draw.scissor.w,
             draw.scissor.h,
         );
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
-            state.bit_font.atlas(),
+            state.renderer.bit_font.atlas(),
             buffer,
             *count,
         );
     }
-    pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+    pass.set_scissor_rect(0, 0, state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     // Quit-confirm modal overlay: SHP panel + buttons (skirmish atlas texture),
     // then labels (font atlas), above the menu but below the cursor.
     if let (Some(overlay), Some(sk_chrome)) = (modal_overlay.as_ref(), skirmish_chrome) {
         if let Some((buffer, count)) = modal_sprite_buffer.as_ref() {
-            state.batch_renderer.draw_with_buffer_passthrough(
+            state.renderer.batch_renderer.draw_with_buffer_passthrough(
                 &mut pass,
                 &sk_chrome.texture,
                 buffer,
@@ -752,24 +752,24 @@ fn render_main_menu_shell_to_target_inner(
                 draw.scissor.w,
                 draw.scissor.h,
             );
-            state.batch_renderer.draw_with_buffer_passthrough(
+            state.renderer.batch_renderer.draw_with_buffer_passthrough(
                 &mut pass,
-                state.bit_font.atlas(),
+                state.renderer.bit_font.atlas(),
                 buffer,
                 *count,
             );
         }
-        pass.set_scissor_rect(0, 0, state.gpu.config.width, state.gpu.config.height);
+        pass.set_scissor_rect(0, 0, state.renderer.gpu.config.width, state.renderer.gpu.config.height);
     }
     if let (Some((buffer, count)), Some(texture)) = (cursor_buffer.as_ref(), cursor_texture) {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_with_buffer_passthrough(&mut pass, texture, buffer, *count);
     }
     // Quit-cascade fade-to-black overlay, drawn LAST so it blackens everything
     // including the cursor (the original's palette fade affects the whole frame).
     if let (Some((buffer, count)), Some(sk_chrome)) = (fade_buffer.as_ref(), skirmish_chrome) {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             &sk_chrome.texture,
             buffer,
@@ -802,8 +802,8 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
     let modal_state = state.exit_confirm_modal.as_ref()?;
     let atlas = state.skirmish_shell_chrome.as_ref()?;
     let layout = modal::quit_confirm_layout(
-        state.gpu.config.width as i32,
-        state.gpu.config.height as i32,
+        state.renderer.gpu.config.width as i32,
+        state.renderer.gpu.config.height as i32,
     );
     let pressed = state.shell_controller.pressed();
     let ok_pressed = pressed == Some(modal::control::OK);
@@ -851,7 +851,7 @@ fn build_exit_confirm_modal_overlay(state: &AppState) -> Option<shell_paint::Mod
         },
     ];
     Some(shell_paint::paint_modal_shp(
-        &state.bit_font,
+        &state.renderer.bit_font,
         atlas.validation_modal_background_pudlgbgn,
         frames,
         layout.dialog,

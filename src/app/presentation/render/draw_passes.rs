@@ -58,9 +58,9 @@ pub(super) fn dispatch_draw_passes(
     view: &wgpu::TextureView,
     data: &DrawPassData<'_>,
 ) {
-    let pool: &InstanceBufferPool = &state.instance_pool;
-    let transition_cache = state.vxl_slope_transition_cache.borrow();
-    let mut pass = begin_main_pass(encoder, view, &state.depth_view);
+    let pool: &InstanceBufferPool = &state.renderer.instance_pool;
+    let transition_cache = state.renderer.vxl_slope_transition_cache.borrow();
+    let mut pass = begin_main_pass(encoder, view, &state.renderer.depth_view);
 
     // Everything from here to the screen-fixed chrome block is battlefield: it
     // belongs to the tactical viewport and must not be able to paint a pixel
@@ -88,7 +88,7 @@ pub(super) fn dispatch_draw_passes(
     // --- Step 1: Terrain (Z-depth pipeline for per-pixel depth from TMP Z-data) ---
     draw_pooled_zdepth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.tile_atlas.as_ref(),
         "terrain",
@@ -102,7 +102,7 @@ pub(super) fn dispatch_draw_passes(
     // walls it should be lying under.
     draw_pooled_passthrough_overlay(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.overlay_atlas.as_ref(),
         "smudge",
@@ -111,7 +111,7 @@ pub(super) fn dispatch_draw_passes(
     // --- Step 2: Bridge body (Z-depth pipeline) ---
     draw_pooled_bridge_zdepth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.bridge_atlas.as_ref(),
         "overlay_bridge_body",
@@ -131,7 +131,7 @@ pub(super) fn dispatch_draw_passes(
     // Overlays (including walls) stay in the fixed cell family.
     draw_pooled_passthrough_overlay(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.overlay_atlas.as_ref(),
         "overlay",
@@ -151,7 +151,7 @@ pub(super) fn dispatch_draw_passes(
     // need their own instance bucket and pooled buffer.
     draw_pooled_bridge_passthrough(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.bridge_atlas.as_ref(),
         "overlay_bridge_body_shadow",
@@ -169,7 +169,7 @@ pub(super) fn dispatch_draw_passes(
     let bracket_tex = state.selection_overlay.as_ref().map(|o| o.white_texture());
     draw_pooled_passthrough_texture(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "selection_brackets_back",
@@ -180,7 +180,7 @@ pub(super) fn dispatch_draw_passes(
     // phase submits them again.
     draw_pooled_passthrough_texture(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "selection_brackets_front_first",
@@ -189,7 +189,7 @@ pub(super) fn dispatch_draw_passes(
     // --- Step 4: Bridge entities (multi-way Y-merge) ---
     merge_passes::draw_merged_bridge_occluded_pass(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         data.bridge_unit_instances,
         data.bridge_unit_pages,
@@ -207,7 +207,7 @@ pub(super) fn dispatch_draw_passes(
     // after the parent slot has been selected.
     merge_passes::draw_native_ground_object_pass(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         data.ground,
         state.overlay_atlas.as_ref(),
@@ -221,7 +221,7 @@ pub(super) fn dispatch_draw_passes(
     // YSortAdjust remain in the pre-existing residual SHP stream.
     merge_passes::draw_merged_object_pass(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         data.unit_instances,
         data.unit_pages,
@@ -236,7 +236,7 @@ pub(super) fn dispatch_draw_passes(
     if let (Some(overlay), Some((buffer, count))) =
         (state.selection_overlay.as_ref(), pool.get("weapon_waves"))
     {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             overlay.white_texture(),
             buffer,
@@ -257,7 +257,7 @@ pub(super) fn dispatch_draw_passes(
     // above the deck body but below the railings.
     draw_pooled_bridge_railing(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.bridge_railing_atlas.as_ref(),
         "overlay_bridge_railing",
@@ -275,7 +275,7 @@ pub(super) fn dispatch_draw_passes(
                 if count == 0 {
                     continue;
                 }
-                state.batch_renderer.draw_passthrough_range(
+                state.renderer.batch_renderer.draw_passthrough_range(
                     &mut pass,
                     &page.texture,
                     buf,
@@ -291,7 +291,7 @@ pub(super) fn dispatch_draw_passes(
     // not substitute the parent building coordinate.
     if let Some((buffer, count)) = pool.get("spotlight_type16") {
         state
-            .batch_renderer
+            .renderer.batch_renderer
             .draw_spotlight_type16(&mut pass, buffer, count);
     }
 
@@ -319,7 +319,7 @@ pub(super) fn dispatch_draw_passes(
             if count > 0 {
                 merge_passes::draw_unit_atlas_page_runs(
                     &mut pass,
-                    &state.batch_renderer,
+                    &state.renderer.batch_renderer,
                     unit_atlas,
                     palette_set,
                     buf,
@@ -335,7 +335,7 @@ pub(super) fn dispatch_draw_passes(
     {
         merge_passes::draw_shp_atlas_page_runs(
             &mut pass,
-            &state.batch_renderer,
+            &state.renderer.batch_renderer,
             atlas,
             buffer,
             data.top_shp_pages,
@@ -351,9 +351,9 @@ pub(super) fn dispatch_draw_passes(
     // then resume both attachments with Load.
     drop(pass);
     state
-        .combat_light_renderer
+        .renderer.combat_light_renderer
         .draw(encoder, [tac_x, tac_y, tac_w, tac_h]);
-    let mut pass = begin_main_load_pass(encoder, view, &state.depth_view);
+    let mut pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
     pass.set_scissor_rect(tac_x, tac_y, tac_w, tac_h);
 
     // --- Step 8: Debug overlays ---
@@ -365,7 +365,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.diamond_filled_texture());
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         debug_diamond_tex,
         "debug_pathgrid",
@@ -376,21 +376,21 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.diamond_outline_texture());
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         grid_tex,
         "debug_cell_grid",
     );
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         debug_diamond_tex,
         "debug_path",
     );
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         debug_diamond_tex,
         "debug_heightmap",
@@ -410,21 +410,21 @@ pub(super) fn dispatch_draw_passes(
     // Factory rally and selected action lines are separate line families.
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "factory_rally_first",
     );
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "target_lines",
     );
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "factory_rally_second",
@@ -432,7 +432,7 @@ pub(super) fn dispatch_draw_passes(
     // Isometric selection brackets for buildings: white 1px stub lines at 3 roof corners.
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "building_radius_rings",
@@ -453,7 +453,7 @@ pub(super) fn dispatch_draw_passes(
     for (i, key) in SELECTED_DEPTH_KEYS.iter().enumerate() {
         if let Some(page) = state.sprite_atlas.as_ref().and_then(|a| a.page(i)) {
             if let Some((buf, count)) = pool.get(key) {
-                state.batch_renderer.draw_with_buffer_depth_stamp(
+                state.renderer.batch_renderer.draw_with_buffer_depth_stamp(
                     &mut pass,
                     &page.texture,
                     buf,
@@ -470,7 +470,7 @@ pub(super) fn dispatch_draw_passes(
     // post-shroud redraw.
     draw_pooled_depth_test_texture(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         bracket_tex,
         "selection_brackets_front",
@@ -482,7 +482,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.pip_texture().unwrap_or_else(|| o.white_texture()));
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         building_status_tex,
         "status_building",
@@ -494,7 +494,7 @@ pub(super) fn dispatch_draw_passes(
     });
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         occupant_pip_tex,
         "occupant_pips",
@@ -506,7 +506,7 @@ pub(super) fn dispatch_draw_passes(
         .and_then(|o| o.pipbrd_texture());
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         unit_bg_tex,
         "status_unit_bg",
@@ -518,7 +518,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.unit_pip_texture().unwrap_or_else(|| o.white_texture()));
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         unit_fill_tex,
         "status_unit_fill",
@@ -530,14 +530,14 @@ pub(super) fn dispatch_draw_passes(
     });
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         cargo_pip_tex,
         "cargo_pips",
     );
     // Drag rectangle — screen-fixed, use UI camera (zoom=1.0).
     let drag_tex = state.selection_overlay.as_ref().map(|o| o.drag_texture());
-    draw_pooled_ui(&mut pass, &state.batch_renderer, pool, drag_tex, "drag");
+    draw_pooled_ui(&mut pass, &state.renderer.batch_renderer, pool, drag_tex, "drag");
     // Placement preview — world-space, uses world camera (zoom).
     let ghost_tex = state
         .sprite_atlas
@@ -546,7 +546,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|p| &p.texture);
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         ghost_tex,
         "placement_ghost",
@@ -554,7 +554,7 @@ pub(super) fn dispatch_draw_passes(
     let wall_ghost_tex = state.overlay_atlas.as_ref().map(|a| &a.texture);
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         wall_ghost_tex,
         "placement_wall_ghost",
@@ -565,7 +565,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.preview_valid_texture());
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         valid_tex,
         "placement_valid",
@@ -576,7 +576,7 @@ pub(super) fn dispatch_draw_passes(
         .map(|o| o.preview_invalid_texture());
     draw_pooled_no_depth(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         invalid_tex,
         "placement_invalid",
@@ -591,7 +591,7 @@ pub(super) fn dispatch_draw_passes(
     if let (Some(overlay), Some((buf, count))) =
         (state.selection_overlay.as_ref(), pool.get("cell_sparkles"))
     {
-        state.batch_renderer.draw_with_buffer_passthrough(
+        state.renderer.batch_renderer.draw_with_buffer_passthrough(
             &mut pass,
             overlay.white_texture(),
             buf,
@@ -607,42 +607,42 @@ pub(super) fn dispatch_draw_passes(
     pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.minimap.as_ref().map(|m| m.map_texture()),
         "minimap",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.minimap.as_ref().map(|m| m.white_texture()),
         "viewport_rect",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.minimap.as_ref().map(|m| m.white_texture()),
         "sidebar",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         current_sidebar_chrome_texture(state),
         "sidebar_chrome",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state.radar_anim.as_ref().map(|ra| ra.texture()),
         "radar_anim",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         state
             .sidebar_cameo_atlas
@@ -652,48 +652,48 @@ pub(super) fn dispatch_draw_passes(
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         current_sidebar_gclock_texture(state),
         "sidebar_gclock",
     );
     let cameo_overlay_tex = state
-        .bit_font
+        .renderer.bit_font
         .darken_texture()
         .or_else(|| state.selection_overlay.as_ref().map(|o| o.white_texture()));
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         cameo_overlay_tex,
         "sidebar_cameo_overlay",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
-        Some(state.bit_font.atlas()),
+        Some(state.renderer.bit_font.atlas()),
         "sidebar_text",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
-        Some(state.bit_font.atlas()),
+        Some(state.renderer.bit_font.atlas()),
         "message_text",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
-        state.bit_font.darken_texture(),
+        state.renderer.bit_font.darken_texture(),
         "tooltip_fill",
     );
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
-        Some(state.bit_font.atlas()),
+        Some(state.renderer.bit_font.atlas()),
         "tooltip_text",
     );
 
@@ -704,22 +704,22 @@ pub(super) fn dispatch_draw_passes(
     // the ordinary presentation target.
     drop(pass);
     state
-        .retail_screenshot_frame_cache
+        .renderer.retail_screenshot_frame_cache
         .stage_pre_cursor_composition(
-            &state.gpu.device,
+            &state.renderer.gpu.device,
             encoder,
-            state.combat_light_renderer.composition_texture(),
-            state.gpu.config.format,
+            state.renderer.combat_light_renderer.composition_texture(),
+            state.renderer.gpu.config.format,
             state.render_width(),
             state.render_height(),
-            state.gpu.config.width,
-            state.gpu.config.height,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
         );
-    let mut pass = begin_main_load_pass(encoder, view, &state.depth_view);
+    let mut pass = begin_main_load_pass(encoder, view, &state.renderer.depth_view);
     pass.set_scissor_rect(0, 0, state.render_width(), state.render_height());
     draw_pooled_ui(
         &mut pass,
-        &state.batch_renderer,
+        &state.renderer.batch_renderer,
         pool,
         current_software_cursor_texture(state),
         "software_cursor",

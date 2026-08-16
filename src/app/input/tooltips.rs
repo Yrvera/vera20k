@@ -258,7 +258,7 @@ pub(crate) fn build_tooltip_instances(
     // side-dependent colour the cameo labels use — not a fixed yellow.
     let tint = crate::render::sidebar_text::side_highlight_color(current_sidebar_theme(state));
     tooltip_quads(
-        &state.bit_font,
+        &state.renderer.bit_font,
         &tip.text,
         [tip.x, tip.y],
         [state.render_width() as f32, state.render_height() as f32],
@@ -271,7 +271,7 @@ pub(crate) fn build_tooltip_instances(
         // without this the popup is displaced by the whole camera offset and
         // leaves the screen as soon as the player scrolls.
         [state.camera_x, state.camera_y],
-        state.bit_font.darken_texture().is_some(),
+        state.renderer.bit_font.darken_texture().is_some(),
     )
 }
 
