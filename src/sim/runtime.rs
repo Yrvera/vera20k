@@ -87,14 +87,64 @@ impl SimRuntime {
 }
 
 /// Immutable borrow facade over the committed simulation state. Getters grow
-/// per consumer cone in F10; keeping it minimal avoids a speculative API.
+/// per consumer cone (F10); presentation code reads through these instead of
+/// reaching into `Simulation` fields directly.
 pub struct SimView<'a> {
     simulation: &'a Simulation,
 }
 
 impl<'a> SimView<'a> {
+    /// Escape hatch for not-yet-migrated consumers; cones retire it (F10).
     pub fn simulation(&self) -> &'a Simulation {
         self.simulation
+    }
+
+    pub fn interner(&self) -> &'a crate::sim::intern::StringInterner {
+        &self.simulation.interner
+    }
+
+    pub fn entities(&self) -> &'a crate::sim::entity_store::EntityStore {
+        self.simulation.entities()
+    }
+
+    pub fn session(&self) -> &'a crate::sim::scenario_session::ScenarioSession {
+        &self.simulation.session
+    }
+
+    pub fn fog(&self) -> &'a crate::sim::vision::FogState {
+        &self.simulation.fog
+    }
+
+    pub fn houses(
+        &self,
+    ) -> &'a std::collections::BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>
+    {
+        &self.simulation.houses
+    }
+
+    pub fn path_grid(&self) -> Option<&'a crate::sim::pathfinding::PathGrid> {
+        self.simulation.path_grid()
+    }
+
+    pub fn radar_events(&self) -> &'a crate::sim::radar::RadarEventQueue {
+        &self.simulation.radar_events
+    }
+
+    pub fn bridge_state(&self) -> Option<&'a crate::sim::bridge_state::BridgeRuntimeState> {
+        self.simulation.bridge_state.as_ref()
+    }
+
+    /// LogicClass active-object order — presentation draws in this order.
+    pub(crate) fn tactical_registration_order(&self) -> &'a [u64] {
+        self.simulation.tactical_registration_order()
+    }
+
+    /// Radar terrain invalidation plumbing for the minimap dirty-gate.
+    pub(crate) fn radar_terrain_dirty(&self) -> (&'a [(u16, u16)], u64) {
+        (
+            &self.simulation.radar_terrain_dirty_cells,
+            self.simulation.radar_terrain_dirty_generation,
+        )
     }
 }
 

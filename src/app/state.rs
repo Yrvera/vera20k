@@ -585,6 +585,14 @@ impl AppState {
 }
 
 impl AppState {
+    /// Immutable view of the running simulation (F10): the read boundary
+    /// presentation cones consume. `None` outside a match. Sites that also
+    /// hold `&mut` app fields keep the `sim_runtime` field chain and call
+    /// `rt.view()` directly for split borrows.
+    pub(crate) fn sim_view(&self) -> Option<crate::sim::runtime::SimView<'_>> {
+        self.sim_runtime.as_ref().map(|rt| rt.view())
+    }
+
     /// Fixed per-cell terrain heights for the active match, or the empty map
     /// when no runtime exists — matching the pre-F07 always-present field.
     pub(crate) fn height_map(&self) -> &BTreeMap<(u16, u16), u8> {

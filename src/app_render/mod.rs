@@ -90,19 +90,22 @@ pub(crate) fn render_game(
     // building-bracket front redraw samples this CPU buffer during UI build.
     let rw = state.render_width();
     let rh = state.render_height();
+    // F10 cone: the render feed reads through SimView getters. This site
+    // holds `&mut state.shroud_buffer`, so it keeps the field chain and views
+    // the runtime directly for split borrows.
     let shroud_height_grid = state
         .sim_runtime
         .as_ref()
-        .map(|rt| &rt.simulation)
-        .and_then(crate::sim::world::Simulation::path_grid)
+        .and_then(|rt| rt.view().path_grid())
         .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
     if let Some(ref mut shroud_buf) = state.shroud_buffer {
         if !state.sandbox_full_visibility {
-            if let (Some(sim), Some(owner)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner) {
-                let owner_id = sim.interner.get(owner).unwrap_or_default();
+            if let (Some(rt), Some(owner)) = (state.sim_runtime.as_ref(), &local_owner) {
+                let view = rt.view();
+                let owner_id = view.interner().get(owner).unwrap_or_default();
                 shroud_buf.rebuild_if_needed(
                     &state.gpu,
-                    &sim.fog,
+                    view.fog(),
                     owner_id,
                     state.camera_x,
                     state.camera_y,

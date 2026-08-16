@@ -178,16 +178,17 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             &crate::sim::vision::FogState,
         )> = if state.sandbox_full_visibility {
             None
-        } else if let (Some(sim), Some(owner)) = (state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner_name) {
-            sim.interner.get(owner).map(|id| (id, &sim.fog))
+        } else if let (Some(rt), Some(owner)) = (state.sim_runtime.as_ref(), &local_owner_name) {
+            // F10 cone: render-feed reads go through SimView getters.
+            let view = rt.view();
+            view.interner().get(owner).map(|id| (id, view.fog()))
         } else {
             None
         };
         let bridge_state = state
             .sim_runtime
             .as_ref()
-            .map(|rt| &rt.simulation)
-            .and_then(|sim| sim.bridge_state.as_ref());
+            .and_then(|rt| rt.view().bridge_state());
         crate::render::terrain_instances::build_visible_instances(
             grid,
             Some(&state.lighting_grid),
@@ -210,8 +211,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         state
             .sim_runtime
             .as_ref()
-            .map(|rt| &rt.simulation)
-            .map_or(&[], |sim| sim.tactical_registration_order()),
+            .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
     let mut ground_objects = Vec::new();
     let mut overlay: Vec<SpriteInstance> = std::mem::take(&mut state.cached_overlay_instances);
@@ -341,8 +341,7 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         state
             .sim_runtime
             .as_ref()
-            .map(|rt| &rt.simulation)
-            .map_or(&[], |sim| sim.tactical_registration_order()),
+            .map_or(&[], |rt| rt.view().tactical_registration_order()),
     );
     // Non-garrison weapon muzzle flashes at FLH fire origins.
     app_instances::build_weapon_muzzle_flash_instances(state, &mut shp_paged);
@@ -429,9 +428,12 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
 fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
     use crate::render::pixel_fx_sparkles::{SparkleInput, build_sparkle_instances};
 
-    let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    // F10 cone entry: read-only assembly consumes the runtime through the
+    // view; fields without getters use the escape hatch until their cone.
+    let Some(view) = state.sim_view() else {
         return Vec::new();
     };
+    let sim = view.simulation();
     let Some(resolved) = state.terrain_template() else {
         return Vec::new();
     };
@@ -568,26 +570,29 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
     if let (Some(minimap), Some(rt)) = (&mut state.minimap, state.sim_runtime.as_ref()) {
-        let sim = &rt.simulation;
+        // F10 cone: render-feed reads go through SimView getters (the split
+        // borrow against `&mut state.minimap` keeps the field chain to `rt`).
+        let view = rt.view();
+        let (radar_dirty_cells, radar_dirty_generation) = view.radar_terrain_dirty();
         minimap.update_unit_dots(
             &state.gpu,
             &state.batch_renderer,
-            sim.entities(),
+            view.entities(),
             &state.house_color_map,
-            sim.session.tick,
+            view.session().tick,
             if state.sandbox_full_visibility {
                 None
             } else {
                 local_owner
                     .as_deref()
-                    .and_then(|owner| sim.interner.get(owner).map(|id| (id, &sim.fog)))
+                    .and_then(|owner| view.interner().get(owner).map(|id| (id, view.fog())))
             },
             Some(&rt.resources.rules),
-            Some(&sim.radar_events),
-            Some(&sim.interner),
-            sim.bridge_state.as_ref(),
-            &sim.radar_terrain_dirty_cells,
-            sim.radar_terrain_dirty_generation,
+            Some(view.radar_events()),
+            Some(view.interner()),
+            view.bridge_state(),
+            radar_dirty_cells,
+            radar_dirty_generation,
         );
     }
 }
