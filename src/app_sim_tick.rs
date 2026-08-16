@@ -60,14 +60,7 @@ fn wall_sell_sound_for_local(
 /// failure restores it for a later retry. Writes
 /// `replays/replay_tick{tick}_{unix_secs}.json`.
 pub(crate) fn flush_replay_log(state: &mut AppState) {
-    let session_tick = state
-        .sim_runtime
-        .as_ref()
-        .map_or(0, |rt| rt.simulation.session.tick);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let (session_tick, now) = replay_flush_facts(state);
     match state
         .match_diagnostics
         .flush_to(session_tick, Path::new(REPLAYS_DIR), now)
@@ -80,6 +73,40 @@ pub(crate) fn flush_replay_log(state: &mut AppState) {
         Ok(None) => {}
         Err(e) => log::error!("Diagnostic-log flush failed: {e}"),
     }
+}
+
+/// Timeline-boundary close (new match install, in-scenario load): a write
+/// failure discards the segment instead of retaining it, so the next
+/// timeline can never append under the previous timeline's header.
+pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
+    let (session_tick, now) = replay_flush_facts(state);
+    match state.match_diagnostics.close_segment_for_new_timeline(
+        session_tick,
+        Path::new(REPLAYS_DIR),
+        now,
+    ) {
+        Ok(Some(flush)) => log::info!(
+            "Deterministic diagnostic log flushed: {} ticks -> {}",
+            flush.tick_count,
+            flush.path.display()
+        ),
+        Ok(None) => {}
+        Err(e) => log::error!(
+            "Diagnostic-log close failed at timeline boundary; segment discarded: {e}"
+        ),
+    }
+}
+
+fn replay_flush_facts(state: &AppState) -> (u64, u64) {
+    let session_tick = state
+        .sim_runtime
+        .as_ref()
+        .map_or(0, |rt| rt.simulation.session.tick);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    (session_tick, now)
 }
 
 /// App-side producers for the high-frequency EVA state cues the sim emits no

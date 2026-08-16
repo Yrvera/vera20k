@@ -349,7 +349,6 @@ impl ShroudBuffer {
             self.last_fog_gen = u64::MAX;
         }
 
-
         // Skip if nothing changed (camera rounded to pixel + fog generation + zoom).
         let cam_x_r = cam_x.floor();
         let cam_y_r = cam_y.floor();

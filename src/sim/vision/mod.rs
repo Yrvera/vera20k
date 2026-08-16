@@ -818,13 +818,6 @@ impl FogState {
         self.view_cache.generation
     }
 
-    /// Return a reference to the raw merged visibility cells (if built).
-    /// Used by the snapshot system to diff visibility transitions cheaply
-    /// without cloning the entire FogState.
-    pub fn merged_cells(&self) -> Option<&[u8]> {
-        self.view_cache.merged.as_ref().map(|(_, vis)| vis.cells_raw())
-    }
-
     /// Get the merged visibility grid, falling back to iterating all owners
     /// if no merged grid is available for this owner.
     fn merged_vis(&self, owner: InternedId) -> Option<&OwnerVisibility> {

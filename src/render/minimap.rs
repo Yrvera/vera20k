@@ -212,6 +212,11 @@ impl MinimapRenderer {
     pub fn mark_stale(&mut self) {
         self.last_sim_tick = u64::MAX;
         self.last_fog_generation = u64::MAX;
+        // The restored sim's radar-terrain dirty generation restarts too.
+        // Known residual: base-terrain pixels patched by the abandoned
+        // timeline (destroyed-bridge cells) are not re-derived here because
+        // the restored sim's dirty list is empty; see the load-path notes.
+        self.last_radar_terrain_dirty_generation = u64::MAX;
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.

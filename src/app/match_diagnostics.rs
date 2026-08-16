@@ -70,6 +70,25 @@ impl MatchDiagnosticsState {
         }
         result
     }
+
+    /// Close the active segment at a timeline boundary (new match install or
+    /// in-scenario load). Unlike the retry-safe teardown flush, a write
+    /// failure here DISCARDS the segment: retaining it would let the next
+    /// timeline's ticks append under the previous timeline's header, and a
+    /// mixed-timeline artifact misleads exactly the desync investigation this
+    /// log exists for. The loss is logged.
+    pub(crate) fn close_segment_for_new_timeline(
+        &mut self,
+        session_tick: u64,
+        replays_dir: &Path,
+        unix_secs: u64,
+    ) -> anyhow::Result<Option<ReplayLogFlush>> {
+        let result = self.flush_to(session_tick, replays_dir, unix_secs);
+        if result.is_err() {
+            self.replay_log = None;
+        }
+        result
+    }
 }
 
 #[cfg(test)]

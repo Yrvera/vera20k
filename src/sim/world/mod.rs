@@ -808,9 +808,6 @@ pub struct Simulation {
     /// Toggled by the debug inspector hotkey (X). Debug-only — not included in state hashing.
     #[serde(skip)]
     pub debug_event_logging: bool,
-    /// Rust-only deterministic diagnostic log for this match.
-    /// Initialized lazily on the first tick. It is separate from the native
-    /// recording stream and is not included in state hashing.
     /// Negotiated lockstep ahead window. Offline producers stamp the current
     /// raw issue ordinal; a network transfer owner overwrites that stamp with
     /// `send_current + MaxAhead` before synchronized dispatch.
