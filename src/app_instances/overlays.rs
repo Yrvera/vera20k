@@ -188,9 +188,9 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
         let cfg: Option<&AnimTypeRuntimeConfig> = state
-            .art_registry
+            .rules
             .as_ref()
-            .and_then(|a| a.anim_runtime_config(shp_name));
+            .and_then(|rules| rules.art_registry.anim_runtime_config(shp_name));
         // Anim SHP draws carry the type's ZAdjust= sort bias plus the
         // constant -2px anim bias (negative = toward camera).
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
@@ -290,9 +290,9 @@ pub(crate) fn build_anim_class_instances(
         }
         let type_name: &str = sim.interner.resolve(anim.type_id);
         let config = state
-            .art_registry
+            .rules
             .as_ref()
-            .and_then(|registry| registry.anim_runtime_config(type_name));
+            .and_then(|rules| rules.art_registry.anim_runtime_config(type_name));
         if !crate::sim::anim_class::anim_draw_detail_visible(
             crate::sim::anim_class::AnimDrawDetailInput {
                 // No authoritative draw-rate degradation producer exists yet.
@@ -779,7 +779,7 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let (atlas, art_reg) = match (&state.sprite_atlas, &state.art_registry) {
+    let (atlas, art_reg) = match (&state.sprite_atlas, state.rules.as_ref().map(|rules| &rules.art_registry)) {
         (Some(a), Some(r)) => (a, r),
         _ => return,
     };
@@ -922,9 +922,9 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
             continue;
         };
         let cfg: Option<&AnimTypeRuntimeConfig> = state
-            .art_registry
+            .rules
             .as_ref()
-            .and_then(|a| a.anim_runtime_config(&flash.shp_name));
+            .and_then(|rules| rules.art_registry.anim_runtime_config(&flash.shp_name));
         let tint = state.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.

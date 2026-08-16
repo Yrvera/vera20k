@@ -496,7 +496,6 @@ impl App {
                 }
             },
             rules: startup_rules,
-            art_registry: None,
             csf: startup_csf,
             house_color_map: HashMap::new(),
             house_roster: HouseRoster::default(),

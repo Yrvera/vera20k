@@ -5,7 +5,7 @@
 //! extracted group; unrelated presentation, input, and match state stay flat.
 
 use super::{
-    ActionMap, ArtRegistry, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
+    ActionMap, AssetManager, BTreeMap, BasicSection, BatchRenderer, BitFont,
     BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
     EguiIntegration, EventMap, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
     HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
@@ -285,7 +285,6 @@ pub(crate) struct AppState {
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     pub(crate) rules: Option<crate::rules::ruleset::RuleSet>,
     /// Art.ini registry — needed for building animation overlay lookups at render time.
-    pub(crate) art_registry: Option<ArtRegistry>,
     /// CSF string table — localized display names for units, buildings, UI text.
     pub(crate) csf: Option<crate::assets::csf_file::CsfFile>,
     /// Owner name → house color index mapping for atlas key lookups.

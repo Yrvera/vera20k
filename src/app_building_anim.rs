@@ -374,7 +374,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
                 return;
             }
         };
-        let art_reg = match &state.art_registry {
+        let art_reg = match state.rules.as_ref().map(|rules| &rules.art_registry) {
             Some(a) => a,
             None => {
                 state.garrison_muzzle_flashes.clear();
@@ -427,7 +427,7 @@ pub(crate) fn tick_garrison_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
 
     // Phase 2: advance all flashes and remove finished ones. This is fed from
     // completed fixed sim ticks, not render-frame wall time.
-    let (Some(sim), Some(art_reg)) = (&state.simulation, &state.art_registry) else {
+    let (Some(sim), Some(art_reg)) = (&state.simulation, &state.rules.as_ref().map(|rules| &rules.art_registry)) else {
         state.garrison_muzzle_flashes.clear();
         return;
     };

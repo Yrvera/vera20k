@@ -250,7 +250,7 @@ pub(crate) fn build_unit_instances(
     let local_owner = crate::app_commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner.get(o));
     let ignore_visibility = state.sandbox_full_visibility;
-    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.art_registry.as_ref();
+    let art_reg: Option<&crate::rules::art_data::ArtRegistry> = state.rules.as_ref().map(|rules| &rules.art_registry);
 
     let encounter_order =
         super::helpers::tactical_entity_encounter_order(sim, state.rules.as_ref());
@@ -619,7 +619,7 @@ fn unit_entry_for_slope_state(
                     &state.batch_renderer,
                     asset_manager,
                     state.rules.as_ref(),
-                    state.art_registry.as_ref(),
+                    state.rules.as_ref().map(|rules| &rules.art_registry),
                     transition_key,
                 )
             {

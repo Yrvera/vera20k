@@ -187,9 +187,9 @@ pub(crate) fn build_building_status_instances(
             })
             .unwrap_or(type_str);
         let art_height: f32 = state
-            .art_registry
+            .rules
             .as_ref()
-            .and_then(|art| art.get(art_key))
+            .and_then(|rules| rules.art_registry.get(art_key))
             .map(|entry| entry.height as f32)
             .unwrap_or(2.0);
         let ratio: f32 = if health.max == 0 {

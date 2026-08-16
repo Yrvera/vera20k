@@ -47,6 +47,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         startup: crate::match_bootstrap::LoadingStartup::Generic {
             selected_map_file: "fallback".to_string(),
         },
+        art_registry: None,
         map_source: crate::app_list_maps::LoadedMapSource::LegacyFallback {
             label: "fallback".to_string(),
         },
@@ -86,7 +87,6 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
         lighting_grid: crate::map::lighting::CellLightGrid::new(),
         map_lighting_config: crate::map::lighting::LightingConfig::default(),
         rules: None,
-        art_registry: None,
         csf: None,
         fnt_file: None,
         camera_anchor_x: 0.0,
@@ -194,7 +194,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.map_lighting_config = result.map_lighting_config;
     state.last_lighting_view_fingerprint = None;
     state.rules = result.rules;
-    state.art_registry = result.art_registry;
+    // F04: the app no longer stores a second ArtRegistry; presentation
+    // borrows the sole copy owned by RuleSet (state.rules).
     state.csf = result.csf;
     state.theater_name = result.theater_name;
     state.theater_ext = result.theater_ext;

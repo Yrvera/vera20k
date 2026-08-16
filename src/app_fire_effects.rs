@@ -269,7 +269,7 @@ pub(crate) fn resolve_non_garrison_fire_origin(
 ) -> Option<FireOrigin> {
     let sim = state.simulation.as_ref()?;
     let rules = state.rules.as_ref()?;
-    let art_reg = state.art_registry.as_ref()?;
+    let art_reg = state.rules.as_ref().map(|rules| &rules.art_registry)?;
     resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
 }
 
@@ -547,7 +547,7 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
         let Some(rules) = state.rules.as_ref() else {
             return;
         };
-        let Some(art_reg) = state.art_registry.as_ref() else {
+        let Some(art_reg) = state.rules.as_ref().map(|rules| &rules.art_registry) else {
             return;
         };
         let frame_counts = state

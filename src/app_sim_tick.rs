@@ -1753,7 +1753,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         sim.entities(),
         asset_manager,
         state.rules.as_ref(),
-        state.art_registry.as_ref(),
+        state.rules.as_ref().map(|rules| &rules.art_registry),
         Some(&sim.interner),
     );
     let unit_rebuild: bool = match &state.unit_atlas {
@@ -1799,7 +1799,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             sim.entities(),
             asset_manager,
             state.rules.as_ref(),
-            state.art_registry.as_ref(),
+            state.rules.as_ref().map(|rules| &rules.art_registry),
             existing,
             state.vxl_compute.as_mut(),
             Some(&sim.interner),
@@ -1828,7 +1828,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &state.theater_ext,
             &state.theater_name,
             state.rules.as_ref(),
-            state.art_registry.as_ref(),
+            state.rules.as_ref().map(|rules| &rules.art_registry),
             &state.house_color_map,
             &extra_buildings,
             &cell_drawer_type_ids,
