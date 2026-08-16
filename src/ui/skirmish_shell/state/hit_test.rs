@@ -1,6 +1,6 @@
 //! Hit testing, hover targets, status-help keys, and action application for the skirmish shell.
 
-use crate::app_init::MapMenuEntry;
+use crate::map::scenario_menu::MapMenuEntry;
 use crate::skirmish_launch::SKIRMISH_PLAYER_SLOT_COUNT;
 
 use super::super::layout::{

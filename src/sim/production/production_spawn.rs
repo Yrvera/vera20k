@@ -404,7 +404,7 @@ fn find_exact_exitcoord_spawn_cell(
     require_water: bool,
 ) -> Option<(u16, u16)> {
     let (lx, ly, _lz) = rules.object(structure_id)?.exit_coord?;
-    let cand = add_cell_offset(base_rx, base_ry, lepton_to_cell(lx), lepton_to_cell(ly))?;
+    let cand = add_cell_offset(base_rx, base_ry, lepton_to_cell_round_nearest(lx), lepton_to_cell_round_nearest(ly))?;
     if let Some(grid) = path_grid {
         if cand.0 >= grid.width()
             || cand.1 >= grid.height()
@@ -711,8 +711,8 @@ fn preferred_exit_offsets(rules: &RuleSet, structure_id: &str) -> Vec<(i16, i16)
     if let Some(obj) = rules.object(structure_id) {
         // Data-driven: use ExitCoord from rules.ini if available.
         if let Some((lx, ly, _lz)) = obj.exit_coord {
-            let primary_x: i16 = lepton_to_cell(lx);
-            let primary_y: i16 = lepton_to_cell(ly);
+            let primary_x: i16 = lepton_to_cell_round_nearest(lx);
+            let primary_y: i16 = lepton_to_cell_round_nearest(ly);
             return exit_candidates_around(primary_x, primary_y);
         }
         // No ExitCoord: generate offsets from foundation perimeter.
@@ -723,8 +723,12 @@ fn preferred_exit_offsets(rules: &RuleSet, structure_id: &str) -> Vec<(i16, i16)
     foundation_perimeter_offsets(2, 2)
 }
 
-/// Convert a lepton value to the nearest cell offset (256 leptons = 1 cell).
-fn lepton_to_cell(leptons: i32) -> i16 {
+/// Convert a lepton value to the NEAREST cell offset (256 leptons = 1 cell).
+///
+/// Deliberately round-half-away, NOT the truncating
+/// `util::direction_tables::lepton_to_cell` — e.g. 200 leptons is cell 1 here
+/// and cell 0 there. Renamed so the two can never be conflated.
+fn lepton_to_cell_round_nearest(leptons: i32) -> i16 {
     // Round toward the nearest cell center. +128 for positive, -128 for negative.
     let rounded: i32 = if leptons >= 0 {
         (leptons + 128) / 256

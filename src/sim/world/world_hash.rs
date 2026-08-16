@@ -209,11 +209,11 @@ impl Simulation {
             }
         }
 
-        self.hash_raw_cell_occupation(&mut hasher);
-        self.hash_hidden_occupation(&mut hasher);
-        self.hash_base_reservations(&mut hasher);
+        self.substrate.fold_raw_cell_occupation(&mut hasher);
+        self.substrate.fold_hidden_occupation(&mut hasher);
+        self.substrate.fold_base_reservations(&mut hasher);
 
-        self.hash_game_options(&mut hasher);
+        self.session.fold_game_options(&mut hasher);
         self.hash_houses(&mut hasher);
         if include_terminal_score_v46 {
             self.hash_terminal_score_snapshot(&mut hasher);
@@ -239,7 +239,7 @@ impl Simulation {
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
-        self.hash_session_identity(&mut hasher);
+        self.session.fold_identity(&mut hasher);
 
         hasher.finish()
     }
@@ -311,112 +311,7 @@ impl Simulation {
         }
     }
 
-    /// Fold the authoritative sparse raw occupation bytes without conflating
-    /// coordinates or the ground/deck planes. Empty raw state contributes no
-    /// bytes, preserving established hashes while every modeled zero remains
-    /// represented canonically by the absence of a sparse entry.
-    fn hash_raw_cell_occupation(&self, hasher: &mut impl Hasher) {
-        let entry_count = self.substrate.raw_cell_occupation.entry_count();
-        if entry_count == 0 {
-            return;
-        }
 
-        b"raw-cell-occupation-v2".hash(hasher);
-        entry_count.hash(hasher);
-        for (rx, ry, ground, deck, ground_owner, deck_owner) in
-            self.substrate.raw_cell_occupation.entries()
-        {
-            0xC1u8.hash(hasher); // entry delimiter
-            rx.hash(hasher);
-            ry.hash(hasher);
-            0u8.hash(hasher); // ground-plane tag
-            ground.hash(hasher);
-            1u8.hash(hasher); // deck-plane tag
-            deck.hash(hasher);
-            ground_owner.hash(hasher);
-            deck_owner.hash(hasher);
-        }
-    }
-
-    fn hash_hidden_occupation(&self, hasher: &mut impl Hasher) {
-        let entry_count = self.substrate.hidden_occupation.entry_count();
-        if entry_count == 0 {
-            return;
-        }
-
-        b"hidden-cell-occupation-v1".hash(hasher);
-        entry_count.hash(hasher);
-        for (rx, ry, count) in self.substrate.hidden_occupation.entries() {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            count.hash(hasher);
-        }
-    }
-
-    fn hash_base_reservations(&self, hasher: &mut impl Hasher) {
-        b"building-base-reservation-v1".hash(hasher);
-        let entry_count = self.substrate.base_reservations.entries().count();
-        entry_count.hash(hasher);
-        for (rx, ry, mask) in self.substrate.base_reservations.entries() {
-            rx.hash(hasher);
-            ry.hash(hasher);
-            mask.hash(hasher);
-        }
-        self.substrate.base_reservations.dummy_mask().hash(hasher);
-    }
-
-    /// Session identity/bounds/waypoints — appended AFTER the legacy folds so
-    /// the pre-session hash prefix order is preserved (SC-2). The clock and
-    /// game options keep their original fold positions above; this fold adds
-    /// only the fields new to the session aggregate. Order is part of the
-    /// hash contract and must never change.
-    fn hash_session_identity(&self, hasher: &mut impl Hasher) {
-        let s = &self.session;
-        s.seed.hash(hasher);
-        s.map_name.hash(hasher);
-        s.theater.hash(hasher);
-        s.game_mode_nonzero.hash(hasher);
-        // Preserve the legacy default-false hash stream while still making
-        // the native ScenarioFlags 0x20 state lockstep-visible.
-        if s.no_damage {
-            b"scenario-no-damage-v1".hash(hasher);
-        }
-        (s.map_width, s.map_height).hash(hasher);
-        (s.local_left, s.local_top, s.local_width, s.local_height).hash(hasher);
-        s.mp_start_waypoints.len().hash(hasher);
-        for (idx, cell) in &s.mp_start_waypoints {
-            idx.hash(hasher);
-            cell.hash(hasher);
-        }
-        s.start_slot_houses.len().hash(hasher);
-        for (idx, owner) in &s.start_slot_houses {
-            idx.hash(hasher);
-            owner.hash(hasher);
-        }
-        s.house_order.hash(hasher);
-
-        let lighting = &s.lighting;
-        lighting.normal.ambient_percent.hash(hasher);
-        lighting.normal.red_percent.hash(hasher);
-        lighting.normal.green_percent.hash(hasher);
-        lighting.normal.blue_percent.hash(hasher);
-        lighting.normal.ground_units.hash(hasher);
-        lighting.normal.level_units.hash(hasher);
-        lighting.ion.ambient_percent.hash(hasher);
-        lighting.ion.red_percent.hash(hasher);
-        lighting.ion.green_percent.hash(hasher);
-        lighting.ion.blue_percent.hash(hasher);
-        lighting.ion.ground_units.hash(hasher);
-        lighting.ion.level_units.hash(hasher);
-        lighting.current_ambient.hash(hasher);
-        lighting.target_ambient.hash(hasher);
-        match lighting.selected_profile {
-            crate::sim::scenario_session::ScenarioLightingProfile::Normal => 0u8.hash(hasher),
-            crate::sim::scenario_session::ScenarioLightingProfile::Ion => 1u8.hash(hasher),
-        }
-        lighting.transition_timer.start_frame().hash(hasher);
-        lighting.transition_timer.duration().hash(hasher);
-    }
 
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
     /// Each system contributes its type, position, lifetime, and ordered particle list.
@@ -457,30 +352,6 @@ impl Simulation {
                 }
             }
         }
-    }
-
-    /// Hash per-match game options for lockstep verification.
-    fn hash_game_options(&self, hasher: &mut impl Hasher) {
-        let opts = &self.session.game_options;
-        opts.short_game.hash(hasher);
-        opts.bases.hash(hasher);
-        opts.bridges_destroyable.hash(hasher);
-        opts.super_weapons.hash(hasher);
-        opts.build_off_ally.hash(hasher);
-        opts.crates.hash(hasher);
-        opts.mcv_redeploy.hash(hasher);
-        opts.fog_of_war.hash(hasher);
-        opts.shroud.hash(hasher);
-        opts.tiberium_grows.hash(hasher);
-        opts.multi_engineer.hash(hasher);
-        opts.harvester_truce.hash(hasher);
-        opts.ally_change_allowed.hash(hasher);
-        opts.starting_credits.hash(hasher);
-        opts.unit_count.hash(hasher);
-        opts.tech_level.hash(hasher);
-        opts.game_speed.hash(hasher);
-        opts.ai_difficulty.hash(hasher);
-        opts.ai_players.hash(hasher);
     }
 
     /// Hash per-player house state (BTreeMap = deterministic order).

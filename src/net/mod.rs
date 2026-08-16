@@ -18,3 +18,5 @@
 // pub mod protocol;
 
 pub mod lockstep;
+#[cfg(test)]
+mod lockstep_sim_convergence_tests;

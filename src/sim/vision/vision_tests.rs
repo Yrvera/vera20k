@@ -1642,3 +1642,89 @@ fn an_aircrafts_altitude_moves_its_revealed_disc() {
     assert!(fog.is_cell_visible(owner, 23, 23));
     assert!(!fog.is_cell_visible(owner, 30, 30));
 }
+
+/// F10: the merged view lives in a nonserialized cache — a bincode round trip
+/// (the snapshot serializer) discards it while the wire shadow survives in the
+/// old `generation` slot, and building for a different owner replaces the
+/// cached owner and bumps only the runtime view generation.
+#[test]
+fn fog_view_cache_is_discarded_and_rebuilt_after_load_or_owner_change() {
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Americans", 4, 4, 3);
+    let mut fog = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(16, 16)),
+        &Default::default(),
+        &default_config(),
+        &ti(),
+    );
+    let americans = intern::test_intern("Americans");
+    fog.build_merged_for(americans, &ti());
+    assert!(fog.view_cache.merged.is_some());
+    let built_generation = fog.view_generation();
+    assert!(built_generation > 0);
+    let shadow_before = fog.generation_wire_shadow;
+
+    // Snapshot-style round trip: the cache is discarded, the shadow survives.
+    let bytes = bincode::serialize(&fog).expect("fog serializes");
+    let restored: FogState = bincode::deserialize(&bytes).expect("fog deserializes");
+    assert!(
+        restored.view_cache.merged.is_none(),
+        "the merged view cache must not survive a load"
+    );
+    assert_eq!(
+        restored.view_generation(),
+        0,
+        "the runtime view generation restarts after a load"
+    );
+    assert_eq!(
+        restored.generation_wire_shadow, shadow_before,
+        "the v81 wire shadow survives in the old generation slot"
+    );
+
+    // Rebuild after the load: queries work again through the fast path.
+    let mut restored = restored;
+    restored.build_merged_for(americans, &ti());
+    assert!(restored.is_cell_visible(americans, 4, 4));
+    assert_eq!(restored.view_generation(), 1);
+
+    // Owner change: the cache is replaced for the new owner and bumped.
+    let russians = intern::test_intern("Russians");
+    restored.build_merged_for(russians, &ti());
+    assert_eq!(
+        restored.view_cache.merged.as_ref().map(|(owner, _)| *owner),
+        Some(russians),
+        "an owner change replaces the cached owner"
+    );
+    assert_eq!(restored.view_generation(), 2);
+}
+
+/// F10: view-cache builds are presentation-only — repeated rebuilds, for the
+/// same or different owners, cannot alter the deterministic state hash.
+#[test]
+fn repeated_fog_view_builds_leave_state_hash_unchanged() {
+    use crate::sim::world::Simulation;
+
+    let mut sim = Simulation::with_seed(0xF10);
+    let owner = sim.interner.intern("Americans");
+    let other = sim.interner.intern("Russians");
+    sim.fog.width = 8;
+    sim.fog.height = 8;
+    sim.fog
+        .by_owner
+        .insert(owner, OwnerVisibility::new(8, 8));
+    sim.fog
+        .by_owner
+        .insert(other, OwnerVisibility::new(8, 8));
+
+    let before = sim.state_hash();
+    for _ in 0..5 {
+        assert!(sim.prepare_fog_view_for("Americans"));
+        assert!(sim.prepare_fog_view_for("Russians"));
+    }
+    assert_eq!(
+        sim.state_hash(),
+        before,
+        "fog view preparation is invisible to the deterministic hash"
+    );
+}

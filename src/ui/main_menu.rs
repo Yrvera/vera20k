@@ -2,7 +2,8 @@
 //!
 //! Uses egui for a pragmatic client shell rather than pixel-perfect RA2 chrome.
 
-use crate::{app_init::MapMenuEntry, ui::client_theme};
+use crate::map::scenario_menu::MapMenuEntry;
+use crate::ui::client_theme;
 
 /// Action returned by the main menu to the app orchestrator.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -460,7 +460,7 @@ mod tests {
         replay.record_tick(tick.tick, Vec::new(), tick.state_hash);
 
         let mut playback = natural_terminal_sim(seed);
-        let hashes = ReplayRunner::run(
+        let hashes = ReplayRunner::run_fixture(
             &mut playback,
             &replay,
             None,

@@ -1364,7 +1364,8 @@ pub fn tick_ore_growth(
     // `GrowthRate` is authored against the engine's legacy 15-frame timebase.
     // Game speed changes frame admission, not the number of simulation visits.
     let rate_seconds: u32 = config.growth_rate_seconds.max(1);
-    const LEGACY_ORE_GROWTH_FRAMES_PER_RATE_SECOND: u32 = 15;
+    const LEGACY_ORE_GROWTH_FRAMES_PER_RATE_SECOND: u32 =
+        crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND;
     let ticks_per_cycle: u32 = rate_seconds
         .saturating_mul(LEGACY_ORE_GROWTH_FRAMES_PER_RATE_SECOND)
         .max(1);

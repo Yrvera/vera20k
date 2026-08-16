@@ -42,7 +42,7 @@ const UNIT_FACING_STEP: u8 = 8;
 ///
 /// `u16` for arithmetic headroom against the step; `bucket * step` stays below 256, so
 /// the facing derived from a bucket is still a byte.
-const UNIT_FACING_BUCKETS: u16 = 32;
+const UNIT_FACING_BUCKETS: u16 = crate::render::vxl_raster::VOXEL_FACING_STEPS as u16;
 /// Turret/barrel facing quantization step: 8 = 32 buckets (11.25° per bucket).
 ///
 /// Turret and barrel matrices go through the same 5-bit facing quantization as the
@@ -50,7 +50,7 @@ const UNIT_FACING_BUCKETS: u16 = 32;
 /// simulation rotates them.
 const TURRET_FACING_STEP: u8 = 8;
 /// Number of pre-rendered facing directions for turret/barrel sprites.
-const TURRET_FACING_BUCKETS: u16 = 32;
+const TURRET_FACING_BUCKETS: u16 = crate::render::vxl_raster::VOXEL_FACING_STEPS as u16;
 
 // VxlLayer lives in sim::components — re-exported here for convenience.
 pub use crate::sim::components::VxlLayer;
@@ -73,7 +73,7 @@ pub struct UnitSpriteKey {
     pub frame: u32,
     /// Terrain slope type (0–16). 0 = flat, 1-4 = edge ramps, 5-8 = corner
     /// ramps, 9-12 = corner tilt at NW/NE/SE/SW (alias of 5-8 in gamemd.exe),
-    /// 13-16 = edge tilt at NW/NE/SE/SW. The consumer in app_instances/units.rs
+    /// 13-16 = edge tilt at NW/NE/SE/SW. The consumer in app/presentation/instances/units.rs
     /// clamps any value ≥ 17 to 0 before constructing this key. Different
     /// slopes produce distinct pre-rendered sprites with tilted models.
     pub slope_type: u8,
@@ -197,52 +197,12 @@ impl CachedUnitSprite {
     }
 }
 
-const NO_SPAWN_ALT_SUFFIX: &str = "WO";
-
-/// One voxel model that an entity can select at presentation time.
-///
-/// Initial atlas construction and incremental coverage checks must enumerate
-/// the same set. Otherwise an already-valid base model can hide a missing
-/// UnloadingClass or `%sWO` auxiliary model until the draw lookup fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct UnitAtlasVariant {
-    type_id: String,
-    has_turret: bool,
-}
-
-fn unit_atlas_variants(type_id: &str, rules: Option<&RuleSet>) -> Vec<UnitAtlasVariant> {
-    let object = rules.and_then(|rules| rules.object(type_id));
-    let mut variants = vec![UnitAtlasVariant {
-        type_id: type_id.to_string(),
-        has_turret: object.is_some_and(|object| object.has_turret),
-    }];
-
-    if let Some((unloading_type, unloading_object)) = object
-        .and_then(|object| object.unloading_class.as_deref())
-        .and_then(|unloading_type| {
-            rules
-                .and_then(|rules| rules.object(unloading_type))
-                .map(|object| (unloading_type, object))
-        })
-    {
-        variants.push(UnitAtlasVariant {
-            type_id: unloading_type.to_string(),
-            has_turret: unloading_object.has_turret,
-        });
-    }
-
-    if object.is_some_and(|object| object.no_spawn_alt) {
-        variants.push(UnitAtlasVariant {
-            type_id: format!("{type_id}{NO_SPAWN_ALT_SUFFIX}"),
-            // Native stores the `%sWO` pair in the same AuxVoxel slot used by
-            // turrets. Stock NoSpawnAlt types therefore render it as one
-            // composite body and cannot also own a turret.
-            has_turret: false,
-        });
-    }
-
-    variants
-}
+// F09: the variant/layer/HVA-count derivation moved to the GPU-independent
+// sim-side catalog so construction (app + headless) and atlas seeding share
+// one source. Re-exported so this module's tests and callers keep their view.
+pub(crate) use crate::sim::voxel_frame_catalog::{
+    UnitAtlasVariant, detect_hva_frame_count, seed_layers_for, unit_atlas_variants,
+};
 
 fn insert_unit_layer_keys(
     needed: &mut HashSet<UnitSpriteKey>,
@@ -380,7 +340,8 @@ pub fn collect_needed_unit_keys(
 /// 3. Diffs against cached sprites — renders only new keys.
 /// 4. Shelf-packs all sprites (cached + new) into a single atlas texture.
 ///
-/// Returns None if no voxel entities exist or all fail to load.
+/// Returns `None` only when no prior atlas exists and no voxel sprite can be
+/// produced. A supplied prior atlas is returned unchanged on ordinary failure.
 pub fn build_unit_atlas(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -393,6 +354,7 @@ pub fn build_unit_atlas(
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<UnitAtlas> {
     use crate::map::entities::EntityCategory;
+    let mut previous_atlas = existing;
     // Step 1: Collect unique (type_id, facing, house_color, layer, frame, slope_type) keys.
     // For turret units, insert separate Body/Turret/Barrel entries per facing.
     // For non-turret units, insert a single Composite entry per facing.
@@ -451,12 +413,11 @@ pub fn build_unit_atlas(
     }
 
     if needed.is_empty() {
-        log::info!("No voxel entities found — skipping unit atlas");
-        return None;
+        log::info!("No voxel entities found — keeping the current unit atlas");
+        return previous_atlas;
     }
 
     // Step 1.5: Extract cached sprites from existing atlas, diff against needed keys.
-    let mut previous_atlas = existing;
     let previous_cache_len = previous_atlas
         .as_ref()
         .map_or(0, |atlas| atlas.rendered_cache.len());
@@ -545,7 +506,13 @@ pub fn build_unit_atlas(
     }
 
     if cached.is_empty() {
-        log::warn!("No unit sprites rendered — unit atlas will be empty");
+        log::warn!("No unit sprites rendered");
+        if let Some(mut previous) = previous_atlas {
+            cached.truncate(previous_cache_len);
+            previous.rendered_cache = cached;
+            log::warn!("Keeping the previous valid unit atlas after render failure");
+            return Some(previous);
+        }
         return None;
     }
 
@@ -818,103 +785,6 @@ pub(crate) fn render_unit_sprite_with_slope_blend(
     }
 
     Some((sprite, use_gpu))
-}
-
-/// The layer set to seed atlas keys for, given a type's turret flag.
-///
-/// A turreted type gets separate Body/Turret layers, and a Barrel layer **only
-/// when a barrel voxel actually exists**. Most turreted units model the gun as
-/// part of the turret and ship no `…BARL.VXL`/`…BARREL.VXL` — the Soviet War
-/// Miner is one. Seeding a Barrel key for those produced a key that could never
-/// be satisfied: the Barrel branch of the renderer rebuilds the body and turret
-/// sprites, finds no barrel, and returns `None`, so nothing is cached and the
-/// whole attempt repeats on the next frame, forever. A single such unit on
-/// screen logged ~135k render failures in four minutes of play and paid for two
-/// discarded voxel rasterisations every frame.
-fn seed_layers_for(
-    asset_manager: &AssetManager,
-    type_id: &str,
-    has_turret: bool,
-    rules: Option<&RuleSet>,
-    art: Option<&ArtRegistry>,
-) -> &'static [VxlLayer] {
-    if !has_turret {
-        return &[VxlLayer::Composite];
-    }
-    if has_barrel_voxel(asset_manager, type_id, rules, art) {
-        &[VxlLayer::Body, VxlLayer::Turret, VxlLayer::Barrel]
-    } else {
-        &[VxlLayer::Body, VxlLayer::Turret]
-    }
-}
-
-/// Whether this type ships a separate barrel voxel under either suffix the
-/// renderer accepts. Resolves the image id exactly as the render path does, so
-/// the seeding decision and the lookup can never disagree.
-fn has_barrel_voxel(
-    asset_manager: &AssetManager,
-    type_id: &str,
-    rules: Option<&RuleSet>,
-    art: Option<&ArtRegistry>,
-) -> bool {
-    let rules_image: String = rules
-        .and_then(|r| r.object(type_id))
-        .map(|o| o.image.clone())
-        .unwrap_or_else(|| type_id.to_string());
-    let image: String = art
-        .map(|a| a.resolve_effective_image_id(type_id, &rules_image))
-        .unwrap_or_else(|| rules_image.to_uppercase());
-    asset_manager
-        .get_ref(&format!("{image}BARL.VXL"))
-        .or_else(|| asset_manager.get_ref(&format!("{image}BARREL.VXL")))
-        .is_some()
-}
-
-/// Detect the HVA animation frame count for a given (type_id, layer) combo.
-///
-/// Loads the HVA file from the asset manager and returns `frame_count`.
-/// Returns 1 if no HVA is found or if parsing fails (single-frame default).
-fn detect_hva_frame_count(
-    asset_manager: &AssetManager,
-    type_id: &str,
-    layer: VxlLayer,
-    rules: Option<&RuleSet>,
-    art: Option<&ArtRegistry>,
-) -> u32 {
-    let rules_image: String = rules
-        .and_then(|r| r.object(type_id))
-        .map(|o| o.image.clone())
-        .unwrap_or_else(|| type_id.to_string());
-    let image: String = art
-        .map(|a| a.resolve_effective_image_id(type_id, &rules_image))
-        .unwrap_or_else(|| rules_image.to_uppercase());
-
-    let hva_name: String = match layer {
-        VxlLayer::Composite | VxlLayer::Body => art_data::voxel_asset_names(&image).1,
-        VxlLayer::Turret => format!("{}TUR.HVA", image),
-        VxlLayer::Barrel => format!("{}BARL.HVA", image),
-    };
-
-    let frame_count: u32 = asset_manager
-        .get_ref(&hva_name)
-        .and_then(|data| HvaFile::from_bytes(data).ok())
-        .map(|h| h.frame_count)
-        .unwrap_or(1);
-
-    // Also try BARREL suffix if BARL had no HVA.
-    if layer == VxlLayer::Barrel && frame_count <= 1 {
-        let alt_name: String = format!("{}BARREL.HVA", image);
-        let alt_count: u32 = asset_manager
-            .get_ref(&alt_name)
-            .and_then(|data| HvaFile::from_bytes(data).ok())
-            .map(|h| h.frame_count)
-            .unwrap_or(1);
-        if alt_count > 1 {
-            return alt_count;
-        }
-    }
-
-    frame_count.max(1)
 }
 
 /// Body plus optional turret and barrel, depth-composited on the CPU.

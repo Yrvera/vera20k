@@ -205,6 +205,20 @@ impl MinimapRenderer {
         }
     }
 
+    /// Invalidate the dirty-gate so the next update redraws regardless of
+    /// counters (F10): after a load the fog view generation restarts and the
+    /// restored tick may equal the pre-load tick, so equal counters no longer
+    /// prove an unchanged view.
+    pub fn mark_stale(&mut self) {
+        self.last_sim_tick = u64::MAX;
+        self.last_fog_generation = u64::MAX;
+        // The restored sim's radar-terrain dirty generation restarts too.
+        // Known residual: base-terrain pixels patched by the abandoned
+        // timeline (destroyed-bridge cells) are not re-derived here because
+        // the restored sim's dirty list is empty; see the load-path notes.
+        self.last_radar_terrain_dirty_generation = u64::MAX;
+    }
+
     /// Update the minimap texture with unit dot overlays from the ECS world.
     ///
     /// Copies the base terrain image, stamps overlay pixels (ore, gems, walls,
@@ -226,7 +240,7 @@ impl MinimapRenderer {
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
-        let fog_generation = visibility.map_or(0, |(_, fog)| fog.generation);
+        let fog_generation = visibility.map_or(0, |(_, fog)| fog.view_generation());
         let visibility_owner = visibility.map(|(owner, _)| owner);
         if sim_tick == self.last_sim_tick
             && fog_generation == self.last_fog_generation

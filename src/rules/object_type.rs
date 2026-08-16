@@ -1259,7 +1259,7 @@ impl ObjectType {
             // is the type constructor's seed — see
             // `sim::movement::locomotion::install` for why there is one rule
             // here and not a per-category table.
-            locomotor: crate::sim::movement::locomotion::resolve_installed_kind(
+            locomotor: crate::rules::locomotor_type::resolve_installed_kind(
                 section.get("Locomotor").as_deref(),
             ),
             speed_type: section

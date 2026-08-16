@@ -3459,9 +3459,10 @@ pub(super) fn is_at_coord_track_cells(
 ) -> (Option<(i16, i16)>, (i16, i16)) {
     let head_abs_x = i32::from(current_cell.0) * 256 + state.head_offset_x + state.cell_offset_x;
     let head_abs_y = i32::from(current_cell.1) * 256 + state.head_offset_y + state.cell_offset_y;
-    // Native's `(value + ((value >> 31) & 255)) >> 8` truncates signed
-    // lepton coordinates toward zero.
-    let head_cell = ((head_abs_x / 256) as i16, (head_abs_y / 256) as i16);
+    let head_cell = (
+        crate::util::direction_tables::lepton_to_cell(head_abs_x) as i16,
+        crate::util::direction_tables::lepton_to_cell(head_abs_y) as i16,
+    );
 
     let Some(meta) = RAW_TRACKS.get(state.raw_track_index as usize) else {
         return (None, head_cell);

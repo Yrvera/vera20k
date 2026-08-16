@@ -139,7 +139,7 @@ pub(crate) const fn base_ready_to_commence() -> ReadyResult {
 /// Native signed lepton-to-cell conversion used by Unit readiness.
 #[inline]
 pub(crate) const fn native_lepton_cell(value: i32) -> i16 {
-    (value.wrapping_add((value >> 31) & 0xff) >> 8) as i16
+    crate::util::direction_tables::lepton_to_cell(value) as i16
 }
 
 /// Evaluate Unit readiness in active-gamemd branch order.

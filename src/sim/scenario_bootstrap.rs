@@ -257,10 +257,11 @@ impl PreloadedBattleStartPlan {
 /// 0x00686B20 calls +0x80 and ordinarily +0x84 for offline g_GameMode 5 before
 /// DrawLoadingScreen.
 pub(crate) fn preload_standard_battle_start_plan(
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
     map_data: &MapFile,
     launch_seed: u32,
 ) -> Option<PreloadedBattleStartPlan> {
+    let session = descriptor.session();
     if !has_verified_preload_start_callbacks(session) {
         return None;
     }
@@ -573,6 +574,78 @@ pub(crate) struct NormalizedSkirmishSlot {
     pub(crate) difficulty: HouseDifficulty,
 }
 
+/// Sim-owned behavioral launch descriptor (F09).
+///
+/// Wraps a `SkirmishLaunchSession` whose shell-random choices — country and
+/// color, for the local slot and every AI slot — are proven resolved. The
+/// validating constructor is the only way in, so sim entry points cannot
+/// receive an unresolved frontend session and silently launch with the
+/// placeholder country/color a random slot still carries. Start positions
+/// remain potentially random by design: gamemd assigns them at scenario load
+/// with the gameplay Scenario RNG (see `assign_native_battle_starts`), not in
+/// the shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchLaunchDescriptor {
+    session: SkirmishLaunchSession,
+}
+
+/// A launch slot still carried an unresolved random shell choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnresolvedShellChoice {
+    /// `None` = the local player slot; `Some(i)` = AI opponent index `i`.
+    pub ai_slot: Option<usize>,
+    /// Which choice was left random: `"country"` or `"color"`.
+    pub choice: &'static str,
+}
+
+impl std::fmt::Display for UnresolvedShellChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ai_slot {
+            None => write!(f, "local slot still has a random {}", self.choice),
+            Some(index) => write!(f, "AI slot {index} still has a random {}", self.choice),
+        }
+    }
+}
+
+impl MatchLaunchDescriptor {
+    /// Validate that the app's shell close transaction resolved every
+    /// random choice before the session crosses into sim.
+    pub fn from_resolved(session: SkirmishLaunchSession) -> Result<Self, UnresolvedShellChoice> {
+        if session.local.country_random {
+            return Err(UnresolvedShellChoice {
+                ai_slot: None,
+                choice: "country",
+            });
+        }
+        if session.local.color_random {
+            return Err(UnresolvedShellChoice {
+                ai_slot: None,
+                choice: "color",
+            });
+        }
+        for (index, opponent) in session.opponents.iter().enumerate() {
+            if opponent.country_random {
+                return Err(UnresolvedShellChoice {
+                    ai_slot: Some(index),
+                    choice: "country",
+                });
+            }
+            if opponent.color_random {
+                return Err(UnresolvedShellChoice {
+                    ai_slot: Some(index),
+                    choice: "color",
+                });
+            }
+        }
+        Ok(Self { session })
+    }
+
+    /// The resolved session's gameplay facts.
+    pub(crate) fn session(&self) -> &SkirmishLaunchSession {
+        &self.session
+    }
+}
+
 /// Construct the active offline-skirmish House array before any map object.
 ///
 /// Active YR `ScenarioClass__Full_Init @ 0x00686B20` calls
@@ -584,8 +657,9 @@ pub(crate) fn initialize_skirmish_launch_houses(
     sim: &mut Simulation,
     house_roster: &HouseRoster,
     rules: &RuleSet,
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
 ) {
+    let session = descriptor.session();
     assert!(
         sim.houses.is_empty()
             && sim.session.house_order.is_empty()
@@ -620,7 +694,7 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
         sim,
@@ -629,7 +703,7 @@ pub(crate) fn apply_explicit_skirmish_launch_session(
         rules,
         height_map,
         resolved_terrain,
-        session,
+        descriptor,
         None,
     )
 }
@@ -642,7 +716,7 @@ pub(crate) fn apply_preloaded_battle_launch_session(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
     plan: &PreloadedBattleStartPlan,
 ) -> SkirmishLaunchApplyResult {
     apply_resolved_skirmish_launch_session(
@@ -652,7 +726,7 @@ pub(crate) fn apply_preloaded_battle_launch_session(
         rules,
         height_map,
         resolved_terrain,
-        session,
+        descriptor,
         Some(plan),
     )
 }
@@ -664,15 +738,16 @@ fn apply_resolved_skirmish_launch_session(
     rules: &RuleSet,
     height_map: &BTreeMap<(u16, u16), u8>,
     resolved_terrain: &ResolvedTerrainGrid,
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
     preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
 ) -> SkirmishLaunchApplyResult {
+    let session = descriptor.session();
     let slots = normalized_launch_slots(session);
     if sim.houses.is_empty() {
         // Direct unit-level callers may enter before the shared app load funnel.
         // The initializer rejects any already-constructed map object, so this
         // fallback cannot recreate the former object-before-house production path.
-        initialize_skirmish_launch_houses(sim, house_roster, rules, session);
+        initialize_skirmish_launch_houses(sim, house_roster, rules, descriptor);
     }
     assert_eq!(
         sim.session.house_order.len(),
@@ -1625,6 +1700,100 @@ impl Simulation {
             human_start_spots,
             &mut self.scenario_rng,
         )
+    }
+}
+
+impl Simulation {
+    /// Register an AI player for every playable roster house except the local
+    /// owner (F10 boundary method: the app names the local owner, sim owns
+    /// the writes). Neutral/civilian/special houses never receive AI.
+    pub(crate) fn register_ai_players_from_roster(
+        &mut self,
+        house_roster: &HouseRoster,
+        local_owner: &str,
+    ) {
+        use crate::sim::ai::AiPlayerState;
+
+        for house in &house_roster.houses {
+            let up = house.name.to_ascii_uppercase();
+            if matches!(
+                up.as_str(),
+                "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
+            ) {
+                continue;
+            }
+            if house.name.eq_ignore_ascii_case(local_owner) {
+                continue;
+            }
+            self.ai_players
+                .push(AiPlayerState::new(self.interner.intern(&house.name)));
+            log::info!("AI player registered: {}", house.name);
+        }
+    }
+
+    /// Mark the named house human-controlled (F10 boundary method). Returns
+    /// false when the owner is not interned or owns no house.
+    pub(crate) fn mark_house_human(&mut self, owner: &str) -> bool {
+        let Some(owner_id) = self.interner.get(owner) else {
+            return false;
+        };
+        let Some(house) = self.houses.get_mut(&owner_id) else {
+            return false;
+        };
+        house.is_human = true;
+        true
+    }
+}
+
+/// Map-roster house construction shared by app and headless (F09):
+/// native order requires houses before every object section.
+pub(crate) fn initialize_map_roster_houses(
+    sim: &mut Simulation,
+    house_roster: &HouseRoster,
+    rules: Option<&RuleSet>,
+) {
+    assert!(
+        sim.houses.is_empty()
+            && sim.session.house_order.is_empty()
+            && sim.entities().is_empty()
+            && sim.production.terrain_objects.is_empty(),
+        "scenario houses must be initialized before map objects"
+    );
+    for house in &house_roster.houses {
+        let fallback_side = crate::sim::house_state::side_index_from_name(house.side.as_deref());
+        let side_idx = rules.map_or(fallback_side, |rules| {
+            crate::sim::house_state::resolve_house_side_index(
+                rules,
+                house.country.as_deref(),
+                house.side.as_deref(),
+                fallback_side,
+            )
+        });
+        let player_control = house.player_control == Some(true);
+        let name_id = sim.interner.intern(&house.name);
+        let country_id = house.country.as_deref().map(|c| sim.interner.intern(c));
+        let mut house_state = crate::sim::house_state::HouseState::new(
+            name_id,
+            side_idx,
+            country_id,
+            false,
+            sim.session.game_options.starting_credits,
+            sim.session.game_options.tech_level,
+        );
+        house_state.player_control = player_control;
+        // HouseClass::Read_Scenario_INI reads `IQ=` from this exact named
+        // house section, defaults it to zero, and changes a value above
+        // MaxIQLevels to literal one before storing CurrentIQ (+0x24C).
+        house_state.current_iq = rules.map_or_else(
+            || house.iq.unwrap_or(0),
+            |rules| house.scenario_current_iq(rules.general.max_iq_levels),
+        );
+        // MultiplayPassive lives on the country/house type. A roster section
+        // with no `Country=` resolves through `[Countries]` entry zero.
+        house_state.multiplay_passive =
+            crate::sim::house_state::resolve_multiplay_passive(rules, house.country.as_deref());
+        sim.houses.insert(name_id, house_state);
+        sim.session.house_order.push(name_id);
     }
 }
 

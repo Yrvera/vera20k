@@ -12,6 +12,7 @@
 //! `LogicVector`.
 
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 
 use super::LogicVector;
 use crate::sim::anim_class::AnimStore;
@@ -57,6 +58,22 @@ impl EnterOrderCounter {
     pub(crate) const fn current(self) -> u64 {
         self.0
     }
+}
+
+/// The object kinds the LogicVector registration/removal dispatch
+/// distinguishes (F13). Classification probes the stores in this fixed order:
+/// anims → particle systems → terrain objects → projectiles → waves →
+/// entities — the exact probe order the pre-consolidation dispatch used at
+/// every site. Object IDs are unique across stores (one monotonic
+/// `next_stable_object_id` namespace), so at most one store can match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectKind {
+    Anim,
+    ParticleSystem,
+    Terrain,
+    Projectile,
+    Wave,
+    Entity,
 }
 
 /// Owns the active-object order and the substrate's monotonic counters. Field
@@ -149,6 +166,111 @@ impl ObjectSubstrate {
             particle_systems: ParticleSystemStore::default(),
             pending_delete: Vec::new(),
         }
+    }
+}
+
+impl ObjectSubstrate {
+    /// Restore-time validation of the substrate's monotonic counters and the
+    /// deserialized LogicVector (F13; moved verbatim from
+    /// `restore_after_snapshot_load`, which remains the ordered coordinator).
+    /// Returns the validated logic-member set so the coordinator's store
+    /// cross-checks read exactly what was admitted here.
+    pub(crate) fn validate_restored_counters_and_logic(
+        &self,
+        highest_id: u64,
+        identities: &std::collections::BTreeMap<u64, &'static str>,
+    ) -> Result<std::collections::BTreeSet<u64>, crate::sim::snapshot::SnapshotRestoreError> {
+        use crate::sim::snapshot::SnapshotRestoreError;
+        if self.next_stable_object_id <= highest_id {
+            return Err(SnapshotRestoreError::ObjectIdCounterBehind {
+                next_id: self.next_stable_object_id,
+                highest_id,
+            });
+        }
+
+        let highest_order = self
+            .entities
+            .values()
+            .filter(|entity| entity.lifecycle.cell_marked)
+            .map(|entity| entity.occupancy_enter_order)
+            .max()
+            .unwrap_or(0);
+        let next_order = self.next_occupancy_enter_order.current();
+        if next_order <= highest_order {
+            return Err(SnapshotRestoreError::OccupancyOrderCounterBehind {
+                next_order,
+                highest_order,
+            });
+        }
+
+        let mut seen_logic = std::collections::BTreeSet::new();
+        for &object_id in self.logic.as_slice() {
+            if !seen_logic.insert(object_id) {
+                return Err(SnapshotRestoreError::DuplicateLogicIdentity { object_id });
+            }
+            if !identities.contains_key(&object_id) {
+                return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
+            }
+        }
+        Ok(seen_logic)
+    }
+
+    // State-hash folds over substrate-owned occupation state (F13).
+    // Called from `state_hash_with_schema` at fixed positions; the fold
+    // order and byte layout are part of the hash contract.
+
+    /// Fold the authoritative sparse raw occupation bytes without conflating
+    /// coordinates or the ground/deck planes. Empty raw state contributes no
+    /// bytes, preserving established hashes while every modeled zero remains
+    /// represented canonically by the absence of a sparse entry.
+    pub(crate) fn fold_raw_cell_occupation(&self, hasher: &mut impl std::hash::Hasher) {
+        let entry_count = self.raw_cell_occupation.entry_count();
+        if entry_count == 0 {
+            return;
+        }
+
+        b"raw-cell-occupation-v2".hash(hasher);
+        entry_count.hash(hasher);
+        for (rx, ry, ground, deck, ground_owner, deck_owner) in
+            self.raw_cell_occupation.entries()
+        {
+            0xC1u8.hash(hasher); // entry delimiter
+            rx.hash(hasher);
+            ry.hash(hasher);
+            0u8.hash(hasher); // ground-plane tag
+            ground.hash(hasher);
+            1u8.hash(hasher); // deck-plane tag
+            deck.hash(hasher);
+            ground_owner.hash(hasher);
+            deck_owner.hash(hasher);
+        }
+    }
+
+    pub(crate) fn fold_hidden_occupation(&self, hasher: &mut impl std::hash::Hasher) {
+        let entry_count = self.hidden_occupation.entry_count();
+        if entry_count == 0 {
+            return;
+        }
+
+        b"hidden-cell-occupation-v1".hash(hasher);
+        entry_count.hash(hasher);
+        for (rx, ry, count) in self.hidden_occupation.entries() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            count.hash(hasher);
+        }
+    }
+
+    pub(crate) fn fold_base_reservations(&self, hasher: &mut impl std::hash::Hasher) {
+        b"building-base-reservation-v1".hash(hasher);
+        let entry_count = self.base_reservations.entries().count();
+        entry_count.hash(hasher);
+        for (rx, ry, mask) in self.base_reservations.entries() {
+            rx.hash(hasher);
+            ry.hash(hasher);
+            mask.hash(hasher);
+        }
+        self.base_reservations.dummy_mask().hash(hasher);
     }
 }
 

@@ -190,7 +190,7 @@ fn remaining_path_from_entity(
 fn is_at_coord_cells(
     entity: &crate::sim::game_entity::GameEntity,
 ) -> (Option<(i16, i16)>, (i16, i16), Option<MovementLayer>) {
-    const CELL_LEPTONS: i32 = 256;
+    const CELL_LEPTONS: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
     let current = (
         ((i32::from(entity.position.rx) * CELL_LEPTONS + entity.position.sub_x.to_num::<i32>())
             / CELL_LEPTONS) as i16,
@@ -476,7 +476,7 @@ pub(super) fn build_bridge_passability_search(
         .map_or(u16::from(mover.facing) << 8, |facing| {
             facing.current(native_frame)
         });
-    let direction = crate::sim::substrate::direction_tables::quantize::dir_from_facing16(facing);
+    let direction = crate::util::direction_tables::quantize::dir_from_facing16(facing);
     let current = (mover.current_cell.0 as i16, mover.current_cell.1 as i16);
     let probe = signed_cell_add(current, DIRECTION_DELTAS[direction as usize]);
     let current_level = signed_ground_level(grid, current);

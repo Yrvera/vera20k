@@ -1,5 +1,5 @@
 //! Small egui helpers for mission result screens. (Mission/trigger
-//! announcements route through the in-game message list — `app_messages`.)
+//! announcements route through the in-game message list — `app::input::messages`.)
 
 use crate::ui::client_theme;
 

@@ -1,6 +1,6 @@
 //! Combo-box item, dropdown, scrollbar, and selection helpers for the skirmish shell.
 
-use crate::app_init::MapMenuEntry;
+use crate::map::scenario_menu::MapMenuEntry;
 use crate::skirmish_launch::{HOUSE_COLOR_COUNT, SKIRMISH_PLAYER_SLOT_COUNT};
 use crate::ui::main_menu::{SkirmishCountry, StartPosition};
 

@@ -1330,38 +1330,9 @@ impl Simulation {
         }
 
         let (index, identities) = RestoredObjectIndex::build(self)?;
-        if self.substrate.next_stable_object_id <= index.highest_id {
-            return Err(SnapshotRestoreError::ObjectIdCounterBehind {
-                next_id: self.substrate.next_stable_object_id,
-                highest_id: index.highest_id,
-            });
-        }
-
-        let highest_order = self
+        let seen_logic = self
             .substrate
-            .entities
-            .values()
-            .filter(|entity| entity.lifecycle.cell_marked)
-            .map(|entity| entity.occupancy_enter_order)
-            .max()
-            .unwrap_or(0);
-        let next_order = self.substrate.next_occupancy_enter_order.current();
-        if next_order <= highest_order {
-            return Err(SnapshotRestoreError::OccupancyOrderCounterBehind {
-                next_order,
-                highest_order,
-            });
-        }
-
-        let mut seen_logic = BTreeSet::new();
-        for &object_id in self.substrate.logic.as_slice() {
-            if !seen_logic.insert(object_id) {
-                return Err(SnapshotRestoreError::DuplicateLogicIdentity { object_id });
-            }
-            if !identities.contains_key(&object_id) {
-                return Err(SnapshotRestoreError::MissingLogicIdentity { object_id });
-            }
-        }
+            .validate_restored_counters_and_logic(index.highest_id, &identities)?;
         let pending_delete_ids = self
             .substrate
             .pending_delete
@@ -2791,8 +2762,7 @@ mod tests {
             .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
         sim.session.house_order.push(owner);
         let hash_without_pending_input = sim.state_hash();
-        sim.pending_commands
-            .push(CommandEnvelope::new(owner, 17, Command::ExitMatch));
+        sim.queue_command(CommandEnvelope::new(owner, 17, Command::ExitMatch));
         assert_eq!(
             sim.state_hash(),
             hash_without_pending_input,
@@ -2804,7 +2774,10 @@ mod tests {
         let bytes = GameSnapshot::save(&sim, 1, 2, "abort.map", 0);
         let mut restored = GameSnapshot::load(&bytes).expect("v75 EXIT snapshot").sim;
 
-        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert_eq!(
+            restored.pending_commands_for_tests(),
+            sim.pending_commands_for_tests()
+        );
         assert!(!restored.quit_requested);
         assert_eq!(restored.take_executed_exit_owner(), None);
         assert_eq!(restored.state_hash(), expected_hash);
@@ -2821,7 +2794,7 @@ mod tests {
             .insert(owner, HouseState::new(owner, 0, None, true, 0, 10));
         sim.session.house_order.push(owner);
         let hash_without_pending_input = sim.state_hash();
-        sim.pending_commands.push(CommandEnvelope::new(
+        sim.queue_command(CommandEnvelope::new(
             owner,
             1,
             Command::SetGameSpeed { speed: 4 },
@@ -2834,7 +2807,10 @@ mod tests {
         let mut restored = GameSnapshot::load(&bytes)
             .expect("v81 GameSpeed snapshot")
             .sim;
-        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert_eq!(
+            restored.pending_commands_for_tests(),
+            sim.pending_commands_for_tests()
+        );
         assert_eq!(restored.session.game_options.game_speed, 1);
         assert_eq!(restored.projected_in_game_options_speed(), Some(4));
 
@@ -2849,7 +2825,7 @@ mod tests {
         );
         assert_eq!(result.executed_commands, 1);
         assert_eq!(restored.session.game_options.game_speed, 4);
-        assert!(restored.pending_commands.is_empty());
+        assert!(restored.pending_commands_for_tests().is_empty());
         assert_eq!(result.state_hash, restored.state_hash());
 
         let second = restored.advance_tick(
@@ -3130,12 +3106,11 @@ mod tests {
         sim.houses.insert(owner, house);
         sim.session.house_order.push(owner);
         sim.session.game_mode_nonzero = true;
-        sim.pending_commands
-            .push(crate::sim::command::CommandEnvelope::new(
-                owner,
-                17,
-                crate::sim::command::Command::SellWallAtCell { x: -3, y: 9 },
-            ));
+        sim.queue_command(crate::sim::command::CommandEnvelope::new(
+            owner,
+            17,
+            crate::sim::command::Command::SellWallAtCell { x: -3, y: 9 },
+        ));
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // pending-command/house-mode persistence on that post-load cursor.
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
@@ -3151,7 +3126,10 @@ mod tests {
         let restored = GameSnapshot::load(&bytes)
             .expect("v60 wall-sale snapshot")
             .sim;
-        assert_eq!(restored.pending_commands, sim.pending_commands);
+        assert_eq!(
+            restored.pending_commands_for_tests(),
+            sim.pending_commands_for_tests()
+        );
         assert!(restored.houses.get(&owner).unwrap().player_control);
         assert!(restored.session.game_mode_nonzero);
         assert_eq!(restored.state_hash(), expected_hash);
@@ -3835,7 +3813,7 @@ mod tests {
         sim.session.binary_frame = u32::MAX - 2;
         sim.session.total_sim_ms = 12_345;
         sim.session.house_order.push(owner);
-        sim.pending_commands.push(CommandEnvelope::new(
+        sim.queue_command(CommandEnvelope::new(
             owner,
             sim.session.tick + 3,
             Command::Stop { entity_id: 71 },
@@ -3854,7 +3832,10 @@ mod tests {
         assert_eq!(restored.sim.session.binary_frame, u32::MAX - 2);
         assert_eq!(restored.sim.session.total_sim_ms, 12_345);
         assert_eq!(restored.sim.session.house_order, vec![owner]);
-        assert_eq!(restored.sim.pending_commands, sim.pending_commands);
+        assert_eq!(
+            restored.sim.pending_commands_for_tests(),
+            sim.pending_commands_for_tests()
+        );
         assert_eq!(
             restored.sim.scenario_rng.logical_state(),
             process_default,

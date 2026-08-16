@@ -9,13 +9,13 @@
 //!   `Simulation` state serialises and survives the consumer's strict parsing — it says
 //!   nothing about parity, because the scenario has no counterpart in gamemd.
 //!
-//! **What a real-map run does and does not contain.** Terrain, ore, rules and the RNG
-//! streams are real and seeded. Map-placed units, structures and houses are NOT spawned
-//! (see `headless_scenario`), so entity and credit dimensions stay empty until that lands.
-//! A comparison today can exercise frame alignment and the RNG cursors; it cannot yet
-//! localise a gameplay divergence.
+//! **What a real-map run contains (F09).** The scenario is constructed through the same
+//! GPU-free funnel the app uses (see `headless_scenario`): map-roster houses, map-placed
+//! units and structures, bridge state, wall ownership, smudges, and the seeded RNG
+//! streams are all real. What it still lacks versus an app launch is the skirmish
+//! *session* — player houses, start-position placement — so digests represent a
+//! spectatorless load of the map as authored, not a played skirmish opening.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use vera20k::headless_scenario::{self, SIM_TICK_MS};
@@ -82,8 +82,8 @@ fn parse_args() -> Result<Args, String> {
 
 /// Two houses with credits and a handful of entities.
 ///
-/// Enough for every digest field to carry a non-trivial value; no rules are loaded, so
-/// `advance_tick` runs without rules-driven behaviour.
+/// Enough for every digest field to carry a non-trivial value; the runtime is
+/// bound to empty resources, so no rules-driven behaviour runs.
 fn build_synthetic_simulation(seed: u32) -> Simulation {
     let mut sim = Simulation::with_seed(u64::from(seed));
 
@@ -145,24 +145,30 @@ fn main() -> Result<(), String> {
             let mut scenario = headless_scenario::load(ra2_dir, map, args.seed)?;
             println!(
                 "loaded {map} ({}x{}, theater {}) seed 0x{:08X}",
-                scenario.sim.session.map_width,
-                scenario.sim.session.map_height,
+                scenario.sim().session.map_width,
+                scenario.sim().session.map_height,
                 scenario.map.header.theater,
                 args.seed
             );
             for _ in 0..args.ticks {
                 scenario.tick();
-                let digest = scenario.sim.parity_digest();
+                let digest = scenario.sim().parity_digest();
                 sink.write(&digest)
                     .map_err(|error| format!("digest write failed: {error}"))?;
             }
         }
         _ => {
-            let mut sim = build_synthetic_simulation(args.seed);
-            let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+            // F09: the synthetic run advances through the same bound-resource
+            // runtime transaction as everything else. Empty resources stand in
+            // for the "no rules loaded" contract the synthetic scenario always
+            // had; synthetic digests are self-comparable, not parity evidence.
+            let mut runtime = vera20k::sim::runtime::SimRuntime {
+                simulation: build_synthetic_simulation(args.seed),
+                resources: vera20k::sim::runtime::SimResources::empty(),
+            };
             for _ in 0..args.ticks {
-                sim.advance_tick(&[], None, &heights, None, None, SIM_TICK_MS);
-                let digest = sim.parity_digest();
+                runtime.advance_idle_frame_for_tooling(SIM_TICK_MS);
+                let digest = runtime.simulation.parity_digest();
                 sink.write(&digest)
                     .map_err(|error| format!("digest write failed: {error}"))?;
             }

@@ -554,4 +554,101 @@ mod tests {
         entity.locomotor = Some(loco);
         assert_eq!(height_lift_px(&entity), 0.0);
     }
+    // -- F14 boundary tests: sim-side callers moved here so `sim/` never
+    // names `crate::render`. Coverage preserved verbatim. --
+    use crate::map::terrain;
+    use crate::sim::components::{Health, MovementTarget};
+    use crate::sim::entity_store::EntityStore;
+    use crate::sim::intern::test_interner;
+    use crate::sim::movement::tick_movement;
+    use crate::util::fixed_math::SIM_ZERO;
+
+    #[test]
+    fn test_screen_coords_computed() {
+        let e = GameEntity::new_at_frame_zero_for_test(
+            1,
+            30,
+            40,
+            2, // z=2 for elevation
+            0,
+            crate::sim::intern::test_intern("Americans"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            crate::sim::intern::test_intern("HTNK"),
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        // An entity is drawn on its cell's diamond centre, half a tile east and
+        // half a tile south of that cell's tile corner.
+        let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
+        assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 0.01);
+        assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tick_movement_updates_screen_position() {
+        let mut entities = EntityStore::new();
+
+        let path: Vec<(u16, u16)> = vec![(5, 5), (6, 5)];
+        let mut e = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
+        e.movement_target = Some(MovementTarget {
+            path,
+            path_layers: vec![MovementLayer::Ground; 2],
+            next_index: 1,
+            speed: SimFixed::from_num(1280), // 5 cells/sec in leptons.
+            move_dir_x: SimFixed::from_num(256),
+            move_dir_y: SIM_ZERO,
+            move_dir_len: SimFixed::from_num(256),
+            ..Default::default()
+        });
+        e.facing = 64;
+        entities.insert(e);
+
+        let mut lifecycle_requests = Vec::new();
+        for _ in 0..3 {
+            tick_movement(&mut entities, &mut test_interner(), &mut lifecycle_requests);
+        }
+
+        let entity = entities.get(1).expect("entity exists");
+        // After moving, the unit is drawn on cell (6, 5)'s diamond centre — half a
+        // tile east and half a tile south of that cell's tile corner.
+        let (corner_sx, corner_sy): (f32, f32) = terrain::iso_to_screen(6, 5, 0);
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
+        assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 1.0);
+        assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 1.0);
+    }
+
+    /// The spawn-path variant with explicit constants (moved from the sim
+    /// spawn test): a unit at cell (30, 40, z=0) projects to
+    ///   x = 30*(30-40) = -300,  y = 15*(30+40) + 15 + 15 = 1080
+    /// (the trailing +15s are VERA's constant world-row bias and the
+    /// half-tile drop from the tile row down to the diamond centre).
+    #[test]
+    fn spawned_unit_projects_to_diamond_centre_constants() {
+        let e = GameEntity::new_at_frame_zero_for_test(
+            1,
+            30,
+            40,
+            0,
+            64,
+            crate::sim::intern::test_intern("Americans"),
+            Health {
+                current: 100,
+                max: 100,
+            },
+            crate::sim::intern::test_intern("HTNK"),
+            EntityCategory::Unit,
+            0,
+            5,
+            true,
+        );
+        let (sx, sy) = screen_position(&e);
+        assert!((sx - (-300.0)).abs() < 0.1);
+        assert!((sy - 1080.0).abs() < 0.1);
+    }
 }

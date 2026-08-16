@@ -398,7 +398,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         .restore_after_snapshot_load()
         .expect("replay snapshot references and Logic membership restore");
     assert_eq!(
-        ReplayRunner::run_master_frame(
+        ReplayRunner::run_fixture_master_frame(
             &mut replayed,
             &replay_log,
             None,

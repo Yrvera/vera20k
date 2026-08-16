@@ -2,7 +2,7 @@
 
 use super::combos::apply_combo_selection as apply_combo_selection_for_test;
 use super::*;
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::map::briefing::BriefingSection;
 use crate::map::preview::PreviewSection;
 use crate::map::waypoints::Waypoint;
@@ -12,7 +12,7 @@ use crate::skirmish_launch::{
     SkirmishLaunchOptions,
 };
 use crate::skirmish_modes::stock_skirmish_modes;
-use crate::skirmish_scenarios::{
+use crate::map::skirmish_scenarios::{
     SkirmishScenarioKind, SkirmishScenarioRecord, SkirmishScenarioSource,
 };
 use crate::ui::skirmish_shell::layout::TRACKBAR_THUMB_W;

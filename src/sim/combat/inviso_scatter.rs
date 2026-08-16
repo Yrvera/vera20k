@@ -10,7 +10,7 @@ use crate::sim::rng::SimRng;
 use crate::util::fixed_math::SimFixed;
 use crate::util::native_x87::{NativeF32Bits, X87Chop53};
 
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const MAP_CELL_LIMIT: u32 = 512;
 const INVISO_ANIM_RADIUS: i32 = 0x20;
 

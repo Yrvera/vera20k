@@ -1855,7 +1855,7 @@ SpreadPercentage=.06
 
         let grid = PathGrid::test_all_passable(64, 64);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
-        sim.pending_commands.push(CommandEnvelope::new(
+        sim.queue_command(CommandEnvelope::new(
             owner_id,
             sim.session.tick + 1,
             Command::ForceAttackCell {
@@ -1871,7 +1871,7 @@ SpreadPercentage=.06
         let mut targeted = false;
         let mut last_health = 200;
         for _ in 0..600 {
-            let pending: Vec<CommandEnvelope> = std::mem::take(&mut sim.pending_commands);
+            let pending = sim.take_due_commands();
             sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
             shots += sim.fire_events.len();
             targeted |= sim

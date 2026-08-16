@@ -7,7 +7,7 @@
 //! is two array indexes with no allocation and no hashing.
 //!
 //! Built once at sim init from a `RuleSet` plus the populated `StringInterner`
-//! (after `RuleSet::intern_all_ids`). It is a derived cache — read-only during
+//! (after `Simulation::intern_rule_type_ids`). It is a derived cache — read-only during
 //! ticks, never serialized, rebuilt on load.
 //!
 //! ## Dependency rules
@@ -28,7 +28,7 @@ pub struct TypeHandleTable {
 impl TypeHandleTable {
     /// Build from every string currently in the interner. Each id that resolves
     /// to an object (case-insensitively) gets its handle; the rest stay `None`.
-    /// Call after `RuleSet::intern_all_ids` so every type id is present.
+    /// Call after `Simulation::intern_rule_type_ids` so every type id is present.
     pub fn build(rules: &RuleSet, interner: &StringInterner) -> Self {
         let mut by_interned = Vec::with_capacity(interner.len());
         for idx in 0..interner.len() as u32 {
@@ -53,6 +53,42 @@ impl TypeHandleTable {
     /// Count of interned ids that did NOT resolve to an object (orphans).
     pub fn orphan_count(&self) -> usize {
         self.by_interned.iter().filter(|h| h.is_none()).count()
+    }
+}
+
+/// Sim-owned pre-resolved rule handles (F04): the `[CombatDamage]` bridge
+/// warhead identities combat compares per detonation. `RuleSet` keeps only the
+/// canonical names (`rules.bridge_warheads`); the interned ids live here,
+/// built beside `TypeHandleTable` after interning and rebuilt from rules on
+/// load. Derived cache — never serialized, never hashed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedRuleHandles {
+    /// Resolved `IonCannonWarhead=` (retail default `IonCannonWH`).
+    pub ion_cannon: crate::sim::intern::InternedId,
+    /// Resolved `C4Warhead=` (retail default `Super`).
+    pub c4: crate::sim::intern::InternedId,
+    /// Resolved `CrushWarhead=` (retail default `Crush`).
+    pub crush: crate::sim::intern::InternedId,
+}
+
+impl ResolvedRuleHandles {
+    /// Intern the canonical warhead names and pin their ids. Idempotent for an
+    /// interner that already carries the names (init and every load path), so
+    /// re-resolution cannot grow or reorder serialized interner state.
+    pub fn resolve(
+        rules: &crate::rules::ruleset::RuleSet,
+        interner: &mut crate::sim::intern::StringInterner,
+    ) -> Self {
+        Self {
+            ion_cannon: interner.intern(&rules.bridge_warheads.ion_cannon_name),
+            c4: interner.intern(&rules.bridge_warheads.c4_name),
+            crush: interner.intern(&rules.bridge_warheads.crush_name),
+        }
+    }
+
+    /// Whether an interned warhead is the resolved `CrushWarhead=`.
+    pub fn is_crush(self, warhead_id: crate::sim::intern::InternedId) -> bool {
+        self.crush == warhead_id
     }
 }
 

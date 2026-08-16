@@ -245,7 +245,7 @@ const IDLE_ROLL_MAX: u32 = 10;
 /// Inclusive top of the idle facing draw — the eight infantry facings.
 const IDLE_FACING_MAX: u32 = 7;
 /// Facing bytes between two adjacent eighth-turns (256 / 8).
-const IDLE_FACING_STEP: u8 = 32;
+const IDLE_FACING_STEP: u8 = crate::util::direction::FACING_UNITS_PER_DIRECTION;
 /// Fear above which a Fraidycat type panics out of the idle turn instead.
 const IDLE_PANIC_FEAR: u16 = 50;
 /// The one type whose idle roll is biased, by name. gamemd tests the object's

@@ -5,7 +5,6 @@ use crate::sim::movement::locomotion::LocomotorSlot;
 
 use super::*;
 use crate::map::entities::EntityCategory;
-use crate::map::terrain;
 use crate::sim::components::{DriveCoord, MovementTarget, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -1064,39 +1063,6 @@ fn test_tick_movement_partial_progress() {
         (sub_x_f32 - 162.0).abs() < 2.0,
         "sub_x should be ~162, got {sub_x_f32}"
     );
-}
-
-#[test]
-fn test_tick_movement_updates_screen_position() {
-    let mut entities = EntityStore::new();
-
-    let path: Vec<(u16, u16)> = vec![(5, 5), (6, 5)];
-    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 5, 5);
-    e.movement_target = Some(MovementTarget {
-        path,
-        path_layers: vec![MovementLayer::Ground; 2],
-        next_index: 1,
-        speed: SimFixed::from_num(1280), // 5 cells/sec in leptons.
-        move_dir_x: SimFixed::from_num(256),
-        move_dir_y: SIM_ZERO,
-        move_dir_len: SimFixed::from_num(256),
-        ..Default::default()
-    });
-    e.facing = 64;
-    entities.insert(e);
-
-    let mut lifecycle_requests = Vec::new();
-    for _ in 0..3 {
-        tick_movement(&mut entities, &mut test_interner(), &mut lifecycle_requests);
-    }
-
-    let entity = entities.get(1).expect("entity exists");
-    // After moving, the unit is drawn on cell (6, 5)'s diamond centre — half a
-    // tile east and half a tile south of that cell's tile corner.
-    let (corner_sx, corner_sy): (f32, f32) = terrain::iso_to_screen(6, 5, 0);
-    let (sx, sy) = crate::render::locomotor_visual::screen_position(entity);
-    assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 1.0);
-    assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 1.0);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Choose-map modal state and selection helpers for the skirmish shell.
 
 use crate::skirmish_modes::{SkirmishGameMode, mode_by_id};
-use crate::skirmish_scenarios::{
+use crate::map::skirmish_scenarios::{
     SkirmishScenarioRecord, filter_records_for_mode, upsert_random_map_sentinel,
 };
 

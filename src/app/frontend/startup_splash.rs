@@ -1,6 +1,6 @@
 //! Retail process-start splash composition and presentation.
 //!
-//! This is intentionally separate from `app_loading`: the native GLS splash is
+//! This is intentionally separate from `app::loading`: the native GLS splash is
 //! process initialization chrome, not selected-scenario loading presentation.
 
 use std::time::{Duration, Instant};

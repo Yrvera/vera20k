@@ -138,4 +138,40 @@ mod tests {
             LocomotorKind::Drive
         );
     }
+
+    /// Lock the rules-owned install table (the production parsing path used by
+    /// `ObjectType`) to the substrate's class table so the two cannot drift:
+    /// same row count, same CLSID -> discriminant on both paths, same seed
+    /// fallback, and the dormant Mech CLSID resolving nowhere on either.
+    #[test]
+    fn install_tables_agree_with_rules_kind_table() {
+        use crate::rules::locomotor_type::{
+            INSTALLED_CLSID_KIND_TABLE, kind_from_clsid,
+            resolve_installed_kind as rules_resolve_installed_kind,
+        };
+        use crate::sim::substrate::locomotion::CLSID_CLASS_TABLE;
+
+        assert_eq!(CLSID_CLASS_TABLE.len(), INSTALLED_CLSID_KIND_TABLE.len());
+        for &(clsid, class) in &CLSID_CLASS_TABLE {
+            let kind: LocomotorKind = LocomotorSlot::new(class).into();
+            assert_eq!(kind_from_clsid(clsid), Some(kind), "CLSID: {clsid}");
+            assert_eq!(
+                rules_resolve_installed_kind(Some(clsid)),
+                resolve_installed_kind(Some(clsid)),
+                "CLSID: {clsid}"
+            );
+        }
+        for &(clsid, kind) in &INSTALLED_CLSID_KIND_TABLE {
+            assert_eq!(
+                class_from_clsid(clsid).map(|class| LocomotorSlot::new(class).into()),
+                Some(kind),
+                "CLSID: {clsid}"
+            );
+        }
+        assert_eq!(rules_resolve_installed_kind(None), resolve_installed_kind(None));
+
+        let mech = "{55D141B8-DB94-11D1-AC98-006008055BB5}";
+        assert_eq!(kind_from_clsid(mech), None);
+        assert_eq!(class_from_clsid(mech), None);
+    }
 }

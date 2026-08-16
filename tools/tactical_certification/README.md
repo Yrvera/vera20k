@@ -21,7 +21,7 @@ Run one capture:
 ```powershell
 python -m tools.tactical_certification capture `
   --profile C:\path\to\tools\tactical_certification\profiles\soviet-radar-online-v1.json `
-  --contract C:\path\to\src\app_tactical_capture_contract.v1.json `
+  --contract C:\path\to\src\app\diagnostics\tactical_capture\contract.v1.json `
   --executable C:\path\to\vera20k.exe `
   --working-directory C:\path\to\ra2-rust-game `
   --run-dir C:\path\to\brand-new-run

@@ -51,13 +51,17 @@ pub const SIM_EPSILON: SimFixed = SimFixed::DELTA;
 /// deterministic fixed-point rounding.
 #[inline]
 pub fn native_movement_frame_fraction() -> SimFixed {
-    SIM_ONE / SimFixed::from_num(15u8)
+    SIM_ONE / SimFixed::from_num(RA2_LOGIC_FRAMES_PER_SECOND as u8)
 }
 
-/// Canonical simulation tick rate in Hz — matches RA2's native 15 fps game
-/// logic rate. At 15 Hz every sim tick equals one RA2 game frame, so INI
-/// timing values (ROF, Speed, Rate, etc.) can be used directly without
-/// conversion.
+/// RA2's native game-logic frame rate at normal speed: 15 logic frames per
+/// second. The single authority for every INI minutes/seconds->frames
+/// conversion (ROF, ReloadRate, C4Delay, ore growth, trigger time, ...).
+pub const RA2_LOGIC_FRAMES_PER_SECOND: u32 = 15;
+
+/// VERA's fixed simulation step rate in Hz (22 ms per tick on the client;
+/// see `app::types::SIM_TICK_MS`). NOT the native logic-frame rate — INI
+/// timing conversions use `RA2_LOGIC_FRAMES_PER_SECOND` above.
 pub const SIM_TICK_HZ: u32 = 45;
 
 // ---------------------------------------------------------------------------
@@ -109,8 +113,8 @@ pub fn sim_from_f64(val: f64) -> SimFixed {
 
 /// Fixed-point delta time from a millisecond tick count.
 ///
-/// The sim runs at fixed 66ms ticks (`SIM_TICK_MS = 1000 / 15`). This converts
-/// that integer millisecond count to a fixed-point seconds value.
+/// Converts an integer millisecond tick count to a fixed-point seconds
+/// value (the client passes `SIM_TICK_MS` = 22 ms).
 ///
 /// Example: `dt_from_tick_ms(66)` ≈ 0.066 (stored as 4325/65536).
 #[inline]
@@ -277,7 +281,7 @@ pub fn isqrt_i64(val: i64) -> i64 {
 /// east and south are therefore 63 and 127; authored quarter-turn facings
 /// remain the exact table values 64 and 128.
 pub fn facing_from_delta_int(dx: i32, dy: i32) -> u8 {
-    crate::sim::substrate::direction_tables::facing8_from_delta(dx, dy)
+    crate::util::direction_tables::facing8_from_delta(dx, dy)
 }
 
 /// Full-word facing from a screen-relative coordinate delta.
@@ -285,7 +289,7 @@ pub fn facing_from_delta_int(dx: i32, dy: i32) -> u8 {
 /// This preserves the native lookup, float-store, quadrant, and 65,534-scale
 /// boundaries used before a value enters `FacingClass`.
 pub fn facing_from_delta_int_u16(dx: i32, dy: i32) -> u16 {
-    crate::sim::substrate::direction_tables::facing16_from_delta(dx, dy)
+    crate::util::direction_tables::facing16_from_delta(dx, dy)
 }
 
 /// Inverse of `facing_from_delta_int` for quantized 8-direction facings.

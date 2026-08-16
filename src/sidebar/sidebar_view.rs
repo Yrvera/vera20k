@@ -10,9 +10,38 @@ use crate::sim::production::{
 use crate::sim::superweapon::SuperWeaponView;
 
 use super::gadget_flash::SidebarGadgetState;
+
+/// The armed targeting selection as the sidebar consumes it (F06): exactly
+/// one of building placement or superweapon may be armed at a time. This is
+/// the sidebar-owned projection; the app converts its targeting state at the
+/// refresh seam so presentation never imports app vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArmedSidebarEntry {
+    /// Ready building awaiting placement (building INI section name).
+    BuildingPlacement(String),
+    /// Charged superweapon awaiting a target cell (SW INI section name).
+    SuperWeapon(String),
+}
+
+impl ArmedSidebarEntry {
+    pub fn as_building_placement(&self) -> Option<&str> {
+        match self {
+            Self::BuildingPlacement(section) => Some(section.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_super_weapon(&self) -> Option<&str> {
+        match self {
+            Self::SuperWeapon(section) => Some(section.as_str()),
+            _ => None,
+        }
+    }
+}
 use super::{
     CAMEO_COLUMNS, Rect, SidebarAction, SidebarChromeLayoutSpec, SidebarControlButton, SidebarItem,
-    SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView, compute_layout_with_spec,
+    SidebarScrollButton, SidebarTab, SidebarTabButton, SidebarToggleButton, SidebarView,
+    compute_layout_with_spec, scroll_button_rects,
 };
 
 #[cfg(test)]
@@ -27,7 +56,7 @@ pub(crate) fn build_sidebar_view(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed: Option<&crate::app_types::TargetingMode>,
+    armed: Option<&ArmedSidebarEntry>,
     producer_focus: &[ProducerFocusView],
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -55,6 +84,8 @@ pub(crate) fn build_sidebar_view(
         gadget_state,
         repair_button_size,
         sell_button_size,
+        None,
+        None,
     )
 }
 
@@ -70,7 +101,7 @@ pub(crate) fn build_sidebar_view_with_spec(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed: Option<&crate::app_types::TargetingMode>,
+    armed: Option<&ArmedSidebarEntry>,
     producer_focus: &[ProducerFocusView],
     scroll_rows: usize,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -78,6 +109,8 @@ pub(crate) fn build_sidebar_view_with_spec(
     gadget_state: &SidebarGadgetState,
     repair_button_size: Option<[f32; 2]>,
     sell_button_size: Option<[f32; 2]>,
+    scroll_down_button_size: Option<[f32; 2]>,
+    scroll_up_button_size: Option<[f32; 2]>,
 ) -> SidebarView {
     // Collect items first to know how many rows we need.
     let selected_category = active_tab.category();
@@ -137,6 +170,7 @@ pub(crate) fn build_sidebar_view_with_spec(
                     h: tab_h,
                 },
                 active: tab == active_tab,
+                disabled: gadget_state.tab_disabled[idx],
                 frame_index: gadget_state.tab_frame(idx, tab == active_tab),
             }
         })
@@ -167,12 +201,32 @@ pub(crate) fn build_sidebar_view_with_spec(
     let repair_button = SidebarToggleButton {
         rect: repair_rect,
         action: SidebarAction::ToggleRepairMode,
+        active: gadget_state.repair_mode_on,
+        disabled: gadget_state.repair_disabled,
         frame_index: gadget_state.repair_frame(),
     };
     let sell_button = SidebarToggleButton {
         rect: sell_rect,
         action: SidebarAction::ToggleSellMode,
+        active: gadget_state.sell_mode_on,
+        disabled: gadget_state.sell_disabled,
         frame_index: gadget_state.sell_frame(),
+    };
+    let (scroll_down_rect, scroll_up_rect) = scroll_button_rects(
+        &layout,
+        layout_spec.sidebar_width,
+        scroll_down_button_size,
+        scroll_up_button_size,
+    );
+    let scroll_down_button = SidebarScrollButton {
+        rect: scroll_down_rect,
+        disabled: false,
+        frame_index: gadget_state.scroll_down_frame(),
+    };
+    let scroll_up_button = SidebarScrollButton {
+        rect: scroll_up_rect,
+        disabled: false,
+        frame_index: gadget_state.scroll_up_frame(),
     };
 
     // Cameo grid positioning.
@@ -254,6 +308,8 @@ pub(crate) fn build_sidebar_view_with_spec(
         items,
         repair_button,
         sell_button,
+        scroll_down_button,
+        scroll_up_button,
         pause_button: active_queue_exists.then_some(SidebarControlButton {
             rect: Rect {
                 x: btn_x1,
@@ -346,17 +402,17 @@ fn collect_build_entries(
     queue_items: &[QueueItemView],
     build_options: &[BuildOption],
     ready_buildings: &[ReadyBuildingView],
-    armed: Option<&crate::app_types::TargetingMode>,
+    armed: Option<&ArmedSidebarEntry>,
     interner: Option<&crate::sim::intern::StringInterner>,
     sw_views: &[SuperWeaponView],
 ) -> Vec<BuildEntry> {
     // Building-placement is_armed: matched by interned type_id.
     let armed_building_id: Option<InternedId> = armed
-        .and_then(crate::app_types::TargetingMode::as_building_placement)
+        .and_then(ArmedSidebarEntry::as_building_placement)
         .and_then(|s| interner.and_then(|i| i.get(s)));
     // SW is_armed: matched by section name (string compare).
     let armed_sw_section: Option<&str> =
-        armed.and_then(crate::app_types::TargetingMode::as_super_weapon);
+        armed.and_then(ArmedSidebarEntry::as_super_weapon);
     let resolve = |id: InternedId| -> String {
         interner.map_or(format!("#{}", id.index()), |i| i.resolve(id).to_string())
     };
@@ -551,6 +607,40 @@ mod tests {
     }
 
     #[test]
+    fn gadget_presentation_is_retained_in_sidebar_view() {
+        let mut gadgets = SidebarGadgetState::new();
+        gadgets.tab_disabled[1] = true;
+        gadgets.repair_mode_on = true;
+        gadgets.sell_disabled = true;
+        gadgets.scroll_down_pressed = true;
+        let view = build_sidebar_view(
+            1280.0,
+            960.0,
+            SidebarTab::Building,
+            0,
+            0,
+            0,
+            Some([28.0, 27.0]),
+            &[],
+            &[],
+            &[],
+            None,
+            &[],
+            0,
+            None,
+            &gadgets,
+            None,
+            None,
+        );
+
+        assert!(view.tabs[1].disabled);
+        assert!(view.repair_button.active);
+        assert!(view.sell_button.disabled);
+        assert_eq!(view.scroll_down_button.frame_index, 1);
+        assert_eq!(view.scroll_up_button.frame_index, 0);
+    }
+
+    #[test]
     fn control_buttons_stay_inside_panel() {
         let view = build_sidebar_view(
             1280.0,
@@ -715,7 +805,7 @@ mod tests {
     #[test]
     fn control_buttons_carry_their_actions() {
         // `sidebar::hit_test` was retired in A6 — the control/dev buttons moved
-        // onto the gadget list. The driver (`app_gadget_input::apply_gadget_result`)
+        // onto the gadget list. The driver (`gadget_input::apply_gadget_result`)
         // applies each button's own `SidebarAction`, so the wiring under test is
         // that the view builds those buttons with the right actions.
         let view = build_sidebar_view(

@@ -1,14 +1,16 @@
 //! Process, window, GPU, frontend, and initial app-state construction.
 
+use super::presentation::render;
+use super::frontend::list_maps;
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
     BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
-    GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig, MapMenuEntry,
+    GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig,
     ModifiersState, MusicPlayer, PhysicalSize, PlatformState, RandomMapGenerationRetention,
-    RefCell, Result,
+    Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
-    SidebarTab, SoundEventQueue, StartupAudioDisposition, TriggerGraph, Window, WindowAttributes,
-    app_list_maps, app_render, auto_detect_ui_scale, frontend::startup_splash,
+    SidebarTab, StartupAudioDisposition, Window, WindowAttributes,
+    auto_detect_ui_scale, frontend::startup_splash,
     should_load_audio_indices,
 };
 
@@ -115,7 +117,7 @@ impl App {
         // which archive wins it.)
         let startup_csf = startup_asset_manager
             .as_ref()
-            .map(crate::app_init::load_csf)
+            .map(crate::app::loading::init::load_csf)
             .transpose()?;
         let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
@@ -170,22 +172,22 @@ impl App {
         let startup_rules = startup_asset_manager
             .as_ref()
             // Startup shell: no mode or map selected yet, so no overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+            .and_then(|am| crate::app::loading::init_helpers::load_rules_ini(am, None, None));
         let startup_sound_registry = startup_asset_manager
             .as_ref()
-            .map(crate::app_transitions::load_sound_registry)
+            .map(crate::app::loading::transitions::load_sound_registry)
             .unwrap_or_default();
         let startup_audio_indices = if should_load_audio_indices(startup_audio.load_audio_indices) {
             startup_asset_manager
                 .as_ref()
-                .map(crate::app_transitions::load_audio_indices)
+                .map(crate::app::loading::transitions::load_audio_indices)
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
         let startup_eva_registry = startup_asset_manager
             .as_ref()
-            .map(crate::app_transitions::load_eva_registry)
+            .map(crate::app::loading::transitions::load_eva_registry)
             .unwrap_or_default();
         if let Some(assets) = startup_asset_manager.as_mut() {
             match assets.register_neutral_archives() {
@@ -223,14 +225,14 @@ impl App {
         let main_menu_shell_failed =
             startup_asset_manager.is_none() || main_menu_shell_chrome.is_none();
         let version_txt = Self::load_version_txt();
-        let available_maps = app_list_maps::list_available_maps().unwrap_or_else(|err| {
+        let available_maps = list_maps::list_available_maps().unwrap_or_else(|err| {
             log::warn!("Could not list maps for menu: {:#}", err);
             Vec::new()
         });
         let skirmish_scenario_records =
             match (startup_asset_manager.as_mut(), game_config.as_ref()) {
                 (Some(assets), Some(config)) => {
-                    app_list_maps::list_skirmish_scenario_records_with_assets(
+                    list_maps::list_skirmish_scenario_records_with_assets(
                         &config.paths.ra2_dir,
                         assets,
                         startup_csf.as_ref(),
@@ -247,16 +249,16 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(idx, map)| {
-                    crate::skirmish_scenarios::SkirmishScenarioRecord::from_map_menu_entry(idx, map)
+                    crate::map::skirmish_scenarios::SkirmishScenarioRecord::from_map_menu_entry(idx, map)
                 })
                 .collect()
         } else {
             skirmish_scenario_records
         };
-        let skirmish_shell_maps: Vec<MapMenuEntry> = skirmish_scenario_records
-            .iter()
-            .map(crate::skirmish_scenarios::SkirmishScenarioRecord::to_map_menu_entry)
-            .collect();
+        // F11: the catalog owns the records and derives the shell-map
+        // projection internally; nothing re-projects by hand anymore.
+        let scenario_catalog =
+            crate::app::scenario_catalog::ScenarioCatalog::from_records(skirmish_scenario_records);
         let skirmish_modes = startup_asset_manager
             .as_ref()
             .and_then(
@@ -276,19 +278,19 @@ impl App {
         // dialog-build time); without assets we keep the stock-default ranges.
         if let Some(assets) = startup_asset_manager.as_ref() {
             skirmish_shell_state.trackbar_bounds =
-                crate::app_init_helpers::load_skirmish_trackbar_bounds(assets);
+                crate::app::loading::init_helpers::load_skirmish_trackbar_bounds(assets);
             // Seed the per-match option values (Money/UnitCount/TechLevel/
             // GameSpeed and the checkbox toggles) from the merged rules
             // [MultiplayerDialogSettings], so a mod that changes a default opens
             // the dialog on — and launches the match with — its value. Without
             // assets we keep the stock-default values.
-            let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
+            let dialog_options = crate::app::loading::init_helpers::load_skirmish_game_options(assets);
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
         let skirmish_defaults =
-            crate::app_skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
+            crate::app::frontend::skirmish_session::skirmish_global_defaults(&skirmish_shell_state);
         let offline_skirmish_runtime =
-            crate::app_skirmish_session::OfflineSkirmishRuntime::initialize(
+            crate::app::frontend::skirmish_session::OfflineSkirmishRuntime::initialize(
                 frontend_seed.value,
                 game_config
                     .as_ref()
@@ -298,7 +300,7 @@ impl App {
             );
         offline_skirmish_runtime.hydrate_shell(
             &mut skirmish_shell_state,
-            &skirmish_shell_maps,
+            scenario_catalog.shell_maps(),
             &skirmish_modes,
         );
         // Pre-fill the player-name field from the persistent profile name when
@@ -317,9 +319,10 @@ impl App {
         );
         crate::ui::skirmish_shell::initialize_rows_for_selected_map(
             &mut skirmish_shell_state,
-            &skirmish_shell_maps,
+            scenario_catalog.shell_maps(),
         );
-        let selected_shell_map = skirmish_shell_maps
+        let selected_shell_map = scenario_catalog
+            .shell_maps()
             .get(skirmish_shell_state.selected_map_idx)
             .map(|map| map.file_name.as_str());
         let mut skirmish_settings =
@@ -339,11 +342,11 @@ impl App {
             crate::render::cursor_atlas::build_software_cursor(&gpu, &batch_renderer, assets)
         });
         let hotkey_bindings =
-            crate::app_hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
+            crate::app::input::hotkeys::HotkeyBindings::load(startup_asset_manager.as_ref());
         let saved_scroll_rate = game_config
             .as_ref()
             .and_then(|config| {
-                crate::app_options_persist::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
+                crate::app::persistence::options::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
             })
             .unwrap_or_else(|| {
                 crate::ui::shell::in_game_options_state::InGameOptionsState::default().scroll_rate
@@ -351,88 +354,172 @@ impl App {
         let saved_detail_level = game_config
             .as_ref()
             .and_then(|config| {
-                crate::app_options_persist::read_detail_level_from_ra2md(&config.paths.ra2_dir)
+                crate::app::persistence::options::read_detail_level_from_ra2md(&config.paths.ra2_dir)
             })
             .unwrap_or_else(|| {
                 crate::ui::shell::in_game_options_state::InGameOptionsState::default().detail_level
             });
 
         let mut state = AppState {
-            random_map_generation: None,
-            random_map_retention: RandomMapGenerationRetention::default(),
-            gpu,
-            batch_renderer,
-            combat_light_renderer,
+            platform: PlatformState::new(window, game_config),
+            match_state: crate::app::match_runtime::state::MatchState {
+            sim_runtime: None,
+            input: crate::app::input::state::MatchInputState {
+            minimap_dragging: false,
+            selection_state: SelectionState::new(),
+            selection_order: Vec::new(),
+            selection_order_pending: false,
+            selection_voice_enabled: true,
+            queued_order_mode: render::OrderMode::Move,
+            control_groups: vec![Vec::new(); 10],
+            last_control_group_press: None,
+            spawn_pick_pending: false,
+            targeting_mode: None,
+            building_placement_preview: None,
+                camera_x: 0.0,
+                camera_y: 0.0,
+                zoom_level: 1.0,
+                zoom_target: 1.0,
+                zoom_anchor_world: [0.0, 0.0],
+                zoom_anchor_screen: [0.0, 0.0],
+                edge_scroll: crate::app::input::camera::EdgeScrollState::default(),
+                tactical_mouse: crate::app::input::camera::TacticalMouseState::default(),
+                view_bookmarks: crate::app::input::camera::ViewBookmarks::default(),
+                cursor_x: 0.0,
+                cursor_y: 0.0,
+                keys_held: HashSet::new(),
+                hotkey_bindings,
+                hotkey_modifiers: ModifiersState::empty(),
+                type_select: crate::app::types::TypeSelectInputState::default(),
+                retail_screenshot_requested: false,
+            },
+            match_presentation: crate::app::presentation::state::MatchPresentationState {
+            power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
+            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
+            in_game_gadgets: crate::app::input::gadget_input::InGameGadgets::new(),
+            sidebar_projection: Default::default(),
+            active_sidebar_tab: SidebarTab::default_active_tab(),
+            sidebar_layout_spec,
+            sidebar_layout_spec_base: base_sidebar_layout_spec,
+            ui_scale,
+            sidebar_scroll_rows: 0,
+            sidebar_scroll_rows_parked: [0; 4],
+            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltip_epoch: Instant::now(),
+            message_list: crate::ui::messages::MessageList::new(
+                3,
+                0,
+                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+                0,
+            ),
+            message_clock: crate::ui::messages::PauseAwareClock::default(),
+            in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
+            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
+                game_speed: crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                scroll_rate: saved_scroll_rate,
+                detail_level: saved_detail_level,
+                ..Default::default()
+            },
+            in_game_options_anchor: None,
+            show_hotkey_help: false,
+            show_save_load_panel: false,
             combat_lights: Default::default(),
-            instance_pool: crate::render::batch::InstanceBufferPool::new(),
-            tile_atlas: None,
+            minimap: None,
+            radar_anim: None,
+            radar_animation_source: None,
+            radar_content_insets: None,
+            has_radar: false,
+            selection_overlay: None,
+            shroud_buffer: None,
+            tactical_bridge_inverse_map: BTreeMap::new(),
+            theater_name: "TEMPERATE".to_string(),
+            theater_ext: "tem".to_string(),
+            target_lines: crate::app::presentation::target_lines::TargetLineState::default(),
+            pending_fire_effects: Vec::new(),
+            garrison_muzzle_flashes: Vec::new(),
+            weapon_muzzle_flashes: Vec::new(),
+            projectile_visuals: Vec::new(),
+            parachute_anims: Vec::new(),
+            idle_anim_elapsed_ms: 0,
+            building_anim_phase_base: std::collections::BTreeMap::new(),
+            cached_overlay_instances: Vec::new(),
+            cached_unit_instances: Vec::new(),
+            cached_unit_pages: Vec::new(),
+                terrain_grid: None,
+                overlays: Default::default(),
+                terrain_objects: Vec::new(),
+                waypoints: HashMap::new(),
+                cell_tags: HashMap::new(),
+                tags: HashMap::new(),
+                overlay_names: BTreeMap::new(),
+                tiberium_radar_colors: HashMap::new(),
+                house_color_map: HashMap::new(),
+                house_roster: HouseRoster::default(),
+                lighting_grid: CellLightGrid::new(),
+                applied_lighting_sources: Vec::new(),
+                applied_lighting_profile: None,
+                applied_lighting_detail_level: 2,
+                pending_lighting_refresh: None,
+                last_lighting_view_fingerprint: None,
+                map_lighting_config: LightingConfig::default(),
+                tile_atlas: None,
+                unit_atlas: None,
+                palette_set: None,
+                sprite_atlas: None,
+                overlay_atlas: None,
+                bridge_atlas: None,
+                bridge_railing_atlas: None,
+                sidebar_cameo_atlas: None,
+                sidebar_chrome: None,
+                software_cursor: startup_software_cursor,
+            },
+            match_audio: Default::default(),
+            match_diagnostics: Default::default(),
             map_basic: BasicSection::default(),
-            terrain_grid: None,
-            resolved_terrain: None,
-            simulation: None,
-            unit_atlas: None,
-            vxl_slope_transition_cache: RefCell::new(Default::default()),
-            palette_set: None,
-            vxl_compute: Some(vxl_compute),
-            sprite_atlas: None,
-            overlay_atlas: None,
-            bridge_atlas: None,
-            bridge_railing_atlas: None,
-            overlays: Vec::new(),
-            terrain_objects: Vec::new(),
-            waypoints: HashMap::new(),
-            cell_tags: HashMap::new(),
-            tags: HashMap::new(),
-            triggers: HashMap::new(),
-            events: HashMap::new(),
-            actions: HashMap::new(),
-            trigger_graph: TriggerGraph::default(),
-            overlay_names: BTreeMap::new(),
-            tiberium_radar_colors: HashMap::new(),
-            overlay_registry: None,
-            game_config,
-            depth_view,
-            shell_surface_presenter,
-            upscale_pass,
-            camera_x: 0.0,
-            camera_y: 0.0,
-            zoom_level: 1.0,
-            zoom_target: 1.0,
-            zoom_anchor_world: [0.0, 0.0],
-            zoom_anchor_screen: [0.0, 0.0],
-            edge_scroll: crate::app_camera::EdgeScrollState::default(),
-            tactical_mouse: crate::app_camera::TacticalMouseState::default(),
-            view_bookmarks: crate::app_camera::ViewBookmarks::default(),
-            cursor_x: 0.0,
-            cursor_y: 0.0,
-            keys_held: HashSet::new(),
-            hotkey_bindings,
-            hotkey_modifiers: ModifiersState::empty(),
-            type_select: crate::app_types::TypeSelectInputState::default(),
-            retail_screenshot_requested: false,
-            retail_screenshot_frame_cache: Default::default(),
-            egui,
+            loaded_map_source: None,
+            loaded_map_hash: None,
+            scenario_outcome: None,
+            scenario_exit: None,
+            scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock::new(),
+            configured_input_delay_ticks: input_delay_ticks,
+            local_player_owner: None,
+            local_owner_override: None,
+            sandbox_full_visibility: false,
+            paused: false,
+            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
+            // (in the presentation owner) is the single source of truth; seed it
+            // from the skirmish-setup speed (internal 1) and derive
+            // `sim_speed_tps` from the same value, so the Options slider
+            // reflects the current pace. The resulting tps is unchanged from
+            // the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
+            sim_speed_tps: crate::app::types::tps_for_game_speed(
+                crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+            ),
+            },
+            frontend: crate::app::frontend::state::FrontendState {
             screen: GameScreen::default(),
             available_maps,
-            skirmish_shell_maps,
+            scenario_catalog,
             skirmish_modes,
-            skirmish_scenario_records,
             skirmish_settings,
             loading_session: None,
-            tile_variant_selector_cache: Default::default(),
             frontend_main_rng: crate::sim::rng::SimRng::new(u64::from(frontend_seed.value)),
             next_match_correlation: 1,
             active_loading_correlation: None,
             loaded_startup: None,
             rust_l0_receipt: None,
+            random_map_generation: None,
+            random_map_retention: RandomMapGenerationRetention::default(),
+            skirmish_preview_texture: None,
+            loading_screen_atlas: None,
+            loading_progress: crate::app::loading::pump::LoadingProgressState::standard_skirmish(),
+            frontend_rules: startup_rules,
+            shell_preview_overlay_registry: None,
             dev_skirmish_shell_enabled,
             skirmish_shell_state,
             offline_skirmish_runtime,
             skirmish_shell_last_painted_pressed_button: None,
             skirmish_shell_chrome,
-            skirmish_preview_texture: None,
-            loading_screen_atlas: None,
-            loading_progress: crate::app_loading::LoadingProgressState::standard_skirmish(),
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             single_player_shell_state:
                 crate::ui::single_player_shell::SinglePlayerShellState::default(),
@@ -443,170 +530,83 @@ impl App {
             main_menu_movie_last_step: Instant::now(),
             main_menu_shell_failed,
             version_txt,
-            main_menu_show_single_player_shell: false,
-            main_menu_show_skirmish_setup: false,
-            main_menu_show_native_skirmish_shell: false,
-            skirmish_shell_return_to_single_player_shell: false,
             shell_first_paint_slide: None,
             shell_slide_active_shell: None,
             shell_slide_generation: 0,
             quit_cascade: None,
-            scenario_outcome: None,
-            scenario_exit: None,
-            minimap: None,
-            minimap_dragging: false,
-            radar_anim: None,
-            radar_animation_source: None,
-            power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
-            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
-            in_game_gadgets: crate::app_gadget_input::InGameGadgets::new(),
-            tooltips: crate::ui::tooltips::TooltipService::new(),
-            tooltip_epoch: Instant::now(),
-            message_list: crate::ui::messages::MessageList::new(
-                3,
-                0,
-                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
-                0,
-            ),
-            message_clock: crate::ui::messages::PauseAwareClock::default(),
-            radar_content_insets: None,
-            has_radar: false,
-            selection_overlay: None,
-            shroud_buffer: None,
-            sidebar_cameo_atlas: None,
-            sidebar_chrome: None,
-            bit_font,
-            software_cursor: startup_software_cursor,
-            selection_state: SelectionState::new(),
-            selection_order: Vec::new(),
-            selection_order_pending: false,
-            selection_voice_enabled: true,
-            loaded_map_source: None,
-            loaded_map_hash: None,
-            parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
-                Ok(sink) => {
-                    if let Some(sink) = sink.as_ref() {
-                        log::info!("parity digest capture -> {}", sink.path().display());
-                    }
-                    sink
-                }
-                Err(error) => {
-                    log::error!("parity digest sink could not be opened: {error}");
-                    None
-                }
-            },
-            rules: startup_rules,
-            art_registry: None,
-            csf: startup_csf,
-            house_color_map: HashMap::new(),
-            house_roster: HouseRoster::default(),
-            score_screen: None,
-            score_shell_state: Default::default(),
-            finished_game_count: 0,
-            height_map: BTreeMap::new(),
-            bridge_height_map: BTreeMap::new(),
-            tactical_bridge_inverse_map: BTreeMap::new(),
-            lighting_grid: CellLightGrid::new(),
-            applied_lighting_sources: Vec::new(),
-            applied_lighting_profile: None,
-            applied_lighting_detail_level: 2,
-            pending_lighting_refresh: None,
-            last_lighting_view_fingerprint: None,
-            map_lighting_config: LightingConfig::default(),
-            theater_name: "TEMPERATE".to_string(),
-            theater_ext: "tem".to_string(),
-            platform: PlatformState::new(window),
-            scenario_elapsed_clock: crate::app_frame_pacer::ScenarioElapsedClock::new(),
-            target_lines: crate::app_target_lines::TargetLineState::default(),
-            configured_input_delay_ticks: input_delay_ticks,
-            queued_order_mode: app_render::OrderMode::Move,
-            control_groups: vec![Vec::new(); 10],
-            last_control_group_press: None,
-            local_player_owner: None,
-            local_owner_override: None,
-            eva_low_power_active: false,
-            eva_funds_stalled: false,
-            eva_announced_dying: std::collections::HashSet::new(),
-            eva_under_attack_block_until_tick: 0,
-            sandbox_full_visibility: false,
-            spawn_pick_pending: false,
-            targeting_mode: None,
-            building_placement_preview: None,
-            active_sidebar_tab: SidebarTab::default_active_tab(),
-            sidebar_layout_spec,
-            sidebar_layout_spec_base: base_sidebar_layout_spec,
-            ui_scale,
-            sidebar_scroll_rows: 0,
-            sidebar_scroll_rows_parked: [0; 4],
-            asset_manager: startup_asset_manager,
-            music_player: startup_audio
-                .initialize_music_output
-                .then(MusicPlayer::new)
-                .flatten(),
-            sfx_player: startup_audio
-                .initialize_sfx_output
-                .then(SfxPlayer::new)
-                .flatten(),
-            sound_registry: startup_sound_registry,
-            audio_indices: startup_audio_indices,
-            audio_indices_enabled: startup_audio.load_audio_indices,
-            eva_registry: startup_eva_registry,
-            sound_events: SoundEventQueue::new(),
-            pending_fire_effects: Vec::new(),
-            garrison_muzzle_flashes: Vec::new(),
-            weapon_muzzle_flashes: Vec::new(),
-            projectile_visuals: Vec::new(),
-            parachute_anims: Vec::new(),
-            paused: false,
-            in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
-            debug_frame_step_requested: false,
-            // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
-            // is the single source of truth; seed it from the skirmish-setup speed
-            // (internal 1) and derive `sim_speed_tps` from the same value, so the
-            // Options slider reflects the current pace. The resulting tps is
-            // unchanged from the prior `default_yr_skirmish_tps()` (= GS1 -> 63).
-            sim_speed_tps: crate::app_types::tps_for_game_speed(
-                crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
-            ),
-            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
-                game_speed: crate::app_types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
-                scroll_rate: saved_scroll_rate,
-                detail_level: saved_detail_level,
-                ..Default::default()
-            },
-            in_game_options_anchor: None,
             startup_splash,
-            idle_anim_elapsed_ms: 0,
-            building_anim_phase_base: std::collections::BTreeMap::new(),
-            debug_show_pathgrid: false,
-            debug_terrain_cost_speed_type: None,
-            debug_show_cell_grid: false,
-            debug_show_heightmap: false,
-            show_hotkey_help: false,
-            debug_unit_inspector: false,
-            show_save_load_panel: false,
             exit_confirm_modal: None,
             options_dialog: None,
             movies_credits_dialog: None,
             campaign_select: None,
-            save_list_cache: crate::app_save_load_panel::SaveListCache::new(),
-            dev_overlay_save_name: String::new(),
-            last_save_tick: None,
-            last_save_instant: None,
-            last_loaded_save_path: None,
-            frame_timer: crate::app_dev_overlay::FrameTimer::new(),
-            displayed_credits: HashMap::new(),
-            cached_overlay_instances: Vec::new(),
-            cached_unit_instances: Vec::new(),
-            cached_unit_pages: Vec::new(),
+            score_screen: None,
+            score_shell_state: Default::default(),
+            finished_game_count: 0,
+            shell_route: Default::default(),
+            },
+            renderer: crate::app::renderer_state::RendererState {
+                gpu,
+                batch_renderer,
+                combat_light_renderer,
+                instance_pool: crate::render::batch::InstanceBufferPool::new(),
+                depth_view,
+                shell_surface_presenter,
+                upscale_pass,
+                egui,
+                vxl_compute: Some(vxl_compute),
+                bit_font,
+                vxl_slope_transition_cache: std::cell::RefCell::new(Default::default()),
+                retail_screenshot_frame_cache: Default::default(),
+            },
+            process_assets: crate::app::process_assets::ProcessAssets::from_startup(
+                startup_asset_manager,
+                startup_csf,
+            ),
+            audio: crate::app::audio_runtime::AppAudioRuntime {
+                music_player: startup_audio
+                    .initialize_music_output
+                    .then(MusicPlayer::new)
+                    .flatten(),
+                sfx_player: startup_audio
+                    .initialize_sfx_output
+                    .then(SfxPlayer::new)
+                    .flatten(),
+                sound_registry: startup_sound_registry,
+                audio_indices: startup_audio_indices,
+                audio_indices_enabled: startup_audio.load_audio_indices,
+                eva_registry: startup_eva_registry,
+            },
+            persistence: crate::app::persistence::PersistenceState::new(),
+            diag: crate::app::diagnostics::state::DiagnosticsState {
+                debug_frame_step_requested: false,
+                debug_show_pathgrid: false,
+                debug_terrain_cost_speed_type: None,
+                debug_show_cell_grid: false,
+                debug_show_heightmap: false,
+                debug_unit_inspector: false,
+                parity_digest_sink: match crate::sim::parity_digest::ParityDigestSink::from_env() {
+                    Ok(sink) => {
+                        if let Some(sink) = sink.as_ref() {
+                            log::info!("parity digest capture -> {}", sink.path().display());
+                        }
+                        sink
+                    }
+                    Err(error) => {
+                        log::error!("parity digest sink could not be opened: {error}");
+                        None
+                    }
+                },
+                dev_overlay_save_name: String::new(),
+                frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer::new(),
+            },
         };
 
         // Seed the live music volume from the user's saved RA2MD.INI
         // [Audio] ScoreVolume, falling back to the engine default when the
         // file/section/key is absent. Matches the original reading this at boot.
-        if let Some(player) = state.music_player.as_mut() {
+        if let Some(player) = state.audio.music_player.as_mut() {
             let saved_volume = state
-                .game_config
+                .platform.game_config
                 .as_ref()
                 .and_then(|config| {
                     crate::audio::music::read_score_volume_from_ra2md(&config.paths.ra2_dir)
@@ -615,15 +615,15 @@ impl App {
             player.set_volume(saved_volume);
         }
 
-        if state.dev_skirmish_shell_enabled {
+        if state.frontend.dev_skirmish_shell_enabled {
             Self::ensure_active_cooperative_shell_selection(&mut state);
         }
 
         if std::env::var("RA2_QUICKPLAY").is_ok() {
-            let skirmish_settings = state.skirmish_settings.clone();
+            let skirmish_settings = state.frontend.skirmish_settings.clone();
             let request =
-                crate::app_loading::LoadingRequest::generic_map_load("auto", skirmish_settings);
-            crate::app_loading::begin_loading(&mut state, request);
+                crate::app::loading::pump::LoadingRequest::generic_map_load("auto", skirmish_settings);
+            crate::app::loading::pump::begin_loading(&mut state, request);
         }
 
         Ok(state)

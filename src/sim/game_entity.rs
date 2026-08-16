@@ -1266,7 +1266,6 @@ impl GameEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::terrain;
 
     #[test]
     fn test_new_entity_defaults() {
@@ -1470,33 +1469,6 @@ mod tests {
         assert!(e.is_alive());
         e.health.current = 0;
         assert!(!e.is_alive());
-    }
-
-    #[test]
-    fn test_screen_coords_computed() {
-        let e = GameEntity::new_at_frame_zero_for_test(
-            1,
-            30,
-            40,
-            2, // z=2 for elevation
-            0,
-            crate::sim::intern::test_intern("Americans"),
-            Health {
-                current: 100,
-                max: 100,
-            },
-            crate::sim::intern::test_intern("HTNK"),
-            EntityCategory::Unit,
-            0,
-            5,
-            true,
-        );
-        // An entity is drawn on its cell's diamond centre, half a tile east and
-        // half a tile south of that cell's tile corner.
-        let (corner_sx, corner_sy) = terrain::iso_to_screen(30, 40, 2);
-        let (sx, sy) = crate::render::locomotor_visual::screen_position(&e);
-        assert!((sx - (corner_sx + terrain::TILE_WIDTH / 2.0)).abs() < 0.01);
-        assert!((sy - (corner_sy + terrain::TILE_HEIGHT / 2.0)).abs() < 0.01);
     }
 }
 

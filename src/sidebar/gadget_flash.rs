@@ -134,7 +134,7 @@ pub fn scroll_frame_select(pressed: bool) -> u8 {
 /// Persistent flash + mode state for the in-game sidebar gadgets.
 ///
 /// Lives on `AppState` (one instance per app session). Ticked once per sim
-/// tick by `app_sidebar_gadgets::update_sidebar_gadget_state`. Read by the
+/// tick by `sidebar_gadgets::update_sidebar_gadget_state`. Read by the
 /// per-frame `SidebarView` builder to populate gadget `frame_index` fields.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarGadgetState {
@@ -166,7 +166,7 @@ pub struct SidebarGadgetState {
 
     /// Transient pressed-look bits (study G22): true while the gadget driver
     /// holds the button pressed-inside; popped on drag-off, restored on
-    /// drag-back. Published by `app_gadget_input` after every gadget tick.
+    /// drag-back. Published by `app::input::gadget_input` after every gadget tick.
     pub tab_pressed: [bool; 4],
     pub repair_pressed: bool,
     pub sell_pressed: bool,

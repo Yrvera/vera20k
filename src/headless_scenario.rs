@@ -5,12 +5,12 @@
 //! Depends on `assets`/`rules`/`map`/`sim` only; nothing here may reach into `render`,
 //! `ui`, `sidebar`, `audio` or `net`.
 //!
-//! **Scope.** This packages the *load* half of a match. Map-placed units and structures
-//! are not spawned: `app_init_helpers::spawn_entities` builds the sim and the voxel/SHP
-//! atlases in one pass and needs a `GpuContext`, so the sim half cannot be called from a
-//! headless binary until that function is split. Houses are likewise a launch-session
-//! concern, not a load concern. A scenario loaded here therefore has real terrain, real
-//! ore, real rules and a pinned RNG — and no combatants.
+//! **Scope.** Construction goes through the same GPU-free funnel the app uses
+//! (`sim::runtime::construct_scenario`): map-roster houses are created before objects,
+//! terrain objects before map entities, and map-placed units/structures spawn with
+//! terrain-attached animations. What a headless scenario still lacks versus an app
+//! launch is the launch *session* — skirmish player houses, start-position placement,
+//! and atlas-derived voxel animation frame counts (a GPU concern).
 //!
 //! The seed contract mirrors the original engine: one 32-bit word seeds the scenario and
 //! main streams identically, fixed before any setup-phase draw.
@@ -24,22 +24,30 @@ use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::theater;
 use crate::map::waypoints;
-use crate::rules::ruleset::RuleSet;
 use crate::sim::overlay_grid::OverlayGrid;
 use crate::sim::scenario_session::ScenarioDescriptor;
 use crate::sim::world::Simulation;
 
 /// A loaded scenario plus the per-tick inputs `advance_tick` needs.
 pub struct HeadlessScenario {
-    pub sim: Simulation,
-    pub rules: RuleSet,
+    /// The runtime owner (F09): simulation plus its bound immutable
+    /// resources - no independently swappable execution inputs remain.
+    pub runtime: crate::sim::runtime::SimRuntime,
     pub map: MapFile,
-    pub height_map: BTreeMap<(u16, u16), u8>,
-    pub overlay_registry: OverlayTypeRegistry,
 }
 
-/// Matches the client's simulation cadence so tick numbering is comparable.
-pub const SIM_TICK_MS: u32 = 1000 / 15;
+impl HeadlessScenario {
+    /// Read access for digest/tooling callers.
+    pub fn sim(&self) -> &Simulation {
+        &self.runtime.simulation
+    }
+}
+
+/// Native logic-frame cadence (66 ms). NOTE: this does NOT match the
+/// client, which steps the sim at `app::types::SIM_TICK_MS` = 22 ms — a
+/// recorded 3x tooling divergence; headless digests are not tick-comparable
+/// to client runs until it is resolved.
+pub const SIM_TICK_MS: u32 = 1000 / crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND;
 
 /// Load `map_file_name` from the retail install at `retail_dir` with a pinned seed.
 ///
@@ -60,10 +68,10 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 
     // Production rules layering: RULESMD, then the map's own INI on top.
     let (mut rules, rules_ini) =
-        crate::app_init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
+        crate::app::loading::init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
             .ok_or_else(|| "load merged rules".to_string())?
             .into_parts();
-    let (mut art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
+    let (mut art, art_ini) = crate::app::loading::init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
     rules.general.resolve_art_rates(&art_ini);
@@ -81,7 +89,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules.general.cliff_back_impassability,
     );
     let scheduler_roots =
-        crate::app_init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
+        crate::app::loading::init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
     art.bind_scheduler_anim_assets(
         &scheduler_roots,
         &assets,
@@ -159,46 +167,51 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         ),
     };
 
-    let mut sim = Simulation::from_descriptor(&descriptor);
-    sim.terrain_speed_config =
-        crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::from_general(
-            rules.general.tracked_uphill,
-            rules.general.tracked_downhill,
-            rules.general.wheeled_uphill,
-            rules.general.wheeled_downhill,
-        );
-    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
-        base: map.header.width as i32,
-        off_fc: map.header.local_left as i32,
-        off_100: map.header.local_top as i32,
-        off_104: map.header.local_width as i32,
-        off_108: map.header.local_height as i32,
-    });
-
-    sim.resolved_terrain = Some(resolved);
-    sim.overlay_grid = Some(overlay_grid);
-    crate::sim::terrain_spawn::construct_terrain_objects(
-        &mut sim,
-        &map.terrain_objects,
-        &rules,
-        map.header.theater.eq_ignore_ascii_case("SNOW"),
+    // F09: the same GPU-free construction funnel the app uses — bootstrap
+    // RNG, map-roster houses before objects, terrain objects before map
+    // entities, entity spawn, and terrain-attached animations — then the
+    // shared post-funnel finalization (spawner seed, wall owners, overlay
+    // grid, smudge grid, post-map). A parity run stands in for a stock
+    // skirmish load with bridges destructible, the retail skirmish default.
+    let mut sim = crate::sim::runtime::construct_scenario(
+        &map,
+        &resolved,
+        &map.header.theater,
+        Some(&rules),
+        Some(&rules.art_registry),
+        &height_map,
+        crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
+            bridge_destruction: true,
+        },
+        &descriptor,
+        crate::sim::scenario_bootstrap::ScenarioBootstrapRng::new(seed),
+        |sim| {
+            crate::sim::scenario_bootstrap::initialize_map_roster_houses(
+                sim,
+                &house_roster,
+                Some(&rules),
+            );
+        },
     );
-    crate::sim::terrain_spawn::seed_terrain_spawner_animation(
+    // F09: bind HVA-driven voxel animation frame counts through the same
+    // GPU-free catalog the app uses; headless previously ran every voxel
+    // animation at its 1-frame default.
+    let frame_catalog = crate::sim::voxel_frame_catalog::build_voxel_frame_catalog(
+        sim.entities(),
+        &sim.interner,
+        &assets,
+        Some(&rules),
+        Some(&rules.art_registry),
+    );
+    sim.update_voxel_anim_frame_counts(&frame_catalog);
+    let post_map = crate::sim::runtime::finalize_constructed_scenario(
         &mut sim,
+        &map,
         &rules,
         &overlay_registry,
-    );
-    let post_map = sim.finalize_scenario_post_map(
-        crate::sim::scenario_post_map::ScenarioPostMapInput {
-            map_width: map.header.width as u16,
-            map_height: map.header.height as u16,
-            basic: &map.basic,
-            special_flags: &map.special_flags,
-            rules: &rules,
-            overlay_registry: &overlay_registry,
-            house_roster: &house_roster,
-            skirmish_session: None,
-        },
+        overlay_grid,
+        &house_roster,
+        None,
     );
     if !post_map.navigation_published {
         return Err("publish headless post-map navigation".to_string());
@@ -207,30 +220,90 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         return Err("headless post-map navigation is unavailable".to_string());
     }
     // The production-side resource-node index is deliberately not seeded: its helper is
-    // `#[cfg(test)]`-gated, and nothing reads that index without miners, which this
-    // scenario has none of. Ore is still present as map overlays. Seed it here when unit
-    // spawning lands.
+    // `#[cfg(test)]`-gated. Map-placed entities now spawn, so a map that pre-places a
+    // miner would find no node index — a documented residual until the helper is
+    // promoted out of test gating. Ore is still present as map overlays.
 
     Ok(HeadlessScenario {
-        sim,
-        rules,
+        runtime: crate::sim::runtime::SimRuntime {
+            simulation: sim,
+            resources: crate::sim::runtime::SimResources {
+                height_map,
+                bridge_height_map: BTreeMap::new(),
+                overlay_registry,
+                terrain_template: None,
+                rules,
+                trigger_graph: Default::default(),
+                triggers: Default::default(),
+                events: Default::default(),
+                actions: Default::default(),
+            },
+        },
         map,
-        height_map,
-        overlay_registry,
     })
 }
 
 impl HeadlessScenario {
-    /// Advance one committed simulation frame with no player commands.
+    /// Advance one committed simulation frame with no player commands,
+    /// through the same bound-resource runtime transaction the app uses.
     pub fn tick(&mut self) {
-        let path_grid = self.sim.path_grid_snapshot();
-        self.sim.advance_tick(
-            &[],
-            Some(&self.rules),
-            &self.height_map,
-            path_grid.as_deref(),
-            Some(&self.overlay_registry),
-            SIM_TICK_MS,
+        let _ = self
+            .runtime
+            .advance_frame(&[], SIM_TICK_MS, crate::sim::world::TickLane::Ordinary);
+    }
+}
+
+#[cfg(test)]
+mod retail_construction_tests {
+    use super::*;
+
+    /// F09 certification: the shared GPU-free funnel produces a deterministic,
+    /// fully populated headless scenario on a retail map. Two loads of the same
+    /// map and seed must yield identical parity digests at construction and on
+    /// every tick, and the construction gains the funnel promises — map-roster
+    /// houses, overlay/smudge/bridge authority, published navigation — must all
+    /// be present. App-vs-headless assembly drift is prevented structurally:
+    /// both call `construct_scenario` + `finalize_constructed_scenario`.
+    #[test]
+    #[ignore = "requires RA2_DIR with installed retail RA2/YR assets"]
+    fn retail_headless_funnel_construction_is_deterministic_and_populated() {
+        let ra2 = std::path::PathBuf::from(
+            std::env::var("RA2_DIR").expect("set RA2_DIR to the retail RA2/YR install directory"),
         );
+        let seed = 0x00C0_FFEE;
+        let mut a = load(&ra2, "Dustbowl.mmx", seed).expect("first headless load");
+        let mut b = load(&ra2, "Dustbowl.mmx", seed).expect("second headless load");
+
+        assert_eq!(
+            a.sim().parity_digest(),
+            b.sim().parity_digest(),
+            "same map+seed must produce an identical construction fingerprint"
+        );
+        assert!(
+            !a.sim().houses.is_empty(),
+            "map-roster houses must be constructed before objects"
+        );
+        assert!(
+            a.sim().overlay_grid.is_some(),
+            "overlay authority must be installed by the shared finalization"
+        );
+        assert!(
+            a.sim().smudge_grid.is_some(),
+            "smudge authority must be installed by the shared finalization"
+        );
+        assert!(
+            a.sim().bridge_state.is_some(),
+            "bridge runtime state must be constructed by the funnel"
+        );
+
+        for tick in 0..30u32 {
+            a.tick();
+            b.tick();
+            assert_eq!(
+                a.sim().parity_digest(),
+                b.sim().parity_digest(),
+                "runtime-backed headless execution diverged at tick {tick}"
+            );
+        }
     }
 }

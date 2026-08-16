@@ -1,0 +1,506 @@
+//! Owned, serialization-only evidence leaves for tactical capture.
+//!
+//! These types snapshot production observations for the immutable manifest.
+//! They do not select assets, mutate app/simulation state, or interpret native
+//! parity. `session.rs` owns the richer stable/run objects assembled from them.
+
+use std::path::Path;
+
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::app::presentation::render::{GameRenderInstanceCounts, GameRenderOutput};
+use crate::render::egui_integration::{EguiCaptureObservation, SelectedSystemFontIdentity};
+use crate::render::gpu::GpuAdapterObservation;
+use crate::render::sidebar_chrome::{
+    ResolvedSidebarChromeIdentity, SidebarChromeAssetIdentity, SidebarChromeAtlasIdentity,
+    SidebarTheme,
+};
+use crate::sidebar::Rect;
+
+use super::integrity::FileDigest;
+
+/// Stable identity of one filesystem input observed by the capture.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArtifactEvidence {
+    pub(crate) path: String,
+    pub(crate) byte_length: u64,
+    pub(crate) sha256: String,
+}
+
+impl ArtifactEvidence {
+    pub(crate) fn from_path_digest(path: &Path, digest: &FileDigest) -> Self {
+        Self {
+            path: evidence_path(path),
+            byte_length: digest.byte_length,
+            sha256: digest.sha256.clone(),
+        }
+    }
+}
+
+fn evidence_path(path: &Path) -> String {
+    let displayed = path.display().to_string();
+    #[cfg(windows)]
+    {
+        displayed.replace('/', "\\")
+    }
+    #[cfg(not(windows))]
+    {
+        displayed
+    }
+}
+
+/// Owned JSON representation of the exact adapter selected by `GpuContext`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GpuAdapterEvidence {
+    pub(crate) name: String,
+    pub(crate) vendor: u32,
+    pub(crate) device: u32,
+    pub(crate) device_type: String,
+    pub(crate) driver: String,
+    pub(crate) driver_info: String,
+    pub(crate) backend: String,
+}
+
+impl GpuAdapterEvidence {
+    pub(crate) fn from_observation(observation: GpuAdapterObservation<'_>) -> Self {
+        Self {
+            name: observation.name.to_owned(),
+            vendor: observation.vendor,
+            device: observation.device,
+            device_type: device_type_name(observation.device_type).to_owned(),
+            driver: observation.driver.to_owned(),
+            driver_info: observation.driver_info.to_owned(),
+            backend: backend_name(observation.backend).to_owned(),
+        }
+    }
+}
+
+fn device_type_name(device_type: wgpu::DeviceType) -> &'static str {
+    match device_type {
+        wgpu::DeviceType::Other => "Other",
+        wgpu::DeviceType::IntegratedGpu => "IntegratedGpu",
+        wgpu::DeviceType::DiscreteGpu => "DiscreteGpu",
+        wgpu::DeviceType::VirtualGpu => "VirtualGpu",
+        wgpu::DeviceType::Cpu => "Cpu",
+    }
+}
+
+fn backend_name(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Noop => "Noop",
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Dx12 => "Dx12",
+        wgpu::Backend::Gl => "Gl",
+        wgpu::Backend::BrowserWebGpu => "BrowserWebGpu",
+    }
+}
+
+/// Stable graphics inputs and identities required by the wrapper validator.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GraphicsEvidence {
+    pub(crate) adapter: GpuAdapterEvidence,
+    pub(crate) surface_format: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) window_scale_factor: f64,
+    pub(crate) app_ui_scale: f64,
+    pub(crate) egui_pixels_per_point: f64,
+    pub(crate) selected_font: ArtifactEvidence,
+    pub(crate) sidebar_layout: ArtifactEvidence,
+}
+
+impl GraphicsEvidence {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_observations(
+        adapter: GpuAdapterObservation<'_>,
+        egui: EguiCaptureObservation<'_>,
+        surface_format: impl Into<String>,
+        render_extent: [u32; 2],
+        app_ui_scale: f32,
+        selected_font: ArtifactEvidence,
+        sidebar_layout: ArtifactEvidence,
+    ) -> Result<Self> {
+        ensure!(
+            render_extent[0] > 0 && render_extent[1] > 0,
+            "tactical graphics extent must be nonzero"
+        );
+        ensure!(
+            egui.window_scale_factor.is_finite() && egui.window_scale_factor > 0.0,
+            "tactical window scale factor must be finite and positive"
+        );
+        ensure!(
+            app_ui_scale.is_finite() && app_ui_scale > 0.0,
+            "tactical app UI scale must be finite and positive"
+        );
+        let pixels_per_point = egui
+            .pixels_per_point
+            .context("tactical egui pass has not produced pixels_per_point")?;
+        ensure!(
+            pixels_per_point.is_finite() && pixels_per_point > 0.0,
+            "tactical egui pixels_per_point must be finite and positive"
+        );
+        match egui.selected_font {
+            SelectedSystemFontIdentity::SystemFile { path, byte_length } => {
+                let byte_length = u64::try_from(*byte_length)
+                    .context("selected system font length exceeds u64")?;
+                ensure!(
+                    Path::new(path) == Path::new(&selected_font.path)
+                        && byte_length == selected_font.byte_length,
+                    "selected system font differs from the pinned artifact identity"
+                );
+            }
+            SelectedSystemFontIdentity::EguiBuiltIn => {
+                bail!("tactical capture requires the pinned system font, not egui built-in");
+            }
+        }
+        let surface_format = surface_format.into();
+        ensure!(
+            !surface_format.is_empty(),
+            "tactical surface format identity must be nonempty"
+        );
+
+        Ok(Self {
+            adapter: GpuAdapterEvidence::from_observation(adapter),
+            surface_format,
+            width: render_extent[0],
+            height: render_extent[1],
+            window_scale_factor: egui.window_scale_factor,
+            app_ui_scale: f64::from(app_ui_scale),
+            egui_pixels_per_point: f64::from(pixels_per_point),
+            selected_font,
+            sidebar_layout,
+        })
+    }
+}
+
+/// One logical sidebar asset and the archive selected by production lookup.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SidebarAssetEvidence {
+    pub(crate) logical_name: String,
+    pub(crate) source_archive: Option<String>,
+}
+
+impl From<&SidebarChromeAssetIdentity> for SidebarAssetEvidence {
+    fn from(identity: &SidebarChromeAssetIdentity) -> Self {
+        Self {
+            logical_name: identity.logical_name.clone(),
+            source_archive: identity.source_archive.clone(),
+        }
+    }
+}
+
+/// Requested-versus-resolved production sidebar source identity.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SidebarSourceEvidence {
+    pub(crate) requested_theme: String,
+    pub(crate) actual_theme: String,
+    pub(crate) atlas_theme: String,
+    pub(crate) parent_archive: String,
+    pub(crate) radar: SidebarAssetEvidence,
+    pub(crate) theme_palette: SidebarAssetEvidence,
+    pub(crate) generic_palette: SidebarAssetEvidence,
+    pub(crate) backgrounds: Option<[SidebarAssetEvidence; 3]>,
+}
+
+impl SidebarSourceEvidence {
+    pub(crate) fn from_identity(identity: &ResolvedSidebarChromeIdentity) -> Self {
+        let atlas = &identity.atlas;
+        Self {
+            requested_theme: sidebar_theme_name(identity.requested_theme).to_owned(),
+            actual_theme: sidebar_theme_name(identity.actual_theme).to_owned(),
+            atlas_theme: sidebar_theme_name(atlas.atlas_theme).to_owned(),
+            parent_archive: atlas.parent_archive.clone(),
+            radar: SidebarAssetEvidence::from(&atlas.radar),
+            theme_palette: SidebarAssetEvidence::from(&atlas.theme_palette),
+            generic_palette: SidebarAssetEvidence::from(&atlas.generic_palette),
+            backgrounds: background_evidence(atlas),
+        }
+    }
+}
+
+fn background_evidence(atlas: &SidebarChromeAtlasIdentity) -> Option<[SidebarAssetEvidence; 3]> {
+    atlas.backgrounds.as_ref().map(|backgrounds| {
+        [
+            SidebarAssetEvidence::from(&backgrounds[0]),
+            SidebarAssetEvidence::from(&backgrounds[1]),
+            SidebarAssetEvidence::from(&backgrounds[2]),
+        ]
+    })
+}
+
+fn sidebar_theme_name(theme: SidebarTheme) -> &'static str {
+    match theme {
+        SidebarTheme::Allied => "Allied",
+        SidebarTheme::Soviet => "Soviet",
+        SidebarTheme::Yuri => "Yuri",
+    }
+}
+
+/// Finite render-space rectangle recorded without taking layout authority.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RenderRectEvidence {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+impl RenderRectEvidence {
+    pub(crate) fn from_rect(rect: Rect) -> Result<Self> {
+        let values = [rect.x, rect.y, rect.w, rect.h];
+        ensure!(
+            values.iter().all(|value| value.is_finite()),
+            "tactical render rectangle must be finite"
+        );
+        Ok(Self {
+            x: f64::from(rect.x),
+            y: f64::from(rect.y),
+            width: f64::from(rect.w),
+            height: f64::from(rect.h),
+        })
+    }
+}
+
+/// Valid minimap aperture observed inside the final render extent.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApertureEvidence {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+impl ApertureEvidence {
+    pub(crate) fn from_rect(rect: Rect, render_extent: [u32; 2]) -> Result<Self> {
+        let rect = RenderRectEvidence::from_rect(rect)?;
+        ensure!(
+            render_extent[0] > 0 && render_extent[1] > 0,
+            "tactical aperture render extent must be nonzero"
+        );
+        ensure!(
+            rect.x >= 0.0
+                && rect.y >= 0.0
+                && rect.width > 0.0
+                && rect.height > 0.0
+                && rect.x + rect.width <= f64::from(render_extent[0])
+                && rect.y + rect.height <= f64::from(render_extent[1]),
+            "tactical minimap aperture is outside the final render extent"
+        );
+        Ok(Self {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        })
+    }
+}
+
+/// Counts of the exact sidebar vectors uploaded and drawn by `render_game`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RenderInstanceCountEvidence {
+    pub(crate) minimap: u64,
+    pub(crate) viewport_rect: u64,
+    pub(crate) radar_animation: u64,
+}
+
+impl RenderInstanceCountEvidence {
+    pub(crate) fn from_counts(counts: GameRenderInstanceCounts) -> Result<Self> {
+        Ok(Self {
+            minimap: u64::try_from(counts.minimap)
+                .context("tactical minimap instance count exceeds u64")?,
+            viewport_rect: u64::try_from(counts.viewport_rect)
+                .context("tactical viewport-rectangle instance count exceeds u64")?,
+            radar_animation: u64::try_from(counts.radar_animation)
+                .context("tactical radar-animation instance count exceeds u64")?,
+        })
+    }
+}
+
+/// Final sidebar/render observation built from the production render output.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SidebarRenderEvidence {
+    pub(crate) sidebar_view_present: bool,
+    pub(crate) sidebar_panel: Option<RenderRectEvidence>,
+    pub(crate) minimap_aperture: ApertureEvidence,
+    pub(crate) radar_content_insets: [u32; 4],
+    pub(crate) instance_counts: RenderInstanceCountEvidence,
+}
+
+impl SidebarRenderEvidence {
+    pub(crate) fn from_render_output(
+        output: &GameRenderOutput,
+        minimap_aperture: Rect,
+        radar_content_insets: [u32; 4],
+        render_extent: [u32; 2],
+    ) -> Result<Self> {
+        let sidebar_panel = output
+            .sidebar_view
+            .as_ref()
+            .map(|view| RenderRectEvidence::from_rect(view.panel_rect))
+            .transpose()?;
+        Ok(Self {
+            sidebar_view_present: output.sidebar_view.is_some(),
+            sidebar_panel,
+            minimap_aperture: ApertureEvidence::from_rect(minimap_aperture, render_extent)?,
+            radar_content_insets,
+            instance_counts: RenderInstanceCountEvidence::from_counts(output.instance_counts)?,
+        })
+    }
+}
+
+/// Deterministic final state fingerprint recorded at the capture checkpoint.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FinalFingerprint {
+    pub(crate) simulation_tick: u64,
+    pub(crate) total_simulation_ms: u64,
+    pub(crate) binary_frame: u32,
+    pub(crate) deterministic_state_hash: u64,
+}
+
+/// Build the manifest evidence envelope with exactly two object-valued keys.
+pub(crate) fn build_evidence(stable: Value, run: Value) -> Result<Value> {
+    ensure!(
+        stable.is_object(),
+        "tactical stable evidence must be a JSON object"
+    );
+    ensure!(
+        run.is_object(),
+        "tactical run evidence must be a JSON object"
+    );
+    let mut evidence = Map::with_capacity(2);
+    evidence.insert("stable".to_owned(), stable);
+    evidence.insert("run".to_owned(), run);
+    ensure!(
+        evidence.len() == 2,
+        "tactical evidence envelope must contain two keys"
+    );
+    Ok(Value::Object(evidence))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_evidence_uses_the_observed_path_and_digest() {
+        let digest = FileDigest {
+            byte_length: 17,
+            sha256: "0123456789abcdef".repeat(4),
+        };
+        let identity =
+            ArtifactEvidence::from_path_digest(Path::new("C:/fixture/file.bin"), &digest);
+
+        #[cfg(windows)]
+        assert_eq!(identity.path, r"C:\fixture\file.bin");
+        #[cfg(not(windows))]
+        assert_eq!(identity.path, "C:/fixture/file.bin");
+        assert_eq!(identity.byte_length, 17);
+        assert_eq!(identity.sha256, digest.sha256);
+    }
+
+    #[test]
+    fn adapter_evidence_preserves_exact_fields_with_stable_enum_names() {
+        let evidence = GpuAdapterEvidence::from_observation(GpuAdapterObservation {
+            name: "fixture adapter",
+            vendor: 1,
+            device: 2,
+            device_type: wgpu::DeviceType::DiscreteGpu,
+            driver: "fixture driver",
+            driver_info: "fixture info",
+            backend: wgpu::Backend::Dx12,
+        });
+
+        assert_eq!(evidence.name, "fixture adapter");
+        assert_eq!(evidence.vendor, 1);
+        assert_eq!(evidence.device, 2);
+        assert_eq!(evidence.device_type, "DiscreteGpu");
+        assert_eq!(evidence.driver, "fixture driver");
+        assert_eq!(evidence.driver_info, "fixture info");
+        assert_eq!(evidence.backend, "Dx12");
+    }
+
+    #[test]
+    fn aperture_must_be_positive_and_inside_the_render_extent() {
+        let aperture = ApertureEvidence::from_rect(
+            Rect {
+                x: 640.0,
+                y: 53.0,
+                w: 75.0,
+                h: 48.0,
+            },
+            [800, 600],
+        )
+        .expect("valid aperture");
+        assert_eq!(aperture.width, 75.0);
+        assert!(
+            ApertureEvidence::from_rect(
+                Rect {
+                    x: 790.0,
+                    y: 0.0,
+                    w: 20.0,
+                    h: 10.0,
+                },
+                [800, 600],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn render_counts_are_taken_from_the_production_output() {
+        let output = GameRenderOutput {
+            sidebar_view: None,
+            instance_counts: GameRenderInstanceCounts {
+                minimap: 1,
+                viewport_rect: 4,
+                radar_animation: 1,
+            },
+        };
+        let evidence = SidebarRenderEvidence::from_render_output(
+            &output,
+            Rect {
+                x: 640.0,
+                y: 53.0,
+                w: 75.0,
+                h: 48.0,
+            },
+            [9, 7, 9, 7],
+            [800, 600],
+        )
+        .expect("render evidence");
+
+        assert!(!evidence.sidebar_view_present);
+        assert_eq!(evidence.instance_counts.minimap, 1);
+        assert_eq!(evidence.instance_counts.viewport_rect, 4);
+        assert_eq!(evidence.instance_counts.radar_animation, 1);
+    }
+
+    #[test]
+    fn evidence_envelope_has_only_stable_and_run_objects() {
+        let value = build_evidence(
+            serde_json::json!({"fingerprint": 1}),
+            serde_json::json!({"process_id": 2}),
+        )
+        .expect("valid evidence");
+        let object = value.as_object().expect("evidence object");
+
+        assert_eq!(object.len(), 2);
+        assert!(object.contains_key("stable"));
+        assert!(object.contains_key("run"));
+        assert!(build_evidence(Value::Null, serde_json::json!({})).is_err());
+        assert!(build_evidence(serde_json::json!({}), Value::Null).is_err());
+    }
+}

@@ -126,8 +126,13 @@ pub mod trigger_runtime;
 // --- AI, replay, selection, debug ---
 pub mod ai;
 pub mod debug_event_log;
+pub mod runtime;
 pub mod replay;
+#[cfg(test)]
+mod replay_determinism_tests;
 pub mod selection;
+// GPU-independent HVA frame-count catalog shared with the renderer's atlas seeding (F09).
+pub mod voxel_frame_catalog;
 
 // --- Snapshot serialization (mid-match save/load) ---
 pub mod snapshot;

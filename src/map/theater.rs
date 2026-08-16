@@ -17,7 +17,7 @@ use crate::assets::tmp_file::TmpFile;
 use crate::map::bridge_facts::{BridgeRampKind, BridgeRampTile};
 use crate::map::map_file::MapError;
 use crate::rules::ini_parser::{IniFile, IniSection};
-use crate::sim::bridge_state::{Axis, BridgeheadAnchorClass};
+use crate::map::bridge_facts::{Axis, BridgeheadAnchorClass};
 
 /// Marker for "no tile" in IsoMapPack5 data.
 /// The raw field is i32; -1 (0xFFFFFFFF) means clear ground.

@@ -31,8 +31,8 @@ pub struct PreviewImage {
 }
 
 /// Leptons per cell; a cell centre sits half a cell in on both axes.
-const LEPTONS_PER_CELL: i32 = 0x100;
-const CELL_CENTRE_LEPTONS: i32 = 0x80;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
+const CELL_CENTRE_LEPTONS: i32 = crate::util::lepton::CELL_CENTER_LEPTON_I32;
 /// Projection scales — the isometric tile is 60x30, and the transform halves
 /// both before the fixed-point shift.
 const PROJECT_X_SCALE: i32 = 60;
@@ -72,9 +72,10 @@ fn project_cell_centre(cell_x: i32, cell_y: i32) -> (i32, i32) {
 }
 
 /// The fixed-point `>> 8` the projection uses, biased so negative values
-/// truncate toward zero.
+/// truncate toward zero — the same signed shift as lepton→cell, delegated so
+/// the bias formula exists once.
 const fn shift_with_sign_bias(value: i32) -> i32 {
-    (value + ((value >> 31) & 0xFF)) >> 8
+    crate::util::direction_tables::lepton_to_cell(value)
 }
 
 /// Preview-pixel column and row for a projected cell, before the surface origin

@@ -52,7 +52,7 @@ const START_CREDITS: i32 = 50_000;
 fn scenario() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
-    rules.intern_all_ids(&mut sim.interner);
+    sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
 
     let owners = [("Americans", 0u8, 10u16), ("Alliance", 1u8, 30u16)];
@@ -166,7 +166,7 @@ fn record(
     sim: &mut Simulation,
     rules: &RuleSet,
     heights: &BTreeMap<(u16, u16), u8>,
-    mut pending: Vec<CommandEnvelope>,
+    pending: Vec<CommandEnvelope>,
     ticks: u64,
 ) -> (Vec<u64>, ReplayLog) {
     let mut log = ReplayLog::new(ReplayHeader {
@@ -179,17 +179,9 @@ fn record(
         rules_hash: 0,
     });
     let mut hashes = Vec::with_capacity(ticks as usize);
+    sim.queue_commands(pending);
     for _ in 0..ticks {
-        let execute_tick = sim.session.tick + 1;
-        let mut due: Vec<CommandEnvelope> = Vec::new();
-        pending.retain(|c| {
-            if c.execute_tick <= execute_tick {
-                due.push(c.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let due = sim.take_due_commands();
         let r = sim.advance_tick(&due, Some(rules), heights, None, None, TICK_MS);
         hashes.push(r.state_hash);
         log.record_tick(r.tick, due, r.state_hash);
@@ -295,7 +287,7 @@ fn factory_flip_replay_is_bit_identical_across_runs_and_playback() {
     // Run 3 — replay the recorded log through the shared ReplayRunner.
     let (mut s3, rules3, heights3) = scenario();
     let timeline_playback =
-        ReplayRunner::run(&mut s3, &log, Some(&rules3), &heights3, None, TICK_MS);
+        ReplayRunner::run_fixture(&mut s3, &log, Some(&rules3), &heights3, None, TICK_MS);
     assert_eq!(
         timeline_live, timeline_playback,
         "replay playback must reproduce the live hash timeline bit-for-bit"
@@ -322,19 +314,10 @@ fn economy_conservation_over_replay() {
 
     let initial: i64 = [am, al].iter().map(|o| sim.houses[o].credits as i64).sum();
 
-    let mut pending = pending;
+    sim.queue_commands(pending);
     let mut any_spent = false;
     for _ in 0..TICKS {
-        let execute_tick = sim.session.tick + 1;
-        let mut due: Vec<CommandEnvelope> = Vec::new();
-        pending.retain(|c| {
-            if c.execute_tick <= execute_tick {
-                due.push(c.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let due = sim.take_due_commands();
         sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
 
         let total: i64 = [am, al]
@@ -393,7 +376,7 @@ fn economy_conservation_through_cancel_refund() {
 
     // Americans: ONLY an MTNK (Cost 900 -> guaranteed mid-build at the cancel tick),
     // cancelled mid-build. Alliance: an E1 + an MTNK that run uninterrupted.
-    let mut pending = vec![
+    sim.queue_commands(vec![
         queue(am, mtnk, 1),
         queue(al, e1, 1),
         queue(al, mtnk, 2),
@@ -405,7 +388,7 @@ fn economy_conservation_through_cancel_refund() {
                 type_id: mtnk,
             },
         ),
-    ];
+    ]);
 
     let initial: i64 = [am, al].iter().map(|o| sim.houses[o].credits as i64).sum();
     let mtnk_cost = sim
@@ -420,16 +403,7 @@ fn economy_conservation_through_cancel_refund() {
     let mut cumulative_refunded: i64 = 0;
 
     for _ in 0..TICKS {
-        let execute_tick = sim.session.tick + 1;
-        let mut due: Vec<CommandEnvelope> = Vec::new();
-        pending.retain(|c| {
-            if c.execute_tick <= execute_tick {
-                due.push(c.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let due = sim.take_due_commands();
         sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
 
         // Every per-owner credit INCREASE is a refund (no deposits in this scenario).
@@ -486,7 +460,7 @@ fn economy_conservation_through_cancel_refund() {
 fn revalidate_abandons_build_with_no_factory_and_drops_queued() {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
-    rules.intern_all_ids(&mut sim.interner);
+    sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
     let am = sim.interner.intern("Americans");
     sim.houses
@@ -531,18 +505,9 @@ fn revalidate_abandons_active_on_factory_loss_partial_refund() {
     let (am, _, _, mtnk) = ids(&sim);
     // Enqueue MTNK via the real command path (eligible — Americans owns GAWEAP), then charge
     // partway.
-    let mut pending = vec![queue(am, mtnk, 1)];
+    sim.queue_command(queue(am, mtnk, 1));
     for _ in 0..40 {
-        let execute_tick = sim.session.tick + 1;
-        let mut due: Vec<CommandEnvelope> = Vec::new();
-        pending.retain(|c| {
-            if c.execute_tick <= execute_tick {
-                due.push(c.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let due = sim.take_due_commands();
         sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
     }
     // Mid-build before factory loss; read the spent portion = the expected refund.
@@ -597,18 +562,9 @@ fn revalidate_abandons_active_on_factory_loss_partial_refund() {
 fn revalidate_keeps_buildable_build_untouched() {
     let (mut sim, rules, heights) = scenario();
     let (am, _, _, mtnk) = ids(&sim);
-    let mut pending = vec![queue(am, mtnk, 1)];
+    sim.queue_command(queue(am, mtnk, 1));
     for _ in 0..40 {
-        let execute_tick = sim.session.tick + 1;
-        let mut due: Vec<CommandEnvelope> = Vec::new();
-        pending.retain(|c| {
-            if c.execute_tick <= execute_tick {
-                due.push(c.clone());
-                false
-            } else {
-                true
-            }
-        });
+        let due = sim.take_due_commands();
         sim.advance_tick(&due, Some(&rules), &heights, None, None, TICK_MS);
     }
     let view = sim
@@ -621,4 +577,33 @@ fn revalidate_keeps_buildable_build_untouched() {
         "a buildable build is never abandoned by revalidation"
     );
     assert!(view.progress > 0, "and keeps progressing");
+}
+
+/// F09 matrix: runtime-backed replay hashes match each tick. The same
+/// recorded log replayed through `ReplayRunner::run_runtime` — the bound
+/// SimRuntime path headless and future callers use — reproduces the live
+/// per-tick hash timeline bit-for-bit.
+#[test]
+fn runtime_backed_replay_hashes_match_each_tick() {
+    const TICKS: u64 = 120;
+
+    let (mut live, rules, heights) = scenario();
+    let cmds = rich_command_stream(&live);
+    let (timeline_live, log) = record(&mut live, &rules, &heights, cmds, TICKS);
+
+    let (fresh, runtime_rules, runtime_heights) = scenario();
+    let mut runtime = crate::sim::runtime::SimRuntime {
+        simulation: fresh,
+        resources: {
+            let mut resources = crate::sim::runtime::SimResources::empty();
+            resources.rules = runtime_rules;
+            resources.height_map = runtime_heights;
+            resources
+        },
+    };
+    let timeline_runtime = ReplayRunner::run_runtime(&mut runtime, &log, TICK_MS);
+    assert_eq!(
+        timeline_live, timeline_runtime,
+        "runtime-backed replay must reproduce the live hash timeline bit-for-bit"
+    );
 }

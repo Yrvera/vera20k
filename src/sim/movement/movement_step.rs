@@ -136,7 +136,7 @@ fn scaled_frame_delta(
 
 fn whole_lepton_subcell_after_delta(cell: u16, subcell: SimFixed, delta: SimFixed) -> SimFixed {
     const FRACTION_SCALE: i64 = 1 << 16;
-    const LEPTONS_PER_CELL: i64 = 256;
+    const LEPTONS_PER_CELL: i64 = crate::util::lepton::LEPTONS_PER_CELL_I32 as i64;
     let cell_origin = i64::from(cell) * LEPTONS_PER_CELL;
     let absolute_bits =
         cell_origin * FRACTION_SCALE + i64::from(subcell.to_bits()) + i64::from(delta.to_bits());

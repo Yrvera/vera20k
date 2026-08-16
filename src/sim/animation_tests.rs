@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
 use crate::rules::art_data::ArtRegistry;
-use crate::rules::ini_parser::IniFile;
 use crate::rules::infantry_sequence::parse_infantry_sequence_registry;
+use crate::rules::ini_parser::IniFile;
 use crate::rules::locomotor_type::LocomotorKind;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::animation::*;
@@ -1290,21 +1290,35 @@ fn animation_catalog_covers_unspawned_registered_shp_types() {
 
     let infantry = rules.animation_sequence("e1").expect("registered infantry");
     assert_eq!(
-        infantry.get(&SequenceKind::Stand).expect("infantry stand").start_frame,
+        infantry
+            .get(&SequenceKind::Stand)
+            .expect("infantry stand")
+            .start_frame,
         3,
     );
     assert_eq!(
-        infantry.get(&SequenceKind::Die1).expect("infantry death").frame_count,
+        infantry
+            .get(&SequenceKind::Die1)
+            .expect("infantry death")
+            .frame_count,
         2,
     );
 
-    let vehicle = rules.animation_sequence("dron").expect("registered SHP vehicle");
+    let vehicle = rules
+        .animation_sequence("dron")
+        .expect("registered SHP vehicle");
     assert_eq!(
-        vehicle.get(&SequenceKind::Walk).expect("vehicle walk").frame_count,
+        vehicle
+            .get(&SequenceKind::Walk)
+            .expect("vehicle walk")
+            .frame_count,
         6,
     );
     assert_eq!(
-        vehicle.get(&SequenceKind::Attack).expect("vehicle attack").frame_count,
+        vehicle
+            .get(&SequenceKind::Attack)
+            .expect("vehicle attack")
+            .frame_count,
         4,
     );
     assert_eq!(
@@ -1330,5 +1344,8 @@ fn simulation_config_hash_changes_with_resolved_sequence_layout() {
     let second = animation_catalog_rules(11);
 
     assert_eq!(first.source_ini_hash(), second.source_ini_hash());
-    assert_ne!(first.simulation_config_hash(), second.simulation_config_hash());
+    assert_ne!(
+        first.simulation_config_hash(),
+        second.simulation_config_hash()
+    );
 }

@@ -3,6 +3,12 @@
 //! RA2 facing convention: 0=N, 64=E, 128=S, 192=W (clockwise).
 //! Aircraft move in facing direction: dx = sin(facing), dy = -cos(facing).
 //!
+//! Ownership (F14): this module owns facing→movement *vectors* only. The
+//! 8-way vocabulary and facing→direction quantization live in
+//! `util::direction`; the gamemd table family (16-bit facings, lepton
+//! deltas, DRAGON frames) lives in `util::direction_tables`. Do not add a
+//! quantizer here.
+//!
 //! Table values are fixed-point I16F16 (SimFixed), pre-computed at compile time
 //! from a hardcoded quarter-wave table. The quarter-wave stores exact integer
 //! values of `round(sin(n * pi / 128) * 65536)` for n=0..64, giving sub-0.001

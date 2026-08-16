@@ -1035,7 +1035,7 @@ fn hut_cell_is_low_bridge(
 /// default Die1). Mirrors the combat-side path in
 /// `compute_dying_entities_combat_effects`.
 fn c4_inf_death(rules: &RuleSet, sim: &Simulation) -> u8 {
-    let c4_id = rules.c4_warhead_id();
+    let c4_id = sim.rule_handles().c4;
     let name = sim.interner.resolve(c4_id);
     rules.warhead(name).map(|wh| wh.inf_death).unwrap_or(1)
 }

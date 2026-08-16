@@ -16,7 +16,10 @@ use crate::sim::production::ProductionCategory;
 
 pub use layout_spec::{SIDEBAR_LAYOUT_FILE_NAME, SidebarChromeLayoutSpec};
 pub use power_bar_anim::PowerBarAnimState;
+#[cfg(test)]
+pub(crate) use sidebar_view::build_sidebar_view;
 pub(crate) use sidebar_view::build_sidebar_view_with_spec;
+pub(crate) use sidebar_view::ArmedSidebarEntry;
 
 /// Original RA2 sidebar chrome width (all SHPs are 168px wide).
 pub const SIDEBAR_WIDTH: f32 = 168.0;
@@ -194,6 +197,9 @@ pub struct SidebarTabButton {
     /// True when this is the currently-selected tab. Used by hit-test
     /// disambiguation; the rendered visual is driven by `frame_index`.
     pub active: bool,
+    /// Mirrors the retained gadget disabled bit used to select the visual and
+    /// to synchronize hit-testing/tooltips from this immutable projection.
+    pub disabled: bool,
     /// SHP frame index (0..=4) for the per-theme tab SHP atlas. Picked by
     /// `SidebarGadgetState::tab_frame` each frame.
     pub frame_index: u8,
@@ -206,7 +212,22 @@ pub struct SidebarTabButton {
 pub struct SidebarToggleButton {
     pub rect: Rect,
     pub action: SidebarAction,
+    /// Externally driven latch state for the toggle gadget.
+    pub active: bool,
+    /// Retained gadget disabled bit for hit-testing and tooltip presentation.
+    pub disabled: bool,
     /// SHP frame index (0..=4) for the button's per-theme SHP atlas.
+    pub frame_index: u8,
+}
+
+/// View entry for one of the two SHP-driven strip scroll buttons.
+#[derive(Debug, Clone)]
+pub struct SidebarScrollButton {
+    pub rect: Rect,
+    /// Retained gadget disabled bit. The current gadget lifecycle leaves this
+    /// false, but consumers must not reconstruct that presentation fact.
+    pub disabled: bool,
+    /// SHP frame index (0..=2) for the button's per-theme atlas.
     pub frame_index: u8,
 }
 
@@ -253,6 +274,8 @@ pub struct SidebarView {
     /// `sell_frames[frame_index]`. Hit-test routes to
     /// `SidebarAction::ToggleSellMode`.
     pub sell_button: SidebarToggleButton,
+    pub scroll_down_button: SidebarScrollButton,
+    pub scroll_up_button: SidebarScrollButton,
     pub cancel_button: SidebarControlButton,
     pub cycle_owner_button: SidebarControlButton,
     pub starter_base_button: SidebarControlButton,
@@ -347,7 +370,7 @@ pub(crate) fn compute_layout_with_spec(
 /// currently draws from.
 ///
 /// MERGE HAZARD: a parallel session is replacing that origin in
-/// `app_sidebar_build.rs` with a theme-dependent `power_bar_origin(theme,
+/// `app::presentation::sidebar_build` with a theme-dependent `power_bar_origin(theme,
 /// layout, ui_scale)`. This helper re-derives `sidebar_x + power_bar_x`, so
 /// once that lands the hover rect and the drawn bar will disagree by the
 /// per-theme x delta with nothing failing. Whoever merges must re-point this
@@ -442,7 +465,7 @@ pub(crate) fn hit_test_item(item: &SidebarItem, right_click: bool) -> SidebarAct
 
 // `sidebar::hit_test` (the legacy press-path hit-test) was retired in A6: every
 // in-game surface — tabs/repair/sell/scroll (A1), cameos (A2), tactical/minimap
-// (A3), and the control/dev buttons (A6) — is now owned by the `app_gadget_input`
+// (A3), and the control/dev buttons (A6) — is now owned by the `app::input::gadget_input`
 // retained list (one order = hit + draw, R7 complete). `hit_test_item` (the cameo
 // click→action map) stays public for the driver.
 

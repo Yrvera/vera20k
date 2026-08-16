@@ -17,8 +17,8 @@ use crate::sim::intern::InternedId;
 use crate::sim::superweapon::invulnerability::{InvulnKind, apply_invulnerability};
 use crate::sim::world::{SimSoundEvent, Simulation};
 
-const LEPTONS_PER_CELL: i64 = 256;
-const CELL_CENTER_LEPTON: i64 = 128;
+const LEPTONS_PER_CELL: i64 = crate::util::lepton::LEPTONS_PER_CELL_I32 as i64;
+const CELL_CENTER_LEPTON: i64 = crate::util::lepton::CELL_CENTER_LEPTON_I32 as i64;
 
 /// Launch ForceShield at (target_rx, target_ry). Protects allied buildings
 /// in radius, triggers owner power blackout.

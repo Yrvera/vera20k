@@ -15,6 +15,8 @@
 //! - rules/ is depended on by: sim/, map/, render/, sidebar/
 //! - rules/ does NOT depend on: sim/, render/, ui/, sidebar/, audio/, net/
 
+pub mod animation_sequence;
+pub mod overlay_types;
 pub mod art_data;
 pub mod bridge_warheads;
 pub mod color_add;
@@ -32,6 +34,7 @@ pub mod ini_value;
 pub mod jumpjet_params;
 pub mod locomotor_type;
 pub mod missile_spawn;
+pub mod mission_data;
 pub mod object_type;
 pub mod particle_system_type;
 pub mod particle_type;

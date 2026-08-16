@@ -125,6 +125,22 @@ pub struct MixFileLoad {
 /// Manages loaded MIX archives and provides name-based lookups.
 ///
 /// Archives are searched in priority order. Earlier archives win.
+///
+/// ## Two lookup families (F11)
+///
+/// - **Current-resolution** — `get`, `get_ref`, `get_with_source`,
+///   `get_with_source_ref`, `resolve_ref`, `contains`, `archive`,
+///   `archive_entry_data`: re-resolve through the live archive list and
+///   `lookup_index`, so their answers CHANGE when a theater activates or
+///   archives are (de)registered.
+/// - **Process-sticky** — `load_file_from_mix`: the native
+///   `LoadFileFromMIX @ 0x005B40B0` normalized-CRC first-winner cache. The
+///   first resolution wins for the life of the process, deliberately
+///   surviving theater swaps. Never invalidated, matching retail.
+///
+/// Pick by invalidation semantics, not convenience: provenance/evidence reads
+/// and theater-dependent assets want current-resolution; anything mirroring
+/// the native `LoadFileFromMIX` contract wants the sticky path.
 pub struct AssetManager {
     /// Loaded MIX archives in search priority order.
     archives: Vec<NamedArchive>,

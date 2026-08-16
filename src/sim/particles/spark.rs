@@ -12,8 +12,10 @@ use crate::util::native_x87::{
     NativeF32Bits, NativeF64Bits, NativeX87Error, X87Chop53, X87Ordering, X87Value,
 };
 
-// Spark collision's verified structural-bridge role; keep independently named.
-const STRUCTURAL_BRIDGE_HEIGHT: i32 = 416;
+// Spark collision's verified structural-bridge role; keep independently named
+// (same retail value as `sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS`;
+// see the separation notes there and at `util::lepton::BRIDGE_HEIGHT_DELTA_LEPTONS`).
+const STRUCTURAL_BRIDGE_HEIGHT: i32 = crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS;
 const ASCENDING_BRIDGE_DELETE_OFFSET: i32 = 20;
 const GROUND_CLAMP_DEPTH: i32 = 100;
 const BUILDING_CONTACT_HEIGHT_F32: NativeF32Bits = NativeF32Bits::from_bits(0x4316_0000);
@@ -91,8 +93,10 @@ pub enum SparkKernelError {
     NativeX87(#[from] NativeX87Error),
 }
 
+/// Signed toward-zero lepton→cell — `v / 256` is bit-identical to the
+/// canonical biased shift; delegated so the conversion exists once.
 pub fn lepton_to_cell_trunc(value: i32) -> i32 {
-    value / 256
+    crate::util::direction_tables::lepton_to_cell(value)
 }
 
 /// Convert the signed `[General] Gravity=` storage to the f32 bits consumed by

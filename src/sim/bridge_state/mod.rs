@@ -42,21 +42,9 @@ const OVERLAY_BYTE_NONE: u8 = 0xFF;
 const HIGH_BRIDGE_START_SUBTILE: [i32; 16] = [7, 7, -1, 7, 7, -1, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
 const HIGH_BRIDGE_WALK_DIRECTION: [i32; 16] = [2, 2, -1, 4, 4, -1, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4];
 const HIGH_BRIDGE_END_SUBTILE: [i32; 16] = [-1, -1, 4, -1, -1, 2, 4, 4, 4, 4, 4, 2, 2, 2, 2, 2];
-
-/// Bridge body axis. Body cells are stacked along this axis; ramps face
-/// perpendicular.
-///
-/// Mapping: `Axis::EW` ↔ `BridgeDirection::EastWest` ↔ state byte 9–17;
-/// `Axis::NS` ↔ `BridgeDirection::NorthSouth` ↔ state byte 0–8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Axis {
-    /// Body cells stacked north–south (along Y); ramps face east/west.
-    /// State byte range 0–8.
-    NS,
-    /// Body cells stacked east–west (along X); ramps face north/south.
-    /// State byte range 9–17.
-    EW,
-}
+// Static bridge axis/anchor vocabulary is map-owned (map::bridge_facts, F05);
+// sim re-exports so runtime and serialized consumers keep their paths.
+pub use crate::map::bridge_facts::{Axis, BridgeheadAnchorClass};
 
 /// Per-cell damage state encoding all 18 state-byte values.
 ///
@@ -154,39 +142,6 @@ impl DamageState {
             _ => None,
         }
     }
-}
-
-/// Per-cell anchor tile-class for bridgehead-adjacent cells.
-///
-/// Mirrors the four `IsoTileTypeIndex` slots used by the bridgehead state
-/// machine. Each value corresponds to a BridgeSet-relative tile_id offset
-/// (slot 0..3); the actual tile_ids are theater-portable via
-/// `BridgeMiddle1` / `BridgeMiddle2`.
-///
-/// - `Variant0` — pristine bridgehead (map-load default for cells with no
-///   author-damaged anchor placement).
-/// - `Variant1` — first DamageB intermediate. Reached only via neighbor
-///   `UpdateRamp_*_DamageB` progression on a Variant0 target.
-/// - `Damaged` — second DamageB intermediate. Reached only via neighbor
-///   `UpdateRamp_*_DamageB` progression on a Variant1 target. Also written
-///   by Collapse* paths advancing any non-AboutToFall variant.
-/// - `AboutToFall` — most-damaged variant. Two reach paths:
-///   1. **Direct hit on a bridgehead cell** — the bridgehead state machine
-///      writes the anchor straight to this slot (skipping Variant1/Damaged).
-///   2. **Map-load author-damaged anchor** — maps may place this tile_id
-///      directly; the renderer reflects it from frame 1.
-///
-/// Meaningful only when `BridgeRuntimeCell.role` is `Anchor` or
-/// `Bridgehead`; the renderer ignores it on other roles.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
-)]
-pub enum BridgeheadAnchorClass {
-    #[default]
-    Variant0,
-    Variant1,
-    Damaged,
-    AboutToFall,
 }
 
 /// Cell role within an `AnchorSpan`.

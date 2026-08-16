@@ -95,7 +95,6 @@ use crate::sim::projectile::{
     projectile_slope_reflect,
 };
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
-use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
 use crate::sim::team_script_vm::{TeamScriptEffect, TeamScriptVm};
@@ -587,7 +586,12 @@ pub struct Simulation {
     /// Built at init by `resolve_type_handles`; empty after deserialize (then
     /// `object_type` uses the name-path fallback). NOT serialized, NOT hashed.
     #[serde(skip)]
-    pub type_handles: crate::sim::type_handle_table::TypeHandleTable,
+    pub(crate) type_handles: crate::sim::type_handle_table::TypeHandleTable,
+    /// Pre-resolved `[CombatDamage]` warhead handles (F04). Built by
+    /// `resolve_type_handles` beside the type table; rebuilt from rules on
+    /// load. NOT serialized, NOT hashed. `None` until resolved.
+    #[serde(skip)]
+    pub(crate) rule_handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
     /// Session aggregate — scenario identity, seed, authoritative map
@@ -682,13 +686,13 @@ pub struct Simulation {
     /// Fire events produced during combat and moved into the app-frame output
     /// for muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
-    pub fire_events: Vec<SimFireEvent>,
+    pub(crate) fire_events: Vec<SimFireEvent>,
     /// Native IC/ForceShield impact combat-light requests emitted in receiver
     /// order during the current master frame. The native object has no owner
     /// and is distinct from AnimClass/ParticleSystemClass, so this remains a
     /// dedicated presentation handoff rather than fabricated world state.
     #[serde(skip)]
-    pub invulnerability_impact_effects: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+    pub(crate) invulnerability_impact_effects: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
     /// Persistent ordinary shots. This is authoritative save/hash state, not
     /// the render-side fire-event approximation.
     #[serde(default)]
@@ -700,7 +704,7 @@ pub struct Simulation {
     /// combat and superweapons commit smudges inline, so this remains empty and
     /// never persists across ticks.
     #[serde(skip)]
-    pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
+    pub(crate) pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
     /// Bale deposit events emitted during refinery dock unloading and consumed
     /// by the authoritative frame tail for SpecialAnim and particle creation.
     #[serde(skip)]
@@ -713,7 +717,7 @@ pub struct Simulation {
     pub ai_players: Vec<AiPlayerState>,
     /// Resolved TeamClass/ScriptType runtime; scenario INI parsing remains a
     /// separate refused boundary until its record grammar is evidenced.
-    pub team_script_vm: TeamScriptVm,
+    pub(crate) team_script_vm: TeamScriptVm,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
     /// via BTreeMap. Equivalent to the original engine's HouseClass array.
     pub houses: BTreeMap<InternedId, HouseState>,
@@ -724,7 +728,7 @@ pub struct Simulation {
     /// Zone-based connectivity map for instant unreachability detection.
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
-    pub zone_grid: Option<ZoneGrid>,
+    pub(crate) zone_grid: Option<ZoneGrid>,
     /// Canonical dynamic navigation projection. Arc snapshots let one master
     /// frame pin its entry view while the sim publishes the next projection.
     #[serde(skip)]
@@ -773,18 +777,18 @@ pub struct Simulation {
     pub radar_terrain_dirty_generation: u64,
     /// Runtime cell rects dirtied by tiberium mutation side effects.
     #[serde(skip)]
-    pub tactical_dirty_cells: Vec<(u16, u16)>,
+    pub(crate) tactical_dirty_cells: Vec<(u16, u16)>,
     /// Per-player power state (output, drain, low-power flag, spy blackout timer).
     /// Updated each tick by `power_system::tick_power_states()`.
     pub power_states: BTreeMap<InternedId, PowerState>,
     /// Per-owner superweapon instances. Outer key = owner, inner key = SW type ID.
     /// Deterministic iteration via nested BTreeMap.
-    pub super_weapons:
+    pub(crate) super_weapons:
         BTreeMap<InternedId, BTreeMap<InternedId, crate::sim::superweapon::SuperWeaponInstance>>,
     /// Active lightning storm state (global — only one at a time).
-    pub lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
+    pub(crate) lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
-    pub super_weapons_initialized: bool,
+    pub(crate) super_weapons_initialized: bool,
     /// Per-cell terrain speed modifier config (slope climb/descend).
     /// Built from [General] rules at map load.
     #[serde(skip)]
@@ -804,11 +808,6 @@ pub struct Simulation {
     /// Toggled by the debug inspector hotkey (X). Debug-only — not included in state hashing.
     #[serde(skip)]
     pub debug_event_logging: bool,
-    /// Rust-only deterministic diagnostic log for this match.
-    /// Initialized lazily on the first tick. It is separate from the native
-    /// recording stream and is not included in state hashing.
-    #[serde(skip)]
-    pub replay_log: Option<ReplayLog>,
     /// Negotiated lockstep ahead window. Offline producers stamp the current
     /// raw issue ordinal; a network transfer owner overwrites that stamp with
     /// `send_current + MaxAhead` before synchronized dispatch.
@@ -822,11 +821,11 @@ pub struct Simulation {
     #[serde(skip)]
     executed_exit_owner: Option<InternedId>,
     #[serde(skip)]
-    pub connection_lost: bool,
+    pub(crate) connection_lost: bool,
     /// Pending gameplay commands waiting for their scheduled execution tick.
-    /// Pushed by the app layer (user input, sidebar, AI), drained each tick
-    /// in `advance_tick()` when `cmd.execute_tick <= current_tick + 1`.
-    pub pending_commands: Vec<CommandEnvelope>,
+    /// Admitted through `queue_command(s)` and drained each tick when
+    /// `cmd.execute_tick <= current_tick + 1`.
+    pending_commands: Vec<CommandEnvelope>,
     /// Map trigger runtime state — tracks global/local variables, disabled triggers,
     /// fired one-shot triggers, and elapsed scenario ticks. Initialized from map data.
     pub trigger_runtime: TriggerRuntime,
@@ -1278,6 +1277,9 @@ impl Simulation {
         projectile_detonations: &[crate::sim::projectile::ProjectileDetonation],
         wave_damage_events: &[crate::sim::wave::WaveDamageEvent],
     ) -> crate::sim::combat::CombatTickResult {
+        // Copy-read the pre-resolved handles: Some from init/load in
+        // production, None for fixtures. Ticks never resolve or intern.
+        let rule_handles = self.rule_handles;
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
         let mut interner = std::mem::take(&mut self.interner);
@@ -1310,6 +1312,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 Some(&fog),
                 &power_states,
                 &mut houses,
@@ -1377,6 +1380,9 @@ impl Simulation {
         if detonations.is_empty() {
             return;
         }
+        // Copy-read the pre-resolved handles (Some in production, None for
+        // fixtures); ticks never resolve or intern.
+        let rule_handles = self.rule_handles;
 
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
@@ -1406,6 +1412,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 &mut houses,
                 &house_order,
                 &house_alliances,
@@ -1564,6 +1571,7 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
     ) {
+        let rule_handles = self.rule_handles;
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
         let mut interner = std::mem::take(&mut self.interner);
@@ -1594,6 +1602,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 &mut houses,
                 &house_order,
                 &house_alliances,
@@ -1867,13 +1876,48 @@ impl Simulation {
         Self::with_seed(DEFAULT_SIM_SEED)
     }
 
-    /// Build the interned-id -> type-handle table. Call once at sim init AFTER
-    /// `RuleSet::intern_all_ids` (mirrors `resolve_bridge_warheads`), and again
-    /// after load once the RuleSet is available. Idempotent.
+    /// Build the interned-id -> type-handle table and the pre-resolved rule
+    /// handles beside it. Call once at sim init AFTER `intern_rule_type_ids`,
+    /// and again after load once the RuleSet is available. Idempotent: the
+    /// warhead names are already interned on every re-resolution path, so
+    /// serialized interner state cannot grow or reorder.
     pub fn resolve_type_handles(&mut self, rules: &RuleSet) {
         self.type_handles =
             crate::sim::type_handle_table::TypeHandleTable::build(rules, &self.interner);
+        self.rule_handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+            rules,
+            &mut self.interner,
+        ));
     }
+
+    /// Intern every rules type id (infantry, vehicle, aircraft, building) so
+    /// `interner.get(type_id)` succeeds for any type this ruleset references.
+    /// Moved from `RuleSet::intern_all_ids` (F04): interning is sim-side work
+    /// over rules-owned canonical names.
+    pub fn intern_rule_type_ids(&mut self, rules: &RuleSet) {
+        for id in rules
+            .infantry_ids
+            .iter()
+            .chain(&rules.vehicle_ids)
+            .chain(&rules.aircraft_ids)
+            .chain(&rules.building_ids)
+        {
+            self.interner.intern(id);
+        }
+    }
+
+    /// Pre-resolved rule handles for combat comparisons.
+    ///
+    /// # Panics
+    /// Panics if `resolve_type_handles` has not run (init and load both call it
+    /// before any combat tick).
+    pub fn rule_handles(&self) -> crate::sim::type_handle_table::ResolvedRuleHandles {
+        self.rule_handles.expect(
+            "Simulation::resolve_type_handles must run at sim init \
+             before combat reads warhead handles",
+        )
+    }
+
 
     /// Resolve an entity's type to its `ObjectType` in one precomputed hop
     /// (two array indexes, no string allocation). Falls back to the name path
@@ -1918,6 +1962,7 @@ impl Simulation {
         let mut out = Self {
             interner: crate::sim::intern::StringInterner::new(),
             type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
+            rule_handles: None,
             production: ProductionState::default(),
             session,
             scenario_rng: SimRng::new(seed),
@@ -1976,7 +2021,6 @@ impl Simulation {
             blockage_path_delay_ticks: 60,
             world_effects: Vec::new(),
             debug_event_logging: false,
-            replay_log: None,
             input_delay_ticks: 2,
             quit_requested: false,
             executed_exit_owner: None,
@@ -2228,9 +2272,28 @@ impl Simulation {
         self.interner.intern(s)
     }
 
-    /// Queue a command for future execution at its scheduled tick.
-    pub fn queue_command(&mut self, cmd: CommandEnvelope) {
-        self.pending_commands.push(cmd);
+    /// Queue one already-prepared command for future execution.
+    ///
+    /// This is an append-only ingress: it preserves the command owner, execution
+    /// tick, and insertion position exactly. It does not sort, retime, normalize,
+    /// intern, deduplicate, or apply the negotiated input delay.
+    pub fn queue_command(&mut self, command: CommandEnvelope) {
+        self.queue_commands([command]);
+    }
+
+    /// Queue an already-ordered batch for future execution.
+    ///
+    /// Commands are appended in iterator order with their owners, execution
+    /// ticks, and payloads unchanged. Native byte round-trips and network timing
+    /// remain the responsibility of the producer that prepares each envelope.
+    pub fn queue_commands(&mut self, commands: impl IntoIterator<Item = CommandEnvelope>) {
+        self.pending_commands.extend(commands);
+    }
+
+    /// Read-only queue evidence for module tests outside the owning module.
+    #[cfg(test)]
+    pub(crate) fn pending_commands_for_tests(&self) -> &[CommandEnvelope] {
+        &self.pending_commands
     }
 
     /// Speed the next ordinary frame will observe after all due offline
@@ -2280,6 +2343,27 @@ impl Simulation {
             }
         }
         self.pending_commands = kept;
+        due
+    }
+
+    /// Admit and drain one diagnostic-replay batch without consuming pending
+    /// work regenerated by the simulation itself.
+    ///
+    /// The diagnostic log already contains the batch drained by the live app.
+    /// Playback can independently recreate later work such as C4 scatter, so
+    /// mixing that pending work with the recorded batch would admit it twice.
+    /// Temporarily isolating the queue preserves the former direct-replay seam:
+    /// the recorded batch still uses [`Self::queue_commands`] and the canonical
+    /// due filter, malformed future-stamped replay entries are discarded, and
+    /// pre-existing simulation work remains untouched.
+    pub(crate) fn take_due_replay_commands(
+        &mut self,
+        commands: impl IntoIterator<Item = CommandEnvelope>,
+    ) -> Vec<CommandEnvelope> {
+        let simulation_pending = std::mem::take(&mut self.pending_commands);
+        self.queue_commands(commands);
+        let due = self.take_due_commands();
+        self.pending_commands = simulation_pending;
         due
     }
 
@@ -2544,8 +2628,63 @@ impl Simulation {
     }
 
     /// Drain app-owned outcomes after their authoritative trigger actions ran.
+    /// Production consumes trigger effects through `SimFrameOutput`; only
+    /// fixture replay and trigger tests drain them directly.
+    #[cfg(test)]
     pub(crate) fn drain_trigger_effects(&mut self) -> Vec<TriggerEffect> {
         std::mem::take(&mut self.trigger_effects)
+    }
+
+    /// Enable or disable per-entity debug event logging (F10 boundary method:
+    /// the app toggles, sim owns the write). Flips the spawn-time flag and
+    /// reconciles every existing entity, so existing and future entities
+    /// always agree with the toggle. Enabling preserves logs an entity
+    /// already accumulated; disabling drops them all.
+    pub(crate) fn set_debug_event_logging(&mut self, enabled: bool) {
+        self.debug_event_logging = enabled;
+        for entity in self.substrate.entities.values_mut() {
+            if enabled {
+                if entity.debug_log.is_none() {
+                    entity.debug_log =
+                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                }
+            } else {
+                entity.debug_log = None;
+            }
+        }
+    }
+
+    /// Pre-merge the named owner's fog visibility so render-side queries hit
+    /// the O(1) merged cache (F10 boundary method: the app requests, sim owns
+    /// the write). Returns false when the owner name is not interned yet —
+    /// no view is built and the per-query slow path stays in effect.
+    pub(crate) fn prepare_fog_view_for(&mut self, owner: &str) -> bool {
+        let Some(owner_id) = self.interner.get(owner) else {
+            return false;
+        };
+        self.fog.build_merged_for(owner_id, &self.interner);
+        true
+    }
+
+    /// Configure the command input delay (F10 boundary method; the app pushes
+    /// its configured value once at match install).
+    pub(crate) fn set_input_delay_ticks(&mut self, ticks: u64) {
+        self.input_delay_ticks = ticks;
+    }
+
+    /// Install the map trigger runtime state machine after load (F10 boundary
+    /// method; the immutable trigger definitions live in `SimResources`).
+    pub(crate) fn install_trigger_runtime(
+        &mut self,
+        runtime: crate::sim::trigger_runtime::TriggerRuntime,
+    ) {
+        self.trigger_runtime = runtime;
+    }
+
+    /// Advance the radar-event review cursor and return the next event cell
+    /// (F10 boundary method backing the center-on-radar-event hotkey).
+    pub(crate) fn cycle_radar_event(&mut self) -> Option<(u16, u16)> {
+        self.radar_events.cycle_event()
     }
 
     #[cfg(test)]
@@ -4732,7 +4871,12 @@ impl Simulation {
         true
     }
 
-    pub fn advance_tick(
+    /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
+    /// frame with explicitly supplied rules/heights/navigation. Production and
+    /// tooling advance exclusively through `SimRuntime::advance_frame`, whose
+    /// resources are bound at construction and cannot be substituted per call.
+    #[cfg(test)]
+    pub(crate) fn advance_tick(
         &mut self,
         commands: &[CommandEnvelope],
         rules: Option<&RuleSet>,
@@ -4741,8 +4885,6 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
-        // Headless callers still enter the complete YR Main_Tick-shaped
-        // transaction; only map-owned trigger definitions are unavailable here.
         self.advance_master_frame(
             commands,
             rules,
@@ -4759,8 +4901,8 @@ impl Simulation {
     ///
     /// The app submits commands and immutable map/rules inputs, then consumes
     /// the returned facts instead of reaching back into Simulation-owned
-    /// transient queues. Headless/replay callers retain `advance_tick` and the
-    /// lower-level master-frame adapter.
+    /// transient queues. `SimRuntime::advance_frame` is the sole production
+    /// caller (F09); headless and replay execution go through the runtime.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_app_frame(
         &mut self,
@@ -4813,9 +4955,10 @@ impl Simulation {
 
     /// Advance exactly one authoritative simulation frame.
     ///
-    /// This is the sole Main_Tick-shaped entry point. `advance_tick` is the
-    /// ordinary, trigger-definition-free adapter used by headless callers and
-    /// tests; gameplay supplies its map definitions through `trigger_inputs`.
+    /// This is the sole Main_Tick-shaped entry point, reached in production
+    /// only through `advance_app_frame` (F09). The fixture-only `advance_tick`
+    /// adapter and the replay fixture runners are `#[cfg(test)]`; gameplay
+    /// supplies its map definitions through `trigger_inputs`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_master_frame(
         &mut self,
@@ -6043,7 +6186,7 @@ impl Simulation {
 
 #[cfg(test)]
 #[path = "world_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "smudge_integration_tests.rs"]

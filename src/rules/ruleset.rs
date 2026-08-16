@@ -23,6 +23,7 @@ use std::hash::{Hash, Hasher};
 use crate::rules::combat_damage::CombatDamageDefaults;
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{IniFile, ProcessedRulesLayers, RulesLayerStack};
+use crate::rules::mission_data::MissionControl;
 use crate::rules::object_type::{BuildCategory, FactoryType, ObjectCategory, ObjectType};
 use crate::rules::particle_system_type::{
     ParticleSystemType, ParticleSystemTypeId, PendingParticleSystemType,
@@ -1888,7 +1889,11 @@ impl GeneralRules {
             // URepairRate= is in minutes. Convert to ticks: minutes * 60 * 15 ticks/sec.
             unit_repair_rate_ticks: general
                 .get_f32("URepairRate")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u32)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u32)
                 .unwrap_or(defaults.unit_repair_rate_ticks),
             repair_step: general
                 .get_i32("RepairStep")
@@ -1900,12 +1905,20 @@ impl GeneralRules {
                 .unwrap_or(defaults.repair_percent),
             reload_rate_ticks: general
                 .get_f32("ReloadRate")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u32)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u32)
                 .unwrap_or(defaults.reload_rate_ticks),
             // PathDelay= is in minutes. Convert to ticks: minutes * 60 * 15.
             path_delay_ticks: general
                 .get_f32("PathDelay")
-                .map(|minutes| (minutes * 60.0 * 15.0).round().max(1.0) as u16)
+                .map(|minutes| (minutes
+                    * 60.0
+                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                .round()
+                .max(1.0) as u16)
                 .unwrap_or(defaults.path_delay_ticks),
             // BlockagePathDelay= is directly in frames (ticks).
             blockage_path_delay_ticks: general
@@ -2249,7 +2262,7 @@ pub struct RuleSet {
     /// Smudge type registry parsed from `[SmudgeTypes]` and per-name sections.
     /// Populated by `RuleSet::from_ini` from rulesmd.ini.
     pub smudge_types: SmudgeTypeRegistry,
-    /// Retained art.ini registry. Populated by app_init after `merge_art_data`
+    /// Retained art.ini registry. Populated by the app loading path (`app::loading::init`) after `merge_art_data`
     /// so dispatchers (e.g. smudge spawning) can read per-anim spawn flags.
     pub art_registry: crate::rules::art_data::ArtRegistry,
     /// GPU-independent SHP frame counts used by authoritative world-effect
@@ -2261,18 +2274,10 @@ pub struct RuleSet {
     /// Complete immutable per-object animation timing catalog. Gameplay reads
     /// this rules-owned resource directly; presentation cannot replace timing
     /// on an individual frame.
-    animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
-    /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
-    /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
-    /// `None` until resolved.
-    ion_cannon_warhead_id: Option<crate::sim::intern::InternedId>,
-    /// Pre-resolved C4Warhead InternedId. Same lifecycle as above.
-    c4_warhead_id: Option<crate::sim::intern::InternedId>,
-    /// Pre-resolved CrushWarhead InternedId. Same lifecycle as above.
-    crush_warhead_id: Option<crate::sim::intern::InternedId>,
+    animation_sequences: BTreeMap<String, crate::rules::animation_sequence::SequenceSet>,
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
-    pub mission_control: crate::sim::mission::MissionControl,
+    pub mission_control: MissionControl,
     /// Deterministic hash of the processed source INI (RULESMD, optional
     /// LANGRULE, selected mode, then the map's rules-shaped pass) this RuleSet
     /// was built from. Unlike a
@@ -2610,7 +2615,7 @@ impl RuleSet {
 
         // [CombatDamage] C4Delay = minutes (double). Default 0.03 = 27 ticks @ 15 fps.
         // Stored as integer ticks for lockstep-safe per-tick comparison.
-        const SIM_TICKS_PER_SECOND: u32 = 15;
+        const SIM_TICKS_PER_SECOND: u32 = crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND;
         let c4_delay_ticks: u32 = ini
             .section("CombatDamage")
             .and_then(|s| s.get("C4Delay"))
@@ -2619,7 +2624,7 @@ impl RuleSet {
             .unwrap_or(27); // 0.03 × 60 × 15 = 27
 
         // Per-mission behaviour table from the [<MissionName>] sections.
-        let mission_control = crate::sim::mission::MissionControl::from_ini(ini);
+        let mission_control = MissionControl::from_ini(ini);
 
         // Parse [TerrainTypes] registry → per-type sections (TIBTRE01, TREE01, etc.).
         let mut terrain_object_types: HashMap<String, TerrainObjectType> = HashMap::new();
@@ -2748,9 +2753,6 @@ impl RuleSet {
             terrain_spawner_assets:
                 crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::default(),
             animation_sequences: BTreeMap::new(),
-            ion_cannon_warhead_id: None,
-            c4_warhead_id: None,
-            crush_warhead_id: None,
             mission_control,
             // Single-source callers hash their one parsed INI. Production
             // ordered-stack callers replace this with the boundary-sensitive
@@ -2762,62 +2764,6 @@ impl RuleSet {
     }
 
     /// Look up a game object by ID.
-    /// Intern all known type IDs (infantry, vehicle, aircraft, building) into
-    /// the given interner. Ensures that `interner.get(type_id)` succeeds for
-    /// any type referenced by this ruleset.
-    pub fn intern_all_ids(&self, interner: &mut crate::sim::intern::StringInterner) {
-        for id in &self.infantry_ids {
-            interner.intern(id);
-        }
-        for id in &self.vehicle_ids {
-            interner.intern(id);
-        }
-        for id in &self.aircraft_ids {
-            interner.intern(id);
-        }
-        for id in &self.building_ids {
-            interner.intern(id);
-        }
-    }
-
-    /// Resolve `[CombatDamage] IonCannonWarhead=`, `C4Warhead=`, and
-    /// `CrushWarhead=` against the
-    /// simulation interner. Call once at sim init after the warhead registry
-    /// is populated and before any combat tick.
-    pub fn resolve_bridge_warheads(&mut self, interner: &mut crate::sim::intern::StringInterner) {
-        self.ion_cannon_warhead_id = Some(interner.intern(&self.bridge_warheads.ion_cannon_name));
-        self.c4_warhead_id = Some(interner.intern(&self.bridge_warheads.c4_name));
-        self.crush_warhead_id = Some(interner.intern(&self.bridge_warheads.crush_name));
-    }
-
-    /// Pre-resolved IonCannonWarhead InternedId.
-    ///
-    /// # Panics
-    /// Panics if `resolve_bridge_warheads` has not been called.
-    pub fn ion_cannon_warhead_id(&self) -> crate::sim::intern::InternedId {
-        self.ion_cannon_warhead_id.expect(
-            "RuleSet::resolve_bridge_warheads must be called at sim init \
-             before combat reads warhead IDs",
-        )
-    }
-
-    /// Pre-resolved C4Warhead InternedId.
-    ///
-    /// # Panics
-    /// Panics if `resolve_bridge_warheads` has not been called.
-    pub fn c4_warhead_id(&self) -> crate::sim::intern::InternedId {
-        self.c4_warhead_id.expect(
-            "RuleSet::resolve_bridge_warheads must be called at sim init \
-             before bridge cascade fires",
-        )
-    }
-
-    /// Whether an interned warhead is the resolved `[CombatDamage]
-    /// CrushWarhead=`. An unresolved test/headless ruleset cannot classify it.
-    pub(crate) fn is_crush_warhead_id(&self, warhead_id: crate::sim::intern::InternedId) -> bool {
-        self.crush_warhead_id == Some(warhead_id)
-    }
-
     /// Case-insensitive type-name lookup matching the original engine's
     /// find-or-allocate (stricmp-style) name resolution.
     ///
@@ -2857,7 +2803,7 @@ impl RuleSet {
     pub fn first_building_type_for_overlay(
         &self,
         overlay_id: u8,
-        overlays: &crate::map::overlay_types::OverlayTypeRegistry,
+        overlays: &crate::rules::overlay_types::OverlayTypeRegistry,
     ) -> Option<&ObjectType> {
         self.object_list.iter().find(|object| {
             object.category == crate::rules::object_type::ObjectCategory::Building
@@ -3337,19 +3283,19 @@ impl RuleSet {
         infantry_sequences: Option<&crate::rules::infantry_sequence::InfantrySequenceRegistry>,
     ) {
         self.animation_sequences =
-            crate::sim::animation::build_animation_sequence_catalog(self, infantry_sequences);
+            crate::rules::animation_sequence::build_animation_sequence_catalog(self, infantry_sequences);
     }
 
     pub(crate) fn animation_sequences(
         &self,
-    ) -> &BTreeMap<String, crate::sim::animation::SequenceSet> {
+    ) -> &BTreeMap<String, crate::rules::animation_sequence::SequenceSet> {
         &self.animation_sequences
     }
 
     pub(crate) fn animation_sequence(
         &self,
         type_id: &str,
-    ) -> Option<&crate::sim::animation::SequenceSet> {
+    ) -> Option<&crate::rules::animation_sequence::SequenceSet> {
         let canonical = self.object(type_id)?.id.as_str();
         self.animation_sequences.get(canonical)
     }
@@ -3357,7 +3303,7 @@ impl RuleSet {
     #[cfg(test)]
     pub(crate) fn replace_animation_sequences_for_test(
         &mut self,
-        animation_sequences: BTreeMap<String, crate::sim::animation::SequenceSet>,
+        animation_sequences: BTreeMap<String, crate::rules::animation_sequence::SequenceSet>,
     ) {
         self.animation_sequences = animation_sequences;
     }
@@ -5307,47 +5253,64 @@ ZAdjust=-10
     }
 
     #[test]
-    fn resolve_bridge_warheads_populates_ids() {
-        use crate::sim::intern::StringInterner;
-        let ini: IniFile = IniFile::from_str(&make_test_rules());
-        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
-        let mut interner = StringInterner::default();
-        rules.resolve_bridge_warheads(&mut interner);
-        let ion_id = rules.ion_cannon_warhead_id();
-        let c4_id = rules.c4_warhead_id();
-        let crush_id = rules.crush_warhead_id.expect("resolved CrushWarhead");
-        // Defaults match retail rulesmd.ini ("IonCannonWH" + "Super") because
-        // the test rules.ini has no `[CombatDamage]` overrides.
-        assert_eq!(interner.resolve(ion_id), "IonCannonWH");
-        assert_eq!(interner.resolve(c4_id), "Super");
-        assert_eq!(interner.resolve(crush_id), "Crush");
+    fn wall_overlay_first_match_order_survives_registry_move() {
+        // F04: the overlay registry moved from map to rules. Pin the two
+        // orders wall selling depends on: `[OverlayTypes]` declaration order
+        // IS the overlay ID, and `first_building_type_for_overlay` returns
+        // the FIRST registered building even when a later one also matches.
+        let overlay_ini =
+            IniFile::from_str("[OverlayTypes]\n0=GASAND\n1=GAWALL\n2=CAWALL\n");
+        let overlays =
+            crate::rules::overlay_types::OverlayTypeRegistry::from_ini(&overlay_ini, None);
+        assert_eq!(overlays.id_for_name("GAWALL"), Some(1));
+        assert_eq!(overlays.id_for_name("CAWALL"), Some(2));
+
+        let rules_ini = IniFile::from_str(
+            "[BuildingTypes]\n0=GAWALL2\n1=GAWALL3\n[GAWALL2]\nCost=1\n[GAWALL3]\nCost=1\n",
+        );
+        let mut rules: RuleSet = RuleSet::from_ini(&rules_ini).expect("rules parse");
+        for object in rules.object_list.iter_mut() {
+            object.to_overlay = Some("GAWALL".to_string());
+        }
+        let first = rules
+            .first_building_type_for_overlay(1, &overlays)
+            .expect("first registered building wins");
+        assert_eq!(first.id, "GAWALL2");
+        assert!(rules.first_building_type_for_overlay(2, &overlays).is_none());
     }
 
     #[test]
-    fn resolve_bridge_warheads_honors_combat_damage_overrides() {
+    fn resolved_rule_handles_use_bridge_warhead_defaults() {
         use crate::sim::intern::StringInterner;
+        use crate::sim::type_handle_table::ResolvedRuleHandles;
+        let ini: IniFile = IniFile::from_str(&make_test_rules());
+        let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
+        let mut interner = StringInterner::default();
+        let handles = ResolvedRuleHandles::resolve(&rules, &mut interner);
+        // Defaults match retail rulesmd.ini ("IonCannonWH" + "Super") because
+        // the test rules.ini has no `[CombatDamage]` overrides.
+        assert_eq!(interner.resolve(handles.ion_cannon), "IonCannonWH");
+        assert_eq!(interner.resolve(handles.c4), "Super");
+        assert_eq!(interner.resolve(handles.crush), "Crush");
+        assert!(handles.is_crush(handles.crush));
+        assert!(!handles.is_crush(handles.c4));
+    }
+
+    #[test]
+    fn resolved_rule_handles_honor_combat_damage_overrides() {
+        use crate::sim::intern::StringInterner;
+        use crate::sim::type_handle_table::ResolvedRuleHandles;
         let rules_text = format!(
             "{}\n[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\nCrushWarhead=CustomCrush\n",
             make_test_rules()
         );
         let ini: IniFile = IniFile::from_str(&rules_text);
-        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
-        let mut interner = StringInterner::default();
-        rules.resolve_bridge_warheads(&mut interner);
-        assert_eq!(interner.resolve(rules.ion_cannon_warhead_id()), "CustomIon");
-        assert_eq!(interner.resolve(rules.c4_warhead_id()), "CustomC4");
-        assert_eq!(
-            interner.resolve(rules.crush_warhead_id.expect("resolved CrushWarhead")),
-            "CustomCrush"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "resolve_bridge_warheads")]
-    fn ion_cannon_warhead_id_panics_before_resolve() {
-        let ini: IniFile = IniFile::from_str(&make_test_rules());
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
-        let _ = rules.ion_cannon_warhead_id();
+        let mut interner = StringInterner::default();
+        let handles = ResolvedRuleHandles::resolve(&rules, &mut interner);
+        assert_eq!(interner.resolve(handles.ion_cannon), "CustomIon");
+        assert_eq!(interner.resolve(handles.c4), "CustomC4");
+        assert_eq!(interner.resolve(handles.crush), "CustomCrush");
     }
 
     #[test]
@@ -5510,7 +5473,17 @@ ZAdjust=-10
         let ini = IniFile::from_str(&make_test_rules());
         let rules = RuleSet::from_ini(&ini).expect("fixture parses");
         let mut interner = crate::sim::intern::StringInterner::new();
-        rules.intern_all_ids(&mut interner);
+        // Mirror Simulation::intern_rule_type_ids (the production interning
+        // pass) so the table sees every registry id.
+        for id in rules
+            .infantry_ids
+            .iter()
+            .chain(&rules.vehicle_ids)
+            .chain(&rules.aircraft_ids)
+            .chain(&rules.building_ids)
+        {
+            interner.intern(id);
+        }
         let table = crate::sim::type_handle_table::TypeHandleTable::build(&rules, &interner);
 
         // Completeness: every registry id in the fixture (E1, E2, MTNK, GAPOWR)
@@ -5522,7 +5495,7 @@ ZAdjust=-10
         );
 
         // Casing: a lowercased reference resolves to the same handle as the stored
-        // uppercase id. The interner is case-insensitive, so intern_all_ids("MTNK")
+        // uppercase id. The interner is case-insensitive, so the interning pass ("MTNK")
         // and a later get("mtnk") share one id.
         let mtnk_lower = interner
             .get("mtnk")

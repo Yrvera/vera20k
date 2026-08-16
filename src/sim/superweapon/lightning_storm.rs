@@ -265,6 +265,7 @@ fn spawn_bolt(
     owner: InternedId,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) {
+    let handles = sim.rule_handles;
     // 1. Pick a random bolt animation.
     let anim_idx = sim
         .superweapon_rng()
@@ -384,6 +385,7 @@ fn spawn_bolt(
             warhead,
             rules,
             &sim.interner,
+            handles,
             (
                 crate::sim::combat::RAD_NO_ATTACKER,
                 Some(owner),

@@ -19,8 +19,8 @@ use crate::assets::shp_file::ShpFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
-    resolve_overlay_name_for_render,
 };
+use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::gpu::GpuContext;
 use crate::rules::art_data::{self, ArtRegistry};

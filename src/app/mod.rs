@@ -1,7 +1,6 @@
 //! Application facade and shared imports for the focused orchestrator modules
 //! under `app/`. GPU initialization remains deferred to `resumed()`.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,68 +14,56 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::app_init::MapMenuEntry;
-use crate::app_input;
-use crate::app_list_maps;
-use crate::app_render;
-use crate::app_sim_tick;
-use crate::app_transitions;
+use crate::app::presentation::render;
+use crate::app::match_runtime::sim_tick;
+use crate::app::loading::transitions;
 use crate::assets::asset_manager::AssetManager;
-use crate::audio::events::SoundEventQueue;
 use crate::audio::music::MusicPlayer;
 use crate::audio::sfx::SfxPlayer;
-use crate::map::actions::ActionMap;
 use crate::map::basic::BasicSection;
-use crate::map::cell_tags::CellTagMap;
-use crate::map::events::EventMap;
-use crate::map::houses::{HouseColorMap, HouseRoster};
+use crate::map::houses::HouseRoster;
 use crate::map::lighting::{CellLightGrid, LightingConfig};
-use crate::map::overlay::{OverlayEntry, TerrainObject};
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::map::tags::TagMap;
-use crate::map::terrain::TerrainGrid;
-use crate::map::trigger_graph::TriggerGraph;
-use crate::map::triggers::TriggerMap;
-use crate::map::waypoints::Waypoint;
 use crate::render::batch::BatchRenderer;
 use crate::render::bit_font::BitFont;
-use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
 use crate::render::egui_integration::EguiIntegration;
 use crate::render::gpu::GpuContext;
-use crate::render::minimap::MinimapRenderer;
-use crate::render::overlay_atlas::OverlayAtlas;
-use crate::render::selection_overlay::SelectionOverlay;
-use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
-use crate::render::sidebar_chrome::SidebarChromeSet;
-use crate::render::sprite_atlas::SpriteAtlas;
-use crate::render::tile_atlas::TileAtlas;
-use crate::render::unit_atlas::UnitAtlas;
-use crate::rules::art_data::ArtRegistry;
-use crate::rules::sound_ini::SoundRegistry;
 use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
-use crate::sim::production::BuildingPlacementPreview;
 use crate::sim::selection::SelectionState;
-use crate::sim::world::Simulation;
 use crate::ui::game_screen::GameScreen;
-use crate::ui::main_menu::{self, SkirmishSettings};
+use crate::ui::main_menu::{self};
 use crate::ui::shell::controller::ShellKey;
 use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
 
 pub mod frontend;
+pub(crate) mod types;
+pub(crate) mod input;
 mod frame;
 mod handler;
 mod initialize;
 mod in_game;
+pub(crate) mod match_audio;
+pub(crate) mod match_runtime;
+pub(crate) mod audio_runtime;
+pub(crate) mod diagnostics;
+pub(crate) mod loading;
+pub(crate) mod match_diagnostics;
+pub(crate) mod persistence;
+pub(crate) mod presentation;
+pub(crate) mod process_assets;
+pub(crate) mod renderer_state;
+pub(crate) mod scenario_catalog;
 mod shell_main_menu;
 mod shell_random_map;
+pub(crate) mod shell_route;
 mod shell_skirmish;
+pub(crate) mod sidebar_projection;
 mod state;
 
 pub(crate) use shell_random_map::{
-    RandomMapGenerationJob, RandomMapGenerationRetention,
+    RandomMapGenerationRetention,
 };
 pub(crate) use state::{AppState, PlatformState, reset_scenario_exit_runtime};
 
@@ -87,8 +74,8 @@ const SHELL_WINDOW_HEIGHT: u32 = 600;
 /// Top-level application. Implements winit's ApplicationHandler.
 pub struct App {
     state: Option<AppState>,
-    shell_capture: Option<crate::app_shell_capture::ShellCaptureSession>,
-    tactical_capture: Option<crate::app_tactical_capture::session::TacticalCaptureSession>,
+    shell_capture: Option<crate::app::diagnostics::shell_capture::ShellCaptureSession>,
+    tactical_capture: Option<crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession>,
     startup_audio: StartupAudioDisposition,
 }
 
@@ -128,12 +115,12 @@ impl Default for StartupAudioDisposition {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new(crate::app_startup_options::RetailStartupOptions::default())
+        Self::new(crate::app::frontend::startup_options::RetailStartupOptions::default())
     }
 }
 
 impl App {
-    pub fn new(startup_options: crate::app_startup_options::RetailStartupOptions) -> Self {
+    pub fn new(startup_options: crate::app::frontend::startup_options::RetailStartupOptions) -> Self {
         Self {
             state: None,
             shell_capture: None,
@@ -144,21 +131,21 @@ impl App {
         }
     }
 
-    pub fn new_shell_capture(request: crate::app_shell_capture::ShellCaptureRequest) -> Self {
+    pub fn new_shell_capture(request: crate::app::diagnostics::shell_capture::ShellCaptureRequest) -> Self {
         Self {
             state: None,
-            shell_capture: Some(crate::app_shell_capture::ShellCaptureSession::new(request)),
+            shell_capture: Some(crate::app::diagnostics::shell_capture::ShellCaptureSession::new(request)),
             tactical_capture: None,
             startup_audio: StartupAudioDisposition::default(),
         }
     }
 
-    pub fn new_tactical_capture(request: crate::app_launch::TacticalCaptureRequest) -> Self {
+    pub fn new_tactical_capture(request: crate::app::frontend::launch::TacticalCaptureRequest) -> Self {
         Self {
             state: None,
             shell_capture: None,
             tactical_capture: Some(
-                crate::app_tactical_capture::session::TacticalCaptureSession::new(request),
+                crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession::new(request),
             ),
             startup_audio: StartupAudioDisposition::default(),
         }

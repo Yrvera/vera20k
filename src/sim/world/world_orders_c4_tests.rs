@@ -63,14 +63,14 @@ fn build_sim_with_c4_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) 
     let mut rules = c4_test_rules();
     // Required: tick_c4_plants calls rules.c4_warhead_id() which panics
     // unless this resolver has run.
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     (sim, rules, BTreeMap::new())
 }
 
 fn build_sim_with_c4_damage_state_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let mut rules = c4_damage_state_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     (sim, rules, BTreeMap::new())
 }
 
@@ -129,7 +129,7 @@ fn spawn_building(sim: &mut Simulation, type_str: &str, owner: &str, rx: u16, ry
 }
 
 /// Advance one tick, draining any pending commands first (mirrors the
-/// production app_sim_tick loop).
+/// production app sim-tick loop).
 fn step(sim: &mut Simulation, rules: &RuleSet, heights: &BTreeMap<(u16, u16), u8>) {
     let due = sim.take_due_commands();
     sim.advance_tick(&due, Some(rules), heights, None, None, 67);

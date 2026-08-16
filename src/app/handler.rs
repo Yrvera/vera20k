@@ -3,27 +3,29 @@
 //! Event priority and consumption order are player-visible contracts; this
 //! module keeps the original handler body intact.
 
+use super::input::dispatch;
 use super::{
     ActiveEventLoop, App, AppState, ApplicationHandler, ControlFlow, GameScreen, Instant, KeyCode,
     KeyEventExtModifierSupplement, MouseButton, MouseScrollDelta, PhysicalKey, PhysicalSize,
-    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId, app_input,
+    SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, ShellKey, WindowEvent, WindowId,
     auto_detect_ui_scale,
 };
 
 impl App {
     fn resize_surface_for_window_size(state: &mut AppState, size: PhysicalSize<u32>) {
-        state.gpu.resize(size.width, size.height);
-        state.depth_view = state.gpu.create_depth_texture();
-        state.shell_surface_presenter.resize(&state.gpu);
+        state.renderer.gpu.resize(size.width, size.height);
+        state.renderer.depth_view = state.renderer.gpu.create_depth_texture();
+        state.renderer.shell_surface_presenter.resize(&state.renderer.gpu);
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
-        if (new_scale - state.ui_scale).abs() > f32::EPSILON {
-            log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
-            state.sidebar_layout_spec = state.sidebar_layout_spec_base.with_scale(new_scale);
-            state.ui_scale = new_scale;
+        if (new_scale - state.match_state.match_presentation.ui_scale).abs() > f32::EPSILON {
+            log::info!("UI scale changed: {}x -> {}x", state.match_state.match_presentation.ui_scale, new_scale);
+            state.match_state.match_presentation.sidebar_layout_spec = state.match_state.match_presentation.sidebar_layout_spec_base.with_scale(new_scale);
+            state.match_state.match_presentation.ui_scale = new_scale;
         }
         Self::invalidate_main_menu_movie_if_base_changed(state);
+        crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
     }
 
     pub(crate) fn enter_shell_window_mode(state: &mut AppState) {
@@ -206,7 +208,7 @@ impl ApplicationHandler for App {
         // owns the display. Keep close/resize/redraw operational, but discard
         // player input until the post-present deadline has elapsed.
         if state
-            .startup_splash
+            .frontend.startup_splash
             .as_ref()
             .is_some_and(|splash| splash.is_active(Instant::now()))
             && matches!(
@@ -233,7 +235,7 @@ impl ApplicationHandler for App {
 
         // Always let egui see the event first for input handling.
         let egui_response: egui_winit::EventResponse =
-            state.egui.on_window_event(&state.platform.window, &event);
+            state.renderer.egui.on_window_event(&state.platform.window, &event);
 
         // In InGame mode, egui only renders non-interactive overlays
         // (mission banner). The custom sidebar handles its own hit-testing.
@@ -242,7 +244,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
-            && (state.screen != GameScreen::InGame || state.paused || state.show_save_load_panel);
+            && (state.frontend.screen != GameScreen::InGame || state.match_state.paused || state.match_state.match_presentation.show_save_load_panel);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -251,7 +253,7 @@ impl ApplicationHandler for App {
                     // Pump/quit exits write the last durable snapshot after
                     // teardown, without a fresh control pack or RNG draw.
                     Self::teardown_skirmish_shell_for_start(state);
-                    state.offline_skirmish_runtime.persist_snapshot();
+                    state.frontend.offline_skirmish_runtime.persist_snapshot();
                 }
                 event_loop.exit();
             }
@@ -278,9 +280,9 @@ impl ApplicationHandler for App {
                     // Without this the right-drag pan keeps applying its
                     // anchor-relative step every frame and edge scroll stays
                     // inhibited until the player right-clicks again.
-                    state.tactical_mouse = Default::default();
-                    state.selection_state.cancel_drag();
-                    state.minimap_dragging = false;
+                    state.match_state.input.tactical_mouse = Default::default();
+                    state.match_state.input.selection_state.cancel_drag();
+                    state.match_state.input.minimap_dragging = false;
                 }
                 Self::set_window_active(state, active);
             }
@@ -292,8 +294,8 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 // Native's paused input capture admits Escape only and does not
                 // mutate the recorded keyboard state for other input.
-                if !state.paused {
-                    state.hotkey_modifiers = modifiers.state();
+                if !state.match_state.paused {
+                    state.match_state.input.hotkey_modifiers = modifiers.state();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -302,10 +304,10 @@ impl ApplicationHandler for App {
                     // so the player can toggle pause regardless of egui focus.
                     let is_escape: bool =
                         code == KeyCode::Escape && event.state.is_pressed() && !event.repeat;
-                    let in_game: bool = state.screen == GameScreen::InGame;
-                    let paused_at_event = in_game && state.paused;
+                    let in_game: bool = state.frontend.screen == GameScreen::InGame;
+                    let paused_at_event = in_game && state.match_state.paused;
 
-                    if crate::app_shell_transition::blocks_shell_input(state) {
+                    if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                         return;
                     }
 
@@ -317,7 +319,7 @@ impl ApplicationHandler for App {
                     // not on the stack and keep the direct close.
                     if Self::main_menu_dialog_open(state) {
                         if is_escape {
-                            if state.exit_confirm_modal.is_some() {
+                            if state.frontend.exit_confirm_modal.is_some() {
                                 if !Self::route_exit_confirm_modal_key(state, ShellKey::Escape) {
                                     // Defensive: on_key only fails with an
                                     // empty route — still close consistently.
@@ -342,7 +344,7 @@ impl ApplicationHandler for App {
                     }
 
                     if Self::native_skirmish_shell_active(state) && is_escape {
-                        if state.skirmish_shell_state.choose_map_modal.is_some() {
+                        if state.frontend.skirmish_shell_state.choose_map_modal.is_some() {
                             // Native chooser `0x6B` has no verified Escape
                             // dismissal. Consume the key without applying the
                             // Cancel transaction or changing its selection.
@@ -364,7 +366,7 @@ impl ApplicationHandler for App {
                         return;
                     }
 
-                    if !crate::app_hotkeys::input_admitted_while_paused(
+                    if !crate::app::input::hotkeys::input_admitted_while_paused(
                         paused_at_event,
                         &event.logical_key,
                     ) {
@@ -391,18 +393,18 @@ impl ApplicationHandler for App {
                     }
 
                     let key_without_modifiers = event.key_without_modifiers();
-                    let binding_key = crate::app_hotkeys::binding_logical_key(
+                    let binding_key = crate::app::input::hotkeys::binding_logical_key(
                         &event.logical_key,
                         &key_without_modifiers,
                         event.location,
                     );
-                    let hotkey_resolution = state.hotkey_bindings.resolve_event(
+                    let hotkey_resolution = state.match_state.input.hotkey_bindings.resolve_event(
                         binding_key,
                         event.location,
-                        state.hotkey_modifiers,
+                        state.match_state.input.hotkey_modifiers,
                     );
                     if in_game && (is_escape || !egui_consumed) {
-                        let type_select_consumed = app_input::handle_type_select_key_edge(
+                        let type_select_consumed = dispatch::handle_type_select_key_edge(
                             state,
                             hotkey_resolution,
                             code,
@@ -410,7 +412,7 @@ impl ApplicationHandler for App {
                             event.repeat,
                         );
                         if event.state.is_pressed() && !event.repeat && !type_select_consumed {
-                            app_input::handle_hotkey_pressed(state, hotkey_resolution, code);
+                            dispatch::handle_hotkey_pressed(state, hotkey_resolution, code);
                         }
                     }
                     // A key received by the paused capture changes no held-key
@@ -418,22 +420,22 @@ impl ApplicationHandler for App {
                     if in_game && !paused_at_event && !egui_consumed {
                         if event.state.is_pressed() {
                             if let Some(scroll_key) =
-                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
+                                crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
                             {
-                                state.keys_held.insert(scroll_key);
-                            } else if crate::app_hotkeys::physical_scroll_key(code).is_none() {
-                                state.keys_held.insert(code);
+                                state.match_state.input.keys_held.insert(scroll_key);
+                            } else if crate::app::input::hotkeys::physical_scroll_key(code).is_none() {
+                                state.match_state.input.keys_held.insert(code);
                             }
                         } else {
                             // A release always clears a previously admitted
                             // scroll flag, even if NumLock or bindings changed
                             // while the key was held.
-                            state.keys_held.remove(&code);
+                            state.match_state.input.keys_held.remove(&code);
                             if let Some(scroll_key) =
-                                crate::app_hotkeys::fallback_scroll_key(hotkey_resolution)
-                                    .or_else(|| crate::app_hotkeys::physical_scroll_key(code))
+                                crate::app::input::hotkeys::fallback_scroll_key(hotkey_resolution)
+                                    .or_else(|| crate::app::input::hotkeys::physical_scroll_key(code))
                             {
-                                state.keys_held.remove(&scroll_key);
+                                state.match_state.input.keys_held.remove(&scroll_key);
                             }
                         }
                     }
@@ -441,33 +443,33 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 // When upscaling, remap window coordinates to render-target coordinates.
-                let use_render_source_coords = state.upscale_pass.is_some()
-                    && (state.screen == GameScreen::InGame
-                        || state.screen == GameScreen::SpawnPick);
+                let use_render_source_coords = state.renderer.upscale_pass.is_some()
+                    && (state.frontend.screen == GameScreen::InGame
+                        || state.frontend.screen == GameScreen::SpawnPick);
                 let (sx, sy) = if use_render_source_coords {
                     (
-                        state.render_width() as f32 / state.gpu.config.width as f32,
-                        state.render_height() as f32 / state.gpu.config.height as f32,
+                        state.render_width() as f32 / state.renderer.gpu.config.width as f32,
+                        state.render_height() as f32 / state.renderer.gpu.config.height as f32,
                     )
                 } else {
                     (1.0, 1.0)
                 };
-                state.cursor_x = position.x as f32 * sx;
-                state.cursor_y = position.y as f32 * sy;
+                state.match_state.input.cursor_x = position.x as f32 * sx;
+                state.match_state.input.cursor_y = position.y as f32 * sy;
                 // Keep OS cursor hidden whenever the software cursor is active.
                 if state.use_software_cursor() {
                     state.platform.window.set_cursor_visible(false);
                 }
                 // Shared tooltip service: every move restarts the show delay
                 // and hides a visible tip (study S1).
-                crate::app_tooltips::on_mouse_move(state);
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                crate::app::input::tooltips::on_mouse_move(state);
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 if !egui_consumed
-                    && (state.screen == GameScreen::InGame || state.screen == GameScreen::SpawnPick)
+                    && (state.frontend.screen == GameScreen::InGame || state.frontend.screen == GameScreen::SpawnPick)
                 {
-                    app_input::handle_cursor_moved_in_game(state);
+                    dispatch::handle_cursor_moved_in_game(state);
                 }
                 if !egui_consumed && Self::native_skirmish_shell_active(state) {
                     Self::handle_skirmish_shell_mouse_move(state);
@@ -479,14 +481,13 @@ impl ApplicationHandler for App {
                     Self::handle_score_shell_mouse_move(state);
                 }
                 if !egui_consumed
-                    && state.screen == GameScreen::MainMenu
-                    && !state.main_menu_shell_failed
-                    && !state.main_menu_show_skirmish_setup
+                    && state.frontend.screen == GameScreen::MainMenu
+                    && !state.frontend.main_menu_shell_failed
                     && !Self::single_player_shell_active(state)
                     && !Self::native_skirmish_shell_active(state)
                     // While the SHP quit-confirm modal owns the controller, the menu
                     // move handler must not re-activate 0xE2 and reset the gesture.
-                    && state.exit_confirm_modal.is_none()
+                    && state.frontend.exit_confirm_modal.is_none()
                 {
                     Self::handle_main_menu_shell_mouse_move(state);
                 }
@@ -504,8 +505,8 @@ impl ApplicationHandler for App {
                 }
                 // Any button press/release kills a visible tooltip + pending
                 // timer (all buttons incl. middle — study S1).
-                crate::app_tooltips::on_button_event(state);
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                crate::app::input::tooltips::on_button_event(state);
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 // While a main-menu modal dialog is open, route the click to the
@@ -513,10 +514,9 @@ impl ApplicationHandler for App {
                 // path; the egui fallback and the other egui dialogs (options/movies/
                 // campaign) were already handled by egui above.
                 if Self::main_menu_dialog_open(state) {
-                    if state.exit_confirm_modal.is_some()
-                        && state.screen == GameScreen::MainMenu
-                        && !state.main_menu_shell_failed
-                        && !state.main_menu_show_skirmish_setup
+                    if state.frontend.exit_confirm_modal.is_some()
+                        && state.frontend.screen == GameScreen::MainMenu
+                        && !state.frontend.main_menu_shell_failed
                         && button == MouseButton::Left
                     {
                         if btn_state.is_pressed() {
@@ -551,9 +551,8 @@ impl ApplicationHandler for App {
                             Self::handle_single_player_shell_mouse_up(state);
                         }
                     }
-                } else if state.screen == GameScreen::MainMenu
-                    && !state.main_menu_shell_failed
-                    && !state.main_menu_show_skirmish_setup
+                } else if state.frontend.screen == GameScreen::MainMenu
+                    && !state.frontend.main_menu_shell_failed
                     && !egui_consumed
                 {
                     if button == MouseButton::Left {
@@ -563,12 +562,12 @@ impl ApplicationHandler for App {
                             Self::handle_main_menu_shell_mouse_up(state, event_loop);
                         }
                     }
-                } else if !egui_consumed && state.screen == GameScreen::SpawnPick {
+                } else if !egui_consumed && state.frontend.screen == GameScreen::SpawnPick {
                     if button == MouseButton::Left && btn_state.is_pressed() {
-                        crate::app_spawn_pick::handle_spawn_pick_click(state);
+                        crate::app::presentation::spawn_pick::handle_spawn_pick_click(state);
                     }
-                } else if !egui_consumed && state.screen == GameScreen::InGame {
-                    app_input::handle_mouse_input(state, button, btn_state);
+                } else if !egui_consumed && state.frontend.screen == GameScreen::InGame {
+                    dispatch::handle_mouse_input(state, button, btn_state);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -576,11 +575,11 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y as f32 / 30.0).clamp(-3.0, 3.0),
                 };
-                if crate::app_shell_transition::blocks_shell_input(state) {
+                if crate::app::frontend::shell_transition::blocks_shell_input(state) {
                     return;
                 }
                 if !egui_consumed
-                    && state.screen == GameScreen::MainMenu
+                    && state.frontend.screen == GameScreen::MainMenu
                     && Self::native_skirmish_shell_active(state)
                     && Self::handle_skirmish_shell_mouse_wheel(state, lines)
                 {
@@ -588,14 +587,14 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if !egui_consumed
-                    && (state.screen == GameScreen::SpawnPick
-                        || (state.screen == GameScreen::InGame && !state.paused))
+                    && (state.frontend.screen == GameScreen::SpawnPick
+                        || (state.frontend.screen == GameScreen::InGame && !state.match_state.paused))
                 {
                     // Every wheel notch scrolls the active build strip by one
                     // row, wherever the cursor is. gamemd routes the wheel
                     // message straight to the SidebarUp / SidebarDown commands
                     // and has no world zoom for it to reach.
-                    app_input::sidebar_wheel_scroll(state, lines);
+                    dispatch::sidebar_wheel_scroll(state, lines);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -631,17 +630,17 @@ impl ApplicationHandler for App {
             if !session.is_finished() {
                 let mut deadline = session.next_wake_deadline();
                 if let Some(wave_deadline) =
-                    crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                    crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
                 {
                     deadline = deadline.max(wave_deadline);
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
         } else if let Some(state) = &self.state {
-            if crate::app_shell_transition::main_menu_presented_is_poisoned(state) {
+            if crate::app::frontend::shell_transition::main_menu_presented_is_poisoned(state) {
                 event_loop.set_control_flow(ControlFlow::Wait);
             } else if let Some(deadline) =
-                crate::app_shell_transition::main_menu_presented_wake_deadline(state)
+                crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
             {
                 if Instant::now() >= deadline {
                     state.platform.window.request_redraw();
@@ -661,7 +660,7 @@ impl ApplicationHandler for App {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
-            crate::app_sim_tick::flush_replay_log(state);
+            crate::app::match_runtime::sim_tick::flush_replay_log(state);
         }
         log::logger().flush();
     }

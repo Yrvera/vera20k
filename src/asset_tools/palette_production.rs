@@ -767,11 +767,11 @@ mod tests {
 //   :641  GCLOCK2.SHP with the generic SIDEBAR.PAL
 //
 // CAMEOS
-//   src/app_init.rs:1259  cameomd.mix / cameo.mix mounted "for sidebar cameo icons"
-//   src/app_init.rs:1266  build_sidebar_cameo_atlas called immediately after
-//   src/app_init_helpers.rs:80  palette order cameo.pal, cameomd.pal, mousepal.pal,
+//   src/app_init.rs:1259 (now app/loading/init.rs)  cameomd.mix / cameo.mix mounted "for sidebar cameo icons"
+//   src/app_init.rs:1266 (now app/loading/init.rs)  build_sidebar_cameo_atlas called immediately after
+//   src/app_init_helpers.rs:80 (now app/loading/init_helpers.rs)  palette order cameo.pal, cameomd.pal, mousepal.pal,
 //         anim.pal, unittem.pal, unit.pal, temperat.pal — first present wins
-//   src/app_init_helpers.rs:91  Palette::from_bytes (standard)
+//   src/app_init_helpers.rs:91 (same file)  Palette::from_bytes (standard)
 //   Note: src/render/sidebar_cameo_atlas.rs:140 is export_debug_palette_sheet,
 //         a RA2_DEBUG_CAMEO_PALETTES-gated comparison sheet, not a production
 //         binding; it is not in the table.
@@ -840,7 +840,7 @@ mod tests {
 //   :138-141  NEWURBAN: "ubn", isoubn.pal, unitubn.pal, urbann.pal
 //   :818-827  iso / unit / theater palettes loaded by exact name
 //   :1107     load_exact_palette uses Palette::from_bytes_gamemd_ui
-//   src/app_init.rs:709  the tile atlas is built with td.iso_palette and
+//   src/app_init.rs:709 (now app/loading/init.rs)  the tile atlas is built with td.iso_palette and
 //             td.extension, so a `.{ext}` tile is an iso-palette asset
 //
 // ---------------------------------------------------------------------------
@@ -884,7 +884,7 @@ mod tests {
 // asset_tools::palette::GAMEMD_UI_PALETTES omits unit*.pal, but
 //   src/map/theater.rs:820 loads the unit palette through
 //   load_exact_palette, which is from_bytes_gamemd_ui (:1107). The fallback
-//   paths that run only when no theater loaded (src/app_init_helpers.rs:632,
-//   src/app_sim_tick.rs:1707, src/app_skirmish.rs:2897) use from_bytes. Since a
+//   paths that run only when no theater loaded (src/app_init_helpers.rs:632, now app/loading/init_helpers.rs,
+//   src/app_sim_tick.rs:1707, src/app_skirmish.rs:2897 - now under app/) use from_bytes. Since a
 //   skirmish always loads a theater, the production policy for unit*.pal is
 //   gamemd_ui.

@@ -281,7 +281,7 @@ pub struct ResolvedTerrainCell {
     /// initialize `BridgeRuntimeCell.bridgehead_anchor_class` instead of
     /// the unconditional Variant0 default. None defaults to Variant0
     /// sim-side.
-    pub bridgehead_anchor_class_at_load: Option<crate::sim::bridge_state::BridgeheadAnchorClass>,
+    pub bridgehead_anchor_class_at_load: Option<crate::map::bridge_facts::BridgeheadAnchorClass>,
 }
 
 impl ResolvedTerrainCell {
@@ -381,7 +381,7 @@ pub struct TerrainTileAnimation {
 }
 
 /// Leptons per cell along one map axis.
-const LEPTONS_PER_CELL: i32 = 256;
+const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 /// Cell-centre offset used by the tile-animation spawn coordinate.
 const CELL_CENTRE_LEPTONS: i32 = LEPTONS_PER_CELL / 2;
 
@@ -1344,9 +1344,9 @@ impl ResolvedTerrainGrid {
             debug_assert_eq!(cliff_back_eligibility.len(), cells.len());
             let resolved_cell_count = cells.len();
             let fixed_stride_index = |x: i32, y: i32| {
-                let native_index = crate::sim::cell_rect::cell_linear_index(x, y)?;
-                let canonical_x = (native_index % crate::sim::cell_rect::CELL_ROW_STRIDE) as usize;
-                let canonical_y = (native_index / crate::sim::cell_rect::CELL_ROW_STRIDE) as usize;
+                let native_index = crate::map::cell_index::cell_linear_index(x, y)?;
+                let canonical_x = (native_index % crate::map::cell_index::CELL_ROW_STRIDE) as usize;
+                let canonical_y = (native_index / crate::map::cell_index::CELL_ROW_STRIDE) as usize;
                 if canonical_x >= usize::from(width) || canonical_y >= usize::from(height) {
                     return None;
                 }
@@ -1682,7 +1682,7 @@ fn presentation_tile_parts(tile_index: i32, sub_tile: u8, clear_tile_id: u16) ->
 /// filters `Clear` only. An already-invalid/sentinel tile id reaches this
 /// final-normal filter, not the sparse-entry copy.
 fn cliff_back_normal_reclass_applies(land_type: u8) -> bool {
-    use crate::sim::pathfinding::passability::LandType;
+    use crate::rules::terrain_rules::LandType;
     land_type == LandType::Clear.as_index()
         || land_type == LandType::Water.as_index()
         || land_type == LandType::Beach.as_index()
@@ -1976,15 +1976,15 @@ fn metadata_from_set_name(set_name: Option<&str>, tileset_index: Option<u16>) ->
     let is_rough = lower.contains("rough");
     let is_road = lower.contains("road") || lower.contains("pavement") || lower.contains("pave");
     let land_type = if is_water {
-        crate::sim::pathfinding::passability::LandType::Water.as_index()
+        crate::rules::terrain_rules::LandType::Water.as_index()
     } else if is_road {
-        crate::sim::pathfinding::passability::LandType::Road.as_index()
+        crate::rules::terrain_rules::LandType::Road.as_index()
     } else if is_rough {
-        crate::sim::pathfinding::passability::LandType::Rough.as_index()
+        crate::rules::terrain_rules::LandType::Rough.as_index()
     } else if is_cliff_like {
-        crate::sim::pathfinding::passability::LandType::Rock.as_index()
+        crate::rules::terrain_rules::LandType::Rock.as_index()
     } else {
-        crate::sim::pathfinding::passability::LandType::Clear.as_index()
+        crate::rules::terrain_rules::LandType::Clear.as_index()
     };
     let terrain_class = if is_water {
         TerrainClass::Water
@@ -2022,7 +2022,7 @@ fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.raw_land_type = tile.terrain_type;
     metadata.yr_cell_land_type = yr_cell_land_type_from_tmp(tile.terrain_type);
     metadata.land_type =
-        crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tile.terrain_type)
+        crate::rules::terrain_rules::tmp_terrain_to_land_type(tile.terrain_type)
             .as_index();
     metadata.slope_type = tile.ramp_type;
     metadata.template_height = tile.height;
@@ -2039,7 +2039,7 @@ fn yr_cell_land_type_from_tmp(tmp_terrain_type: u8) -> u8 {
     if tmp_terrain_type == 5 {
         YR_CELL_LAND_TUNNEL
     } else {
-        crate::sim::pathfinding::passability::tmp_terrain_to_land_type(tmp_terrain_type).as_index()
+        crate::rules::terrain_rules::tmp_terrain_to_land_type(tmp_terrain_type).as_index()
     }
 }
 
@@ -4164,7 +4164,7 @@ NoUseTileLandType=no
         assert!(metadata.is_water);
         assert_eq!(
             metadata.land_type,
-            crate::sim::pathfinding::passability::LandType::Water.as_index()
+            crate::rules::terrain_rules::LandType::Water.as_index()
         );
     }
 
@@ -4185,7 +4185,7 @@ NoUseTileLandType=no
         let mut metadata = TileMetadata {
             has_tmp_metadata: true,
             raw_land_type: 15,
-            land_type: crate::sim::pathfinding::passability::tmp_terrain_to_land_type(15)
+            land_type: crate::rules::terrain_rules::tmp_terrain_to_land_type(15)
                 .as_index(),
             slope_type: 2,
             terrain_class: TerrainClass::Cliff,
@@ -4461,7 +4461,7 @@ NoUseTileLandType=no
         );
         assert_eq!(
             cell.land_type,
-            crate::sim::pathfinding::passability::LandType::Rock.as_index(),
+            crate::rules::terrain_rules::LandType::Rock.as_index(),
             "Cell at base of cliff should have Rock land type"
         );
         // The reclass precedes zone derivation: the reduced zone becomes
@@ -4471,13 +4471,13 @@ NoUseTileLandType=no
         assert_eq!(cell.zone_type, zone_class::IMPASSABLE);
         assert_eq!(
             cell.base_land_type,
-            crate::sim::pathfinding::passability::LandType::Rock.as_index()
+            crate::rules::terrain_rules::LandType::Rock.as_index()
         );
         assert!(cell.base_ground_walk_blocked);
         assert!(cell.base_build_blocked);
         assert_eq!(
             cell.yr_cell_land_type,
-            crate::sim::pathfinding::passability::LandType::Rock.as_index()
+            crate::rules::terrain_rules::LandType::Rock.as_index()
         );
     }
 
@@ -4823,7 +4823,7 @@ Tile03ZAdjust=-10
 
     #[test]
     fn gsi_04_04_normal_cliff_back_reclass_filter_includes_ice() {
-        use crate::sim::pathfinding::passability::LandType;
+        use crate::rules::terrain_rules::LandType;
         for land in [
             LandType::Clear,
             LandType::Water,

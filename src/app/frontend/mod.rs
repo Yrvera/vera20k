@@ -1,3 +1,17 @@
-//! Front-end shell, loading, and capture orchestration.
+//! Front-end owner (F12): launch boundary, map listing, skirmish
+//! session/settings, every shell render surface, quit cascade, startup
+//! options/splash, and shell slide transitions.
 
+pub mod launch;
+pub(crate) mod list_maps;
+pub(crate) mod main_menu_shell_render;
+pub(crate) mod quit_cascade;
+pub(crate) mod score_shell_render;
+pub(crate) mod shell_transition;
+pub(crate) mod single_player_shell_render;
+pub(crate) mod skirmish;
+pub(crate) mod skirmish_session;
+pub(crate) mod state;
+pub(crate) mod skirmish_shell_render;
+pub mod startup_options;
 pub(super) mod startup_splash;

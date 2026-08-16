@@ -33,7 +33,7 @@ const WORLD_YAW_OFFSET_DEG: f32 = 45.0;
 /// The original quantizes facing to 5 bits before building the rotation matrix and
 /// reuses those same 5 bits as its draw-cache key, so there is no finer sub-facing
 /// anywhere in the voxel pipeline: a rendered voxel is always exactly 1 of 32.
-const VOXEL_FACING_STEPS: u32 = 32;
+pub(crate) const VOXEL_FACING_STEPS: u32 = 32;
 
 /// Angular size of one voxel facing step: 360° / 32 = 11.25° = π/16.
 const VOXEL_FACING_STEP_RAD: f32 = std::f32::consts::PI / 16.0;
@@ -55,7 +55,7 @@ pub fn voxel_facing_step(facing: u8) -> u8 {
 /// facing is still in hand, since it rounds off the true value rather than off an
 /// already-truncated byte.
 pub fn voxel_facing_step_u16(facing16: u16) -> u8 {
-    ((((u32::from(facing16) >> 10) + 1) >> 1) & (VOXEL_FACING_STEPS - 1)) as u8
+    crate::util::direction_tables::step32_from_facing16(facing16)
 }
 
 /// The body-rotation angle the original installs for a given facing step.
@@ -1269,7 +1269,7 @@ mod tests {
         // gamemd has no matrix populated for slopes 17-20 (BSS-zero region
         // at DAT_00b454B8). We deliberately diverge from gamemd's invisible-
         // unit failure mode and clamp these to identity (flat) at the
-        // renderer. The consumer clamp in app_instances/units.rs is the
+        // renderer. The consumer clamp in app/presentation/instances/units.rs is the
         // primary boundary; this defensive arm catches any value that
         // bypasses it.
         for slope in 17..=20u8 {

@@ -12,7 +12,7 @@
 //!     the verified tick cadence and loop bound.
 //!
 //! Render-agnostic: depends only on [`DialogId`] + `std` (no sim/render/assets),
-//! honouring the `ui/` layering rule. The app layer (`app_shell_transition`) maps
+//! honouring the `ui/` layering rule. The app layer (`app::frontend::shell_transition`) maps
 //! the showing screen to a `DialogId`, drives the wave each frame, and plays the
 //! start cue (`GUIMoveInSound`, stock `MenuSlideIn`); the stock-empty end cue
 //! (`ShellButtonSlideSound`) stays silent.
