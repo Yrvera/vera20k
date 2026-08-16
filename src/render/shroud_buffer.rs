@@ -300,6 +300,13 @@ impl ShroudBuffer {
         }
     }
 
+    /// Invalidate the fog dirty-gate so the next frame rebuilds regardless of
+    /// generation (F10): the view-cache generation restarts from zero after a
+    /// load, so an equal counter value no longer proves an unchanged view.
+    pub fn mark_stale(&mut self) {
+        self.last_fog_gen = u64::MAX;
+    }
+
     /// Rebuild the shroud buffer if camera moved, fog changed, or screen resized.
     ///
     /// Blits SHROUD.SHP brightness pixels into the CPU buffer matching the
@@ -342,17 +349,18 @@ impl ShroudBuffer {
             self.last_fog_gen = u64::MAX;
         }
 
+
         // Skip if nothing changed (camera rounded to pixel + fog generation + zoom).
         let cam_x_r = cam_x.floor();
         let cam_y_r = cam_y.floor();
-        if fog.generation == self.last_fog_gen
+        if fog.view_generation() == self.last_fog_gen
             && cam_x_r == self.last_cam_x
             && cam_y_r == self.last_cam_y
             && (zoom - self.last_zoom).abs() < 1e-6
         {
             return;
         }
-        self.last_fog_gen = fog.generation;
+        self.last_fog_gen = fog.view_generation();
         self.last_cam_x = cam_x_r;
         self.last_cam_y = cam_y_r;
         self.last_zoom = zoom;

@@ -1630,6 +1630,22 @@ fn commit_prepared_load(
     state.combat_lights.clear();
     crate::app_sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
 
+    // F10: the fog view cache was discarded with the load (nonserialized) —
+    // rebuild it for the local owner BEFORE the first tactical render, and
+    // invalidate the render dirty-gates: the view generation restarts from
+    // zero, so an equal counter no longer proves an unchanged view.
+    if let Some(owner) = crate::app_commands::preferred_local_owner_name(state) {
+        if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+            sim.prepare_fog_view_for(&owner);
+        }
+    }
+    if let Some(shroud) = state.shroud_buffer.as_mut() {
+        shroud.mark_stale();
+    }
+    if let Some(minimap) = state.minimap.as_mut() {
+        minimap.mark_stale();
+    }
+
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.
     crate::app_sim_tick::refresh_entity_atlases(state);

@@ -488,10 +488,26 @@ pub struct FoggedObjectFootprintRecord {
     pub occupied_cells: Vec<(u16, u16)>,
 }
 
+/// Nonserialized merged-visibility cache for one owner (F10 `FogViewCache`).
+///
+/// Presentation-only: discarded by every snapshot load (serde skip) and
+/// rebuilt before the first tactical render; never part of save bytes or the
+/// state hash, so building it any number of times cannot affect determinism.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FogViewCache {
+    /// The owner the merged grid was built for, plus the merged grid. All
+    /// alliance-aware queries (is_cell_visible, edge masks) use this for
+    /// O(1) lookups instead of iterating all owners per cell.
+    pub(crate) merged: Option<(InternedId, OwnerVisibility)>,
+    /// Bumps on every rebuild. The fog mask renderer and minimap dirty-gate
+    /// on this runtime counter, never on the serialized wire shadow.
+    pub(crate) generation: u64,
+}
+
 /// Global fog/shroud state keyed by owner name.
 ///
-/// Stores per-owner visibility grids plus a lazily-computed merged grid for
-/// fast alliance-aware queries. The merged grid is built once via
+/// Stores per-owner visibility grids plus a lazily-computed merged view cache
+/// for fast alliance-aware queries. The cache is built via
 /// `build_merged_for()` and then used by `is_cell_visible`, edge masks, etc.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FogState {
@@ -499,16 +515,15 @@ pub struct FogState {
     pub height: u16,
     pub by_owner: BTreeMap<InternedId, OwnerVisibility>,
     pub alliances: HouseAllianceMap,
-    /// Pre-merged visibility grid for a specific owner + their allies.
-    /// Built once per tick via `build_merged_for()`. All alliance-aware
-    /// queries (is_cell_visible, edge masks) use this for O(1) lookups
-    /// instead of iterating all owners per cell.
+    /// The merged local-owner view (F10): nonserialized presentation cache.
     #[serde(skip)]
-    pub(crate) merged: Option<(InternedId, OwnerVisibility)>,
-    /// Monotonically increasing counter bumped whenever visibility changes
-    /// (after each `build_merged_for()` call). Used by the fog mask renderer
-    /// and minimap to skip redundant updates when fog hasn't changed.
-    pub generation: u64,
+    pub(crate) view_cache: FogViewCache,
+    /// Version-81 wire-compatibility shadow (F10): the exact serialized `u64`
+    /// slot the pre-split view generation occupied, still updated in lockstep
+    /// with the cache so round-trip bytes stay identical. Render consumes
+    /// `view_generation()`, never this field. Do not bump SNAPSHOT_VERSION
+    /// for this; retiring the slot waits for the next planned bump.
+    pub generation_wire_shadow: u64,
     /// Native CellClass::FoggedObjects vectors, keyed by viewer and cell. IDs
     /// may be shared across every cell in one building footprint.
     #[serde(default)]
@@ -777,7 +792,7 @@ impl FogState {
     /// avoid per-tick allocation.
     pub fn build_merged_for(&mut self, owner: InternedId, interner: &StringInterner) {
         // Reuse existing buffer if dimensions match; otherwise allocate.
-        let mut merged = match self.merged.take() {
+        let mut merged = match self.view_cache.merged.take() {
             Some((_, mut vis)) if vis.width == self.width && vis.height == self.height => {
                 vis.clear_all();
                 vis
@@ -791,21 +806,29 @@ impl FogState {
                 merged.merge_all_flags_from(state);
             }
         }
-        self.merged = Some((owner, merged));
-        self.generation = self.generation.wrapping_add(1);
+        self.view_cache.merged = Some((owner, merged));
+        self.view_cache.generation = self.view_cache.generation.wrapping_add(1);
+        // Kept in lockstep purely for v81 byte compatibility (see field doc).
+        self.generation_wire_shadow = self.generation_wire_shadow.wrapping_add(1);
+    }
+
+    /// The runtime view-cache generation render dirty-gates on (F10). Resets
+    /// with the cache on every load; never the serialized wire shadow.
+    pub fn view_generation(&self) -> u64 {
+        self.view_cache.generation
     }
 
     /// Return a reference to the raw merged visibility cells (if built).
     /// Used by the snapshot system to diff visibility transitions cheaply
     /// without cloning the entire FogState.
     pub fn merged_cells(&self) -> Option<&[u8]> {
-        self.merged.as_ref().map(|(_, vis)| vis.cells_raw())
+        self.view_cache.merged.as_ref().map(|(_, vis)| vis.cells_raw())
     }
 
     /// Get the merged visibility grid, falling back to iterating all owners
     /// if no merged grid is available for this owner.
     fn merged_vis(&self, owner: InternedId) -> Option<&OwnerVisibility> {
-        if let Some((cached_owner, ref vis)) = self.merged {
+        if let Some((cached_owner, ref vis)) = self.view_cache.merged {
             if cached_owner == owner {
                 return Some(vis);
             }
@@ -1134,7 +1157,7 @@ pub fn recompute_owner_visibility_in_place(
     }
 
     fog.alliances = alliances.clone();
-    fog.merged = None;
+    fog.view_cache.merged = None;
 
     // Batch entities by owner to avoid repeated BTreeMap lookups and String allocations.
     // Each unique owner's grid is looked up once, then all their entities reveal into it.
