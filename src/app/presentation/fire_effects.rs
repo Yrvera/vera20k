@@ -82,8 +82,9 @@ pub(crate) fn select_weapon_muzzle_anim<'a>(anims: &'a [String], facing: u8) -> 
     match anims.len() {
         0 => None,
         8 => {
-            let idx = ((((facing as u16) << 8) >> 12) + 1) >> 1;
-            let idx = ((idx & 7) + 1) & 7;
+            let idx = crate::util::direction_tables::muzzle_anim_index_8way(
+                crate::util::direction_tables::facing8_to_16(facing),
+            );
             anims.get(idx as usize).map(String::as_str)
         }
         _ => anims.first().map(String::as_str),

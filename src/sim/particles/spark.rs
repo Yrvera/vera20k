@@ -91,8 +91,10 @@ pub enum SparkKernelError {
     NativeX87(#[from] NativeX87Error),
 }
 
+/// Signed toward-zero lepton→cell — `v / 256` is bit-identical to the
+/// canonical biased shift; delegated so the conversion exists once.
 pub fn lepton_to_cell_trunc(value: i32) -> i32 {
-    value / 256
+    crate::util::direction_tables::lepton_to_cell(value)
 }
 
 /// Convert the signed `[General] Gravity=` storage to the f32 bits consumed by

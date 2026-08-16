@@ -202,7 +202,7 @@ fn edge_scroll_octant(x: i32, y: i32, view_w: i32, view_h: i32) -> usize {
     // 16-bit direction word to direction byte, then byte to octant. Both are the
     // native "add half a step, then shift" rounding, and both wrap to north.
     let dir8 = (((dir16 >> 7) + 1) >> 1) as u8;
-    ((usize::from(dir8 >> 4) + 1) >> 1) & 7
+    usize::from(crate::util::direction_tables::dir_from_facing8(dir8))
 }
 
 fn scroll_dir_from_octant(octant: usize) -> ScrollDir {

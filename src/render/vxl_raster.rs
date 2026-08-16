@@ -55,7 +55,7 @@ pub fn voxel_facing_step(facing: u8) -> u8 {
 /// facing is still in hand, since it rounds off the true value rather than off an
 /// already-truncated byte.
 pub fn voxel_facing_step_u16(facing16: u16) -> u8 {
-    ((((u32::from(facing16) >> 10) + 1) >> 1) & (VOXEL_FACING_STEPS - 1)) as u8
+    crate::util::direction_tables::step32_from_facing16(facing16)
 }
 
 /// The body-rotation angle the original installs for a given facing step.

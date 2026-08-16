@@ -200,10 +200,7 @@ pub fn project_spark_point(
     world: IVec3,
     frame: TacticalCompatFrame<'_>,
 ) -> Result<IVec2, TacticalCompatError> {
-    let planar_x =
-        projection_half_term(world.x, 60).wrapping_add(projection_half_term(world.y, -60)) / 256;
-    let planar_y =
-        projection_half_term(world.x, 30).wrapping_add(projection_half_term(world.y, 30)) / 256;
+    let (planar_x, planar_y) = project_native_planar(world.x, world.y);
     let z_adjustment = adjust_for_z(world.z, frame.adjust_for_z_multiplier)?;
     Ok(IVec2::new(
         planar_x.wrapping_sub(frame.tactical_offset_x),
@@ -212,6 +209,20 @@ pub fn project_spark_point(
             .wrapping_sub(frame.tactical_offset_y)
             .wrapping_add(frame.radar_viewport_offset_y),
     ))
+}
+
+/// Native wrap-preserving planar projection: each 60/30 half-term is formed
+/// in wrapping i32 before the truncating /256. The single implementation —
+/// `combat_light` delegates here, and the wrap contract is pinned by this
+/// module's `projection_preserves_native_wrap_before_each_half_term` test.
+/// (The i64 no-wrap form for ordinary in-range coordinates is
+/// `util::lepton::project_absolute_lepton_xy`.)
+pub(crate) fn project_native_planar(world_x: i32, world_y: i32) -> (i32, i32) {
+    let planar_x =
+        projection_half_term(world_x, 60).wrapping_add(projection_half_term(world_y, -60)) / 256;
+    let planar_y =
+        projection_half_term(world_x, 30).wrapping_add(projection_half_term(world_y, 30)) / 256;
+    (planar_x, planar_y)
 }
 
 fn projection_half_term(value: i32, factor: i32) -> i32 {

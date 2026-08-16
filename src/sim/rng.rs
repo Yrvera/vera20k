@@ -76,12 +76,9 @@ impl SimRng {
     /// This is for tests and debug comparisons. Use `hash_state` when feeding
     /// the authoritative world hash so every field contributes directly.
     pub fn state(&self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = crate::util::fnv::FNV1A64_OFFSET_BASIS;
         let mut mix = |value: u64| {
-            for byte in value.to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-            }
+            hash = crate::util::fnv::fnv1a64_fold_bytes(hash, &value.to_le_bytes());
         };
         mix(u64::from(self.disabled));
         mix(self.index_a as u32 as u64);

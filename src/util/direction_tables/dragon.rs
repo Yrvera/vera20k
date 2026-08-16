@@ -20,7 +20,7 @@ pub const DRAGON_FRAME_TABLE: [i32; 32] = {
 /// DRAGON 32-way frame index from a BAM (binary-angle) value:
 /// `index = (((bam) >> 10) + 1) >> 1 & 0x1F` (study §5).
 pub fn dragon_frame_index(bam: u16) -> usize {
-    ((((bam >> 10) + 1) >> 1) & 0x1F) as usize
+    super::quantize::step32_from_facing16(bam) as usize
 }
 
 #[cfg(test)]

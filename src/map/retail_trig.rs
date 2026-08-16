@@ -148,12 +148,9 @@ impl TrigTable {
     /// FNV-1a over the raw little-endian bytes, for comparison against
     /// [`RETAIL_FNV1A64`].
     pub fn fnv1a64(&self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = crate::util::fnv::FNV1A64_OFFSET_BASIS;
         for entry in &self.entries {
-            for byte in entry.to_le_bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
+            hash = crate::util::fnv::fnv1a64_fold_bytes(hash, &entry.to_le_bytes());
         }
         hash
     }

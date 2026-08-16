@@ -29,4 +29,5 @@ pub use lepton::{LEPTON_DELTAS, lepton_delta, lepton_to_cell};
 pub use native_angle::{facing8_from_delta, facing16_from_delta};
 pub use quantize::{
     dir_from_facing8, dir_from_facing16, facing8_to_16, muzzle_anim_index_8way, opposite_dir,
+    step32_from_facing16,
 };

@@ -21,6 +21,14 @@ pub fn facing8_to_16(f: u8) -> u16 {
     (f as u16) << 8
 }
 
+/// gamemd 16-bit facing → 32-way step (5-bit bucket):
+/// `(((f>>10)+1)>>1) & 0x1F`. The single implementation of the 32-way
+/// quantizer — DRAGON frames, FLH fire origins, and the voxel rasteriser all
+/// rotate off this one form.
+pub fn step32_from_facing16(f16: u16) -> u8 {
+    ((((f16 >> 10) + 1) >> 1) & 0x1F) as u8
+}
+
 /// Opposite direction: `(dir-4)&7` (== `(dir+4)&7`).
 pub fn opposite_dir(dir: u8) -> u8 {
     dir.wrapping_sub(4) & 7

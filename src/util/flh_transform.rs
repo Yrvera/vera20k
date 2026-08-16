@@ -87,7 +87,8 @@ pub fn flh_to_screen_offset_32way(
         return (0.0, 0.0);
     }
     let facing_16: u16 = (facing as u16) << 8;
-    let bucket: i16 = ((((facing_16 >> 10) + 1) >> 1) & 0x1f) as i16 - 8;
+    let bucket: i16 =
+        i16::from(crate::util::direction_tables::step32_from_facing16(facing_16)) - 8;
     let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
     flh_to_screen_offset(forward, lateral, height, quantized_facing)
 }
@@ -99,7 +100,8 @@ pub fn flh_to_world_offset_32way(forward: i32, lateral: i32, facing: u8) -> (f32
         return (0.0, 0.0);
     }
     let facing_16: u16 = (facing as u16) << 8;
-    let bucket: i16 = ((((facing_16 >> 10) + 1) >> 1) & 0x1f) as i16 - 8;
+    let bucket: i16 =
+        i16::from(crate::util::direction_tables::step32_from_facing16(facing_16)) - 8;
     let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
     flh_to_world_offset(forward, lateral, quantized_facing)
 }

@@ -72,9 +72,10 @@ fn project_cell_centre(cell_x: i32, cell_y: i32) -> (i32, i32) {
 }
 
 /// The fixed-point `>> 8` the projection uses, biased so negative values
-/// truncate toward zero.
+/// truncate toward zero — the same signed shift as lepton→cell, delegated so
+/// the bias formula exists once.
 const fn shift_with_sign_bias(value: i32) -> i32 {
-    (value + ((value >> 31) & 0xFF)) >> 8
+    crate::util::direction_tables::lepton_to_cell(value)
 }
 
 /// Preview-pixel column and row for a projected cell, before the surface origin

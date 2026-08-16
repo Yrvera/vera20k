@@ -42,8 +42,8 @@ use std::path::{Path, PathBuf};
 /// 128. Both engines use this, which is what makes the X/Y fold comparable at all.
 const SUBCELL_UNITS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 
-const FNV1A64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
-const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01B3;
+const FNV1A64_OFFSET_BASIS: u64 = crate::util::fnv::FNV1A64_OFFSET_BASIS;
+const FNV1A64_PRIME: u64 = crate::util::fnv::FNV1A64_PRIME;
 
 /// Fold one `i32` into a running FNV-1a hash, over its little-endian bytes.
 ///

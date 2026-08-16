@@ -361,20 +361,14 @@ impl CombatLightRenderer {
 /// scaling. VERA's common world-row bias remains after that native projection
 /// so this direct-surface primitive aligns with the rest of the tactical scene.
 fn project_combat_light_anchor(coord: crate::sim::projectile::ProjectileCoord) -> [i32; 2] {
-    let planar_x =
-        projection_half_term(coord.x, 60).wrapping_add(projection_half_term(coord.y, -60)) / 256;
-    let planar_y =
-        projection_half_term(coord.x, 30).wrapping_add(projection_half_term(coord.y, 30)) / 256;
+    let (planar_x, planar_y) =
+        crate::render::tactical_compat::project_native_planar(coord.x, coord.y);
     [
         planar_x,
         planar_y
             .wrapping_sub(crate::util::flh_transform::adjust_for_z_leptons(coord.z))
             .wrapping_add(15),
     ]
-}
-
-fn projection_half_term(value: i32, factor: i32) -> i32 {
-    value.wrapping_mul(factor) / 2
 }
 
 fn allocate_instance_buffer(gpu: &GpuContext, capacity: usize) -> wgpu::Buffer {

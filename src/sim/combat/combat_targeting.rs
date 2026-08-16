@@ -485,7 +485,7 @@ pub(crate) fn calculate_ai_threat_score(
     );
     let distance_root = X87Chop53::load_f32(sqrt_approx_f32(distance_sq).ok()?).ok()?;
     let distance_leptons = i32::try_from(X87Chop53::ftol_i64(distance_root).ok()?).ok()?;
-    let distance_cells = distance_leptons.wrapping_add((distance_leptons >> 31) & 0xff) >> 8;
+    let distance_cells = crate::util::direction_tables::lepton_to_cell(distance_leptons);
     let range_cells = selected_scorer_weapon
         .as_ref()
         .map_or(scorer_type.sight, |selected| {
