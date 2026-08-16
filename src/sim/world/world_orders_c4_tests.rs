@@ -63,14 +63,14 @@ fn build_sim_with_c4_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) 
     let mut rules = c4_test_rules();
     // Required: tick_c4_plants calls rules.c4_warhead_id() which panics
     // unless this resolver has run.
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     (sim, rules, BTreeMap::new())
 }
 
 fn build_sim_with_c4_damage_state_rules() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let mut rules = c4_damage_state_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     (sim, rules, BTreeMap::new())
 }
 

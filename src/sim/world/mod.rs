@@ -588,6 +588,11 @@ pub struct Simulation {
     /// `object_type` uses the name-path fallback). NOT serialized, NOT hashed.
     #[serde(skip)]
     pub type_handles: crate::sim::type_handle_table::TypeHandleTable,
+    /// Pre-resolved `[CombatDamage]` warhead handles (F04). Built by
+    /// `resolve_type_handles` beside the type table; rebuilt from rules on
+    /// load. NOT serialized, NOT hashed. `None` until resolved.
+    #[serde(skip)]
+    pub rule_handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
     /// Session aggregate — scenario identity, seed, authoritative map
@@ -1302,6 +1307,7 @@ impl Simulation {
         let current_tick = u64::from(self.session.binary_frame);
         let binary_frame = self.session.binary_frame;
         let scenario_no_damage = self.session.no_damage;
+        let rule_handles = self.rule_handles_or_resolve(rules);
 
         let combat_result = {
             let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
@@ -1310,6 +1316,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 Some(&fog),
                 &power_states,
                 &mut houses,
@@ -1374,6 +1381,7 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         detonations: &[crate::sim::projectile::ProjectileDetonation],
     ) {
+        let rule_handles = self.rule_handles_or_resolve(rules);
         if detonations.is_empty() {
             return;
         }
@@ -1406,6 +1414,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 &mut houses,
                 &house_order,
                 &house_alliances,
@@ -1564,6 +1573,7 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         receivers: &[crate::sim::combat::combat_aoe::AreaDamageReceiver],
     ) {
+        let rule_handles = self.rule_handles_or_resolve(rules);
         let mut entities = std::mem::take(&mut self.substrate.entities);
         let mut occupancy = std::mem::take(&mut self.substrate.occupancy);
         let mut interner = std::mem::take(&mut self.interner);
@@ -1594,6 +1604,7 @@ impl Simulation {
                 &mut occupancy,
                 rules,
                 &mut interner,
+                rule_handles,
                 &mut houses,
                 &house_order,
                 &house_alliances,
@@ -1867,12 +1878,67 @@ impl Simulation {
         Self::with_seed(DEFAULT_SIM_SEED)
     }
 
-    /// Build the interned-id -> type-handle table. Call once at sim init AFTER
-    /// `RuleSet::intern_all_ids` (mirrors `resolve_bridge_warheads`), and again
-    /// after load once the RuleSet is available. Idempotent.
+    /// Build the interned-id -> type-handle table and the pre-resolved rule
+    /// handles beside it. Call once at sim init AFTER `intern_rule_type_ids`,
+    /// and again after load once the RuleSet is available. Idempotent: the
+    /// warhead names are already interned on every re-resolution path, so
+    /// serialized interner state cannot grow or reorder.
     pub fn resolve_type_handles(&mut self, rules: &RuleSet) {
         self.type_handles =
             crate::sim::type_handle_table::TypeHandleTable::build(rules, &self.interner);
+        self.rule_handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+            rules,
+            &mut self.interner,
+        ));
+    }
+
+    /// Intern every rules type id (infantry, vehicle, aircraft, building) so
+    /// `interner.get(type_id)` succeeds for any type this ruleset references.
+    /// Moved from `RuleSet::intern_all_ids` (F04): interning is sim-side work
+    /// over rules-owned canonical names.
+    pub fn intern_rule_type_ids(&mut self, rules: &RuleSet) {
+        for id in rules
+            .infantry_ids
+            .iter()
+            .chain(&rules.vehicle_ids)
+            .chain(&rules.aircraft_ids)
+            .chain(&rules.building_ids)
+        {
+            self.interner.intern(id);
+        }
+    }
+
+    /// Pre-resolved rule handles for combat comparisons.
+    ///
+    /// # Panics
+    /// Panics if `resolve_type_handles` has not run (init and load both call it
+    /// before any combat tick).
+    pub fn rule_handles(&self) -> crate::sim::type_handle_table::ResolvedRuleHandles {
+        self.rule_handles.expect(
+            "Simulation::resolve_type_handles must run at sim init \
+             before combat reads warhead handles",
+        )
+    }
+
+    /// Rule handles for this tick pass. Production sims resolve at init/load
+    /// via `resolve_type_handles`, so the lazy arm never fires there; a
+    /// fixture sim that skipped init pins the identical ids here on first use
+    /// (re-interning existing names is id-stable, so this is deterministic).
+    pub fn rule_handles_or_resolve(
+        &mut self,
+        rules: &RuleSet,
+    ) -> crate::sim::type_handle_table::ResolvedRuleHandles {
+        match self.rule_handles {
+            Some(handles) => handles,
+            None => {
+                let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+                    rules,
+                    &mut self.interner,
+                );
+                self.rule_handles = Some(handles);
+                handles
+            }
+        }
     }
 
     /// Resolve an entity's type to its `ObjectType` in one precomputed hop
@@ -1918,6 +1984,7 @@ impl Simulation {
         let mut out = Self {
             interner: crate::sim::intern::StringInterner::new(),
             type_handles: crate::sim::type_handle_table::TypeHandleTable::default(),
+            rule_handles: None,
             production: ProductionState::default(),
             session,
             scenario_rng: SimRng::new(seed),

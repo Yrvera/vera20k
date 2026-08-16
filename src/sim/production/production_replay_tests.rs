@@ -52,7 +52,7 @@ const START_CREDITS: i32 = 50_000;
 fn scenario() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
-    rules.intern_all_ids(&mut sim.interner);
+    sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
 
     let owners = [("Americans", 0u8, 10u16), ("Alliance", 1u8, 30u16)];
@@ -460,7 +460,7 @@ fn economy_conservation_through_cancel_refund() {
 fn revalidate_abandons_build_with_no_factory_and_drops_queued() {
     let mut sim = Simulation::new();
     let rules = build_catalog_rules();
-    rules.intern_all_ids(&mut sim.interner);
+    sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
     let am = sim.interner.intern("Americans");
     sim.houses

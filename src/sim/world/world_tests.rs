@@ -3496,7 +3496,7 @@ fn test_bridge_damage_rebuilds_path_grid() {
     }
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3537,7 +3537,7 @@ fn test_bridge_collapse_signals_pathgrid_refresh() {
     sim.bridge_state = Some(bridge_state);
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     let state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
@@ -3622,7 +3622,7 @@ fn test_bridge_collapse_clears_transition_flag() {
 
     // Damage event collapses the entire EW strip.
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3676,7 +3676,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_when_ground_exists() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3734,7 +3734,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_water_below() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3797,7 +3797,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_overlay_blocked() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3852,7 +3852,7 @@ fn test_destroyed_bridge_snaps_unit_to_ground_over_terrain_object_blocked() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3910,7 +3910,7 @@ fn test_destroyed_bridge_fallout_matches_rebuilt_ground_walkability() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _state_changed = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -3988,7 +3988,7 @@ fn test_bridge_collapse_kills_ground_unit_under_destroyed_cell() {
     );
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -4025,7 +4025,7 @@ fn test_bridge_walker_collapses_full_3_cell_strip_on_single_hit() {
     sim.bridge_state = Some(bridge_state);
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -4206,7 +4206,7 @@ fn test_bridge_orchestrator_state_machine_path_collapses_anchor_and_deactivates_
         .collect();
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -4254,7 +4254,7 @@ fn test_bridge_collapse_is_deterministic_under_replay() {
         sim.bridge_state = Some(bridge_state);
 
         let mut rules = combat_test_rules();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
             &mut sim,
             &rules,
@@ -4294,7 +4294,7 @@ fn replay_determinism_with_bridge_collapse_and_rim_refresh() {
         sim.bridge_state = Some(bridge_state);
 
         let mut rules = combat_test_rules();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
             &mut sim,
             &rules,
@@ -4332,7 +4332,7 @@ fn test_bridge_snapshot_roundtrip_preserves_state_after_collapse() {
     sim.bridge_state = Some(bridge_state);
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(
         &mut sim,
         &rules,
@@ -4413,7 +4413,7 @@ fn test_bridge_dispatcher_consumes_one_path_gate_draw_per_non_ion_event() {
     let _gate = predicted.next_range_u32_inclusive(1, bridge_strength as u32);
 
     let mut rules = combat_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     // High damage so the gate roll passes deterministically (any roll < 9999
     // succeeds when damage > roll).
     let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events(

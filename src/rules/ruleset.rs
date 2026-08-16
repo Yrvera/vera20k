@@ -2263,14 +2263,6 @@ pub struct RuleSet {
     /// this rules-owned resource directly; presentation cannot replace timing
     /// on an individual frame.
     animation_sequences: BTreeMap<String, crate::rules::animation_sequence::SequenceSet>,
-    /// Pre-resolved IonCannonWarhead InternedId. Set at sim init via
-    /// `resolve_bridge_warheads`; combat reads via `ion_cannon_warhead_id()`.
-    /// `None` until resolved.
-    ion_cannon_warhead_id: Option<crate::sim::intern::InternedId>,
-    /// Pre-resolved C4Warhead InternedId. Same lifecycle as above.
-    c4_warhead_id: Option<crate::sim::intern::InternedId>,
-    /// Pre-resolved CrushWarhead InternedId. Same lifecycle as above.
-    crush_warhead_id: Option<crate::sim::intern::InternedId>,
     /// Per-mission behaviour table parsed from the `[<MissionName>]` sections
     /// (Rate/AARate + NoThreat/Zombie/Recruitable/Paralyzed/Retaliate/Scatter).
     pub mission_control: MissionControl,
@@ -2749,9 +2741,6 @@ impl RuleSet {
             terrain_spawner_assets:
                 crate::rules::terrain_asset_catalog::TerrainSpawnerAssetCatalog::default(),
             animation_sequences: BTreeMap::new(),
-            ion_cannon_warhead_id: None,
-            c4_warhead_id: None,
-            crush_warhead_id: None,
             mission_control,
             // Single-source callers hash their one parsed INI. Production
             // ordered-stack callers replace this with the boundary-sensitive
@@ -2763,62 +2752,6 @@ impl RuleSet {
     }
 
     /// Look up a game object by ID.
-    /// Intern all known type IDs (infantry, vehicle, aircraft, building) into
-    /// the given interner. Ensures that `interner.get(type_id)` succeeds for
-    /// any type referenced by this ruleset.
-    pub fn intern_all_ids(&self, interner: &mut crate::sim::intern::StringInterner) {
-        for id in &self.infantry_ids {
-            interner.intern(id);
-        }
-        for id in &self.vehicle_ids {
-            interner.intern(id);
-        }
-        for id in &self.aircraft_ids {
-            interner.intern(id);
-        }
-        for id in &self.building_ids {
-            interner.intern(id);
-        }
-    }
-
-    /// Resolve `[CombatDamage] IonCannonWarhead=`, `C4Warhead=`, and
-    /// `CrushWarhead=` against the
-    /// simulation interner. Call once at sim init after the warhead registry
-    /// is populated and before any combat tick.
-    pub fn resolve_bridge_warheads(&mut self, interner: &mut crate::sim::intern::StringInterner) {
-        self.ion_cannon_warhead_id = Some(interner.intern(&self.bridge_warheads.ion_cannon_name));
-        self.c4_warhead_id = Some(interner.intern(&self.bridge_warheads.c4_name));
-        self.crush_warhead_id = Some(interner.intern(&self.bridge_warheads.crush_name));
-    }
-
-    /// Pre-resolved IonCannonWarhead InternedId.
-    ///
-    /// # Panics
-    /// Panics if `resolve_bridge_warheads` has not been called.
-    pub fn ion_cannon_warhead_id(&self) -> crate::sim::intern::InternedId {
-        self.ion_cannon_warhead_id.expect(
-            "RuleSet::resolve_bridge_warheads must be called at sim init \
-             before combat reads warhead IDs",
-        )
-    }
-
-    /// Pre-resolved C4Warhead InternedId.
-    ///
-    /// # Panics
-    /// Panics if `resolve_bridge_warheads` has not been called.
-    pub fn c4_warhead_id(&self) -> crate::sim::intern::InternedId {
-        self.c4_warhead_id.expect(
-            "RuleSet::resolve_bridge_warheads must be called at sim init \
-             before bridge cascade fires",
-        )
-    }
-
-    /// Whether an interned warhead is the resolved `[CombatDamage]
-    /// CrushWarhead=`. An unresolved test/headless ruleset cannot classify it.
-    pub(crate) fn is_crush_warhead_id(&self, warhead_id: crate::sim::intern::InternedId) -> bool {
-        self.crush_warhead_id == Some(warhead_id)
-    }
-
     /// Case-insensitive type-name lookup matching the original engine's
     /// find-or-allocate (stricmp-style) name resolution.
     ///
@@ -5335,47 +5268,37 @@ ZAdjust=-10
     }
 
     #[test]
-    fn resolve_bridge_warheads_populates_ids() {
+    fn resolved_rule_handles_use_bridge_warhead_defaults() {
         use crate::sim::intern::StringInterner;
+        use crate::sim::type_handle_table::ResolvedRuleHandles;
         let ini: IniFile = IniFile::from_str(&make_test_rules());
-        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
+        let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
         let mut interner = StringInterner::default();
-        rules.resolve_bridge_warheads(&mut interner);
-        let ion_id = rules.ion_cannon_warhead_id();
-        let c4_id = rules.c4_warhead_id();
-        let crush_id = rules.crush_warhead_id.expect("resolved CrushWarhead");
+        let handles = ResolvedRuleHandles::resolve(&rules, &mut interner);
         // Defaults match retail rulesmd.ini ("IonCannonWH" + "Super") because
         // the test rules.ini has no `[CombatDamage]` overrides.
-        assert_eq!(interner.resolve(ion_id), "IonCannonWH");
-        assert_eq!(interner.resolve(c4_id), "Super");
-        assert_eq!(interner.resolve(crush_id), "Crush");
+        assert_eq!(interner.resolve(handles.ion_cannon), "IonCannonWH");
+        assert_eq!(interner.resolve(handles.c4), "Super");
+        assert_eq!(interner.resolve(handles.crush), "Crush");
+        assert!(handles.is_crush(handles.crush));
+        assert!(!handles.is_crush(handles.c4));
     }
 
     #[test]
-    fn resolve_bridge_warheads_honors_combat_damage_overrides() {
+    fn resolved_rule_handles_honor_combat_damage_overrides() {
         use crate::sim::intern::StringInterner;
+        use crate::sim::type_handle_table::ResolvedRuleHandles;
         let rules_text = format!(
             "{}\n[CombatDamage]\nIonCannonWarhead=CustomIon\nC4Warhead=CustomC4\nCrushWarhead=CustomCrush\n",
             make_test_rules()
         );
         let ini: IniFile = IniFile::from_str(&rules_text);
-        let mut rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
-        let mut interner = StringInterner::default();
-        rules.resolve_bridge_warheads(&mut interner);
-        assert_eq!(interner.resolve(rules.ion_cannon_warhead_id()), "CustomIon");
-        assert_eq!(interner.resolve(rules.c4_warhead_id()), "CustomC4");
-        assert_eq!(
-            interner.resolve(rules.crush_warhead_id.expect("resolved CrushWarhead")),
-            "CustomCrush"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "resolve_bridge_warheads")]
-    fn ion_cannon_warhead_id_panics_before_resolve() {
-        let ini: IniFile = IniFile::from_str(&make_test_rules());
         let rules: RuleSet = RuleSet::from_ini(&ini).expect("rules parse");
-        let _ = rules.ion_cannon_warhead_id();
+        let mut interner = StringInterner::default();
+        let handles = ResolvedRuleHandles::resolve(&rules, &mut interner);
+        assert_eq!(interner.resolve(handles.ion_cannon), "CustomIon");
+        assert_eq!(interner.resolve(handles.c4), "CustomC4");
+        assert_eq!(interner.resolve(handles.crush), "CustomCrush");
     }
 
     #[test]
@@ -5538,7 +5461,17 @@ ZAdjust=-10
         let ini = IniFile::from_str(&make_test_rules());
         let rules = RuleSet::from_ini(&ini).expect("fixture parses");
         let mut interner = crate::sim::intern::StringInterner::new();
-        rules.intern_all_ids(&mut interner);
+        // Mirror Simulation::intern_rule_type_ids (the production interning
+        // pass) so the table sees every registry id.
+        for id in rules
+            .infantry_ids
+            .iter()
+            .chain(&rules.vehicle_ids)
+            .chain(&rules.aircraft_ids)
+            .chain(&rules.building_ids)
+        {
+            interner.intern(id);
+        }
         let table = crate::sim::type_handle_table::TypeHandleTable::build(&rules, &interner);
 
         // Completeness: every registry id in the fixture (E1, E2, MTNK, GAPOWR)

@@ -110,7 +110,7 @@ fn bridge_repair_test_rules() -> RuleSet {
 fn build_sim() -> (Simulation, RuleSet, BTreeMap<(u16, u16), u8>) {
     let mut sim = Simulation::new();
     let mut rules = bridge_repair_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
     sim.resolved_terrain = Some(dummy_resolved_terrain());
     (sim, rules, BTreeMap::new())
 }
@@ -1733,7 +1733,7 @@ fn ramp_fire_collapses_high_bridgehead_on_ion_retry() {
     sim.bridge_state = Some(bs);
 
     let mut rules = bridge_repair_test_rules();
-    rules.resolve_bridge_warheads(&mut sim.interner);
+    sim.resolve_type_handles(&rules);
 
     let pre_bridgehead = *sim.bridge_state.as_ref().unwrap().cell(2, 4).unwrap();
 

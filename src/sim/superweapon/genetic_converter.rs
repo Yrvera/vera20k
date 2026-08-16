@@ -83,6 +83,7 @@ fn apply_mutate_explosion(
     owner: InternedId,
     overlay_registry: Option<&OverlayTypeRegistry>,
 ) -> (Vec<(u16, u16)>, usize) {
+    let handles = sim.rule_handles_or_resolve(rules);
     let warhead_id = rules.general.mutate_explosion_warhead.clone();
     let Some(warhead) = rules.warhead(&warhead_id) else {
         log::warn!("MutateExplosionWarhead '{}' not found in rules", warhead_id);
@@ -115,6 +116,7 @@ fn apply_mutate_explosion(
         warhead,
         rules,
         &sim.interner,
+        handles,
         (
             crate::sim::combat::RAD_NO_ATTACKER,
             Some(owner),

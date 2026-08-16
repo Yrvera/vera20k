@@ -624,8 +624,8 @@ impl Simulation {
                 }
             }
         }
-        // Early-out skips the rules.c4_warhead_id() lookup, which panics if
-        // resolve_bridge_warheads hasn't been called. Pre-feature tests don't
+        // Early-out returns before rule-handle resolution so pre-feature
+        // fixtures never intern warhead names they do not exercise. They do not
         // call it; guarding here keeps them passing.
         if det_keys.is_empty() {
             return C4TickOutcome {
@@ -634,7 +634,7 @@ impl Simulation {
             };
         }
 
-        let c4_warhead_id = rules.c4_warhead_id();
+        let c4_warhead_id = self.rule_handles_or_resolve(rules).c4;
         for building_id in det_keys {
             let pending = self
                 .substrate
@@ -750,7 +750,7 @@ impl Simulation {
                 .source_entity_id
                 .unwrap_or(crate::sim::combat::RAD_NO_ATTACKER),
             None,
-            rules.c4_warhead_id(),
+            self.rule_handles_or_resolve(rules).c4,
             crate::sim::combat::ReceiverCallFlags {
                 ignore_defenses: true,
                 arg6: false,

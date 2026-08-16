@@ -1000,11 +1000,11 @@ mod tests {
         // 1. Load the narrow stock-shaped contract consumed by this cursor path.
         let mut rules = cursor_contract_rules();
 
-        // 2. Build a Simulation. resolve_bridge_warheads is required by the
+        // 2. Build a Simulation. resolve_type_handles is required by the
         //    c4 tick path even though we don't tick here — keeps the sim in a
         //    consistent state with what the runtime would see.
         let mut sim = Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
         // 3. Spawn a SEAL and an enemy Power Plant via the same path the
@@ -1065,7 +1065,7 @@ mod tests {
         let mut rules = cursor_contract_rules();
 
         let mut sim = Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
         let miner_id = sim
@@ -1180,7 +1180,7 @@ mod tests {
     fn sim_with_tank() -> (Simulation, RuleSet, u64) {
         let mut rules = cell_action_rules();
         let mut sim = Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
         let tank = sim
             .spawn_object("MTNK", "Americans", 2, 2, 0, &rules, &height_map)
@@ -1262,7 +1262,7 @@ mod tests {
     fn secondary_only_unit_outranks_a_closer_unarmed_unit() {
         let mut rules = cell_action_rules();
         let mut sim = Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
         let truck = sim
@@ -1292,7 +1292,7 @@ mod tests {
     fn tie_break_uses_lepton_distance_to_the_cell_centre() {
         let mut rules = cell_action_rules();
         let mut sim = Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
 
         let near = sim

@@ -40,8 +40,6 @@ const LAYER_RULES: &[(&str, &[&str])] = &[
 const FROZEN_EXCEPTIONS: &[(&str, &str)] = &[
     // F05: pure direction tables move to util::direction_tables.
     ("util/fixed_math.rs", "sim"),
-    // F04: interned sim handles leave RuleSet (ResolvedRuleHandles).
-    ("rules/ruleset.rs", "sim"),
     // F05: bridge facts / fixed cell indexing / passability move downward.
     ("map/resolved_terrain.rs", "sim"),
     ("map/theater.rs", "sim"),

@@ -101,7 +101,7 @@ fn outbound_contract_oracle() -> OutboundContractOracle {
 
 fn production_sim(seed: u64, oracle: &OutboundContractOracle) -> Simulation {
     let mut sim = Simulation::with_seed(seed);
-    oracle.rules.intern_all_ids(&mut sim.interner);
+    sim.intern_rule_type_ids(&oracle.rules);
     sim.resolve_type_handles(&oracle.rules);
     sim
 }

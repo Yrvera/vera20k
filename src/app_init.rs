@@ -1785,16 +1785,12 @@ pub(crate) fn load_map_from_initial(
     // Without this, sidebar cameo lookups fail because unspawned types get
     // InternedId(0) and resolve to the wrong string.
     if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_ref()) {
-        ruleset.intern_all_ids(&mut sim.interner);
-        // One-hop type resolution: build the handle table now that every type id
-        // is interned. Mirrors the bridge-warhead pre-resolve below.
+        sim.intern_rule_type_ids(ruleset);
+        // One-hop type resolution: build the handle table now that every type
+        // id is interned. This also pre-resolves the `[CombatDamage]` bridge
+        // warhead handles combat compares during the bridge-damage path;
+        // resolution must happen before any combat tick.
         sim.resolve_type_handles(ruleset);
-    }
-    // Pre-resolve `[CombatDamage] IonCannonWarhead=` and `C4Warhead=` against
-    // the simulation interner. Combat reads these via accessors during the
-    // bridge-damage path; resolution must happen before any combat tick.
-    if let (Some(sim), Some(ruleset)) = (&mut simulation, rules.as_mut()) {
-        ruleset.resolve_bridge_warheads(&mut sim.interner);
     }
 
     // SpawnPick phase is disabled — MCV always spawns directly at the chosen position.

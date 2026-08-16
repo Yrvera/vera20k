@@ -304,7 +304,7 @@ pub(crate) fn apply_aoe_damage<O: Into<AoEDamageOrigin>>(
     base_damage: i32,
     warhead: &WarheadType,
     rules: &RuleSet,
-    interner: &StringInterner,
+    interner: &mut StringInterner,
     origin: O,
     layer_context: AoELayerContext<'_>,
 ) -> AoEDamageResult {
@@ -322,6 +322,8 @@ pub(crate) fn apply_aoe_damage<O: Into<AoEDamageOrigin>>(
     )
 }
 
+/// Test-only wrapper: resolves the rule handles itself (mirroring sim init)
+/// so fixture tests need no explicit `ResolvedRuleHandles` plumbing.
 #[cfg(test)]
 pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
     entities: &mut EntityStore,
@@ -330,11 +332,12 @@ pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
     base_damage: i32,
     warhead: &WarheadType,
     rules: &RuleSet,
-    interner: &StringInterner,
+    interner: &mut StringInterner,
     origin: O,
     layer_context: AoELayerContext<'_>,
     terrain_objects: Option<TerrainCollectionView<'_>>,
 ) -> AoEDamageResult {
+    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner);
     apply_aoe_damage_with_terrain_and_scenario(
         entities,
         impact_rx,
@@ -343,6 +346,7 @@ pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
         warhead,
         rules,
         interner,
+        handles,
         origin,
         layer_context,
         terrain_objects,
@@ -360,6 +364,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     warhead: &WarheadType,
     rules: &RuleSet,
     interner: &StringInterner,
+    handles: crate::sim::type_handle_table::ResolvedRuleHandles,
     origin: O,
     mut layer_context: AoELayerContext<'_>,
     terrain_objects: Option<TerrainCollectionView<'_>>,
@@ -376,7 +381,7 @@ pub(crate) fn apply_aoe_damage_with_terrain_and_scenario<O: Into<AoEDamageOrigin
     if origin.source_house.is_none() && origin.source_id != super::RAD_NO_ATTACKER {
         origin.source_house = entities.get(origin.source_id).map(|source| source.owner);
     }
-    let ground_source_admitted = rules.is_crush_warhead_id(origin.warhead_ref)
+    let ground_source_admitted = handles.is_crush(origin.warhead_ref)
         || entities
             .get(origin.source_id)
             .and_then(|source| rules.object(interner.resolve(source.type_ref)))
@@ -1216,7 +1221,7 @@ mod tests {
             0,
             &wad,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1255,7 +1260,7 @@ mod tests {
             0,
             &wall,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1289,6 +1294,7 @@ mod tests {
         let mut scenario_rng = SimRng::new(17);
         let before = scenario_rng.state();
 
+        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let result = apply_aoe_damage_with_terrain_and_scenario(
             &mut entities,
             8,
@@ -1297,6 +1303,7 @@ mod tests {
             &warhead,
             &rules,
             &interner,
+            handles,
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1367,6 +1374,7 @@ mod tests {
         let mut scenario_rng = SimRng::new(91);
         let mut prelude = OreReseedDraw { cell: (8, 8) };
 
+        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let _ = apply_aoe_damage_with_terrain_and_scenario(
             &mut EntityStore::new(),
             8,
@@ -1375,6 +1383,7 @@ mod tests {
             &warhead,
             &rules,
             &interner,
+            handles,
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             AoELayerContext {
                 occupancy: None,
@@ -1448,7 +1457,7 @@ mod tests {
             100,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -1474,7 +1483,7 @@ mod tests {
             100,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -1555,7 +1564,7 @@ mod tests {
             450,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (77, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -1670,7 +1679,7 @@ mod tests {
                 100,
                 &warhead,
                 &rules,
-                &interner,
+                &mut interner,
                 (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
                 AoELayerContext {
                     occupancy: Some(&occupancy),
@@ -1775,7 +1784,7 @@ mod tests {
                 10,
                 &warhead,
                 &rules,
-                &interner,
+                &mut interner,
                 (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
                 AoELayerContext {
                     occupancy: Some(&occupancy),
@@ -1959,7 +1968,7 @@ mod tests {
             }
 
             let mut interner = test_interner();
-            rules.resolve_bridge_warheads(&mut interner);
+            let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let blast_ref = interner.intern("BlastWH");
             let mut scenario_rng = SimRng::new(1);
             let air_impact = Some(AoEAirImpact {
@@ -1974,7 +1983,7 @@ mod tests {
                 10,
                 &blast,
                 &rules,
-                &interner,
+                &mut interner,
                 (crate::sim::combat::RAD_NO_ATTACKER, blast_ref),
                 AoELayerContext {
                     occupancy: Some(&occupancy),
@@ -2129,7 +2138,7 @@ mod tests {
             .collect();
         let mut terrain = ResolvedTerrainGrid::from_cells(48, 48, cells);
         let mut interner = test_interner();
-        rules.resolve_bridge_warheads(&mut interner);
+        let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let warhead_ref = interner.intern("WIDEWH");
 
         assert_eq!(
@@ -2147,7 +2156,7 @@ mod tests {
             30,
             &stock,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -2165,7 +2174,7 @@ mod tests {
             30,
             &wide,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -2221,7 +2230,7 @@ mod tests {
     fn gsi_04_07_damage_center_first_seeded_strength_sweep() {
         let (rules, warhead, registry) = wall_aoe_fixture(".5", "Wall=yes");
         let mut entities = EntityStore::new();
-        let interner = test_interner();
+        let mut interner = test_interner();
         let mut overlays = OverlayGrid::new(16, 16);
         overlays.place_overlay(8, 8, 0, 0);
         overlays.place_overlay(9, 7, 0, 0);
@@ -2239,7 +2248,7 @@ mod tests {
             214,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: None,
@@ -2282,7 +2291,7 @@ mod tests {
     fn gsi_04_07_damage_fractional_spread_keeps_raw_i32_and_nuke_forces_all() {
         let (rules, wall, registry) = wall_aoe_fixture(".5", "Wall=yes");
         let mut entities = EntityStore::new();
-        let interner = test_interner();
+        let mut interner = test_interner();
         let mut overlays = OverlayGrid::new(32, 32);
         overlays.place_overlay(16, 16, 0, 0);
         overlays.place_overlay(17, 15, 0, 0);
@@ -2295,7 +2304,7 @@ mod tests {
             65_537,
             &wall,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: None,
@@ -2341,7 +2350,7 @@ mod tests {
             -2,
             &nuke,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: None,
@@ -2395,7 +2404,7 @@ mod tests {
         chain_only.attack_target = Some(AttackTarget::for_cell(8, 7));
         entities.insert(chain_only);
 
-        let interner = test_interner();
+        let mut interner = test_interner();
         let owner = crate::sim::intern::InternedId::from_index(7);
         let mut overlays = OverlayGrid::new(16, 16);
         overlays.place_overlay(8, 8, 2, 0);
@@ -2408,7 +2417,7 @@ mod tests {
             1,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: None,
@@ -2473,7 +2482,7 @@ mod tests {
 
     #[test]
     fn bridge_impact_above_threshold_damages_only_bridge_layer() {
-        let (mut entities, occupancy, mut terrain, rules, warhead, interner) =
+        let (mut entities, occupancy, mut terrain, rules, warhead, mut interner) =
             bridge_layer_test_fixture();
         let hits = apply_aoe_damage(
             &mut entities,
@@ -2482,7 +2491,7 @@ mod tests {
             100,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -2501,7 +2510,7 @@ mod tests {
 
     #[test]
     fn bridge_impact_at_threshold_stays_on_ground_layer() {
-        let (mut entities, occupancy, mut terrain, rules, warhead, interner) =
+        let (mut entities, occupancy, mut terrain, rules, warhead, mut interner) =
             bridge_layer_test_fixture();
         let hits = apply_aoe_damage(
             &mut entities,
@@ -2510,7 +2519,7 @@ mod tests {
             100,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             "Americans",
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -2566,7 +2575,7 @@ mod tests {
             let mut rules = RuleSet::from_ini(&ini).expect("receiver admission fixture");
             let warhead = rules.warhead(warhead_name).unwrap().clone();
             let mut interner = test_interner();
-            rules.resolve_bridge_warheads(&mut interner);
+            let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
             let warhead_ref = interner.intern(warhead_name);
             let source_house = interner.intern("SourceHouse");
             let ally_house = interner.intern("AllyHouse");
@@ -2609,7 +2618,7 @@ mod tests {
                 40,
                 &warhead,
                 &rules,
-                &interner,
+                &mut interner,
                 (1, Some(source_house), warhead_ref),
                 AoELayerContext {
                     occupancy: Some(&occupancy),
@@ -2744,7 +2753,7 @@ mod tests {
                 65,
                 &warhead,
                 &rules,
-                &interner,
+                &mut interner,
                 (1, Some(soviet), ap),
                 AoELayerContext {
                     occupancy: Some(&occupancy),
@@ -2875,7 +2884,7 @@ mod tests {
             90,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (1, Some(russian), ap),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -3036,7 +3045,7 @@ mod tests {
             rules.weapon("ChaosAttack").unwrap().damage,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (1, Some(yuri), psych_gas_create),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -3244,7 +3253,7 @@ mod tests {
             65,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (1, Some(source_house), grizape),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -3701,7 +3710,7 @@ mod tests {
             100,
             &warhead,
             &rules,
-            &interner,
+            &mut interner,
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             AoELayerContext {
                 occupancy: Some(&occupancy),
@@ -3808,7 +3817,7 @@ mod tests {
         );
         let mut rules = RuleSet::from_ini(&ini).expect("spawning Terrain rules");
         let mut sim = crate::sim::world::Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let victim_id = sim
             .spawn_object("VICTIM", "VictimHouse", 5, 5, 0, &rules, &BTreeMap::new())
             .expect("nested C4 victim spawns");
@@ -3957,7 +3966,7 @@ mod tests {
         );
         let mut rules = RuleSet::from_ini(&ini).expect("inert Terrain rules");
         let mut sim = crate::sim::world::Simulation::new();
-        rules.resolve_bridge_warheads(&mut sim.interner);
+        sim.resolve_type_handles(&rules);
         let victim_id = sim
             .spawn_object("VICTIM", "VictimHouse", 5, 5, 0, &rules, &BTreeMap::new())
             .expect("inert receiver victim spawns");
