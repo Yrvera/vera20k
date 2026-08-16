@@ -5,6 +5,12 @@
 //! the embedded snapshot timestamp, while quickload selects by filesystem
 //! modification time. Unifying them would be VERA-internal / gamemd equivalent
 //! UNCHECKED.
+//!
+//! F12 owner tree: the save/load panel UI and options persistence live here
+//! beside the repository they drive.
+
+pub(crate) mod options;
+pub(crate) mod save_load_panel;
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};

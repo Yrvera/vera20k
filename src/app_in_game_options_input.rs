@@ -6,7 +6,7 @@
 //! changes only the visual/stored state — slider thumb + stored value, checkbox
 //! check, pressed button frame, and the drag-gated value-label flag. The downstream
 //! EFFECTS (sim cadence, target-line gate, INI persist) apply on close only, in
-//! `app_options_persist::in_game_options_close` (KD-8).
+//! `app::persistence::options::in_game_options_close` (KD-8).
 //!
 //! Hit-testing uses the `InGameOptionsAnchor` the overlay render pass cached on
 //! `AppState` (KD-6) — the sidebar-anchored Back/Sound/Keyboard button Y is only
@@ -102,7 +102,7 @@ pub(crate) fn in_game_options_mouse(state: &mut AppState, button: MouseButton, p
         state.in_game_options.pressed_button = None;
         state.in_game_options.dragging_slider = None;
         if over_back {
-            crate::app_options_persist::in_game_options_close(state);
+            crate::app::persistence::options::in_game_options_close(state);
         }
     }
 }

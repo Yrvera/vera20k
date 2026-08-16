@@ -344,7 +344,7 @@ impl App {
         let saved_scroll_rate = game_config
             .as_ref()
             .and_then(|config| {
-                crate::app_options_persist::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
+                crate::app::persistence::options::read_scroll_rate_from_ra2md(&config.paths.ra2_dir)
             })
             .unwrap_or_else(|| {
                 crate::ui::shell::in_game_options_state::InGameOptionsState::default().scroll_rate
@@ -352,7 +352,7 @@ impl App {
         let saved_detail_level = game_config
             .as_ref()
             .and_then(|config| {
-                crate::app_options_persist::read_detail_level_from_ra2md(&config.paths.ra2_dir)
+                crate::app::persistence::options::read_detail_level_from_ra2md(&config.paths.ra2_dir)
             })
             .unwrap_or_else(|| {
                 crate::ui::shell::in_game_options_state::InGameOptionsState::default().detail_level

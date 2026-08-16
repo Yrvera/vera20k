@@ -140,7 +140,7 @@ impl App {
         // apply and persist the touched `[Options]` values — so the two ways of
         // leaving the dialog cannot disagree about what was saved.
         if state.in_game_menu == InGameMenuState::Options {
-            crate::app_options_persist::in_game_options_close(state);
+            crate::app::persistence::options::in_game_options_close(state);
         }
         let next = state.in_game_menu.on_escape();
         Self::enter_in_game_menu_state(state, next);
@@ -351,10 +351,10 @@ impl App {
 
     /// Draw the save/load panel and handle its actions.
     pub(super) fn handle_save_load_panel(state: &mut AppState) {
-        use crate::app_save_load_panel::SaveLoadAction;
+        use crate::app::persistence::save_load_panel::SaveLoadAction;
 
         state.persistence.refresh_save_list_if_dirty();
-        let action = crate::app_save_load_panel::draw_save_load_panel(
+        let action = crate::app::persistence::save_load_panel::draw_save_load_panel(
             &state.egui.ctx,
             state.persistence.save_list_cache.entries(),
         );
@@ -401,7 +401,7 @@ impl App {
                     .unwrap_or("?")
                     .to_string(),
                 tick: e.header.tick,
-                age_str: crate::app_save_load_panel::format_timestamp(e.header.save_timestamp),
+                age_str: crate::app::persistence::save_load_panel::format_timestamp(e.header.save_timestamp),
             })
             .collect();
 

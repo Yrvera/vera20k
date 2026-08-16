@@ -97,7 +97,6 @@ pub mod app_input;
 // Paused in-game Options (0xBBB) overlay mouse routing + the close/apply/persist
 // path (Slice 5a-iii interaction).
 pub mod app_in_game_options_input;
-pub mod app_options_persist;
 
 // Context-sensitive order resolution — click-to-command decision tree.
 // Extracted from app_input.rs to separate order logic from raw input handling.
@@ -186,7 +185,6 @@ pub mod app_debug_overlays;
 // Debug info panel — egui overlay with PathGrid/entity info (shown with pathgrid overlay).
 pub mod app_debug_panel;
 // Save/load panel — egui overlay for managing save files (F5).
-pub mod app_save_load_panel;
 // Developer overlay — egui panel with runtime knobs, diagnostics,
 // and save/load helpers. Toggled with backtick (`).
 pub mod app_dev_overlay;
