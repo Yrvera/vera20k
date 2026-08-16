@@ -586,12 +586,12 @@ pub struct Simulation {
     /// Built at init by `resolve_type_handles`; empty after deserialize (then
     /// `object_type` uses the name-path fallback). NOT serialized, NOT hashed.
     #[serde(skip)]
-    pub type_handles: crate::sim::type_handle_table::TypeHandleTable,
+    pub(crate) type_handles: crate::sim::type_handle_table::TypeHandleTable,
     /// Pre-resolved `[CombatDamage]` warhead handles (F04). Built by
     /// `resolve_type_handles` beside the type table; rebuilt from rules on
     /// load. NOT serialized, NOT hashed. `None` until resolved.
     #[serde(skip)]
-    pub rule_handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
+    pub(crate) rule_handles: Option<crate::sim::type_handle_table::ResolvedRuleHandles>,
     /// Credits, build queue state, and rally points.
     pub production: ProductionState,
     /// Session aggregate — scenario identity, seed, authoritative map
@@ -686,13 +686,13 @@ pub struct Simulation {
     /// Fire events produced during combat and moved into the app-frame output
     /// for muzzle flash rendering and future projectile origin computation.
     #[serde(skip)]
-    pub fire_events: Vec<SimFireEvent>,
+    pub(crate) fire_events: Vec<SimFireEvent>,
     /// Native IC/ForceShield impact combat-light requests emitted in receiver
     /// order during the current master frame. The native object has no owner
     /// and is distinct from AnimClass/ParticleSystemClass, so this remains a
     /// dedicated presentation handoff rather than fabricated world state.
     #[serde(skip)]
-    pub invulnerability_impact_effects: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
+    pub(crate) invulnerability_impact_effects: Vec<crate::sim::combat::InvulnerabilityImpactEffect>,
     /// Persistent ordinary shots. This is authoritative save/hash state, not
     /// the render-side fire-event approximation.
     #[serde(default)]
@@ -704,7 +704,7 @@ pub struct Simulation {
     /// combat and superweapons commit smudges inline, so this remains empty and
     /// never persists across ticks.
     #[serde(skip)]
-    pub pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
+    pub(crate) pending_smudge_requests: Vec<crate::sim::combat::SmudgeSpawnRequest>,
     /// Bale deposit events emitted during refinery dock unloading and consumed
     /// by the authoritative frame tail for SpecialAnim and particle creation.
     #[serde(skip)]
@@ -717,7 +717,7 @@ pub struct Simulation {
     pub ai_players: Vec<AiPlayerState>,
     /// Resolved TeamClass/ScriptType runtime; scenario INI parsing remains a
     /// separate refused boundary until its record grammar is evidenced.
-    pub team_script_vm: TeamScriptVm,
+    pub(crate) team_script_vm: TeamScriptVm,
     /// Per-player state keyed by uppercase owner name. Deterministic iteration
     /// via BTreeMap. Equivalent to the original engine's HouseClass array.
     pub houses: BTreeMap<InternedId, HouseState>,
@@ -728,7 +728,7 @@ pub struct Simulation {
     /// Zone-based connectivity map for instant unreachability detection.
     /// Built from terrain data; rebuilt when buildings or bridges change.
     #[serde(skip)]
-    pub zone_grid: Option<ZoneGrid>,
+    pub(crate) zone_grid: Option<ZoneGrid>,
     /// Canonical dynamic navigation projection. Arc snapshots let one master
     /// frame pin its entry view while the sim publishes the next projection.
     #[serde(skip)]
@@ -777,18 +777,18 @@ pub struct Simulation {
     pub radar_terrain_dirty_generation: u64,
     /// Runtime cell rects dirtied by tiberium mutation side effects.
     #[serde(skip)]
-    pub tactical_dirty_cells: Vec<(u16, u16)>,
+    pub(crate) tactical_dirty_cells: Vec<(u16, u16)>,
     /// Per-player power state (output, drain, low-power flag, spy blackout timer).
     /// Updated each tick by `power_system::tick_power_states()`.
     pub power_states: BTreeMap<InternedId, PowerState>,
     /// Per-owner superweapon instances. Outer key = owner, inner key = SW type ID.
     /// Deterministic iteration via nested BTreeMap.
-    pub super_weapons:
+    pub(crate) super_weapons:
         BTreeMap<InternedId, BTreeMap<InternedId, crate::sim::superweapon::SuperWeaponInstance>>,
     /// Active lightning storm state (global — only one at a time).
-    pub lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
+    pub(crate) lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
-    pub super_weapons_initialized: bool,
+    pub(crate) super_weapons_initialized: bool,
     /// Per-cell terrain speed modifier config (slope climb/descend).
     /// Built from [General] rules at map load.
     #[serde(skip)]
@@ -824,7 +824,7 @@ pub struct Simulation {
     #[serde(skip)]
     executed_exit_owner: Option<InternedId>,
     #[serde(skip)]
-    pub connection_lost: bool,
+    pub(crate) connection_lost: bool,
     /// Pending gameplay commands waiting for their scheduled execution tick.
     /// Admitted through `queue_command(s)` and drained each tick when
     /// `cmd.execute_tick <= current_tick + 1`.
