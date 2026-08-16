@@ -544,6 +544,9 @@ mod tests {
 
     struct RunningMatchTestState {
         simulation: Simulation,
+        /// The app-owned diagnostics slot (F10) — represented here so the
+        /// baseline proves a failed load leaves the segment untouched.
+        replay_log: Option<ReplayLog>,
         active_loading_correlation: Option<MatchCorrelationId>,
         loaded_startup: Option<PreparedMatchStartup>,
         rust_l0_receipt: Option<RustL0Receipt>,
@@ -557,7 +560,7 @@ mod tests {
 
     impl RunningMatchTestState {
         fn running(rules: &RuleSet) -> Self {
-            let mut simulation = load_fixture_simulation(true);
+            let simulation = load_fixture_simulation(true);
             let mut replay = ReplayLog::new(ReplayHeader {
                 version: 1,
                 tick_hz: 15,
@@ -566,7 +569,7 @@ mod tests {
                 rules_hash: rules.simulation_config_hash(),
             });
             replay.record_tick(1, Vec::new(), simulation.state_hash());
-            simulation.replay_log = Some(replay);
+            let replay_log = Some(replay);
 
             let (active_loading_correlation, loaded_startup, rust_l0_receipt) =
                 startup_authority(LOAD_FIXTURE_SEED);
@@ -580,6 +583,7 @@ mod tests {
 
             Self {
                 simulation,
+                replay_log,
                 active_loading_correlation,
                 loaded_startup,
                 rust_l0_receipt,
@@ -601,7 +605,7 @@ mod tests {
             RunningMatchBaseline {
                 simulation_hash: self.simulation.state_hash(),
                 rng: self.simulation.rng_state(),
-                replay: self.simulation.replay_log.as_ref().map(|replay| {
+                replay: self.replay_log.as_ref().map(|replay| {
                     (
                         replay.header.seed,
                         replay.ticks.len(),

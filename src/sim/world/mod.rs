@@ -95,7 +95,6 @@ use crate::sim::projectile::{
     projectile_slope_reflect,
 };
 use crate::sim::radar::{RadarEventQueue, RadarEventType};
-use crate::sim::replay::ReplayLog;
 use crate::sim::rng::{SimRng, SimRngLogicalState, SimRngLogicalView};
 use crate::sim::scenario_session::ScenarioSession;
 use crate::sim::team_script_vm::{TeamScriptEffect, TeamScriptVm};
@@ -812,8 +811,6 @@ pub struct Simulation {
     /// Rust-only deterministic diagnostic log for this match.
     /// Initialized lazily on the first tick. It is separate from the native
     /// recording stream and is not included in state hashing.
-    #[serde(skip)]
-    pub replay_log: Option<ReplayLog>,
     /// Negotiated lockstep ahead window. Offline producers stamp the current
     /// raw issue ordinal; a network transfer owner overwrites that stamp with
     /// `send_current + MaxAhead` before synchronized dispatch.
@@ -2027,7 +2024,6 @@ impl Simulation {
             blockage_path_delay_ticks: 60,
             world_effects: Vec::new(),
             debug_event_logging: false,
-            replay_log: None,
             input_delay_ticks: 2,
             quit_requested: false,
             executed_exit_owner: None,

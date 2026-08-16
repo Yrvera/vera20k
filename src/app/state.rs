@@ -40,6 +40,9 @@ pub(crate) struct AppState {
     pub(crate) loaded_map_hash: Option<u64>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
     pub(crate) sim_runtime: Option<crate::sim::runtime::SimRuntime>,
+    /// App-owned diagnostic recording (F10) — never inside the simulation, so
+    /// no load/install path can silently drop an unflushed segment.
+    pub(crate) match_diagnostics: crate::app::match_diagnostics::MatchDiagnosticsState,
     pub(crate) unit_atlas: Option<UnitAtlas>,
     pub(crate) vxl_slope_transition_cache:
         RefCell<crate::render::unit_slope_transition_cache::VxlSlopeTransitionCache>,

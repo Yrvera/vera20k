@@ -64,6 +64,7 @@ mod frame;
 mod handler;
 mod initialize;
 mod in_game;
+pub(crate) mod match_diagnostics;
 pub(crate) mod persistence;
 mod shell_main_menu;
 mod shell_random_map;

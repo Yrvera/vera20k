@@ -1616,6 +1616,10 @@ fn commit_prepared_load(
     );
 
     crate::app::reset_scenario_exit_runtime(state);
+    // F10 lifecycle: a successful in-scenario load closes the outgoing
+    // timeline's diagnostic segment BEFORE the restored simulation commits;
+    // the restored timeline lazily opens its own segment on the next frame.
+    crate::app_sim_tick::flush_replay_log(state);
     // Same-content in-scenario restore: the immutable match resources carry
     // over; only the simulation is replaced (F07 critic fix).
     state.sim_runtime = Some(crate::sim::runtime::SimRuntime::rebind_restored(

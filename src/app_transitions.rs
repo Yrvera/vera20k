@@ -114,6 +114,10 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.loaded_map_hash = result.map_hash;
     state.terrain_grid = result.terrain_grid;
     state.shell_preview_overlay_registry = Some(result.overlay_registry.clone());
+    // F10 lifecycle: a new match install closes the outgoing diagnostic
+    // segment (retry-safe) before the runtime slot is overwritten — the old
+    // install dropped any unflushed segment silently.
+    crate::app_sim_tick::flush_replay_log(state);
     let match_rules = result.rules;
     state.sim_runtime = result.simulation.zip(match_rules).map(|(simulation, rules)| crate::sim::runtime::SimRuntime {
         simulation,
