@@ -99,6 +99,13 @@ impl<'a> SimView<'a> {
 }
 
 impl SimRuntime {
+    /// One command-free Ordinary-lane frame for side binaries (parity-digest):
+    /// the same bound-resource transaction as `advance_frame`, with the
+    /// crate-private frame output discarded so no internal type goes public.
+    pub fn advance_idle_frame_for_tooling(&mut self, tick_ms: u32) {
+        let _ = self.advance_frame(&[], tick_ms, crate::sim::world::TickLane::Ordinary);
+    }
+
     /// The production frame transaction: advance one lane-tagged frame using
     /// the bound immutable resources. Callers cannot substitute rules, maps,
     /// registries, definitions, or navigation (the simulation pins its own

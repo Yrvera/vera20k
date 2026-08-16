@@ -287,7 +287,7 @@ fn factory_flip_replay_is_bit_identical_across_runs_and_playback() {
     // Run 3 — replay the recorded log through the shared ReplayRunner.
     let (mut s3, rules3, heights3) = scenario();
     let timeline_playback =
-        ReplayRunner::run(&mut s3, &log, Some(&rules3), &heights3, None, TICK_MS);
+        ReplayRunner::run_fixture(&mut s3, &log, Some(&rules3), &heights3, None, TICK_MS);
     assert_eq!(
         timeline_live, timeline_playback,
         "replay playback must reproduce the live hash timeline bit-for-bit"

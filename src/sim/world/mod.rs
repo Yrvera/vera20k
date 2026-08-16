@@ -2635,6 +2635,9 @@ impl Simulation {
     }
 
     /// Drain app-owned outcomes after their authoritative trigger actions ran.
+    /// Production consumes trigger effects through `SimFrameOutput`; only
+    /// fixture replay and trigger tests drain them directly.
+    #[cfg(test)]
     pub(crate) fn drain_trigger_effects(&mut self) -> Vec<TriggerEffect> {
         std::mem::take(&mut self.trigger_effects)
     }
@@ -4823,7 +4826,12 @@ impl Simulation {
         true
     }
 
-    pub fn advance_tick(
+    /// Fixture-only frame adapter (F09): unit tests drive one Main_Tick-shaped
+    /// frame with explicitly supplied rules/heights/navigation. Production and
+    /// tooling advance exclusively through `SimRuntime::advance_frame`, whose
+    /// resources are bound at construction and cannot be substituted per call.
+    #[cfg(test)]
+    pub(crate) fn advance_tick(
         &mut self,
         commands: &[CommandEnvelope],
         rules: Option<&RuleSet>,
@@ -4832,8 +4840,6 @@ impl Simulation {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> TickResult {
-        // Headless callers still enter the complete YR Main_Tick-shaped
-        // transaction; only map-owned trigger definitions are unavailable here.
         self.advance_master_frame(
             commands,
             rules,
@@ -4850,8 +4856,8 @@ impl Simulation {
     ///
     /// The app submits commands and immutable map/rules inputs, then consumes
     /// the returned facts instead of reaching back into Simulation-owned
-    /// transient queues. Headless/replay callers retain `advance_tick` and the
-    /// lower-level master-frame adapter.
+    /// transient queues. `SimRuntime::advance_frame` is the sole production
+    /// caller (F09); headless and replay execution go through the runtime.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_app_frame(
         &mut self,
@@ -4904,9 +4910,10 @@ impl Simulation {
 
     /// Advance exactly one authoritative simulation frame.
     ///
-    /// This is the sole Main_Tick-shaped entry point. `advance_tick` is the
-    /// ordinary, trigger-definition-free adapter used by headless callers and
-    /// tests; gameplay supplies its map definitions through `trigger_inputs`.
+    /// This is the sole Main_Tick-shaped entry point, reached in production
+    /// only through `advance_app_frame` (F09). The fixture-only `advance_tick`
+    /// adapter and the replay fixture runners are `#[cfg(test)]`; gameplay
+    /// supplies its map definitions through `trigger_inputs`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_master_frame(
         &mut self,

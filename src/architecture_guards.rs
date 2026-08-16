@@ -74,6 +74,52 @@ fn production_dependency_edges_match_frozen_ledger_inventory() {
     );
 }
 
+/// F09: `Simulation::advance_master_frame` and `advance_app_frame` accept
+/// swappable rules/map/path resources, so their production call sites are
+/// pinned — the master frame is reached only inside `sim/world/mod.rs`, the
+/// app frame only there and in `SimRuntime::advance_frame`. Every other
+/// caller must be `#[cfg(test)]` (the `advance_tick` fixture adapter and the
+/// replay `run_fixture*` runners are compile-time gated already); production
+/// and tooling advance exclusively through the bound-resource runtime.
+#[test]
+fn master_frame_adapters_have_pinned_production_callers() {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let allowed: &[(&str, &[&str])] = &[
+        ("advance_master_frame", &["sim/world/mod.rs"]),
+        ("advance_app_frame", &["sim/world/mod.rs", "sim/runtime.rs"]),
+    ];
+    let mut violations: Vec<String> = Vec::new();
+    visit_rust_files(&src_root, &mut |path| {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name == "tests.rs" || name.ends_with("_tests.rs") {
+            return;
+        }
+        let rel = path
+            .strip_prefix(&src_root)
+            .expect("scanned file under src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source =
+            fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let production = strip_test_items(&blank_comments_and_literals(&source));
+        for (symbol, files) in allowed {
+            if production.contains(symbol) && !files.contains(&rel.as_str()) {
+                violations.push(format!("{rel}: {symbol}"));
+            }
+        }
+    });
+    assert!(
+        violations.is_empty(),
+        "swappable-resource frame adapters referenced outside their pinned \
+         production sites: {violations:?}\n\
+         Production advances only through SimRuntime::advance_frame (F09); \
+         gate new fixture callers with #[cfg(test)]."
+    );
+}
+
 fn scan_forbidden_edges(src_root: &Path) -> BTreeSet<(String, String)> {
     let mut found = BTreeSet::new();
     for (layer, forbidden) in LAYER_RULES {

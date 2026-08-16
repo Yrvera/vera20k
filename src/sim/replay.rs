@@ -9,6 +9,7 @@
 //! [`ReplayLog`] remains the richer Rust-only command/hash diagnostic used by
 //! parity tests. It is deliberately separate from [`NativeReplay`].
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::num::NonZeroI32;
 use std::path::Path;
@@ -17,9 +18,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(test)]
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{COMMAND_RECORD_LEN, CommandEnvelope, CommandRecord};
+#[cfg(test)]
 use crate::sim::pathfinding::PathGrid;
+#[cfg(test)]
 use crate::sim::world::{Simulation, TickLane, TriggerInputs};
 
 /// Value written by the compiled legacy recorder at the start of a stream.
@@ -805,8 +809,11 @@ impl ReplayRunner {
         hashes
     }
 
-    /// Re-run diagnostic-log ticks and return the resulting hash timeline.
-    pub fn run(
+    /// Fixture-only replay runner (F09): re-run diagnostic-log ticks with
+    /// explicitly supplied resources. Production replay execution goes
+    /// through `run_runtime`, whose resources are bound in the `SimRuntime`.
+    #[cfg(test)]
+    pub(crate) fn run_fixture(
         sim: &mut Simulation,
         replay: &ReplayLog,
         rules: Option<&RuleSet>,
@@ -814,14 +821,23 @@ impl ReplayRunner {
         path_grid: Option<&PathGrid>,
         tick_ms: u32,
     ) -> Vec<u64> {
-        Self::run_with_overlay_registry(sim, replay, rules, height_map, path_grid, None, tick_ms)
+        Self::run_fixture_with_overlay_registry(
+            sim,
+            replay,
+            rules,
+            height_map,
+            path_grid,
+            None,
+            tick_ms,
+        )
     }
 
-    /// Re-run diagnostic-log ticks with the static overlay type registry used
-    /// by the recorded map. Overlay-backed simulation authority (including
-    /// miner resource queries) must see the same registry on record and replay.
+    /// Fixture-only variant with the static overlay type registry used by the
+    /// recorded map. Overlay-backed simulation authority (including miner
+    /// resource queries) must see the same registry on record and replay.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub fn run_with_overlay_registry(
+    pub(crate) fn run_fixture_with_overlay_registry(
         sim: &mut Simulation,
         replay: &ReplayLog,
         rules: Option<&RuleSet>,
@@ -830,7 +846,7 @@ impl ReplayRunner {
         overlay_registry: Option<&crate::map::overlay_types::OverlayTypeRegistry>,
         tick_ms: u32,
     ) -> Vec<u64> {
-        Self::run_master_frame(
+        Self::run_fixture_master_frame(
             sim,
             replay,
             rules,
@@ -842,13 +858,13 @@ impl ReplayRunner {
         )
     }
 
-    /// Replay through the same master-frame admission used by gameplay.
-    ///
-    /// Diagnostic logs own commands and hashes, while the caller owns static
-    /// map trigger definitions. This keeps presentation-free replay faithful
-    /// to the YR LogicClass trigger rung without serializing map data twice.
+    /// Fixture-only replay through the same master-frame admission gameplay
+    /// uses, with caller-owned static map trigger definitions. Diagnostic
+    /// logs own commands and hashes. Production replay execution is
+    /// `run_runtime`.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn run_master_frame(
+    pub(crate) fn run_fixture_master_frame(
         sim: &mut Simulation,
         replay: &ReplayLog,
         rules: Option<&RuleSet>,
@@ -1428,7 +1444,7 @@ mod tests {
         assert_eq!(decoded.ticks[0].commands[0].payload, Command::ExitMatch);
         assert_eq!(NATIVE_REPLAY_VERSION, 10);
 
-        let hashes = ReplayRunner::run(&mut sim, &decoded, None, &BTreeMap::new(), None, 33);
+        let hashes = ReplayRunner::run_fixture(&mut sim, &decoded, None, &BTreeMap::new(), None, 33);
         assert_eq!(hashes.len(), 1);
         assert!(sim.quit_requested);
         assert_eq!(sim.take_executed_exit_owner(), Some(owner));
@@ -1471,7 +1487,7 @@ mod tests {
         let decoded: ReplayLog = serde_json::from_str(&json).expect("decode GameSpeed replay");
 
         let (mut replayed, _) = make_sim();
-        let hashes = ReplayRunner::run(&mut replayed, &decoded, None, &BTreeMap::new(), None, 67);
+        let hashes = ReplayRunner::run_fixture(&mut replayed, &decoded, None, &BTreeMap::new(), None, 67);
         assert_eq!(hashes, vec![tick.state_hash]);
         assert_eq!(replayed.session.game_options.game_speed, 4);
         assert_eq!(replayed.state_hash(), recorded.state_hash());
@@ -1500,7 +1516,7 @@ mod tests {
         );
         log.record_tick(2, Vec::new(), 0);
 
-        let hashes = ReplayRunner::run(&mut sim, &log, None, &BTreeMap::new(), None, 33);
+        let hashes = ReplayRunner::run_fixture(&mut sim, &log, None, &BTreeMap::new(), None, 33);
 
         assert_eq!(hashes.len(), 2);
         assert!(
@@ -1534,7 +1550,7 @@ mod tests {
         });
         log.record_tick(1, vec![regenerated.clone()], 0);
 
-        let hashes = ReplayRunner::run(&mut sim, &log, None, &BTreeMap::new(), None, 33);
+        let hashes = ReplayRunner::run_fixture(&mut sim, &log, None, &BTreeMap::new(), None, 33);
 
         assert_eq!(hashes.len(), 1);
         assert_eq!(sim.session.game_options.game_speed, 4);

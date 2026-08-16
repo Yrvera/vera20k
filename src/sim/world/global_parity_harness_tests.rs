@@ -685,7 +685,7 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             header: log.header.clone(),
             ticks: log.ticks[chunk_start..chunk_end].to_vec(),
         };
-        replayed.extend(ReplayRunner::run_with_overlay_registry(
+        replayed.extend(ReplayRunner::run_fixture_with_overlay_registry(
             &mut rep,
             &chunk,
             Some(&rules),
@@ -707,7 +707,7 @@ fn global_skirmish_replay_is_deterministic_and_baseline_stable() {
             header: log.header.clone(),
             ticks: log.ticks[chunk_start..].to_vec(),
         };
-        replayed.extend(ReplayRunner::run_with_overlay_registry(
+        replayed.extend(ReplayRunner::run_fixture_with_overlay_registry(
             &mut rep,
             &tail,
             Some(&rules),
