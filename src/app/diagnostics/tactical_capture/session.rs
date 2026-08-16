@@ -160,9 +160,9 @@ impl TacticalCaptureSession {
             "tactical swapchain lacks COPY_SRC readback usage"
         );
         ensure!(
-            (state.ui_scale - capture.app_ui_scale as f32).abs() <= f32::EPSILON,
+            (state.match_presentation.ui_scale - capture.app_ui_scale as f32).abs() <= f32::EPSILON,
             "app UI scale {} differs from sealed {}",
-            state.ui_scale,
+            state.match_presentation.ui_scale,
             capture.app_ui_scale
         );
         ensure!(
@@ -966,17 +966,17 @@ impl TacticalCaptureSession {
             .is_some_and(|rules| crate::sim::radar::has_radar_for_owner(sim, rules, owner));
         let bound_structures_ready = self.bound_structures_ready(state)?;
         let no_modal_or_debug = !state.paused
-            && !state.show_save_load_panel
+            && !state.match_presentation.show_save_load_panel
             && !state.main_menu_dialog_open()
             && !state.diag.debug_show_pathgrid
             && !state.diag.debug_unit_inspector
-            && !state.show_hotkey_help
+            && !state.match_presentation.show_hotkey_help
             && state.input.targeting_mode.is_none()
             && state.input.building_placement_preview.is_none()
             && state.input.keys_held.is_empty()
             && !state.input.minimap_dragging
-            && !state.sidebar_gadget_state.repair_mode_on
-            && !state.sidebar_gadget_state.sell_mode_on;
+            && !state.match_presentation.sidebar_gadget_state.repair_mode_on
+            && !state.match_presentation.sidebar_gadget_state.sell_mode_on;
         let counts_ready = output.instance_counts.minimap > 0
             && output.instance_counts.viewport_rect > 0
             && output.instance_counts.radar_animation > 0;
@@ -1266,7 +1266,7 @@ impl TacticalCaptureSession {
             egui,
             format!("{:?}", state.renderer.gpu.config.format),
             [state.renderer.gpu.config.width, state.renderer.gpu.config.height],
-            state.ui_scale,
+            state.match_presentation.ui_scale,
             inputs.font.clone(),
             inputs.sidebar_layout.clone(),
         )?;

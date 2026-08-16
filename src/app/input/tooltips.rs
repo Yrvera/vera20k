@@ -61,20 +61,20 @@ pub(crate) const TIP_BOX_PAD: [f32; 2] = [4.0, 3.0];
 pub(crate) const TIP_TEXT_INSET: [f32; 2] = [2.0, 4.0];
 
 pub(crate) fn now_ms(state: &AppState) -> u64 {
-    state.tooltip_epoch.elapsed().as_millis() as u64
+    state.match_presentation.tooltip_epoch.elapsed().as_millis() as u64
 }
 
 /// CursorMoved feed (all screens).
 pub(crate) fn on_mouse_move(state: &mut AppState) {
     let now = now_ms(state);
     let (x, y) = (state.input.cursor_x.round() as i32, state.input.cursor_y.round() as i32);
-    state.tooltips.on_mouse_move(x, y, now);
+    state.match_presentation.tooltips.on_mouse_move(x, y, now);
 }
 
 /// MouseInput feed — ANY button, press or release, kills tip + timer.
 pub(crate) fn on_button_event(state: &mut AppState) {
     let now = now_ms(state);
-    state.tooltips.on_button(now);
+    state.match_presentation.tooltips.on_button(now);
 }
 
 /// Per-frame update: refresh regions for the live in-game surface, then pump
@@ -84,9 +84,9 @@ pub(crate) fn update(state: &mut AppState) {
     if state.screen == GameScreen::InGame {
         sync_in_game_regions(state);
     } else {
-        state.tooltips.sync_regions(&[]);
+        state.match_presentation.tooltips.sync_regions(&[]);
     }
-    state.tooltips.poll(now);
+    state.match_presentation.tooltips.poll(now);
 }
 
 fn tip_rect(r: crate::sidebar::Rect) -> TipRect {
@@ -147,13 +147,13 @@ fn cameo_tip_text(money_format: Option<&str>, name: &str, cost: Option<i32>) -> 
 /// from direct CSF keys, cameos through the money format.
 fn sync_in_game_regions(state: &mut AppState) {
     let Some(view) = current_sidebar_view(state).cloned() else {
-        state.tooltips.sync_regions(&[]);
+        state.match_presentation.tooltips.sync_regions(&[]);
         return;
     };
     let mut regions: Vec<TipRegion> = Vec::with_capacity(9 + view.items.len());
     // Power meter first: gamemd asks the power bar for a tip before the
     // sidebar gadget ids, and registration order decides the hit here.
-    let power_rect = crate::sidebar::power_bar_rect(&view.layout, state.sidebar_layout_spec);
+    let power_rect = crate::sidebar::power_bar_rect(&view.layout, state.match_presentation.sidebar_layout_spec);
     let power_text = state
         .csf
         .as_ref()
@@ -239,7 +239,7 @@ fn sync_in_game_regions(state: &mut AppState) {
             text,
         });
     }
-    state.tooltips.sync_regions(&regions);
+    state.match_presentation.tooltips.sync_regions(&regions);
 }
 
 /// In-game tooltip draw: (fill instances on the darken texture, text
@@ -248,7 +248,7 @@ fn sync_in_game_regions(state: &mut AppState) {
 pub(crate) fn build_tooltip_instances(
     state: &AppState,
 ) -> (Vec<SpriteInstance>, Vec<SpriteInstance>) {
-    let Some(tip) = state.tooltips.active() else {
+    let Some(tip) = state.match_presentation.tooltips.active() else {
         return (Vec::new(), Vec::new());
     };
     if state.screen != GameScreen::InGame {

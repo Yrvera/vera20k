@@ -294,7 +294,7 @@ pub(crate) fn build_anim_class_instances(
                 // No authoritative draw-rate degradation producer exists yet.
                 frame_rate_below_minimum: false,
                 type_detail_level: config.map_or(0, |value| value.detail_level),
-                game_detail_level: state.in_game_options.detail_level as i32,
+                game_detail_level: state.match_presentation.in_game_options.detail_level as i32,
                 hidden: anim.draw_runtime.hidden,
                 special_hidden: anim.draw_runtime.special_hidden,
                 // The native special-hide type bit remains an explicit residual.
@@ -330,7 +330,7 @@ pub(crate) fn build_anim_class_instances(
                 presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name)
                     .unwrap_or(0),
             ),
-            state.in_game_options.detail_level as i32,
+            state.match_presentation.in_game_options.detail_level as i32,
             anim.draw_runtime,
         ) else {
             continue;

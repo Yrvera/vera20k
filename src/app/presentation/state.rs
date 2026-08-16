@@ -7,6 +7,7 @@
 //! process-lifetime GPU objects live in `app::renderer_state::RendererState`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::Instant;
 
 use crate::map::cell_tags::CellTagMap;
 use crate::map::houses::{HouseColorMap, HouseRoster};
@@ -25,6 +26,7 @@ use crate::render::sidebar_chrome::SidebarChromeSet;
 use crate::render::sprite_atlas::SpriteAtlas;
 use crate::render::tile_atlas::TileAtlas;
 use crate::render::unit_atlas::UnitAtlas;
+use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
 
 pub(crate) struct MatchPresentationState {
     pub(crate) tile_atlas: Option<TileAtlas>,
@@ -142,4 +144,69 @@ pub(crate) struct MatchPresentationState {
     pub(crate) cached_unit_instances: Vec<crate::render::batch::SpriteInstance>,
     /// UnitAtlas texture-page tags aligned with `cached_unit_instances`.
     pub(crate) cached_unit_pages: Vec<usize>,
+    /// Animated power bar — segment-by-segment transition matching original PowerClass.
+    pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
+    /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
+    /// `sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
+    /// read each frame by the sidebar view builder to pick SHP frame indices.
+    pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
+    /// In-game gadget substrate (study §6.1): retained sidebar button list +
+    /// capture/focus state + reusable tick output + the mouse-held record.
+    pub(crate) in_game_gadgets: crate::app::input::gadget_input::InGameGadgets,
+    /// Retained immutable sidebar view plus its per-owner animated credit state.
+    /// Consumers read the snapshot; explicit transitions rebuild it.
+    pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
+    /// Active tab for the custom in-game sidebar.
+    pub(crate) active_sidebar_tab: SidebarTab,
+    /// Optional local override for chrome positioning loaded from sidebar_layout.ron.
+    /// This is the SCALED version — multiply base by ui_scale at init/resize.
+    pub(crate) sidebar_layout_spec: SidebarChromeLayoutSpec,
+    /// Unscaled base layout spec (from file or stock). Kept for re-scaling on resize.
+    pub(crate) sidebar_layout_spec_base: SidebarChromeLayoutSpec,
+    /// Integer UI scale factor (1, 2, or 3). Auto-detected from screen height.
+    /// Sidebar, minimap, and other UI elements are scaled by this factor.
+    pub(crate) ui_scale: f32,
+    /// Scroll offset for the current sidebar tab's item list.
+    ///
+    /// gamemd's sidebar keeps this row per build strip, not one shared value —
+    /// its scroll command indexes the strip by column. This holds the live row
+    /// for the active tab; the parked rows for the other tabs live in
+    /// `sidebar_scroll_rows_parked` and swap in and out on a tab change, which
+    /// keeps every consumer reading one field while the position stops bleeding
+    /// across tabs.
+    pub(crate) sidebar_scroll_rows: usize,
+    /// Parked scroll row per sidebar tab, indexed by `input::dispatch::tab_scroll_slot`.
+    /// One entry per `SidebarTab` variant.
+    pub(crate) sidebar_scroll_rows_parked: [usize; 4],
+    /// Shared tooltip service (study S1) — the model is clock-injected; only
+    /// `app_tooltips` reads the wall clock.
+    pub(crate) tooltips: crate::ui::tooltips::TooltipService,
+    /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
+    /// app construction).
+    pub(crate) tooltip_epoch: Instant,
+    /// In-game chat/system message surface (study §3.1) — re-anchored to the
+    /// tactical viewport per frame by `app_messages`.
+    pub(crate) message_list: crate::ui::messages::MessageList,
+    /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
+    /// §4.3: the native composite timer freezes during pause). Fed pause
+    /// edges by `messages::update`.
+    pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
+    /// In-scenario modal state — the port of gamemd's in-scenario state
+    /// variable. Owns the in-game menu, the abort-mission confirmation and the
+    /// parent/child relationship with the `0xBBB` Options dialog.
+    pub(crate) in_game_menu: crate::ui::pause_menu::InGameMenuState,
+    /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
+    /// transient interaction flags. `game_speed` mirrors the launched sim and
+    /// queues an authoritative transition on close; `sim_speed_tps` is its local
+    /// presentation readout. App/ui-level.
+    pub(crate) in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState,
+    /// Laid-out 0xBBB anchor cached by the overlay render pass each frame it draws,
+    /// so the paused mouse handler hit-tests the exact rects that were rendered
+    /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
+    /// overlay first renders.
+    pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
+    /// Show hotkey reference overlay. Toggle with F1.
+    pub(crate) show_hotkey_help: bool,
+    /// Save/load panel visible. Toggle with F5.
+    pub(crate) show_save_load_panel: bool,
 }

@@ -629,7 +629,7 @@ fn update_right_drag_pan(state: &mut AppState) {
         cursor,
         state.render_width() as f32,
         state.render_height() as f32,
-        state.in_game_options.scroll_rate,
+        state.match_presentation.in_game_options.scroll_rate,
     );
     // The pan distance is in window pixels. Stock YR has no world zoom, so the
     // divide is VERA-internal and exact at zoom 1.0.
@@ -696,7 +696,7 @@ pub(crate) fn update_camera(state: &mut AppState) {
     // minimap re-centres only on press, while this flag owns the gesture here.
     if !state.input.tactical_mouse.captured && !state.input.minimap_dragging {
         let now = state.input.edge_scroll.radar_timer();
-        let scroll_rate = state.in_game_options.scroll_rate;
+        let scroll_rate = state.match_presentation.in_game_options.scroll_rate;
         let active_direction =
             edge_scroll_intent((state.input.cursor_x, state.input.cursor_y), sw as i32, sh as i32);
         let requested_direction =
@@ -715,7 +715,7 @@ pub(crate) fn update_camera(state: &mut AppState) {
             sh as i32,
             scroll_rate,
             scroll_multiplier,
-            state.in_game_gadgets.right_held,
+            state.match_presentation.in_game_gadgets.right_held,
             movement_allowed,
             now,
         );

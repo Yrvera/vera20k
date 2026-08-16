@@ -250,8 +250,8 @@ fn sell_wall_command_for_cell(
 /// repair/sell mode was active (the click is consumed by the mode regardless of
 /// whether it landed on a building), `false` when neither mode is on.
 pub(crate) fn try_repair_sell_mode_click(state: &mut AppState) -> bool {
-    let repair = state.sidebar_gadget_state.repair_mode_on;
-    let sell = state.sidebar_gadget_state.sell_mode_on;
+    let repair = state.match_presentation.sidebar_gadget_state.repair_mode_on;
+    let sell = state.match_presentation.sidebar_gadget_state.sell_mode_on;
     if !repair && !sell {
         return false;
     }

@@ -30,7 +30,7 @@ pub(crate) use crate::app::presentation::sidebar_build::{
 /// Return the one retained sidebar projection. Reading it never advances
 /// credits, clears targeting, or clamps scroll state.
 pub(crate) fn current_sidebar_view(state: &AppState) -> Option<&SidebarView> {
-    state.sidebar_projection.view()
+    state.match_presentation.sidebar_projection.view()
 }
 
 /// Advance the displayed balance at the authoritative gameplay-frame seam.
@@ -48,7 +48,7 @@ pub(crate) fn advance_sidebar_credits_after_frame(
     };
     let credits = production::credits_for_owner(sim, &owner_name);
     state
-        .sidebar_projection
+        .match_presentation.sidebar_projection
         .advance_credits(&owner_name, credits);
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         ))
     })()
     else {
-        state.sidebar_projection.replace_view(None);
+        state.match_presentation.sidebar_projection.replace_view(None);
         return;
     };
 
@@ -118,10 +118,10 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         }
     }
     let display_credits = state
-        .sidebar_projection
+        .match_presentation.sidebar_projection
         .displayed_credits_or_seed(&owner_name, credits);
     let (tab_btn_size, repair_btn_size, sell_btn_size, scroll_down_btn_size, scroll_up_btn_size) = {
-        let scale = state.ui_scale;
+        let scale = state.match_presentation.ui_scale;
         let size = |entry: Option<&crate::render::sidebar_chrome::SidebarChromeEntry>| {
             entry.map(|entry| [entry.pixel_size[0] * scale, entry.pixel_size[1] * scale])
         };
@@ -151,10 +151,10 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         }
     });
     let mut view = sidebar::build_sidebar_view_with_spec(
-        state.sidebar_layout_spec,
+        state.match_presentation.sidebar_layout_spec,
         state.render_width() as f32,
         state.render_height() as f32,
-        state.active_sidebar_tab,
+        state.match_presentation.active_sidebar_tab,
         display_credits,
         power_produced,
         power_drained,
@@ -164,22 +164,22 @@ pub(crate) fn refresh_sidebar_projection(state: &mut AppState) {
         &ready_buildings,
         armed_entry.as_ref(),
         &producer_focus,
-        state.sidebar_scroll_rows,
+        state.match_presentation.sidebar_scroll_rows,
         state.sim_runtime.as_ref().map(|rt| &rt.simulation).map(|sim| &sim.interner),
         &sw_views,
-        &state.sidebar_gadget_state,
+        &state.match_presentation.sidebar_gadget_state,
         repair_btn_size,
         sell_btn_size,
         scroll_down_btn_size,
         scroll_up_btn_size,
     );
-    state.sidebar_scroll_rows = view.scroll_rows;
+    state.match_presentation.sidebar_scroll_rows = view.scroll_rows;
     if let Some(atlas) = state.match_presentation.sidebar_cameo_atlas.as_ref() {
         for item in &mut view.items {
             item.has_cameo_art = atlas.get(&item.type_id).is_some();
         }
     }
-    state.sidebar_projection.replace_view(Some(view));
+    state.match_presentation.sidebar_projection.replace_view(Some(view));
 }
 
 pub(crate) fn sync_targeting_mode(
@@ -399,8 +399,8 @@ pub(crate) fn active_minimap_screen_rect(state: &AppState) -> crate::sidebar::Re
         const MINIMAP_WIDTH: f32 = 140.0;
         const MINIMAP_HEIGHT: f32 = 120.0;
 
-        let spec = state.sidebar_layout_spec;
-        let s = state.ui_scale;
+        let spec = state.match_presentation.sidebar_layout_spec;
+        let s = state.match_presentation.ui_scale;
         let sidebar_x = sw - spec.sidebar_width + spec.x_offset;
         crate::sidebar::Rect {
             x: sidebar_x + MINIMAP_LEFT * s,

@@ -909,7 +909,7 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
 }
 
 pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
-    let sw = state.sidebar_layout_spec.sidebar_width;
+    let sw = state.match_presentation.sidebar_layout_spec.sidebar_width;
     let panel_rect = crate::sidebar::Rect {
         x: state.render_width() as f32 - sw - 10.0,
         y: 10.0,

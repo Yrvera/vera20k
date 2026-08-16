@@ -720,7 +720,7 @@ fn advance_in_game_runtime_mode(
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
             let game_speed = state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or_else(
-                || state.in_game_options.game_speed.min(6) as u8,
+                || state.match_presentation.in_game_options.game_speed.min(6) as u8,
                 |sim| sim.session.game_options.game_speed.clamp(0, 6) as u8,
             );
             // Pure timing consult; pause/menu blocking belongs to the decision.
@@ -737,7 +737,7 @@ fn advance_in_game_runtime_mode(
         startup_admitted,
         frame_stepping,
         paused: state.paused,
-        menu_open: state.in_game_menu.is_open(),
+        menu_open: state.match_presentation.in_game_menu.is_open(),
         session_mode: current_session_mode(state),
         pacer_timing_admits,
     });
@@ -1458,7 +1458,7 @@ fn refresh_cell_lighting(state: &mut AppState) {
             &state.match_presentation.map_lighting_config,
             Some(sim),
             Some(rules),
-            state.in_game_options.detail_level,
+            state.match_presentation.in_game_options.detail_level,
         );
         if state.match_presentation.last_lighting_view_fingerprint == Some(view.fingerprint) {
             None

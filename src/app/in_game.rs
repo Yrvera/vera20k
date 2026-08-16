@@ -30,8 +30,8 @@ impl App {
 
     pub(super) fn return_to_main_menu(state: &mut AppState) {
         state.paused = false;
-        state.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
-        state.in_game_options_anchor = None;
+        state.match_presentation.in_game_menu = crate::ui::pause_menu::InGameMenuState::Closed;
+        state.match_presentation.in_game_options_anchor = None;
         // Persist the deterministic diagnostic log before its owning sim is
         // torn down.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
@@ -124,10 +124,10 @@ impl App {
     /// cancels that instead and the machine stays out of it.
     pub(super) fn in_game_menu_owns_escape(state: &AppState) -> bool {
         let in_world_mode_armed = state.input.targeting_mode.is_some()
-            || state.sidebar_gadget_state.repair_mode_on
-            || state.sidebar_gadget_state.sell_mode_on;
+            || state.match_presentation.sidebar_gadget_state.repair_mode_on
+            || state.match_presentation.sidebar_gadget_state.sell_mode_on;
         crate::ui::pause_menu::escape_belongs_to_modal_machine(
-            state.in_game_menu,
+            state.match_presentation.in_game_menu,
             in_world_mode_armed,
         )
     }
@@ -139,10 +139,10 @@ impl App {
         // Backing out of Options takes the same exit its Back control does —
         // apply and persist the touched `[Options]` values — so the two ways of
         // leaving the dialog cannot disagree about what was saved.
-        if state.in_game_menu == InGameMenuState::Options {
+        if state.match_presentation.in_game_menu == InGameMenuState::Options {
             crate::app::persistence::options::in_game_options_close(state);
         }
-        let next = state.in_game_menu.on_escape();
+        let next = state.match_presentation.in_game_menu.on_escape();
         Self::enter_in_game_menu_state(state, next);
     }
 
@@ -161,7 +161,7 @@ impl App {
     ) {
         use crate::ui::pause_menu::InGameMenuState;
 
-        let previous = state.in_game_menu;
+        let previous = state.match_presentation.in_game_menu;
         if previous == next {
             return;
         }
@@ -177,17 +177,17 @@ impl App {
                 state.scenario_elapsed_clock.resume(now_ms);
             }
         }
-        state.in_game_menu = next;
+        state.match_presentation.in_game_menu = next;
 
         // Leaving Options: drop the cached `0xBBB` hit-test anchor so the
         // overlay's own mouse handler cannot claim clicks aimed at the menu.
         if previous == InGameMenuState::Options {
-            state.in_game_options_anchor = None;
+            state.match_presentation.in_game_options_anchor = None;
         }
         if next == InGameMenuState::Options {
             // Reset the transient interaction flags so the drag-gated
             // value-label quirk resets on every open.
-            state.in_game_options.on_open();
+            state.match_presentation.in_game_options.on_open();
         }
 
         state.paused = next.is_open();
@@ -213,7 +213,7 @@ impl App {
     pub(super) fn handle_in_game_menu(state: &mut AppState) {
         use crate::ui::pause_menu::{self, InGameMenuState, ModalOutcome};
 
-        let outcome = match state.in_game_menu {
+        let outcome = match state.match_presentation.in_game_menu {
             InGameMenuState::Closed => ModalOutcome::Stay,
             InGameMenuState::Menu => {
                 pause_menu::resolve_menu_action(pause_menu::draw_in_game_menu(&state.renderer.egui.ctx))
@@ -249,7 +249,7 @@ impl App {
     pub(super) fn sync_in_game_menu_with_options_overlay(state: &mut AppState) {
         use crate::ui::pause_menu::InGameMenuState;
 
-        if state.in_game_menu == InGameMenuState::Options && !state.paused {
+        if state.match_presentation.in_game_menu == InGameMenuState::Options && !state.paused {
             Self::enter_in_game_menu_state(state, InGameMenuState::Menu);
         }
     }
@@ -372,7 +372,7 @@ impl App {
                 state.persistence.invalidate_save_list();
             }
             SaveLoadAction::Close => {
-                state.show_save_load_panel = false;
+                state.match_presentation.show_save_load_panel = false;
             }
             SaveLoadAction::None => {}
         }

@@ -103,7 +103,7 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     };
 
     // Compute bar height from sidebar layout.
-    let spec = state.sidebar_layout_spec;
+    let spec = state.match_presentation.sidebar_layout_spec;
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
     let layout = crate::sidebar::compute_layout_with_spec(spec, sw, sh, 0);
@@ -111,11 +111,11 @@ pub(crate) fn update_power_bar_anim(state: &mut AppState) {
     let region_top = layout.tabs_y + spec.power_bar_top_y;
     let bar_height_px = (region_bottom - region_top).max(0.0) as i32;
 
-    state.power_bar_anim.set_max_segments(bar_height_px);
+    state.match_presentation.power_bar_anim.set_max_segments(bar_height_px);
     state
-        .power_bar_anim
+        .match_presentation.power_bar_anim
         .update(power_produced, power_drained, theoretical);
-    state.power_bar_anim.tick();
+    state.match_presentation.power_bar_anim.tick();
 }
 
 /// Update radar availability from ECS and tick the radar chrome animation.

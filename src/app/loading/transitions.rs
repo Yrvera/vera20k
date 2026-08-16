@@ -39,7 +39,7 @@ pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
     else {
         return;
     };
-    state.in_game_options.game_speed = game_speed;
+    state.match_presentation.in_game_options.game_speed = game_speed;
     state.sim_speed_tps = crate::app::types::tps_for_game_speed(game_speed);
 }
 
@@ -206,7 +206,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_presentation.lighting_grid = result.presentation.lighting_grid;
     state.match_presentation.applied_lighting_sources.clear();
     state.match_presentation.applied_lighting_profile = None;
-    state.match_presentation.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+    state.match_presentation.applied_lighting_detail_level = state.match_presentation.in_game_options.detail_level.min(2);
     state.match_presentation.pending_lighting_refresh = None;
     state.match_presentation.map_lighting_config = result.scenario.map_lighting_config;
     state.match_presentation.last_lighting_view_fingerprint = None;
@@ -229,7 +229,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                 &state.match_presentation.map_lighting_config,
                 Some(sim),
                 Some(rules),
-                state.in_game_options.detail_level,
+                state.match_presentation.in_game_options.detail_level,
             );
             let fingerprint = view.fingerprint;
             let profile = view.profile;
@@ -271,21 +271,21 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     }
     state.input.targeting_mode = None;
     state.input.building_placement_preview = None;
-    state.active_sidebar_tab = SidebarTab::default_active_tab();
-    state.sidebar_scroll_rows = 0;
-    state.sidebar_scroll_rows_parked = [0; 4];
+    state.match_presentation.active_sidebar_tab = SidebarTab::default_active_tab();
+    state.match_presentation.sidebar_scroll_rows = 0;
+    state.match_presentation.sidebar_scroll_rows_parked = [0; 4];
     // Re-init the message surface per scenario (the native list is
     // re-initialized at scenario start): drops stale rows from the previous
     // game and any dangling pause span, so a pause→quit→new-map sequence
     // never folds the menu dwell into the new game's frozen-deadline clock.
     // Anchors mirror the AppState ctor; x/width re-sync on first use.
-    state.message_list = crate::ui::messages::MessageList::new(
+    state.match_presentation.message_list = crate::ui::messages::MessageList::new(
         3,
         0,
         crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
         0,
     );
-    state.message_clock = crate::ui::messages::PauseAwareClock::default();
+    state.match_presentation.message_clock = crate::ui::messages::PauseAwareClock::default();
     let map_title: &str = state.map_basic.name.as_deref().unwrap_or("Unknown Map");
     state.platform.window.set_title(&format!("RA2 - {}", map_title));
     state

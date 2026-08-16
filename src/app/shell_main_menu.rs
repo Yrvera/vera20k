@@ -541,7 +541,7 @@ impl App {
             }
             SinglePlayerShellAction::LoadSavedGame => {
                 if state.single_player_shell_state.load_saved_game_enabled {
-                    state.show_save_load_panel = true;
+                    state.match_presentation.show_save_load_panel = true;
                     state.persistence.invalidate_save_list();
                 }
             }

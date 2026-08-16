@@ -147,31 +147,6 @@ pub(crate) struct AppState {
     /// frame remains visible but simulation is frozen; its destination is
     /// committed only after the retail fade/voice-wait sequence completes.
     pub(crate) scenario_exit: Option<crate::app::match_runtime::scenario_exit::ScenarioExitCascade>,
-    /// Animated power bar — segment-by-segment transition matching original PowerClass.
-    pub(crate) power_bar_anim: crate::sidebar::PowerBarAnimState,
-    /// Persistent flash + mode state for in-game sidebar gadgets. Ticked from
-    /// `sidebar_gadgets::update_sidebar_gadget_state` once per sim tick;
-    /// read each frame by the sidebar view builder to pick SHP frame indices.
-    pub(crate) sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState,
-    /// In-game gadget substrate (study §6.1): retained sidebar button list +
-    /// capture/focus state + reusable tick output + the mouse-held record.
-    pub(crate) in_game_gadgets: crate::app::input::gadget_input::InGameGadgets,
-    /// Shared tooltip service (study S1) — the model is clock-injected; only
-    /// `app_tooltips` reads the wall clock.
-    pub(crate) tooltips: crate::ui::tooltips::TooltipService,
-    /// Epoch for the tooltip/message wall-clock (`now_ms` = elapsed since
-    /// app construction).
-    pub(crate) tooltip_epoch: Instant,
-    /// In-game chat/system message surface (study §3.1) — re-anchored to the
-    /// tactical viewport per frame by `app_messages`.
-    pub(crate) message_list: crate::ui::messages::MessageList,
-    /// Pause-adjusted clock for message deadlines (contract §4.2 step 8 /
-    /// §4.3: the native composite timer freezes during pause). Fed pause
-    /// edges by `messages::update`.
-    pub(crate) message_clock: crate::ui::messages::PauseAwareClock,
-    /// Retained immutable sidebar view plus its per-owner animated credit state.
-    /// Consumers read the snapshot; explicit transitions rebuild it.
-    pub(crate) sidebar_projection: crate::app::sidebar_projection::SidebarProjectionState,
     /// Game data from rules.ini — needed by combat system for weapon/warhead lookups.
     /// Startup-shell rules loaded at boot for menu presentation; match paths
     /// read the runtime-bound copy via `rules()`.
@@ -210,28 +185,6 @@ pub(crate) struct AppState {
     pub(crate) diag: crate::app::diagnostics::state::DiagnosticsState,
     /// Seeded empty-map sandbox keeps full map visibility while still locking control.
     pub(crate) sandbox_full_visibility: bool,
-    /// Active tab for the custom in-game sidebar.
-    pub(crate) active_sidebar_tab: SidebarTab,
-    /// Optional local override for chrome positioning loaded from sidebar_layout.ron.
-    /// This is the SCALED version — multiply base by ui_scale at init/resize.
-    pub(crate) sidebar_layout_spec: SidebarChromeLayoutSpec,
-    /// Unscaled base layout spec (from file or stock). Kept for re-scaling on resize.
-    pub(crate) sidebar_layout_spec_base: SidebarChromeLayoutSpec,
-    /// Integer UI scale factor (1, 2, or 3). Auto-detected from screen height.
-    /// Sidebar, minimap, and other UI elements are scaled by this factor.
-    pub(crate) ui_scale: f32,
-    /// Scroll offset for the current sidebar tab's item list.
-    ///
-    /// gamemd's sidebar keeps this row per build strip, not one shared value —
-    /// its scroll command indexes the strip by column. This holds the live row
-    /// for the active tab; the parked rows for the other tabs live in
-    /// `sidebar_scroll_rows_parked` and swap in and out on a tab change, which
-    /// keeps every consumer reading one field while the position stops bleeding
-    /// across tabs.
-    pub(crate) sidebar_scroll_rows: usize,
-    /// Parked scroll row per sidebar tab, indexed by `input::dispatch::tab_scroll_slot`.
-    /// One entry per `SidebarTab` variant.
-    pub(crate) sidebar_scroll_rows_parked: [usize; 4],
     /// Process-wide asset ownership (F11): the one retail MIX manager for
     /// the process, leased to the loading pipeline and always returned.
     pub(crate) process_assets: crate::app::process_assets::ProcessAssets,
@@ -242,29 +195,11 @@ pub(crate) struct AppState {
     /// Derived from `in_game_menu` for every player-driven modal; the debug
     /// pause (dev overlay / hotkey) also sets it without opening a menu.
     pub(crate) paused: bool,
-    /// In-scenario modal state — the port of gamemd's in-scenario state
-    /// variable. Owns the in-game menu, the abort-mission confirmation and the
-    /// parent/child relationship with the `0xBBB` Options dialog.
-    pub(crate) in_game_menu: crate::ui::pause_menu::InGameMenuState,
     /// Effective simulation ticks per second — controls game speed.
     /// Default follows retail/YR skirmish stored game speed 1.
     pub(crate) sim_speed_tps: u32,
-    /// Client-side in-game Options (0xBBB) state: the six [Options] values plus
-    /// transient interaction flags. `game_speed` mirrors the launched sim and
-    /// queues an authoritative transition on close; `sim_speed_tps` is its local
-    /// presentation readout. App/ui-level.
-    pub(crate) in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState,
-    /// Laid-out 0xBBB anchor cached by the overlay render pass each frame it draws,
-    /// so the paused mouse handler hit-tests the exact rects that were rendered
-    /// (the sidebar-anchored button Y is render-derived; see KD-6). None until the
-    /// overlay first renders.
-    pub(crate) in_game_options_anchor: Option<crate::ui::shell::layout::InGameOptionsAnchor>,
     /// Retail process-start splash, held until its post-present deadline.
     pub(crate) startup_splash: Option<startup_splash::StartupSplashPresentation>,
-    /// Show hotkey reference overlay. Toggle with F1.
-    pub(crate) show_hotkey_help: bool,
-    /// Save/load panel visible. Toggle with F5.
-    pub(crate) show_save_load_panel: bool,
     /// Exit-Game confirm message box, open while the player is being asked to
     /// confirm quitting. The app only exits on confirm, never on the first
     /// Exit click.
@@ -316,7 +251,7 @@ impl AppState {
     pub(crate) fn use_software_cursor(&self) -> bool {
         self.match_presentation.software_cursor.is_some()
             && !self.paused
-            && !self.show_save_load_panel
+            && !self.match_presentation.show_save_load_panel
             && !self.main_menu_dialog_open()
     }
 

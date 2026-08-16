@@ -147,8 +147,8 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 state.input.tactical_mouse.left_held = true;
                 state.input.tactical_mouse.captured = true;
                 if state.input.targeting_mode.is_some()
-                    || state.sidebar_gadget_state.repair_mode_on
-                    || state.sidebar_gadget_state.sell_mode_on
+                    || state.match_presentation.sidebar_gadget_state.repair_mode_on
+                    || state.match_presentation.sidebar_gadget_state.sell_mode_on
                 {
                     return; // suppress selection drag while a targeting / repair / sell mode is active
                 }
@@ -458,9 +458,9 @@ fn right_click_cancel_ladder(state: &mut AppState) {
         state.input.building_placement_preview = None;
         return;
     }
-    if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
-        state.sidebar_gadget_state.repair_mode_on = false;
-        state.sidebar_gadget_state.sell_mode_on = false;
+    if state.match_presentation.sidebar_gadget_state.repair_mode_on || state.match_presentation.sidebar_gadget_state.sell_mode_on {
+        state.match_presentation.sidebar_gadget_state.repair_mode_on = false;
+        state.match_presentation.sidebar_gadget_state.sell_mode_on = false;
         return;
     }
     queue_selection_snapshot_command(state, Vec::new(), false);
@@ -769,7 +769,7 @@ pub(crate) fn sidebar_wheel_scroll(state: &mut AppState, delta_lines: f32) {
     let Some(view) = current_sidebar_view(state).cloned() else {
         return;
     };
-    state.sidebar_scroll_rows = wheel_scrolled_row(
+    state.match_presentation.sidebar_scroll_rows = wheel_scrolled_row(
         view.scroll_rows,
         view.max_scroll_rows,
         wheel_action(delta_lines),
@@ -795,11 +795,11 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             // gamemd's scroll row is per build strip, so switching tabs must not
             // carry the outgoing strip's position over — nor throw it away. Park
             // the row we are leaving and restore the one we are entering.
-            if tab != state.active_sidebar_tab {
-                state.sidebar_scroll_rows_parked[tab_scroll_slot(state.active_sidebar_tab)] =
-                    state.sidebar_scroll_rows;
-                state.active_sidebar_tab = tab;
-                state.sidebar_scroll_rows = state.sidebar_scroll_rows_parked[tab_scroll_slot(tab)];
+            if tab != state.match_presentation.active_sidebar_tab {
+                state.match_presentation.sidebar_scroll_rows_parked[tab_scroll_slot(state.match_presentation.active_sidebar_tab)] =
+                    state.match_presentation.sidebar_scroll_rows;
+                state.match_presentation.active_sidebar_tab = tab;
+                state.match_presentation.sidebar_scroll_rows = state.match_presentation.sidebar_scroll_rows_parked[tab_scroll_slot(tab)];
             }
         }
         SidebarAction::BuildType(type_id) => {
@@ -808,8 +808,8 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
         SidebarAction::ArmPlacement(type_id) => {
             state.input.targeting_mode =
                 Some(crate::app::types::TargetingMode::BuildingPlacement(type_id));
-            state.sidebar_gadget_state.repair_mode_on = false;
-            state.sidebar_gadget_state.sell_mode_on = false;
+            state.match_presentation.sidebar_gadget_state.repair_mode_on = false;
+            state.match_presentation.sidebar_gadget_state.sell_mode_on = false;
         }
         SidebarAction::ClearPlacementMode => {
             state.input.targeting_mode = None;
@@ -819,8 +819,8 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             state.input.targeting_mode = Some(crate::app::types::TargetingMode::SuperWeapon(section));
             // Mutual exclusion: clear building-placement preview AND repair/sell modes.
             state.input.building_placement_preview = None;
-            state.sidebar_gadget_state.repair_mode_on = false;
-            state.sidebar_gadget_state.sell_mode_on = false;
+            state.match_presentation.sidebar_gadget_state.repair_mode_on = false;
+            state.match_presentation.sidebar_gadget_state.sell_mode_on = false;
             log::info!(
                 "SuperWeapon armed: type={}",
                 state.armed_super_weapon_type().unwrap_or("")
@@ -852,7 +852,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             spawn_test_units_for_local_owner(state);
         }
         SidebarAction::ToggleRepairMode => {
-            let g = &mut state.sidebar_gadget_state;
+            let g = &mut state.match_presentation.sidebar_gadget_state;
             g.repair_mode_on = !g.repair_mode_on;
             if g.repair_mode_on {
                 g.sell_mode_on = false;
@@ -861,7 +861,7 @@ pub(crate) fn apply_sidebar_action(state: &mut AppState, action: SidebarAction) 
             }
         }
         SidebarAction::ToggleSellMode => {
-            let g = &mut state.sidebar_gadget_state;
+            let g = &mut state.match_presentation.sidebar_gadget_state;
             g.sell_mode_on = !g.sell_mode_on;
             if g.sell_mode_on {
                 g.repair_mode_on = false;
@@ -1191,12 +1191,12 @@ fn handle_options_hotkey(state: &mut AppState) {
     } else if state.input.targeting_mode.is_some() {
         state.input.targeting_mode = None;
         state.input.building_placement_preview = None;
-    } else if state.sidebar_gadget_state.repair_mode_on || state.sidebar_gadget_state.sell_mode_on {
-        state.sidebar_gadget_state.repair_mode_on = false;
-        state.sidebar_gadget_state.sell_mode_on = false;
+    } else if state.match_presentation.sidebar_gadget_state.repair_mode_on || state.match_presentation.sidebar_gadget_state.sell_mode_on {
+        state.match_presentation.sidebar_gadget_state.repair_mode_on = false;
+        state.match_presentation.sidebar_gadget_state.sell_mode_on = false;
     } else {
         state.paused = true;
-        state.in_game_options.on_open();
+        state.match_presentation.in_game_options.on_open();
         if state.match_presentation.software_cursor.is_some() {
             state.platform.window.set_cursor_visible(true);
         }
@@ -1211,7 +1211,7 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
         // stock YR binds to the first camera bookmark. Moved onto the dev chord,
         // which stock binds nothing to.
         KeyCode::F1 => {
-            state.show_hotkey_help = !state.show_hotkey_help;
+            state.match_presentation.show_hotkey_help = !state.match_presentation.show_hotkey_help;
         }
         KeyCode::KeyM => {
             quicksave(state);
@@ -1220,8 +1220,8 @@ fn handle_dev_hotkey_pressed(state: &mut AppState, code: winit::keyboard::KeyCod
             quickload(state);
         }
         KeyCode::F5 => {
-            state.show_save_load_panel = !state.show_save_load_panel;
-            if state.show_save_load_panel {
+            state.match_presentation.show_save_load_panel = !state.match_presentation.show_save_load_panel;
+            if state.match_presentation.show_save_load_panel {
                 state.persistence.invalidate_save_list();
                 // Show OS cursor for egui interaction.
                 if state.match_presentation.software_cursor.is_some() {
@@ -1659,12 +1659,12 @@ fn commit_prepared_load(
             &state.match_presentation.map_lighting_config,
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),
             state.rules(),
-            state.in_game_options.detail_level,
+            state.match_presentation.in_game_options.detail_level,
         );
         state.match_presentation.pending_lighting_refresh = None;
         state.match_presentation.applied_lighting_sources.clear();
         state.match_presentation.applied_lighting_profile = None;
-        state.match_presentation.applied_lighting_detail_level = state.in_game_options.detail_level.min(2);
+        state.match_presentation.applied_lighting_detail_level = state.match_presentation.in_game_options.detail_level.min(2);
         state.match_presentation.last_lighting_view_fingerprint = None;
     }
 
@@ -1672,7 +1672,7 @@ fn commit_prepared_load(
     state.platform.frame_pacer.reset_for_immediate_frame();
 
     // Close the save/load panel after loading.
-    state.show_save_load_panel = false;
+    state.match_presentation.show_save_load_panel = false;
 
     // Same-content in-scenario load retains the accepted startup authority
     // that admitted the running match. Cross-session loads require a new

@@ -826,7 +826,7 @@ pub(super) fn build_sidebar_instances(state: &mut AppState) -> SidebarInstances 
         text.extend(crate::app::presentation::sidebar_text::build_sidebar_credits_instances(
             &state.renderer.bit_font,
             v,
-            state.ui_scale,
+            state.match_presentation.ui_scale,
             crate::app::presentation::sidebar_text::credits_tint(theme),
             [state.input.camera_x, state.input.camera_y],
         ));
@@ -866,10 +866,10 @@ fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
 
     let sw: f32 = state.render_width() as f32;
     let sh: f32 = state.render_height() as f32;
-    let spec = state.sidebar_layout_spec;
+    let spec = state.match_presentation.sidebar_layout_spec;
     let layout = crate::sidebar::compute_layout_with_spec(spec, sw, sh, 0);
 
-    let s = state.ui_scale;
+    let s = state.match_presentation.ui_scale;
     vec![SpriteInstance {
         position: [
             state.input.camera_x + layout.sidebar_x,

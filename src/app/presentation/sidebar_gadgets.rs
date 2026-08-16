@@ -51,7 +51,7 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     let initial_state: u8 = if next_boundary & 1 == 0 { 1 } else { 0 };
 
     // --- Step 3: drive Start/Stop on each tab. ---
-    let gadgets = &mut state.sidebar_gadget_state;
+    let gadgets = &mut state.match_presentation.sidebar_gadget_state;
     // Building (idx 0) — never flashes in retail.
     gadgets.tab_flashes[SidebarTab::Building.tab_index()].stop();
     // Defense (idx 1) — flashes on any SW ready.

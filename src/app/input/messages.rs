@@ -34,7 +34,7 @@ const TYPE_SELECT_FALLBACK_SCHEME_ENTRY: crate::rules::house_colors::HouseColorI
 /// clock — never the raw `tooltips::now_ms` — so a pause freezes the
 /// remaining lifetime of every visible row.
 pub(crate) fn message_now_ms(state: &AppState) -> u64 {
-    state.message_clock.now(crate::app::input::tooltips::now_ms(state))
+    state.match_presentation.message_clock.now(crate::app::input::tooltips::now_ms(state))
 }
 
 /// Post a system message (mission/trigger text, future house notifications).
@@ -43,7 +43,7 @@ pub(crate) fn post_system_message(state: &mut AppState, text: &str) {
     let now = message_now_ms(state);
     let font = &state.renderer.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;
-    let outcome = state.message_list.add_message(
+    let outcome = state.match_presentation.message_list.add_message(
         &crate::ui::messages::MessagePost {
             prefix: None,
             text,
@@ -73,7 +73,7 @@ pub(crate) fn post_type_select_feedback(state: &mut AppState, csf_key: &str) {
     let font = &state.renderer.bit_font;
     let measure = |s: &str| font.text_width(s) as i32;
     let outcome = add_type_select_feedback(
-        &mut state.message_list,
+        &mut state.match_presentation.message_list,
         state.csf.as_ref(),
         csf_key,
         rgb,
@@ -139,20 +139,20 @@ pub(crate) fn update(state: &mut AppState) {
         return;
     }
     let wall = crate::app::input::tooltips::now_ms(state);
-    state.message_clock.set_paused(state.paused, wall);
+    state.match_presentation.message_clock.set_paused(state.paused, wall);
     if state.paused {
         return;
     }
     sync_view(state);
     let now = message_now_ms(state);
-    state.message_list.manage(now);
+    state.match_presentation.message_list.manage(now);
 }
 
 fn sync_view(state: &mut AppState) {
     // Tactical viewport = render area minus the sidebar panel width.
     let tactical_w =
-        state.render_width() as i32 - state.sidebar_layout_spec.sidebar_width.round() as i32;
-    state.message_list.set_view(
+        state.render_width() as i32 - state.match_presentation.sidebar_layout_spec.sidebar_width.round() as i32;
+    state.match_presentation.message_list.set_view(
         MESSAGE_X_INSET,
         0,
         (tactical_w - MESSAGE_WIDTH_INSET).max(0),
@@ -166,7 +166,7 @@ pub(crate) fn build_message_text_instances(state: &AppState) -> Vec<SpriteInstan
     }
     message_text_instances(
         &state.renderer.bit_font,
-        &state.message_list,
+        &state.match_presentation.message_list,
         [state.input.camera_x, state.input.camera_y],
     )
 }

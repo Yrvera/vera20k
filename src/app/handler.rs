@@ -19,10 +19,10 @@ impl App {
         // The frame-index wave is driven by wall-clock ticks and repaints every
         // frame, so a mid-flight resize simply lets it finish; no snap/cancel.
         let new_scale = auto_detect_ui_scale(size.width, size.height);
-        if (new_scale - state.ui_scale).abs() > f32::EPSILON {
-            log::info!("UI scale changed: {}x -> {}x", state.ui_scale, new_scale);
-            state.sidebar_layout_spec = state.sidebar_layout_spec_base.with_scale(new_scale);
-            state.ui_scale = new_scale;
+        if (new_scale - state.match_presentation.ui_scale).abs() > f32::EPSILON {
+            log::info!("UI scale changed: {}x -> {}x", state.match_presentation.ui_scale, new_scale);
+            state.match_presentation.sidebar_layout_spec = state.match_presentation.sidebar_layout_spec_base.with_scale(new_scale);
+            state.match_presentation.ui_scale = new_scale;
         }
         Self::invalidate_main_menu_movie_if_base_changed(state);
         crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
@@ -244,7 +244,7 @@ impl ApplicationHandler for App {
         // Exception: when paused or save/load panel is open, egui renders
         // interactive content.
         let egui_consumed: bool = egui_response.consumed
-            && (state.screen != GameScreen::InGame || state.paused || state.show_save_load_panel);
+            && (state.screen != GameScreen::InGame || state.paused || state.match_presentation.show_save_load_panel);
 
         match event {
             WindowEvent::CloseRequested => {

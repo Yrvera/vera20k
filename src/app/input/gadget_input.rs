@@ -145,7 +145,7 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
     let repair_rect = rect_px(view.repair_button.rect);
     let sell_rect = rect_px(view.sell_button.rect);
 
-    let gadgets = &mut state.in_game_gadgets;
+    let gadgets = &mut state.match_presentation.in_game_gadgets;
     if gadgets.handles.is_none() {
         let list = &mut gadgets.list;
         let zero = GadgetRect::new(0, 0, 0, 0);
@@ -237,18 +237,18 @@ fn sync_gadgets(state: &mut AppState, view: &SidebarView) {
 /// pause/producer slots disable when the view omits them. Appended after the
 /// cameos — disjoint rects, so order is observationally irrelevant (O7/G20).
 fn sync_controls(state: &mut AppState, view: &SidebarView) {
-    if state.in_game_gadgets.controls.is_none() {
+    if state.match_presentation.in_game_gadgets.controls.is_none() {
         let zero = GadgetRect::new(0, 0, 0, 0);
         let mut handles = [GadgetHandle(0); CONTROL_SLOTS];
         for (i, h) in handles.iter_mut().enumerate() {
             let mut spec = GadgetSpec::new(zero, CONTROL_FLAGS, false);
             spec.id = ID_CONTROL_BASE + i as u16;
             spec.behavior = GadgetBehavior::Control;
-            *h = state.in_game_gadgets.list.add_tail(spec);
+            *h = state.match_presentation.in_game_gadgets.list.add_tail(spec);
         }
-        state.in_game_gadgets.controls = Some(handles);
+        state.match_presentation.in_game_gadgets.controls = Some(handles);
     }
-    let handles = state.in_game_gadgets.controls.expect("built above");
+    let handles = state.match_presentation.in_game_gadgets.controls.expect("built above");
     let slots: [Option<GadgetRect>; CONTROL_SLOTS] = [
         Some(rect_px(view.cancel_button.rect)),
         Some(rect_px(view.cycle_owner_button.rect)),
@@ -258,7 +258,7 @@ fn sync_controls(state: &mut AppState, view: &SidebarView) {
         view.producer_button.as_ref().map(|b| rect_px(b.rect)),
     ];
     for (i, h) in handles.iter().enumerate() {
-        if let Some(g) = state.in_game_gadgets.list.get_mut(*h) {
+        if let Some(g) = state.match_presentation.in_game_gadgets.list.get_mut(*h) {
             match slots[i] {
                 Some(r) => {
                     g.rect = r;
@@ -278,18 +278,18 @@ fn sync_controls(state: &mut AppState, view: &SidebarView) {
 /// first-consumer-by-rect and the smallest-area hover both resolve to the unique
 /// containing gadget regardless (study tactical/minimap lanes §6/§4).
 fn sync_regions(state: &mut AppState, _view: &SidebarView) {
-    if state.in_game_gadgets.tactical.is_none() {
+    if state.match_presentation.in_game_gadgets.tactical.is_none() {
         let zero = GadgetRect::new(0, 0, 0, 0);
         let tac = state
-            .in_game_gadgets
+            .match_presentation.in_game_gadgets
             .list
             .add_tail(GadgetSpec::click_region(zero, TACTICAL_REGION_FLAGS));
         let mini = state
-            .in_game_gadgets
+            .match_presentation.in_game_gadgets
             .list
             .add_tail(GadgetSpec::click_region(zero, MINIMAP_REGION_FLAGS));
-        state.in_game_gadgets.tactical = Some(tac);
-        state.in_game_gadgets.minimap = Some(mini);
+        state.match_presentation.in_game_gadgets.tactical = Some(tac);
+        state.match_presentation.in_game_gadgets.minimap = Some(mini);
     }
     // Tactical catcher rect = the play area left of the sidebar panel (the Rust
     // equivalent of gamemd's g_RadarViewport*). Always enabled in-game — we have
@@ -297,8 +297,8 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
     let (tactical_width, tactical_height) =
         crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
     let play_rect = GadgetRect::new(0, 0, tactical_width as i32, tactical_height as i32);
-    if let Some(th) = state.in_game_gadgets.tactical
-        && let Some(g) = state.in_game_gadgets.list.get_mut(th)
+    if let Some(th) = state.match_presentation.in_game_gadgets.tactical
+        && let Some(g) = state.match_presentation.in_game_gadgets.list.get_mut(th)
     {
         g.rect = play_rect;
         g.is_disabled = false;
@@ -312,8 +312,8 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
         .is_none_or(|ra| ra.is_minimap_visible())
         && state.match_presentation.minimap.is_some();
     let mini_rect = rect_px(crate::app::presentation::sidebar_render::active_minimap_screen_rect(state));
-    if let Some(mh) = state.in_game_gadgets.minimap
-        && let Some(g) = state.in_game_gadgets.list.get_mut(mh)
+    if let Some(mh) = state.match_presentation.in_game_gadgets.minimap
+        && let Some(g) = state.match_presentation.in_game_gadgets.list.get_mut(mh)
     {
         g.rect = mini_rect;
         g.is_disabled = !minimap_available;
@@ -330,22 +330,22 @@ fn sync_regions(state: &mut AppState, _view: &SidebarView) {
 /// holds capture (defensive — cameos themselves are never sticky).
 fn sync_cameos(state: &mut AppState, view: &SidebarView) {
     let want = view.items.len();
-    if state.in_game_gadgets.cameos.len() < want && state.in_game_gadgets.focus.sticky.is_none() {
+    if state.match_presentation.in_game_gadgets.cameos.len() < want && state.match_presentation.in_game_gadgets.focus.sticky.is_none() {
         let zero = GadgetRect::new(0, 0, 0, 0);
-        while state.in_game_gadgets.cameos.len() < want {
-            let slot = state.in_game_gadgets.cameos.len();
+        while state.match_presentation.in_game_gadgets.cameos.len() < want {
+            let slot = state.match_presentation.in_game_gadgets.cameos.len();
             let id = ID_CAMEO_BASE + slot as u16;
             let h = state
-                .in_game_gadgets
+                .match_presentation.in_game_gadgets
                 .list
                 .add_tail(GadgetSpec::cameo(zero, id));
-            state.in_game_gadgets.cameos.push(h);
+            state.match_presentation.in_game_gadgets.cameos.push(h);
         }
     }
-    let cameos = state.in_game_gadgets.cameos.clone();
+    let cameos = state.match_presentation.in_game_gadgets.cameos.clone();
     for (slot, h) in cameos.iter().enumerate() {
         let rect = view.items.get(slot).map(|it| rect_px(it.rect));
-        if let Some(g) = state.in_game_gadgets.list.get_mut(*h) {
+        if let Some(g) = state.match_presentation.in_game_gadgets.list.get_mut(*h) {
             match rect {
                 Some(r) => {
                     g.rect = r;
@@ -370,8 +370,8 @@ pub(crate) fn handle_mouse_button_event(
     // The held record updates on every edge (G8 idle-tick source). The gadget
     // masks cover left/right only; middle input has no tactical behavior.
     match button {
-        MouseButton::Left => state.in_game_gadgets.left_held = pressed,
-        MouseButton::Right => state.in_game_gadgets.right_held = pressed,
+        MouseButton::Left => state.match_presentation.in_game_gadgets.left_held = pressed,
+        MouseButton::Right => state.match_presentation.in_game_gadgets.right_held = pressed,
         _ => return GadgetConsume::NotConsumed,
     }
     let Some(view) = current_sidebar_view(state).cloned() else {
@@ -412,8 +412,8 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
         event_y: cy,
         mouse_x: cx,
         mouse_y: cy,
-        left_held: state.in_game_gadgets.left_held,
-        right_held: state.in_game_gadgets.right_held,
+        left_held: state.match_presentation.in_game_gadgets.left_held,
+        right_held: state.match_presentation.in_game_gadgets.right_held,
         shift: crate::app::input::dispatch::is_shift_held(state),
         ctrl: crate::app::input::dispatch::is_ctrl_held(state),
         alt: crate::app::input::dispatch::is_alt_held(state),
@@ -421,15 +421,15 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
     // The sticky tier dispatches the holder but does NOT set `consumed_by`, so
     // capture the pre-tick holder to route a captured drag/release back to its
     // region (study tactical lane §5).
-    let prev_sticky = state.in_game_gadgets.focus.sticky;
-    let gadgets = &mut state.in_game_gadgets;
+    let prev_sticky = state.match_presentation.in_game_gadgets.focus.sticky;
+    let gadgets = &mut state.match_presentation.in_game_gadgets;
     let result = tick(
         &mut gadgets.list,
         &mut gadgets.focus,
         &input,
         &mut gadgets.out,
     );
-    let routed = state.in_game_gadgets.out.consumed_by.or(prev_sticky);
+    let routed = state.match_presentation.in_game_gadgets.out.consumed_by.or(prev_sticky);
     let fired = (result & RESULT_BUTTON) != 0;
     if fired {
         apply_gadget_result(state, view, result);
@@ -445,7 +445,7 @@ fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume
 /// matching body). A fired control always sets `consumed_by`, so a `None`
 /// routed handle with `fired` cannot happen — handled defensively.
 fn classify(state: &AppState, routed: Option<GadgetHandle>, fired: bool) -> GadgetConsume {
-    let g = &state.in_game_gadgets;
+    let g = &state.match_presentation.in_game_gadgets;
     match routed {
         Some(h) if Some(h) == g.tactical => GadgetConsume::Tactical,
         Some(h) if Some(h) == g.minimap => GadgetConsume::Minimap,
@@ -466,15 +466,15 @@ fn classify(state: &AppState, routed: Option<GadgetHandle>, fired: bool) -> Gadg
 /// hover transition (`out.hover_entered`/`hover_left`) is the Mouse_Enter/Leave
 /// edge — reproducing SelectClass::Mouse_Enter/Leave's save-and-zero / restore.
 fn apply_cameo_hover_tooltip(state: &mut AppState) {
-    let entered = state.in_game_gadgets.out.hover_entered;
-    let left = state.in_game_gadgets.out.hover_left;
-    let entered_cameo = entered.is_some_and(|h| state.in_game_gadgets.is_cameo(h));
-    let left_cameo = left.is_some_and(|h| state.in_game_gadgets.is_cameo(h));
+    let entered = state.match_presentation.in_game_gadgets.out.hover_entered;
+    let left = state.match_presentation.in_game_gadgets.out.hover_left;
+    let entered_cameo = entered.is_some_and(|h| state.match_presentation.in_game_gadgets.is_cameo(h));
+    let left_cameo = left.is_some_and(|h| state.match_presentation.in_game_gadgets.is_cameo(h));
     if entered_cameo {
-        state.tooltips.set_delay_override(Some(0));
+        state.match_presentation.tooltips.set_delay_override(Some(0));
     } else if left_cameo {
         // Left a cameo and did NOT enter another cameo this tick → restore.
-        state.tooltips.set_delay_override(None);
+        state.match_presentation.tooltips.set_delay_override(None);
     }
 }
 
@@ -521,12 +521,12 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
         // consumed release, including clamped no-op scrolls at either end.
         ID_SCROLL_DOWN => {
             let page = view.layout.side2_tile_count.max(1);
-            state.sidebar_scroll_rows = (view.scroll_rows + page).min(view.max_scroll_rows);
+            state.match_presentation.sidebar_scroll_rows = (view.scroll_rows + page).min(view.max_scroll_rows);
             play_gui_tab_sound(state);
         }
         ID_SCROLL_UP => {
             let page = view.layout.side2_tile_count.max(1);
-            state.sidebar_scroll_rows = view.scroll_rows.saturating_sub(page);
+            state.match_presentation.sidebar_scroll_rows = view.scroll_rows.saturating_sub(page);
             play_gui_tab_sound(state);
         }
         // Cameo press (A2): map the fired id back to its SidebarItem and run the
@@ -566,12 +566,12 @@ fn apply_gadget_result(state: &mut AppState, view: &SidebarView, result: u16) {
 
 /// Publish the transient pressed bits for the 5-frame visuals (frames 3/4).
 fn publish_pressed_visuals(state: &mut AppState) {
-    let Some(handles) = state.in_game_gadgets.handles else {
+    let Some(handles) = state.match_presentation.in_game_gadgets.handles else {
         return;
     };
     let pressed = |h: GadgetHandle| {
         state
-            .in_game_gadgets
+            .match_presentation.in_game_gadgets
             .list
             .get(h)
             .is_some_and(|g| matches!(g.behavior, GadgetBehavior::Button(b) if b.is_pressed))
@@ -581,7 +581,7 @@ fn publish_pressed_visuals(state: &mut AppState) {
     let sell = pressed(handles.sell);
     let down = pressed(handles.scroll_down);
     let up = pressed(handles.scroll_up);
-    let gs = &mut state.sidebar_gadget_state;
+    let gs = &mut state.match_presentation.sidebar_gadget_state;
     gs.tab_pressed = tabs;
     gs.repair_pressed = repair;
     gs.sell_pressed = sell;

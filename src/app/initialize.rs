@@ -405,18 +405,6 @@ impl App {
             quit_cascade: None,
             scenario_outcome: None,
             scenario_exit: None,
-            power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
-            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
-            in_game_gadgets: crate::app::input::gadget_input::InGameGadgets::new(),
-            tooltips: crate::ui::tooltips::TooltipService::new(),
-            tooltip_epoch: Instant::now(),
-            message_list: crate::ui::messages::MessageList::new(
-                3,
-                0,
-                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
-                0,
-            ),
-            message_clock: crate::ui::messages::PauseAwareClock::default(),
             loaded_map_source: None,
             loaded_map_hash: None,
             frontend_rules: startup_rules,
@@ -426,6 +414,35 @@ impl App {
             finished_game_count: 0,
             platform: PlatformState::new(window),
             match_presentation: crate::app::presentation::state::MatchPresentationState {
+            power_bar_anim: crate::sidebar::PowerBarAnimState::new(),
+            sidebar_gadget_state: crate::sidebar::gadget_flash::SidebarGadgetState::new(),
+            in_game_gadgets: crate::app::input::gadget_input::InGameGadgets::new(),
+            sidebar_projection: Default::default(),
+            active_sidebar_tab: SidebarTab::default_active_tab(),
+            sidebar_layout_spec,
+            sidebar_layout_spec_base: base_sidebar_layout_spec,
+            ui_scale,
+            sidebar_scroll_rows: 0,
+            sidebar_scroll_rows_parked: [0; 4],
+            tooltips: crate::ui::tooltips::TooltipService::new(),
+            tooltip_epoch: Instant::now(),
+            message_list: crate::ui::messages::MessageList::new(
+                3,
+                0,
+                crate::ui::messages::MESSAGE_MAX_VISIBLE_RETAIL,
+                0,
+            ),
+            message_clock: crate::ui::messages::PauseAwareClock::default(),
+            in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
+            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
+                game_speed: crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
+                scroll_rate: saved_scroll_rate,
+                detail_level: saved_detail_level,
+                ..Default::default()
+            },
+            in_game_options_anchor: None,
+            show_hotkey_help: false,
+            show_save_load_panel: false,
             combat_lights: Default::default(),
             minimap: None,
             radar_anim: None,
@@ -525,12 +542,6 @@ impl App {
             local_owner_override: None,
             match_audio: Default::default(),
             sandbox_full_visibility: false,
-            active_sidebar_tab: SidebarTab::default_active_tab(),
-            sidebar_layout_spec,
-            sidebar_layout_spec_base: base_sidebar_layout_spec,
-            ui_scale,
-            sidebar_scroll_rows: 0,
-            sidebar_scroll_rows_parked: [0; 4],
             process_assets: crate::app::process_assets::ProcessAssets::from_startup(
                 startup_asset_manager,
             ),
@@ -549,7 +560,6 @@ impl App {
                 eva_registry: startup_eva_registry,
             },
             paused: false,
-            in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
             // KD-3: unify the two game-speed sources. `in_game_options.game_speed`
             // is the single source of truth; seed it from the skirmish-setup speed
             // (internal 1) and derive `sim_speed_tps` from the same value, so the
@@ -558,16 +568,7 @@ impl App {
             sim_speed_tps: crate::app::types::tps_for_game_speed(
                 crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
             ),
-            in_game_options: crate::ui::shell::in_game_options_state::InGameOptionsState {
-                game_speed: crate::app::types::DEFAULT_YR_SKIRMISH_GAME_SPEED,
-                scroll_rate: saved_scroll_rate,
-                detail_level: saved_detail_level,
-                ..Default::default()
-            },
-            in_game_options_anchor: None,
             startup_splash,
-            show_hotkey_help: false,
-            show_save_load_panel: false,
             exit_confirm_modal: None,
             options_dialog: None,
             movies_credits_dialog: None,
@@ -595,7 +596,6 @@ impl App {
                 dev_overlay_save_name: String::new(),
                 frame_timer: crate::app::diagnostics::dev_overlay::FrameTimer::new(),
             },
-            sidebar_projection: Default::default(),
         };
 
         // Seed the live music volume from the user's saved RA2MD.INI
