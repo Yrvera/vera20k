@@ -1006,13 +1006,12 @@ fn advance_one_simulation_frame(state: &mut AppState, tick_lane: TickLane) -> bo
             census_tick = tick_result.frame_committed.then_some(tick_result.tick);
             drained_lifecycle_outputs = frame_lifecycle_outputs;
             // Pre-merge fog visibility for local owner so render queries are O(1).
+            // F10: sim owns the write; the app only names the owner.
             if let Some(owner) = &local_owner_for_fog {
                 if sim.session.tick == 1 {
                     log::info!("Fog merged for local owner: '{}'", owner);
                 }
-                if let Some(owner_id) = sim.interner.get(owner) {
-                    sim.fog.build_merged_for(owner_id, &sim.interner);
-                }
+                sim.prepare_fog_view_for(owner);
             }
             // Drain fire events for render-side muzzle flash / projectile origin.
             drained_fire_events = frame_fire_events;

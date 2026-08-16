@@ -968,20 +968,12 @@ pub(crate) fn report_black_cell_causes(state: &mut AppState) {
 pub(crate) fn toggle_unit_inspector(state: &mut AppState) {
     state.debug_unit_inspector = !state.debug_unit_inspector;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-        sim.debug_event_logging = state.debug_unit_inspector;
-        if state.debug_unit_inspector {
-            for entity in sim.entities_mut().values_mut() {
-                if entity.debug_log.is_none() {
-                    entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
-                }
-            }
-            log::info!("Debug unit inspector: ON");
-        } else {
-            for entity in sim.entities_mut().values_mut() {
-                entity.debug_log = None;
-            }
-            log::info!("Debug unit inspector: OFF");
-        }
+        // F10: sim owns the write; the app only requests the toggle.
+        sim.set_debug_event_logging(state.debug_unit_inspector);
+        log::info!(
+            "Debug unit inspector: {}",
+            if state.debug_unit_inspector { "ON" } else { "OFF" }
+        );
     }
 }
 
@@ -1145,7 +1137,7 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
                 .sim_runtime
                 .as_mut()
                 .map(|rt| &mut rt.simulation)
-                .and_then(|sim| sim.radar_events.cycle_event());
+                .and_then(|sim| sim.cycle_radar_event());
             if let Some((rx, ry)) = event {
                 crate::app_camera::center_camera_on_cell(state, rx, ry);
             }

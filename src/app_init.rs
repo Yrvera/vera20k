@@ -1727,7 +1727,7 @@ pub(crate) fn load_map_from_initial(
                 );
                 // Set up AI players: all playable houses except the local (first) player.
                 if let Some(ref local_owner) = initial_local_owner {
-                    setup_ai_players(sim, &house_roster, local_owner);
+                    sim.register_ai_players_from_roster(&house_roster, local_owner);
                 }
                 initial_local_owner.is_some()
             };
@@ -2030,32 +2030,6 @@ pub(crate) fn load_map_from_initial(
 }
 
 /// Register non-local playable houses as AI opponents.
-fn setup_ai_players(
-    sim: &mut crate::sim::world::Simulation,
-    house_roster: &HouseRoster,
-    local_owner: &str,
-) {
-    use crate::sim::ai::AiPlayerState;
-
-    for house in &house_roster.houses {
-        // Skip neutral/civilian/special houses.
-        let up = house.name.to_ascii_uppercase();
-        if matches!(
-            up.as_str(),
-            "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
-        ) {
-            continue;
-        }
-        // Skip the local player.
-        if house.name.eq_ignore_ascii_case(local_owner) {
-            continue;
-        }
-        sim.ai_players
-            .push(AiPlayerState::new(sim.interner.intern(&house.name)));
-        log::info!("AI player registered: {}", house.name);
-    }
-}
-
 #[cfg(test)]
 mod random_map_retail_tests {
     //! Retail-input pass over the real `.SED` load path.

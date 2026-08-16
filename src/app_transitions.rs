@@ -132,7 +132,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.combat_lights.clear();
     sync_in_game_options_speed_from_sim(state);
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-        sim.input_delay_ticks = state.configured_input_delay_ticks;
+        sim.set_input_delay_ticks(state.configured_input_delay_ticks);
     }
     state.unit_atlas = result.unit_atlas;
     state.palette_set = result.palette_set;
@@ -186,7 +186,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     state.cell_tags = result.cell_tags;
     state.tags = result.tags;
     if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-        sim.trigger_runtime = result.trigger_runtime;
+        sim.install_trigger_runtime(result.trigger_runtime);
     }
     state.overlay_names = result.overlay_names;
     state.tiberium_radar_colors = result.tiberium_radar_colors;

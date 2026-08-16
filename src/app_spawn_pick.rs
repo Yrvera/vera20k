@@ -85,13 +85,10 @@ pub(crate) fn handle_spawn_pick_click(state: &mut AppState) -> bool {
     // Set up AI players and rebuild entity atlases now that MCVs are spawned.
     if let Some(ref local_owner) = seeded_owner {
         if let Some(sim) = state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
-            setup_ai_players_from_roster(sim, &state.house_roster, local_owner);
+            // F10: sim owns both writes; the app only names the local owner.
+            sim.register_ai_players_from_roster(&state.house_roster, local_owner);
             // Ensure the local player is marked human even if the map lacks PlayerControl=yes.
-            if let Some(owner_id) = sim.interner.get(local_owner) {
-                if let Some(house) = sim.houses.get_mut(&owner_id) {
-                    house.is_human = true;
-                }
-            }
+            sim.mark_house_human(local_owner);
         }
         // Rebuild entity atlases to include the newly spawned MCVs.
         if let Some(rt) = state.sim_runtime.as_ref() {
@@ -187,30 +184,6 @@ fn build_temp_map_data_for_seeding(state: &AppState) -> crate::map::map_file::Ma
 }
 
 /// Register non-local playable houses as AI opponents (same logic as app_init).
-fn setup_ai_players_from_roster(
-    sim: &mut crate::sim::world::Simulation,
-    house_roster: &crate::map::houses::HouseRoster,
-    local_owner: &str,
-) {
-    use crate::sim::ai::AiPlayerState;
-
-    for house in &house_roster.houses {
-        let up = house.name.to_ascii_uppercase();
-        if matches!(
-            up.as_str(),
-            "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
-        ) {
-            continue;
-        }
-        if house.name.eq_ignore_ascii_case(local_owner) {
-            continue;
-        }
-        sim.ai_players
-            .push(AiPlayerState::new(sim.interner.intern(&house.name)));
-        log::info!("AI player registered: {}", house.name);
-    }
-}
-
 /// Render the SpawnPick phase: full map visible, no fog, no simulation tick.
 ///
 /// Temporarily enables sandbox visibility so the entire map is shown.

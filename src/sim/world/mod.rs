@@ -2642,6 +2642,58 @@ impl Simulation {
         std::mem::take(&mut self.trigger_effects)
     }
 
+    /// Enable or disable per-entity debug event logging (F10 boundary method:
+    /// the app toggles, sim owns the write). Flips the spawn-time flag and
+    /// reconciles every existing entity, so existing and future entities
+    /// always agree with the toggle. Enabling preserves logs an entity
+    /// already accumulated; disabling drops them all.
+    pub(crate) fn set_debug_event_logging(&mut self, enabled: bool) {
+        self.debug_event_logging = enabled;
+        for entity in self.substrate.entities.values_mut() {
+            if enabled {
+                if entity.debug_log.is_none() {
+                    entity.debug_log =
+                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                }
+            } else {
+                entity.debug_log = None;
+            }
+        }
+    }
+
+    /// Pre-merge the named owner's fog visibility so render-side queries hit
+    /// the O(1) merged cache (F10 boundary method: the app requests, sim owns
+    /// the write). Returns false when the owner name is not interned yet —
+    /// no view is built and the per-query slow path stays in effect.
+    pub(crate) fn prepare_fog_view_for(&mut self, owner: &str) -> bool {
+        let Some(owner_id) = self.interner.get(owner) else {
+            return false;
+        };
+        self.fog.build_merged_for(owner_id, &self.interner);
+        true
+    }
+
+    /// Configure the command input delay (F10 boundary method; the app pushes
+    /// its configured value once at match install).
+    pub(crate) fn set_input_delay_ticks(&mut self, ticks: u64) {
+        self.input_delay_ticks = ticks;
+    }
+
+    /// Install the map trigger runtime state machine after load (F10 boundary
+    /// method; the immutable trigger definitions live in `SimResources`).
+    pub(crate) fn install_trigger_runtime(
+        &mut self,
+        runtime: crate::sim::trigger_runtime::TriggerRuntime,
+    ) {
+        self.trigger_runtime = runtime;
+    }
+
+    /// Advance the radar-event review cursor and return the next event cell
+    /// (F10 boundary method backing the center-on-radar-event hotkey).
+    pub(crate) fn cycle_radar_event(&mut self) -> Option<(u16, u16)> {
+        self.radar_events.cycle_event()
+    }
+
     #[cfg(test)]
     pub(crate) fn take_master_frame_test_trace(&mut self) -> Vec<MasterFrameTestRung> {
         std::mem::take(&mut self.master_frame_test_trace)
