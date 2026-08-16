@@ -578,3 +578,32 @@ fn revalidate_keeps_buildable_build_untouched() {
     );
     assert!(view.progress > 0, "and keeps progressing");
 }
+
+/// F09 matrix: runtime-backed replay hashes match each tick. The same
+/// recorded log replayed through `ReplayRunner::run_runtime` — the bound
+/// SimRuntime path headless and future callers use — reproduces the live
+/// per-tick hash timeline bit-for-bit.
+#[test]
+fn runtime_backed_replay_hashes_match_each_tick() {
+    const TICKS: u64 = 120;
+
+    let (mut live, rules, heights) = scenario();
+    let cmds = rich_command_stream(&live);
+    let (timeline_live, log) = record(&mut live, &rules, &heights, cmds, TICKS);
+
+    let (fresh, runtime_rules, runtime_heights) = scenario();
+    let mut runtime = crate::sim::runtime::SimRuntime {
+        simulation: fresh,
+        resources: {
+            let mut resources = crate::sim::runtime::SimResources::empty();
+            resources.rules = runtime_rules;
+            resources.height_map = runtime_heights;
+            resources
+        },
+    };
+    let timeline_runtime = ReplayRunner::run_runtime(&mut runtime, &log, TICK_MS);
+    assert_eq!(
+        timeline_live, timeline_runtime,
+        "runtime-backed replay must reproduce the live hash timeline bit-for-bit"
+    );
+}
