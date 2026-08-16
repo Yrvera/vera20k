@@ -680,7 +680,7 @@ mod tests {
         session.options.bases = false;
         session.options.unit_count = 0;
         assert!(
-            preload_standard_battle_start_plan(&session, &map, 9).is_none(),
+            preload_standard_battle_start_plan(&launch_descriptor(&session), &map, 9).is_none(),
             "terrain-dependent deficient starts must not guess a loading plan"
         );
         assert!(
@@ -1133,7 +1133,7 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let terrain = test_terrain(64, 64);
         let rules = test_standard_launch_rules();
-        let plan = preload_standard_battle_start_plan(&session, &map, launch_seed)
+        let plan = preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
             .expect("complete standard Battle starts preload");
 
         let loading_assignments =

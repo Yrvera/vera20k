@@ -325,7 +325,13 @@ impl LoadingRequest {
             let seed = self
                 .startup()
                 .seed_or_else(|| unreachable!("a launch session always owns a launch seed"));
-            preload_standard_battle_start_plan(session, map, seed)
+            // The shell close transaction resolved every random before the
+            // first loading frame; the descriptor proves it at this boundary.
+            let descriptor = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(
+                session.clone(),
+            )
+            .expect("shell close transaction resolves every random choice before loading");
+            preload_standard_battle_start_plan(&descriptor, map, seed)
         });
         self.preloaded_battle_start_plan = plan.map_or(
             PreloadedBattleStartPlanState::Unavailable,

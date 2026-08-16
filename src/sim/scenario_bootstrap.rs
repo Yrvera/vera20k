@@ -257,10 +257,11 @@ impl PreloadedBattleStartPlan {
 /// 0x00686B20 calls +0x80 and ordinarily +0x84 for offline g_GameMode 5 before
 /// DrawLoadingScreen.
 pub(crate) fn preload_standard_battle_start_plan(
-    session: &SkirmishLaunchSession,
+    descriptor: &MatchLaunchDescriptor,
     map_data: &MapFile,
     launch_seed: u32,
 ) -> Option<PreloadedBattleStartPlan> {
+    let session = descriptor.session();
     if !has_verified_preload_start_callbacks(session) {
         return None;
     }
