@@ -7,7 +7,7 @@ use super::{
     BitFont, CellLightGrid, DEV_SKIRMISH_SHELL_ENV, EguiIntegration, GameConfig, GameScreen,
     GpuContext, HashMap, HashSet, HouseRoster, Instant, LightingConfig,
     ModifiersState, MusicPlayer, PhysicalSize, PlatformState, RandomMapGenerationRetention,
-    RefCell, Result,
+    Result,
     SHELL_WINDOW_HEIGHT, SHELL_WINDOW_WIDTH, SelectionState, SfxPlayer, SidebarChromeLayoutSpec,
     SidebarTab, StartupAudioDisposition, Window, WindowAttributes,
     auto_detect_ui_scale, frontend::startup_splash,

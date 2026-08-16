@@ -441,7 +441,6 @@ mod tests {
         use crate::map::entities::{EntityCategory, MapEntity};
         use crate::sim::command::{Command, CommandEnvelope};
         use std::collections::BTreeMap;
-use std::hash::Hash;
 
         fn build(seed: u32) -> Simulation {
             let mut sim = Simulation::from_descriptor(&ScenarioDescriptor {

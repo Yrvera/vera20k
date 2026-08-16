@@ -22,8 +22,10 @@ use crate::sidebar::SidebarView;
 // Generic credit glyph generation is render-owned (F06); this module keeps
 // only the sidebar-view adapter below. Re-exported for existing callers.
 pub use crate::render::sidebar_text::{
-    CREDITS_DEPTH, CREDITS_SURFACE_Y, build_credits_instances, credits_tint, format_credits,
+    build_credits_instances, credits_tint,
 };
+#[cfg(test)]
+use crate::render::sidebar_text::{CREDITS_DEPTH, CREDITS_SURFACE_Y, format_credits};
 /// Per-frame wrapper over [`build_credits_instances`] taking the sidebar view.
 pub fn build_sidebar_credits_instances(
     font: &BitFont,

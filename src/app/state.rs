@@ -4,19 +4,7 @@
 //! are introduced incrementally. Platform lifecycle and pacing are the first
 //! extracted group; unrelated presentation, input, and match state stay flat.
 
-use super::presentation::render;
-use super::{
-    BTreeMap, BasicSection, BatchRenderer, BitFont,
-    BridgeAtlas, BridgeRailingAtlas, BuildingPlacementPreview, CellLightGrid, CellTagMap,
-    EguiIntegration, GameConfig, GameScreen, GpuContext, HashMap, HashSet, HouseColorMap,
-    HouseRoster, Instant, KeyCode, LightingConfig, MapMenuEntry,
-    MinimapRenderer, ModifiersState, MusicPlayer, OverlayAtlas, OverlayTypeRegistry,
-    RandomMapGenerationJob, RandomMapGenerationRetention, RefCell, ResolvedTerrainGrid,
-    SelectionOverlay, SelectionState, SfxPlayer, SidebarCameoAtlas,
-    SidebarChromeLayoutSpec, SidebarChromeSet, SidebarTab, SkirmishSettings,
-    SoundRegistry, SpriteAtlas, TagMap, TerrainGrid, TerrainObject, TileAtlas,
-    UnitAtlas, Waypoint, frontend::startup_splash,
-};
+use super::{BTreeMap, OverlayTypeRegistry, ResolvedTerrainGrid};
 
 mod platform;
 

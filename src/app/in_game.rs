@@ -382,7 +382,7 @@ impl App {
     /// overlay is hidden — caller checks `show_dev_overlay` before
     /// calling.
     pub(super) fn handle_dev_overlay(state: &mut AppState) {
-        use crate::app::diagnostics::dev_overlay::{self, DevOverlayAction, DevOverlayInfo, RecentSaveRow};
+        use crate::app::diagnostics::dev_overlay::{DevOverlayAction, DevOverlayInfo, RecentSaveRow};
 
         // Build the recent-saves snapshot from the existing cache.
         state.persistence.refresh_save_list_if_dirty();

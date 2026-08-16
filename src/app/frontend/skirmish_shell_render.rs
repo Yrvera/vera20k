@@ -6,16 +6,17 @@
 mod chrome;
 mod controls;
 mod draw_order;
+#[cfg(test)]
+use draw_order::{
+    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
+    random_map_setup_semantic_draw_order, skirmish_shell_semantic_draw_order,
+    validation_modal_semantic_draw_order,
+};
 mod in_game_options;
 mod modals;
 mod preview;
 mod text;
 
-pub use draw_order::{
-    SkirmishShellDrawRole, choose_map_modal_semantic_draw_order,
-    random_map_setup_semantic_draw_order, skirmish_shell_semantic_draw_order,
-    validation_modal_semantic_draw_order,
-};
 pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
 

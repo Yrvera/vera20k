@@ -1,7 +1,6 @@
 //! Application facade and shared imports for the focused orchestrator modules
 //! under `app/`. GPU initialization remains deferred to `resumed()`.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,9 +14,6 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::app::loading::init::MapMenuEntry;
-use crate::app::input::dispatch;
-use crate::app::frontend::list_maps;
 use crate::app::presentation::render;
 use crate::app::match_runtime::sim_tick;
 use crate::app::loading::transitions;
@@ -25,35 +21,18 @@ use crate::assets::asset_manager::AssetManager;
 use crate::audio::music::MusicPlayer;
 use crate::audio::sfx::SfxPlayer;
 use crate::map::basic::BasicSection;
-use crate::map::cell_tags::CellTagMap;
-use crate::map::houses::{HouseColorMap, HouseRoster};
+use crate::map::houses::HouseRoster;
 use crate::map::lighting::{CellLightGrid, LightingConfig};
-use crate::map::overlay::TerrainObject;
 use crate::map::overlay_types::OverlayTypeRegistry;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::map::tags::TagMap;
-use crate::map::terrain::TerrainGrid;
-use crate::map::waypoints::Waypoint;
 use crate::render::batch::BatchRenderer;
 use crate::render::bit_font::BitFont;
-use crate::render::bridge_atlas::BridgeAtlas;
-use crate::render::bridge_railing_atlas::BridgeRailingAtlas;
 use crate::render::egui_integration::EguiIntegration;
 use crate::render::gpu::GpuContext;
-use crate::render::minimap::MinimapRenderer;
-use crate::render::overlay_atlas::OverlayAtlas;
-use crate::render::selection_overlay::SelectionOverlay;
-use crate::render::sidebar_cameo_atlas::SidebarCameoAtlas;
-use crate::render::sidebar_chrome::SidebarChromeSet;
-use crate::render::sprite_atlas::SpriteAtlas;
-use crate::render::tile_atlas::TileAtlas;
-use crate::render::unit_atlas::UnitAtlas;
-use crate::rules::sound_ini::SoundRegistry;
 use crate::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
-use crate::sim::production::BuildingPlacementPreview;
 use crate::sim::selection::SelectionState;
 use crate::ui::game_screen::GameScreen;
-use crate::ui::main_menu::{self, SkirmishSettings};
+use crate::ui::main_menu::{self};
 use crate::ui::shell::controller::ShellKey;
 use crate::ui::skirmish_shell::{SavedSeedBrowserState, SavedSeedMode};
 use crate::util::config::GameConfig;
@@ -84,7 +63,7 @@ pub(crate) mod sidebar_projection;
 mod state;
 
 pub(crate) use shell_random_map::{
-    RandomMapGenerationJob, RandomMapGenerationRetention,
+    RandomMapGenerationRetention,
 };
 pub(crate) use state::{AppState, PlatformState, reset_scenario_exit_runtime};
 

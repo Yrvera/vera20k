@@ -6,8 +6,6 @@
 //! `sim/` itself never names `crate::net`. Moved verbatim from the
 //! `sim::world` test module (whose fixtures they still share).
 
-use std::collections::BTreeMap;
-
 use crate::rules::ruleset::RuleSet;
 use crate::sim::command::{Command, CommandEnvelope};
 use crate::sim::world::Simulation;

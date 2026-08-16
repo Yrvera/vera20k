@@ -1266,7 +1266,6 @@ impl GameEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::terrain;
 
     #[test]
     fn test_new_entity_defaults() {

@@ -5,7 +5,6 @@ use crate::sim::movement::locomotion::LocomotorSlot;
 
 use super::*;
 use crate::map::entities::EntityCategory;
-use crate::map::terrain;
 use crate::sim::components::{DriveCoord, MovementTarget, NavTargetRef};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
