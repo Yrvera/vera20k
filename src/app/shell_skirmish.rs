@@ -212,11 +212,11 @@ impl App {
         state.skirmish_shell_last_painted_pressed_button = None;
         state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
-        let request = crate::app_loading::LoadingRequest::generic_map_load(
+        let request = crate::app::loading::pump::LoadingRequest::generic_map_load(
             map_name,
             state.skirmish_settings.clone(),
         );
-        crate::app_loading::begin_loading(state, request);
+        crate::app::loading::pump::begin_loading(state, request);
         Self::enter_game_window_mode(state);
         state.zoom_level = 1.0;
         state.zoom_target = 1.0;
@@ -248,7 +248,7 @@ impl App {
                     accepted,
                     &mut clock,
                 );
-                crate::app_loading::LoadingRequest::accepted_skirmish(
+                crate::app::loading::pump::LoadingRequest::accepted_skirmish(
                     startup,
                     state.skirmish_settings.clone(),
                 )
@@ -257,7 +257,7 @@ impl App {
                 log::warn!("Skirmish startup uses unverified compatibility path: {reason:?}");
                 let mut clock = crate::match_bootstrap::OrdinaryMatchSeedClock;
                 let seed = crate::match_bootstrap::read_match_seed(&mut clock);
-                crate::app_loading::LoadingRequest::unverified_legacy_skirmish(
+                crate::app::loading::pump::LoadingRequest::unverified_legacy_skirmish(
                     session,
                     seed,
                     state.skirmish_settings.clone(),
@@ -270,7 +270,7 @@ impl App {
         state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         state.skirmish_preview_texture = None;
-        crate::app_loading::begin_loading(state, request);
+        crate::app::loading::pump::begin_loading(state, request);
         Self::enter_game_window_mode(state);
         state.zoom_level = 1.0;
         state.zoom_target = 1.0;

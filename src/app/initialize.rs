@@ -115,7 +115,7 @@ impl App {
         // which archive wins it.)
         let startup_csf = startup_asset_manager
             .as_ref()
-            .map(crate::app_init::load_csf)
+            .map(crate::app::loading::init::load_csf)
             .transpose()?;
         let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
@@ -170,22 +170,22 @@ impl App {
         let startup_rules = startup_asset_manager
             .as_ref()
             // Startup shell: no mode or map selected yet, so no overrides.
-            .and_then(|am| crate::app_init_helpers::load_rules_ini(am, None, None));
+            .and_then(|am| crate::app::loading::init_helpers::load_rules_ini(am, None, None));
         let startup_sound_registry = startup_asset_manager
             .as_ref()
-            .map(crate::app_transitions::load_sound_registry)
+            .map(crate::app::loading::transitions::load_sound_registry)
             .unwrap_or_default();
         let startup_audio_indices = if should_load_audio_indices(startup_audio.load_audio_indices) {
             startup_asset_manager
                 .as_ref()
-                .map(crate::app_transitions::load_audio_indices)
+                .map(crate::app::loading::transitions::load_audio_indices)
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
         let startup_eva_registry = startup_asset_manager
             .as_ref()
-            .map(crate::app_transitions::load_eva_registry)
+            .map(crate::app::loading::transitions::load_eva_registry)
             .unwrap_or_default();
         if let Some(assets) = startup_asset_manager.as_mut() {
             match assets.register_neutral_archives() {
@@ -276,13 +276,13 @@ impl App {
         // dialog-build time); without assets we keep the stock-default ranges.
         if let Some(assets) = startup_asset_manager.as_ref() {
             skirmish_shell_state.trackbar_bounds =
-                crate::app_init_helpers::load_skirmish_trackbar_bounds(assets);
+                crate::app::loading::init_helpers::load_skirmish_trackbar_bounds(assets);
             // Seed the per-match option values (Money/UnitCount/TechLevel/
             // GameSpeed and the checkbox toggles) from the merged rules
             // [MultiplayerDialogSettings], so a mod that changes a default opens
             // the dialog on — and launches the match with — its value. Without
             // assets we keep the stock-default values.
-            let dialog_options = crate::app_init_helpers::load_skirmish_game_options(assets);
+            let dialog_options = crate::app::loading::init_helpers::load_skirmish_game_options(assets);
             skirmish_shell_state.apply_multiplayer_dialog_values(&dialog_options);
         }
         let skirmish_defaults =
@@ -428,7 +428,7 @@ impl App {
             skirmish_shell_chrome,
             skirmish_preview_texture: None,
             loading_screen_atlas: None,
-            loading_progress: crate::app_loading::LoadingProgressState::standard_skirmish(),
+            loading_progress: crate::app::loading::pump::LoadingProgressState::standard_skirmish(),
             main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
             single_player_shell_state:
                 crate::ui::single_player_shell::SinglePlayerShellState::default(),
@@ -607,8 +607,8 @@ impl App {
         if std::env::var("RA2_QUICKPLAY").is_ok() {
             let skirmish_settings = state.skirmish_settings.clone();
             let request =
-                crate::app_loading::LoadingRequest::generic_map_load("auto", skirmish_settings);
-            crate::app_loading::begin_loading(&mut state, request);
+                crate::app::loading::pump::LoadingRequest::generic_map_load("auto", skirmish_settings);
+            crate::app::loading::pump::begin_loading(&mut state, request);
         }
 
         Ok(state)

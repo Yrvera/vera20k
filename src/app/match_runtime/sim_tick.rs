@@ -338,7 +338,7 @@ fn build_score_screen_model(
     // Use the launch handle while it is still available. Current map handoff
     // clears LoadingSession instead of pinning the handle for the match, so the
     // ordinary fallback remains a recorded presentation residual.
-    let local_handle = crate::app_loading::launch_player_name(state);
+    let local_handle = crate::app::loading::pump::launch_player_name(state);
     let Some(sim) = state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
         return ScoreScreenModel::default();
     };
@@ -1454,7 +1454,7 @@ fn refresh_cell_lighting(state: &mut AppState) {
         ) else {
             return;
         };
-        let view = crate::app_init::derive_lighting_view(
+        let view = crate::app::loading::init::derive_lighting_view(
             &state.map_lighting_config,
             Some(sim),
             Some(rules),

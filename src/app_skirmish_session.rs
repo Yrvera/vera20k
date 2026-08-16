@@ -7,7 +7,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::assets::asset_manager::AssetManager;
 use crate::rules::ini_parser::IniFile;
 use crate::sim::rng::SimRng;
@@ -743,7 +743,7 @@ fn menu_country_item_data(country: SkirmishCountry) -> i32 {
 fn cooperative_country_roster_from_assets(
     assets: &AssetManager,
 ) -> Vec<CooperativeCountryRosterEntry> {
-    let rules = crate::app_init_helpers::load_retail_rules_source(assets);
+    let rules = crate::app::loading::init_helpers::load_retail_rules_source(assets);
     SkirmishCountry::ALL
         .into_iter()
         .map(|country| {

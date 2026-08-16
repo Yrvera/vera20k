@@ -176,7 +176,7 @@ impl App {
             });
         // `[AI] NeutralTechBuildings` plus each type's `Foundation=`, resolved
         // here because only plain data may cross to the worker.
-        let tech_types = crate::app_init_helpers::load_neutral_tech_types(asset_manager);
+        let tech_types = crate::app::loading::init_helpers::load_neutral_tech_types(asset_manager);
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let options = options.clone();

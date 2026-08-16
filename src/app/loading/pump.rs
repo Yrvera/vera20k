@@ -5,13 +5,13 @@
 //! the app loop before map-load phases are split into a fully pumpable job.
 
 use crate::app::AppState;
-use crate::app_init::{self, MapLoadInitial, MapLoadResult};
-use crate::app_loading_composition::{
+use crate::app::loading::init::{self, MapLoadInitial, MapLoadResult};
+use crate::app::loading::composition::{
     LoadingCompositionSnapshot, LoadingParticipantId, LoadingStartAssignment, MmpbRegionRect,
     RANDOM_MAP_PREVIEW_FILE, build_loading_composition, build_random_map_loading_composition,
     loading_base_origin,
 };
-use crate::app_loading_progress_row::{
+use crate::app::loading::progress_row::{
     LoadingProgressRowLayout, LoadingProgressRowSnapshot, layout_standard_skirmish_progress_row,
 };
 use crate::sim::scenario_bootstrap::{
@@ -657,13 +657,13 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                                     progress: &mut native.progress,
                                     cadence,
                                 };
-                                app_init::retained_random_map_initial(
+                                init::retained_random_map_initial(
                                     requested_map_file,
                                     generated,
                                     &mut sink,
                                 )
                             }
-                            None => app_init::retained_random_map_initial(
+                            None => init::retained_random_map_initial(
                                 requested_map_file,
                                 generated,
                                 &mut NoopProgressSink,
@@ -689,14 +689,14 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                                     progress: &mut native.progress,
                                     cadence,
                                 };
-                                app_init::load_map_initial_with_assets(
+                                init::load_map_initial_with_assets(
                                     ra2_dir,
                                     asset_manager,
                                     Some(requested_map_file.as_str()),
                                     &mut sink,
                                 )
                             }
-                            None => app_init::load_map_initial_with_assets(
+                            None => init::load_map_initial_with_assets(
                                 ra2_dir,
                                 asset_manager,
                                 Some(requested_map_file.as_str()),
@@ -796,7 +796,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         render_size,
                         cadence,
                     };
-                    app_init::load_map_from_initial(
+                    init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
                         asset_manager,
@@ -818,7 +818,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         progress: &mut native.progress,
                         cadence,
                     };
-                    app_init::load_map_from_initial(
+                    init::load_map_from_initial(
                         &state.gpu,
                         &state.batch_renderer,
                         asset_manager,
@@ -833,7 +833,7 @@ pub(crate) fn pump_loading_after_present(state: &mut AppState) -> LoadingPump {
                         &mut sink,
                     )
                 }
-                None => app_init::load_map_from_initial(
+                None => init::load_map_from_initial(
                     &state.gpu,
                     &state.batch_renderer,
                     asset_manager,
@@ -979,7 +979,7 @@ fn prepare_selected_map_initial_before_first_frame(state: &mut AppState) -> anyh
             .asset_manager
             .as_mut()
             .expect("asset-manager setup stores the manager");
-        app_init::load_map_initial_with_assets(
+        init::load_map_initial_with_assets(
             ra2_dir,
             asset_manager,
             Some(requested_map_file.as_str()),
@@ -2557,7 +2557,7 @@ mod tests {
             .take_retained_random_map()
             .expect("the same retained FFA generation reaches MapLoadInitial");
         let mut progress = RecordingProgressSink::standard();
-        let initial = app_init::retained_random_map_initial(
+        let initial = init::retained_random_map_initial(
             "RandMap.Sed".to_string(),
             retained,
             &mut progress,
@@ -2922,7 +2922,7 @@ mod tests {
 
     #[test]
     fn a_preview_wider_than_its_region_is_squashed_whole_not_cropped() {
-        use crate::app_loading_composition::{aspect_fit_preview, mmpb_region_rect};
+        use crate::app::loading::composition::{aspect_fit_preview, mmpb_region_rect};
 
         // A stock map whose projected preview overruns the 800-wide region: the
         // fit picks a destination narrower than the source, which is exactly the

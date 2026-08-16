@@ -4,7 +4,7 @@
 //! decoding remains in `render::loading_screen_chrome`; draw submission remains
 //! in `app_loading`.
 
-use crate::app_loading_composition::{NARROW_LOADING_SCREEN_WIDTH, loading_base_origin};
+use crate::app::loading::composition::{NARROW_LOADING_SCREEN_WIDTH, loading_base_origin};
 use crate::skirmish_launch::SkirmishLaunchSession;
 use crate::ui::shell::geom::RectPx;
 

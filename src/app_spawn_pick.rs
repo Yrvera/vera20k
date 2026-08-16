@@ -9,7 +9,7 @@
 //! - Part of the app layer — may depend on everything.
 
 use crate::app::AppState;
-use crate::app_init_helpers::build_entity_atlases;
+use crate::app::loading::init_helpers::build_entity_atlases;
 use crate::app_render;
 use crate::app_skirmish::seed_skirmish_opening_if_needed;
 use crate::map::terrain;

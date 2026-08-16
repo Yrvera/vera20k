@@ -65,10 +65,10 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
 
     // Production rules layering: RULESMD, then the map's own INI on top.
     let (mut rules, rules_ini) =
-        crate::app_init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
+        crate::app::loading::init_helpers::load_rules_with_merged_ini(&assets, None, Some(&map.ini))
             .ok_or_else(|| "load merged rules".to_string())?
             .into_parts();
-    let (mut art, art_ini) = crate::app_init_helpers::load_art_ini(&assets)
+    let (mut art, art_ini) = crate::app::loading::init_helpers::load_art_ini(&assets)
         .ok_or_else(|| "load merged art".to_string())?;
     rules.merge_art_data(&art);
     rules.general.resolve_art_rates(&art_ini);
@@ -86,7 +86,7 @@ pub fn load(retail_dir: &Path, map_file_name: &str, seed: u32) -> Result<Headles
         rules.general.cliff_back_impassability,
     );
     let scheduler_roots =
-        crate::app_init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
+        crate::app::loading::init_helpers::scheduler_anim_roots(&rules, resolved.tile_animations());
     art.bind_scheduler_anim_assets(
         &scheduler_roots,
         &assets,

@@ -3,9 +3,10 @@
 //! Simulation admission, draw composition, submit/present, transition commits,
 //! captures, and loading-after-present remain in their original source order.
 
+use super::loading::transitions;
 use super::{
     ActiveEventLoop, App, AppState, GameScreen, Instant, Result, app_render, sim_tick,
-    app_transitions, frontend::startup_splash, main_menu,
+    frontend::startup_splash, main_menu,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,17 +310,17 @@ impl App {
                 }
             }
             GameScreen::Loading => {
-                match crate::app_loading::render_loading_screen(
+                match crate::app::loading::pump::render_loading_screen(
                     state,
                     &mut encoder,
                     &output.texture,
                 ) {
-                    crate::app_loading::LoadingRenderResult::NativeRendered => {}
-                    crate::app_loading::LoadingRenderResult::GenericFallback => {
-                        let map_name_display = crate::app_loading::loading_map_name(state)
+                    crate::app::loading::pump::LoadingRenderResult::NativeRendered => {}
+                    crate::app::loading::pump::LoadingRenderResult::GenericFallback => {
+                        let map_name_display = crate::app::loading::pump::loading_map_name(state)
                             .unwrap_or("auto")
                             .to_string();
-                        app_transitions::clear_screen(&mut encoder, &view);
+                        transitions::clear_screen(&mut encoder, &view);
                         state.egui.begin_frame(&state.platform.window);
                         main_menu::draw_loading_screen(&state.egui.ctx, &map_name_display);
                         state.egui.end_frame_and_render(
@@ -330,11 +331,11 @@ impl App {
                             state.use_software_cursor(),
                         );
                     }
-                    crate::app_loading::LoadingRenderResult::NativeFailed(err) => {
-                        app_transitions::clear_screen(&mut encoder, &view);
+                    crate::app::loading::pump::LoadingRenderResult::NativeFailed(err) => {
+                        transitions::clear_screen(&mut encoder, &view);
                         log::warn!("Could not render native loading screen: {err:#}");
-                        crate::app_loading::clear_loading_state(state);
-                        crate::app_loading::clear_match_startup_state(state);
+                        crate::app::loading::pump::clear_loading_state(state);
+                        crate::app::loading::pump::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
@@ -454,7 +455,7 @@ impl App {
                     false
                 };
                 if !score_rendered {
-                    app_transitions::clear_screen(&mut encoder, &view);
+                    transitions::clear_screen(&mut encoder, &view);
                     state.egui.begin_frame(&state.platform.window);
                     if crate::ui::mission_status::draw_mission_result_screen(
                         &state.egui.ctx,
@@ -627,27 +628,27 @@ impl App {
         // pump one loading phase. The next patch will continue splitting the
         // remaining legacy load body into smaller phases.
         if matches!(state.screen, GameScreen::Loading) {
-            crate::app_loading::loading_screen_presented(state);
-            let native_loading = crate::app_loading::is_native_loading_session(state);
-            match crate::app_loading::pump_loading_after_present(state) {
-                crate::app_loading::LoadingPump::Pending => {
+            crate::app::loading::pump::loading_screen_presented(state);
+            let native_loading = crate::app::loading::pump::is_native_loading_session(state);
+            match crate::app::loading::pump::pump_loading_after_present(state) {
+                crate::app::loading::pump::LoadingPump::Pending => {
                     state.platform.window.request_redraw();
                 }
-                crate::app_loading::LoadingPump::Finished(result) => {
-                    app_transitions::apply_map_load_result(state, result);
+                crate::app::loading::pump::LoadingPump::Finished(result) => {
+                    transitions::apply_map_load_result(state, result);
                 }
-                crate::app_loading::LoadingPump::Failed(err) => {
+                crate::app::loading::pump::LoadingPump::Failed(err) => {
                     log::warn!("Could not load map: {err:#}");
                     if native_loading {
-                        crate::app_loading::clear_loading_state(state);
-                        crate::app_loading::clear_match_startup_state(state);
+                        crate::app::loading::pump::clear_loading_state(state);
+                        crate::app::loading::pump::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Loading Failed".to_string(),
                             detail: format!("{err:#}"),
                         };
                     } else {
-                        let result = app_transitions::fallback_map_load_result();
-                        app_transitions::apply_map_load_result(state, result);
+                        let result = transitions::fallback_map_load_result();
+                        transitions::apply_map_load_result(state, result);
                     }
                 }
             }

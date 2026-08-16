@@ -51,15 +51,10 @@ pub mod app;
 
 // App initialization helpers — map loading, entity spawning, asset loading.
 // Extracted from app.rs to keep the orchestrator under 600 lines.
-pub mod app_init;
-pub mod app_init_helpers;
 /// Headless retail-scenario loading for parity runs (no GPU, no window).
 pub mod headless_scenario;
 pub mod app_launch;
 pub mod app_list_maps;
-pub mod app_loading;
-pub mod app_loading_composition;
-pub mod app_loading_progress_row;
 pub mod app_main_menu_shell_render;
 pub mod app_quit_cascade;
 pub mod app_radiation_light;
@@ -149,7 +144,6 @@ pub mod app_combat_lights;
 pub mod app_chute_anim;
 
 // App state transitions: map loading, screen clearing.
-pub mod app_transitions;
 
 // Cursor feedback analysis and software cursor frame selection.
 pub mod app_cursor;

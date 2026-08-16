@@ -1627,7 +1627,7 @@ fn commit_prepared_load(
         state.sim_runtime.take(),
         simulation,
     ));
-    crate::app_transitions::sync_in_game_options_speed_from_sim(state);
+    crate::app::loading::transitions::sync_in_game_options_speed_from_sim(state);
     state.combat_lights.clear();
     crate::app::match_runtime::sim_tick::upsert_occupied_overlay_render_entries(state, occupied_overlays);
 
@@ -1654,7 +1654,7 @@ fn commit_prepared_load(
     // Rebuild transient lighting from the loaded live entity set so destroyed
     // light-source buildings do not leave stale point lights behind.
     if let Some(resolved_terrain) = state.terrain_template() {
-        state.lighting_grid = crate::app_init::rebuild_lighting_grid_from_sim(
+        state.lighting_grid = crate::app::loading::init::rebuild_lighting_grid_from_sim(
             resolved_terrain,
             &state.map_lighting_config,
             state.sim_runtime.as_ref().map(|rt| &rt.simulation),

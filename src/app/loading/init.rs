@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::app_init_helpers::{
+use crate::app::loading::init_helpers::{
     build_entity_atlases, build_sidebar_cameo_atlas, build_tile_atlas, load_art_ini,
     load_rules_with_merged_ini, log_trigger_graph_diagnostics, parse_debug_spawn_units_env,
     scheduler_anim_roots, theater_ext_for,
@@ -828,7 +828,7 @@ impl MapLoadInitial {
 pub(crate) fn retained_random_map_initial(
     seed_name: String,
     generated: crate::map::rmg::GeneratedMap,
-    progress: &mut dyn crate::app_loading::LoadingProgressSink,
+    progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> MapLoadInitial {
     progress.milestone(8);
     let mapgen_rng_continuation = generated.mapgen_continuation;
@@ -1056,7 +1056,7 @@ pub(crate) fn load_map_initial_with_assets(
     ra2_dir: PathBuf,
     asset_manager: &mut AssetManager,
     requested_map: Option<&str>,
-    progress: &mut dyn crate::app_loading::LoadingProgressSink,
+    progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> Result<MapLoadInitial> {
     // TubeMovement and random-map geometry share the retail executable's
     // sine/cosine table.  Install it before selecting the map source: explicit
@@ -1129,7 +1129,7 @@ pub(crate) fn load_map_initial_with_assets(
         // `[AI] NeutralTechBuildings` plus each type's `Foundation=`. The phase
         // runs for every map type except 0, so an empty list here would both
         // strip the buildings and skip the draws the original consumes.
-        let tech_types = crate::app_init_helpers::load_neutral_tech_types(asset_manager);
+        let tech_types = crate::app::loading::init_helpers::load_neutral_tech_types(asset_manager);
         let generated = crate::map::rmg::build::generate_map(
             &options,
             &settings,
@@ -1238,7 +1238,7 @@ pub(crate) fn load_map_from_initial(
     runtime_color_scheme_count: usize,
     mut vxl_compute: Option<&mut crate::render::vxl_compute::VxlComputeRenderer>,
     tile_variant_selector_cache: &mut crate::map::tile_variant_selector::TileVariantSelectorCache,
-    progress: &mut dyn crate::app_loading::LoadingProgressSink,
+    progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> Result<MapLoadResult> {
     let MapLoadInitial {
         map_data,
@@ -1263,7 +1263,7 @@ pub(crate) fn load_map_from_initial(
     // the same single resolved seed word. Generic loads retain the explicitly
     // unverified fallback, but it is sampled exactly once.
     let match_seed =
-        startup.seed_or_else(crate::app_init_helpers::generate_unverified_legacy_match_seed);
+        startup.seed_or_else(crate::app::loading::init_helpers::generate_unverified_legacy_match_seed);
 
     // Load theater INI for tileset lookup, palette, and LAT configuration.
     // Also loads theater-specific MIX archives (e.g., isotemmd.mix) at highest priority.
@@ -1274,7 +1274,7 @@ pub(crate) fn load_map_from_initial(
         // Native advances while rebuilding each color scheme. Rust's theater
         // loader is monolithic, so present the verified pre-load-count sequence
         // synchronously after that work instead of faking per-item callbacks.
-        for value in crate::app_loading::theater_ramp_changed_values(runtime_color_scheme_count) {
+        for value in crate::app::loading::pump::theater_ramp_changed_values(runtime_color_scheme_count) {
             progress.milestone(value);
         }
         progress.milestone(25);
@@ -1642,7 +1642,7 @@ pub(crate) fn load_map_from_initial(
     };
     // F09 seam: GPU-free construction first, then the presentation manifest
     // is derived from the constructed simulation — never fed back into it.
-    let constructed = crate::app_init_helpers::construct_app_scenario(
+    let constructed = crate::app::loading::init_helpers::construct_app_scenario(
         &map_data,
         &resolved_terrain,
         &asset_manager,
@@ -1655,7 +1655,7 @@ pub(crate) fn load_map_from_initial(
         bootstrap_rng,
         initialize_houses_before_objects,
     );
-    let manifest = crate::app_init_helpers::build_presentation_manifest(
+    let manifest = crate::app::loading::init_helpers::build_presentation_manifest(
         &constructed,
         &asset_manager,
         gpu,
@@ -2073,7 +2073,7 @@ mod random_map_retail_tests {
     use crate::map::rmg::RmgOptions;
 
     struct SilentProgress;
-    impl crate::app_loading::LoadingProgressSink for SilentProgress {
+    impl crate::app::loading::pump::LoadingProgressSink for SilentProgress {
         fn milestone(&mut self, _percent: u32) {}
     }
 

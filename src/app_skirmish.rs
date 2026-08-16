@@ -684,7 +684,7 @@ mod tests {
             "terrain-dependent deficient starts must not guess a loading plan"
         );
         assert!(
-            crate::app_loading::selected_map_start_assignments(&session, None).is_empty(),
+            crate::app::loading::pump::selected_map_start_assignments(&session, None).is_empty(),
             "no exact plan means no colored loading assignment markers"
         );
         let bounds = NativeStartBounds::from_session(&sim, &terrain);
@@ -1121,7 +1121,7 @@ mod tests {
 
     #[test]
     fn gsi_04_16_first_loading_markers_match_final_battle_start_table() {
-        use crate::app_loading_composition::{LoadingParticipantId, LoadingStartAssignment};
+        use crate::app::loading::composition::{LoadingParticipantId, LoadingStartAssignment};
 
         let launch_seed = 8;
         let mut session = test_session();
@@ -1137,7 +1137,7 @@ mod tests {
             .expect("complete standard Battle starts preload");
 
         let loading_assignments =
-            crate::app_loading::selected_map_start_assignments(&session, Some(&plan));
+            crate::app::loading::pump::selected_map_start_assignments(&session, Some(&plan));
         assert_eq!(
             loading_assignments,
             vec![

@@ -4,7 +4,7 @@
 //! status help text, and start-marker number labels.
 
 use crate::app::AppState;
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::shell_paint::{self, PaintLabel};

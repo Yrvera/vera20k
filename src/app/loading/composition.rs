@@ -1133,7 +1133,7 @@ mod tests {
                 .contains(&LoadingCompositionLayer::AssignedMmpbMarkers)
         );
         assert_eq!(
-            crate::app_loading_progress_row::LoadingProgressRowSnapshot::from_launch_session(
+            crate::app::loading::progress_row::LoadingProgressRowSnapshot::from_launch_session(
                 &session
             )
             .label,

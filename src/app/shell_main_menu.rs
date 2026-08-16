@@ -54,7 +54,7 @@ impl App {
     pub(super) fn leave_mission_result_screen(state: &mut AppState) {
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
-        crate::app_loading::clear_match_startup_state(state);
+        crate::app::loading::pump::clear_match_startup_state(state);
         state.scenario_elapsed_clock.reset();
         state.score_screen = None;
         state.score_shell_state = Default::default();
@@ -169,7 +169,7 @@ impl App {
         view: &wgpu::TextureView,
         event_loop: &ActiveEventLoop,
     ) -> Result<()> {
-        app_transitions::clear_screen(encoder, view);
+        transitions::clear_screen(encoder, view);
         state.egui.begin_frame(&state.platform.window);
         let action = main_menu::draw_main_menu_with_maps(
             &state.egui.ctx,

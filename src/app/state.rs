@@ -126,7 +126,7 @@ pub(crate) struct AppState {
     pub(crate) skirmish_modes: Vec<crate::skirmish_modes::SkirmishGameMode>,
     /// Player-configured skirmish settings (map, country, credits, etc.).
     pub(crate) skirmish_settings: SkirmishSettings,
-    pub(crate) loading_session: Option<crate::app_loading::LoadingSession>,
+    pub(crate) loading_session: Option<crate::app::loading::pump::LoadingSession>,
     /// Process-persistent terrain-load cache. Scenario teardown, failed loads,
     /// reseeds, and save transitions must not clear it.
     pub(crate) tile_variant_selector_cache:
@@ -166,7 +166,7 @@ pub(crate) struct AppState {
     /// Minimap renderer — created at map load time.
     pub(crate) loading_screen_atlas:
         Option<crate::render::loading_screen_chrome::LoadingScreenAtlas>,
-    pub(crate) loading_progress: crate::app_loading::LoadingProgressState,
+    pub(crate) loading_progress: crate::app::loading::pump::LoadingProgressState,
     pub(crate) main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState,
     pub(crate) single_player_shell_state: crate::ui::single_player_shell::SinglePlayerShellState,
     /// Shared descriptor-driven input authority for the front-end shell dialogs

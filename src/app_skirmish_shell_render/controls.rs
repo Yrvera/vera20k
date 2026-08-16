@@ -3,7 +3,7 @@
 //! Contains player-name edit chrome, checkboxes, trackbars, combo faces,
 //! and ComboDropWin popup sprite construction.
 
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::render::batch::SpriteInstance;
 use crate::render::bit_font::BitFont;
 use crate::render::skirmish_shell_chrome::{

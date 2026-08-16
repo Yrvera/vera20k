@@ -85,7 +85,7 @@ pub(crate) fn apply_in_game_options(state: &mut AppState) {
                 "In-game Options could not queue GameSpeed={} for the local house",
                 state.in_game_options.game_speed
             );
-            crate::app_transitions::sync_in_game_options_speed_from_sim(state);
+            crate::app::loading::transitions::sync_in_game_options_speed_from_sim(state);
         }
     }
     // UnitActionLines -> the target-line render gate (the one confirmed live consumer).

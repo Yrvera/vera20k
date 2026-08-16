@@ -670,7 +670,7 @@ pub(crate) fn build_entity_atlases(
 }
 
 #[cfg(test)]
-#[path = "app_init_helpers_retail_placement_oracle_tests.rs"]
+#[path = "init_helpers_retail_placement_oracle_tests.rs"]
 mod retail_placement_oracle_tests;
 
 #[cfg(test)]

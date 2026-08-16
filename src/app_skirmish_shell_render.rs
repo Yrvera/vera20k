@@ -20,7 +20,7 @@ pub(crate) use preview::SkirmishPreviewTexture;
 pub(crate) use text::skirmish_right_panel_label_strings;
 
 use crate::app::AppState;
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::app_shell_transition::{ButtonGroup, ShellFrameWave};
 #[cfg(test)]
 use crate::map::preview::PreviewSourceBounds;

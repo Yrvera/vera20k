@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::app_init;
+use crate::app::loading::init;
 use crate::app_render;
 use crate::app::match_runtime::sim_tick;
 use crate::map::basic::BasicSection;
@@ -43,9 +43,9 @@ pub(crate) fn sync_in_game_options_speed_from_sim(state: &mut AppState) {
     state.sim_speed_tps = crate::app_types::tps_for_game_speed(game_speed);
 }
 
-pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
-    app_init::MapLoadResult {
-        scenario: app_init::ScenarioLoadInputs {
+pub(crate) fn fallback_map_load_result() -> init::MapLoadResult {
+    init::MapLoadResult {
+        scenario: init::ScenarioLoadInputs {
             startup: crate::match_bootstrap::LoadingStartup::Generic {
                 selected_map_file: "fallback".to_string(),
             },
@@ -82,7 +82,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
             camera_anchor_x: 0.0,
             camera_anchor_y: 0.0,
         },
-        presentation: app_init::PresentationLoadAssets {
+        presentation: init::PresentationLoadAssets {
             tile_atlas: None,
             unit_atlas: None,
             palette_set: None,
@@ -104,7 +104,7 @@ pub(crate) fn fallback_map_load_result() -> app_init::MapLoadResult {
     }
 }
 
-pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapLoadResult) {
+pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadResult) {
     crate::app::reset_scenario_exit_runtime(state);
     let startup = result.scenario.startup;
     let returns_scenario_rng_to_offline_shell = startup.launch_session().is_some();
@@ -112,7 +112,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     // InGame (SpawnPick remains outside the scenario elapsed span).
     state.scenario_elapsed_clock.reset();
     state.tile_atlas = result.presentation.tile_atlas;
-    crate::app_loading::clear_loading_state(state);
+    crate::app::loading::pump::clear_loading_state(state);
     state.map_basic = result.scenario.basic;
     state.loaded_map_source = Some(result.scenario.map_source);
     state.loaded_map_hash = result.scenario.map_hash;
@@ -225,7 +225,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
         state.rules(),
     ) {
         (Some(terrain), Some(sim), Some(rules)) => {
-            let view = crate::app_init::derive_lighting_view(
+            let view = crate::app::loading::init::derive_lighting_view(
                 &state.map_lighting_config,
                 Some(sim),
                 Some(rules),
@@ -235,7 +235,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
             let profile = view.profile;
             let detail_level = view.detail_level;
             let point_lights = view.point_lights.clone();
-            let grid = crate::app_init::build_lighting_grid_from_view(terrain, &view);
+            let grid = crate::app::loading::init::build_lighting_grid_from_view(terrain, &view);
             Some((fingerprint, profile, detail_level, point_lights, grid))
         }
         _ => None,
@@ -402,7 +402,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
     }
 
     if state.spawn_pick_pending {
-        crate::app_loading::clear_match_startup_state(state);
+        crate::app::loading::pump::clear_match_startup_state(state);
         state.screen = GameScreen::SpawnPick;
         if returns_scenario_rng_to_offline_shell {
             state
@@ -451,7 +451,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: app_init::MapL
                         log::info!("Transitioned to InGame after Rust L0 acknowledgement");
                     }
                     Err(err) => {
-                        crate::app_loading::clear_match_startup_state(state);
+                        crate::app::loading::pump::clear_match_startup_state(state);
                         state.screen = GameScreen::MissionResult {
                             title: "Startup Rejected".to_string(),
                             detail: err.clone(),

@@ -36,7 +36,7 @@ impl App {
         // torn down.
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_skirmish_rng(state);
-        crate::app_loading::clear_match_startup_state(state);
+        crate::app::loading::pump::clear_match_startup_state(state);
         state.scenario_elapsed_clock.reset();
         if let Some(ref mut player) = state.music_player {
             player.stop();

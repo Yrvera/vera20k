@@ -277,11 +277,11 @@ impl TacticalCaptureSession {
         state.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.shell_first_paint_slide = None;
         state.skirmish_preview_texture = None;
-        let request = crate::app_loading::LoadingRequest::accepted_skirmish(
+        let request = crate::app::loading::pump::LoadingRequest::accepted_skirmish(
             startup,
             state.skirmish_settings.clone(),
         );
-        crate::app_loading::begin_loading(state, request);
+        crate::app::loading::pump::begin_loading(state, request);
         state.zoom_level = 1.0;
         state.zoom_target = 1.0;
         Ok(())

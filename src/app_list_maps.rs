@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::csf_file::CsfFile;
 use crate::assets::mix_archive::MixArchive;

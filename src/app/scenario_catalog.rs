@@ -9,7 +9,7 @@
 //! are borrows, and the only mutable access re-projects when it drops, so the
 //! two lists cannot drift.
 
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::map::skirmish_scenarios::SkirmishScenarioRecord;
 
 pub(crate) struct ScenarioCatalog {

@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use crate::app::AppState;
-use crate::app_init::MapMenuEntry;
+use crate::app::loading::init::MapMenuEntry;
 use crate::assets::asset_manager::AssetManager;
 use crate::map::preview::{DecodedPreview, PreviewSourceBounds};
 use crate::render::batch::{BatchTexture, SpriteInstance};
