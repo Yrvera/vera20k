@@ -2291,14 +2291,14 @@ fn mission_base_frames_reads_rate_table_stock_identical() {
     assert_eq!(mission_base_frames(&rules, MissionType::Unload, 99), 14);
     assert_eq!(mission_base_frames(&rules, MissionType::Harvest, 99), 14);
 
-    // Sanity: the table also carries Guard's distinct 27/14 Rate/AARate split.
-    assert_eq!(rules.mission_control.rate_frames(MissionType::Guard), 27);
+    // Sanity: the table also carries Guard's distinct 26/14 Rate/AARate split.
+    assert_eq!(rules.mission_control.rate_frames(MissionType::Guard), 26);
 
     // Keyless mission (no [Stop] section) → the slot keeps its constructed
-    // 0.016-minute rate, i.e. 14 frames. It is NOT zero, so the zero-sentinel
-    // fallback branch in `mission_base_frames` is unreachable for a table
-    // parsed from any INI (recorded: that fallback is a VERA-internal gate the
-    // original does not have).
+    // 0.016-minute rate, i.e. 14 frames. Not zero — so an ABSENT section never
+    // reaches the zero-sentinel fallback in `mission_base_frames` (recorded:
+    // that fallback is a VERA-internal gate the original does not have). A
+    // PRESENT `Rate=0`, or a `Rate=` VERA cannot parse, does reach it.
     assert_eq!(rules.mission_control.rate_frames(MissionType::Stop), 14);
     assert_eq!(mission_base_frames(&rules, MissionType::Stop, 99), 14);
 }

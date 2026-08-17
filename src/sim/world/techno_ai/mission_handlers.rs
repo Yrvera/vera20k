@@ -163,7 +163,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // selectors — so it runs the Guard body. The cadence still comes from
         // the object's own mission slot (the timer lookup indexes on the
         // committed mission id, not on the handler's identity), and `[Sticky]
-        // Rate=.016` is 14 frames against Guard's 27. Stock skirmish maps park
+        // Rate=.016` is 14 frames against Guard's 26. Stock skirmish maps park
         // neutral civilian traffic on this.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Sticky)) => {
             evaluate_foot_guard_cadence(sim, rules, MissionType::Sticky, input.bunker_delegate)

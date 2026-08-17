@@ -3358,7 +3358,7 @@ mod tests {
 
     /// Sticky and Guard dispatch through the same slot, so Sticky runs the
     /// Guard handler — but the cadence comes from the object's OWN mission
-    /// slot, so `[Sticky] Rate` (14) applies, not `[Guard] Rate` (27).
+    /// slot, so `[Sticky] Rate` (14) applies, not `[Guard] Rate` (26).
     #[test]
     fn sticky_runs_the_guard_handler_at_its_own_rate() {
         let mut sim = Simulation::with_seed(0x21C0);
@@ -3385,7 +3385,7 @@ mod tests {
                 .mission
                 .dispatch_timer(),
             MissionDispatchTimer::from_raw(0, 14 + jitter),
-            "[Sticky] Rate=.016 is 14 frames; [Guard] Rate=.030 would be 27"
+            "[Sticky] Rate=.016 is 14 frames; [Guard] Rate=.030 would be 26"
         );
         assert_eq!(
             sim.scenario_rng.logical_state(),
@@ -3513,7 +3513,7 @@ mod tests {
     }
 
     /// Area Guard has its own handler and its own cadence: `[Area Guard]
-    /// Rate=.040` is 36 frames, and the jitter draw is `RandomRanged(1, 5)` —
+    /// Rate=.040` is 35 frames, and the jitter draw is `RandomRanged(1, 5)` —
     /// NOT the `(0, 2)` every other absorbed handler takes. The fixture type
     /// carries no weapon, so the can-acquire predicate fails and the scan (with
     /// its own separate draw) never runs.
@@ -3543,8 +3543,8 @@ mod tests {
                 .expect("fixture entity")
                 .mission
                 .dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, 36 + jitter),
-            "[Area Guard] Rate=.040 is 36 frames; [Guard] Rate=.030 would be 27"
+            MissionDispatchTimer::from_raw(0, 35 + jitter),
+            "[Area Guard] Rate=.040 is 35 frames; [Guard] Rate=.030 would be 26"
         );
         assert_eq!(
             sim.scenario_rng.logical_state(),
