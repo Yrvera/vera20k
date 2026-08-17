@@ -33,10 +33,6 @@ pub struct PreviewImage {
 /// Leptons per cell; a cell centre sits half a cell in on both axes.
 const LEPTONS_PER_CELL: i32 = crate::util::lepton::LEPTONS_PER_CELL_I32;
 const CELL_CENTRE_LEPTONS: i32 = crate::util::lepton::CELL_CENTER_LEPTON_I32;
-/// Projection scales — the isometric tile is 60x30, and the transform halves
-/// both before the fixed-point shift.
-const PROJECT_X_SCALE: i32 = 60;
-const PROJECT_Y_SCALE: i32 = 30;
 /// Constant added to the projected X after the shift, keeping the whole
 /// playfield in positive territory.
 const PROJECT_X_BIAS: i32 = 0x3C00;
@@ -54,28 +50,18 @@ const MARKER_ORIGIN_BIAS: i32 = -1;
 /// Only the first eight waypoints get a marker.
 pub const MARKER_WAYPOINT_COUNT: u8 = 8;
 
-/// Project a cell to the preview's pre-division coordinate space.
+/// Project a cell centre to the preview's coordinate space.
 ///
-/// The halving happens before the fixed-point shift, and the shift adds a
-/// sign-dependent bias so negatives truncate toward zero rather than flooring —
-/// dropping that bias shifts the whole west/north edge of the map by a pixel.
+/// Delegates to the canonical native projector (halved 60/30 terms, then a
+/// toward-zero /256 — `util::lepton::project_absolute_lepton_xy`); only the
+/// preview's X bias is local. Cell-centre inputs always divide exactly, so
+/// the i64 no-wrap canonical is bit-identical here.
 fn project_cell_centre(cell_x: i32, cell_y: i32) -> (i32, i32) {
     let lepton_x = cell_x * LEPTONS_PER_CELL + CELL_CENTRE_LEPTONS;
     let lepton_y = cell_y * LEPTONS_PER_CELL + CELL_CENTRE_LEPTONS;
-
-    let raw_x = (lepton_x * PROJECT_X_SCALE) / 2 + (lepton_y * -PROJECT_X_SCALE) / 2;
-    let raw_y = (lepton_x * PROJECT_Y_SCALE) / 2 + (lepton_y * PROJECT_Y_SCALE) / 2;
-
-    let projected_x = shift_with_sign_bias(raw_x) + PROJECT_X_BIAS;
-    let projected_y = shift_with_sign_bias(raw_y);
-    (projected_x, projected_y)
-}
-
-/// The fixed-point `>> 8` the projection uses, biased so negative values
-/// truncate toward zero — the same signed shift as lepton→cell, delegated so
-/// the bias formula exists once.
-const fn shift_with_sign_bias(value: i32) -> i32 {
-    crate::util::direction_tables::lepton_to_cell(value)
+    let (projected_x, projected_y) =
+        crate::util::lepton::project_absolute_lepton_xy(lepton_x, lepton_y);
+    (projected_x + PROJECT_X_BIAS, projected_y)
 }
 
 /// Preview-pixel column and row for a projected cell, before the surface origin
@@ -545,12 +531,12 @@ mod tests {
     }
 
     #[test]
-    fn the_shift_truncates_negatives_toward_zero() {
-        // Floor would give -2 for a value that truncation puts at -1.
-        assert_eq!(shift_with_sign_bias(-300), -1);
-        assert_eq!(shift_with_sign_bias(300), 1);
-        assert_eq!(shift_with_sign_bias(-256), -1);
-        assert_eq!(shift_with_sign_bias(0), 0);
+    fn projection_matches_the_canonical_with_preview_bias() {
+        // Cell (0, 1): leptons (128, 384) → canonical (-30, 30); only the X
+        // bias is preview-local. The toward-zero truncation of the shared
+        // canonical is pinned at util::direction_tables and mission::readiness.
+        assert_eq!(project_cell_centre(0, 1), (-30 + PROJECT_X_BIAS, 30));
+        assert_eq!(project_cell_centre(0, 0), (PROJECT_X_BIAS, 15));
     }
 
     #[test]
