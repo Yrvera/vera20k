@@ -1257,15 +1257,44 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         // cannot commit every selected unit's path at one instant, cannot edit
         // nodes before committing, and cannot loop a path.
         HotkeyCommand::PlanningMode => {}
+        // DEFERRED (row 86, GSI-14.05's selection-cycling half). Control groups
+        // themselves are implemented; these four verbs are not, and each needs
+        // its own mechanism rather than a shared one.
+        //
+        // `CombatantSelect` (P, Execute 0x005367F0) and `VeterancyNav`
+        // (Y, Execute 0x005369F0) share a prologue that hands
+        // `!(key >> 8) & 1` — the INVERTED Shift bit — to 0x00732280 and
+        // 0x007336C0 respectively. `FUN_00732280` is the closest of the four to
+        // landable: it is the TypeSelect escalation machine VERA already owns
+        // (`g_bTypeSelectAcrossMap`, `g_SelectionMode`, and the same
+        // screen/map/empty CSF feedback triple, string ids 0x3F5 / 0x3F3 /
+        // 0x3F1) driven by a different member predicate — a drawn-list test
+        // `FUN_007342C0` (`entry->+0x14 & 1`) plus a type flag at
+        // `TechnoTypeClass+0xDBC`, whose INI key is UNCHECKED. So closing it is
+        // "reuse `compute_type_select_tap`'s scope machinery with a combatant
+        // predicate", not new infrastructure.
+        //
+        // `NextObject` (N, Execute 0x00536610) and `PreviousObject`
+        // (M, Execute 0x00536A80) share an identical opening — 0x004AC820(0)
+        // then 0x004AC700(0, 0), which cancel the armed cursor modes — and
+        // differ only in a tail this session did not read. Their cycling order
+        // and wrap behaviour are UNCHECKED.
+        //
+        // Trigger: pressing P, Y, N or M. Player effect: the key does nothing.
+        // Frequency: occasional — control groups carry this load in ordinary
+        // play, and none of the four is a reflex. Downstream risk: none for
+        // Next/Previous/Veterancy, which are pure app-side selection changes;
+        // CombatantSelect touches the shared TypeSelect scope latch, so it
+        // should land beside that machinery rather than duplicating it.
+        HotkeyCommand::PreviousObject
+        | HotkeyCommand::NextObject
+        | HotkeyCommand::CombatantSelect
+        | HotkeyCommand::VeterancyNav => {}
         HotkeyCommand::ToggleAlliance
         | HotkeyCommand::PlaceBeacon
         | HotkeyCommand::AllToCheer
-        | HotkeyCommand::PreviousObject
-        | HotkeyCommand::NextObject
-        | HotkeyCommand::CombatantSelect
         | HotkeyCommand::PageUser
         | HotkeyCommand::ScatterObject
-        | HotkeyCommand::VeterancyNav
         | HotkeyCommand::Delete
         | HotkeyCommand::Taunt(_) => {}
     }
