@@ -326,6 +326,19 @@ pub struct MissionControlEntry {
     /// when the key is absent or zero).
     pub aa_rate_frames: u32,
     /// Weapons disabled → ignored as a target until it fires (`NoThreat=`, def no).
+    ///
+    /// **Parsed, no consumer.** Stock YR sets it on exactly two sections,
+    /// `[Harmless]` and `[Selling]`. Harmless is inert here — nothing shoots a
+    /// civilian anyway — but Selling is not. Trigger: an enemy building is
+    /// selected as a target during the seconds it spends on the Selling mission.
+    /// Player effect: retail stops treating a building the player has sold as
+    /// worth shooting, so the deconstruction runs out and the refund lands;
+    /// VERA's keeps drawing fire and can be destroyed instead, costing the
+    /// player the refund. Frequency: every contested sell — a few times a match
+    /// for an active player, and near-continuous when a base is being overrun.
+    /// Downstream risk: the consumer belongs in threat scoring
+    /// (`TechnoClass::Greatest_Threat`), which is not this row's owner; the
+    /// native reader of `NoThreat` is UNCHECKED.
     pub no_threat: bool,
     /// Frozen forever, never recovers (`Zombie=`, def no).
     pub zombie: bool,

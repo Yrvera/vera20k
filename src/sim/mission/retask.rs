@@ -23,16 +23,16 @@ use crate::sim::world::Simulation;
 ///
 /// | site | variant | cancels |
 /// |---|---|---|
-/// | Move | `All` | depot + aircraft RTB/wait + docked-idle |
-/// | Stop, RepairAtDepot | `Depot` | depot reservation only |
+/// | Move, Stop | `All` | depot + aircraft RTB/wait + docked-idle |
+/// | RepairAtDepot | `Depot` | depot reservation only |
 /// | Attack | `AircraftOnly` | aircraft RTB/wait + docked-idle (NOT depot) |
 /// | ForceAttack, ForceAttackCell, AttackMove | `IdleOnly` | docked-idle only |
 /// | EnterTransport, PlantC4, CaptureBuilding | `None` | nothing |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockTeardown {
-    /// Depot + aircraft RTB/wait + docked-idle (Move).
+    /// Depot + aircraft RTB/wait + docked-idle (Move, Stop).
     All,
-    /// Depot reservation only (Stop, RepairAtDepot).
+    /// Depot reservation only (RepairAtDepot).
     Depot,
     /// Aircraft RTB/wait + docked-idle, but NOT the depot reservation (Attack).
     AircraftOnly,

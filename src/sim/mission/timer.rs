@@ -7,11 +7,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::sim::timer::CdTimer;
 
-/// "Unarmed / always due" (the -1 start). `u32::MAX`: the live counter starts at
-/// 0 and would take ~3.3 years at 15fps to reach it, so it is never a live value.
+/// [`MissionTimer`]'s unarmed anchor. `u32::MAX`: the live counter starts at 0
+/// and would take ~3.3 years at 15fps to reach it, so it is never a live value.
+///
+/// "Unarmed" reads as "due" only because [`MissionTimer::clear`] zeroes the
+/// duration alongside it — the anchor alone does not force readiness, exactly as
+/// on [`MissionDispatchTimer`]. [`MissionTimer::pause`] parks the live remainder
+/// on this same anchor and is deliberately NOT due.
 pub const SENTINEL: u32 = u32::MAX;
 
-const DISPATCH_ALWAYS_DUE_START: i32 = -1;
+/// The unanchored start dword. `MissionClass::Mission_Dispatch` 0x005B3060
+/// tests it at 0x005B308C and, when it matches, **skips** the elapsed
+/// computation at 0x005B3091-0x005B309D entirely — it does not shortcut to
+/// "due". Control falls straight into the shared `TEST EAX,EAX / JNZ` at
+/// 0x005B309F with the raw delay still in EAX, so an unanchored timer is due
+/// only when its delay is also zero.
+const DISPATCH_UNANCHORED_START: i32 = -1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MissionTimer {
@@ -60,21 +71,29 @@ impl MissionDispatchTimer {
 
     /// Test native Mission-dispatch readiness.
     ///
-    /// A `-1` start is always due. Otherwise elapsed time is a signed wrapping
-    /// subtraction and the due boundary is inclusive.
+    /// Elapsed time is a signed wrapping subtraction and the due boundary is
+    /// inclusive. An unanchored start does not force readiness — see
+    /// [`DISPATCH_UNANCHORED_START`].
     #[inline]
     pub fn due(self, now: u32) -> bool {
-        self.start_frame == DISPATCH_ALWAYS_DUE_START
-            || (now as i32).wrapping_sub(self.start_frame) >= self.delay
+        if self.start_frame == DISPATCH_UNANCHORED_START {
+            return self.delay == 0;
+        }
+        (now as i32).wrapping_sub(self.start_frame) >= self.delay
     }
 
     /// Return the signed wrapping remainder only while dispatch is pending.
     ///
-    /// Native dispatch does not saturate this subtraction.
+    /// Native dispatch does not saturate this subtraction. On the unanchored
+    /// start the remainder is the raw delay dword, because the elapsed
+    /// subtraction never runs.
     #[inline]
     pub fn remaining_if_pending(self, now: u32) -> Option<i32> {
         if self.due(now) {
             return None;
+        }
+        if self.start_frame == DISPATCH_UNANCHORED_START {
+            return Some(self.delay);
         }
         let elapsed = (now as i32).wrapping_sub(self.start_frame);
         Some(self.delay.wrapping_sub(elapsed))
@@ -196,12 +215,19 @@ mod tests {
     }
 
     #[test]
-    fn signed_dispatch_minus_one_start_is_always_due() {
-        let timer = MissionDispatchTimer::from_raw(-1, i32::MAX);
+    fn signed_dispatch_unanchored_start_is_due_only_on_a_zero_delay() {
+        // 0x005B308C jumps past the elapsed computation, so the raw delay is
+        // what the shared `TEST EAX,EAX` at 0x005B309F sees.
+        let live = MissionDispatchTimer::from_raw(-1, i32::MAX);
+        assert!(!live.due(0));
+        assert!(!live.due(u32::MAX));
+        assert_eq!(live.remaining_if_pending(0), Some(i32::MAX));
+        assert_eq!(live.remaining_if_pending(u32::MAX), Some(i32::MAX));
 
-        assert!(timer.due(0));
-        assert!(timer.due(u32::MAX));
-        assert_eq!(timer.remaining_if_pending(0), None);
+        let expired = MissionDispatchTimer::from_raw(-1, 0);
+        assert!(expired.due(0));
+        assert!(expired.due(u32::MAX));
+        assert_eq!(expired.remaining_if_pending(0), None);
     }
 
     #[test]
