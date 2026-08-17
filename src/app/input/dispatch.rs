@@ -1199,6 +1199,64 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::Options => handle_options_hotkey(state),
         HotkeyCommand::CenterView => crate::app::input::camera::center_view_on_selection(state),
         HotkeyCommand::Follow => crate::app::input::camera::toggle_follow_target(state),
+        // DEFERRED, not overlooked: waypoint planning mode is a whole input
+        // mode, and VERA has none of it. Prior research already handed this off:
+        // docs/research/DRIVE_QUEUED_CLICK_EVENT_PLANNING_MODE_OUTCOME_RESWARM_20260528.md,
+        // whose conclusion — implement it as a separate path-command surface,
+        // NOT as FootClass NavQueue entries — still stands.
+        //
+        // Mode edge. `PlanningModeCommandClass::Execute` 0x00536750 reads the
+        // key-up bit itself (`TEST AH,0x8`), so the mode is HELD, not toggled.
+        // It is not alone in that: `TypeSelectCommandClass::Execute` 0x005368B0
+        // has the identical prologue, and VERA already models that one as a
+        // both-edges held command in `handle_type_select_key_edge`. Press routes
+        // 0x00731A50 -> 0x006379C0, which sets the mode byte `DAT_00AC4CF4`,
+        // plays a sound and posts UI message 0x11C7. Release routes 0x00731A70
+        // -> 0x00637A10, which clears the mode byte and posts 0x11C8. That same
+        // mode byte is what `FUN_0063AB60` hands
+        // `ScrollClass__UpdateMouseScrolling` 0x00692F30 ahead of its capture
+        // routing.
+        //
+        // Command surface — THREE event types, not one, and the plan is streamed
+        // as it is drawn rather than shipped at the end:
+        //   * PLANCONNECT 0x2A — emitted by `FUN_0063AD50` once PER SELECTED
+        //     OBJECT PER CLICK, through the payload ctor 0x004C6780 and
+        //     `Try_Append_Event_To_OutList`.
+        //   * PLANCOMMIT 0x2B — the release event. Built with the 2-arg
+        //     `EventClass(house, type)` ctor 0x004C66C0, so it carries only the
+        //     type, the local house `g_PlayerPtr+0x30` and the frame. It carries
+        //     NO path data.
+        //   * PLANNODEDELETE 0x2C — `DeleteCommandClass::Execute` 0x00537F90 ->
+        //     0x00731A10 -> `FUN_00637D00`, i.e. the Delete key edits the plan
+        //     before it commits. `HotkeyCommand::Delete` below belongs to this
+        //     same deferred mode.
+        // All three land in one executor, `FUN_00637E00`. Module string
+        // `D:\ra2mdpost\PlanMgr.cpp` at 0x00836BD4.
+        //
+        // Storage is the row's named model: TWELVE `WaypointPathClass*` slots on
+        // HouseClass at +0x210..+0x23C with the active slot index at +0x20C
+        // (walked by `FUN_006DAD60`), the point count at path+0x38, and a
+        // per-object back-pointer at `TechnoClass+0x514`. Paths can loop
+        // (`WaypointPathClass+0x24`). The overlay is a dashed all-segment line
+        // with a per-point shroud test and MOUSE.SHA action 0x3C.
+        //
+        // INI: `MaxWaypointPathLength=15` caps the path (Rules+0x90), and
+        // `AddPlanningModeCommandSound=PlanningModeAdd` is a third sound, played
+        // per added node — start and end are not the whole set.
+        //
+        // Trigger: holding Z. Player effect: the key does nothing, so no
+        // multi-leg route can be planned. Frequency: occasional — a deliberate
+        // habit rather than a reflex. Downstream risk: bounded but wider than a
+        // single command — three new event types on the deterministic stream
+        // (row 89 owns the envelope), house-side path storage, and a new overlay
+        // layer. Nothing here needs rework to accommodate it later.
+        //
+        // Note the honest limit of the frequency call: VERA's Shift-queue is NOT
+        // an equivalent, and is itself VERA-internal with the gamemd equivalent
+        // UNIMPLEMENTED. It reproduces single-unit route geometry only. It
+        // cannot commit every selected unit's path at one instant, cannot edit
+        // nodes before committing, and cannot loop a path.
+        HotkeyCommand::PlanningMode => {}
         HotkeyCommand::ToggleAlliance
         | HotkeyCommand::PlaceBeacon
         | HotkeyCommand::AllToCheer
@@ -1208,7 +1266,6 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         | HotkeyCommand::PageUser
         | HotkeyCommand::ScatterObject
         | HotkeyCommand::VeterancyNav
-        | HotkeyCommand::PlanningMode
         | HotkeyCommand::Delete
         | HotkeyCommand::Taunt(_) => {}
     }

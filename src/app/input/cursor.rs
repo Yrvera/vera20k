@@ -401,6 +401,16 @@ fn capability_cursor_for_hover(
             entity.and_then(|e| rules.and_then(|r| r.object(sim.interner.resolve(e.type_ref))));
         if let Some(obj) = obj {
             if obj.deployer || obj.deploys_into.is_some() {
+                // DRIFT, recorded not fixed: this branch does not see the order
+                // modifier, so Alt over a deployer's own body still shows the
+                // deploy cursor while the click issues a move —
+                // native resolves Alt to action 1 at 0x00700B1A and would show
+                // the move cursor. Trigger: holding Alt over the selected
+                // deployer itself. Player effect: the cursor promises a deploy
+                // and the unit moves instead. Frequency: rare — it needs Alt
+                // held over exactly the one selected deployable. Downstream
+                // risk: none; the fix is to thread the resolved modifier into
+                // this helper, which changes no sim state.
                 return CursorFeedbackKind::Deploy;
             }
         }

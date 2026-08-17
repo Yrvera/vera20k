@@ -93,8 +93,9 @@ pub(crate) fn resolve_order_modifiers(ctrl: bool, shift: bool, alt: bool) -> Ord
 /// Two retail slots have no VERA counterpart yet:
 /// * Capture has its **own** slot, verified: it reads the type's `VoiceCapture=`
 ///   sound and speaks it, and only when the key is absent does it call the Enter
-///   slot instead. VERA does not parse `VoiceCapture=`, so it takes the absent
-///   branch unconditionally — and every stock engineer ships the key, so every
+///   slot instead. VERA now PARSES `VoiceCapture=` (`ObjectType::voice_capture`)
+///   but this router still has no arm for it, so capture keeps routing to the
+///   Enter slot — and every stock engineer ships the key, so every
 ///   engineer capture order in ordinary play speaks the wrong line today
 ///   (Allied `EngAllMove` instead of `EngAllAttackCommand`, Soviet `EngSovMove`
 ///   instead of `EngSovAttackCommand`; Yuri's two keys happen to hold the same
@@ -1132,6 +1133,17 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                                 }
                             }
                         }
+                        // DRIFT, recorded not fixed: gamemd's Ctrl+Alt area-guard
+                        // carries the CLICKED cell (0x00700830 -> mission 0x1A /
+                        // 0x33), while `Command::Guard` has no cell field, so the
+                        // sim anchors the guard at the actor's own position.
+                        // Trigger: Ctrl+Alt-clicking a cell away from the unit.
+                        // Player effect: the unit guards where it stands instead
+                        // of where the player pointed, so the order looks like it
+                        // did nothing. Frequency: occasional — a real habit for
+                        // holding ground, but not a reflex. Downstream risk:
+                        // closing it widens a sim command's payload, so it lands
+                        // with the Guard mission's own row (95), not here.
                         OrderMode::Guard => Command::Guard {
                             entity_id: stable_id,
                             target_id: None,
