@@ -1012,10 +1012,13 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 ///
-/// **Modifier matching is exact.** Every stock binding names a precise modifier
-/// set, and a bare-key command is rejected outright while Shift, Ctrl or Alt is
-/// held — so holding Ctrl to force-fire or Alt to force-move and tapping a
-/// letter does nothing instead of firing Stop or Deploy.
+/// **Modifier matching is exact for all but five commands.** Every stock binding
+/// names a precise modifier set, and a bare-key command is normally rejected
+/// while Shift, Ctrl or Alt is held — so holding Ctrl to force-fire or Alt to
+/// force-move and tapping a letter does nothing instead of firing Stop or
+/// Deploy. The exceptions are the five classes that override
+/// `CommandClass::AcceptsModifiers`; see `hotkeys::HotkeyCommand`. TypeSelect is
+/// one of them, so Shift+T still reaches this tap/hold machinery.
 ///
 /// Dev/debug functions live behind the Ctrl+Shift chord, which stock binds
 /// nothing to, so bare keys stay free for stock game hotkeys.
