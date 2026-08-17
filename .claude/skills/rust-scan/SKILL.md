@@ -71,6 +71,11 @@ no repository-wide regex.
 
 ## Workflow
 
+The numbered order is binding only where a step names a precondition: collect
+candidates before verifying them, confirm no active `cargo`/`rustc` process
+before Clippy, deduplicate and classify last. Otherwise treat the steps as
+required checks, not a script — plan the pass yourself.
+
 1. **Establish scope.** Inspect `src/lib.rs`, `src/sim/mod.rs`, the target module
    headers, and relevant callers. For simulation work, locate the current
    `World::advance_tick` / master-frame spine and its `SPINE REGION` comments
@@ -168,8 +173,10 @@ is not certification.`
 
 ### Unresolved candidates
 
-List only candidates whose missing type, caller, authority, or runtime evidence
-could materially change the verdict. State the exact next check.
+List every candidate that remains unresolved; never drop one silently. For those
+whose missing type, caller, authority, or runtime evidence could materially
+change the verdict, state the exact next check. Group the rest by rule with a
+count and a one-line reason they were left unresolved.
 
 ### Notable rejected candidates
 
