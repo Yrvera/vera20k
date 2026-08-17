@@ -516,6 +516,50 @@ pub(crate) struct TacticalMouseState {
 }
 
 impl TacticalMouseState {
+    /// Whether a press edge may arm anything and take the capture.
+    ///
+    /// `Tactical_Mouse_Message_Handler` 0x006930A0 keeps ONE capture byte at
+    /// `+0x555A` for both buttons, and cases 0x201 (test at 0x00693194) and
+    /// 0x204 (test at 0x006932D5) each require it to be clear before they arm.
+    /// So whichever button presses first owns the gesture: a left press during a
+    /// right-drag pan arms no band box, and a right press during a band drag
+    /// records no pan anchor. Both are dropped rather than layered.
+    pub(crate) fn press_may_arm(&self) -> bool {
+        !self.captured
+    }
+
+    /// Left press edge. Returns whether the caller should arm the band drag.
+    ///
+    /// The physical-button byte is recorded either way, because
+    /// `ScrollClass__UpdateMouseScrolling` 0x00692F30 gates on the capture byte
+    /// first (0x00692F85) and then picks its branch from the LIVE button state
+    /// via `Input__IsLogicalMouseButtonActive` — button 1 before button 2. That
+    /// is what lets a left press interrupt a right-drag pan mid-gesture even
+    /// when the press itself armed nothing.
+    pub(crate) fn begin_left_press(&mut self) -> bool {
+        self.left_held = true;
+        if !self.press_may_arm() {
+            return false;
+        }
+        self.captured = true;
+        true
+    }
+
+    /// Left release edge. Returns whether the caller should run the release body.
+    ///
+    /// Case 0x202 (test at 0x00693232) gates on the same shared byte and does
+    /// not test which button set it: with the byte clear it exits having done
+    /// nothing, and with it set it runs `BandBox_LeftUp` 0x004AB9B0 and drops
+    /// the capture even when the right button was the one holding it.
+    pub(crate) fn end_left_press(&mut self) -> bool {
+        self.left_held = false;
+        if !self.captured {
+            return false;
+        }
+        self.captured = false;
+        true
+    }
+
     /// Right press inside the play area: record the anchor and take the capture.
     /// The press itself has no game effect in gamemd.
     pub(crate) fn begin_right_drag(&mut self, cursor: (f32, f32)) {
@@ -1647,5 +1691,58 @@ mod tests {
         mouse.release();
         assert!(!mouse.captured);
         assert!(!mouse.right_drag_owns_frame());
+    }
+
+    /// The four press/release orderings of a two-button chord, against the one
+    /// shared capture byte. Both press cases refuse to arm while it is set, and
+    /// the left release runs its body whenever it is set, whichever button set
+    /// it — so the release still fires after a swallowed press.
+    #[test]
+    fn one_capture_byte_arbitrates_both_buttons_across_all_four_orderings() {
+        // Baseline: an uncontested left click arms and then releases.
+        let mut mouse = TacticalMouseState::default();
+        assert!(mouse.begin_left_press());
+        assert!(mouse.captured);
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+
+        // R-down, L-down, L-up, R-up. The left press is swallowed, but its
+        // release still runs the body and takes the capture away from the pan.
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        assert!(!mouse.begin_left_press());
+        assert!(mouse.left_held, "the live button byte is recorded anyway");
+        assert!(!mouse.right_drag_owns_frame(), "left freezes the pan");
+        assert_eq!(mouse.right_anchor, (100.0, 100.0), "anchor is untouched");
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+
+        // R-down, L-down, R-up, L-up. The right release already cleared the
+        // byte, so the trailing left release does nothing at all.
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        assert!(!mouse.begin_left_press());
+        mouse.right_held = false;
+        mouse.release();
+        assert!(!mouse.end_left_press());
+
+        // L-down, R-down, L-up. The right press finds the byte set, so it is
+        // swallowed and records no anchor; the left release still owns the
+        // ending and hands the byte back.
+        let mut mouse = TacticalMouseState::default();
+        assert!(mouse.begin_left_press());
+        mouse.right_held = true;
+        if mouse.press_may_arm() {
+            mouse.begin_right_drag((250.0, 250.0));
+        }
+        assert_eq!(
+            mouse.right_anchor,
+            (0.0, 0.0),
+            "the swallowed right press left the anchor alone"
+        );
+        assert!(mouse.end_left_press());
+        assert!(mouse.press_may_arm(), "the byte is free again");
     }
 }

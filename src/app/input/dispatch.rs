@@ -142,10 +142,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
             if btn_state.is_pressed() {
                 // gamemd takes the mouse capture on the press edge whether or
                 // not the band drag arms: the modal gates live inside the
-                // drag-arm helper, not around the capture. The capture is what
-                // freezes edge auto-scroll for the length of the gesture.
-                state.match_state.input.tactical_mouse.left_held = true;
-                state.match_state.input.tactical_mouse.captured = true;
+                // drag-arm helper 0x004AC310, not around the capture. The
+                // capture is what freezes edge auto-scroll for the gesture.
+                //
+                // It refuses to arm at all when the shared capture byte is
+                // already held, so a left press landing mid right-drag records
+                // only the physical button. See `TacticalMouseState`.
+                if !state.match_state.input.tactical_mouse.begin_left_press() {
+                    return;
+                }
                 if state.match_state.input.targeting_mode.is_some()
                     || state.match_state.match_presentation.sidebar_gadget_state.repair_mode_on
                     || state.match_state.match_presentation.sidebar_gadget_state.sell_mode_on
@@ -156,8 +161,14 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     .match_state.input.selection_state
                     .begin_drag(state.match_state.input.cursor_x, state.match_state.input.cursor_y);
             } else {
-                state.match_state.input.tactical_mouse.left_held = false;
-                state.match_state.input.tactical_mouse.captured = false;
+                // Case 0x202 gates the whole release on the same shared capture
+                // byte and does NOT test which button set it. With the byte
+                // clear it exits having done nothing; with it set it runs
+                // BandBox_LeftUp and drops the capture, whichever button was
+                // holding it. See `TacticalMouseState::end_left_press`.
+                if !state.match_state.input.tactical_mouse.end_left_press() {
+                    return;
+                }
                 // Repair / Sell cursor modes consume the click — toggle repair or
                 // sell the own building under the cursor. The mode stays active
                 // (sticky) so the player can act on several buildings in a row.
@@ -193,6 +204,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 let mut action: SelectAction = state
                     .match_state.input.selection_state
                     .end_drag(release_point.0, release_point.1);
+                // BandBox_LeftUp 0x004AB9B0 does not early-return when nothing
+                // was armed: with the band flag clear it falls straight through
+                // to the action dispatch. So a release whose press never armed
+                // a drag -- because the shared capture byte was already held, or
+                // because a cursor mode swallowed the press -- is still an
+                // ordinary click at its own release point, not a no-op.
+                if matches!(action, SelectAction::None) {
+                    action = SelectAction::Click(release_point.0, release_point.1);
+                }
                 let shift = is_shift_held(state);
                 // A band box that caught no drawn object leaves the selection
                 // exactly as it was, and the release is handled as an ordinary
@@ -420,7 +440,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // the pan anchor and takes the capture, and only does that when
                 // no other button already holds it. Everything the player sees
                 // happens on the release edge.
-                if !state.match_state.input.tactical_mouse.captured {
+                if state.match_state.input.tactical_mouse.press_may_arm() {
                     state
                         .match_state.input.tactical_mouse
                         .begin_right_drag((state.match_state.input.cursor_x, state.match_state.input.cursor_y));
