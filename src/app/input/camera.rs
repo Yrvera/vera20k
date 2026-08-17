@@ -557,6 +557,27 @@ impl TacticalMouseState {
             return false;
         }
         self.captured = false;
+        // The threshold latch deliberately SURVIVES. Native's case 0x202 writes
+        // only the capture byte, at 0x00693290; the latch `this+0x5558`
+        // (0x00884D40) is SET at 0x006934B6 inside `Tactical_RightDrag_Pan` and
+        // cleared at 0x0069333F (case 0x204) and 0x006933B4 (case 0x205). Note
+        // `get_xrefs_to` alone sees only those two absolute stores — every other
+        // access is `this`-relative and produces no data xref, the standing
+        // `param_1` pointer-arithmetic pitfall.
+        //
+        // Clearing it here would flip the right-release cancel ladder, which
+        // case 0x205 gates at 0x00693397 and calls at 0x006933C6 only when the
+        // latch is CLEAR: a pan that crossed the threshold, then took a left
+        // click and a second still-held left press, would drop the player's
+        // whole selection on the right release where gamemd is silent.
+        //
+        // The engaged latch is cleared purely to keep the two pan latches from
+        // disagreeing about a gesture that has ended. It is a write native lacks
+        // — `this+0x554C` is only ever set, never cleared after a gesture — but
+        // it is unobservable: `right_drag_owns_frame` requires the capture, and
+        // the capture can only come back through `begin_right_drag`, which
+        // resets both latches anyway.
+        self.right_pan_engaged = false;
         true
     }
 
@@ -1192,6 +1213,72 @@ fn requested_scroll_survives_clamp(
 ) -> bool {
     let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];
     (dx != 0.0 && clamped.0 != current.0) || (dy != 0.0 && clamped.1 != current.1)
+}
+
+/// The cursor a right-drag pan shows, or `None` when no pan owns the frame.
+///
+/// `Some(None)` is the plain pan cursor; `Some(Some(dir))` is the directional
+/// variant that says the map cannot scroll any further that way.
+///
+/// `Tactical_RightDrag_Pan` 0x00693440 ends every engaged frame by probing all
+/// four cardinals with a dry-run `Scroll_Map(dir, 1, 0)` and setting one bit per
+/// direction that came back blocked — bit index `dir / 2`, so bit 0 = north,
+/// 1 = east, 2 = south, 3 = west. It then indexes the 16-entry cursor table at
+/// `DAT_0083E790` with that mask and hands the result to the shape setter
+/// (`vtable +0x48`). Read out of the binary, that table is:
+///
+/// ```text
+///  mask 0 -> 0x3D    1 (N) -> 0x3E    3 (N|E) -> 0x3F    2 (E) -> 0x40
+///  6 (E|S) -> 0x41   4 (S) -> 0x42   12 (S|W) -> 0x43    8 (W) -> 0x44
+///  9 (W|N) -> 0x45   every other mask -> 0x3D
+/// ```
+///
+/// So 0x3D is the unconstrained pan shape and 0x3E..0x45 are the eight compass
+/// directions in N, NE, E, SE, S, SW, W, NW order. Contradictory masks — north
+/// AND south blocked, for instance — fall back to the plain shape rather than
+/// picking a diagonal.
+pub(crate) fn right_drag_pan_cursor_state(state: &AppState) -> Option<Option<ScrollDir>> {
+    // The gate is the capture, not the latch. Native writes this cursor from
+    // INSIDE `Tactical_RightDrag_Pan`, and `ScrollClass__UpdateMouseScrolling`
+    // 0x00692F30 only calls that with the capture byte +0x555A set, button 1
+    // inactive and button 2 active — which is `right_drag_owns_frame`. Gating on
+    // the engaged latch alone would let a left click taken mid-pan strand it set
+    // (the left release clears the capture, and the right release then skips its
+    // own cleanup), leaving the pan cursor suppressing every other cursor for
+    // the rest of the match.
+    if !state.match_state.input.tactical_mouse.right_drag_owns_frame()
+        || !state.match_state.input.tactical_mouse.right_pan_engaged
+    {
+        return None;
+    }
+    let sw = state.render_width() as f32;
+    let sh = state.render_height() as f32;
+    let mut mask: u8 = 0;
+    for (bit, dir) in [ScrollDir::N, ScrollDir::E, ScrollDir::S, ScrollDir::W]
+        .into_iter()
+        .enumerate()
+    {
+        if !camera_scroll_direction_allowed(state, dir, sw, sh) {
+            mask |= 1 << bit;
+        }
+    }
+    Some(blocked_mask_to_scroll_dir(mask))
+}
+
+/// The compass direction native's 16-entry pan-cursor table assigns to a
+/// blocked-direction mask, or `None` for the unconstrained pan shape.
+fn blocked_mask_to_scroll_dir(mask: u8) -> Option<ScrollDir> {
+    Some(match mask {
+        1 => ScrollDir::N,
+        3 => ScrollDir::NE,
+        2 => ScrollDir::E,
+        6 => ScrollDir::SE,
+        4 => ScrollDir::S,
+        12 => ScrollDir::SW,
+        8 => ScrollDir::W,
+        9 => ScrollDir::NW,
+        _ => return None,
+    })
 }
 
 /// Active edge intent plus whether the tactical clamp removes all requested
@@ -1955,6 +2042,71 @@ mod tests {
     fn a_fully_stacked_selection_reproduces_the_native_off_centre_divide() {
         let coords = [(600, 900, 0), (600, 900, 0), (600, 900, 0)];
         assert_eq!(selection_view_centre_leptons(&coords), Some((900, 1350, 0)));
+    }
+
+    /// A left click taken mid-pan ends the pan cursor but must NOT rewrite the
+    /// threshold latch, because the right release reads that latch to decide
+    /// whether to run its cancel ladder.
+    #[test]
+    fn a_left_release_mid_pan_ends_the_pan_but_keeps_the_threshold_latch() {
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        mouse.right_threshold_crossed = true;
+        mouse.right_pan_engaged = true;
+        assert!(mouse.right_drag_owns_frame());
+
+        // Left press is swallowed by the shared capture byte but still recorded.
+        assert!(!mouse.begin_left_press());
+        assert!(!mouse.right_drag_owns_frame(), "left freezes the pan");
+
+        // Left release takes the capture, so the pan can no longer own a frame.
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+        assert!(!mouse.right_drag_owns_frame());
+        assert!(
+            mouse.right_threshold_crossed,
+            "the threshold latch survives; the right-release cancel ladder reads it"
+        );
+
+        // A second left press re-takes the capture. The right release that
+        // follows must still see a crossed threshold and stay silent — clearing
+        // the latch above would have made it drop the whole selection.
+        assert!(mouse.begin_left_press());
+        assert!(mouse.captured);
+        assert!(mouse.right_threshold_crossed);
+    }
+
+    /// The pan cursor's 16-entry table, read out of `DAT_0083E790`. Only eight
+    /// masks name a direction; every other mask — including every contradictory
+    /// one, and the all-clear mask 0 — falls back to the plain pan shape.
+    #[test]
+    fn the_pan_cursor_table_names_eight_directions_and_falls_back_otherwise() {
+        // The eight table entries 0x3E..0x45, in the order the table lists them.
+        for (mask, expected) in [
+            (1u8, ScrollDir::N),
+            (3, ScrollDir::NE),
+            (2, ScrollDir::E),
+            (6, ScrollDir::SE),
+            (4, ScrollDir::S),
+            (12, ScrollDir::SW),
+            (8, ScrollDir::W),
+            (9, ScrollDir::NW),
+        ] {
+            assert_eq!(
+                blocked_mask_to_scroll_dir(mask),
+                Some(expected),
+                "mask {mask} must select {expected:?}"
+            );
+        }
+        // Nothing blocked, and the contradictory pairs north|south and east|west.
+        for mask in [0u8, 5, 10] {
+            assert_eq!(blocked_mask_to_scroll_dir(mask), None, "mask {mask}");
+        }
+        // Every mask the table maps back to the plain shape.
+        for mask in [7u8, 11, 13, 14, 15] {
+            assert_eq!(blocked_mask_to_scroll_dir(mask), None, "mask {mask}");
+        }
     }
 
     /// The four press/release orderings of a two-button chord, against the one

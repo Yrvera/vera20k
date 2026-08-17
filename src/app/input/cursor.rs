@@ -15,6 +15,27 @@ use crate::app::types::{
 use crate::sim::combat;
 
 pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFeedbackKind> {
+    // A right-drag pan owns the cursor for as long as it owns the camera, and it
+    // is tested first because native gates the cursor write and the edge-scroll
+    // block inside the same `capture == 0` else-arm of
+    // `ScrollClass__UpdateMouseScrolling` 0x00692F30 — with the capture held,
+    // neither the action cursor nor the edge arrow is reached.
+    //
+    // DRIFT, pre-existing and recorded not fixed: `edge_scroll_cursor_state`
+    // never consults `captured`, so the edge arrow can still appear during a
+    // captured gesture the pan branch declines — a band-box drag pushed into the
+    // outer window pixel, or the part of a right drag before the threshold is
+    // crossed. Trigger: dragging into a screen border with a button held.
+    // Player effect: a scroll arrow gamemd never shows; the camera does not
+    // actually move, because the motion path IS capture-gated. Frequency:
+    // occasional, and transient — it clears on release. Downstream risk: none;
+    // the fix is a `captured` check in that one helper.
+    if let Some(blocked) = crate::app::input::camera::right_drag_pan_cursor_state(state) {
+        return Some(match blocked {
+            Some(dir) => CursorFeedbackKind::PanBlocked(dir),
+            None => CursorFeedbackKind::Pan,
+        });
+    }
     // The active band is the outermost pixel of the whole window, including
     // the sidebar. It wins even when that pixel overlaps a sidebar/minimap hit.
     if let Some((dir, blocked)) = crate::app::input::camera::edge_scroll_cursor_state(state) {
@@ -837,6 +858,12 @@ pub(crate) fn cursor_id_for_feedback(kind: CursorFeedbackKind) -> Option<CursorI
         CursorFeedbackKind::PlaceValid | CursorFeedbackKind::PlaceInvalid => None,
         CursorFeedbackKind::Scroll(dir) => Some(scroll_dir_to_cursor_id(dir)),
         CursorFeedbackKind::ScrollBlocked(dir) => Some(blocked_scroll_dir_to_cursor_id(dir)),
+        // Cursor-table row 61, mouse.sha frame 385.
+        CursorFeedbackKind::Pan => Some(CursorId::Pan),
+        // Rows 62..69, frames 386..393 — a set of their own, NOT the barred
+        // edge-scroll rows, which are rows 9..16 / frames 10..17 and carry
+        // edge-anchored hotspots instead of centre/centre.
+        CursorFeedbackKind::PanBlocked(dir) => Some(pan_dir_to_cursor_id(dir)),
         CursorFeedbackKind::MinimapMove => Some(CursorId::MinimapMove),
         CursorFeedbackKind::Enter => Some(CursorId::Enter),
         CursorFeedbackKind::EngineerRepair => Some(CursorId::EngineerRepair),
@@ -866,6 +893,20 @@ fn scroll_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
         ScrollDir::SW => CursorId::ScrollSW,
         ScrollDir::W => CursorId::ScrollW,
         ScrollDir::NW => CursorId::ScrollNW,
+    }
+}
+
+/// Cursor-table rows 62..69, the right-drag pan's directional variants.
+fn pan_dir_to_cursor_id(dir: ScrollDir) -> CursorId {
+    match dir {
+        ScrollDir::N => CursorId::PanN,
+        ScrollDir::NE => CursorId::PanNE,
+        ScrollDir::E => CursorId::PanE,
+        ScrollDir::SE => CursorId::PanSE,
+        ScrollDir::S => CursorId::PanS,
+        ScrollDir::SW => CursorId::PanSW,
+        ScrollDir::W => CursorId::PanW,
+        ScrollDir::NW => CursorId::PanNW,
     }
 }
 
