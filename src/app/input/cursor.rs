@@ -223,10 +223,35 @@ enum CellAction {
 /// force-move capability answers Move; a unit that cannot accept move orders
 /// answers No-Move; otherwise the cell occupancy probe decides Move vs No-Move.
 ///
-/// VERA implements the playfield test, both modifier short-circuits, and a
-/// terrain-passability stand-in for the occupancy probe (`Can_Enter_Cell` has no
-/// VERA equivalent yet, so the same layered-walkability test the click path uses
-/// stands in for it — that residual is terrain-only, with no per-cell occupancy).
+/// VERA implements the playfield test, all three modifier short-circuits, and
+/// the terrain slice of the cell-entry probe through the same
+/// `evaluate_can_enter_cell` the mover itself asks, on both ground and bridge
+/// planes. What remains unmodelled is recorded rather than hidden:
+///
+/// * The probe's **occupancy** half. Native's `Can_Enter_Cell` also weighs the
+///   cell's occupants and returns a cost class, so a cell blocked only by a unit
+///   or a building still shows the move cursor here.
+/// * The rung at 0x00700B84-0x00700BCE, which is NOT a gap: after the probe
+///   rejects a cell, an object whose RTTI is 6 with a non-null type `+0x408`
+///   whose `+0x5EC` is set still returns ACTION_MOVE at 0x00700BC5. RTTI 6 is
+///   `BuildingClass` (vtable 0x007E3EBC, COL 0x007FC360, slot `+0x2C` at
+///   0x00459EC0 returning 6), and the structure arm above already answers Move
+///   before reaching the probe at all. Recorded so a later session does not add
+///   a gate for it.
+/// * A destroyed LOW bridge keeps its `bridge_walkable` bit from the resolved
+///   cell (`PathGrid::from_resolved_terrain_with_bridges` gates only the
+///   structural branch on intactness), so the walkable-deck gate closes only the
+///   structural half of the destroyed-bridge class.
+/// * The `vtable+0xA0` rung at 0x00700B43 — "this object cannot accept move
+///   orders at all" — whose `JZ` lands on the ACTION_NOMOVE return at
+///   0x00700C17. VERA has no equivalent test, so an object gamemd refuses
+///   outright still gets the terrain answer.
+/// * The **order path is looser than this cursor**. `nearest_reachable_goal`
+///   still admits a goal from the coarse `is_any_layer_walkable` bit and, on
+///   failure, retargets rather than refusing, so a click on open water still
+///   walks the unit to the shoreline while the cursor over it is now barred.
+///   Reconciling the two belongs to the move order's own row.
+///
 /// Aircraft and subterranean movers answer Move for any in-playfield cell.
 ///
 /// With no path grid or no resolved object the cursor keeps its previous
@@ -255,17 +280,76 @@ fn what_action_on_cell(
     if entity.category == crate::map::entities::EntityCategory::Structure {
         return CellAction::Move;
     }
+    // Native returns ACTION_MOVE before the probe for all three: the Shift latch,
+    // the Alt force-move capability, and the force-fire flag `param_3` at
+    // 0x00700B51. Force-fire only arrives here at all when the resolved object
+    // is unarmed — an armed one already took the attack-reticle branch above —
+    // and gamemd still answers Move for it rather than running the probe.
     if matches!(
         modifier,
         crate::app::input::context_order::OrderModifier::Queue
             | crate::app::input::context_order::OrderModifier::ForceMove
+            | crate::app::input::context_order::OrderModifier::ForceFire
     ) {
         return CellAction::Move;
     }
     match entity.movement_layer_or_ground() {
         MovementLayer::Air | MovementLayer::Underground => CellAction::Move,
         MovementLayer::Ground | MovementLayer::Bridge => {
-            if grid.is_any_layer_walkable(cell.0, cell.1) {
+            // Native asks the mover's own cell-entry virtual here, not a coarse
+            // walkability bit: the tail of What_Action_OnCell 0x00700600 calls
+            // vtable +0x1AC on the target cell and answers ACTION_NOMOVE (2)
+            // when the result is > 1. Asking the same predicate the move order
+            // asks is the point — otherwise the cursor promises a move the unit
+            // then refuses, which is what a PathGrid-walkable water cell did to
+            // every ordinary ground mover.
+            //
+            // The callsite pushes `(cell, -1, -1, 0, 1)` at 0x00700B5F, and in
+            // `UnitClass::Can_Enter_Cell` 0x0073F0A0 the LEVEL argument is the
+            // second of those two (guarded by `param_4 != -1`); the first is a
+            // facing, feeding `param_3 - 4U & 7` into the step-by-direction
+            // lookup. Passing -1 for the level is what makes the TARGET CELL
+            // select the plane rather than the mover's current layer, and that
+            // distinction is the whole bridge case: a tank on open ground
+            // hovering a deck cell, and a tank already on the deck hovering open
+            // ground, both have to answer Move. So the probe runs on both planes.
+            //
+            // The bridge plane additionally requires a walkable DECK, not merely
+            // the structural bit. `PathGrid::from_resolved_terrain_with_bridges`
+            // keeps `bridge_structural` set after a span collapses and clears
+            // only `bridge_walkable`, and the bridge leaf answers Clear off the
+            // structural bit alone — so without this the barred cursor would
+            // disappear from a blown span, which is where a player most needs it.
+            //
+            // Only one probe, not native's two. The second is gated on
+            // `Type+0xD2C`, the derived `MovementZone == Subterannean` flag
+            // (`CMP EAX,0x6; SETZ` at 0x0071607E-0x0071608A), which is zero for
+            // every stock YR type — so native always takes the `return 2` above
+            // it and the second probe is Tiberian Sun legacy that stock cannot
+            // reach.
+            let speed_type = entity.locomotor.as_ref().map(|l| l.speed_type);
+            let terrain_costs = speed_type.and_then(|st| sim.terrain_costs.get(&st));
+            let admits = |layer| {
+                crate::sim::pathfinding::cell_entry::evaluate_can_enter_cell(
+                    crate::sim::pathfinding::cell_entry::CanEnterCellContext {
+                        target: cell,
+                        terrain_layer: layer,
+                        movement_zone: entity.locomotor.as_ref().map(|l| l.movement_zone),
+                        speed_type,
+                        path_grid: Some(grid),
+                        resolved_terrain: sim.resolved_terrain.as_ref(),
+                        terrain_costs,
+                        bypass_grid: false,
+                        mode:
+                            crate::sim::pathfinding::cell_entry::TerrainEntryMode::RuntimeTransition,
+                        is_infantry: entity.category
+                            == crate::map::entities::EntityCategory::Infantry,
+                    },
+                )
+                .is_clear()
+            };
+            let bridge_deck_open = grid.is_walkable_on_layer(cell.0, cell.1, MovementLayer::Bridge);
+            if admits(MovementLayer::Ground) || (bridge_deck_open && admits(MovementLayer::Bridge)) {
                 CellAction::Move
             } else {
                 CellAction::NoMove
@@ -1173,6 +1257,111 @@ mod tests {
         RuleSet::from_ini(&ini).expect("cell action rules")
     }
 
+    /// A minimal flat clear land cell for the cursor fixtures.
+    fn flat_land_cell(rx: u16, ry: u16) -> crate::map::resolved_terrain::ResolvedTerrainCell {
+        use crate::map::resolved_terrain::ResolvedTerrainCell;
+        use crate::rules::terrain_rules::TerrainClass;
+        ResolvedTerrainCell {
+            rx,
+            ry,
+            source_tile_index: 0,
+            source_sub_tile: 0,
+            final_tile_index: 0,
+            final_sub_tile: 0,
+            is_wood_bridge_repair_tile: false,
+            level: 0,
+            filled_clear: false,
+            tileset_index: Some(0),
+            land_type: 0,
+            yr_cell_land_type: 0,
+            slope_type: 0,
+            template_height: 0,
+            render_offset_x: 0,
+            render_offset_y: 0,
+            terrain_class: TerrainClass::Clear,
+            speed_costs: Default::default(),
+            is_water: false,
+            is_cliff_like: false,
+            is_rough: false,
+            is_road: false,
+            accepts_smudge: false,
+            allows_tiberium: false,
+            height_in_pixels: 0,
+            variant: 0,
+            has_ramp: false,
+            canonical_ramp: None,
+            ground_walk_blocked: false,
+            terrain_object_blocks: false,
+            terrain_object_occupation: None,
+            overlay_blocks: false,
+            overlay_zone_type: None,
+            outside_playfield: false,
+            zone_type: 0,
+            base_ground_walk_blocked: false,
+            base_build_blocked: false,
+            base_land_type: 0,
+            base_yr_cell_land_type: 0,
+            base_terrain_class: Default::default(),
+            base_speed_costs: Default::default(),
+            build_blocked: false,
+            has_bridge_deck: false,
+            bridge_walkable: false,
+            bridge_transition: false,
+            bridge_deck_level: 0,
+            bridge_layer: None,
+            bridge_facts: Default::default(),
+            tube_index: None,
+            radar_left: [0, 0, 0],
+            radar_right: [0, 0, 0],
+            has_damaged_data: false,
+            bridgehead_anchor_class_at_load: None,
+        }
+    }
+
+    /// A tank that actually carries a locomotor, and therefore a SpeedType.
+    ///
+    /// `cell_action_rules` declares no `Speed=`, so its MTNK spawns with
+    /// `locomotor: None` and every SpeedType-dependent branch of the cell-entry
+    /// predicate short-circuits. Any test about the speed row or the bridge
+    /// plane has to use this one instead.
+    fn sim_with_track_tank() -> (Simulation, RuleSet, u64) {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]
+             [VehicleTypes]
+             0=MTNK
+             [AircraftTypes]
+             [BuildingTypes]
+             [MTNK]
+             Strength=300
+             Primary=105mm
+             Speed=6
+             SpeedType=Track
+             MovementZone=Normal
+             Locomotor={4A582741-9839-11d1-B709-00A024DDAFD1}
+             [WeaponTypes]
+             0=105mm
+             [105mm]
+             Damage=60
+             Range=5
+",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("track tank rules");
+        let mut sim = Simulation::new();
+        sim.resolve_type_handles(&rules);
+        let heights: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 2, 2, 0, &rules, &heights)
+            .expect("tank spawned");
+        assert!(
+            sim.entities()
+                .get(tank)
+                .and_then(|e| e.locomotor.as_ref())
+                .is_some(),
+            "the fixture must give the mover a locomotor, or the speed row is skipped",
+        );
+        (sim, rules, tank)
+    }
+
     fn sim_with_tank() -> (Simulation, RuleSet, u64) {
         let mut rules = cell_action_rules();
         let mut sim = Simulation::new();
@@ -1205,6 +1394,162 @@ mod tests {
             what_action_on_cell(&sim, Some(tank), (6, 6), Some(&grid), OrderModifier::Normal),
             CellAction::NoMove,
             "a blocked cell answers no-move",
+        );
+    }
+
+    /// The probe runs on the TARGET cell's planes, not the mover's current one.
+    ///
+    /// Native passes the level argument to `vtable+0x1AC` as -1, so the cell
+    /// picks the plane. Pinning it to the mover's layer instead barred the
+    /// cursor over every high-bridge deck — a tank on open ground would see the
+    /// no-move cursor over a crossing, and a tank already on the deck would see
+    /// it over the entire rest of the map.
+    #[test]
+    fn a_bridge_only_cell_answers_move_for_a_ground_mover() {
+        use crate::app::input::context_order::OrderModifier;
+        use crate::sim::movement::locomotor::MovementLayer;
+        use crate::sim::pathfinding::PathGrid;
+
+        let (sim, _rules, tank) = sim_with_tank();
+        let mut grid = PathGrid::new(8, 8);
+        // Deck cell: walkable on the bridge plane, closed on the ground plane.
+        grid.set_cell_for_test(6, 6, 0, true, false);
+        grid.set_blocked(6, 6, true);
+        assert!(!grid.is_walkable_on_layer(6, 6, MovementLayer::Ground));
+        assert!(grid.is_walkable_on_layer(6, 6, MovementLayer::Bridge));
+
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (6, 6), Some(&grid), OrderModifier::Normal),
+            CellAction::Move,
+            "a ground mover must be offered the deck",
+        );
+
+        // And a cell closed on both planes still answers no-move.
+        grid.set_blocked(5, 5, true);
+        assert!(!grid.is_walkable_on_layer(5, 5, MovementLayer::Bridge));
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (5, 5), Some(&grid), OrderModifier::Normal),
+            CellAction::NoMove,
+        );
+    }
+
+    /// A collapsed span keeps its structural bit and loses only its deck, and the
+    /// bridge leaf answers Clear off the structural bit alone — so without the
+    /// walkable-deck gate the barred cursor would vanish from a blown bridge,
+    /// which is exactly where a player needs it. `DestroyableBridges=yes` is the
+    /// stock default, so this is ordinary mid-game play.
+    #[test]
+    fn a_destroyed_span_answers_no_move_for_a_ground_mover() {
+        use crate::app::input::context_order::OrderModifier;
+        use crate::sim::pathfinding::{PathCell, PathGrid};
+
+        // A mover WITH a speed type: without one the shared leaf short-circuits
+        // on `land_passable` and never reaches the bridge-plane branch the deck
+        // gate guards, so the test would pass with the gate deleted.
+        let (sim, _rules, tank) = sim_with_track_tank();
+        let open = PathCell {
+            ground_walkable: true,
+            bridge_walkable: false,
+            bridge_structural: false,
+            bridge_marker_0x80: false,
+            transition: false,
+            ground_level: 0,
+            bridge_deck_level: 0,
+            slope_type: 0,
+            tube_index: None,
+            low_bridge_tube_cell: false,
+        };
+        let mut cells = vec![open.clone(); 8 * 8];
+        // The production shape after a span collapses: structural still set, deck
+        // cleared, and the water underneath closed to ground movement.
+        cells[6 * 8 + 6] = PathCell {
+            ground_walkable: false,
+            bridge_walkable: false,
+            bridge_structural: true,
+            bridge_deck_level: 4,
+            ..open.clone()
+        };
+        // An intact deck on the same map, to prove the gate did not simply close
+        // the bridge plane altogether.
+        cells[3 * 8 + 3] = PathCell {
+            ground_walkable: false,
+            bridge_walkable: true,
+            bridge_structural: true,
+            bridge_deck_level: 4,
+            ..open.clone()
+        };
+        let grid = PathGrid::from_cells(cells, 8, 8);
+
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (6, 6), Some(&grid), OrderModifier::Normal),
+            CellAction::NoMove,
+            "a blown span must still show the barred cursor",
+        );
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (3, 3), Some(&grid), OrderModifier::Normal),
+            CellAction::Move,
+            "an intact deck must still be offered",
+        );
+    }
+
+    /// The change's motivating case. `PathGrid::from_resolved_terrain_with_bridges`
+    /// leaves water cells `ground_walkable`, so the old coarse bit showed the
+    /// move cursor over open water for a Track mover; the shared predicate weighs
+    /// the mover's SpeedType against the resolved LandType and refuses.
+    #[test]
+    fn open_water_answers_no_move_for_a_track_mover() {
+        use crate::app::input::context_order::OrderModifier;
+
+        let (mut sim, rules, tank) = sim_with_track_tank();
+        const SIZE: u16 = 16;
+        let mut cells = Vec::new();
+        for ry in 0..SIZE {
+            for rx in 0..SIZE {
+                cells.push(flat_land_cell(rx, ry));
+            }
+        }
+        let mut terrain =
+            crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(SIZE, SIZE, cells);
+        let water = crate::rules::terrain_rules::LandType::Water.as_index();
+        let cell = terrain.cell_mut(9, 9).expect("water cell inside the grid");
+        cell.land_type = water;
+        cell.yr_cell_land_type = water;
+        cell.base_land_type = water;
+        cell.base_yr_cell_land_type = water;
+        cell.is_water = true;
+        // Production water is ground-blocked and becomes `ground_walkable` only
+        // through the `|| is_water` clause in the PathGrid derivation. Tie the
+        // fixture to that so it cannot keep passing if the clause is dropped.
+        cell.ground_walk_blocked = true;
+        cell.base_ground_walk_blocked = true;
+        // Water's retail speed row is zero for every land SpeedType; that zero
+        // is what the shared predicate reads and the coarse walkable bit does not.
+        cell.speed_costs = crate::rules::terrain_rules::SpeedCostProfile {
+            foot: Some(0),
+            track: Some(0),
+            wheel: Some(0),
+            float: Some(100),
+            amphibious: Some(100),
+            float_beach: Some(100),
+            hover: Some(100),
+        };
+        cell.base_speed_costs = cell.speed_costs.clone();
+        sim.resolved_terrain = Some(terrain);
+        sim.rebuild_dynamic_navigation(&rules);
+        let grid = sim.path_grid().cloned().expect("navigation rebuilt a grid");
+
+        assert!(
+            grid.is_walkable(9, 9),
+            "the fixture only bites while the coarse bit still calls water walkable",
+        );
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (9, 9), Some(&grid), OrderModifier::Normal),
+            CellAction::NoMove,
+            "a Track mover cannot enter water, so the cursor must say so",
+        );
+        assert_eq!(
+            what_action_on_cell(&sim, Some(tank), (4, 4), Some(&grid), OrderModifier::Normal),
+            CellAction::Move,
         );
     }
 
