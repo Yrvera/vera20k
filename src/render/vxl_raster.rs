@@ -33,7 +33,7 @@ const WORLD_YAW_OFFSET_DEG: f32 = 45.0;
 /// The original quantizes facing to 5 bits before building the rotation matrix and
 /// reuses those same 5 bits as its draw-cache key, so there is no finer sub-facing
 /// anywhere in the voxel pipeline: a rendered voxel is always exactly 1 of 32.
-pub(crate) const VOXEL_FACING_STEPS: u32 = 32;
+pub const VOXEL_FACING_STEPS: u32 = 32;
 
 /// Angular size of one voxel facing step: 360° / 32 = 11.25° = π/16.
 const VOXEL_FACING_STEP_RAD: f32 = std::f32::consts::PI / 16.0;

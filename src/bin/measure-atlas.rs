@@ -22,10 +22,10 @@
 const VXL_TYPES_PER_PLAYER: usize = 30;
 
 /// Body/composite facing buckets (matches `unit_atlas::UNIT_FACING_BUCKETS`).
-const BODY_FACING_BUCKETS: usize = 32;
+const BODY_FACING_BUCKETS: usize = vera20k::render::vxl_raster::VOXEL_FACING_STEPS as usize;
 
 /// Turret/barrel facing buckets (matches `unit_atlas::TURRET_FACING_BUCKETS`).
-const TURRET_FACING_BUCKETS: usize = 32;
+const TURRET_FACING_BUCKETS: usize = vera20k::render::vxl_raster::VOXEL_FACING_STEPS as usize;
 
 /// Slope variants pre-rendered for ground vehicles (slopes 0..=16, ramps
 /// + corner tilts). Aircraft never tilt and use slope_type=0 only.
