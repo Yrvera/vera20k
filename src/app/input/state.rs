@@ -58,6 +58,9 @@ pub(crate) struct MatchInputState {
     /// state: the original stamps `timeGetTime()` here and only a recall writes
     /// it — assigning with Ctrl+digit never does.
     pub(crate) last_control_group_press: Option<(usize, std::time::Instant)>,
+    /// The object the camera is following, i.e. `DisplayClass +0x11A0` behind
+    /// its valid byte `+0x119C`. `None` is the cleared pair.
+    pub(crate) follow_target: Option<u64>,
     /// True when in SpawnPick phase — MCV seeding is deferred until the player picks a waypoint.
     pub(crate) spawn_pick_pending: bool,
     /// Mutually-exclusive cursor-on-tactical-map targeting mode (building

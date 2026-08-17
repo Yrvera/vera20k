@@ -1186,11 +1186,11 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::SidebarUp => sidebar_wheel_scroll(state, 1.0),
         HotkeyCommand::SidebarDown => sidebar_wheel_scroll(state, -1.0),
         HotkeyCommand::Options => handle_options_hotkey(state),
-        HotkeyCommand::CenterView
-        | HotkeyCommand::ToggleAlliance
+        HotkeyCommand::CenterView => crate::app::input::camera::center_view_on_selection(state),
+        HotkeyCommand::Follow => crate::app::input::camera::toggle_follow_target(state),
+        HotkeyCommand::ToggleAlliance
         | HotkeyCommand::PlaceBeacon
         | HotkeyCommand::AllToCheer
-        | HotkeyCommand::Follow
         | HotkeyCommand::PreviousObject
         | HotkeyCommand::NextObject
         | HotkeyCommand::CombatantSelect
