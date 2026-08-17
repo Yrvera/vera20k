@@ -38,6 +38,24 @@ pub enum IdleModeResult {
 }
 
 /// Decide what mission an aircraft should enter after completing its current one.
+///
+/// DRIFT, recorded not fixed: `AircraftClass::Enter_Idle_Mode` opens with a
+/// Restore that this decision tree has no equivalent for. At 0x004176F8 it calls
+/// `Is_Mission_Suspended` (`vtable+0x1FC`) and, when that is true, calls
+/// `Restore_Mission` (`vtable+0x1F8`) at 0x00417706, clears the cursor for
+/// mission 0x19, and RETURNS — the idle selection below is skipped entirely.
+/// `CALL [reg+0x1F8]` has exactly three sites program-wide; VERA wires the other
+/// two (`TechnoClass::PointerExpired` 0x00707A4B and the detach sweep
+/// 0x0070D50D) and not this one.
+///
+/// Trigger: an aircraft that carries a suspended selector reaching idle —
+/// reachable through the `ReceiveDamage` retaliation Override at 0x00702B41 or
+/// `Mission_SpyPlane` 0x00417499. Player effect: a Harrier or Black Eagle hit by
+/// AA mid-run picks a fresh idle mission instead of resuming the order it had
+/// archived. Frequency: uncommon — it needs the Override and the idle transition
+/// to land on the same sortie. Downstream risk: none; the fix is one guard at
+/// the head of this function, but it needs the caller to own the Restore because
+/// this helper is pure.
 pub fn enter_idle_mode(input: &IdleModeInput) -> IdleModeResult {
     // Ammo depleted and has weapons → need to RTB.
     if input.has_weapon && input.ammo_current <= 0 && input.ammo_max > 0 {

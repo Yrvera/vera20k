@@ -574,7 +574,7 @@ impl Simulation {
                 // Drop any dock reservation (depot + aircraft + docked-idle) and
                 // retask onto a fresh Move via the verb API. The legacy field
                 // clears below stay authoritative in Slice 6.
-                self.queue_mission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
+                self.queue_megamission_with_teardown(*entity_id, MissionType::Move, DockTeardown::All);
                 // Clear attack and order intent.
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.attack_target = None;
@@ -851,7 +851,7 @@ impl Simulation {
                 }
                 // Cancel aircraft RTB/wait + docked-idle (not depot), then retask
                 // onto Attack keeping the interrupt stack (combat sets the target).
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::AircraftOnly,
@@ -887,7 +887,7 @@ impl Simulation {
                 }
                 // Force-attack bypasses friendship check (Ctrl+click). Release a
                 // docked-idle aircraft only, then retask onto Attack keeping fields.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::IdleOnly,
@@ -918,7 +918,7 @@ impl Simulation {
                 }
                 // No target-entity existence check — cells always "exist". Release
                 // a docked-idle aircraft only, then retask onto Attack keeping fields.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Attack,
                     DockTeardown::IdleOnly,
@@ -960,7 +960,7 @@ impl Simulation {
                 }
                 // Release a docked-idle aircraft only, then retask onto AttackMove
                 // (the order_intent set after the move issues is the real driver).
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *entity_id,
                     MissionType::AttackMove,
                     DockTeardown::IdleOnly,
@@ -1426,7 +1426,7 @@ impl Simulation {
                     return true;
                 }
                 // Cancel any existing depot reservation, then retask onto Enter.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *entity_id,
                     MissionType::Enter,
                     DockTeardown::Depot,
@@ -1557,7 +1557,7 @@ impl Simulation {
                 }
                 // Retask onto Enter (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *passenger_id,
                     MissionType::Enter,
                     DockTeardown::None,
@@ -1750,7 +1750,7 @@ impl Simulation {
                 }
                 // Retask onto Sabotage (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *attacker_id,
                     MissionType::Sabotage,
                     DockTeardown::None,
@@ -1878,7 +1878,7 @@ impl Simulation {
                 }
                 // Retask onto Capture (no dock reservation touched); the legacy
                 // field clears below stay authoritative.
-                self.queue_mission_with_teardown(
+                self.queue_megamission_with_teardown(
                     *engineer_id,
                     MissionType::Capture,
                     DockTeardown::None,
@@ -2111,7 +2111,7 @@ impl Simulation {
                 );
                 // Retask onto Enter (no dock reservation), mark the unit as
                 // approaching THIS bunker (the install machine's keep-alive gate).
-                self.queue_mission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
+                self.queue_megamission_with_teardown(*unit_id, MissionType::Enter, DockTeardown::None);
                 if let Some(e) = self.substrate.entities.get_mut(*unit_id) {
                     e.attack_target = None;
                     e.passively_acquired_target = false;
