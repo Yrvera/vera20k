@@ -464,9 +464,9 @@ pub(crate) fn tick_movement(
 
 /// Advance movement and perform deterministic blocked-cell recovery.
 ///
-/// `terrain_costs` is the per-SpeedType cost map for cost-aware repath.
-/// When provided, repath attempts use `find_path_with_costs` to prefer
-/// roads and avoid rough terrain.
+/// `terrain_costs` is the per-SpeedType land-row map. When provided, repath
+/// attempts use `find_path_with_costs`, which reads it as a passability
+/// predicate — retail's search does not prefer roads or avoid rough terrain.
 #[cfg(test)]
 pub(crate) fn tick_movement_with_grid(
     entities: &mut EntityStore,

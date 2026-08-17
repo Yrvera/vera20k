@@ -1311,8 +1311,35 @@ pub fn astar_search(
                     }
                 }
 
-                // Terrain speed percentage. This is distinct from the native
-                // Foot +0x1AC cost class handled immediately below.
+                // The land-type × SpeedType row, read as a **passability
+                // predicate only**: zero closes the cell, any non-zero value
+                // opens it and weighs exactly the same as any other.
+                //
+                // Retail provenance: land-type speed table — the twelve rows at
+                // `0x0089EA40` filled by `RulesClass::ReadSpeedTypeLandTypeTable`
+                // @ `0x00674000`. All twelve read sites, exhaustively:
+                // passability gates (`CellClass::CheckCellPassability` @
+                // `0x004835DE`, `InfantryClass::Can_Enter_Cell` @ `0x0051C750`
+                // and `0x0051C7BC`, `UnitClass::Can_Enter_Cell` @ `0x0073FAB5`,
+                // building placement @ `0x0047CA58`, and the Foot-column
+                // `FCOMP 0.0f` at `0x0051895A` in the unnamed function around
+                // `0x00518930`); runtime speed consumers
+                // (`DriveLocomotionClass::Process_Movement` @ `0x004B3CA3`,
+                // `ShipLocomotionClass::Process_Movement` @ `0x006A32F2`);
+                // AI/action queries (`UnitClass::What_Action_OnObject` @
+                // `0x007400A1`, `UnitClass::Mission_Hunt` @ `0x00740C9C`); and
+                // the RulesClass save/load pair that streams the block whole
+                // (`0x0067F882`, `0x0067FAF6`). **No path-search function is
+                // among them.**
+                //
+                // The search's own edge cost is built by `AStar_compute_edge_cost`
+                // @ `0x00429830` for `AStar_main_loop` @ `0x00429A90` out of the
+                // `FootClass` `+0x1AC` cost class (base table `0x0081870C`), the
+                // code-2 blocker override, a `CellClass+0x140 & 0x40000` term,
+                // the dormant `PathfinderClass+0x01` bridge-flank term and the
+                // direction tiebreaks at `0x0081872C`. Both `Can_Enter_Cell`
+                // implementations reduce the land row to `== 0.0 → class 7`, so
+                // no gradation reaches the cost class either.
                 let terrain_cost: u8 = if neighbor_use_bridge {
                     100 // bridge layer: no terrain cost modifiers
                 } else if is_water_mover {
@@ -1352,12 +1379,7 @@ pub fn astar_search(
                 // Can_Enter_Cell. PathfinderClass+0x01 is constructor-zero and
                 // has no retail writer, so the dormant bridge-flank block does
                 // not inspect either cardinal beside a diagonal destination.
-                let base_cost = STEP_COST;
-                let mut step_cost = if terrain_cost == 100 {
-                    base_cost
-                } else {
-                    base_cost * 100 / terrain_cost as i32
-                };
+                let mut step_cost = STEP_COST;
                 step_cost = apply_search_cost_class_multiplier(
                     step_cost,
                     search_cost.effective_cost_class.unwrap_or(0),
@@ -2465,9 +2487,11 @@ pub fn find_path(grid: &PathGrid, start: (u16, u16), goal: (u16, u16)) -> Option
     Some(steps.into_iter().map(|s| (s.rx, s.ry)).collect())
 }
 
-/// A* pathfinding with optional terrain cost modifiers and entity blocking.
+/// A* pathfinding with optional land-row passability and entity blocking.
 ///
-/// When `costs` is `Some`, step cost is scaled by `100 / cost_at(x,y)`.
+/// When `costs` is `Some`, a cell whose land row is zero is closed; every
+/// non-zero row expands at the same step cost, which is what the native search
+/// does (see the provenance in `astar_search`).
 /// When `entity_blocks` is `Some`, cells in the set are treated as blocked
 /// UNLESS they are the goal cell.
 pub fn find_path_with_costs(

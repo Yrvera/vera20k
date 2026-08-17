@@ -1,13 +1,24 @@
-//! Per-SpeedType terrain cost grid for variable-cost A* pathfinding.
+//! Per-SpeedType land-row grid: the A*'s passability predicate, and the
+//! movement chain's runtime speed multiplier.
 //!
-//! Each cell has a speed modifier (0 = blocked, 100 = normal, <100 = slow terrain).
-//! The A* pathfinder multiplies its step cost by `100 / cost_at(x,y)` so that
-//! slower terrain costs more and the planner routes around it.
+//! Each cell carries its land-type row for one SpeedType (0 = impassable,
+//! otherwise a whole-percent speed). **The A* reads it as a predicate only** —
+//! zero closes the cell, and every non-zero percentage weighs the same. That is
+//! the native split: `AStar_main_loop` @ `0x00429A90` builds its edge cost from
+//! `AStar_compute_edge_cost` @ `0x00429830`, whose only inputs are the
+//! `FootClass` `+0x1AC` cost class (base table at `0x0081870C`), the code-2
+//! blocker override, a `CellClass+0x140 & 0x40000` term, the dormant
+//! `PathfinderClass+0x01` bridge-flank term, and the per-direction tiebreaks at
+//! `0x0081872C`. Nothing terrain-derived enters it, and the two `Can_Enter_Cell`
+//! implementations that back `+0x1AC` reduce the land row to `== 0.0 → class 7`.
+//! The graded value's one real consumer is the runtime speed chain
+//! (`sim::pathfinding::terrain_speed`).
 //!
 //! ## Design
 //! `TerrainCostGrid` is built from map data + a `SpeedType` and provides the
-//! cost lookup that `find_path_with_costs()` uses. It is separate from `PathGrid`
-//! (which is boolean walkability) to keep the fast path working for simple queries.
+//! lookup that `find_path_with_costs()` uses. It is separate from `PathGrid`
+//! (which is boolean walkability) because it also folds in the per-SpeedType
+//! land rows, bridge decks, ramps and terrain-object sub-cell occupation.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on map/ (MapCell, TilesetLookup).
@@ -25,11 +36,11 @@ const COST_ROUGH: u8 = 75;
 /// Blocked / impassable for this SpeedType.
 const COST_BLOCKED: u8 = 0;
 
-/// Per-cell speed modifier grid for one SpeedType.
+/// Per-cell land row for one SpeedType.
 ///
-/// Values: 0 = blocked, 100 = normal speed, <100 = slow terrain.
-/// Built once per SpeedType from map data. The A* planner reads this to weight
-/// step costs, making units avoid rough terrain.
+/// Values: 0 = impassable, otherwise a whole-percent speed. Built once per
+/// SpeedType from map data. The A* planner reads only the zero/non-zero split;
+/// the percentage itself is the movement chain's business.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerrainCostGrid {
     costs: Vec<u8>,
@@ -57,9 +68,10 @@ pub(crate) fn build_canonical_terrain_cost_grids(
 impl TerrainCostGrid {
     /// Build a terrain cost grid from resolved terrain metadata.
     ///
-    /// Uses the cell's INI-backed speed profile as the terrain substrate. When a
-    /// profile is unavailable, the existing coarse terrain-cost classifier remains
-    /// the weighting fallback; reduced-zone matrix rows are not SpeedType data.
+    /// Uses the cell's INI-backed land row as the terrain substrate. When no row
+    /// was parsed, [`classify_terrain_cost`] answers instead — a VERA-internal
+    /// fallback, see its own note; reduced-zone matrix rows are not SpeedType
+    /// data.
     pub fn from_resolved_terrain(terrain: &ResolvedTerrainGrid, speed_type: SpeedType) -> Self {
         let size: usize = terrain.width() as usize * terrain.height() as usize;
         let mut costs: Vec<u8> = vec![COST_BLOCKED; size];
@@ -96,9 +108,9 @@ impl TerrainCostGrid {
             } else if ramp_passable {
                 COST_NORMAL
             } else if let Some(resolved) = cell.speed_costs.cost_for_speed_type(speed_type) {
-                // INI speed costs are the primary source — they come from rules.ini
-                // [Clear], [Rough], [Tiberium], etc. sections and encode the actual
-                // speed percentage per SpeedType. 0 = blocked, >0 = passable.
+                // The parsed land row is the primary source — rules.ini's
+                // [Clear], [Rough], [Tiberium] … sections, one whole-percent
+                // value per SpeedType. 0 = impassable, >0 = passable.
                 resolved
             } else {
                 classify_terrain_cost(
@@ -146,8 +158,25 @@ impl TerrainCostGrid {
 
 /// Determine the terrain cost for a cell given its SpeedType and tile classification.
 ///
-/// Roads use uniform cost (same as clear terrain), matching the original engine's
-/// A* behavior where all passable cells have equal pathfinding weight.
+/// **VERA-internal, and it deliberately disagrees with gamemd.** This answers
+/// for a cell whose land-type section was absent from the INI. Its non-zero
+/// constants (Foot rough 90, Track rough 75, Wheel rough 60) have no gamemd
+/// source at all, and its *permissiveness* is the opposite of retail:
+/// `RulesClass::ReadSpeedTypeLandTypeTable` @ `0x00674000` skips a row whose
+/// section `INIClass::FindSectionByName` cannot find, and the block at
+/// `0x0089EA40` is all zero bytes in the image with no other initializer, so an
+/// unauthored land type is **impassable to every SpeedType** in gamemd. Only a
+/// missing *key* inside a present section defaults to `1.0`.
+///
+/// Not aligned deliberately: `SpeedCostProfile::default()` — all rows `None` —
+/// is also what every synthetic cell in the codebase carries, so making the
+/// unparsed case impassable would close every fixture-built map rather than
+/// reproduce a retail behaviour. Trigger: a mod or map INI that omits one of the
+/// twelve land-type sections. Player effect: retail refuses to move onto that
+/// land type at all; VERA treats it as ordinary ground. Frequency: **zero in
+/// ordinary skirmish** — `rulesmd.ini` carries all twelve, and `parse_cost`
+/// never returns `None` for a section that exists, so no cell reaches this arm.
+/// Downstream risk: none while the A* reads the value as a predicate only.
 fn classify_terrain_cost(
     speed_type: SpeedType,
     is_water: bool,
@@ -433,6 +462,73 @@ mod tests {
     /// is ever consulted. This drives the production entry point end to end on a
     /// 3x1 corridor whose only middle cell is a `bits=4` tree — an infantryman
     /// must walk through it, a vehicle must fail outright.
+    #[test]
+    fn a_graded_land_row_does_not_bend_the_path() {
+        // Every reader of the native land-type table at 0x0089EA40 is a
+        // passability gate, a runtime speed consumer or an AI query; no
+        // path-search function reads it. So a non-zero percentage must weigh
+        // exactly like any other non-zero percentage.
+        //
+        // The fixture is built so a weighted search would answer differently:
+        // the straight run along y=2 crosses three 25% cells, while the y=1
+        // detour is the same four steps at full speed. Under a
+        // `cost × 100 / percentage` weighting the detour is strictly cheaper.
+        use crate::sim::pathfinding::{PathGrid, find_path_with_costs};
+
+        let build = |graded: bool| {
+            let mut cells = Vec::with_capacity(15);
+            for ry in 0..3u16 {
+                for rx in 0..5u16 {
+                    let track = if graded && ry == 2 && (1..=3).contains(&rx) {
+                        25
+                    } else {
+                        100
+                    };
+                    cells.push(ResolvedTerrainCell {
+                        speed_costs: SpeedCostProfile {
+                            track: Some(track),
+                            ..SpeedCostProfile::default()
+                        },
+                        ..make_resolved_cell(rx, ry)
+                    });
+                }
+            }
+            ResolvedTerrainGrid::from_cells(5, 3, cells)
+        };
+
+        let route = |terrain: &ResolvedTerrainGrid| {
+            let grid = PathGrid::from_resolved_terrain(terrain);
+            let costs = TerrainCostGrid::from_resolved_terrain(terrain, SpeedType::Track);
+            find_path_with_costs(
+                &grid,
+                (0, 2),
+                (4, 2),
+                Some(&costs),
+                None,
+                None,
+                Some(terrain),
+                None,
+                0,
+                false,
+                false,
+            )
+        };
+
+        let flat = build(false);
+        let graded = build(true);
+        assert_eq!(
+            TerrainCostGrid::from_resolved_terrain(&graded, SpeedType::Track).cost_at(2, 2),
+            25,
+            "precondition: the graded strip really is graded",
+        );
+        let flat_path = route(&flat).expect("flat route exists");
+        assert_eq!(
+            route(&graded),
+            Some(flat_path),
+            "a slow-but-passable land row must not change the route",
+        );
+    }
+
     #[test]
     fn infantry_astar_routes_through_a_partially_occupied_tree_cell() {
         use crate::sim::pathfinding::{PathGrid, find_path_with_costs};
