@@ -273,6 +273,45 @@ mod tests {
         assert_eq!(t, DragTransition::NoChange);
     }
 
+    /// `MIN_DRAG_DISTANCE` claims the exact root and the native approximate one
+    /// pick the same boundary. Prove it on the inputs that decide it rather than
+    /// asserting it in prose.
+    ///
+    /// `DisplayClass__BandBox_MouseMove` 0x004AC380 activates on
+    /// `ftol(Sqrt_Approx(dx² + dy²)) > 4`, and both deltas are integer mouse
+    /// coordinates, so the sum is an integer. 25 is the only sum whose exact
+    /// root is 5; its neighbours are 4.898 and 5.099, far outside the table's
+    /// ~3e-5 relative error, so no integer sum can straddle the boundary
+    /// differently under the two kernels.
+    #[test]
+    fn band_box_activation_boundary_agrees_with_the_native_truncated_root() {
+        use crate::util::native_x87::distance_3d_leptons;
+
+        // Exactly 25: the table returns 5.0 and ftol keeps 5, which passes `> 4`.
+        for (dx, dy) in [(3, 4), (4, 3), (5, 0), (0, 5)] {
+            assert_eq!(
+                distance_3d_leptons([0, 0, 0], [dx, dy, 0]),
+                5,
+                "({dx},{dy}) must reach the activation threshold"
+            );
+        }
+        // The integer sums immediately below stay at 4 and do not activate.
+        for (dx, dy) in [(3, 3), (4, 2), (4, 0)] {
+            assert!(
+                distance_3d_leptons([0, 0, 0], [dx, dy, 0]) <= 4,
+                "({dx},{dy}) must stay pending"
+            );
+        }
+
+        // And the f32 form in `update_drag` agrees on the same inputs.
+        let mut sel = SelectionState::new();
+        sel.begin_drag(0.0, 0.0);
+        assert_eq!(sel.update_drag(3.0, 4.0), DragTransition::Activated);
+        let mut sel = SelectionState::new();
+        sel.begin_drag(0.0, 0.0);
+        assert_eq!(sel.update_drag(3.0, 3.0), DragTransition::NoChange);
+    }
+
     #[test]
     fn test_drag_rect_only_when_active() {
         let mut sel = SelectionState::new();

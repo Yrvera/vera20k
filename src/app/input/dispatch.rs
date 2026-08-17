@@ -426,6 +426,17 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     // Both selection arms of the band-box release open the
                     // action-line window, so the units just picked up flash
                     // whatever they are already doing.
+                    //
+                    // DRIFT, recorded not fixed: native runs
+                    // `ActionLines__StartTimer` 0x004ABCF0 on EVERY band
+                    // release, ahead of the `if (!bVar2)` bail, so a drag that
+                    // caught nothing still flashes the lines of whatever was
+                    // already selected. VERA only reaches here with a mutation,
+                    // because an empty catch returns `None`. Trigger: an empty
+                    // band drag over open ground. Player effect: the 25-frame
+                    // order-line flash on the existing group is missing.
+                    // Frequency: a few times a match. Downstream risk: none --
+                    // presentation only.
                     apply_selection_action_line_policy(
                         state,
                         ORDINARY_SELECTION_ACTION_LINE_POLICY,
