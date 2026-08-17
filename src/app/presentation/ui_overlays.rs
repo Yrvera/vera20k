@@ -110,6 +110,33 @@ pub(crate) fn unit_status_visibility(selected: bool, hovered: bool) -> (bool, bo
     (selected, selected || hovered)
 }
 
+// DEFERRED members of this row's overlay set, recorded with what a follow-up
+// needs. None of them requires new texture infrastructure — pips.shp and
+// pips2.shp are both already loaded, and `DrawPipScalePips` swaps the shape
+// handle from `DAT_00AC147C` (PIPS.SHP) to `DAT_00AC1480` (PIPS2.SHP) at
+// 0x00709AEF for every non-building.
+//
+// * **`PipScale=Passengers` and `PipScale=Ammo`.** `build_cargo_pip_instances`
+//   accepts only `PipScale::Tiberium` and additionally requires a miner. 38
+//   stock rulesmd.ini sections set one of the two (34 Passengers, 4 Ammo).
+//   `DrawPipScalePips` branches on `TechnoTypeClass+0x3D4` (1 = ammo,
+//   2 = tiberium/storage, 5 = the `+0x2B8` branch); the passenger-list branch is
+//   the mutually exclusive `else` of that chain, gated on `+0x5E0 >= 1` alone,
+//   so `PipScale=Passengers` may gate nothing there — UNCHECKED. Trigger:
+//   selecting a loaded IFV, Flak Track, Battle Fortress, Nighthawk or any
+//   transport. Player effect: no passenger or ammo readout at all. Frequency:
+//   common — transports are ordinary play. Downstream risk: none.
+//
+// * **Control-group number, spawn pips, self-heal indicator**, all in the tail
+//   of `DrawPipScalePips`: the group index from `param_1[0x85]` drawn as text at
+//   `param_2 + (-4, -0x27)` for units and `(-4, -0x24)` for infantry; spawn pips
+//   from `TypeClass+0xD5C` via `SpawnManagerClass__CountDockedSpawns`; and the
+//   self-heal frame 0xD (infantry) / 0x14 (units) at `(+0x26, -0x20)` /
+//   `(+0x13, -0x23)`, blinking. Trigger: for the group number, every recall of a
+//   control group. Player effect: a selected group shows no number, so the
+//   player cannot tell which group is up. Frequency: common. Downstream risk:
+//   none. The other two are rarer (Kirov/carrier spawns; self-healing units).
+//
 /// Building health: discrete pips from pips.shp along the isometric NW foundation edge.
 ///
 /// Pip positions are computed from Dimension2 (foundation size in leptons) projected
@@ -340,10 +367,20 @@ pub(crate) fn build_occupant_pip_instances(
     let local_owner_id = local_owner.as_deref().and_then(|n| sim.interner.get(n));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
     let rules = state.rules();
+    // Occupant pips are NOT free-standing: `DrawPipScalePips` 0x00709A90 has
+    // exactly two callsites, 0x006F682C and 0x006F6AB0, and both are inside
+    // `TechnoClass__DrawHealthBar`. So they are reachable only through the same
+    // selected-or-hovered arms that gate the health bar — the same rule that
+    // stopped VERA drawing a bar over every damaged unit. Without it every
+    // garrisoned building on a city map wears its pip strip permanently.
+    let hovered_structure_id = building_health_hover_target(state, local_owner.as_deref());
     let mut instances = Vec::new();
 
     for e in sim.entities().values() {
         if e.category != EntityCategory::Structure {
+            continue;
+        }
+        if !e.selected && hovered_structure_id != Some(e.stable_id) {
             continue;
         }
         let type_str = sim.interner.resolve(e.type_ref);
@@ -367,9 +404,20 @@ pub(crate) fn build_occupant_pip_instances(
             None => continue,
         };
         let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
-        // Occupant pips start at (screen_x + 6, screen_y - 1).
-        let start_x: f32 = sx + 6.0 + adj_x;
-        let start_y: f32 = sy - 1.0 + adj_y;
+        // The (+6, -1) offset is applied to the point `DrawHealthBar`'s BUILDING
+        // branch hands the pip routine, which is the entity anchor plus the
+        // projected foundation edge — not the raw anchor. Dropping that term put
+        // the strip on the building's art instead of at its west corner, a miss
+        // of (-60, +15) px on a 2-deep footprint and (-90, +30) on a 3-deep one.
+        // Same pair the health pips above already use.
+        let (fw, fh) = {
+            let (w, h) = crate::rules::foundation::foundation_dimensions(&obj.foundation);
+            (w as f32, h as f32)
+        };
+        let anchor_x = sx + (fw - fh) * 15.0 - (fw + fh) * 15.0;
+        let anchor_y = sy + (fw + fh) * 7.5 - 15.0 + (fh - fw) * 7.5;
+        let start_x: f32 = anchor_x + 6.0 + adj_x;
+        let start_y: f32 = anchor_y - 1.0 + adj_y;
         let count: u32 = obj.max_number_occupants;
         // Occupant pip step: +4 right, +2 down (isometric NW edge, same as health pips but positive X).
         const STEP_X: f32 = 4.0;
@@ -425,6 +473,70 @@ pub(crate) fn build_occupant_pip_instances(
             });
         }
     }
+
+    // Veterancy chevrons ride this same atlas and pass.
+    //
+    // `DrawVeterancyPips` 0x0070A990 (TechnoClass vtable +0x454) has a single
+    // callsite, 0x006F5382 in `DrawExtras`, and it sits BEFORE the selected test
+    // at 0x006F5388-0x006F5390 — so unlike the health bar and the garrison pips,
+    // rank draws for every visible object, selected or not. It blits at
+    // `pLoc + (5, 2)` for infantry and `pLoc + (10, 6)` otherwise.
+    for e in sim.entities().values() {
+        if e.category == EntityCategory::Structure {
+            continue;
+        }
+        // Rookie draws nothing: native's rookie frame is the flagged variant,
+        // reached only from the veterancy < 0 branch, which a freshly built unit
+        // is not in.
+        let rank: u32 = if e.veterancy >= 200 {
+            2
+        } else if e.veterancy >= 100 {
+            1
+        } else {
+            continue;
+        };
+        if !status_entity_visible_plain(
+            local_owner_id,
+            &sim.fog,
+            &e.position,
+            e.owner,
+            ignore_visibility,
+        ) {
+            continue;
+        }
+        let (sx, sy) = crate::render::locomotor_visual::screen_position(e);
+        let (dx, dy) = if e.category == EntityCategory::Infantry {
+            (5.0, 2.0)
+        } else {
+            (10.0, 6.0)
+        };
+        let px: f32 = sx + dx + adj_x;
+        let py: f32 = sy + dy + adj_y;
+        if !in_view(
+            px,
+            py,
+            pip_size[0],
+            pip_size[1],
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+            sw,
+            sh,
+            48.0,
+        ) {
+            continue;
+        }
+        instances.push(SpriteInstance {
+            position: [px, py],
+            size: [pip_size[0], pip_size[1]],
+            uv_origin: overlay.veterancy_pip_uv_origin(rank),
+            uv_size: pip_uv_size,
+            depth: 0.0006,
+            tint: [1.0, 1.0, 1.0],
+            alpha: 1.0,
+            ..Default::default()
+        });
+    }
+
     instances
 }
 

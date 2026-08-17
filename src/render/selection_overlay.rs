@@ -403,15 +403,30 @@ impl SelectionOverlay {
         self.occupant_pip_texture.as_ref()
     }
 
-    /// Number of occupant pip variants in the atlas.
-    const OCCUPANT_PIP_VARIANTS: u32 = 7;
+    /// Number of pip variants in the shared occupant/veterancy atlas.
+    const OCCUPANT_PIP_VARIANTS: u32 = OCCUPANT_PIP_FRAMES.len() as u32;
+
+    /// UV origin for a veterancy chevron. `rank` is 0 rookie, 1 veteran, 2 elite.
+    pub fn veterancy_pip_uv_origin(&self, rank: u32) -> [f32; 2] {
+        let frame: usize = match rank {
+            2 => 15,
+            1 => 14,
+            _ => 19,
+        };
+        let slot = OCCUPANT_PIP_FRAMES
+            .iter()
+            .position(|f| *f == frame)
+            .unwrap_or(0) as u32;
+        [slot as f32 / Self::OCCUPANT_PIP_VARIANTS as f32, 0.0]
+    }
 
     /// UV origin for an occupant pip by pips.shp frame index (6-12).
     /// Frame 6 → slot 0, frame 7 → slot 1, ..., frame 12 → slot 6.
     pub fn occupant_pip_uv_origin(&self, frame_index: u32) -> [f32; 2] {
-        let slot: u32 = frame_index
-            .saturating_sub(6)
-            .min(Self::OCCUPANT_PIP_VARIANTS - 1);
+        let slot: u32 = OCCUPANT_PIP_FRAMES
+            .iter()
+            .position(|f| *f as u32 == frame_index)
+            .unwrap_or(0) as u32;
         [slot as f32 / Self::OCCUPANT_PIP_VARIANTS as f32, 0.0]
     }
 
@@ -894,6 +909,15 @@ fn load_unit_pip_atlas(
 ///   10 = PersonRed, 11 = PersonBlue, 12 = PersonPurple
 ///
 /// Returns (Some(texture), frame_w, frame_h, canvas_adj_x, canvas_adj_y) on success.
+/// pips.shp frames packed into the shared occupant/veterancy strip.
+///
+/// 6 is the empty garrison slot and 7-12 are PersonGreen..PersonPurple. 14, 15
+/// and 19 are the veterancy chevrons: `DrawVeterancyPips` 0x0070A990 (TechnoClass
+/// vtable +0x454) blits frame 14 for veteran, 15 for elite and 19 for the
+/// rookie-flagged variant. They ride the same atlas so they cost no extra
+/// texture and no extra draw pass.
+const OCCUPANT_PIP_FRAMES: [usize; 10] = [6, 7, 8, 9, 10, 11, 12, 14, 15, 19];
+
 fn load_occupant_pip_atlas(
     gpu: &GpuContext,
     batch: &BatchRenderer,
@@ -902,9 +926,9 @@ fn load_occupant_pip_atlas(
     let assets = assets?;
     let shp_data = assets.get("pips.shp")?;
     let shp = ShpFile::from_bytes(&shp_data).ok()?;
-    if shp.frames.len() < 13 {
+    if shp.frames.len() <= OCCUPANT_PIP_FRAMES[OCCUPANT_PIP_FRAMES.len() - 1] {
         log::warn!(
-            "pips.shp has fewer than 13 frames ({}), cannot load occupant pip atlas",
+            "pips.shp has too few frames ({}), cannot load the occupant/veterancy pip atlas",
             shp.frames.len()
         );
         return Some((None, 0, 0, 0.0, 0.0));
@@ -914,8 +938,8 @@ fn load_occupant_pip_atlas(
         .or_else(|| assets.get("unittem.pal"))?;
     let palette = Palette::from_bytes(&pal_data).ok()?;
 
-    const VARIANT_COUNT: u32 = 7;
-    let frame_indices: [usize; VARIANT_COUNT as usize] = [6, 7, 8, 9, 10, 11, 12];
+    const VARIANT_COUNT: u32 = OCCUPANT_PIP_FRAMES.len() as u32;
+    let frame_indices = OCCUPANT_PIP_FRAMES;
     let mut max_w: u32 = 0;
     let mut max_h: u32 = 0;
     for &fi in &frame_indices {
@@ -965,12 +989,13 @@ fn load_occupant_pip_atlas(
 
     let texture: BatchTexture = batch.create_texture(gpu, &rgba, atlas_w, atlas_h);
     log::info!(
-        "Occupant pip atlas: {}x{} (frame {}x{}, {} variants, frames 6-12, adj ({:.0},{:.0}))",
+        "Occupant/veterancy pip atlas: {}x{} (frame {}x{}, {} variants, frames {:?}, adj ({:.0},{:.0}))",
         atlas_w,
         atlas_h,
         max_w,
         max_h,
         VARIANT_COUNT,
+        OCCUPANT_PIP_FRAMES,
         adj_x,
         adj_y,
     );
