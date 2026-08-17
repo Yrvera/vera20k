@@ -2365,6 +2365,18 @@ impl Simulation {
     }
 
     /// Check ownership using stable_id via EntityStore.
+    ///
+    /// VERA-internal; the gamemd equivalent is that there ISN'T one. The
+    /// MEGAMISSION arm loads `Houses[event.house]` into EDI at
+    /// 0x004C6CBD-0x004C6CCA, then overwrites EDI with the resolved acting
+    /// object at 0x004C71D2 and never compares the two — there is no house test
+    /// anywhere in 0x004C71CA-0x004C74CA. So VERA is strict where retail is
+    /// permissive. The two agree today because commands execute on the issuing
+    /// tick and there is one local house; they would part company for a peer or
+    /// replayed event naming an object whose owner changed — capture or mind
+    /// control — between issue and execute, where retail still obeys the order
+    /// and VERA drops it. Kept because dropping it would let a malformed or
+    /// hostile envelope drive another house's units.
     pub(crate) fn entity_owned_by_id(&self, command_owner: &str, stable_id: u64) -> bool {
         self.substrate
             .entities
@@ -2387,6 +2399,47 @@ impl Simulation {
     /// the two collapse to the same predicate on VERA's unsigned HP but the
     /// asymmetry is preserved so a future signed-HP change keeps the native
     /// meaning.
+    ///
+    /// Residuals on this gate, recorded not fixed:
+    ///
+    /// * **Five arms still ungated.** `Simulation::command_uses_megamission`
+    ///   already enumerates which VERA commands are MEGAMISSION-shaped — it is
+    ///   what splits due commands into the non-MEGAMISSION pass and the staged
+    ///   batch, mirroring opcode 0x04 in `net::lockstep`. Checked against it,
+    ///   `MinerReturn`, `HarvestCell`, `UnloadPassengers`, `EjectBunker` and
+    ///   `ToggleInfantryDeploy` carry only the ownership test. Trigger: issuing
+    ///   one of those to a dying or limboed actor. Player effect: the order runs
+    ///   where retail abandons it. Frequency: low per order, but miner orders
+    ///   are among the most frequent in a match. Downstream risk: none — the
+    ///   gate is a pure precondition, two lines per site.
+    /// * **Duplicate-Enter is not applied to `MinerReturn`**, which is the
+    ///   fourth Enter-shaped order (right-clicking your own refinery). Same
+    ///   stall-and-re-approach the predicate exists to stop, on the one Enter
+    ///   the player repeats most.
+    /// * **Replacement is per-site here and uniform in retail.** After the gate
+    ///   retail runs one sequence for EVERY MEGAMISSION: `[EDI+0x500] = 0`
+    ///   (write at 0x004C7353, skipped by the `JZ` at 0x004C7351 when the field
+    ///   is already zero), `TeamClass__Remove_Member` when Foot and `[+0x5D4]`
+    ///   and mission != 0x10 (0x004C736B-0x004C7380), `Queue_Mission(mission, 0)`
+    ///   (0x004C73B9), then `[+0x2B8] = 0` (0x004C73D7) and the manager abandon
+    ///   (0x004C73E1-0x004C73EA). Only `[+0x5A8] = 0` (0x004C73C7) is Foot-gated:
+    ///   the `TEST byte [EDI+0x14],0x4` at 0x004C73BF jumps to 0x004C7440, which
+    ///   zeroes EBP and rejoins at 0x004C73D1 — BEFORE the other write and
+    ///   before the abandon. VERA substitutes five hand-picked
+    ///   `DockTeardown` subsets whose own doc calls them "the exact subset that
+    ///   site cancels today" — preserved legacy, not derived. The subsets happen
+    ///   to be close for Move and Attack; the divergence is structural.
+    /// * **Spawn-manager abandon is modelled nowhere.** 0x004C73E1-0x004C73EA
+    ///   calls 0x006B0C80 on `[actor+0x2D8]` whenever the queued mission is not
+    ///   Attack, which drops the spawner's target and re-tasks its spawns.
+    ///   Trigger: ordering an Aircraft Carrier or any `Spawns=` unit to move out
+    ///   of a fight. Player effect: retail's planes break off, VERA's keep
+    ///   attacking. Frequency: several times per naval match. Downstream risk:
+    ///   none — `spawn_manager.rs` exists, it just has no order-boundary hook.
+    ///   Note when wiring it: the abandon is NOT Foot-gated, so it must fire for
+    ///   non-Foot spawners too.
+    /// * **`TeamClass__Remove_Member` has no VERA equivalent.** Zero frequency
+    ///   today (no AI teams); wrong the moment AI teams exist.
     pub(crate) fn order_actor_admits(&self, stable_id: u64) -> bool {
         self.substrate.entities.get(stable_id).is_some_and(|e| {
             e.lifecycle.object_alive && e.health.current > 0 && !e.lifecycle.in_limbo
@@ -2500,6 +2553,19 @@ impl Simulation {
         if !self.entity_owned_by_id(command_owner, entity_id) {
             return false;
         }
+        // Guard reaches the same MEGAMISSION arm as every other order — it
+        // branches on mission 0x0B (Area_Guard) at 0x004C73EF — so it is subject
+        // to the same admission gate, and the gate runs BEFORE anything is
+        // written. Retail's whole contract on this arm is that a failure
+        // abandons the order and touches nothing.
+        if !self.order_actor_admits(entity_id) {
+            return false;
+        }
+        if let Some(tid) = target_id.filter(|&tid| self.substrate.entities.contains(tid))
+            && !self.order_object_token_admits(tid)
+        {
+            return false;
+        }
         let anchor = self
             .substrate
             .entities
@@ -2508,14 +2574,19 @@ impl Simulation {
         let Some((anchor_rx, anchor_ry)) = anchor else {
             return false;
         };
+        // Decide before mutating: the alliance test below can still reject, and
+        // clearing the movement target first would stop the unit on an order
+        // that then fails.
+        if let Some(tid) = target_id.filter(|&tid| self.substrate.entities.contains(tid))
+            && !self.can_attack_target_by_id(entity_id, tid)
+        {
+            return false;
+        }
         if let Some(e) = self.substrate.entities.get_mut(entity_id) {
             e.movement_target = None;
         }
         match target_id.filter(|&tid| self.substrate.entities.contains(tid)) {
             Some(tid) => {
-                if !self.can_attack_target_by_id(entity_id, tid) {
-                    return false;
-                }
                 let issued = combat::issue_attack_command(
                     &mut self.substrate.entities,
                     entity_id,
@@ -2822,6 +2893,83 @@ mod tests {
                 .unwrap()
                 .movement_target
                 .is_some()
+        );
+    }
+
+    /// Guard branches on mission 0x0B (Area_Guard) at 0x004C73EF, so it travels
+    /// the same MEGAMISSION arm as Move and carries the same admission gate —
+    /// and, like every arm there, a failure must abandon the order having
+    /// touched nothing.
+    #[test]
+    fn guard_order_is_dropped_for_a_limboed_actor_without_touching_it() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        sim.substrate
+            .entities
+            .get_mut(1)
+            .unwrap()
+            .lifecycle
+            .in_limbo = true;
+
+        assert!(!sim.order_actor_admits(1));
+        assert!(!sim.apply_command(
+            "Americans",
+            &Command::Guard {
+                entity_id: 1,
+                target_id: None,
+            },
+            Some(&rules),
+            None,
+            &BTreeMap::new(),
+        ));
+        let actor = sim.substrate.entities.get(1).unwrap();
+        assert!(
+            actor.order_intent.is_none(),
+            "a rejected guard order must not have written anything"
+        );
+        assert_eq!(actor.mission.queued(), MissionId::NONE);
+    }
+
+    /// The other half of "a failure touches nothing": a Guard onto a target the
+    /// alliance test refuses must leave the actor's movement alone. Clearing it
+    /// before that test stopped the unit on an order that then failed.
+    #[test]
+    fn a_refused_guard_target_leaves_the_actor_moving() {
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        spawn_rule_backed_unit(&mut sim, 1, "AMCV", &rules);
+        // An ally: `can_attack_target_by_id` refuses it, so the order must bail.
+        spawn_rule_backed_unit(&mut sim, 2, "AMCV", &rules);
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        assert!(sim.apply_command(
+            "Americans",
+            &Command::Move {
+                entity_id: 1,
+                target_rx: 25,
+                target_ry: 20,
+                queue: false,
+                group_id: None,
+            },
+            Some(&rules),
+            Some(&grid),
+            &BTreeMap::new(),
+        ));
+        assert!(sim.substrate.entities.get(1).unwrap().movement_target.is_some());
+
+        assert!(!sim.apply_command(
+            "Americans",
+            &Command::Guard {
+                entity_id: 1,
+                target_id: Some(2),
+            },
+            Some(&rules),
+            Some(&grid),
+            &BTreeMap::new(),
+        ));
+        assert!(
+            sim.substrate.entities.get(1).unwrap().movement_target.is_some(),
+            "the refused guard must not have stopped the unit"
         );
     }
 
