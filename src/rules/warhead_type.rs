@@ -148,6 +148,36 @@ pub struct WarheadType {
 
     // --- List fields ---
     /// Debris animation names spawned on detonation (Debris= in rules.ini).
+    ///
+    /// RESIDUAL (GSI-05.14) — dead on both ends, and the live keys sit on a
+    /// different class. No stock warhead section carries `Debris=` or
+    /// `DebrisMaximums=` at all; the debris that stock YR actually throws is
+    /// driven from TechnoType sections — `MaxDebris=` (439 stock entries),
+    /// `MinDebris=` (272, all BuildingTypes), `DebrisTypes=` (36, every one of
+    /// them `TIRE`), `DebrisMaximums=` (36) and `DebrisAnims=` (166) — none of
+    /// which is parsed anywhere. These two fields also have no reader: they are
+    /// written by the parser below and never consulted.
+    ///
+    /// The consuming system is absent, not merely unwired. `VoxelAnimClass`
+    /// (constructor `0x007493B0`, AI `0x00749F30`, destructor `0x007499F0`,
+    /// draw `0x0046B0C0`; type class `0x0074AD80`) has no store, no type
+    /// registry and no `BounceClass` physics here — note that
+    /// `sim::components::VoxelAnimation` is an unrelated per-entity voxel frame
+    /// cursor, not this. `[VoxelAnims]` lists ten stock types (`PIECE`, `TIRE`,
+    /// `GASTANK`, `SONICTURRET`, `4TNKTURRET`, `CRYSTAL01/02`, `METEOR01/02`,
+    /// `PEBBLE`) whose bodies carry `Elasticity`, `Min/MaxAngularVelocity`,
+    /// `Min/MaxZVel`, `MaxXYVel`, `Duration`, `Damage`, `DamageRadius`,
+    /// `Warhead`, `ExpireAnim`, `IsMeteor` and `IsTiberium`; none is parsed.
+    /// - Trigger: any vehicle or building death.
+    /// - Player effect: no debris is thrown. Wrecks vanish into their explosion
+    ///   instead of scattering tyres, hull pieces and gas tanks, and buildings
+    ///   drop none of their `MinDebris` chunks.
+    /// - Frequency: continuous — this is every unit death in every match.
+    /// - Downstream risk: the launch side belongs to the death path
+    ///   (`GSI-08.11`) and the falling-object physics to `BounceClass`, which
+    ///   `Bouncer=` SHP anims need too, so the two rows want one shared physics
+    ///   owner rather than two. Bridge collapse already emits SHP debris as
+    ///   `WorldEffect` rows and would migrate onto that owner.
     pub debris: Vec<String>,
     /// Maximum count for each debris type (DebrisMaximums= in rules.ini).
     pub debris_maximums: Vec<i32>,
