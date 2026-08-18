@@ -9,9 +9,8 @@
 //!     shuffle within the last `insert_range` slots so the visual stream has
 //!     variety instead of strict FIFO.
 //!
-//! `Railgun` systems are still accepted by the public entry point but logged +
-//! skipped — runtime spawn returns `None`. `Spark` systems are live and run
-//! their own burst AI in `spark_system.rs`.
+//! Tier 3 system types (`Spark`, `Railgun`) are accepted by the public entry
+//! point but logged + skipped — runtime spawn returns `None`.
 
 use super::{Particle, ParticleSystem};
 use crate::rules::particle_system_type::{ParticleSystemBehavesLike, ParticleSystemTypeId};
@@ -27,7 +26,46 @@ use glam::IVec3;
 
 impl Simulation {
     /// Spawn a new particle system. Returns the new system's stable id, or
-    /// `None` if the type is `Railgun`, which has no producer yet.
+    /// `None` if the type is `Spark` or `Railgun` (Tier 3 — not implemented).
+    ///
+    /// RESIDUAL (GSI-05.13) — Spark systems are absent on both ends, and the
+    /// contract for both is verified. The system AI is
+    /// `ParticleSystemClass::AI_Spark @ 0x0062E840`: guard `+0xF0 > 0`; burst
+    /// gate `+0xF0 == 1` or `RandomRanged(0, 0x7ffffffe) * 2^-31 <=` the
+    /// *double* at `pstype+0x2F8`; burst size `|Next()| % (cap/2) + cap/2`;
+    /// three shared draws taken unconditionally where the first divides by
+    /// `YVelocity` and lands on Y and the second divides by `XVelocity` and
+    /// lands on X; per particle one lifetime draw and a conditional color draw
+    /// inside `ParticleClass::Constructor @ 0x0062B5E0`, then three velocity
+    /// draws with the Z one absolute; magnitude `Sqrt_Approx((x*x + y*y) +
+    /// z*z)` read off the x87 stack at `0x0062EA85`, offset added, renormalise,
+    /// rescale by the original magnitude; countdown then deletion; and a facing
+    /// walk that steps -3 clamping at `0x11` below `0x12`, +3 clamping at
+    /// `0x29` above `0x28`, or holds.
+    ///
+    /// Its producer is a different function again: `TechnoClass::AI_Update @
+    /// 0x006F9E50` walks the type's `DamageParticleSystems=` list *forward* at
+    /// `0x006FAD5D` admitting only `BehavesLike == Spark` into its own slot
+    /// `+0x308`, gated by a health-band chance from `RulesClass+0x558` below
+    /// ConditionRed or `+0x560` above, compared strictly less-than at
+    /// `0x006FAE24`. That is why the Smoke-only filter in
+    /// `maintain_damage_smoke_after_receive` below is correct and must stay:
+    /// `TechnoClass::ReceiveDamage @ 0x00701900` really does admit only
+    /// `BehavesLike == Smoke` into `+0x310`.
+    /// - Trigger: any unit damaged past ConditionYellow whose
+    ///   `DamageParticleSystems=` names a Spark system — 126 of the 141 stock
+    ///   entries do, and 26 name nothing else.
+    /// - Player effect: damaged vehicles smoke but never spark.
+    /// - Frequency: continuous — every unit that survives a hit.
+    /// - Downstream risk: the producer needs a second attached-system slot
+    ///   beside `damage_smoke_system_id` and a per-tick chance draw, so it moves
+    ///   the shared RNG stream on a high-frequency seam and the pinned replay
+    ///   hash with it. `SpawnSparkPercentage` must also be widened: it is a
+    ///   `double` natively and `SimFixed` here, and for `[LGSparkSys]`'s `.2`
+    ///   the 3.05e-6 gap flips the gate often enough to diverge the stream.
+    ///   `spark.rs` and `spark_world.rs` already hold the verified per-particle
+    ///   kernel and its collision inputs, so the missing work is the two
+    ///   loops, not the math.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_particle_system(
         &mut self,
@@ -40,17 +78,16 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Option<u64> {
         let pst = rules.particle_system_type(type_id);
-        // RESIDUAL (GSI-05.13) — Railgun systems are still unbuilt. Native
-        // front-loads their whole beam of particles in one pass rather than
-        // spawning per frame, so they are a different producer, not a variant of
-        // the Spark burst below. Trigger: any `BehavesLike=Railgun` system —
-        // `SmallRailgunSys` and `LargeRailgunSys`. Player effect: prism and
-        // railgun weapons show no beam particles. Frequency: every shot from
-        // those weapons. Downstream risk: none on this path; the request is
-        // dropped before any state is allocated.
-        if pst.behaves_like == ParticleSystemBehavesLike::Railgun {
-            log::warn!("particles: Railgun PSC type requested at {coords:?} — skipped");
-            return None;
+        match pst.behaves_like {
+            ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {
+                log::warn!(
+                    "particles: Tier 3 PSC type {:?} requested at {:?} — skipped",
+                    pst.behaves_like,
+                    coords,
+                );
+                return None;
+            }
+            _ => {}
         }
         let directionless = pst.spawn_direction == IVec3::ZERO;
         let stable_id = self.allocate_stable_id();
@@ -137,24 +174,17 @@ impl Simulation {
                         .wrapping_add(offset.y),
                     i32::from(entity.position.z).wrapping_add(offset.z),
                 );
-                // The whole authored list is the selection space. It used to
-                // be narrowed to Smoke because Spark had no producer, which both
-                // dropped the spark half of a mixed list and shortened the range
-                // the draw below is taken over. 126 of the 141 stock
-                // `DamageParticleSystems=` entries name `SparkSys`, and 27 name
-                // nothing else, so that narrowing left those types with no
-                // damage particles at all.
-                let candidates = object
+                let smoke = object
                     .damage_particle_systems
                     .iter()
                     .rev()
                     .filter_map(|name| rules.ps_type_id_by_name(name))
                     .filter(|&id| {
                         rules.particle_system_type(id).behaves_like
-                            != ParticleSystemBehavesLike::Railgun
+                            == ParticleSystemBehavesLike::Smoke
                     })
                     .collect::<Vec<_>>();
-                Some((coords, stable_id, candidates))
+                Some((coords, stable_id, smoke))
             })
         else {
             return;
@@ -419,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_admits_spark_systems() {
+    fn spawn_returns_none_for_spark_at_tier_2() {
         let rules = build_rules("Spark", 50);
         let mut sim = Simulation::new();
         let result = sim.spawn_particle_system(
@@ -431,12 +461,12 @@ mod tests {
             None,
             &rules,
         );
-        assert!(result.is_some());
-        assert_eq!(sim.particle_systems().len(), 1);
+        assert!(result.is_none());
+        assert_eq!(sim.particle_systems().len(), 0);
     }
 
     #[test]
-    fn spawn_returns_none_for_railgun() {
+    fn spawn_returns_none_for_railgun_at_tier_2() {
         let rules = build_rules("Railgun", 50);
         let mut sim = Simulation::new();
         let result = sim.spawn_particle_system(

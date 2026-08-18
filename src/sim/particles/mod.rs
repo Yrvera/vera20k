@@ -32,7 +32,6 @@ pub mod fire;
 pub mod gas;
 pub mod smoke;
 pub mod spark;
-pub mod spark_system;
 pub mod spark_world;
 pub mod spawn;
 pub mod system_ai;

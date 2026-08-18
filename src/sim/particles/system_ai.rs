@@ -133,9 +133,8 @@ fn tick_one_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleS
         ParticleSystemBehavesLike::Smoke => tick_smoke(sys, sim, rules),
         ParticleSystemBehavesLike::Gas => tick_gas(sys, sim, rules),
         ParticleSystemBehavesLike::Fire => tick_fire(sys, sim, rules),
-        ParticleSystemBehavesLike::Spark => super::spark_system::tick_system(sys, sim, rules),
-        ParticleSystemBehavesLike::Railgun => {
-            // Railgun remains unimplemented; see the residual on `spawn_particle_system`.
+        ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {
+            // Tier 3 — no-op.
         }
     }
 }
