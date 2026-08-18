@@ -318,9 +318,6 @@ pub(crate) fn issue_move_command_with_layered(
     if !can_accept_destination(entity) {
         return false;
     }
-    let start_rx: u16 = entity.position.rx;
-    let start_ry: u16 = entity.position.ry;
-    let current_layer = entity.movement_layer_or_ground();
     // The original engine dispatches its cell-entry predicate by object class,
     // so terrain-object occupation is read at sub-cell granularity for infantry
     // and whole-cell for everything else. The search has to know which.
@@ -329,6 +326,42 @@ pub(crate) fn issue_move_command_with_layered(
     let uses_drive_locomotor = locomotor_kind == Some(LocomotorKind::Drive);
     let uses_ship_locomotor = locomotor_kind == Some(LocomotorKind::Ship);
     let uses_shared_tracks = uses_drive_locomotor || uses_ship_locomotor;
+    // A new destination never rewinds a curve already in flight.
+    // `TechnoClass::Set_Destination` @ `0x00741970` only records the target —
+    // NavCom in `FootClass::Set_Destination_Internal` @ `0x004D94B0`, the
+    // coordinate in Drive `Head_To_Coord` @ `0x004AFD40` — and never touches
+    // the Drive track cursor, so the new path takes effect at the curve's next
+    // node. Installing a fresh curve here re-read the body position from the
+    // new curve's lead-in point (the current cell centre) and visibly snapped
+    // the vehicle backward, up to half a cell, on every mid-drive re-order.
+    // Keep the curve and anchor the new path at its committed head cell.
+    let current_cell = (entity.position.rx, entity.position.ry);
+    let in_flight_curve_head: Option<(u16, u16)> = if uses_shared_tracks {
+        entity.drive_track.as_ref().and_then(|track| {
+            let (_, head) = drive_track::is_at_coord_track_cells(track, current_cell, false);
+            u16::try_from(head.0).ok().zip(u16::try_from(head.1).ok())
+        })
+    } else {
+        None
+    };
+    let keep_in_flight_curve = in_flight_curve_head.is_some();
+    let (start_rx, start_ry) = in_flight_curve_head.unwrap_or(current_cell);
+    let current_layer = match in_flight_curve_head {
+        // The layer the body will be on at the curve head — from the accepted
+        // path while it still lists that node, else the current layer.
+        Some(head) => entity
+            .movement_target
+            .as_ref()
+            .and_then(|target| {
+                target
+                    .path
+                    .iter()
+                    .position(|&cell| cell == head)
+                    .map(|index| target.layer_at(index))
+            })
+            .unwrap_or_else(|| entity.movement_layer_or_ground()),
+        None => entity.movement_layer_or_ground(),
+    };
     // Derive movement_zone from the entity's locomotor — no parameter needed.
     let movement_zone: Option<MovementZone> = entity.locomotor.as_ref().map(|l| l.movement_zone);
     let speed_type = entity.locomotor.as_ref().map(|l| l.speed_type);
@@ -564,10 +597,27 @@ pub(crate) fn issue_move_command_with_layered(
         new_facing = Some(facing_from_delta(dx, dy));
     }
 
+    // A kept curve's head cell is a future node the body has not crossed into
+    // yet: the queue cursor starts ON it so the coordinate crossing consumes
+    // it, exactly as it would have consumed that node under the replaced path.
+    let head_not_yet_reached = keep_in_flight_curve && (start_rx, start_ry) != current_cell;
+    let first_target_index = if head_not_yet_reached { 0 } else { 1 };
+
     // Compute initial direction vector toward the first path step.
     // No carry-forward needed — sub_x/sub_y already encode the entity's
     // exact lepton position, so it continues from wherever it is.
-    let (dir_x, dir_y, dir_len) = if path.len() >= 2 {
+    let (dir_x, dir_y, dir_len) = if head_not_yet_reached {
+        // The first vector target is the kept curve's head itself — up to two
+        // cells out for a two-node curve — so use the Euclidean form (as in
+        // `issue_direct_move`) in case the curve is torn down early and the
+        // vector step has to cover the multi-cell delta.
+        let dx = i32::from(start_rx) - i32::from(current_cell.0);
+        let dy = i32::from(start_ry) - i32::from(current_cell.1);
+        let dir_x = SimFixed::from_num(dx * 256);
+        let dir_y = SimFixed::from_num(dy * 256);
+        let dir_len = crate::util::fixed_math::fixed_distance(dir_x, dir_y);
+        (dir_x, dir_y, dir_len)
+    } else if path.len() >= 2 {
         crate::util::lepton::cell_delta_to_lepton_dir(
             path[1].0 as i32 - path[0].0 as i32,
             path[1].1 as i32 - path[0].1 as i32,
@@ -589,7 +639,10 @@ pub(crate) fn issue_move_command_with_layered(
     let movement: MovementTarget = MovementTarget {
         path,
         path_layers,
-        next_index: 1, // Index 0 is the current position, 1 is the first target.
+        // Index 0 is the path anchor: the current position normally (first
+        // target is 1), the kept curve's still-unreached head when re-ordered
+        // mid-curve (the head itself is the first queued node).
+        next_index: first_target_index,
         speed,
         current_speed: speed,
         move_dir_x: dir_x,
@@ -662,7 +715,9 @@ pub(crate) fn issue_move_command_with_layered(
         // Set when the body is not yet on the head path node's octant: gamemd
         // commands that turn and installs no curve until the body reaches it.
         let mut turn_first: Option<u8> = None;
-        if let Some(f) = new_facing {
+        // A kept in-flight curve owns facing and position until it completes;
+        // the fresh-curve selection below runs only from a standstill anchor.
+        if !keep_in_flight_curve && let Some(f) = new_facing {
             if entity_mut.category != EntityCategory::Infantry
                 && uses_shared_tracks
                 && let Some((dx, dy)) = initial_step_delta
@@ -732,7 +787,10 @@ pub(crate) fn issue_move_command_with_layered(
                 }
             }
         }
-        if uses_drive_locomotor {
+        // A kept curve's head-to and handoff occupation claims stay with it —
+        // the body is still physically driving into the claimed cells. The
+        // clear/replace arms below are for curves this order replaces.
+        if uses_drive_locomotor && !keep_in_flight_curve {
             let current_cell = (entity_mut.position.rx, entity_mut.position.ry);
             let current_layer = entity_mut
                 .occupancy_list_layer()
@@ -793,7 +851,7 @@ pub(crate) fn issue_move_command_with_layered(
                     }
                 }
             }
-        } else if uses_ship_locomotor {
+        } else if uses_ship_locomotor && !keep_in_flight_curve {
             let fallback_z = entity_mut.position.z;
             if let Some(ship) = entity_mut.ship_locomotion.as_mut() {
                 if let Some(reference) = accepted_path_reference {
