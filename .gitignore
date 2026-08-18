@@ -28,9 +28,11 @@ Thumbs.db
 !/docs/index.md
 !/docs/system-map/
 !/docs/system-map/**
-# research corpus is tracked so forks and worktrees get it
+# research corpus and plans are tracked so forks and worktrees get them
 !/docs/research/
 !/docs/research/**
+!/docs/plans/
+!/docs/plans/**
 
 .mcp.json
 /.claude/*

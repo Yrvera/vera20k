@@ -63,9 +63,9 @@ localized observable fix needs no exhaustive binary proof.
 Order: `docs/research/` → live Ghidra decompilation → repo `ini/` → retail assets. Authority for
 any conflict: **binary → Ghidra → docs**.
 
-Skill instructions write `<main-checkout>` for the primary repository root. `docs/research/`
-and the research-index *code* are tracked, so every worktree, clone, and fork has them.
-Gitignored corpora — `ini/`, the rest of `docs/` (`plans/`, `scans/`, `gap-scans/`,
+Skill instructions write `<main-checkout>` for the primary repository root. `docs/research/`,
+`docs/plans/`, and the research-index *code* are tracked, so every worktree, clone, and fork
+has them. Gitignored corpora — `ini/`, the rest of `docs/` (`scans/`, `gap-scans/`,
 `contracts/`), and the built index `tools/research_index/.cache/` — exist only in the main
 checkout; from a worktree, resolve it with `git worktree list`.
 
@@ -246,7 +246,7 @@ bulk-annotate, or hand-edit generated files.
   Every PR targets `main`. Delete merged feature branches when safe. Do not create a long-lived
   `dev` branch; use a temporary integration branch only when the user explicitly requests one.
 - Gitignored, local-only — never write commit steps for these: `docs/` (except `_config.yml`,
-  `index.md`, `system-map/`, and `research/`), `ini/`, `tools/research_index/.cache/`, `.mcp.json`, `.claude/` and
+  `index.md`, `system-map/`, `research/`, and `plans/`), `ini/`, `tools/research_index/.cache/`, `.mcp.json`, `.claude/` and
   `.agents/` (except their `skills/` trees, which are tracked — `ghidra-up` alone stays local),
   `todo/`, and root `*.md` other than `README.md`, `CLAUDE.md`, `ENGINE.md`, and `AGENTS.md`
   (`LOCAL.md` stays local).
