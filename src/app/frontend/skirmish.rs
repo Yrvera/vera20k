@@ -12,12 +12,12 @@ use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
     OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
 };
-use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::map::waypoints;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};
 use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::gpu::GpuContext;
+use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::color_scheme::scheme_entry_for_priority;
@@ -145,7 +145,6 @@ pub(crate) fn house_color_map_for_launch_session(
     }
     colors
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -745,7 +744,12 @@ mod tests {
         let mut sim = Simulation::new();
         let rules = test_standard_launch_rules();
 
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &HouseRoster::default(),
+            &rules,
+            &launch_descriptor(&session),
+        );
 
         let order: Vec<_> = sim
             .session
@@ -786,7 +790,12 @@ mod tests {
 
         let session = test_session();
         let mut sim = Simulation::new();
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &HouseRoster::default(),
+            &rules,
+            &launch_descriptor(&session),
+        );
         assert!(sim.entities().is_empty());
 
         let spawned = sim.spawn_from_map(
@@ -857,12 +866,8 @@ mod tests {
         apply_skirmish_ai_opening_credits(&mut sim);
 
         let credits = |owner: &str| {
-            crate::sim::house_state::house_state_for_owner(
-                &sim.houses,
-                owner,
-                &sim.interner,
-            )
-            .map(|house| house.credits)
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.credits)
         };
         assert_eq!(credits("Player"), Some(10_000));
         assert_eq!(credits("Computer1"), Some(20_000));
@@ -1133,8 +1138,9 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let terrain = test_terrain(64, 64);
         let rules = test_standard_launch_rules();
-        let plan = preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
-            .expect("complete standard Battle starts preload");
+        let plan =
+            preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
+                .expect("complete standard Battle starts preload");
 
         let loading_assignments =
             crate::app::loading::pump::selected_map_start_assignments(&session, Some(&plan));
@@ -1425,7 +1431,11 @@ mod tests {
         };
 
         assert_eq!(
-            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
+            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(
+                None,
+                &roster,
+                "MapPlayer",
+            ),
             Some(SidebarTheme::Soviet),
             "an absent live owner must preserve the existing roster resolver"
         );
@@ -1865,6 +1875,85 @@ mod tests {
             .count();
         assert_eq!(player_units, 5);
         assert_eq!(ai_units, 4);
+    }
+
+    /// NearOreF.MAP geometry: `Size=0,0,80,58`, `LocalSize=2,4,76,48`, with
+    /// authored starts far outside any axis-aligned reading of LocalSize but
+    /// inside the retail playfield diamond. gamemd unlimbos every starting MCV
+    /// exactly on its authored waypoint (mode `+0xC8` @ `0x005D7030`; diamond
+    /// gate in the scan-place helper @ `0x00688ED0`). The old LocalSize-shaped
+    /// `NativeStartBounds` gate rejected these cells and clamped the fallback
+    /// spiral onto the false edge, piling several MCVs into the same corner.
+    #[test]
+    fn starting_mcvs_spawn_on_authored_waypoints_outside_the_localsize_box() {
+        let mut sim = Simulation::new();
+        // Raw Size width feeds the diamond's `base`; LocalSize feeds its band
+        // constants. Stored verbatim, exactly as the map loader does.
+        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
+            base: 80,
+            off_fc: 2,
+            off_100: 4,
+            off_104: 76,
+            off_108: 48,
+        });
+        sim.session.local_left = 2;
+        sim.session.local_top = 4;
+        sim.session.local_width = 76;
+        sim.session.local_height = 48;
+        // Canonical cell-array extent for an 80x58 map (~SizeW+SizeH).
+        sim.session.map_width = 138;
+        sim.session.map_height = 138;
+
+        // NearOreF waypoints 0 and 7: (38,63) fails the false box on ry,
+        // (100,75) fails it on both axes; both are inside the retail diamond.
+        let starts = [
+            Waypoint {
+                index: 0,
+                rx: 38,
+                ry: 63,
+            },
+            Waypoint {
+                index: 1,
+                rx: 100,
+                ry: 75,
+            },
+        ];
+        let map = test_map_with_starts(&starts);
+        let terrain = test_terrain(139, 139);
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        session.opponents[0].start_position = LaunchStartPosition::Position(1);
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &test_standard_launch_rules(),
+            &test_height_map(),
+            &terrain,
+            &launch_descriptor(&session),
+        );
+
+        assert_eq!(result.spawned_mcvs, 2);
+        let mut cells: Vec<((u16, u16), String)> = sim
+            .entities()
+            .values()
+            .map(|entity| {
+                (
+                    (entity.position.rx, entity.position.ry),
+                    sim.interner.resolve(entity.owner).to_string(),
+                )
+            })
+            .collect();
+        cells.sort();
+        assert_eq!(
+            cells,
+            vec![
+                ((38, 63), "Player".to_string()),
+                ((100, 75), "Computer1".to_string()),
+            ],
+            "starting MCVs must unlimbo exactly on their authored waypoints"
+        );
     }
 
     #[test]

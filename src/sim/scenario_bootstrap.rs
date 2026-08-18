@@ -35,21 +35,32 @@ pub(crate) struct NativeStartBounds {
 }
 
 impl NativeStartBounds {
+    /// The native start machinery is bounded by the MapClass CELL-ARRAY rect,
+    /// never by `LocalSize=`: `MapClass::Resize` @ `0x00565C10` writes
+    /// `MapClass+0x124..0x130` as `(1, 1, SizeW+SizeH-1, SizeW+SizeH-1)`, and
+    /// both `ScenarioClass::Gather_Start_Positions` @ `0x00688564` (deficient
+    /// seed draws) and the starting-unit scan-place helper @ `0x00688ED0`
+    /// (fallback probe clamp) read exactly those four fields. Playable-area
+    /// acceptance is the separate isometric-diamond predicate
+    /// (`cell_rect::cell_is_in_playfield`); `LocalSize=` feeds that test's
+    /// band constants only, never an axis-aligned bound. Treating LocalSize
+    /// as a cell rectangle here previously rejected most authored starts and
+    /// clamped every displaced MCV onto the false edge.
     pub(crate) fn from_session(sim: &Simulation, terrain: &ResolvedTerrainGrid) -> Self {
-        if sim.session.local_width != 0 && sim.session.local_height != 0 {
-            Self {
-                min_rx: sim.session.local_left,
-                min_ry: sim.session.local_top,
-                width: sim.session.local_width,
-                height: sim.session.local_height,
-            }
+        // `session.map_width/height` hold the canonical cell-array extent
+        // (~SizeW+SizeH), so the native rect side is that extent minus one.
+        // Sessions without header data (headless fixtures) fall back to the
+        // terrain grid extent — VERA-internal, same shape.
+        let (extent_x, extent_y) = if sim.session.map_width != 0 && sim.session.map_height != 0 {
+            (sim.session.map_width, sim.session.map_height)
         } else {
-            Self {
-                min_rx: 0,
-                min_ry: 0,
-                width: terrain.width(),
-                height: terrain.height(),
-            }
+            (terrain.width(), terrain.height())
+        };
+        Self {
+            min_rx: 1,
+            min_ry: 1,
+            width: extent_x.saturating_sub(1),
+            height: extent_y.saturating_sub(1),
         }
     }
 
@@ -66,10 +77,6 @@ impl NativeStartBounds {
             rx.clamp(i32::from(self.min_rx), i32::from(self.max_rx())) as u16,
             ry.clamp(i32::from(self.min_ry), i32::from(self.max_ry())) as u16,
         )
-    }
-
-    pub(crate) fn contains(self, rx: u16, ry: u16) -> bool {
-        rx >= self.min_rx && rx <= self.max_rx() && ry >= self.min_ry && ry <= self.max_ry()
     }
 }
 
@@ -100,15 +107,22 @@ pub(crate) fn native_gather_start_positions(
     }
 
     while starts.len() < target_count {
-        let x_span = u32::from(bounds.width.saturating_sub(10));
-        let y_high = u32::from(bounds.height.saturating_sub(10));
-        let seed_rx = rng
-            .next_range_u32_inclusive(0, x_span)
-            .wrapping_add(u32::from(bounds.min_rx))
-            .wrapping_add(10) as u16;
+        // `ScenarioClass::Gather_Start_Positions` @ `0x00688564`: the first
+        // draw `RandomRanged(0, rect.h - 10)` lands on the Y axis
+        // (`+ 10 + rect.y`), the second `RandomRanged(10, rect.w - 10)` on the
+        // X axis (`+ rect.x`). The rect is the MapClass cell-array rect (see
+        // `NativeStartBounds::from_session`), which is square, so a transposed
+        // mapping is RNG-neutral — but the seeded POINT mirrors across the
+        // diagonal, so the axes are kept exactly as native writes them.
+        let y_span = u32::from(bounds.height.saturating_sub(10));
+        let x_high = u32::from(bounds.width.saturating_sub(10));
         let seed_ry = rng
-            .next_range_u32_inclusive(10, y_high)
+            .next_range_u32_inclusive(0, y_span)
+            .wrapping_add(10)
             .wrapping_add(u32::from(bounds.min_ry)) as u16;
+        let seed_rx = rng
+            .next_range_u32_inclusive(10, x_high)
+            .wrapping_add(u32::from(bounds.min_rx)) as u16;
 
         let Some((rx, ry)) = find_nearby_start_rect(terrain, occupancy, bounds, seed_rx, seed_ry)
         else {
@@ -1198,7 +1212,7 @@ fn place_starting_object_near_base(
     resolved_terrain: &ResolvedTerrainGrid,
 ) -> Option<u64> {
     let category = rules.object(type_id)?.category;
-    if starting_object_cell_placeable(sim, resolved_terrain, bounds, base_rx, base_ry, category) {
+    if starting_object_cell_placeable(sim, resolved_terrain, base_rx, base_ry, category) {
         return sim.spawn_object(type_id, owner, base_rx, base_ry, facing, rules, height_map);
     }
 
@@ -1227,14 +1241,7 @@ fn place_starting_object_near_base(
                 }
 
                 if (rx, ry) == (base_rx, base_ry)
-                    || !starting_object_cell_placeable(
-                        sim,
-                        resolved_terrain,
-                        bounds,
-                        rx,
-                        ry,
-                        category,
-                    )
+                    || !starting_object_cell_placeable(sim, resolved_terrain, rx, ry, category)
                 {
                     continue;
                 }
@@ -1491,12 +1498,22 @@ fn starting_unit_infantry_allowed(
 fn starting_object_cell_placeable(
     sim: &Simulation,
     resolved_terrain: &ResolvedTerrainGrid,
-    bounds: NativeStartBounds,
     rx: u16,
     ry: u16,
     category: crate::rules::object_type::ObjectCategory,
 ) -> bool {
-    if !bounds.contains(rx, ry) {
+    // Acceptance is the retail isometric-diamond predicate: the mode's
+    // starting-unit creator (vtable `+0xC8` @ `0x005D7030`) unlimbos at the
+    // start coord, and its scan-place fallback @ `0x00688ED0` gates the seed
+    // cell and every ring candidate with `MapClass::Is_Cell_In_Playfield(cell,
+    // 1)`. The cell-array rect only clamps probe coordinates — it is never an
+    // acceptance test.
+    if !crate::sim::cell_rect::cell_is_in_playfield(
+        (i32::from(rx), i32::from(ry)),
+        sim.playfield_bounds,
+        Some(resolved_terrain),
+        Some((resolved_terrain.width(), resolved_terrain.height())),
+    ) {
         return false;
     }
     if let Some(occupancy) = sim.occupancy().get(rx, ry) {
@@ -1872,9 +1889,7 @@ mod tests {
             usize::try_from(generated.index_a).expect("test MapGen cursor A is non-negative"),
             usize::try_from(generated.index_b).expect("test MapGen cursor B is non-negative"),
         ));
-        let actual = owner
-            .into_simulation(&descriptor(match_seed))
-            .rng_state();
+        let actual = owner.into_simulation(&descriptor(match_seed)).rng_state();
 
         assert_eq!(
             actual.scenario,
