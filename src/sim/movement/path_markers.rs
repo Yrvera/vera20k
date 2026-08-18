@@ -1127,11 +1127,11 @@ mod tests {
         );
         assert!(
             !urgency_two.overlay.contains((4, 4)),
-            "Unit one-direction prerequisite remains enforced"
+            "Unit needs dir[0] and dir[1] non-(-1) (0x0042AE90)"
         );
         assert!(
             !urgency_two.overlay.contains((5, 2)),
-            "Infantry two-direction prerequisite remains enforced"
+            "Infantry needs dir[0..2] non-(-1) (0x0042AED8)"
         );
     }
 

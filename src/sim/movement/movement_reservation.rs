@@ -53,6 +53,26 @@ pub(super) fn reserve_destination_after_transition(
                 preferred,
             )
         };
+        // **VERA-internal, gamemd has no equivalent — and this one can stall a
+        // man.** Native arrival cannot fail: `WalkLocomotionClass::ProcessMovement`
+        // @ `0x0075BE0A` hands `FindSubCellDest` @ `0x0075C240` a NullCoord, which
+        // stores it and jumps to `LAB_0075C5C5` to re-mark the infantryman's own
+        // current coordinate through Infantry `vtable+0xF0`, and the caller at
+        // `0x0075BE1D` never reads the return value. The slot is derived from the
+        // man's leptons; nothing is scanned and nothing can be refused. VERA
+        // instead moves the entity in the occupancy grid first and then *picks* a
+        // slot here, so it needs a failure branch the original does not have —
+        // and the cell centre it snaps to is a position the ordinary chooser can
+        // never assign.
+        //
+        // Trigger: the look-ahead's reserved slot is taken, or a vehicle enters
+        // the cell, between look-ahead and arrival. Player effect: the crossing
+        // loop breaks and the infantryman freezes mid-order on the cell centre.
+        // Frequency: infantry cross cells hundreds of times a minute in a
+        // mid-game push, so even a low per-crossing rate is repeatedly visible.
+        // Downstream risk: closing it means marking from the man's own leptons
+        // instead of scanning, which reorders the occupancy claim against the
+        // transition — a restructure of this seam, not a swap.
         let Some(sub) = claimed else {
             position.sub_x = crate::util::lepton::CELL_CENTER_LEPTON;
             position.sub_y = crate::util::lepton::CELL_CENTER_LEPTON;

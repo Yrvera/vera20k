@@ -319,8 +319,25 @@ impl DriveCoord {
 /// DriveLocomotion-owned path direction cursor.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DrivePathQueue {
+    /// Native `Foot+0x5E0`: a 24-entry direction array, codes 0..=7 plus the
+    /// tube sentinel 8, terminated by `-1`. `FootClass::Find_Path` @ `0x004D3920`
+    /// copies `min(count, 0x18 - prefix)` dwords into it at `0x004D3E98`, and
+    /// `AStar_reconstruct_path` @ `0x0042AA90` is what produces the codes —
+    /// octant from the 3×3 delta table for an adjacent hop, literal `8` for any
+    /// non-adjacent one.
     #[serde(default)]
     pub directions: Vec<u8>,
+    /// **VERA-internal representation, gamemd equivalent UNCHECKED.** Native has
+    /// no cursor: each locomotor's `Process_Movement` pops by `REP MOVSD`
+    /// (`0x004B45F6` for one entry, `0x004B45CB` for two) and writes `-1` into
+    /// the freed tail slots, so "queue exhausted" is literally `[+0x5E0] == -1`.
+    /// This advances an index and leaves the consumed prefix in place, so
+    /// `directions.is_empty()` is **not** the native predicate. Trigger: a
+    /// fully-consumed queue. Player effect: none today — `movement_step` clears
+    /// the queue on `next_index >= path.len()` before either reader sees it.
+    /// Frequency: zero while that clear holds. Downstream risk: the two
+    /// `!directions.is_empty()` readers diverge the moment the queue and
+    /// `MovementTarget` are allowed to disagree.
     #[serde(default)]
     pub cursor: u16,
     /// Native FootClass path-reference cell (`+0x558`). Drive advances this

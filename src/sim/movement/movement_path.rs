@@ -54,6 +54,19 @@ pub(super) fn merge_path_blocks(
     entity_blocks.cloned().unwrap_or_default()
 }
 
+/// Ring radius the blocked-goal fallback searches for a reachable substitute.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED** — a named constant standing in
+/// for what used to be a bare `10` at the call site.
+const NEAREST_REACHABLE_SEARCH_RADIUS: u16 = 10;
+
+/// **VERA-internal, gamemd equivalent UNCHECKED**: the locomotor whitelist and
+/// the zero-size grid sentinel below. `FootClass::Find_Path` @ `0x004D3920`
+/// gates on `vtable+0x2CC` and a non-null destination, not on locomotor kind.
+/// Trigger: any repath. Player effect: none observed — the excluded locomotors
+/// are the ones with their own state machines. Frequency: every repath, so a
+/// wrong entry here would be constant. Downstream risk: the whitelist is the
+/// only thing keeping air and teleport movers out of the layered path builder.
 pub(super) fn supports_layered_bridge_pathing(
     loco: &LocomotorState,
     grid: &PathGrid,
@@ -72,6 +85,18 @@ fn is_bridge_layer_walkable(grid: Option<&PathGrid>, cell: (u16, u16)) -> bool {
     grid.is_some_and(|g| g.is_walkable_on_layer(cell.0, cell.1, MovementLayer::Bridge))
 }
 
+/// **VERA-internal, gamemd has no equivalent.** A goal reachable only on the
+/// bridge layer makes `find_move_path` drop the order outright.
+/// `FootClass::Find_Path` @ `0x004D3920` has exactly two clear-and-fail exits
+/// — `vtable+0x2CC` returning 0 at `0x004D3989` and a null destination at
+/// `0x004D3E22` — and neither is a bridge-layer test.
+///
+/// Trigger: a move ordered onto a cell whose ground plane is impassable but
+/// whose bridge deck is walkable. Player effect: VERA refuses the order where
+/// retail runs the search. Frequency: clicks on a bridge deck over water or a
+/// cliff — a few times a match on any map with a high bridge. Downstream risk:
+/// removing it re-opens the layered-goal case the bridge-parity boundary at
+/// the top of this module records, so it must land with that work.
 fn is_bridge_only_goal(grid: &PathGrid, goal: (u16, u16)) -> bool {
     !grid.is_walkable(goal.0, goal.1) && is_bridge_layer_walkable(Some(grid), goal)
 }
@@ -386,6 +411,18 @@ pub(super) fn find_move_path_with_marker(
             if entity_block_map.is_some_and(|m| m.contains_key(layer, &(x, y))) {
                 return false;
             }
+            // **VERA-internal, gamemd equivalent UNCHECKED.** A marked cell is
+            // a hard smoothing block here. Native charges it a soft x4 instead:
+            // `0x004299AA` tests `Cell+0x140 & 0x40000` and, if set,
+            // `FMUL [0x007E37BC]` (= 4.0f) on the edge cost. VERA's A* models
+            // that correctly in `apply_search_marker_cost`; only the two
+            // smoothing predicates in this file harden it, and the
+            // `(x, y) != goal` carve-out has no native counterpart at all.
+            // Trigger: any blocked repath with a non-empty overlay, i.e.
+            // urgency 1 or 2. Player effect: VERA keeps a detour retail would
+            // straighten back out. Frequency: traffic jams at a chokepoint or
+            // a war-factory exit, several times a match. Downstream risk: low,
+            // it is a predicate the smoother consults.
             if marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal) {
                 return false;
             }
@@ -449,6 +486,7 @@ pub(super) fn find_move_path_with_marker(
         terrain_ok
             && !entity_blocks.is_some_and(|eb| eb.contains(&(x, y)))
             && !entity_block_map.is_some_and(|m| m.contains_any(&(x, y)))
+            // Same VERA-internal hardening as the layered predicate above.
             && !marker_overlay.is_some_and(|m| m.contains((x, y)) && (x, y) != goal)
     };
     let path = path_smooth::smooth_path(path, &smooth_walkable);
@@ -535,7 +573,7 @@ pub(super) fn try_repath_after_block(
         Some(&combined_blocks),
         movement_zone,
         ctx.resolved_terrain,
-        10,
+        NEAREST_REACHABLE_SEARCH_RADIUS,
     ) else {
         target.movement_delay = mcfg.path_delay_ticks;
         return false;

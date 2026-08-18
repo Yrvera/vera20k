@@ -396,7 +396,11 @@ pub fn allocate_sub_cell_with_preference(
             .into_iter()
             .flatten()
             .fold(0u8, |mask, &spot| mask | (1 << spot));
-    // YR CellClass::FindInfantrySubposition draws only for the center/NW path.
+    // `CellClass::PlaceInfantryInCell` @ `0x00481180` — reached from
+    // `WalkLocomotionClass::FindSubCellDest` @ `0x0075C240` — draws its
+    // `Random__RandomRanged(0, 3)` row rotation only on the centre/NW path.
+    // There is no `CellClass::FindInfantrySubposition` in this program; the name
+    // this comment used to carry was invented.
     let random_row = (quadrant == 0).then(|| rng.next_range_u32(4) as u8);
     cell_kernel::select_infantry_subcell(quadrant, occupied_mask, false, random_row)
 }
