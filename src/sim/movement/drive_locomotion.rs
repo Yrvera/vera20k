@@ -200,10 +200,19 @@ pub(super) fn ship_process_target_speed_fraction(
 ///   `UnitClass::PerCellProcess`), native replaces the whole ramp with
 ///   `min(target, 0.2)` and writes it back to `drive+0x50` (`0x004B1146`).
 ///   Trigger: a crusher mid-crush. Player effect: retail slows to a fifth speed
-///   over the victim. Frequency: rare — it lives inside the `Accelerates`
-///   branch, and stock marks every crusher tank `Accelerates=false`, so only
-///   harvester-class crushers reach it. Downstream risk: it writes the
-///   locomotor-owned slot, not just the owner's.
+///   over the victim. Frequency: **common, not rare.** It lives inside the
+///   `Accelerates` branch, and of the 29 `Crusher=yes` types in stock
+///   `rulesmd.ini` only 14 carry `Accelerates=false` — the 15 that accelerate
+///   include `[APOC]`, both MCVs, `[V3]`, every ore miner and the amphibious
+///   transports. An Apocalypse driving over infantry is ordinary Soviet play.
+///   Downstream risk: it writes the locomotor-owned slot, not just the owner's.
+/// - **The `drive+0x58 >= 0x40` bypass.** Both `Process_Movement` @
+///   `0x004B2630` and this function gate on `*(int*)(drive+0x58) < 0x40`; above
+///   it native skips the `drive+0x50` write *and* the whole ramp, setting the
+///   owner fraction directly. VERA always writes and always ramps. Trigger:
+///   whatever manoeuvre assigns a track index at or above 0x40 — UNCHECKED, and
+///   that is the prerequisite for ranking this. Player effect: VERA ramps where
+///   native jumps. Downstream risk: it is the same gate in two functions.
 /// - **The `Passive=` skip.** `UnitTypeClass+0xE0C` (stored at `0x0074783D`)
 ///   disables the entire ramp for a UnitClass mover. Trigger: a `Passive=yes`
 ///   type. Player effect: none observed. Frequency: zero in skirmish — stock
@@ -225,9 +234,14 @@ fn update_vehicle_speed_fraction(
     // tracked mover going downhill on a 100% land row legitimately carries 1.2
     // — the terrain chain's own tests assert the combined value exceeds 1.0.
     // The only native clamp is inside `TechnoClass::SetSpeedFraction` @
-    // `0x004D3710`, and it applies to the owner's `+0x578`, not to this slot.
-    // Clamping here silently discarded the whole downhill bonus for every
-    // Drive and Ship mover.
+    // `0x004D3710`, on the owner's `+0x578`.
+    //
+    // That clamp is still reached: **every** arm of `Process_Drive_Track` @
+    // `0x004B0F20` terminates in `SetSpeedFraction` through vtable `+0x544`, so
+    // gamemd discards the above-1.0 portion one step later and the mover does
+    // not actually go faster downhill. Keeping this slot unclamped matches
+    // where the native clamp lives, and matters only to anything that reads the
+    // *target* fraction rather than the owner's; it is not a speed change.
     *target_slot = target_fraction;
     if !accelerates {
         *current_slot = target_fraction.clamp(SIM_ZERO, SIM_ONE);
@@ -652,6 +666,33 @@ mod tests {
         let drive = entity.drive_locomotion.as_mut().expect("drive");
         drive.head_to = Some(DriveCoord::cell(4, 3, 0));
         assert!(drive_locomotor_is_moving(&entity));
+    }
+
+    #[test]
+    fn a_downhill_target_stays_above_one_but_the_owner_fraction_does_not() {
+        // `Process_Movement` @ 0x004B2630 writes `drive+0x50` unclamped, so a
+        // 1.2 downhill product survives on the locomotor-owned slot; the only
+        // native clamp is `TechnoClass::SetSpeedFraction` @ 0x004D3710, which
+        // every arm of `Process_Drive_Track` reaches, so the owner's fraction
+        // never exceeds 1.
+        let mut drive = DriveLocomotionRuntime {
+            current_speed_fraction: SIM_ZERO,
+            ..Default::default()
+        };
+
+        update_drive_speed_fraction(
+            &mut drive,
+            SimFixed::lit("1.2"),
+            false,
+            SimFixed::from_num(10),
+            SimFixed::lit("0.03"),
+            SimFixed::lit("0.002"),
+            SimFixed::from_num(500),
+            SimFixed::from_num(1000),
+        );
+
+        assert_eq!(drive.target_speed_fraction, SimFixed::lit("1.2"));
+        assert_eq!(drive.current_speed_fraction, SIM_ONE);
     }
 
     #[test]

@@ -97,7 +97,8 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
             None => body_facing_to_turret(entity.facing),
         }
     } else {
-        // No target — return to body facing (research doc §5.1).
+        // No target — return to body facing. See the residual list on
+        // `tick_turret_rotation` for the three native arms this omits.
         body_facing_to_turret(entity.facing)
     };
     Some(desired)
@@ -114,7 +115,12 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
 ///
 /// `UnitClass::Facing_Update` @ `0x00736990` owns this natively, on the turret
 /// `FacingClass` at owner `+0x3A0`. Four of its behaviours are **not** modelled,
-/// recorded rather than approximated:
+/// recorded rather than approximated.
+///
+/// **These four apply to the live vehicle path too.** This function `continue`s
+/// past every `EntityCategory::Unit` while `L2_UNIT_POST_AUTHORITATIVE` holds,
+/// so the host that actually aims a vehicle turret is `sim::combat`'s
+/// `desired_turret_facing` sweep — the same omissions, one file over.
 ///
 /// - **The idle dwell.** The native idle return is gated on
 ///   `frame - owner+0x120 >= Rules+0xE04 + 5` (`0x00736B35`-`0x00736B7C`),
@@ -140,7 +146,7 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
 ///   continuous in combat. Downstream risk: one latch byte on the entity.
 /// - **The building anchor.** Native reaches the target through its `GetCoords`
 ///   slot `+0x48`, which for `BuildingClass` returns the foundation centre;
-///   [`turret_desired_facing`] reads the raw NW-anchored position. A 3x3
+///   [`desired_turret_facing`] reads the raw NW-anchored position. A 3x3
 ///   building aimed at from four cells is off by about 14 degrees. Trigger:
 ///   every vehicle attack on a structure. Frequency: constant in any base
 ///   assault, and it feeds the fire-alignment gate, so first-shot timing shifts
