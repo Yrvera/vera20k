@@ -269,6 +269,88 @@ impl BounceState {
 /// - The `+0x80` virtual on `BuildingClass`. Verified only that it returns a
 ///   `char` and that nonzero suppresses the bounce.
 /// - `MATRIX_TABLE_0x00B45188` beyond ramp index 16; the init loop fills 0..16.
+
+/// The identity entry of `MATRIX_TABLE_0x00B45188`, ramp index 0 — flat ground.
+///
+/// `VXL_MasterLighting_Init @ 0x00755400` fills index 0 with the identity and
+/// indices 1..=16 with `Matrix3x4_BuildFromRotateXAndFacing(angle, slope)` over
+/// eight facings and two slope constants. Only the flat entry is modelled here;
+/// see [`reflect_off_ground`].
+const FLAT_RAMP: u8 = 0;
+
+impl BounceState {
+    /// `BounceClass::Update`'s reflection block, `0x00439D91`..`0x00439E89`.
+    ///
+    /// gamemd-derived, and the operand order matters at every step:
+    /// ```text
+    /// M1 = MATRIX_TABLE_0x00B45188[cell(newPos).ramp]   // VXL_GetFacingMatrix @ 0x007559B0
+    /// M2 = inverse_rigid(M1)                            // FUN_005AFC20
+    /// v  = (Velocity.X, -Velocity.Y, Velocity.Z)        // FUN_0043A0B0
+    /// v  = M2 * v                                       // FUN_005AF4D0, rotation only
+    /// v  = f32(Elasticity) * v                          // FUN_0043A0D0, ALL THREE components
+    /// v.Z = -v.Z
+    /// q  = M1 * v
+    /// Velocity = (q.X, -q.Y, q.Z)
+    /// ```
+    /// Y is negated on the way in and on the way out; Z is the axis actually
+    /// reflected, in surface space. Elasticity is applied BEFORE the Z flip, so
+    /// it damps the tangential and normal components alike, and it is the f32
+    /// truncation of the stored double — narrowed at `0x00439E2A`, before the
+    /// first transform overwrites that stack slot.
+    ///
+    /// `FUN_005AF4D0` reads only the rotation columns; the translation column
+    /// (`0x0C`/`0x1C`/`0x2C`) is never touched, so `M2 ≡ M1ᵀ` here and the block
+    /// is a rotate-into-surface-space, reflect, rotate-back round trip.
+    ///
+    /// RESIDUAL (GSI-05.14) — only the FLAT ramp is modelled. On ramp 0 the
+    /// table entry is the identity, so both transforms drop out and the whole
+    /// block collapses to `Velocity = (e·Vx, e·Vy, -e·Vz)` — which this
+    /// function computes directly rather than through two identity matrices.
+    /// - Trigger: debris bouncing on a sloped cell.
+    /// - Player effect: it would rebound along the slope's normal in retail and
+    ///   rebounds vertically here, so a chunk landing on a hillside runs
+    ///   downhill in retail and hops in place here.
+    /// - Frequency: bounded by two things and small because of both. Only
+    ///   `[TIRE]` has a non-zero `Elasticity` among stock `[VoxelAnims]`, and
+    ///   `Elasticity = 0` zeroes the velocity whatever the matrix; and debris
+    ///   lands on flat ground far more often than on a ramp.
+    /// - Downstream risk: closing it needs the runtime contents of
+    ///   `MATRIX_TABLE_0x00B45188`, which `VXL_MasterLighting_Init` builds from
+    ///   `Matrix3x4_BuildFromRotateXAndFacing` — the eight facings and two
+    ///   slope constants are known, the matrices themselves are UNCHECKED. The
+    ///   `FUN_005AF4D0` row associations differ per row (row 0 pairs the y/z
+    ///   terms first, rows 1 and 2 pair y/x first), so they must be read from
+    ///   disassembly rather than written naturally.
+    ///
+    /// Returns the reflected velocity, or `None` for a ramp this does not
+    /// model.
+    pub fn reflect_off_ground(
+        velocity: [NativeF32Bits; 3],
+        elasticity: NativeF64Bits,
+        ramp: u8,
+    ) -> Result<Option<[NativeF32Bits; 3]>, NativeX87Error> {
+        if ramp != FLAT_RAMP {
+            return Ok(None);
+        }
+        // The elasticity multiplier is the f32 narrowing of the stored double,
+        // not the double itself — `FLD double [ESP+0x64]` / `FSTP float [ESP]`.
+        let scale = X87Chop53::load_f32(X87Chop53::store_f32(X87Chop53::load_f64(elasticity)?)?)?;
+
+        let mut out = [NativeF32Bits::POSITIVE_ZERO; 3];
+        for (axis, component) in velocity.iter().enumerate() {
+            let scaled = X87Chop53::mul(scale, X87Chop53::load_f32(*component)?);
+            // Y is negated going in and coming out, so it survives unflipped;
+            // Z is the reflected axis and keeps a single negation.
+            out[axis] = X87Chop53::store_f32(if axis == 2 {
+                X87Chop53::neg(scaled)
+            } else {
+                scaled
+            })?;
+        }
+        Ok(Some(out))
+    }
+}
+
 /// `Random__RandomRanged(low, high)` over a signed span.
 ///
 /// `SimRng::next_range_u32_inclusive` models the native helper directly; the
@@ -304,6 +386,90 @@ mod tests {
             rng,
         )
         .expect("init stays inside the verified x87 domain")
+    }
+
+    #[test]
+    fn gsi_05_14_flat_reflection_flips_z_and_damps_all_three() {
+        // Y is negated on the way in and on the way out, so it survives
+        // UNFLIPPED; Z is the axis actually reflected. Getting that backwards
+        // is the natural mistake — the decompile shows two Y negations and one
+        // Z negation, and a reading that keeps only the outer pair would flip
+        // the wrong axis.
+        let v = [f32bits(3.0), f32bits(-4.0), f32bits(12.0)];
+        let out = BounceState::reflect_off_ground(v, f64bits(0.5), 0)
+            .expect("flat reflection stays in the x87 domain")
+            .expect("ramp 0 is modelled");
+        let got = [
+            f32::from_bits(out[0].bits()),
+            f32::from_bits(out[1].bits()),
+            f32::from_bits(out[2].bits()),
+        ];
+        assert_eq!(got, [1.5, -2.0, -6.0]);
+    }
+
+    #[test]
+    fn gsi_05_14_zero_elasticity_kills_the_bounce() {
+        // Every stock `[VoxelAnims]` type except `[TIRE]` is `Elasticity=0`, so
+        // this is the path the scrap a dying vehicle throws actually takes: the
+        // reflection runs in full and produces no motion, which is why that
+        // debris stops on first contact and exits through the STOP test rather
+        // than the bounce one — and so never plays its `BounceAnim`.
+        let v = [f32bits(3.0), f32bits(-4.0), f32bits(12.0)];
+        let out = BounceState::reflect_off_ground(v, NativeF64Bits::POSITIVE_ZERO, 0)
+            .expect("zero elasticity is in domain")
+            .expect("ramp 0 is modelled");
+        for component in out {
+            assert_eq!(f32::from_bits(component.bits()).abs(), 0.0);
+        }
+    }
+
+    #[test]
+    fn gsi_05_14_sloped_ramps_are_refused_rather_than_approximated() {
+        // The matrix table's runtime contents are UNCHECKED, so a sloped ramp
+        // returns None instead of silently reusing the flat collapse. A caller
+        // that ignored this would rebound vertically off a hillside.
+        let v = [f32bits(3.0), f32bits(-4.0), f32bits(12.0)];
+        for ramp in 1..=16u8 {
+            assert!(
+                BounceState::reflect_off_ground(v, f64bits(0.8), ramp)
+                    .expect("in domain")
+                    .is_none(),
+                "ramp {ramp} must be refused, not approximated by the flat case"
+            );
+        }
+    }
+
+    #[test]
+    fn gsi_05_14_elasticity_is_narrowed_to_f32_before_scaling() {
+        // `FLD double [ESP+0x64]` / `FSTP float [ESP]` — the multiplier is the
+        // f32 narrowing of the stored double, taken before the first transform
+        // overwrites that slot.
+        //
+        // The narrowing CHOPS. This process runs x87 at 53-bit precision with
+        // truncate-toward-zero rounding, so `FSTP float` drops the low mantissa
+        // bits rather than rounding them. Rust's `as f32` rounds to nearest, so
+        // it disagrees by one ULP on a value like 0.1 — and anyone "simplifying"
+        // this to `f64::from_bits(elasticity.bits()) as f32` would introduce
+        // that error on every single bounce. This test exists to fail if they
+        // do.
+        let v = [
+            f32bits(1.0),
+            NativeF32Bits::POSITIVE_ZERO,
+            NativeF32Bits::POSITIVE_ZERO,
+        ];
+        let out = BounceState::reflect_off_ground(v, f64bits(0.1), 0)
+            .expect("in domain")
+            .expect("ramp 0 is modelled");
+        assert_eq!(
+            out[0].bits(),
+            0x3DCC_CCCC,
+            "the chopped narrowing of 0.1, not the rounded one"
+        );
+        assert_ne!(
+            out[0].bits(),
+            (0.1_f64 as f32).to_bits(),
+            "Rust's `as f32` rounds to nearest and would give 0x3DCCCCCD"
+        );
     }
 
     #[test]
