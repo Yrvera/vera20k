@@ -309,8 +309,14 @@ pub struct AnimObject {
     pub stable_id: AnimId,
     pub native_unique_id: i32,
     pub type_id: InternedId,
-    /// Absolute world leptons. Z uses the animation constructor's 128-lepton
-    /// height level, not combat's terrain-height conversion.
+    /// World leptons — but **owner-relative whenever `owner_entity` is set**,
+    /// exactly as `AnimClass::SetOwnerObject @ 0x00424B50` stores it. Read it
+    /// through [`Simulation::anim_absolute_coord`] for a world position; read
+    /// the field directly only where native reads the stored `ObjectClass`
+    /// coordinate directly, which is the multiplayer sync checksum
+    /// (`Compute_Game_Sync_Checksum @ 0x0064DAB0` folds `+0x9c`/`+0xa0`) and
+    /// the state hash. Z uses the animation constructor's 128-lepton height
+    /// level, not combat's terrain-height conversion.
     pub world_coord: AnimWorldCoord,
     pub draw_flags: u32,
     pub z_adjust: i32,
@@ -680,10 +686,14 @@ impl Simulation {
     }
 
     pub(crate) fn visit_anim(&mut self, id: AnimId, rules: &RuleSet) {
-        let Some((type_id, world_coord, first_guard, inactive)) = self.anim(id).map(|anim| {
+        // `AnimClass::GetCoords @ 0x00422BE0`, not the stored field: an
+        // owner-attached anim stores an owner-relative delta.
+        let Some(world_coord) = self.anim_absolute_coord(id) else {
+            return;
+        };
+        let Some((type_id, first_guard, inactive)) = self.anim(id).map(|anim| {
             (
                 anim.type_id,
-                anim.world_coord,
                 anim.runtime.first_ai_guard,
                 anim.runtime.inactive,
             )
@@ -832,10 +842,12 @@ impl Simulation {
         if already_queued {
             return;
         }
-        let Some((world, stop_sound)) = self
-            .anim(id)
-            .map(|anim| (anim.world_coord, anim.stop_sound_id))
-        else {
+        // `AnimClass::GetCoords @ 0x00422BE0` — the sound plays at the anim's
+        // resolved world position, not its owner-relative stored delta.
+        let Some(world) = self.anim_absolute_coord(id) else {
+            return;
+        };
+        let Some(stop_sound) = self.anim(id).map(|anim| anim.stop_sound_id) else {
             return;
         };
         self.detach_anim_from_owner(id);
@@ -861,44 +873,167 @@ impl Simulation {
     /// Techno/Object implementation is `FUN_00710410`; here the
     /// `damage_fire_anim_ids` slot clear) before the owner pointer itself.
     ///
-    /// RESIDUAL (GSI-05.12) — owner-relative attachment is not modelled.
-    /// `AnimClass::SetOwnerObject @ 0x00424B50` rewrites the anim coordinate to
-    /// `anim_abs - owner_abs` on attach and `AnimClass::GetCoords @ 0x00422BE0`
-    /// then returns `stored_offset + owner.GetCoords()`; `GetLayer @
-    /// 0x00424CB0` forces layer 2 for any attached anim; and native scans the
-    /// global anim array so the owner's "has attached anim" byte
-    /// (`Object+0x84`) clears only after the *last* attached anim leaves. The
-    /// three pieces have different exposure here:
-    /// - Moving owner. Trigger: an attached anim whose owner changes position.
-    ///   Player effect would be a stale draw position. Frequency: zero
-    ///   occurrences in this build — the only production attach site is the
-    ///   building damage-fire slot below and buildings do not move; every other
-    ///   anim producer emits an unattached `WorldEffect` row.
-    /// - Multi-attached owner. Trigger: a building past a damage-fire
-    ///   threshold, which fills two or more slots. Frequency: every such
-    ///   building, so continuously in ordinary play. Player effect: none —
-    ///   `detach_anim_from_owner` below already clears only the slot equal to
-    ///   the departing anim, and no consumer of `Object+0x84` exists on the
-    ///   building side, so the shared-owner scan has nothing to guard yet.
-    /// - Layer override. Approximated rather than absent:
-    ///   `anim_render_destination` in `app/presentation/instances/overlays.rs`
-    ///   short-circuits any owned anim to `AnimRenderDestination::Existing`,
-    ///   which is what keeps `FIRE01`..`FIRE03` (no `Layer=` key in artmd) off
-    ///   the `Top` default. Trigger: drawing any owner-attached anim, i.e. every
-    ///   burning building. Player effect: if the parent-adjacent path and native
-    ///   layer-2 ground sorting disagree, a damage fire draws in front of or
-    ///   behind a ground object it should be behind or in front of. Frequency:
-    ///   every frame of every burning building. Whether they do disagree is the
-    ///   open question — nothing checks the two orders against each other, and
-    ///   native reaches its ordering through `ground_order.anim_object_draw` by
-    ///   a different route.
-    /// - Downstream risk: the mechanism blocks every native producer that does
-    ///   attach — paradrop `PARACH`, the `BEHIND` marker, non-building muzzle
-    ///   anims, EMPulse sparks, Psychic Dominator per-victim anims,
-    ///   CaptureManager, transport/enter `+0x1D4`, deploy/undeploy `+0x130`,
-    ///   terrain catch-fire, and building damage side-effect debris. Temporal
-    ///   `SQDG` needs more than `SetOwnerObject`: it also registers in
-    ///   `g_AnimClass_RemoveListeners`, which has no analogue here.
+    /// gamemd-derived: `AnimClass::SetOwnerObject @ 0x00424B50` — the attach
+    /// half. Native stores an attached anim's coordinate RELATIVE to its owner
+    /// and resolves it back on read, so the anim follows a moving owner for
+    /// free. The disassembly is explicit about the sign and the axes: at
+    /// `0x00424C16` it takes the anim's own `GetCoords` (vtable `+0x48`, with
+    /// the owner pointer still null so this is the stored absolute), at
+    /// `0x00424C37` it writes the owner into `Anim+0xCC`, at `0x00424C46` it
+    /// takes the owner's `GetCoords`, then `SUB EBX,ECX` / `SUB EBP,EDI` /
+    /// `SUB ECX,EDX` (`0x00424C51`, `0x00424C5F`, `0x00424C5B`) form
+    /// `anim_abs - owner_abs` on X, Y and Z and hand that to `SetCoords`
+    /// (vtable `+0x1B4`) at `0x00424C70`. The detach half at `0x00424BBD`
+    /// mirrors it: read `GetCoords` while the owner is still set — so it comes
+    /// back absolute — null `Anim+0xCC`, and store the absolute.
+    ///
+    /// Three native steps are deliberately not modelled, and it matters what
+    /// each one actually is:
+    /// - The owner's "has an anim attached" byte. Attach sets
+    ///   `[owner+0x84] = 1` at `0x00424C30`; detach clears it at `0x00424BB6`,
+    ///   but only when the `g_AnimClass_Array` scan at `0x00424B85` finds no
+    ///   OTHER anim sharing that owner. Nothing in this engine reads
+    ///   `Object+0x84`, so neither write has an observable consequence here.
+    ///   The multi-slot case the scan exists for is already correct for a
+    ///   different reason: [`Self::detach_anim_from_owner`] clears only the
+    ///   slot equal to the departing anim.
+    /// - The same guard also gates a virtual call on the OWNER,
+    ///   `CALL [owner_vtable+0x17C]` at `0x00424BB0` — read directly, not
+    ///   inferred: BuildingClass's primary vtable base is `0x007E3EBC` and
+    ///   `+0x17C` there is `0x005F43C0`, whose body is a bare `RET`. So for the
+    ///   only producer this engine has, the skipped call does nothing. A
+    ///   non-building owner may override it; whoever adds the first such
+    ///   producer must read `+0x17C` on that class before reusing this.
+    /// - The `DisplayClass::RemoveFromLayer` / `Submit_Object` re-registration
+    ///   pair either side of the pointer write (`0x004A9770` / `0x004A9720`).
+    ///   Layer membership is rebuilt from `tactical_registration_order` every
+    ///   frame in this engine rather than held as a persistent container, so
+    ///   there is no registration to move.
+    ///
+    /// Returns `false` when the anim does not exist, or when the requested
+    /// owner does not.
+    pub(crate) fn set_anim_owner_object(&mut self, id: AnimId, new_owner: Option<u64>) -> bool {
+        if self.anim(id).is_none() {
+            return false;
+        }
+
+        // Detach half: resolve back to absolute *before* dropping the owner.
+        if self.anim(id).and_then(|anim| anim.owner_entity).is_some() {
+            let absolute = self
+                .anim_absolute_coord(id)
+                .expect("anim exists: checked at the head of this function");
+            if let Some(anim) = self.anim_mut_by_id(id) {
+                anim.owner_entity = None;
+                anim.world_coord = absolute;
+            }
+        }
+
+        // Attach half: the stored coordinate becomes the owner-relative delta.
+        if let Some(owner_id) = new_owner {
+            let Some(owner_coord) = self.anim_owner_coords(owner_id) else {
+                return false;
+            };
+            if let Some(anim) = self.anim_mut_by_id(id) {
+                anim.world_coord = AnimWorldCoord {
+                    x: anim.world_coord.x.wrapping_sub(owner_coord.x),
+                    y: anim.world_coord.y.wrapping_sub(owner_coord.y),
+                    z: anim.world_coord.z.wrapping_sub(owner_coord.z),
+                };
+                anim.owner_entity = Some(owner_id);
+            }
+        }
+        true
+    }
+
+    /// gamemd-derived: `AnimClass::GetCoords @ 0x00422BE0` — with an owner at
+    /// `Anim+0xCC` it returns `stored + owner->GetCoords()`, otherwise the
+    /// stored coordinate unchanged. This is the only correct way to read an
+    /// anim's world position: [`AnimObject::world_coord`] is owner-relative
+    /// whenever `owner_entity` is set, exactly as native stores it.
+    ///
+    /// Returns `None` only when the anim does not exist.
+    ///
+    /// VERA-internal, gamemd equivalent UNREACHABLE: an anim naming an owner
+    /// the store no longer holds is treated as unattached, so the stored
+    /// coordinate is returned as-is. Native cannot produce that state —
+    /// `AnimClass::Detach @ 0x00425150` runs from the owner's own uninit, via
+    /// `ObjectClass::Detach_From_All_Lists`, before the pointer can dangle, and
+    /// this engine mirrors it in `expire_anim_owner_reference`. The fallback
+    /// exists so every caller agrees on one behaviour instead of one panicking
+    /// and another silently dropping the anim; treating a dangling owner as no
+    /// owner is also the only reading under which the stored coordinate means
+    /// anything.
+    pub fn anim_absolute_coord(&self, id: AnimId) -> Option<AnimWorldCoord> {
+        let anim = self.anim(id)?;
+        let Some(owner_coord) = anim
+            .owner_entity
+            .and_then(|owner| self.anim_owner_coords(owner))
+        else {
+            return Some(anim.world_coord);
+        };
+        Some(AnimWorldCoord {
+            x: anim.world_coord.x.wrapping_add(owner_coord.x),
+            y: anim.world_coord.y.wrapping_add(owner_coord.y),
+            z: anim.world_coord.z.wrapping_add(owner_coord.z),
+        })
+    }
+
+    /// The owner side of `AnimClass::GetCoords`: `ObjectClass::GetCoords` on
+    /// the attached-to object, in the anim coordinate frame.
+    ///
+    /// X and Y are leptons, with `BuildingClass::GetCoords @ 0x00447AC0`'s
+    /// `(W-1) * 128` / `(H-1) * 128` shift off the stored NW anchor onto the
+    /// geometric foundation centre — the same derivation
+    /// `world/lifecycle.rs`'s `object_get_coords_cell` and `combat`'s
+    /// `target_coords` use.
+    ///
+    /// Z deliberately uses the anim height-level scale
+    /// (`ANIM_HEIGHT_LEVEL_LEPTONS`, 128), NOT `Position::exact_z_leptons` and
+    /// NOT the 104-lepton `LevelHeight` the locomotor and combat use. Native
+    /// has one Z frame and this engine has two: an anim's own Z is stored in
+    /// 128-per-level units (see [`AnimWorldCoord::to_cell_sub_z`] and the anim
+    /// constructor), so the owner's Z must be converted into that same frame or
+    /// the subtraction native performs would compare two different scales.
+    /// Feeding `exact_z_leptons` in here would look more faithful and be wrong.
+    ///
+    /// The consequence, recorded rather than hidden: this reads the owner's
+    /// coarse height level only. An owner with a non-zero locomotor altitude —
+    /// a flying or falling attach target — would contribute no altitude to the
+    /// delta. No attach producer in this engine targets a moving or airborne
+    /// owner (the sole producer is building damage fire), so the term has zero
+    /// occurrences today; the first airborne-owner producer must reconcile the
+    /// two Z frames before relying on it. The attach/detach round trip is exact
+    /// regardless, because the same value is subtracted and added back.
+    fn anim_owner_coords(&self, owner_id: u64) -> Option<AnimWorldCoord> {
+        let owner = self.substrate.entities.get(owner_id)?;
+        let mut x = i32::from(owner.position.rx)
+            .wrapping_mul(LEPTONS_PER_CELL)
+            .wrapping_add(owner.position.sub_x.to_num::<i32>());
+        let mut y = i32::from(owner.position.ry)
+            .wrapping_mul(LEPTONS_PER_CELL)
+            .wrapping_add(owner.position.sub_y.to_num::<i32>());
+        if owner.category == crate::map::entities::EntityCategory::Structure {
+            let (width, height) =
+                crate::rules::foundation::foundation_dimensions(&owner.foundation);
+            x = x.wrapping_add(
+                i32::from(width.saturating_sub(1)).wrapping_mul(BUILDING_RENDER_ORIGIN_LEPTONS),
+            );
+            y = y.wrapping_add(
+                i32::from(height.saturating_sub(1)).wrapping_mul(BUILDING_RENDER_ORIGIN_LEPTONS),
+            );
+        }
+        Some(AnimWorldCoord {
+            x,
+            y,
+            z: i32::from(owner.position.z).wrapping_mul(ANIM_HEIGHT_LEVEL_LEPTONS),
+        })
+    }
+
+    /// gamemd-derived: `AnimClass::SetOwnerObject @ 0x00424B50` detach half,
+    /// plus this engine's damage-fire slot bookkeeping. See
+    /// [`Self::set_anim_owner_object`] for the coordinate contract; the slot
+    /// clear below is why the native `g_AnimClass_Array` shared-owner scan has
+    /// nothing to guard here.
     pub(crate) fn detach_anim_from_owner(&mut self, id: AnimId) -> Option<u64> {
         let owner_id = self.anim(id).and_then(|anim| anim.owner_entity)?;
         if let Some(owner) = self.substrate.entities.get_mut(owner_id) {
@@ -908,9 +1043,7 @@ impl Simulation {
                 }
             }
         }
-        if let Some(anim) = self.anim_mut_by_id(id) {
-            anim.owner_entity = None;
-        }
+        self.set_anim_owner_object(id, None);
         Some(owner_id)
     }
 
@@ -937,46 +1070,58 @@ impl Simulation {
     /// block on `+0x19B == 0` at `0x004242B0`; and the `Next=` transition
     /// clears it, matching native's `+0x19B = 0` write there.
     ///
-    /// RESIDUAL (GSI-05.12) — the marker is checked much earlier in the visit
-    /// than native checks it. The gate sits 0x89F bytes into `AnimClass::AI`
-    /// (`0x00423AC0`..`0x0042435F`). Two `+0x19B` sites do sit inside that span —
-    /// the trailer guard at `0x004242B0` noted above and the `0x147C` writer at
-    /// `0x00424358` noted below — but none of the items enumerated here carries
-    /// a guard of its own, so native runs every one of them on a detached anim:
-    /// `AnimClass::UpdateLoopingSound @ 0x00750D40` (entered on
-    /// `Anim+0x198 == 0` and `AnimType+0x2F8 != -1`); `BounceAI` plus the
-    /// `AnimType+0x354` `ObjectClass::AI` call; the bouncer-impact block on
-    /// instance byte `+0x194`, which itself contains `AnimClass::Constructor`
-    /// calls and an `Apply_area_damage` call; the `+0x19D` draw-suppression
-    /// writers at `0x00423B5C`, `0x00423B7F`/`0x00423B88` and
-    /// `0x00423BB8`/`0x00423BC1`; and the `+0x11B` frame-equality cleanup at
-    /// `0x00423C03`..`0x00423C1D`. `visit_anim`
-    /// runs only the make-infantry occupation mark before its own gate, so a
-    /// detached anim skips every one of them.
+    /// DRIFT (GSI-05.12) — the marker is checked earlier in the visit than
+    /// native checks it, and the difference has no observable surface here yet.
+    /// The gate sits 0x89F bytes into `AnimClass::AI`
+    /// (`0x00423AC0`..`0x0042435F`), so native runs a prefix on a detached anim
+    /// that `visit_anim` skips: `AnimClass::UpdateLoopingSound @ 0x00750D40`
+    /// (entered on `Anim+0x198 == 0` and `AnimType+0x2F8 != -1`); `BounceAI`
+    /// plus the `AnimType+0x354` `ObjectClass::AI` call; the bouncer-impact
+    /// block on instance byte `+0x194`, which itself contains
+    /// `AnimClass::Constructor` calls and an `Apply_area_damage` call; the
+    /// `+0x19D` draw-suppression writers at `0x00423B5C`,
+    /// `0x00423B7F`/`0x00423B88` and `0x00423BB8`/`0x00423BC1`; and the `+0x11B`
+    /// frame-equality cleanup at `0x00423C03`..`0x00423C1D`. `visit_anim` runs
+    /// only the make-infantry occupation mark before its own gate.
+    ///
+    /// Three of those five items are inert in this engine today, which is why
+    /// moving the gate now would be a no-op rather than a fix:
+    /// - `UpdateLoopingSound` is pure maintenance of a loop handle — it
+    ///   revalidates the handle, recomputes volume and pan through
+    ///   `VocClass::CalcVolumeAndPan`, and stops the loop when the volume comes
+    ///   back non-positive. There is no loop-handle mechanism in this engine to
+    ///   maintain (recorded on `audio/sfx.rs`), so there is nothing for the
+    ///   extra pass to act on. `[FIRE01]`/`[FIRE02]` carry
+    ///   `StartSound=BuildingFireBig` and `[FIRE03]` `StartSound=BuildingFireMed`,
+    ///   so `AnimType+0x2F8 != -1` does hold for exactly this trigger — the pass
+    ///   really does run in native.
+    /// - The bouncer-impact block needs a bounce simulation, and there is none:
+    ///   `Bouncer=` is parsed into `art_data.rs`'s `bouncer` flag with no sim
+    ///   consumer, and damage-fire anims are not bouncers in any case.
+    /// - The `+0x19D` writes cannot reach a `DrawIt` even in native — the same
+    ///   call destroys the anim a few instructions later.
+    ///
+    /// The other two are NOT argued inert, and are why this stays recorded
+    /// rather than dismissed: `BounceAI` plus the `AnimType+0x354`
+    /// `ObjectClass::AI` call, and the `+0x11B` frame-equality cleanup at
+    /// `0x00423C03`..`0x00423C1D` (`if [+0x11B] && [+0x11C] == [+0xAC] then
+    /// [+0x11B] = 0`, a draw-family-adjacent byte). Neither has a mapped
+    /// analogue in this store, so whether they carry a consequence is
+    /// UNCHECKED, not clean.
+    ///
     /// - Trigger: a building destroyed while its damage-fire anims are live.
-    /// - Player effect: audible only, because the `+0x19D` writes cannot reach
-    ///   a `DrawIt` — the same call destroys the anim a few instructions later.
-    ///   `[FIRE01]`/`[FIRE02]` carry
-    ///   `StartSound=BuildingFireBig` and `[FIRE03]`
-    ///   `StartSound=BuildingFireMed`, so `AnimType+0x2F8 != -1` holds for
-    ///   exactly this trigger and native's looping-sound maintenance does run
-    ///   one more time before the destroy. What that last pass emits is the
-    ///   corpus's own open item — OQ-09 in
-    ///   `ANIMCLASS_DETACHEDOWNER_MARKER_0X19B_CONSUMERS_GHIDRA_REPORT.md`,
-    ///   deferred — so this is UNCHECKED, not clean. The spawn/damage half of
-    ///   the prefix is unreachable today: the bouncer-impact block needs a
-    ///   bounce simulation, and there is none — `Bouncer=` is parsed into
-    ///   `art_data.rs`'s `bouncer` flag but has no sim consumer, and damage-fire
-    ///   anims are not bouncers in any case.
+    /// - Player effect: none today; audible once loop handles exist, and what
+    ///   that final pass emits is the corpus's own open item, OQ-09 in
+    ///   `ANIMCLASS_DETACHEDOWNER_MARKER_0X19B_CONSUMERS_GHIDRA_REPORT.md`.
     /// - Frequency: every destroyed building that had reached a damage-fire
     ///   threshold, so several times in an ordinary skirmish.
-    /// - Downstream risk: grows with every anim producer added; the bouncer
-    ///   half becomes live the moment `Bouncer=` debris exists. The named
-    ///   acceptance check is
-    ///   `inactive_anim_runs_pre_destroy_ai_prefix_before_destroy`, and the
-    ///   corpus's negative fact applies verbatim: do not place the inactive
-    ///   check at the top of AI unless every pre-check side effect is proven
-    ///   irrelevant.
+    /// - Downstream risk: this is sequenced, not open-ended. It becomes
+    ///   observable exactly when `GSI-15.03`'s loop-handle mechanism lands, and
+    ///   the gate must move in the same slice that lands it. The corpus's
+    ///   negative fact applies verbatim and is the reason the gate has not been
+    ///   moved speculatively: do not place the inactive check at the top of AI
+    ///   unless every pre-check side effect is proven irrelevant — which is a
+    ///   claim about the prefix's contents, and the prefix grows.
     ///
     /// Separately unmodelled, and not a consequence of the ordering above: the
     /// `Rules+0x147C` occupied-cell path at `0x00424322`..`0x0042435E` is a
@@ -984,16 +1129,21 @@ impl Simulation {
     /// through `MapClass::Get_CellClass_At_Coord @ 0x00565730`, tests it via
     /// `0x0047C520`, and sets `+0x19B = 1` at `0x00424358`. A third writer, the
     /// `AnimType+0x360` overlay-bound path entered at `0x004243C2` and writing at
-    /// `0x00424427`, sits after the gate
-    /// and is out of scope here. Neither has an analogue in this store.
+    /// `0x00424427`, sits after the gate and is out of scope here. Neither has
+    /// an analogue in this store.
     ///
-    /// RESIDUAL (GSI-05.12, structural) — `runtime.inactive` doubles as this
+    /// DRIFT (GSI-05.12, structural) — `runtime.inactive` doubles as this
     /// store's "ready for pending delete" predicate
     /// (`world/lifecycle.rs pending_object_is_ready`), so the marker and object
     /// liveness are one field where native keeps display-layer membership
-    /// separate from both. No behavioral divergence is known from this; it is
-    /// recorded because a future attached-anim producer that must survive its
-    /// owner would have to split them first.
+    /// separate from both.
+    /// - Trigger: an attached anim that must outlive its owner.
+    /// - Player effect: none. No such producer exists — every native attach
+    ///   producer either dies with its owner or is not built here.
+    /// - Frequency: zero occurrences in this build.
+    /// - Downstream risk: recorded because splitting the two fields is a
+    ///   prerequisite for any future producer whose anim survives its owner;
+    ///   nothing else depends on it.
     pub(crate) fn expire_anim_owner_reference(&mut self, id: AnimId, expired_id: u64) -> bool {
         if self.anim(id).and_then(|anim| anim.owner_entity) != Some(expired_id) {
             return false;
@@ -1139,9 +1289,7 @@ impl Simulation {
             let anim_id = self
                 .spawn_anim_at_world(rules, descriptor, world)
                 .expect("validated stock damage-fire animation must spawn");
-            if let Some(anim) = self.anim_mut_by_id(anim_id) {
-                anim.owner_entity = Some(building_id);
-            }
+            self.set_anim_owner_object(anim_id, Some(building_id));
             if let Some(entity) = self.substrate.entities.get_mut(building_id) {
                 entity.damage_fire_anim_ids[slot] = Some(anim_id);
             }
@@ -1212,7 +1360,7 @@ impl Simulation {
             return;
         };
         let sound_id = self.interner.intern(&sound_name);
-        let Some(world) = self.anim(id).map(|anim| anim.world_coord) else {
+        let Some(world) = self.anim_absolute_coord(id) else {
             return;
         };
         if let Some(anim) = self.anim_mut_by_id(id) {
@@ -1953,6 +2101,64 @@ mod tests {
     }
 
     #[test]
+    fn gsi_05_12_attached_anim_follows_a_moving_owner_and_detaches_absolute() {
+        // The point of owner-relative storage: `AnimClass::GetCoords @
+        // 0x00422BE0` adds the owner's live coordinate, so the anim tracks the
+        // owner without anyone rewriting the anim. `SetOwnerObject @
+        // 0x00424B50` then writes the resolved absolute back on detach, so the
+        // anim stays where it was standing.
+        let (mut sim, rules, building_id) = damage_fire_fixture(false);
+        sim.substrate
+            .entities
+            .get_mut(building_id)
+            .unwrap()
+            .health
+            .current = 50;
+        sim.update_building_damage_fire(building_id, &rules);
+        let anim_id = sim
+            .substrate
+            .entities
+            .get(building_id)
+            .unwrap()
+            .damage_fire_anim_ids[0]
+            .expect("slot zero");
+        let before = sim.anim_absolute_coord(anim_id).expect("attached anim");
+        let stored_before = sim.anim(anim_id).unwrap().world_coord;
+
+        // Move the owner one cell east and one cell south.
+        {
+            let owner = sim.substrate.entities.get_mut(building_id).unwrap();
+            owner.position.rx += 1;
+            owner.position.ry += 1;
+        }
+
+        assert_eq!(
+            sim.anim(anim_id).unwrap().world_coord,
+            stored_before,
+            "the stored delta is untouched by owner movement"
+        );
+        assert_eq!(
+            sim.anim_absolute_coord(anim_id).unwrap(),
+            AnimWorldCoord {
+                x: before.x + LEPTONS_PER_CELL,
+                y: before.y + LEPTONS_PER_CELL,
+                z: before.z
+            },
+            "the resolved coordinate follows the owner one cell on each axis"
+        );
+
+        let moved = sim.anim_absolute_coord(anim_id).unwrap();
+        assert_eq!(sim.detach_anim_from_owner(anim_id), Some(building_id));
+        assert!(sim.anim(anim_id).unwrap().owner_entity.is_none());
+        assert_eq!(
+            sim.anim(anim_id).unwrap().world_coord,
+            moved,
+            "detach writes the resolved absolute back into the stored field"
+        );
+        assert_eq!(sim.anim_absolute_coord(anim_id).unwrap(), moved);
+    }
+
+    #[test]
     fn building_damage_fire_uses_exact_threshold_slots_coords_and_depth() {
         let (mut sim, rules, building_id) = damage_fire_fixture(false);
         sim.substrate
@@ -1986,13 +2192,25 @@ mod tests {
             type_names[expected_types[0]]
         );
         assert_eq!(first_anim.runtime.current_frame, expected_frames[0]);
+        // `AnimClass::SetOwnerObject @ 0x00424B50` stores the coordinate
+        // owner-relative; `GetCoords @ 0x00422BE0` resolves it back. The
+        // absolute is what the draw and the sound see, and it is unchanged.
         assert_eq!(
-            first_anim.world_coord,
+            sim.anim_absolute_coord(first).unwrap(),
             AnimWorldCoord {
                 x: 2450,
                 y: 2653,
                 z: 0
             }
+        );
+        assert_eq!(
+            first_anim.world_coord,
+            AnimWorldCoord {
+                x: 2450 - 3072,
+                y: 2653 - 3072,
+                z: 0
+            },
+            "stored coordinate is the owner-relative delta native writes"
         );
         assert_eq!(first_anim.z_adjust, -192);
         let second_anim = sim.anim(second).unwrap();
@@ -2003,12 +2221,21 @@ mod tests {
         );
         assert_eq!(second_anim.runtime.current_frame, expected_frames[1]);
         assert_eq!(
-            second_anim.world_coord,
+            sim.anim_absolute_coord(second).unwrap(),
             AnimWorldCoord {
                 x: 3140,
                 y: 2594,
                 z: 0
             }
+        );
+        assert_eq!(
+            second_anim.world_coord,
+            AnimWorldCoord {
+                x: 3140 - 3072,
+                y: 2594 - 3072,
+                z: 0
+            },
+            "stored coordinate is the owner-relative delta native writes"
         );
         assert_eq!(second_anim.z_adjust, -136);
         assert_eq!(

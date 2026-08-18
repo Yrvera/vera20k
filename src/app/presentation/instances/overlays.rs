@@ -145,7 +145,14 @@ fn overlay_display_identity(
 /// Appends to the SHP instance list so they draw in the same depth-sorted pass.
 /// Each effect's current frame is looked up in the SHP atlas.
 pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -187,13 +194,16 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
         };
         let depth_y: f32 = center_y + entry.offset_y + entry.pixel_size[1];
         let base_depth: f32 = compute_sprite_depth(state, depth_y, fx.z);
-        let cfg: Option<&AnimTypeRuntimeConfig> = state.rules()
+        let cfg: Option<&AnimTypeRuntimeConfig> = state
+            .rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(shp_name));
         // Anim SHP draws carry the type's ZAdjust= sort bias plus the
         // constant -2px anim bias (negative = toward camera).
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
         let world_height: f32 = state
-            .match_state.match_presentation.terrain_grid
+            .match_state
+            .match_presentation
+            .terrain_grid
             .as_ref()
             .map(|g| g.world_height)
             .unwrap_or(1.0);
@@ -202,7 +212,11 @@ pub(crate) fn build_world_effect_instances(state: &AppState, paged: &mut [Vec<Sp
             type_z_adjust + ANIM_DRAW_DEPTH_BIAS_PX,
             world_height,
         );
-        let tint: [f32; 3] = state.match_state.match_presentation.lighting_grid.anim_tint_at((fx.rx, fx.ry), cfg);
+        let tint: [f32; 3] = state
+            .match_state
+            .match_presentation
+            .lighting_grid
+            .anim_tint_at((fx.rx, fx.ry), cfg);
         // Source-pixel weight the native blitter family gives this frame:
         // a fixed 25/50/75 stage from `Translucency=`, or the progressive
         // `Translucent=yes` fade keyed on the frame against the type's End.
@@ -234,11 +248,34 @@ fn anim_render_destination(
     config: Option<&AnimTypeRuntimeConfig>,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) -> Option<AnimRenderDestination> {
-    // Owner-attached damage fire retains its established parent-adjacent path.
-    // gamemd-derived: no-owner `AnimClass::GetLayer @ 0x00424CB0` returns the
-    // AnimType layer; `GetYSort @ 0x00422BC0` adds AnimType YSortAdjust.
+    // gamemd-derived: `AnimClass::GetLayer @ 0x00424CB0` forces layer 2
+    // (Ground) for ANY anim carrying an owner at `Anim+0xCC`, ahead of both the
+    // AnimType `Layer=` read and the Top default — so an attached anim joins the
+    // sorted ground layer whatever its type asked for. Layer 2 is the only
+    // sorted `DisplayClass` layer: `Submit_Object @ 0x004A9720` sets the sorted
+    // flag with `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`, and every other layer
+    // plain-appends, so a layer-2 member is inserted in ascending y-sort against
+    // the non-anim ground objects by `ObjectClass::YSortComparator @ 0x005F6220`
+    // keyed on vtable `+0xB8`. For an anim that key is
+    // `AnimClass::GetYSort @ 0x00422BC0` = `ObjectClass::GetYSort @ 0x005F6BD0`
+    // + AnimType `YSortAdjust`, and `ObjectClass::GetYSort` reads slot `+0xAC`
+    // (`ObjectClass::GetRenderCoords @ 0x0041BE00`, which AnimClass does not
+    // override) — that re-enters the anim's own virtual `+0x48`, so an attached
+    // anim sorts at its OWNER-RESOLVED absolute position, not at the stored
+    // relative delta. `coord` is already that resolved value.
+    let config_y_sort_adjust = config.map_or(0, |config| config.y_sort_adjust);
     if owner_entity.is_some() {
-        return Some(AnimRenderDestination::Existing);
+        return ground_order
+            .anim_object_draw(
+                stable_id,
+                TacticalCoord {
+                    x: world_coord.x,
+                    y: world_coord.y,
+                    z: world_coord.z,
+                },
+                config_y_sort_adjust,
+            )
+            .map(AnimRenderDestination::Ground);
     }
     let config = config?;
     match config.layer {
@@ -265,10 +302,19 @@ pub(crate) fn build_anim_class_instances(
     top_instances: &mut Vec<SpriteInstance>,
     top_pages: &mut Vec<usize>,
     top_ids: &mut Vec<u64>,
-    ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_objects: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
+    >,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -287,14 +333,19 @@ pub(crate) fn build_anim_class_instances(
             continue;
         }
         let type_name: &str = sim.interner.resolve(anim.type_id);
-        let config = state.rules()
+        let config = state
+            .rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(type_name));
         if !crate::sim::anim_class::anim_draw_detail_visible(
             crate::sim::anim_class::AnimDrawDetailInput {
                 // No authoritative draw-rate degradation producer exists yet.
                 frame_rate_below_minimum: false,
                 type_detail_level: config.map_or(0, |value| value.detail_level),
-                game_detail_level: state.match_state.match_presentation.in_game_options.detail_level as i32,
+                game_detail_level: state
+                    .match_state
+                    .match_presentation
+                    .in_game_options
+                    .detail_level as i32,
                 hidden: anim.draw_runtime.hidden,
                 special_hidden: anim.draw_runtime.special_hidden,
                 // The native special-hide type bit remains an explicit residual.
@@ -306,13 +357,23 @@ pub(crate) fn build_anim_class_instances(
         let Ok(frame) = u16::try_from(anim.runtime.current_frame) else {
             continue;
         };
-        let (center_x, center_y, rx, ry, z) = anim_world_render_coords(anim.world_coord);
+        // `AnimClass::GetCoords @ 0x00422BE0`: an owner-attached anim stores an
+        // owner-relative delta, so the draw position must be resolved through
+        // the owner rather than read off the field.
+        let Some(anim_coord) = sim.anim_absolute_coord(anim.stable_id) else {
+            continue;
+        };
+        let (center_x, center_y, rx, ry, z) = anim_world_render_coords(anim_coord);
         if !in_view(
             center_x, center_y, 200.0, 200.0, cam_x, cam_y, sw, sh, 200.0,
         ) {
             continue;
         }
-        let tint = state.match_state.match_presentation.lighting_grid.anim_tint_at((rx, ry), config);
+        let tint = state
+            .match_state
+            .match_presentation
+            .lighting_grid
+            .anim_tint_at((rx, ry), config);
         let key = ShpSpriteKey {
             type_id: type_name.to_string(),
             facing: 0,
@@ -330,13 +391,19 @@ pub(crate) fn build_anim_class_instances(
                 presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name)
                     .unwrap_or(0),
             ),
-            state.match_state.match_presentation.in_game_options.detail_level as i32,
+            state
+                .match_state
+                .match_presentation
+                .in_game_options
+                .detail_level as i32,
             anim.draw_runtime,
         ) else {
             continue;
         };
         let (origin_y, world_height) = state
-            .match_state.match_presentation.terrain_grid
+            .match_state
+            .match_presentation
+            .terrain_grid
             .as_ref()
             .map(|grid| (grid.origin_y, grid.world_height))
             .unwrap_or((0.0, 1.0));
@@ -359,7 +426,7 @@ pub(crate) fn build_anim_class_instances(
         match anim_render_destination(
             anim.stable_id,
             anim.owner_entity,
-            anim.world_coord,
+            anim_coord,
             config,
             ground_order,
         ) {
@@ -450,7 +517,9 @@ fn anim_instance_alpha_with_flags(
 /// the atlas has no matching shape.
 fn anim_shp_frame_count(state: &AppState, type_name: &str) -> i32 {
     state
-        .match_state.match_presentation.sprite_atlas
+        .match_state
+        .match_presentation
+        .sprite_atlas
         .as_ref()
         .and_then(|atlas| presentation_anim_frame_count(&atlas.active_anim_frame_counts, type_name))
         .map(i32::from)
@@ -485,22 +554,34 @@ pub(crate) fn build_overlay_instances(
     sw: f32,
     sh: f32,
     instances: &mut Vec<SpriteInstance>,
-    ground_objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance>,
+    ground_objects: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::PlannedGroundObjectInstance,
+    >,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder,
 ) {
     let atlas = match &state.match_state.match_presentation.overlay_atlas {
         Some(a) => a,
         None => return,
     };
-    let (cam_x, cam_y) = (state.match_state.input.camera_x, state.match_state.input.camera_y);
+    let (cam_x, cam_y) = (
+        state.match_state.input.camera_x,
+        state.match_state.input.camera_y,
+    );
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
     // Playable area bounds — skip overlays outside LocalSize (border filler).
-    let local_bounds = state.match_state.match_presentation.terrain_grid.as_ref().and_then(|g| g.local_bounds);
+    let local_bounds = state
+        .match_state
+        .match_presentation
+        .terrain_grid
+        .as_ref()
+        .and_then(|g| g.local_bounds);
 
     // Cell visibility for the local owner — used to cull overlays and terrain
     // objects in unrevealed cells. The shroud multiply pass darkens per-pixel,
@@ -515,7 +596,14 @@ pub(crate) fn build_overlay_instances(
         None
     } else {
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
-        match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &local_owner_name) {
+        match (
+            state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation),
+            &local_owner_name,
+        ) {
             (Some(sim), Some(owner)) => sim.interner.get(owner).map(|id| (id, &sim.fog)),
             _ => None,
         }
@@ -532,7 +620,12 @@ pub(crate) fn build_overlay_instances(
             }
         }
 
-        let Some(static_name) = state.match_state.match_presentation.overlay_names.get(&entry.overlay_id) else {
+        let Some(static_name) = state
+            .match_state
+            .match_presentation
+            .overlay_names
+            .get(&entry.overlay_id)
+        else {
             continue;
         };
 
@@ -546,7 +639,8 @@ pub(crate) fn build_overlay_instances(
         // Low bridges remain in the ordinary overlay pass, but CellClass's
         // live identity—not the map-pack seed—selects damaged/collapsed art.
         let live_overlay_cell = state
-            .match_state.sim_runtime
+            .match_state
+            .sim_runtime
             .as_ref()
             .map(|rt| &rt.simulation)
             .and_then(|sim| sim.overlay_grid.as_ref())
@@ -572,7 +666,12 @@ pub(crate) fn build_overlay_instances(
             state.rules().map(|rules| &rules.tiberium_types),
         );
         let name = if display_overlay_id == live_overlay_id {
-            state.match_state.match_presentation.overlay_names.get(&live_overlay_id).cloned()
+            state
+                .match_state
+                .match_presentation
+                .overlay_names
+                .get(&live_overlay_id)
+                .cloned()
         } else {
             overlay_registry
                 .and_then(|registry| registry.name(display_overlay_id).map(str::to_owned))
@@ -629,33 +728,41 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = spr else { continue };
         let depth_z: u8 = z;
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
-        let tint: [f32; 3] = state.match_state.match_presentation.lighting_grid.overlay_tint_at((entry.rx, entry.ry));
-        planned_cells.push(crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
-            draw: crate::render::tactical_draw_plan::CellDraw {
-                id: next_draw_id,
-                kind: crate::app::presentation::render::draw_plan_lowering::cell_draw_kind(is_wall),
-                policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
+        let tint: [f32; 3] = state
+            .match_state
+            .match_presentation
+            .lighting_grid
+            .overlay_tint_at((entry.rx, entry.ry));
+        planned_cells.push(
+            crate::app::presentation::render::draw_plan_lowering::PlannedCellInstance {
+                draw: crate::render::tactical_draw_plan::CellDraw {
+                    id: next_draw_id,
+                    kind: crate::app::presentation::render::draw_plan_lowering::cell_draw_kind(
+                        is_wall,
+                    ),
+                    policy: BlitPolicy::translucent(SpriteEncoding::Terrain, RenderZPolicy::None),
+                },
+                instance: SpriteInstance {
+                    position: [
+                        screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
+                        screen_y + TILE_HEIGHT / 2.0 + spr.offset_y,
+                    ],
+                    size: spr.pixel_size,
+                    uv_origin: spr.uv_origin,
+                    uv_size: spr.uv_size,
+                    depth,
+                    tint,
+                    alpha: 1.0,
+                    ..Default::default()
+                },
             },
-            instance: SpriteInstance {
-                position: [
-                    screen_x + TILE_WIDTH / 2.0 + spr.offset_x,
-                    screen_y + TILE_HEIGHT / 2.0 + spr.offset_y,
-                ],
-                size: spr.pixel_size,
-                uv_origin: spr.uv_origin,
-                uv_size: spr.uv_size,
-                depth,
-                tint,
-                alpha: 1.0,
-                ..Default::default()
-            },
-        });
+        );
         next_draw_id += 1;
     }
 
-    instances.extend(crate::app::presentation::render::draw_plan_lowering::lower_cell_instances(
-        planned_cells,
-    ));
+    instances.extend(
+        crate::app::presentation::render::draw_plan_lowering::lower_cell_instances(planned_cells),
+    );
 
     if std::env::var("RA2_DEBUG_BRIDGE_RENDER_BUCKETS").is_ok() {
         log::debug!("Cell overlay instances: {}", instances.len());
@@ -666,7 +773,12 @@ pub(crate) fn build_overlay_instances(
     //   drawy = ... + f_y/2 - 3 - pic.wMaxHeight/2
     const TERRAIN_OBJECT_Y_FUDGE: f32 = -3.0;
 
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return;
     };
     for obj in sim.production.terrain_objects.values() {
@@ -702,7 +814,8 @@ pub(crate) fn build_overlay_instances(
         let frame: u8 = if let Some(count) = atlas.terrain_anim_frame_count(name) {
             // RA2 terrain animation rate: ~83ms per frame (12 fps).
             const TERRAIN_ANIM_RATE_MS: u32 = 83;
-            let tick = state.match_state.match_presentation.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
+            let tick =
+                state.match_state.match_presentation.idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS;
             (tick % count as u32) as u8
         } else {
             0
@@ -714,12 +827,15 @@ pub(crate) fn build_overlay_instances(
         let Some(spr) = atlas.get(&key) else { continue };
 
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, z);
-        let spawns_tiberium = state.rules()
+        let spawns_tiberium = state
+            .rules()
             .and_then(|rules| rules.terrain_object_type_case_insensitive(name))
             .map(|terrain_type| terrain_type.spawns_tiberium)
             .unwrap_or(false);
         let tint: [f32; 3] = state
-            .match_state.match_presentation.lighting_grid
+            .match_state
+            .match_presentation
+            .lighting_grid
             .terrain_object_tint_for_type((obj.rx, obj.ry), spawns_tiberium);
 
         let Some(parent) = ground_order.terrain_object_draw(obj.stable_id, obj.rx, obj.ry) else {
@@ -758,7 +874,10 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
     state: &AppState,
     paged: &mut [Vec<SpriteInstance>],
 ) {
-    let (atlas, art_reg) = match (&state.match_state.match_presentation.sprite_atlas, state.rules().map(|rules| &rules.art_registry)) {
+    let (atlas, art_reg) = match (
+        &state.match_state.match_presentation.sprite_atlas,
+        state.rules().map(|rules| &rules.art_registry),
+    ) {
         (Some(a), Some(r)) => (a, r),
         _ => return,
     };
@@ -770,7 +889,9 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -804,7 +925,11 @@ pub(crate) fn build_garrison_muzzle_flash_instances(
         };
         let fx: f32 = flash.screen_x + entry.offset_x;
         let fy: f32 = flash.screen_y + entry.offset_y;
-        let tint: [f32; 3] = state.match_state.match_presentation.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
+        let tint: [f32; 3] = state
+            .match_state
+            .match_presentation
+            .lighting_grid
+            .anim_tint_at((flash.rx, flash.ry), cfg);
         let depth: f32 = garrison_flash_depth(
             origin_y,
             world_height,
@@ -877,7 +1002,9 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -900,9 +1027,14 @@ pub(crate) fn build_weapon_muzzle_flash_instances(
         let Some(entry) = atlas.get(&key) else {
             continue;
         };
-        let cfg: Option<&AnimTypeRuntimeConfig> = state.rules()
+        let cfg: Option<&AnimTypeRuntimeConfig> = state
+            .rules()
             .and_then(|rules| rules.art_registry.anim_runtime_config(&flash.shp_name));
-        let tint = state.match_state.match_presentation.lighting_grid.anim_tint_at((flash.rx, flash.ry), cfg);
+        let tint = state
+            .match_state
+            .match_presentation
+            .lighting_grid
+            .anim_tint_at((flash.rx, flash.ry), cfg);
         // Muzzle anims (e.g. GCMUZZLE, VTMUZZLE) carry their art section's
         // ZAdjust= as a sort bias plus the constant -2px anim bias.
         let type_z_adjust: i32 = cfg.map(|c| c.z_adjust).unwrap_or(0);
@@ -957,7 +1089,15 @@ fn projectile_authoritative_screen_position(
 /// YR `BulletClass::AI` linkage: rendering reads the same committed CoordStruct
 /// that the next authoritative flight pass will advance.
 fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<SpriteInstance>]) {
-    let (sim, rules, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), state.rules().map(|r| r), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, rules, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        state.rules().map(|r| r),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(sim), Some(rules), Some(atlas)) => (sim, rules, atlas),
         _ => return,
     };
@@ -969,7 +1109,9 @@ fn build_authoritative_projectile_instances(state: &AppState, paged: &mut [Vec<S
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|grid| (grid.origin_y, grid.world_height))
         .unwrap_or((0.0, 1.0));
@@ -1048,7 +1190,9 @@ pub(crate) fn build_projectile_visual_instances(
         state.render_height() as f32 / z,
     );
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -1089,7 +1233,12 @@ pub(crate) fn build_projectile_visual_instances(
 /// Build persistent WaveClass polygon edges from simulation registration state.
 pub(crate) fn build_weapon_wave_instances(state: &AppState) -> Vec<SpriteInstance> {
     let mut instances = Vec::new();
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return instances;
     };
     let observer = crate::app::input::commands::preferred_local_owner(state)
@@ -1151,7 +1300,14 @@ pub(crate) fn build_parachute_instances(
     /// frame-internal positioning, which our atlas doesn't replicate exactly.
     const CHUTE_Y_LIFT: f32 = 8.0;
 
-    let (sim, atlas) = match (state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation), &state.match_state.match_presentation.sprite_atlas) {
+    let (sim, atlas) = match (
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation),
+        &state.match_state.match_presentation.sprite_atlas,
+    ) {
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
@@ -1162,7 +1318,8 @@ pub(crate) fn build_parachute_instances(
         state.render_width() as f32 / z,
         state.render_height() as f32 / z,
     );
-    let config = match state.rules()
+    let config = match state
+        .rules()
         .and_then(|r| r.general.parachute_render.as_ref())
     {
         Some(c) => c,
@@ -1219,12 +1376,12 @@ pub(crate) fn build_parachute_instances(
         else {
             continue;
         };
-        parent
-            .pieces
-            .push(crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
-                target: crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
-                    entry.page as usize,
-                ),
+        parent.pieces.push(
+            crate::app::presentation::render::draw_plan_lowering::GroundPieceInstance {
+                target:
+                    crate::app::presentation::render::draw_plan_lowering::GroundTexture::ShpPage(
+                        entry.page as usize,
+                    ),
                 instance: SpriteInstance {
                     position: [cx, cy],
                     size: entry.pixel_size,
@@ -1235,7 +1392,8 @@ pub(crate) fn build_parachute_instances(
                     alpha: 1.0,
                     ..Default::default()
                 },
-            });
+            },
+        );
     }
 }
 
@@ -1261,12 +1419,81 @@ mod tests {
     use crate::util::fixed_math::SimFixed;
 
     #[test]
+    fn gsi_05_12_owner_attached_anim_is_forced_onto_the_sorted_ground_layer() {
+        // `AnimClass::GetLayer @ 0x00424CB0` tests the owner at `Anim+0xCC`
+        // FIRST and returns 2 (Ground); only an ownerless anim reaches the
+        // AnimType `Layer=` read or the Top default. Layer 2 is the one sorted
+        // `DisplayClass` layer (`Submit_Object @ 0x004A9720`,
+        // `CMP EDI,0x2` at `0x004A9747` / `SETZ CL` at `0x004A974D`), so an attached anim is
+        // y-sorted against ordinary ground objects rather than appended.
+        let art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[FIRE_TOP]\nLayer=top\nYSortAdjust=7\n\
+             [FIRE_AIR]\nLayer=air\n",
+        ));
+        let order =
+            crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[
+                5, 10, 20, 30,
+            ]);
+        // The owner-resolved absolute, which is what
+        // `ObjectClass::GetRenderCoords @ 0x0041BE00` hands the y-sort: it
+        // re-enters the anim's own `GetCoords`, so the sort key is built from
+        // the absolute, never from the stored owner-relative delta.
+        let resolved = crate::sim::anim_class::AnimWorldCoord {
+            x: 2450,
+            y: 2653,
+            z: 0,
+        };
+
+        let top_config = art.anim_runtime_config("FIRE_TOP");
+        assert_eq!(
+            anim_render_destination(10, None, resolved, top_config, &order),
+            Some(AnimRenderDestination::Top),
+            "without an owner the type's Layer=top still wins"
+        );
+
+        let Some(AnimRenderDestination::Ground(draw)) =
+            anim_render_destination(10, Some(77), resolved, top_config, &order)
+        else {
+            panic!("an owner-attached anim must enter the sorted ground layer");
+        };
+        assert_eq!((draw.coord.x, draw.coord.y, draw.coord.z), (2450, 2653, 0));
+        assert_eq!(draw.y_sort_adjust, 7);
+        assert_eq!(
+            draw.y_sort_key(),
+            2450 + 2653 + 7,
+            "ObjectClass::GetYSort @ 0x005F6BD0 returns coord.X + coord.Y, and \
+             AnimClass::GetYSort @ 0x00422BC0 adds the AnimType YSortAdjust"
+        );
+
+        // The override is unconditional on the type: air is pulled down too.
+        assert!(matches!(
+            anim_render_destination(
+                20,
+                Some(77),
+                resolved,
+                art.anim_runtime_config("FIRE_AIR"),
+                &order
+            ),
+            Some(AnimRenderDestination::Ground(_)),
+        ));
+        // And it does not need a known AnimType at all, because GetLayer
+        // returns before it reads `Anim+0xC8`.
+        assert!(matches!(
+            anim_render_destination(30, Some(77), resolved, None, &order),
+            Some(AnimRenderDestination::Ground(_)),
+        ));
+    }
+
+    #[test]
     fn gsi_13_04_wa_top_and_tuntop_ground_use_native_layer_and_ysort_lowering() {
         let art = ArtRegistry::from_ini(&IniFile::from_str(
             "[WA_CUSTOM]\nYSortAdjust=7\n\
              [TUNTOP_CUSTOM]\nLayer=ground\nYSortAdjust=1000\n",
         ));
-        let order = crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[5, 10, 20]);
+        let order =
+            crate::app::presentation::render::draw_plan_lowering::NativeGroundOrder::new(&[
+                5, 10, 20,
+            ]);
         let wa = art.anim_runtime_config("WA_CUSTOM");
         let tuntop = art.anim_runtime_config("TUNTOP_CUSTOM");
         let world = crate::sim::anim_class::AnimWorldCoord {
@@ -1310,10 +1537,10 @@ mod tests {
                 }],
             )
         };
-        let lowered = crate::app::presentation::render::draw_plan_lowering::lower_ground_object_instances(vec![
-            pieces(tunnel_draw),
-            pieces(ordinary),
-        ]);
+        let lowered =
+            crate::app::presentation::render::draw_plan_lowering::lower_ground_object_instances(
+                vec![pieces(tunnel_draw), pieces(ordinary)],
+            );
         assert_eq!(lowered.owners, [5, 20]);
     }
 
