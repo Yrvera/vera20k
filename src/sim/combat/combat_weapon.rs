@@ -147,6 +147,24 @@ const DEFAULT_DEPLOY_FIRE_WEAPON_INDEX: i32 = 1;
 /// 2. Try Primary (elite-aware) — check projectile AA/AG flags + Verses > 0%.
 /// 3. If Primary fails, try Secondary (elite-aware) with same checks.
 /// 4. If both fail, return None.
+///
+/// RESIDUAL (GSI-08.02) — this is first-legal-slot, not `What_Weapon_Should_I_Use`.
+/// Native compares the two slots and takes the one that does more to this
+/// target's armor; here Primary wins whenever it is merely legal, so a unit with
+/// a weak anti-armor Primary and a strong anti-armor Secondary fires the wrong
+/// one. `MinimumRange=` (20 stock entries: V3, Dreadnought, the artillery
+/// family) is likewise a pure exclusion in `in_range.rs` rather than a reason to
+/// switch slots, so an artillery piece with something inside its dead zone
+/// simply stops firing instead of falling back to its other weapon.
+/// - Trigger: any attacker whose two slots differ in effectiveness against the
+///   chosen target, or whose target is inside `MinimumRange`.
+/// - Player effect: wrong weapon, or no shot at all at close range.
+/// - Frequency: continuous for the slot choice — most dual-weapon units meet
+///   both target classes in an ordinary match. The `MinimumRange` arm is rarer,
+///   bounded by those 20 types.
+/// - Downstream risk: the same key that row GSI-08.01's acquisition residual
+///   names — changing slot choice moves which target dies first, so it shifts
+///   the pinned replay hash and wants the same slice.
 #[allow(dead_code)] // Used by tests; production callers go through with_override.
 pub(crate) fn select_weapon<'a>(
     rules: &'a RuleSet,

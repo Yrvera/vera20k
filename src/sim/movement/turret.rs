@@ -58,6 +58,23 @@ pub fn body_facing_to_turret(body: u8) -> u16 {
     (body as u16) << 8
 }
 
+/// RESIDUAL (GSI-08.14) — the turret model is one facing, and there is no
+/// recoil. Native splits the turret receiver from the barrel facing and reads
+/// them separately when it builds a fire location; `barrel_facing` here is the
+/// single value both roles share. `TurretRecoil=` is not parsed at all (2 stock
+/// entries), so no barrel slides back on firing, and no fire-time impulse is
+/// fed to the rocking system — `apply_rocker_impulse` is driven by damage only.
+/// - Trigger: firing any turreted vehicle; the recoil arm needs one of the two
+///   `TurretRecoil=` types.
+/// - Player effect: turrets fire without kicking back, so heavy guns read as
+///   weightless. The single-facing model additionally means a fire location
+///   derived from the barrel would use the receiver's angle.
+/// - Frequency: every shot from a turreted unit for the missing recoil;
+///   negligible for the two authored `TurretRecoil=` types.
+/// - Downstream risk: bounded while the fire origin is the unit centre (see the
+///   GSI-08.04 residual) — splitting the facings only pays off once FLH drives
+///   the projectile origin, so the two want one slice.
+///
 /// The barrel facing `tick_turret_rotation` drives this entity toward this tick:
 /// toward its attack target (lepton-precise) when it has one, else back to body
 /// facing. `None` when the entity has no turret. PURE READ — mutates neither the

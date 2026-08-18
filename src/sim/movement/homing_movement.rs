@@ -329,8 +329,10 @@ impl HomingState {
     /// - Trigger: a homing missile losing a multi-cell building target.
     /// - Player effect: the missile continues to the building's NW cell instead
     ///   of its centre, so the impact lands up to half a foundation off.
-    /// - Frequency: every homing shot whose building target dies in flight,
-    ///   which needs two attackers on one structure — uncommon but not rare.
+    /// - Frequency: every homing shot whose building target dies in flight.
+    ///   One attacker is enough — a V3, a Dreadnought or any burst weapon kills
+    ///   the structure with its own later missiles still travelling — so this
+    ///   is ordinary siege play, not a two-attacker coincidence.
     /// - Downstream risk: aligning it means routing this arm through the same
     ///   derivation, which moves the impact cell of an existing tested path, so
     ///   it wants its own slice rather than a drive-by change here.

@@ -248,8 +248,8 @@ pub(crate) fn cell_target_coord(
         })
         // A Cell target may legitimately name a cell with no allocated
         // CellClass: `MapClass::Get_CellClass @ 0x005657A0` answers those with
-        // the shared dummy at `0x00ABDC50`. A `CellClass` is 0x148 bytes and
-        // holds `Level` at `+283` and `SlopeIndex` at `+284`; all 0x148 bytes of
+        // the shared dummy at `0x00ABDC50`. A `CellClass` is `0x148` bytes and
+        // holds `Level` at `+0x11B` and `SlopeIndex` at `+0x11C`; all `0x148` of
         // the dummy read zero, so native takes level 0 and slope 0 there and
         // lands on floor height 0 as well. Headless store tests reach the same
         // arm by having no map substrate.

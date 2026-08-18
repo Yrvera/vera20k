@@ -6,6 +6,26 @@
 //! map to "no fire this tick"; threading sub-reason complexity buys zero
 //! observable difference.
 //!
+//! RESIDUAL (GSI-08.03) — this vocabulary has no producer. There is no
+//! `GetFireError` function; the fire gates are scattered early returns across
+//! `combat/mod.rs`, `combat_fire_gate.rs` and the attacker snapshot loop, none
+//! of which yields a code, so nothing downstream can consume one. That is why
+//! the whole enum is `#[allow(dead_code)]`.
+//! - Trigger: any consumer that needs to know *why* a shot did not happen —
+//!   gattling spin-up (which native drives from codes {0, 2, 3, 4}), the attack
+//!   cursor, and the EVA "cannot deploy/fire" feedback.
+//! - Player effect: gattling weapons do not spin up on the near-miss codes, so
+//!   a Gattling Cannon reaches full rate differently from retail; the other
+//!   consumers fall back to coarser conditions.
+//! - Frequency: every gattling engagement; the cursor and EVA arms are
+//!   whenever the player targets something illegal.
+//! - Downstream risk: two gates the same native step applies are also absent
+//!   and recorded at their call site in `combat/mod.rs` —
+//!   `TechnoClass::IsOnBridge_ForFiring @ 0x00703B10` and the vtable `+0x380`
+//!   test, both yielding error 6. Introducing codes means routing every early
+//!   return through one function, which is a refactor of the whole fire path
+//!   rather than an addition to it.
+//!
 //! ## Dependency rules
 //! - Part of sim/ — depends only on standard library.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
