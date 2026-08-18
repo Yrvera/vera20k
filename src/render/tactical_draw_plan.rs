@@ -197,20 +197,22 @@ pub struct TacticalDrawPlan {
 
 impl TacticalDrawPlan {
     /// Build fixed cell passes plus stable `LayerClass` object ordering.
-    /// RESIDUAL (GSI-13.12) — this planner is the verified ordering authority
-    /// and is not what ships pixels. `render/tactical_compat.rs` and the
-    /// `app/presentation/instances/*` builders assemble their buffers
-    /// independently, so the `native_layer_order`/`y_sort_key` contract proved
-    /// by the tests below does not gate the live frame.
-    /// - Trigger: every rendered frame.
-    /// - Player effect: draw order comes from the compat path, so any place the
-    ///   two disagree is a sprite in front of or behind something it should not
-    ///   be — the same open question the anim layer-override residual in
-    ///   `sim/anim_class.rs` names from the other end.
-    /// - Frequency: continuous.
-    /// - Downstream risk: routing the live path through this planner is a
-    ///   render-pipeline change, and its result is only checkable against a real
-    ///   frame, which `--lib` cannot reach — so it needs a capture harness, not
+    /// RESIDUAL (GSI-13.12) — the planner is production, but it is not the
+    /// whole story. `native_layer_order` and `y_sort_key` do gate the live
+    /// frame through `tactical_entity_encounter_order` and
+    /// `lower_cell_instances`, which the SHP, unit and overlay instance
+    /// builders consume. What is unchecked is whether every family reaches the
+    /// frame through it: `render/tactical_compat.rs` and parts of the instance
+    /// builders assemble buffers on their own, and the anim layer-2 override
+    /// recorded in `sim/anim_class.rs` short-circuits before this planner sees
+    /// the anim at all.
+    /// - Trigger: drawing an owner-attached anim, or any family that bypasses
+    ///   the planner.
+    /// - Player effect: where a bypassing path and this ordering disagree, a
+    ///   sprite draws in front of or behind something it should not.
+    /// - Frequency: continuous for the anim override — every burning building.
+    /// - Downstream risk: settling it needs a comparison against a real frame,
+    ///   which `--lib` cannot reach, so it wants a capture harness rather than
     ///   another unit test.
     pub fn build(inputs: impl IntoIterator<Item = TacticalDrawInput>) -> Self {
         let mut plan = Self::default();

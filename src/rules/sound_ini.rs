@@ -276,7 +276,7 @@ impl EvaRegistry {
     }
 }
 
-/// `AudioEventClass::ParsePriority @ 0x004067E7` walks the `(token, value)`
+/// `AudioEventClass::ParsePriority @ 0x004067D0` walks the `(token, value)`
 /// table at `0x00816018` with a case-insensitive compare and writes the value
 /// beside the first match. The table's NULL terminator carries `2`, so an
 /// unrecognised or absent token resolves to `NORMAL`.
@@ -289,14 +289,16 @@ const SOUND_PRIORITY_TABLE: [(&str, u8); 5] = [
 ];
 
 /// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors ten
-/// more. `Control=` (594 stock entries) selects RANDOM, INTERRUPT, PREDELAY,
+/// more. Counts below are case-insensitive section counts, matching how the
+/// engine matches keys. `Control=` (594) selects RANDOM, INTERRUPT, PREDELAY,
 /// LOOP, ALL and AMBIENT behaviour and is not parsed, so variant choice is a
 /// plain counter and none of the other modes exist; `Type=` (89) classifies
 /// GLOBAL/LOCAL/SHROUD and is not parsed, which is what leaves the `MinVolume=`
-/// floor unconditional in `audio/sfx.rs`; `Limit=` (77, plus `[Defaults]
-/// Limit=5`) caps concurrent instances and is not parsed, so nothing bounds a
-/// repeated sound; `Attack=`/`Decay=` (12/9), `Delay=` (64), `Loop=` (1) and
-/// `FShift=` (215) likewise have no fields.
+/// floor unconditional in `audio/sfx.rs`; `Limit=` (77, of which one is the
+/// `[Defaults]` line) caps concurrent instances and is not parsed, so nothing
+/// bounds a repeated sound; `FShift=` (218) and `VShift=` (153) shift pitch;
+/// and `Attack=`/`Decay=` (12/9), `Delay=` (64), `Loop=` (1) and the single
+/// `MinVol=` typo likewise have no fields.
 /// - Trigger: playing any sound whose entry authors one of them, which is most
 ///   of the registry.
 /// - Player effect: sounds do not interrupt or loop as authored, ambient beds
@@ -349,11 +351,14 @@ mod tests {
         assert_eq!(parse_sound_priority("Normal"), 2);
         assert_eq!(parse_sound_priority("HIGH"), 3);
         assert_eq!(parse_sound_priority(" critical "), 4);
-        // The table terminator carries 2, so no match resolves to NORMAL —
-        // including the numeric spellings stock never uses.
-        assert_eq!(parse_sound_priority("5"), SOUND_PRIORITY_DEFAULT);
-        assert_eq!(parse_sound_priority(""), SOUND_PRIORITY_DEFAULT);
-        assert_eq!(parse_sound_priority("URGENT"), SOUND_PRIORITY_DEFAULT);
+        // The terminator's own value is the fact the fix turns on, so it is
+        // asserted as the literal 2 rather than against the constant that
+        // carries it — the old broken behaviour resolved everything to 0, and a
+        // constant-relative assertion would pass for that too.
+        assert_eq!(SOUND_PRIORITY_DEFAULT, 2);
+        assert_eq!(parse_sound_priority("5"), 2);
+        assert_eq!(parse_sound_priority(""), 2);
+        assert_eq!(parse_sound_priority("URGENT"), 2);
     }
 
     #[test]
@@ -403,7 +408,10 @@ mod tests {
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("MinimalSound").unwrap();
         assert_eq!(entry.volume, 100);
-        assert_eq!(entry.priority, SOUND_PRIORITY_DEFAULT);
+        // `VocClass::ReadINI @ 0x00750440` passes the literal "NORMAL" as the
+        // ReadString default, so an absent key lands on the same 2 the
+        // terminator carries.
+        assert_eq!(entry.priority, 2);
     }
 
     #[test]

@@ -263,13 +263,27 @@ const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 /// with the rest of a defended-expansion group; the Chrono Miner is refused by
 /// its `Primary=none` on its own.
 ///
-/// One half of the type test is missing here: VERA does not parse
-/// `PreventAttackMove=`. Stock YR sets it on the three Engineers and the Spy,
-/// each of which carries a real `Primary=` (`DefuseKit` / `MakeupKit`) and so
-/// passes the weapon half; every other stock user of the key is an aircraft,
-/// which the aircraft rule already refuses. Until that key is parsed, a
-/// selection containing an Engineer or a Spy attack-moves here where retail
-/// leaves the chord inert — VERA-internal residual, gamemd rule itself verified.
+/// RESIDUAL (GSI-07.34) — one half of the type test is missing here. The key
+/// IS parsed (`rules/object_type.rs` into `prevent_attack_move`); what is
+/// absent is a reader — `entity_can_attack_move` below never consults it.
+/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Of
+/// the eleven, six are refused anyway by the aircraft rule (`SHAD`, `ORCA`,
+/// `BEAG`, `HIND`, `SCHP`, `SCHD`); the five that slip through are the three
+/// Engineers, the Spy, and Boris (`CCOMAND`, an infantry type), each carrying a
+/// real `Primary=` and so passing the weapon half.
+/// - Trigger: attack-moving a selection containing an Engineer, a Spy or Boris.
+/// - Player effect: they take the order and walk into the fight, where retail
+///   leaves the chord inert for them.
+/// - Frequency: every mixed attack-move that sweeps up an Engineer or Boris —
+///   common, since players band-select whole groups.
+/// - Downstream risk: none beyond this predicate; the field is already on the
+///   type, so the fix is one read. The gamemd rule itself is verified — this is
+///   a missing consumer, not missing evidence.
+///
+/// Note also that the sim side is confirmed complete for this row:
+/// `MissionClass::Mission_Dispatch @ 0x005B3060` has no case for mission 29, so
+/// Attack Move is an assign-side selector with no dispatcher handler, exactly
+/// as modelled.
 fn entity_can_attack_move(
     sim: &crate::sim::world::Simulation,
     rules: Option<&crate::rules::ruleset::RuleSet>,

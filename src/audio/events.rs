@@ -279,7 +279,7 @@ impl GameSoundEvent {
 /// Collects sound events during a simulation tick for later playback.
 ///
 /// Drained by the app layer each frame after sim ticking.
-#[derive(Debug, Default)]
+///
 /// RESIDUAL (GSI-15.05/15.08) — routing is by event variant, not by the INI
 /// classification, and several authored families have no emission site at all.
 /// Nothing emits ambient sound: `WorkingSound=` (9 stock), `AuxSound1=` (8),
@@ -301,6 +301,7 @@ impl GameSoundEvent {
 ///   the voice repeat guard is pure state and could land ahead of it.
 ///   Selection variance is also split — the app picks with a plain counter
 ///   while death pools draw from `SimRng`, so the two are unrelated mechanisms.
+#[derive(Debug, Default)]
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,
 }

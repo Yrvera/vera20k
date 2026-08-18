@@ -167,7 +167,9 @@ pub struct WarheadType {
     /// RESIDUAL (GSI-05.14) — dead on both ends, and the live keys sit on a
     /// different class. No stock warhead section carries `Debris=` or
     /// `DebrisMaximums=` at all; the debris that stock YR actually throws is
-    /// driven from TechnoType sections — `MaxDebris=` (439 stock entries),
+    /// driven from TechnoType sections — `MaxDebris=` (456 stock sections, 17
+    /// of them spelled `Maxdebris=`; the engine matches keys case-insensitively
+    /// and so do these counts),
     /// `MinDebris=` (272, all BuildingTypes), `DebrisTypes=` (36, every one of
     /// them `TIRE`), `DebrisMaximums=` (36) and `DebrisAnims=` (166) — none of
     /// which is parsed anywhere. These two fields also have no reader: they are

@@ -136,13 +136,17 @@ enum ImmediateProjectileReason {
 /// RESIDUAL (GSI-08.06/08.07/08.08) — this classifier is also the flight-model
 /// gate, and most of the native flight keys reach it only as reasons to opt
 /// *out* of authoritative flight rather than as models. `Vertical=` (5 stock),
-/// `Inaccurate=` (2), `Proximity=` (18) and `SubjectToCliffs=`/
-/// `SubjectToElevation=` (30) each disqualify a shot here; `ProjectileTrajectory`
-/// itself has only `Straight` and `Ballistic`, so vertical launch, scatter,
-/// proximity detection and cliff collision have no implementation to fall back
-/// on. `Floater=` (2) and `DetonationAltitude=` (4) are parsed with no reader,
-/// `Acceleration=` (6) is carried but unused by the advance, and the
-/// `AirburstWeapon=`/`ShrapnelWeapon=` child spawn is not wired from here.
+/// `Inaccurate=` (2), `Proximity=` (18), `SubjectToCliffs=` (30) and
+/// `SubjectToElevation=` (31) each disqualify a shot here;
+/// `ProjectileTrajectory` itself has only `Straight` and `Ballistic`, so
+/// vertical launch, scatter, proximity detection and cliff collision have no
+/// implementation to fall back on. `DetonationAltitude=` (4) is parsed with no
+/// reader, `Acceleration=` (6) is carried but unused by the advance, and
+/// `AirburstWeapon=` (1) has no consumer — the `airburst` bool only suppresses
+/// the cluster walk. Two nearby keys are NOT gaps: `Floater=` (2) is read on
+/// both ballistic launch paths to halve gravity and is carried and hashed by
+/// the homing state, and `ShrapnelWeapon=` (5) is fully wired through
+/// `emit_projectile_shrapnel`, scenario-RNG cell selection included.
 /// - Trigger: firing any weapon whose projectile carries one of those keys —
 ///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
 /// - Player effect: those shots fall back to the non-authoritative path, so

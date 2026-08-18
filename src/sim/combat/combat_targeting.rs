@@ -205,9 +205,11 @@ fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId)
 ///   parsed anywhere despite 232 stock entries (141 of them `0`, i.e. "never
 ///   pick me" — engineers, spies and the like), so the input the native score
 ///   weights most heavily does not yet exist in the rules layer. `OmniFire=`
-///   (18 stock), `DistributedWeaponFire=` and `OpportunityFire=` (14) are
-///   parsed but read by nothing, and spread-fire types are explicitly refused a
-///   target by the passive scan, so an Aegis Cruiser never acquires at all.
+///   (18 stock) and `DistributedWeaponFire=` are parsed and read by nothing,
+///   and spread-fire types are explicitly refused a target by the passive scan,
+///   so an Aegis Cruiser never acquires at all. `OpportunityFire=` (14) is the
+///   exception in that list — it is read by `passive_acquire_gate` in
+///   `world/techno_ai.rs` and covered by named tests there.
 ///
 /// `scan_range_override`: when `Some`, replaces the mission-derived radius with
 /// a hard cutoff. Used by garrisoned buildings whose scan range is derived from
