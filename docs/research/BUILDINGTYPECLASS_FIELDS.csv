@@ -1,0 +1,345 @@
+section,key,type,offset,default,source_addr,yr_active,notes,field_class
+$SELF,WaterBound,bool,0x67c,UNINIT,line:80,yes,ctor leaves uninitialized — INI silent => whatever memory had,uninit_config
+$SELF,BuildCat,enum_buildcat,0xe08,,line:51,yes,FUN_00475060 short-string enum reader,config
+$SELF,HalfDamageSmokeLocation1,int[3],0xe0c,,line:63,yes,coord triple,config
+$SELF,HalfDamageSmokeLocation2,int[3],0xe18,,line:70,yes,coord triple,config
+$SELF,GateCloseDelay,double,0xe28,0.0,line:513,yes,double — two DWORDs at 0xE28/0xE2C zeroed (ctor 0045de06/0045de0c),config
+$SELF,LightVisibility,int,0xe30,5000,line:495,yes,ctor 0045de12 sets 0x1388,config
+$SELF,LightIntensity,double,0xe34,0,line:498,yes,ctor 0045de21,config
+$SELF,LightRedTint,double,0xe38,1000000,line:502,yes,ctor 0045de27 (0xF4240),config
+$SELF,LightGreenTint,double,0xe3c,1000000,line:506,yes,ctor 0045de2d,config
+$SELF,LightBlueTint,double,0xe40,1000000,line:510,yes,ctor 0045de33,config
+$IMAGE,PrimaryFirePixelOffset,minmax,0xe44,"{min=0xFFFF, max=0xFFFF}",line:677,yes,minmax sentinel — ctor 0045de40/0045de46,config
+$IMAGE,SecondaryFirePixelOffset,minmax,0xe4c,"{min=0xFFFF, max=0xFFFF}",line:683,yes,minmax sentinel — ctor 0045de4c/0045de52,config
+$IMAGE,ToOverlay,OverlayType*,0xe54,0 (null OverlayType*),line:654,yes,source_fn=OverlayTypeClass__FindOrCreate; ctor 0045de58,config
+$IMAGE,Buildup,char[16],0xe5c,"" (empty string),line:745,yes,ctor 0045e416 null-terms at [0xE5C],config
+$SELF,BuildupSound,VocClass*,0xe6c,-1 (unset VocClass*),line:375,yes,source_fn=VocClass__FindByName; ctor 0045de64,config
+$SELF,PackupSound,VocClass*,0xe70,-1,line:382,yes,source_fn=VocClass__FindByName; ctor 0045de6a,config
+$SELF,CreateUnitSound,VocClass*,0xe74,-1,line:388,yes,source_fn=VocClass__FindByName; ctor 0045de70,config
+$SELF,UnitEnterSound,VocClass*,0xe78,-1,line:402,yes,source_fn=VocClass__FindByName; ctor 0045de76,config
+$SELF,UnitExitSound,VocClass*,0xe7c,-1,line:395,yes,source_fn=VocClass__FindByName; ctor 0045de7c,config
+$SELF,WorkingSound,VocClass*,0xe80,-1,line:409,yes,source_fn=VocClass__FindByName; ctor 0045de82,config
+$SELF,NotWorkingSound,VocClass*,0xe84,-1,line:416,yes,source_fn=VocClass__FindByName; ctor 0045de88,config
+$SELF,PowersUpBuilding,char[16],0xe88,"" (empty),line:523,yes,ctor 0045e41c null-terms char[16],config
+$SELF,FreeUnit,UnitType*,0xea0,0 (null),line:321,yes,source_fn=FUN_007480d0; ctor 0045de8e,config
+$SELF,SecretInfantry,InfantryType*,0xea4,0 (null),line:333,yes,source_fn=FUN_00524cb0; ctor 0045de94,config
+$SELF,SecretUnit,UnitType*,0xea8,0 (null),line:340,yes,source_fn=FUN_007480d0; ctor 0045de9a,config
+$SELF,SecretBuilding,string,0xeac,0 (null string),line:346,yes,ctor 0045dea0 — SecretBuilding is 4-byte string slot,config
+$SELF,Adjacent,int,0xeb4,3,line:82,yes,ctor 0045deac — default Adjacent cells,config
+$SELF,Factory,UnitType*,0xeb8,0 (null),line:318,yes,FUN_00474ff0 DynString reader source_fn=FUN_007480d0; ctor 0045deb6,config
+$SELF,TargetCoordOffset,int[3],0xebc,"{0,0,0}",line:581,yes,coord triple; coord triple — ctor 0045debc/0045dec2/0045dec8,config
+$SELF,ExitCoord,int[3],0xec8,"{0,0,0}",line:590,yes,coord triple; coord triple — ctor 0045dece/0045ded4/0045deda,config
+$SELF,DeployFacing,int,0xedc,128,line:493,yes,ctor 0045deec — default DeployFacing,config
+$SELF,Power,int,0xee0,0,line:614,yes,ctor 0045def6,config
+$SELF,ExtraPower,int,0xee8,0,line:627,yes,ctor 0045df02,config
+$IMAGE,Foundation,enum_category,0xef0,0,line:660,yes,FUN_00474da0 category-string enum (PTR_DAT_0081b9d8 table); ctor 0045df13 (Foundation=0),config
+$IMAGE,Height,int,0xef4,2,line:634,yes,ctor 0045df19 — default Height,config
+$IMAGE,OccupyHeight,int,0xef8,2,line:636,yes,ctor 0045df1f — default OccupyHeight,config
+$IMAGE,MidPoint,int,0xefc,0,line:666,yes,ctor 0045df25,config
+$IMAGE,DoorStages,int,0xf00,0,line:668,yes,ctor 0045df2b — default DoorStages,config
+$IMAGE,AnimIdle,int[3],0xf10,"{0,1,0}",line:783,yes,AnimIdle[3] triple — ctor 0045e374/7a/80,config
+$IMAGE,AnimActive,int[3],0xf1c,"{0,1,0}",line:789,yes,AnimActive[3] triple — ctor 0045e386/8c/92,config
+$IMAGE,AnimAux1,int[3],0xf34,"{0,1,0}",line:795,yes,AnimAux1[3] triple — ctor 0045e398/9e/a4,config
+$IMAGE,AnimAux2,int[3],0xf40,"{0,1,0}",line:801,yes,AnimAux2[3] triple — ctor 0045e3aa/b0/b6,config
+$IMAGE,ActiveAnim,char[16],0x1018,"" (empty),line:805,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimDamaged,char[16],0x1028,"" (empty),line:839,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimGarrisoned,char[16],0x1038,"" (empty),line:908,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimX,int,0x1048,0,line:1006,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimY,int,0x104c,0,line:1008,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimZAdjust,int,0x1050,0,line:1010,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimYSort,int,0x1054,0,line:1013,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimPowered,bool,0x1058,1 (true),line:1016,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,ActiveAnimPoweredLight,bool,0x1059,0 (false),line:1019,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,ActiveAnimPoweredEffect,bool,0x105a,0 (false),line:1022,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,ActiveAnimPoweredSpecial,bool,0x105b,0 (false),line:1025,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,ActiveAnimTwo,char[16],0x105c,"" (empty),line:1030,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoDamaged,char[16],0x106c,"" (empty),line:1064,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoGarrisoned,char[16],0x107c,"" (empty),line:1133,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoX,int,0x108c,0,line:1231,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoY,int,0x1090,0,line:1233,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoZAdjust,int,0x1094,0,line:1235,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoYSort,int,0x1098,0,line:1238,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimTwoPowered,bool,0x109c,1 (true),line:1241,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,ActiveAnimTwoPoweredLight,bool,0x109d,0 (false),line:1244,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,ActiveAnimTwoPoweredEffect,bool,0x109e,0 (false),line:1248,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,ActiveAnimTwoPoweredSpecial,bool,0x109f,0 (false),line:1252,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,ActiveAnimThree,char[16],0x10a0,"" (empty),line:1257,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeDamaged,char[16],0x10b0,"" (empty),line:1291,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeGarrisoned,char[16],0x10c0,"" (empty),line:1360,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeX,int,0x10d0,0,line:1458,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeY,int,0x10d4,0,line:1461,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeZAdjust,int,0x10d8,0,line:1464,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreeYSort,int,0x10dc,0,line:1467,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimThreePowered,bool,0x10e0,1 (true),line:1470,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,ActiveAnimThreePoweredLight,bool,0x10e1,0 (false),line:1473,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,ActiveAnimThreePoweredEffect,bool,0x10e2,0 (false),line:1477,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,ActiveAnimThreePoweredSpecial,bool,0x10e3,0 (false),line:1481,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,ActiveAnimFour,char[16],0x10e4,"" (empty),line:1486,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourDamaged,char[16],0x10f4,"" (empty),line:1520,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourGarrisoned,char[16],0x1104,"" (empty),line:1589,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourX,int,0x1114,0,line:1687,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourY,int,0x1118,0,line:1690,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourZAdjust,int,0x111c,0,line:1693,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourYSort,int,0x1120,0,line:1696,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ActiveAnimFourPowered,bool,0x1124,1 (true),line:1699,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,ActiveAnimFourPoweredLight,bool,0x1125,0 (false),line:1702,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,ActiveAnimFourPoweredEffect,bool,0x1126,0 (false),line:1706,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,ActiveAnimFourPoweredSpecial,bool,0x1127,0 (false),line:1710,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,PreProductionAnim,char[16],0x1128,"" (empty),line:4420,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,PreProductionAnimDamaged,char[16],0x1138,"" (empty),line:4455,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,PreProductionAnimGarrisoned,char[16],0x1148,"" (empty),line:4524,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,PreProductionAnimX,int,0x1158,0,line:4621,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,PreProductionAnimY,int,0x115c,0,line:4624,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,PreProductionAnimZAdjust,int,0x1160,0,line:4627,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,PreProductionAnimYSort,int,0x1164,0,line:4630,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ProductionAnim,char[16],0x116c,"" (empty),line:3984,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ProductionAnimDamaged,char[16],0x117c,"" (empty),line:4018,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ProductionAnimGarrisoned,char[16],0x118c,"" (empty),line:4087,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,ProductionAnimX,int,0x119c,0,line:4185,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ProductionAnimY,int,0x11a0,0,line:4188,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ProductionAnimZAdjust,int,0x11a4,0,line:4191,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,ProductionAnimYSort,int,0x11a8,0,line:4194,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$SELF,TurretAnim,char[16],0x11b0,"" (empty),line:4635,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$SELF,TurretAnimDamaged,char[16],0x11c0,"" (empty),line:4669,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,TurretAnimGarrisoned,char[16],0x11d0,"" (empty),line:4736,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$SELF,TurretAnimX,int,0x11e0,0,line:4804,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$SELF,TurretAnimY,int,0x11e4,0,line:4806,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$SELF,TurretAnimZAdjust,int,0x11e8,0,line:4808,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$SELF,TurretAnimYSort,int,0x11ec,0,line:4811,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnim,char[16],0x11f4,"" (empty),line:2621,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimDamaged,char[16],0x1204,"" (empty),line:2655,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimGarrisoned,char[16],0x1214,"" (empty),line:2724,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimX,int,0x1224,0,line:2822,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimY,int,0x1228,0,line:2824,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimZAdjust,int,0x122c,0,line:2826,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimYSort,int,0x1230,0,line:2829,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimPowered,bool,0x1234,1 (true),line:2832,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SpecialAnimPoweredLight,bool,0x1235,0 (false),line:2835,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SpecialAnimPoweredEffect,bool,0x1236,0 (false),line:2838,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SpecialAnimPoweredSpecial,bool,0x1237,0 (false),line:2842,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SpecialAnimTwo,char[16],0x1238,"" (empty),line:2847,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoDamaged,char[16],0x1248,"" (empty),line:2881,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoGarrisoned,char[16],0x1258,"" (empty),line:2950,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoX,int,0x1268,0,line:3048,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoY,int,0x126c,0,line:3051,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoZAdjust,int,0x1270,0,line:3054,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoYSort,int,0x1274,0,line:3057,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimTwoPowered,bool,0x1278,1 (true),line:3060,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SpecialAnimTwoPoweredLight,bool,0x1279,0 (false),line:3063,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SpecialAnimTwoPoweredEffect,bool,0x127a,0 (false),line:3067,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SpecialAnimTwoPoweredSpecial,bool,0x127b,0 (false),line:3071,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SpecialAnimThree,char[16],0x127c,"" (empty),line:3076,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeDamaged,char[16],0x128c,"" (empty),line:3111,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeGarrisoned,char[16],0x129c,"" (empty),line:3180,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeX,int,0x12ac,0,line:3278,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeY,int,0x12b0,0,line:3281,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeZAdjust,int,0x12b4,0,line:3284,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreeYSort,int,0x12b8,0,line:3287,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimThreePowered,bool,0x12bc,1 (true),line:3290,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SpecialAnimThreePoweredLight,bool,0x12bd,0 (false),line:3293,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SpecialAnimThreePoweredEffect,bool,0x12be,0 (false),line:3297,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SpecialAnimThreePoweredSpecial,bool,0x12bf,0 (false),line:3301,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SpecialAnimFour,char[16],0x12c0,"" (empty),line:3306,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourDamaged,char[16],0x12d0,"" (empty),line:3340,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourGarrisoned,char[16],0x12e0,"" (empty),line:3409,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourX,int,0x12f0,0,line:3507,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourY,int,0x12f4,0,line:3510,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourZAdjust,int,0x12f8,0,line:3513,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourYSort,int,0x12fc,0,line:3516,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SpecialAnimFourPowered,bool,0x1300,1 (true),line:3519,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SpecialAnimFourPoweredLight,bool,0x1301,0 (false),line:3522,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SpecialAnimFourPoweredEffect,bool,0x1302,0 (false),line:3526,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SpecialAnimFourPoweredSpecial,bool,0x1303,0 (false),line:3530,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SuperAnim,char[16],0x1304,"" (empty),line:1715,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimDamaged,char[16],0x1314,"" (empty),line:1749,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimGarrisoned,char[16],0x1324,"" (empty),line:1818,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimX,int,0x1334,0,line:1916,yes,load=0x1114 store=0x1334 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimY,int,0x1338,0,line:1918,yes,load=0x1118 store=0x1338 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimZAdjust,int,0x133c,0,line:1920,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimYSort,int,0x1340,0,line:1923,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimPowered,bool,0x1344,1 (true),line:1925,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SuperAnimPoweredLight,bool,0x1345,0 (false),line:1928,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperAnimPoweredEffect,bool,0x1346,0 (false),line:1931,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SuperAnimPoweredSpecial,bool,0x1347,0 (false),line:1934,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SuperAnimTwo,char[16],0x1348,"" (empty),line:1938,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoDamaged,char[16],0x1358,"" (empty),line:1972,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoGarrisoned,char[16],0x1368,"" (empty),line:2041,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoX,int,0x1378,0,line:2139,yes,load=0x108c store=0x1378 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoY,int,0x137c,0,line:2141,yes,load=0x1090 store=0x137c (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoZAdjust,int,0x1380,0,line:2143,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoYSort,int,0x1384,0,line:2146,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimTwoPowered,bool,0x1389,0 (false),line:2149,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperAnimTwoPoweredLight,bool,0x1389,0 (false),line:2152,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperAnimTwoPoweredEffect,bool,0x138a,0 (false),line:2156,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SuperAnimTwoPoweredSpecial,bool,0x138b,0 (false),line:2160,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SuperAnimThree,char[16],0x138c,"" (empty),line:2165,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeDamaged,char[16],0x139c,"" (empty),line:2199,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeGarrisoned,char[16],0x13ac,"" (empty),line:2268,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeX,int,0x13bc,0,line:2366,yes,load=0x10d0 store=0x13bc (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeY,int,0x13c0,0,line:2369,yes,load=0x10d4 store=0x13c0 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeZAdjust,int,0x13c4,0,line:2372,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimThreeYSort,int,0x13c8,0,line:2375,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimThreePowered,bool,0x13cc,1 (true),line:2378,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SuperAnimThreePoweredLight,bool,0x13cd,0 (false),line:2381,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperAnimThreePoweredEffect,bool,0x13ce,0 (false),line:2385,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SuperAnimThreePoweredSpecial,bool,0x13cf,0 (false),line:2389,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SuperAnimFour,char[16],0x13d0,"" (empty),line:2394,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimFourDamaged,char[16],0x13e0,"" (empty),line:2428,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimFourGarrisoned,char[16],0x13f0,"" (empty),line:2497,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperAnimFourX,int,0x1400,0,line:2595,yes,load=0x10d0 store=0x1400 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimFourY,int,0x1404,0,line:2597,yes,load=0x10d4 store=0x1404 (binary reads default from wrong offset); PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimFourZAdjust,int,0x1408,0,line:2599,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimFourYSort,int,0x140c,0,line:2602,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperAnimFourPowered,bool,0x1410,1 (true),line:2605,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SuperAnimFourPoweredLight,bool,0x1411,0 (false),line:2608,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperAnimFourPoweredEffect,bool,0x1412,0 (false),line:2612,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SuperAnimFourPoweredSpecial,bool,0x1413,0 (false),line:2616,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,IdleAnim,char[16],0x1414,"" (empty),line:4198,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,IdleAnimDamaged,char[16],0x1424,"" (empty),line:4232,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,IdleAnimGarrisoned,char[16],0x1434,"" (empty),line:4300,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,IdleAnimX,int,0x1444,0,line:4398,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,IdleAnimY,int,0x1448,0,line:4400,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,IdleAnimZAdjust,int,0x144c,0,line:4402,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,IdleAnimYSort,int,0x1450,0,line:4405,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,IdleAnimPowered,bool,0x1454,1 (true),line:4407,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,IdleAnimPoweredLight,bool,0x1455,0 (false),line:4410,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,IdleAnimPoweredEffect,bool,0x1456,0 (false),line:4413,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,IdleAnimPoweredSpecial,bool,0x1457,0 (false),line:4416,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,LowPower,char[16],0x1458,"" (empty),line:3535,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,LowPowerDamaged,char[16],0x1468,"" (empty),line:3569,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,LowPowerGarrisoned,char[16],0x1478,"" (empty),line:3637,yes,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,LowPowerX,int,0x1488,0,line:3735,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,LowPowerY,int,0x148c,0,line:3737,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,LowPowerZAdjust,int,0x1490,0,line:3739,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,LowPowerYSort,int,0x1494,0,line:3742,yes,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,LowPowerPowered,bool,0x1498,1 (true),line:3744,yes,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,LowPowerPoweredLight,bool,0x1499,0 (false),line:3747,yes,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,LowPowerPoweredEffect,bool,0x149a,0 (false),line:3750,yes,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,LowPowerPoweredSpecial,bool,0x149b,0 (false),line:3753,yes,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$IMAGE,SuperLowPower,char[16],0x149c,"" (empty),line:3757,no,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperLowPowerDamaged,char[16],0x14ac,"" (empty),line:3791,no,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperLowPowerGarrisoned,char[16],0x14bc,"" (empty),line:3860,no,PowerUp loop entry — name fields memset to 0 by loop at 0045e3be,config
+$IMAGE,SuperLowPowerX,int,0x14cc,0,line:3958,no,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperLowPowerY,int,0x14d0,0,line:3960,no,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperLowPowerZAdjust,int,0x14d4,0,line:3962,no,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperLowPowerYSort,int,0x14d8,0,line:3965,no,PowerUp loop entry int field — zeroed by loop at 0045e3be,config
+$IMAGE,SuperLowPowerPowered,bool,0x14dc,1 (true),line:3968,no,PowerUp loop entry Powered flag — default true via [base+0x40]=1,config
+$IMAGE,SuperLowPowerPoweredLight,bool,0x14dd,0 (false),line:3971,no,PowerUp loop entry bool @ entry+0x41 — zeroed,config
+$IMAGE,SuperLowPowerPoweredEffect,bool,0x14de,0 (false),line:3975,no,PowerUp loop entry bool @ entry+0x42 — zeroed,config
+$IMAGE,SuperLowPowerPoweredSpecial,bool,0x14df,0 (false),line:3979,no,PowerUp loop entry bool @ entry+0x43 — zeroed,config
+$SELF,Upgrades,int,0x14e0,0,line:4848,yes,ctor 0045df31 — Upgrades default,config
+$IMAGE,SpecialZOverlayZAdjust,int,0x1514,0,line:695,yes,ctor 0045df61,config
+$IMAGE,NormalZAdjust,int,0x1520,0,line:698,yes,ctor 0045df73 — NormalZAdjust int=0,config
+$SELF,AntiAirValue,int,0x1524,0,line:58,yes,ctor 0045df79 — AntiAirValue,config
+$SELF,AntiArmorValue,int,0x1528,0,line:56,yes,ctor 0045df7f — AntiArmorValue,config
+$SELF,AntiInfantryValue,int,0x152c,0,line:53,yes,ctor 0045df87 — AntiInfantryValue,config
+$IMAGE,ZShapePointMove,minmax,0x1530,"{min=0, max=0}",line:701,yes,minmax — ctor 0045df8d zeros 0x1530 (min); 0045df93 zeros 0x1534 (max),config
+$IMAGE,ExtraLight,short,0x1548,0,line:705,yes,ctor 0045dfcc WORD — ExtraLight short,config
+$SELF,TogglePower,bool,0x154a,1 (true),line:372,yes,ctor 0045dfd3 — default TogglePower=true,config
+$SELF,HasSpotlight,bool,0x154b,0 (false),line:60,conditional,ctor 0045dfda — HasSpotlight,config
+$SELF,IsTemple,bool,0x154c,0,line:328,yes,ctor 0045dfe0 — IsTemple,config
+$SELF,IsPlug,bool,0x154d,0,line:330,yes,ctor 0045dfec — IsPlug,config
+$SELF,HoverPad,bool,0x154e,0,line:326,yes,ctor 0045dfc3 — HoverPad,config
+$SELF,BaseNormal,bool,0x154f,1 (true),line:134,no,ctor 0045dff2 — default BaseNormal=true,config
+$SELF,EligibileForAllyBuilding,bool,0x1550,0,line:136,yes,ctor 0045dff9 — EligibileForAllyBuilding,config
+$SELF,EligibleForDelayKill,bool,0x1551,0,line:139,yes,ctor 0045dfff — EligibleForDelayKill,config
+$SELF,NeedsEngineer,bool,0x1552,0,line:142,yes,ctor 0045e005 — NeedsEngineer,config
+$SELF,CaptureEvaEvent,enum_owner,0x1554,-1,line:144,yes,FUN_00474fa0 owner/ADR-string enum; ctor 0045e00b — CaptureEvaEvent=unset,config
+$SELF,ProduceCashStartup,int,0x1558,0,line:117,yes,ctor 0045e011 — ProduceCashStartup,config
+$SELF,ProduceCashAmount,int,0x155c,0,line:120,yes,ctor 0045e017 — ProduceCashAmount,config
+$SELF,ProduceCashDelay,int,0x1560,0,line:123,yes,ctor 0045e01d — ProduceCashDelay,config
+$SELF,InfantryGainSelfHeal,int,0x1564,0,line:125,yes,ctor 0045e023 — InfantryGainSelfHeal,config
+$SELF,UnitsGainSelfHeal,int,0x1568,0,line:128,yes,ctor 0045e029 — UnitsGainSelfHeal,config
+$SELF,RefinerySmokeFrames,int,0x156c,25,line:131,yes,ctor 0045e02f (0x19) — default RefinerySmokeFrames,config
+$SELF,Capturable,bool,0x1572,0,line:84,yes,ctor 0045e045 — Capturable=false,config
+$SELF,Powered,bool,0x1573,0,line:86,yes,ctor 0045e04b — Powered=false,config
+$SELF,PoweredSpecial,bool,0x1574,0,line:88,yes,ctor 0045e051 — PoweredSpecial,config
+$SELF,Overpowerable,bool,0x1575,0,line:90,yes,ctor 0045e057 — Overpowerable,config
+$SELF,Spyable,bool,0x1576,0,line:92,yes,ctor 0045e05d — Spyable,config
+$SELF,CanC4,bool,0x1577,1 (true),line:94,yes,ctor 0045e063 — default CanC4=true,config
+$SELF,WantsExtraSpace,bool,0x1578,0,line:96,yes,ctor 0045e06a — WantsExtraSpace,config
+$SELF,Unsellable,bool,0x1579,0,line:100,yes,ctor 0045e070 — Unsellable,config
+$SELF,ClickRepairable,bool,0x157a,1 (true),line:102,yes,ctor 0045e076 — default ClickRepairable=true,config
+$SELF,CanBeOccupied,bool,0x157b,0,line:104,yes,ctor 0045e07d — CanBeOccupied,config
+$SELF,CanOccupyFire,bool,0x157c,0,line:106,yes,ctor 0045e083 — CanOccupyFire,config
+$SELF,MaxNumberOccupants,int,0x1580,0,line:111,yes,ctor 0045e089 — MaxNumberOccupants,config
+$SELF,ShowOccupantPips,bool,0x1584,1 (true),line:108,yes,ctor 0045e08f — default ShowOccupantPips=true,config
+$IMAGE,QueueingCell,minmax,0x1618,"{min=UNINIT, max=0}",line:739,yes,ctor 0045e096 zeros only 0x161C (max); 0x1618 (min) UNINIT — WARN,partial_config
+$SELF,NumberImpassableRows,int,0x1620,-1,line:114,yes,ctor 0045e09c — NumberImpassableRows=-1 sentinel,config
+$SELF,Radar,bool,0x16a4,0,line:76,yes,ctor 0045e0a2 — Radar=false,config
+$SELF,SpySat,bool,0x16a5,0,line:78,yes,ctor 0045e0a8 — SpySat=false,config
+$IMAGE,ChargeAnim,bool,0x16a6,0,line:646,yes,ctor 0045e0ae — ChargeAnim=false,config
+$IMAGE,IsAnimDelayedFire,bool,0x16a7,0,line:648,yes,ctor 0045e0b4 — IsAnimDelayedFire=false,config
+$IMAGE,SiloDamage,bool,0x16a8,0,line:644,yes,ctor 0045e0ba — SiloDamage=false,config
+$SELF,UnitRepair,bool,0x16a9,0,line:422,yes,ctor 0045e0c0 — UnitRepair=false,config
+$SELF,UnitReload,bool,0x16aa,0,line:424,yes,ctor 0045e0c6 — UnitReload=false,config
+$SELF,Bunker,bool,0x16ab,0,line:426,yes,ctor 0045e0cc — Bunker=false,config
+$SELF,Cloning,bool,0x16ac,0,line:428,yes,ctor 0045e0d2 — Cloning=false,config
+$SELF,Grinding,bool,0x16ad,0,line:430,yes,ctor 0045e0d8 — Grinding=false,config
+$SELF,UnitAbsorb,bool,0x16ae,0,line:432,yes,ctor 0045e0de — UnitAbsorb=false,config
+$SELF,InfantryAbsorb,bool,0x16af,0,line:434,yes,ctor 0045e0e4 — InfantryAbsorb=false,config
+$SELF,SecretLab,bool,0x16b0,0,line:436,yes,ctor 0045e0ea — SecretLab=false,config
+$IMAGE,DoubleThick,bool,0x16b1,0,line:640,yes,ctor 0045e0f0 — DoubleThick=false,config
+$SELF,DockUnload,bool,0x16b3,0,line:438,yes,ctor 0045e0fc — DockUnload=false,config
+$IMAGE,Recoilless,bool,0x16b4,0,line:638,yes,ctor 0045e102 — Recoilless=false,config
+$SELF,HasStupidGuardMode,bool,0x16b5,1 (true),line:561,yes,ctor 0045e108 — default HasStupidGuardMode=true,config
+$SELF,BridgeRepairHut,bool,0x16b6,0,line:559,no,ctor 0045e10f — BridgeRepairHut=false (TS-only),config
+$SELF,ConstructionYard,bool,0x16b9,0,line:444,yes,ctor 0045e121 — ConstructionYard=false,config
+$SELF,NukeSilo,bool,0x16ba,0,line:447,yes,ctor 0045e127 — NukeSilo=false,config
+$SELF,Refinery,bool,0x16bb,0,line:449,yes,ctor 0045e12d — Refinery=false,config
+$SELF,Weeder,bool,0x16bc,0,line:310,yes,ctor 0045e133 — Weeder=false,config
+$SELF,WeaponsFactory,bool,0x16bd,0,line:451,yes,ctor 0045e139 — WeaponsFactory=false,config
+$SELF,LaserFencePost,bool,0x16be,0,line:453,no,ctor 0045e13f — LaserFencePost=false (TS),config
+$SELF,LaserFence,bool,0x16bf,0,line:455,no,ctor 0045e145 — LaserFence=false (TS),config
+$SELF,FirestormWall,bool,0x16c0,0,line:457,no,ctor 0045e14b — FirestormWall=false (TS),config
+$SELF,Hospital,bool,0x16c1,0,line:459,yes,ctor 0045e151 — Hospital=false,config
+$SELF,Armory,bool,0x16c2,0,line:461,yes,ctor 0045e157 — Armory=false,config
+$SELF,EMPulseCannon,bool,0x16c3,0,line:469,no,ctor 0045e15d — EMPulseCannon=false (TS),config
+$SELF,TickTank,bool,0x16c4,0,line:471,no,ctor 0045e163 — TickTank=false (TS),config
+$SELF,TurretAnimIsVoxel,bool,0x16c5,0,line:4813,yes,ctor 0045e169 — TurretAnimIsVoxel=false,config
+$SELF,BarrelAnimIsVoxel,bool,0x16c6,0,line:4816,yes,ctor 0045e16f — BarrelAnimIsVoxel=false,config
+$SELF,CloakGenerator,bool,0x16c7,0,line:481,no,ctor 0045e175 — CloakGenerator=false (TS),config
+$SELF,SensorArray,bool,0x16c8,0,line:483,yes,ctor 0045e17b — SensorArray=false,config
+$SELF,ICBMLauncher,bool,0x16c9,0,line:573,no,ctor 0045e181 — ICBMLauncher=false (TS),config
+$SELF,Artillary,bool,0x16ca,0,line:575,no,ctor 0045e187 — Artillary=false (TS),config
+$SELF,Helipad,bool,0x16cb,0,line:312,yes,ctor 0045e18d — Helipad=false,config
+$SELF,OrePurifier,bool,0x16cc,0,line:314,yes,ctor 0045e193 — OrePurifier=false,config
+$SELF,FactoryPlant,bool,0x16cd,0,line:316,yes,ctor 0045e19e — FactoryPlant=false,config
+$SELF,InfantryCostBonus,float,0x16d0,1.0f,line:352,yes,ctor 0045e1a4 (0x3F800000) — InfantryCostBonus,config
+$SELF,UnitsCostBonus,float,0x16d4,1.0f,line:356,yes,ctor 0045e1aa — UnitsCostBonus,config
+$SELF,AircraftCostBonus,float,0x16d8,1.0f,line:360,yes,ctor 0045e1b0 — AircraftCostBonus,config
+$SELF,BuildingsCostBonus,float,0x16dc,1.0f,line:364,yes,ctor 0045e1b6 — BuildingsCostBonus,config
+$SELF,DefensesCostBonus,float,0x16e0,1.0f,line:368,yes,ctor 0045e1bc — DefensesCostBonus,config
+$SELF,GDIBarracks,bool,0x16e4,0,line:463,no,ctor 0045e1c2 — GDIBarracks=false (TS),config
+$SELF,NODBarracks,bool,0x16e5,0,line:465,no,ctor 0045e1c8 — NODBarracks=false (TS),config
+$SELF,YuriBarracks,bool,0x16e6,0,line:467,yes,ctor 0045e1ce — YuriBarracks=false,config
+$SELF,ChargedAnimTime,float,0x16e8,999.0f,line:473,yes,ctor 0045e1d4 (0x4479C000) — ChargedAnimTime,config
+$IMAGE,DelayedFireDelay,int,0x16ec,0,line:651,yes,ctor 0045e1de — DelayedFireDelay,config
+$SELF,SuperWeapon,enum_indexed,0x16f0,-1,line:477,yes,FUN_00474f50 indexed-table enum reader; ctor 0045e1e4 — SuperWeapon index=-1,config
+$SELF,SuperWeapon2,enum_indexed,0x16f4,-1,line:479,yes,FUN_00474f50 indexed-table enum reader; ctor 0045e1ea — SuperWeapon2 index=-1,config
+$IMAGE,GateStages,int,0x16f8,9,line:674,yes,ctor 0045e1f0 — default GateStages,config
+$SELF,PowersUpToLevel,int,0x16fc,-1,line:557,yes,ctor 0045e1fa — PowersUpToLevel=-1 sentinel,config
+$IMAGE,DamagedDoor,bool,0x1700,0,line:670,yes,ctor 0045e200 — DamagedDoor=false,config
+$SELF,InvisibleInGame,bool,0x1701,0,line:517,yes,ctor 0045e206 — InvisibleInGame=false,config
+$IMAGE,TerrainPalette,bool,0x1702,0,line:672,yes,ctor 0045e20c — TerrainPalette=false,config
+$SELF,PlaceAnywhere,bool,0x1703,0,line:571,yes,ctor 0045e212 — PlaceAnywhere=false,config
+$IMAGE,ExtraDamageStage,bool,0x1704,1 (true),line:692,yes,ctor 0045e218 — default ExtraDamageStage=true,config
+$SELF,AIBuildThis,bool,0x1705,0,line:597,yes,ctor 0045e21f — AIBuildThis=false,config
+$SELF,IsBaseDefense,bool,0x1706,0,line:601,yes,ctor 0045e225 — IsBaseDefense=false,config
+$SELF,CloakRadiusInCells,byte,0x1707,20,line:485,conditional,ctor 0045e22b (0x14) — default CloakRadiusInCells,config
+$SELF,ConcentricRadialIndicator,bool,0x1708,0,line:606,conditional,ctor 0045e232 — ConcentricRadialIndicator=false,config
+$SELF,PsychicDetectionRadius,int,0x170c,0,line:488,conditional,ctor 0045e238 — PsychicDetectionRadius,config
+$SELF,BarrelStartPitch,int,0x1710,64,line:491,yes,ctor 0045e23e (0x40) — default BarrelStartPitch,config
+$SELF,VoxelBarrelFile,char[],0x1714,"" (empty),line:4819,yes,ctor 0045e428 null-terms VoxelBarrelFile first byte,config
+$SELF,VoxelBarrelOffsetToPitchPivotPoint,int[3],0x1730,UNINIT,line:4821,yes,coord triple; ctor leaves uninitialized,uninit_config
+$SELF,VoxelBarrelOffsetToRotatePivotPoint,int[3],0x173c,UNINIT,line:4828,yes,coord triple; ctor leaves uninitialized,uninit_config
+$SELF,VoxelBarrelOffsetToBuildingPivotPoint,int[3],0x1748,UNINIT,line:4835,yes,coord triple; ctor leaves uninitialized,uninit_config
+$SELF,VoxelBarrelOffsetToBarrelEnd,int[3],0x1754,UNINIT,line:4842,yes,coord triple; ctor leaves uninitialized,uninit_config
+$SELF,IsThreatRatingNode,bool,0x1763,0,line:603,yes,ctor 0045e25a — IsThreatRatingNode=false,config
+$IMAGE,PrimaryFireDualOffset,bool,0x1764,0,line:688,yes,ctor 0045e260 — PrimaryFireDualOffset,config
+$SELF,ProtectWithWall,bool,0x1765,0,line:146,yes,ctor 0045e266 — ProtectWithWall=false,config
+$SELF,CanHideThings,bool,0x1766,1 (true),line:707,yes,ctor 0045e26c — default CanHideThings=true,config
+$SELF,CrateBeneath,bool,0x1767,0,line:564,yes,ctor 0045e273 — CrateBeneath=false,config
+$SELF,LeaveRubble,bool,0x1768,0,line:569,yes,ctor 0045e279 — LeaveRubble=false,config
+$SELF,CrateBeneathIsMoney,bool,0x1769,0,line:566,yes,ctor 0045e284 — CrateBeneathIsMoney=false,config
+$SELF,NumberOfDocks,int,0x1780,1,line:4942,yes,ctor 0045e28a — default NumberOfDocks=1,config

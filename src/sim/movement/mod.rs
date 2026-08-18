@@ -90,11 +90,11 @@ pub use facing_class::FacingClass;
 // The drive-locomotor "Process" presence marker, consumed read-only by the
 // per-object AI shell (sim/world/techno_ai.rs, Slice S1) to observe that the
 // locomotor would process AFTER mission dispatch. Behavior-neutral re-export.
-// Gated to match its only consumer (the debug/test S1 shadow) so release builds
-// carry no unused re-export.
 #[cfg(test)]
 pub(crate) use drive_locomotion::owner_current_speed_from_fraction;
-#[cfg(any(test, debug_assertions))]
+// NOT test-gated: `techno_common_pre`'s DisguiseWhenStill check
+// (sim/world/techno_ai.rs) consumes this in every build; a 2026-08-14
+// warning-cleanup gate on it broke release-only compilation.
 pub(crate) use drive_locomotion::drive_locomotor_is_moving;
 #[cfg(test)]
 pub(crate) use drive_locomotion::{DriveProcessOutcome, process_drive_locomotion_shell};

@@ -121,8 +121,8 @@ re-checking, write idempotently and skip the header.
 Prepend this to the governing prompt, filled in concretely:
 
 > **Continuation.** This goal is mid-flight. The approved design/ledger is at
-> `<main-checkout>/<doc path>` (docs/ is gitignored — resolve the main
-> checkout via `git worktree list`; the doc is absent from worktrees). Do not
+> `<doc path>` (tracked under `docs/plans/`, so it is present in every
+> worktree and clone). Do not
 > re-trace or re-derive — adopt it. Completed on `<branch>`: <item → SHA
 > list>. Verify no other session or tool owns the checkout/branch before
 > touching it (<how to check>; if owned, stop and report). First actions:

@@ -12,12 +12,12 @@ use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
     OverlayTypeRegistry, is_bridge_overlay_index, is_high_bridge_index,
 };
-use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::map::waypoints;
 use crate::render::batch::BatchRenderer;
 use crate::render::bridge_atlas::{self, BridgeAtlas};
 use crate::render::bridge_railing_atlas::{self, BridgeRailingAtlas, BridgeRailingTileBases};
 use crate::render::gpu::GpuContext;
+use crate::render::overlay_assets::resolve_overlay_name_for_render;
 use crate::render::overlay_atlas::{self, OverlayAtlas};
 use crate::rules::art_data::ArtRegistry;
 use crate::rules::color_scheme::scheme_entry_for_priority;
@@ -146,7 +146,6 @@ pub(crate) fn house_color_map_for_launch_session(
     colors
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +155,7 @@ mod tests {
     use crate::map::waypoints::Waypoint;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
     use crate::sim::house_state::{HouseDifficulty, HouseState};
     use crate::sim::mission::MissionType;
     use crate::sim::rng::SimRng;
@@ -427,6 +427,67 @@ mod tests {
         }
     }
 
+    fn nearoref_starts() -> [Waypoint; 8] {
+        [
+            Waypoint {
+                index: 0,
+                rx: 38,
+                ry: 63,
+            },
+            Waypoint {
+                index: 1,
+                rx: 53,
+                ry: 48,
+            },
+            Waypoint {
+                index: 2,
+                rx: 71,
+                ry: 32,
+            },
+            Waypoint {
+                index: 3,
+                rx: 99,
+                ry: 32,
+            },
+            Waypoint {
+                index: 4,
+                rx: 39,
+                ry: 106,
+            },
+            Waypoint {
+                index: 5,
+                rx: 68,
+                ry: 107,
+            },
+            Waypoint {
+                index: 6,
+                rx: 85,
+                ry: 90,
+            },
+            Waypoint {
+                index: 7,
+                rx: 100,
+                ry: 75,
+            },
+        ]
+    }
+
+    fn configure_nearoref_geometry(sim: &mut Simulation, map: &mut MapFile) {
+        map.header.width = 80;
+        map.header.height = 58;
+        map.header.local_left = 2;
+        map.header.local_top = 4;
+        map.header.local_width = 76;
+        map.header.local_height = 48;
+        sim.playfield_bounds = Some(PlayfieldBounds::from_map_header(&map.header));
+        sim.session.map_width = 138;
+        sim.session.map_height = 138;
+        sim.session.local_left = 2;
+        sim.session.local_top = 4;
+        sim.session.local_width = 76;
+        sim.session.local_height = 48;
+    }
+
     fn test_launch_starts() -> [Waypoint; 4] {
         [
             Waypoint {
@@ -589,6 +650,10 @@ mod tests {
         assert!(slots[0].is_human);
     }
 
+    /// gamemd-derived: active YR `ScenarioClass__Gather_Start_Positions
+    /// @ 0x00688380`, seed block `0x00688528..0x0068857C`, draws Y before X
+    /// from the full cell-array bounds. Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_GATHER_START_POSITIONS_DEFICIENT_WAYPOINT_FALLBACK_00688380_GHIDRA_REPORT.md`.
     #[test]
     fn native_gather_generates_deficient_start_with_two_ranged_draws() {
         let authored = Waypoint {
@@ -610,12 +675,18 @@ mod tests {
         let _ = expected.next_range_u32_inclusive(10, 54);
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
 
-        let starts =
-            native_gather_start_positions(&waypoints, 2, &terrain, &occupancy, bounds, &mut rng);
+        let starts = native_gather_start_positions(
+            &waypoints, 2, &terrain, &occupancy, bounds, None, &mut rng,
+        );
 
         assert_eq!(starts.len(), 2);
         assert_eq!(starts[0], authored);
         assert_eq!(starts[1].index, 1);
+        assert_eq!(
+            (starts[1].rx, starts[1].ry),
+            (54, 21),
+            "first native ranged draw is Y, second is X"
+        );
         assert!(deficient_start_rect_track_passable(
             &terrain,
             &occupancy,
@@ -663,6 +734,87 @@ mod tests {
         ));
     }
 
+    /// gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
+    /// @ 0x0056DC20` gates the candidate anchor through
+    /// `MapClass__Is_Cell_In_Playfield_CellClass @ 0x00578540` before the 8x8
+    /// scan. Research:
+    /// `docs/research/skirmish-ui/FOOTCLASS_FIND_NEARBY_PASSABLE_CELL_0056DC20_START_FALLBACK_GHIDRA_REPORT.md`.
+    #[test]
+    fn deficient_start_skips_passable_anchor_outside_diamond() {
+        let terrain = test_terrain(32, 32);
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 32,
+            height: 32,
+        };
+        let diamond = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        assert!(deficient_start_rect_track_passable(
+            &terrain, &occupancy, 6, 6
+        ));
+        assert!(!cell_is_in_playfield(
+            (6, 6),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 6),
+            Some((6, 7))
+        );
+    }
+
+    /// gamemd-derived: `CellRect__CheckPassability @ 0x0056E7C0` scans the 8x8
+    /// footprint after `0x00578540` gates only its anchor; retail does not
+    /// diamond-test the other 63 cells. Research:
+    /// `docs/research/skirmish-ui/FOOTCLASS_FIND_NEARBY_PASSABLE_CELL_0056DC20_START_FALLBACK_GHIDRA_REPORT.md`.
+    #[test]
+    fn deficient_start_gates_anchor_not_full_8x8_footprint() {
+        let terrain = test_terrain(32, 32);
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 32,
+            height: 32,
+        };
+        let diamond = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        assert!(cell_is_in_playfield(
+            (6, 7),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+        assert!(!cell_is_in_playfield(
+            (13, 14),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 7),
+            Some((6, 7))
+        );
+    }
+
+    /// gamemd-derived: standard Battle dispatches start gathering through its
+    /// `+0x80 @ 0x005D6BE0` and `+0x84 @ 0x005D6C70` phases, both reaching
+    /// `ScenarioClass__Gather_Start_Positions @ 0x00688380`.
     #[test]
     fn gsi_04_16_standard_battle_gathers_deficient_starts_twice() {
         let authored = Waypoint {
@@ -696,6 +848,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
+            None,
             &mut expected_rng,
         );
         let final_starts = native_gather_start_positions(
@@ -704,6 +857,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
+            None,
             &mut expected_rng,
         );
         assert_ne!(provisional[1], final_starts[1]);
@@ -745,7 +899,12 @@ mod tests {
         let mut sim = Simulation::new();
         let rules = test_standard_launch_rules();
 
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &HouseRoster::default(),
+            &rules,
+            &launch_descriptor(&session),
+        );
 
         let order: Vec<_> = sim
             .session
@@ -786,7 +945,12 @@ mod tests {
 
         let session = test_session();
         let mut sim = Simulation::new();
-        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch_descriptor(&session));
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &HouseRoster::default(),
+            &rules,
+            &launch_descriptor(&session),
+        );
         assert!(sim.entities().is_empty());
 
         let spawned = sim.spawn_from_map(
@@ -857,12 +1021,8 @@ mod tests {
         apply_skirmish_ai_opening_credits(&mut sim);
 
         let credits = |owner: &str| {
-            crate::sim::house_state::house_state_for_owner(
-                &sim.houses,
-                owner,
-                &sim.interner,
-            )
-            .map(|house| house.credits)
+            crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner)
+                .map(|house| house.credits)
         };
         assert_eq!(credits("Player"), Some(10_000));
         assert_eq!(credits("Computer1"), Some(20_000));
@@ -1133,8 +1293,9 @@ mod tests {
         let map = test_map_with_starts(&starts);
         let terrain = test_terrain(64, 64);
         let rules = test_standard_launch_rules();
-        let plan = preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
-            .expect("complete standard Battle starts preload");
+        let plan =
+            preload_standard_battle_start_plan(&launch_descriptor(&session), &map, launch_seed)
+                .expect("complete standard Battle starts preload");
 
         let loading_assignments =
             crate::app::loading::pump::selected_map_start_assignments(&session, Some(&plan));
@@ -1425,7 +1586,11 @@ mod tests {
         };
 
         assert_eq!(
-            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(None, &roster, "MapPlayer",),
+            crate::app::presentation::sidebar_render::sidebar_theme_for_owner_sources(
+                None,
+                &roster,
+                "MapPlayer",
+            ),
             Some(SidebarTheme::Soviet),
             "an absent live owner must preserve the existing roster resolver"
         );
@@ -1710,6 +1875,85 @@ mod tests {
         );
     }
 
+    /// gamemd-derived: active YR
+    /// `MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030` falls
+    /// through to `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0`; probes
+    /// clamp through the `0x00565C10` full cell-array rect and then use the
+    /// `0x00578460` diamond. Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`.
+    #[test]
+    fn nearoref_blocked_start_fallback_uses_full_cell_array_clamp() {
+        let mut sim = Simulation::with_seed(0);
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        session.opponents.clear();
+        session.options.bases = true;
+        session.options.unit_count = 0;
+        let starts = [Waypoint {
+            index: 0,
+            rx: 100,
+            ry: 75,
+        }];
+        let mut map = test_map_with_starts(&starts);
+        configure_nearoref_geometry(&mut sim, &mut map);
+        let terrain = test_terrain(138, 138);
+        let rules = test_standard_launch_rules();
+        let descriptor = launch_descriptor(&session);
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &descriptor,
+        );
+        sim.spawn_object(
+            "AMCV",
+            "Neutral",
+            100,
+            75,
+            STARTING_MCV_FACING,
+            &rules,
+            &test_height_map(),
+        )
+        .expect("authored start blocker");
+        let mut expected_rng = sim.scenario_rng.clone();
+        assert_eq!(
+            expected_rng.next_range_u32_inclusive(0, 7),
+            3,
+            "seed zero chooses the southeast radius-one spoke"
+        );
+        let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &descriptor,
+        );
+
+        assert_eq!(result.active_slots, 1);
+        assert_eq!(result.spawned_mcvs, 1);
+        assert_eq!(sim.entities().len(), 2);
+        assert_eq!(entity_position_for_owner(&sim, "Neutral"), Some((100, 75)));
+        assert_eq!(
+            entity_position_for_owner(&sim, "Player"),
+            Some((101, 76)),
+            "the valid spoke stays outside the old LocalSize box instead of clamping to (77,51)"
+        );
+        assert_eq!(
+            crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
+                .and_then(|house| house.base_center),
+            Some((100, 75)),
+            "fallback placement must not rewrite the assigned base center"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
     #[test]
     fn skirmish_start_unit_budget_is_global_but_house_pools_filter_tech_and_mask() {
         let rules = test_starting_unit_rules();
@@ -1865,6 +2109,92 @@ mod tests {
             .count();
         assert_eq!(player_units, 5);
         assert_eq!(ai_units, 4);
+    }
+
+    /// gamemd-derived: active YR
+    /// `MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030` and
+    /// `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0` use the independent
+    /// full-array clamp (`0x00565C10`) and playfield diamond (`0x00578460`).
+    /// NearOreF.MAP geometry is `Size=0,0,80,58`, `LocalSize=2,4,76,48`.
+    /// GameMD unlimbos all eight starting MCVs exactly on their authored
+    /// waypoints. The former Cartesian LocalSize test accepted only indices 1
+    /// and 2, displaced the other six, and consumed fallback RNG.
+    /// Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`.
+    #[test]
+    fn all_eight_nearoref_mcvs_spawn_on_authored_waypoints_without_fallback_rng() {
+        let mut sim = Simulation::with_seed(0);
+        let starts = nearoref_starts();
+        let mut map = test_map_with_starts(&starts);
+        configure_nearoref_geometry(&mut sim, &mut map);
+        let terrain = test_terrain(138, 138);
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        session.options.bases = true;
+        session.options.unit_count = 0;
+        let ai_template = session.opponents[0].clone();
+        session.opponents = (1..8)
+            .map(|index| SkirmishAiSlot {
+                color_index: (index + 1) as u8,
+                start_position: LaunchStartPosition::Position(index as u8),
+                ..ai_template.clone()
+            })
+            .collect();
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &test_standard_launch_rules(),
+            &test_height_map(),
+            &terrain,
+            &launch_descriptor(&session),
+        );
+
+        assert_eq!(result.active_slots, 8);
+        assert_eq!(result.spawned_mcvs, 8);
+        assert_eq!(sim.entities().len(), 8);
+        let cells: BTreeMap<String, (u16, u16)> = sim
+            .entities()
+            .values()
+            .map(|entity| {
+                (
+                    sim.interner.resolve(entity.owner).to_string(),
+                    (entity.position.rx, entity.position.ry),
+                )
+            })
+            .collect();
+        let expected_cells: BTreeMap<String, (u16, u16)> = starts
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let owner = if index == 0 {
+                    "Player".to_string()
+                } else {
+                    format!("Computer{index}")
+                };
+                (owner, (start.rx, start.ry))
+            })
+            .collect();
+        assert_eq!(
+            cells, expected_cells,
+            "starting MCVs must unlimbo exactly on their authored waypoints"
+        );
+        for (owner, expected_cell) in &expected_cells {
+            assert_eq!(
+                crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner,)
+                    .and_then(|house| house.base_center),
+                Some(*expected_cell),
+                "{owner} must retain its authored base center"
+            );
+        }
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "exact placement consumes only the final scenario synchronization draw"
+        );
     }
 
     #[test]
