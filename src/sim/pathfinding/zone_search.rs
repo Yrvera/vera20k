@@ -1,16 +1,86 @@
-//! Zone-aware pathfinding — uses zone connectivity for fast unreachability
-//! detection and hierarchical corridor-based search space reduction.
+//! Zone-aware pathfinding — zone connectivity for fast unreachability detection
+//! and hierarchical search-space reduction.
 //!
-//! Current approximation:
-//! 1. Look up zone IDs for start and goal.
-//! 2. If they are in disconnected zones, return `None` immediately (no A*).
-//! 3. Run Dijkstra on the zone adjacency graph to find a coarse corridor.
-//! 4. Run cell-level A* restricted to the corridor zones.
-//! 5. On failure, retry with per-edge exclusions (up to 5 total attempts).
+//! ## What gamemd does
 //!
-//! TODO(RE): RA2/YR has distinct regular vs hierarchical entrypoints and a separate
-//! allowHS gate. The recovered entrypoint behavior is precise enough to prove those
-//! modes exist, but not yet enough to replace this corridor-Dijkstra approximation.
+//! `AStar_pathfind_search` @ `0x0042C900` is the single entrypoint, and the
+//! hierarchical/regular split is one boolean it computes for itself:
+//!
+//! 1. Source zone from `MapClass::GetZoneID` with the mover's `Foot+0x8C`
+//!    on-bridge flag; destination zone with the goal cell's `Flags & 0x100`.
+//! 2. `MapClass::ResolvePathCoord_BridgeAware` projects both endpoints to
+//!    logical coordinates. The projection feeds `Zone_precheck`, the playfield
+//!    test below and the three failure logs — but **not** the search:
+//!    `AStar_main_loop` @ `0x00429A90` receives the raw endpoints.
+//! 3. `allowHS` = `GetTechnoType()->[+0xC94] == 0` **and** `mover->[+0x3D5] != 0`
+//!    **and** `[mover vtable+0x320]()` (`0x004DA1D0`) `== 0` **and** both
+//!    projected endpoints pass `MapClass::Is_Cell_In_Playfield(cell, 1)`
+//!    (`0x0042CAC2` through `0x0042CB22`).
+//! 4. **Zones equal** → if `allowHS`, run `Zone_precheck` @ `0x0042C290`; on
+//!    failure log "Hierarchical findpath failure", clear `allowHS`, and run the
+//!    A* anyway. **Zones differ** → if `allowHS`, return 0 with no A* at all;
+//!    otherwise fall through to the A*.
+//! 5. `AStar_main_loop` receives `allowHS` as its last argument, and it **is** a
+//!    corridor filter: `Zone_precheck` stamps every zone on the coarse route
+//!    into the level-0 array at `PathfinderClass+0x40` with the search serial
+//!    from `+0x28`, and the neighbour loop at `0x00429EB1` skips any cell whose
+//!    zone is unstamped unless the cell itself carries `CellClass+0x122`.
+//!    [`super::core::HierarchyGate`] is that rule, with `BlockerNeighborCounts`
+//!    standing in for `+0x122`. There is a **second exemption**: the whole skip
+//!    is reached only when the layer byte at `[ESP+0x60]` is non-zero, and
+//!    `0x00429E54`-`0x00429E7A` computes that byte as `1` *unless* the
+//!    neighbour carries `Flags & 0x100` **and**
+//!    `|PathfinderClass+0x30 − cell[+0x11B]| > 1`. A bridge-layer neighbour at a
+//!    differing height therefore jumps from `0x00429EAF` straight to
+//!    `0x00429F04` and is expanded regardless of the corridor stamp, the
+//!    `+0x122` byte and `allowHS`.
+//! 6. Retry budget is `param_6 != -1 ? 1 : 5`. Each retry calls
+//!    `PathfinderClass::UpdateHierarchicalEdges` @ `0x0042CCD0`, re-reads
+//!    `allowHS` from `PathfinderClass+0x38`, and re-runs `Zone_precheck`;
+//!    a failed precheck ends the loop.
+//!
+//! ## What VERA does, and the two recorded gaps
+//!
+//! The live route is faithful in shape: `zone_precheck_flat` on the level-0
+//! hierarchy, then a hierarchy-marked cell A*; a precheck failure with matching
+//! zones falls back to the plain A*, and one with differing zones returns
+//! `None`. What is missing:
+//!
+//! - **The `allowHS` gate is not modelled.** VERA takes the zone route whenever
+//!   the zone data exists, which is what gamemd does for an ordinary unit
+//!   taking an ordinary order — so the common case already agrees. The gap is
+//!   the cases gamemd turns the hierarchy *off* for: `IsTrain=` (the INI key
+//!   behind `TechnoTypeClass+0xC94`, string `0x008444BC`, stored at
+//!   `0x00712284` — absent from stock `rulesmd.ini`, so this term never fires);
+//!   an object whose on-map byte `+0x3D5` is clear (among its nine writers:
+//!   `TechnoClass::Unlimbo` `0x006F6CFE`, `BuildingClass::ExitObject_Main`
+//!   `0x00443C81` and `FootClass::AI` `0x004DA670` set it; the teleport
+//!   locomotor clears it at `0x00719A99`); the `0x004DA1D0` predicate, which —
+//!   given the two terms above already hold at the call site — reduces to
+//!   `mover+0x3D4 != 0` **or** current mission == Retreat(4) **or**
+//!   (`mover+0x5D4` non-null and `FUN_006EC300`); and an endpoint outside the
+//!   playfield. Player effect: for such a mover gamemd runs an unrestricted A*
+//!   and can return a route where VERA answers "unreachable" from the zone map,
+//!   so the unit refuses an order retail accepts. Frequency: a chrono unit in
+//!   the frame its teleport clears `+0x3D5`, a unit on Retreat, and orders with
+//!   an endpoint in the map border — all uncommon in ordinary skirmish, none
+//!   zero. Downstream risk: the gate is a pure predicate at this function's
+//!   head, so adding it later moves no state.
+//! - **The corridor-Dijkstra fallback defines its corridor differently.**
+//!   gamemd's corridor is the set of zones `Zone_precheck` stamped, widened by
+//!   the per-cell `+0x122` escape (point 5). When VERA has no level-0 hierarchy
+//!   or no blocker counts it instead builds a Dijkstra zone corridor, expands
+//!   it by one ring, and retries up to [`MAX_CORRIDOR_RETRIES`] excluding
+//!   corridor edges. The count coincides with gamemd's 5, but gamemd's retries
+//!   re-run `UpdateHierarchicalEdges` and re-precheck rather than excluding
+//!   edges. Trigger: `has_explicit_tube_scenario` — a map with authored tubes.
+//!   Every production caller supplies blocker counts (`movement_tick`,
+//!   `world_commands`, the miner system, the production queue) and the
+//!   production `ZoneGrid` always carries levels 0/1/2, so that is the only live
+//!   trigger. Player effect: a corridor that excludes the only viable route
+//!   makes the unit refuse to move where retail walks it. Frequency: tube maps
+//!   only, and there only for cross-zone orders. Downstream risk: it is a whole
+//!   alternative search; replacing it is row GSI-06.03's work, not this row's.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/zone_map, sim/pathfinding, sim/locomotor.
