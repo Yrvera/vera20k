@@ -1,14 +1,29 @@
 //! Path smoothing — post-processes raw A* paths for natural-looking movement.
 //!
-//! Two passes, matching the original YR engine:
+//! `AStar_main_loop` @ `0x00429A90` runs two passes on every successful search:
+//! `Path_smooth_corners` @ `0x0042B210` (call at `0x0042A415`) then
+//! `Path_optimize_straight_segments` @ `0x0042B7F0` (call at `0x0042A41E`).
 //!
 //! **Pass 1 — Zigzag smoothing**: Replaces 90-degree zigzag pairs (e.g. N then E)
 //! with a single diagonal shortcut (NE), if the shortcut cell is walkable and
 //! diagonal corner-cutting rules are satisfied.
 //!
-//! **Pass 2 — Drift correction**: Identifies segments where cumulative deviation
-//! from a straight line exceeds a threshold, then reroutes those segments with
-//! a straighter cardinal+diagonal decomposition.
+//! Ported from `Path_smooth_corners` / `Path_smooth_single_segment` @
+//! `0x0042B420`, but **not** completely: native rejects a replacement cell when
+//! any of three terms holds — the `+0x1AC` cell predicate, the `0x40000` search
+//! marker, or `Get_Slope_Cost_At_Cell(coord, this[0x87]) ×
+//! FootClass::Get_Slope_Speed_Factor() >= 1.0` — and carries a per-step z with a
+//! bridge lift (`if (z_prev - z == 4 && flags & 0x100) z += 4`) into that
+//! predicate. VERA validates with its `walkable` closure alone and carries no z.
+//! **VERA-internal, gamemd equivalent UNCHECKED.** Trigger: any smoothing
+//! candidate on sloped ground or across a bridge step. Player effect: VERA
+//! collapses a zigzag onto a slope retail routes around, and can smooth across a
+//! height step native keeps separate. Frequency: pass 1 runs on every successful
+//! A*, and slope terrain is on most retail maps. Downstream risk: the slope term
+//! needs two native helpers VERA does not have yet.
+//!
+//! **Pass 2 — absent.** `optimize_path` below is dead and models a different
+//! mechanism from `0x0042B7F0`; see its own record.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends only on sim/locomotor (MovementLayer).

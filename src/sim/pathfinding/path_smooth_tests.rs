@@ -247,7 +247,10 @@ fn optimize_short_path_unchanged() {
 }
 
 #[test]
-fn optimize_staircase_straightened() {
+fn optimize_staircase_is_a_no_op_today() {
+    // `optimize_path` is dead - `find_drift_segment` can never fire. The
+    // assertions below are `<=` plus endpoint checks, which a no-op
+    // satisfies, so this is not coverage of a reroute.
     // E-S-E-S-E-S staircase when ideal is SE diagonal.
     let path = vec![(0, 0), (1, 0), (1, 1), (2, 1), (2, 2), (3, 2), (3, 3)];
     let result = optimize_path(path.clone(), &all_walkable);
@@ -280,7 +283,8 @@ fn optimize_determinism() {
 // ---- Integration: smooth then optimize ----
 
 #[test]
-fn full_pipeline_zigzag_then_drift() {
+fn full_pipeline_zigzag_then_dead_second_pass() {
+    // Pass 2 is a no-op; only pass 1's effect is under test here.
     // A path with both zigzags and drift.
     let path = vec![(0, 0), (0, 1), (1, 1), (1, 2), (2, 2), (2, 3), (3, 3)];
     let smoothed = smooth_path(path.clone(), &all_walkable);

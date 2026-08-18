@@ -225,7 +225,7 @@ pub struct MovementTarget {
     pub path_blocked: bool,
     /// Retry counter — decremented on each failed Find_Path. When it reaches 0
     /// the unit gives up and stops. Reset to PATH_STUCK_INIT on new move orders.
-    /// Original engine: FootClass+0x64C path_stuck_counter (init=10).
+    /// `Foot+0x64C`, init 10 - read at `0x004B2DC8`, decremented at `0x004B2DD2`, and at zero the move ends (init=10).
     pub path_stuck_counter: u8,
     /// Ultimate destination — preserved across 24-step segment replanning.
     /// When a path segment is exhausted before reaching this goal, the movement

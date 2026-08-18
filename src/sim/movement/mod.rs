@@ -208,22 +208,27 @@ pub(crate) fn install_forced_drive_track(
 // Constants — shared across movement submodules via `super::`
 // ---------------------------------------------------------------------------
 
-/// Initial path retry counter before giving up.
+/// Initial path retry counter before giving up (`Foot+0x64C`, init 10).
 ///
-/// **VERA-internal, gamemd has no equivalent.** The earlier claim — "FootClass
-/// +0x64C, init=10, decremented on each failed Find_Path, at 0 the unit abandons
-/// the move order" — is refuted twice over. `Foot+0x64C` is written with a
-/// literal 10 on the **code-6** arm of `Process_Movement` (`LAB_004B3282`) and
-/// tested `< 1` at the head of the next pass to skip the move; it is never
-/// decremented per `Find_Path` failure and never abandons an order. The
-/// escalation clock is a different record entirely: `Foot+0x668` = frame and
-/// `Foot+0x670` = `Rules+0x1768`, stored only on the `Foot+0x6B7 == 0`
-/// transition of the code-2 arm, and the urgency it feeds is 1 or 2.
+/// The mechanism is real and this constant is right: `Process_Movement` reads
+/// `[ECX+0x64C]` at `0x004B2DC8`, and on `> 0` decrements and stores it back
+/// (`0x004B2DD2`/`0x004B2DD3`) before continuing; on `<= 0` it clears the drive
+/// coord, calls `FootClass::Stop_Moving` plus vtable `+0x480`/`+0x484`, and
+/// plays the blocked voice at `Foot+0x68A`. So it *is* decremented and it *does*
+/// end the move at zero.
 ///
-/// Trigger: ten consecutive failed repaths. Player effect: VERA drops the order;
-/// gamemd keeps escalating. Frequency: any unit walled in by traffic long
-/// enough. Downstream risk: the same offset was being claimed for two different
-/// VERA constants, so both have to be re-derived together.
+/// Recorded difference: **what decrements it.** Native decrements it on every
+/// pass through the generic blocked label `LAB_004B3282` — reached from
+/// `Is_Cell_In_Playfield == 0`, from code 3, from `code != 6` and from two
+/// code-6 sub-failures — and the same label is where the literal 10 is stored.
+/// VERA decrements per failed repath instead. The escalation clock is a
+/// separate record: `Foot+0x668` = frame, `Foot+0x66C`, and `Foot+0x670` =
+/// `Rules+0x1768`, stored only on the `Foot+0x6B7 == 0` transition of the code-2
+/// arm — which contains no `Scatter_Objects` call at all. Trigger: a unit
+/// blocked long enough to exhaust the counter. Player effect: the give-up point
+/// arrives after a different number of ticks than retail's. Frequency: every
+/// traffic jam, many times a minute once a base has armour queuing. Downstream
+/// risk: the two clocks are separate fields and must stay separate.
 const PATH_STUCK_INIT: u8 = 10;
 /// Minimum height level difference to trigger Rust's defensive cliff detection.
 ///

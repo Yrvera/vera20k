@@ -2322,9 +2322,14 @@ fn is_adjacent_or_at(pos: (u16, u16), target: (u16, u16)) -> bool {
 /// `[General] CloseEnough`; refinery return must treat that as contact so the
 /// dock radio/enter sequence can take over instead of reissuing the same path.
 fn is_within_close_enough(pos: (u16, u16), target: (u16, u16), close_enough: SimFixed) -> bool {
-    let dx = (pos.0 as i32 - target.0 as i32).abs();
-    let dy = (pos.1 as i32 - target.1 as i32).abs();
-    SimFixed::from_num((dx + dy) * 256) < close_enough
+    // Same metric the movement give-up test uses: `CoordStruct::Distance3D` @
+    // `0x0041C380` against `Rules+0x1718`. A Manhattan sum here disagreed with
+    // movement by up to √2 at exactly the Δ(2,1) geometry where the two now
+    // both abort, so movement stopped while this said "not close enough" and the
+    // return loop reissued the same path.
+    let dx = (pos.0 as i64 - target.0 as i64).abs() * 256;
+    let dy = (pos.1 as i64 - target.1 as i64).abs() * 256;
+    SimFixed::from_num(crate::util::fixed_math::isqrt_i64(dx * dx + dy * dy)) < close_enough
 }
 
 /// Check whether the player owns at least one Ore Purifier building.
