@@ -16,6 +16,7 @@ use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
@@ -92,6 +93,7 @@ pub(crate) fn native_gather_start_positions(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
     bounds: NativeStartBounds,
+    playfield_bounds: Option<PlayfieldBounds>,
     rng: &mut SimRng,
 ) -> Vec<Waypoint> {
     let authored_prefix = (0..8u32)
@@ -124,8 +126,14 @@ pub(crate) fn native_gather_start_positions(
             .next_range_u32_inclusive(10, x_high)
             .wrapping_add(u32::from(bounds.min_rx)) as u16;
 
-        let Some((rx, ry)) = find_nearby_start_rect(terrain, occupancy, bounds, seed_rx, seed_ry)
-        else {
+        let Some((rx, ry)) = find_nearby_start_rect(
+            terrain,
+            occupancy,
+            bounds,
+            playfield_bounds,
+            seed_rx,
+            seed_ry,
+        ) else {
             continue;
         };
         starts.push(Waypoint {
@@ -142,10 +150,11 @@ pub(crate) fn native_gather_start_positions(
 /// start gathering: scan square rings from the seed, finish the first ring
 /// containing an 8x8 passable candidate, and select its first candidate at
 /// frame zero.
-fn find_nearby_start_rect(
+pub(crate) fn find_nearby_start_rect(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
     bounds: NativeStartBounds,
+    playfield_bounds: Option<PlayfieldBounds>,
     seed_rx: u16,
     seed_ry: u16,
 ) -> Option<(u16, u16)> {
@@ -172,6 +181,19 @@ fn find_nearby_start_rect(
                 || rx + i32::from(DEFICIENT_START_RECT_W) - 1 > i32::from(bounds.max_rx())
                 || ry + i32::from(DEFICIENT_START_RECT_H) - 1 > i32::from(bounds.max_ry())
             {
+                continue;
+            }
+            // Active YR `FootClass::Find_Nearby_Passable_Cell @ 0x0056DC20`
+            // applies `MapClass::Is_Cell_In_Playfield(cell, 1) @ 0x00578540`
+            // to the candidate anchor before scanning its 8x8 passability rect.
+            // Only the anchor is diamond-gated; requiring all 64 cells to lie in
+            // the diamond would be stricter than retail.
+            if !cell_is_in_playfield(
+                (rx, ry),
+                playfield_bounds,
+                Some(terrain),
+                Some((terrain.width(), terrain.height())),
+            ) {
                 continue;
             }
             let (rx, ry) = (rx as u16, ry as u16);
@@ -1693,6 +1715,7 @@ impl Simulation {
             terrain,
             &self.substrate.occupancy,
             bounds,
+            self.playfield_bounds,
             &mut self.scenario_rng,
         )
     }

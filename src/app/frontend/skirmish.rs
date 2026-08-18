@@ -155,6 +155,7 @@ mod tests {
     use crate::map::waypoints::Waypoint;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+    use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
     use crate::sim::house_state::{HouseDifficulty, HouseState};
     use crate::sim::mission::MissionType;
     use crate::sim::rng::SimRng;
@@ -609,8 +610,9 @@ mod tests {
         let _ = expected.next_range_u32_inclusive(10, 54);
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
 
-        let starts =
-            native_gather_start_positions(&waypoints, 2, &terrain, &occupancy, bounds, &mut rng);
+        let starts = native_gather_start_positions(
+            &waypoints, 2, &terrain, &occupancy, bounds, None, &mut rng,
+        );
 
         assert_eq!(starts.len(), 2);
         assert_eq!(starts[0], authored);
@@ -663,6 +665,75 @@ mod tests {
     }
 
     #[test]
+    fn deficient_start_skips_passable_anchor_outside_diamond() {
+        let terrain = test_terrain(32, 32);
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 32,
+            height: 32,
+        };
+        let diamond = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        assert!(deficient_start_rect_track_passable(
+            &terrain, &occupancy, 6, 6
+        ));
+        assert!(!cell_is_in_playfield(
+            (6, 6),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 6),
+            Some((6, 7))
+        );
+    }
+
+    #[test]
+    fn deficient_start_gates_anchor_not_full_8x8_footprint() {
+        let terrain = test_terrain(32, 32);
+        let occupancy = crate::sim::occupancy::OccupancyGrid::new();
+        let bounds = NativeStartBounds {
+            min_rx: 0,
+            min_ry: 0,
+            width: 32,
+            height: 32,
+        };
+        let diamond = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        assert!(cell_is_in_playfield(
+            (6, 7),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+        assert!(!cell_is_in_playfield(
+            (13, 14),
+            Some(diamond),
+            Some(&terrain),
+            Some((terrain.width(), terrain.height())),
+        ));
+
+        assert_eq!(
+            find_nearby_start_rect(&terrain, &occupancy, bounds, Some(diamond), 6, 7),
+            Some((6, 7))
+        );
+    }
+
+    #[test]
     fn gsi_04_16_standard_battle_gathers_deficient_starts_twice() {
         let authored = Waypoint {
             index: 0,
@@ -695,6 +766,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
+            None,
             &mut expected_rng,
         );
         let final_starts = native_gather_start_positions(
@@ -703,6 +775,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
+            None,
             &mut expected_rng,
         );
         assert_ne!(provisional[1], final_starts[1]);
