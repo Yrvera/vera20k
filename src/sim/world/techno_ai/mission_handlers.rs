@@ -119,7 +119,57 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
-        // `FootClass::Mission_Attack`; keep both categories on this one path.
+        // `FootClass::Mission_Attack`, so vehicles belong on this path.
+        //
+        // RESIDUAL (GSI-07.06) — **Infantry do NOT**, and that is not modelled.
+        // `InfantryClass`'s Attack slot `+0x210` is `0x0051F3E0`, a real
+        // override with three branches ahead of the Foot body:
+        // - Human-owned infantry whose sequence enum `[this+0x6C4]` is in
+        //   `{0x1B, 0x1C, 0x1D, 0x1E}` call vtable `+0x428`, then return the
+        //   PLAIN `ftol(Rate) + RandomRanged(0,2)` — skipping the whole Foot
+        //   body, so no half-cadence gate and no idle-mode exit. The same field
+        //   and the same value set gate `InfantryClass::Mission_Move`
+        //   (`0x0051F660`), recorded on the Move arm above.
+        //   Trigger: a deployed infantryman firing. Player effect: VERA runs
+        //   the half-cadence test and the idle exit that retail skips, so the
+        //   dispatch cadence and the scenario-RNG draw rate both diverge for
+        //   the whole engagement. Frequency: continuous — a deployed GI,
+        //   Guardian GI or Desolator shooting is among the most common states
+        //   in any skirmish.
+        //   **Not implemented because the gate's identity is UNCHECKED.**
+        //   `[this+0x6C4]` is believed to be the deploy family but no reading
+        //   proves it, and this engine already has a `deploy_state` that would
+        //   be the tempting mapping. Gating simulation behaviour on that guess
+        //   is exactly what the native-to-Rust rule forbids; the sequence enum
+        //   must be pinned first.
+        // - A spy/engineer-class infantryman (`InfType+0xEC2`, or
+        //   `HasWeaponAbility(0xE)`) holding a BuildingClass target whose type
+        //   has `+0x1577` set and `+0x1701` clear takes
+        //   `Set_Destination(target, 1)` then `Assign_Mission(0x11 Sabotage)`
+        //   and returns 1. Frequency: low-to-moderate — the ordinary
+        //   right-click resolver usually issues the enter action directly, so
+        //   this is the force-fire / retarget path.
+        // - An AI-owned engineer or medic converts to Capture. Frequency: zero
+        //   today, because this project has no AI opponent.
+        //
+        // RESIDUAL (GSI-07.06) — two further Foot-body steps are absent:
+        // - Step 1, the `HoverAttack` re-anchor. When `TechnoType+0x390`
+        //   (`HoverAttack`, NOT `DefaultToGuardArea` — the research corpus has
+        //   those crossed) is set and `GetHeight() == 0`, native finds a nearby
+        //   passable cell and takes it as a destination every dispatch. Live
+        //   FootClass carriers in stock: `JUMPJET` (Rocketeer) and
+        //   `SCHP`/`SCHD` (Siege Chopper). Trigger: a landed Rocketeer or a
+        //   grounded Siege Chopper on Attack. Player effect: retail nudges them
+        //   off the spot; VERA's stay put. Frequency: routine in Allied and
+        //   Soviet mid-game. The key IS parsed, for locomotor selection only.
+        // - Step 2, the `[this+0x68E]` re-acquire, which runs
+        //   `Greatest_Threat` once and clears the flag. Frequency: ZERO today —
+        //   its only producers are the tank-bunker adjacency scans in
+        //   `Mission_Guard @ 0x004D51C5` and `Mission_AreaGuard @ 0x004D7018`,
+        //   both already recorded as residuals on their own arms. Downstream
+        //   risk is the reason it is written down: the consumer must land in
+        //   the same slice as the bunker scan, or a bunker-acquired unit keeps
+        //   the bunker as its target instead of re-picking one dispatch later.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
             let delay = if foot_attack_in_half_cadence_band(sim, rules, id) {
@@ -848,7 +898,11 @@ fn foot_attack_type_takes_half_cadence(
     if attacker.category == EntityCategory::Infantry && object.close_range {
         return true;
     }
-    let Some(primary) = object.primary.as_deref().and_then(|name| rules.weapon(name)) else {
+    let Some(primary) = object
+        .primary
+        .as_deref()
+        .and_then(|name| rules.weapon(name))
+    else {
         return false;
     };
     (primary.range * crate::util::fixed_math::SimFixed::from_num(256)).to_num::<i64>()
