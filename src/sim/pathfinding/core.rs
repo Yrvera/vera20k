@@ -113,9 +113,6 @@ const MAX_SEARCH_NODES: u32 = 65_527;
 /// This limits lookahead and makes units adapt to obstacles discovered en route.
 pub const MAX_PATH_SEGMENT_STEPS: usize = 24;
 
-/// Cost multiplier for cells with height transitions (ramps, slopes).
-/// With STEP_COST=1000, a height step costs 4000 instead of 1000.
-const CLIFF_COST_MULTIPLIER: i32 = 4;
 
 /// Code-2 (friendly moving) cost multipliers. Matches gamemd.exe
 /// AStar_compute_edge_cost (0x00429830). See `compute_code2_multiplier`.
@@ -390,10 +387,13 @@ impl HierarchyGate<'_> {
 }
 
 /// Per-direction tie-breaker offsets added to g-cost.
-/// Original engine adds tiny floats (0.001–0.008) from table at 0x0081872c.
-/// We scale by 10000 to stay in integer math: cardinals get lower values than
-/// diagonals, preventing path oscillation when multiple routes have equal cost.
-/// Index order matches NEIGHBORS: N, NE, E, SE, S, SW, W, NW.
+///
+/// `AStar_main_loop` @ `0x00429A90` adds the eight floats at `0x0081872C`,
+/// `0.001` through `0.008`. With [`STEP_COST`] at 1000 the integers below are
+/// the same fractions of a step, so no separate scaling is applied. Cardinals
+/// get lower values than diagonals, which is what stops path oscillation when
+/// several routes tie. Index order matches [`NEIGHBORS`]: N, NE, E, SE, S, SW,
+/// W, NW.
 const DIR_TIEBREAK: [i32; 8] = [
     1, // N   (original ≈0.001)
     5, // NE  (original ≈0.005)
@@ -1362,6 +1362,16 @@ pub fn astar_search(
                 // Original: `AStar_main_loop` @ `0x00429A90` calls the FootClass
                 // `+0x1AC` slot (`Can_Enter_Cell`). There is no `FindPathRegular`
                 // symbol in this program.
+                // **No production site sets `search_cost_classifier`**, so this
+                // resolves to the clear/blocked endpoints and
+                // `apply_search_cost_class_multiplier` always sees class 0.
+                // VERA's stand-in for the native cost class is the
+                // `entity_block_map` below, whose 2/5/6 codes reproduce the
+                // `0x0081870C` entries 1.0/20.0/8.0 and the code-2 prediction
+                // override. Classes 3 and 4 have no producer at all — see
+                // `cell_entry`'s wall and gate residuals — so their 1.0 and 60.0
+                // entries are unreachable. The hook stays as the seam a real
+                // `Can_Enter_Cell` cost class would plug into.
                 let raw_cost_class = options.search_cost_classifier.map_or_else(
                     || if neighbor_passable { 0 } else { 7 },
                     |classifier| classifier.classify((cx, cy), (nx, ny), neighbor_use_bridge),
@@ -1387,10 +1397,17 @@ pub fn astar_search(
                     search_cost.effective_cost_class.unwrap_or(0),
                 );
 
-                // Cliff cost: uses effective path heights, NOT raw ground_levels
-                if current.height != neighbor_height {
-                    step_cost *= CLIFF_COST_MULTIPLIER;
-                }
+                // No height term. `AStar_compute_edge_cost` @ `0x00429830`
+                // multiplies by exactly four things — the `0x0081870C` class
+                // base, the code-2 blocker-prediction override, `4.0` when the
+                // destination carries `CellClass+0x140 & 0x40000` (the
+                // search-scoped bridge marker, applied below), and the dormant
+                // `PathfinderClass+0x01` flank term — and `AStar_main_loop` @
+                // `0x00429A90` adds only the direction tiebreak and one `FMUL`
+                // by `PathfinderClass+0x04`. Its seven reads of the cell level
+                // byte `+0x11B` all feed the bridge/layer selection, never a
+                // cost. A ×4 on height change would have made every ramp step
+                // cost as much as four flat ones.
 
                 // Entity soft-block cost (codes 2/5/6). Goal exempt. Crusher exempt.
                 if (nx, ny) != goal && !options.mover_is_crusher {
