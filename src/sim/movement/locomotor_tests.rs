@@ -253,6 +253,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         debris_types: Vec::new(),
         debris_maximums: Vec::new(),
         debris_anims: Vec::new(),
+        close_range: false,
         cyborg: false,
         destroy_particle_systems: Vec::new(),
         damage_smoke_offset: glam::IVec3::ZERO,

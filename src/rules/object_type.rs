@@ -958,6 +958,19 @@ pub struct ObjectType {
     /// `DebrisAnims=` CSV of `[Animations]` ids — the SHP half of the debris a
     /// death throws, as distinct from the VXL half above. 166 stock sections.
     pub debris_anims: Vec<String>,
+    /// `CloseRange=` bool — `TechnoTypeClass+0x695`, read at `0x0071497A`
+    /// (key string `0x008439C4`) and stored at `0x00714987`.
+    ///
+    /// `FootClass::Mission_Attack @ 0x004D4DC0` uses it as one half of the
+    /// gate on its halved dispatch cadence: an INFANTRY type carrying it, or
+    /// any type whose primary weapon reaches under 513 leptons, dispatches
+    /// twice as often while closing on a target. Three stock entries —
+    /// `BRUTE`, `DNOA`, `MUMY`.
+    ///
+    /// Not to be confused with `TechnoTypeClass+0x390` (`HoverAttack`) or
+    /// `+0xD39` (`DefaultToGuardArea`); the research corpus has all three
+    /// crossed.
+    pub close_range: bool,
     /// `Cyborg=` bool — gamemd's TechnoTypeClass `+0xC8F` "emits damage sparks"
     /// flag that `AI_Update` gates the per-tick damage-Spark prob-roll on.
     /// Verified: only `InfantryTypeClass::ReadINI` writes `+0xC8F` (from `Cyborg=`);
@@ -1487,6 +1500,7 @@ impl ObjectType {
                 .filter_map(|value| value.parse::<i32>().ok())
                 .collect(),
             debris_anims: parse_csv_string_list(section.get_ignoring_case("DebrisAnims")),
+            close_range: section.get_bool("CloseRange").unwrap_or(false),
             cyborg: section.get_bool("Cyborg").unwrap_or(false),
             destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
             damage_smoke_offset: section

@@ -122,7 +122,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // `FootClass::Mission_Attack`; keep both categories on this one path.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
-            let delay = if foot_attack_in_half_cadence_band(sim, id) {
+            let delay = if foot_attack_in_half_cadence_band(sim, rules, id) {
                 cadence / 2
             } else {
                 cadence
@@ -782,14 +782,39 @@ fn jittered_mission_cadence(sim: &mut Simulation, rules: &RuleSet, mission: Miss
     base.saturating_add(jitter)
 }
 
-/// The representative Foot Attack cadence halves only inside the observed
-/// 282..=768 lepton band. Entity target positions are authoritative here;
-/// force-fire cell geometry is intentionally deferred with target routing.
-fn foot_attack_in_half_cadence_band(sim: &Simulation, id: u64) -> bool {
+/// Whether this dispatch takes `FootClass::Mission_Attack`'s halved cadence.
+///
+/// gamemd-derived: `FootClass::Mission_Attack @ 0x004D4DC0` halves its return
+/// only when a target is installed AND the attacker qualifies by TYPE AND the
+/// 2D distance falls in the close band. The type half is
+/// `(What_Am_I() == 0xF && InfantryType->CloseRange) || primaryWeapon.Range <
+/// 0x201` — an infantry type carrying `CloseRange=`, or any type whose primary
+/// reaches under 513 leptons.
+///
+/// That gate was missing, which is the whole point of this function's rewrite:
+/// without it every tank, rifle infantryman and artillery piece ran the halved
+/// cadence whenever it closed to 1.1–3 cells. 22 of the 93 stock vehicle and
+/// infantry types have a short enough primary; the other 71 must return the
+/// full cadence. Both branches draw the same jitter, so the cost is not an
+/// extra draw — it is that the Attack dispatch, and the scenario-RNG jitter it
+/// consumes, ran at roughly double the native rate through every close-quarters
+/// engagement.
+///
+/// UNCHECKED: the band's exact boundaries. The `282..=768` pair below is
+/// inherited from the earlier survey that wrote this function; a later reading
+/// put it at `[281.6, 769)`, which disagrees at both ends, and neither reading
+/// carries an address. Left as found rather than moved on prose.
+fn foot_attack_in_half_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) -> bool {
     const MIN_LEPTONS: i64 = 282;
     const MAX_LEPTONS: i64 = 768;
+    /// `CMP ..., 0x201` — the primary-weapon reach below which any type
+    /// qualifies, in leptons.
+    const CLOSE_PRIMARY_RANGE_LEPTONS: i64 = 0x201;
 
     let Some(attacker) = sim.substrate.entities.get(id) else {
+        return false;
+    };
+    if !foot_attack_type_takes_half_cadence(sim, rules, attacker, CLOSE_PRIMARY_RANGE_LEPTONS) {
         return false;
     };
     let Some(crate::sim::combat::AttackTarget {
@@ -804,6 +829,30 @@ fn foot_attack_in_half_cadence_band(sim: &Simulation, id: u64) -> bool {
     };
     let distance_sq = crate::sim::combat::lepton_distance_sq(&attacker.position, &target.position);
     distance_sq >= MIN_LEPTONS * MIN_LEPTONS && distance_sq <= MAX_LEPTONS * MAX_LEPTONS
+}
+
+/// The type half of the halved-cadence gate.
+///
+/// `What_Am_I() == 0xF` is InfantryClass, so `CloseRange=` only qualifies an
+/// infantry type — a vehicle carrying the key would NOT take the short path in
+/// native, and does not here.
+fn foot_attack_type_takes_half_cadence(
+    sim: &Simulation,
+    rules: &RuleSet,
+    attacker: &crate::sim::game_entity::GameEntity,
+    close_primary_range_leptons: i64,
+) -> bool {
+    let Some(object) = rules.object(sim.interner.resolve(attacker.type_ref)) else {
+        return false;
+    };
+    if attacker.category == EntityCategory::Infantry && object.close_range {
+        return true;
+    }
+    let Some(primary) = object.primary.as_deref().and_then(|name| rules.weapon(name)) else {
+        return false;
+    };
+    (primary.range * crate::util::fixed_math::SimFixed::from_num(256)).to_num::<i64>()
+        < close_primary_range_leptons
 }
 
 fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {
