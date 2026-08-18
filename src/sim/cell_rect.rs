@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
+use crate::map::map_file::MapHeader;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
@@ -581,25 +582,106 @@ pub struct CellRectOccupancyContext<'a> {
 /// The five map bound values that define the engine's isometric playfield diamond,
 /// read by `cell_in_playfield_diamond`.
 ///
-/// Field meanings verified 2026-06-04 (see
-/// `docs/research/CELLCLASS_PLAYFIELD_BOUNDS_FROM_LOCALSIZE_GHIDRA_REPORT.md`): `base` is the map's
-/// `[Map] Size=` width; the other four are the raw `[Map] LocalSize=` values (left, top, width, height)
-/// stored verbatim — there is no transform here. The `*2` doubling and the `+2`/`+4` constants live
-/// entirely in `cell_in_playfield_diamond`. All five are signed map-coord values. The `off_*` field
-/// names are legacy (named after their source struct offsets) and kept to avoid a rename churn across
-/// the tests and the diamond fn.
+/// Field meanings verified against active YR `MapClass::Set_Clipped_LocalSize
+/// @ 0x00567230`: `base` is the map's signed `[Map] Size=` width; the other
+/// four are `[Map] LocalSize=` after signed intersection with normalized
+/// `Size=(0,0,width,height)`, the native left/top floor, and right/bottom
+/// margin caps. The `*2` doubling and the `+2`/`+4` diamond constants live in
+/// `cell_in_playfield_diamond`. The `off_*` names are legacy source-struct
+/// offsets retained to avoid rename churn across consumers and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlayfieldBounds {
     /// `[Map] Size=` width (3rd value).
     pub base: i32,
-    /// `[Map] LocalSize=` left (1st value).
+    /// Clipped/normalized `[Map] LocalSize=` left (1st value).
     pub off_fc: i32,
-    /// `[Map] LocalSize=` top (2nd value).
+    /// Clipped/normalized `[Map] LocalSize=` top (2nd value).
     pub off_100: i32,
-    /// `[Map] LocalSize=` width (3rd value).
+    /// Clipped/normalized `[Map] LocalSize=` width (3rd value).
     pub off_104: i32,
-    /// `[Map] LocalSize=` height (4th value).
+    /// Clipped/normalized `[Map] LocalSize=` height (4th value).
     pub off_108: i32,
+}
+
+impl PlayfieldBounds {
+    /// Construct the live MapClass playfield fields from the raw map header.
+    ///
+    /// `MapHeader` preserves signed INI values in `u32` bit patterns; recover
+    /// them before reproducing `ClipRect @ 0x00421B60` and
+    /// `MapClass::Set_Clipped_LocalSize @ 0x00567230`. Wrapping arithmetic is
+    /// intentional x86 parity for malformed headers, and final spans are not
+    /// saturated back to zero after the native margin caps.
+    pub(crate) fn from_map_header(header: &MapHeader) -> Self {
+        let size_width = header.width as i32;
+        let size_height = header.height as i32;
+        let [clipped_left, clipped_top, clipped_width, clipped_height] = clip_local_size_to_map(
+            size_width,
+            size_height,
+            [
+                header.local_left as i32,
+                header.local_top as i32,
+                header.local_width as i32,
+                header.local_height as i32,
+            ],
+        );
+
+        let left = clipped_left.max(2);
+        let top = clipped_top.max(2);
+        let width_cap = size_width.wrapping_sub(left).wrapping_sub(2);
+        let height_cap = size_height.wrapping_sub(top).wrapping_sub(6);
+
+        Self {
+            base: size_width,
+            off_fc: left,
+            off_100: top,
+            off_104: clipped_width.min(width_cap),
+            off_108: clipped_height.min(height_cap),
+        }
+    }
+}
+
+/// Signed intersection of raw LocalSize with normalized Size, matching the
+/// active `ClipRect @ 0x00421B60` call inside `0x00567230`.
+fn clip_local_size_to_map(
+    size_width: i32,
+    size_height: i32,
+    [mut left, mut top, mut width, mut height]: [i32; 4],
+) -> [i32; 4] {
+    if size_width <= 0 || size_height <= 0 || width <= 0 || height <= 0 {
+        return [0; 4];
+    }
+
+    if left < 0 {
+        width = width.wrapping_add(left);
+        left = 0;
+    }
+    if width <= 0 {
+        return [0; 4];
+    }
+
+    if top < 0 {
+        height = height.wrapping_add(top);
+        top = 0;
+    }
+    if height <= 0 {
+        return [0; 4];
+    }
+
+    if size_width < left.wrapping_add(width) {
+        width = size_width.wrapping_sub(left);
+    }
+    if width <= 0 {
+        return [0; 4];
+    }
+
+    if size_height < top.wrapping_add(height) {
+        height = size_height.wrapping_sub(top);
+    }
+    if height <= 0 {
+        return [0; 4];
+    }
+
+    [left, top, width, height]
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
@@ -971,6 +1053,95 @@ mod tests {
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::pathfinding::zone_map::ZoneGrid;
+
+    fn map_header_with_rects(size: (i32, i32), local: [i32; 4]) -> MapHeader {
+        MapHeader {
+            theater: "TEMPERATE".to_string(),
+            fill: "Clear".to_string(),
+            level: 0,
+            width: size.0 as u32,
+            height: size.1 as u32,
+            local_left: local[0] as u32,
+            local_top: local[1] as u32,
+            local_width: local[2] as u32,
+            local_height: local[3] as u32,
+        }
+    }
+
+    #[test]
+    fn playfield_bounds_from_map_header_keeps_nearoref_native_values() {
+        let bounds =
+            PlayfieldBounds::from_map_header(&map_header_with_rects((80, 58), [2, 4, 76, 48]));
+
+        assert_eq!(
+            bounds,
+            PlayfieldBounds {
+                base: 80,
+                off_fc: 2,
+                off_100: 4,
+                off_104: 76,
+                off_108: 48,
+            }
+        );
+    }
+
+    #[test]
+    fn playfield_bounds_from_map_header_clips_signed_local_before_margins() {
+        let bounds =
+            PlayfieldBounds::from_map_header(&map_header_with_rects((80, 80), [-5, -6, 100, 100]));
+
+        assert_eq!(
+            bounds,
+            PlayfieldBounds {
+                base: 80,
+                off_fc: 2,
+                off_100: 2,
+                off_104: 76,
+                off_108: 72,
+            }
+        );
+    }
+
+    #[test]
+    fn playfield_bounds_from_map_header_preserves_native_empty_and_small_results() {
+        assert_eq!(
+            PlayfieldBounds::from_map_header(&map_header_with_rects((40, 50), [0; 4])),
+            PlayfieldBounds {
+                base: 40,
+                off_fc: 2,
+                off_100: 2,
+                off_104: 0,
+                off_108: 0,
+            }
+        );
+        assert_eq!(
+            PlayfieldBounds::from_map_header(&map_header_with_rects((0, 0), [0; 4])),
+            PlayfieldBounds {
+                base: 0,
+                off_fc: 2,
+                off_100: 2,
+                off_104: -4,
+                off_108: -8,
+            }
+        );
+    }
+
+    #[test]
+    fn playfield_bounds_from_map_header_caps_present_rect_at_native_margins() {
+        let bounds =
+            PlayfieldBounds::from_map_header(&map_header_with_rects((40, 50), [5, 6, 40, 50]));
+
+        assert_eq!(
+            bounds,
+            PlayfieldBounds {
+                base: 40,
+                off_fc: 5,
+                off_100: 6,
+                off_104: 33,
+                off_108: 38,
+            }
+        );
+    }
 
     fn clear_to_move_request() -> IsClearToMoveRequest {
         IsClearToMoveRequest {
