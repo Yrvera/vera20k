@@ -392,6 +392,30 @@ pub fn adjust_for_z_standard(world_z: i32) -> i32 {
         .expect("the verified finite standard multiplier maps every i32 Z into i32")
 }
 
+/// `CoordStruct__Distance3D` 0x0041C380 — the 3D lepton distance every native
+/// coordinate comparison goes through.
+///
+/// The body squares and sums the three deltas on the x87 stack, stores the sum
+/// to **f32**, runs [`sqrt_approx_f32`] (the 14-bit table lookup at
+/// 0x004CAC40), then truncates through `Math__ftol`. The approximation and the
+/// truncation both matter: callers compare the whole-lepton result, so two
+/// objects whose true distances differ in the fraction tie, and the
+/// approximation's ~3e-5 relative error can move that tie by one lepton.
+/// Substituting an exact integer square root silently changes which object wins
+/// those comparisons.
+pub fn distance_3d_leptons(lhs: [i32; 3], rhs: [i32; 3]) -> i32 {
+    let mut squared = X87Chop53::load_i32(0);
+    for axis in 0..3 {
+        let delta = X87Chop53::load_i32(lhs[axis].wrapping_sub(rhs[axis]));
+        squared = X87Chop53::add(squared, X87Chop53::mul(delta, delta));
+    }
+    let root_bits =
+        sqrt_approx_f32(squared).expect("map-space squared distance stays in finite f32 range");
+    let root =
+        X87Chop53::load_f32(root_bits).expect("Sqrt_Approx always returns a finite normal or zero");
+    X87Chop53::ftol_i64(root).expect("map-space distance fits a signed integer") as i32
+}
+
 fn chop_extended(sign: bool, exponent: i32, extended: u64) -> X87Value {
     let significand = extended >> 3;
     debug_assert!(significand == 0 || significand & SIGNIFICAND_TOP != 0);

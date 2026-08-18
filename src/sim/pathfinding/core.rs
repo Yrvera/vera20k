@@ -113,9 +113,6 @@ const MAX_SEARCH_NODES: u32 = 65_527;
 /// This limits lookahead and makes units adapt to obstacles discovered en route.
 pub const MAX_PATH_SEGMENT_STEPS: usize = 24;
 
-/// Cost multiplier for cells with height transitions (ramps, slopes).
-/// With STEP_COST=1000, a height step costs 4000 instead of 1000.
-const CLIFF_COST_MULTIPLIER: i32 = 4;
 
 /// Code-2 (friendly moving) cost multipliers. Matches gamemd.exe
 /// AStar_compute_edge_cost (0x00429830). See `compute_code2_multiplier`.
@@ -390,10 +387,13 @@ impl HierarchyGate<'_> {
 }
 
 /// Per-direction tie-breaker offsets added to g-cost.
-/// Original engine adds tiny floats (0.001–0.008) from table at 0x0081872c.
-/// We scale by 10000 to stay in integer math: cardinals get lower values than
-/// diagonals, preventing path oscillation when multiple routes have equal cost.
-/// Index order matches NEIGHBORS: N, NE, E, SE, S, SW, W, NW.
+///
+/// `AStar_main_loop` @ `0x00429A90` adds the eight floats at `0x0081872C`,
+/// `0.001` through `0.008`. With [`STEP_COST`] at 1000 the integers below are
+/// the same fractions of a step, so no separate scaling is applied. Cardinals
+/// get lower values than diagonals, which is what stops path oscillation when
+/// several routes tie. Index order matches [`NEIGHBORS`]: N, NE, E, SE, S, SW,
+/// W, NW.
 const DIR_TIEBREAK: [i32; 8] = [
     1, // N   (original ≈0.001)
     5, // NE  (original ≈0.005)
@@ -405,8 +405,17 @@ const DIR_TIEBREAK: [i32; 8] = [
     8, // NW  (original ≈0.008)
 ];
 
-/// Direction-8 tube edge tie-breaker. The recovered normal-direction table has
-/// only 8 entries; keep tube jumps after normal edges when costs tie.
+/// **VERA-internal, gamemd has no equivalent.** The native direction-8 arm at
+/// `0x00429FA3` charges the Chebyshev cell distance from the tube entrance to
+/// its **exit** and then skips the `FMUL`/`FADD` entirely — a tube edge takes
+/// **no tiebreak at all**. VERA charges `STEP_COST × path_len()` plus this
+/// constant, which keeps tube jumps ordered after normal edges on a tie.
+///
+/// Trigger: any expansion across a tube edge. Player effect: the tube's cost
+/// differs from retail's whenever the tunnel is not straight (path length vs
+/// endpoint distance), which shifts whether the unit takes the tunnel at all.
+/// Frequency: tunnel maps only, and there on every cross-map order.
+/// Downstream risk: low — it is one arm of the neighbour loop.
 const TUBE_DIR_TIEBREAK: i32 = 9;
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
@@ -423,7 +432,8 @@ const NEIGHBORS: [(i32, i32, bool); 8] = [
 ];
 
 /// Threshold for ground vs bridge closed-list selection.
-/// Binary: abs(path_height - cell.height_level) < 2 at 0x00429e7d.
+/// Binary: `abs(path_height - cell.height_level) < 2`, the `CMP EAX,0x1` at
+/// `0x00429E75` inside the layer-flag block that starts at `0x00429E54`.
 const BRIDGE_HEIGHT_THRESHOLD: u8 = 2;
 
 /// Encode source cell index + bridge flag into came_from value.
@@ -432,7 +442,25 @@ const CAME_FROM_BRIDGE: usize = 1 << 20;
 
 /// Determine whether a node at `path_height` should use the bridge closed list
 /// for a given neighbor cell. Uses the CURRENT node's height (not computed
-/// neighbor height). Matches binary inline check at 0x00429e54.
+/// neighbor height). Matches the binary inline check at `0x00429E54`.
+///
+/// **Recorded mismatch, not closed:** the native test is `TEST AH,0x1` on
+/// `Cell+0x140` (`0x00429E5A`) — the `0x100` structural-bridge bit, which VERA
+/// calls `has_structural_bridge()`. This reads `bridge_walkable`, and the two
+/// deliberately differ: the producer marks ramp and bridgehead cells walkable
+/// *without* marking them structural. `check_bridge_traversal` in the same
+/// expansion reads `has_structural_bridge()` for that same bit, so the two
+/// halves of one step disagree about what `0x100` means — and
+/// [`compute_neighbor_height`] is a third reader with the same mismatch, at all
+/// three of its cases (native gates them on `Cell+0x140 & 0x100` at
+/// `0x0042A4B6` and `0x0042A4C2`). Trigger: any ramp or
+/// bridgehead cell. Player effect: the closed-list selection and the carried
+/// height take the deck branch where gamemd takes ground, so a bridge approach
+/// can be planned on the wrong plane. Frequency: every bridge approach on every
+/// bridge map. Downstream risk: high — swapping the flag here moves every
+/// bridge-adjacent expansion at once, so it needs its own slice with a fixture,
+/// not a one-word edit. Native also has a `height == -1` arm this omits;
+/// `movement_occupancy`'s runtime twin carries it.
 fn is_at_bridge_level(path_height: u8, cell: &PathCell) -> bool {
     cell.bridge_walkable && path_height.abs_diff(cell.ground_level) >= BRIDGE_HEIGHT_THRESHOLD
 }
@@ -462,10 +490,17 @@ fn compute_neighbor_height(
     }
 
     // Case 3: Parent is NOT bridge, neighbor IS bridge.
-    // Ground→Bridge entry requires height-diff EXACTLY 4 AND the bridgehead flag
-    // (transition). Diffs 2/3/5+ are always blocked; diff 0/1 fall to other cases.
-    let diff = parent_height as i16 - neighbor_cell.ground_level as i16;
-    if diff == 4 && neighbor_cell.transition {
+    //
+    // `AStar_create_node` @ `0x0042A460` tests
+    // `abs((neighbor.Level - parent_height) + 3) <= 1`, i.e. a drop of **2, 3 or
+    // 4**, and reads no bridgehead or transition flag anywhere in the function.
+    // Requiring exactly 4 plus `transition` refused two of the three native
+    // drops outright and refused the third on every deck cell that is not a
+    // flagged bridgehead — in each case carrying `ground_level` instead, which
+    // then feeds the closed-list split and `check_bridge_traversal`, so the
+    // route planned *under* the bridge or failed.
+    let drop = parent_height as i16 - neighbor_cell.ground_level as i16;
+    if (2..=4).contains(&drop) {
         neighbor_cell.bridge_deck_level
     } else {
         neighbor_cell.ground_level
@@ -476,11 +511,27 @@ fn is_structural_bridge_deck_height(path_height: u8, cell: &PathCell) -> bool {
     cell.has_structural_bridge() && path_height as i16 == cell.signed_level() + 4
 }
 
-/// Whether an edge needs the bridge-traversal legality check at all. The A*
-/// neighbor expansion skips `check_bridge_traversal` for structural→structural
-/// bridge edges with no bridgehead involved (plain deck driving: ramp→body,
-/// body→body); the runtime crossing gate must mirror this or it rejects edges
-/// the plan legally produced.
+/// Whether an edge needs the bridge-traversal legality check at all.
+///
+/// **VERA-internal, gamemd has no equivalent.** `AStar_main_loop` calls the
+/// `+0x1AC` slot unconditionally at `0x00429F54`, and `UnitClass::Can_Enter_Cell`
+/// @ `0x0073F0A0` calls `+0x1B0` (`CheckBridgeTraversal` @ `0x004D9C60`)
+/// unconditionally in turn. There is no skip predicate in the binary. This one
+/// skips structural→structural edges with no bridgehead — plain deck driving —
+/// and the caller substitutes a local `|diff| ∈ {0, 1}` rule instead.
+///
+/// The substitute is **looser**, not stricter: native's diff-0 arm can still
+/// return 7 when the path height disagrees with the candidate's level and the
+/// three-flag escape fails, while the substitute always allows diff 0. It also
+/// reads `cur_cell.slope_type` for a positive diff where native reads the lower
+/// cell's `+0x11C`, and it can never set `force_bridge_list`.
+///
+/// Trigger: every tick a unit drives along a bridge span. Player effect: VERA
+/// admits deck-to-deck steps retail refuses. Frequency: continuous while any
+/// unit is on a bridge. Downstream risk: the runtime crossing gate in
+/// `movement_occupancy` mirrors this predicate deliberately, so removing it
+/// must move both sites together or the runtime starts rejecting edges the
+/// plan legally produced.
 pub(crate) fn needs_bridge_traversal_for_edge(
     current_height: u8,
     current_cell: &PathCell,
@@ -556,8 +607,11 @@ pub(crate) fn check_bridge_traversal(
         input.direction,
         input.parent,
     ) else {
+        // `0x004D9CC5`: `TEST ESI,ESI; JZ 0x004D9E5E` — a null parent is
+        // **allowed** (`XOR EAX,EAX`), not refused. Reached on the outer map
+        // ring, where the predecessor cell resolves off-map.
         return BridgeTraversalResult {
-            allowed: false,
+            allowed: true,
             path_height,
             force_bridge_list: false,
         };
@@ -609,7 +663,12 @@ pub(crate) fn check_bridge_traversal(
                     false
                 }
             } else {
-                false
+                // `0x004D9D8F-0x004D9D94`: `ADD EAX,-0x4; CMP EBX,EAX; JNZ
+                // 0x004D9E5E` — when the parent's own level is neither
+                // `candidate ± 4`, the step is **allowed** with no deck flag.
+                // Reached when the parent carries no structural bridge, so
+                // `parent_selected` is the path height rather than the level.
+                true
             }
         }
         _ => false,
@@ -1311,8 +1370,35 @@ pub fn astar_search(
                     }
                 }
 
-                // Terrain speed percentage. This is distinct from the native
-                // Foot +0x1AC cost class handled immediately below.
+                // The land-type × SpeedType row, read as a **passability
+                // predicate only**: zero closes the cell, any non-zero value
+                // opens it and weighs exactly the same as any other.
+                //
+                // Retail provenance: land-type speed table — the twelve rows at
+                // `0x0089EA40` filled by `RulesClass::ReadSpeedTypeLandTypeTable`
+                // @ `0x00674000`. All twelve read sites, exhaustively:
+                // passability gates (`CellClass::CheckCellPassability` @
+                // `0x004835DE`, `InfantryClass::Can_Enter_Cell` @ `0x0051C750`
+                // and `0x0051C7BC`, `UnitClass::Can_Enter_Cell` @ `0x0073FAB5`,
+                // building placement @ `0x0047CA58`, and the Foot-column
+                // `FCOMP 0.0f` at `0x0051895A` in the unnamed function around
+                // `0x00518930`); runtime speed consumers
+                // (`DriveLocomotionClass::Process_Movement` @ `0x004B3CA3`,
+                // `ShipLocomotionClass::Process_Movement` @ `0x006A32F2`);
+                // AI/action queries (`UnitClass::What_Action_OnObject` @
+                // `0x007400A1`, `UnitClass::Mission_Hunt` @ `0x00740C9C`); and
+                // the RulesClass save/load pair that streams the block whole
+                // (`0x0067F882`, `0x0067FAF6`). **No path-search function is
+                // among them.**
+                //
+                // The search's own edge cost is built by `AStar_compute_edge_cost`
+                // @ `0x00429830` for `AStar_main_loop` @ `0x00429A90` out of the
+                // `FootClass` `+0x1AC` cost class (base table `0x0081870C`), the
+                // code-2 blocker override, a `CellClass+0x140 & 0x40000` term,
+                // the dormant `PathfinderClass+0x01` bridge-flank term and the
+                // direction tiebreaks at `0x0081872C`. Both `Can_Enter_Cell`
+                // implementations reduce the land row to `== 0.0 → class 7`, so
+                // no gradation reaches the cost class either.
                 let terrain_cost: u8 = if neighbor_use_bridge {
                     100 // bridge layer: no terrain cost modifiers
                 } else if is_water_mover {
@@ -1332,7 +1418,19 @@ pub fn astar_search(
                 // The current grid-level predicate can only produce the known
                 // clear/blocked endpoints (0/7). Keep that adaptation separate
                 // from terrain speed while preserving the YR coercion threshold.
-                // Original: FindPathRegular calls FootClass virtual +0x1AC.
+                // Original: `AStar_main_loop` @ `0x00429A90` calls the FootClass
+                // `+0x1AC` slot (`Can_Enter_Cell`). There is no `FindPathRegular`
+                // symbol in this program.
+                // **No production site sets `search_cost_classifier`**, so this
+                // resolves to the clear/blocked endpoints and
+                // `apply_search_cost_class_multiplier` always sees class 0.
+                // VERA's stand-in for the native cost class is the
+                // `entity_block_map` below, whose 2/5/6 codes reproduce the
+                // `0x0081870C` entries 1.0/20.0/8.0 and the code-2 prediction
+                // override. Classes 3 and 4 have no producer at all — see
+                // `cell_entry`'s wall and gate residuals — so their 1.0 and 60.0
+                // entries are unreachable. The hook stays as the seam a real
+                // `Can_Enter_Cell` cost class would plug into.
                 let raw_cost_class = options.search_cost_classifier.map_or_else(
                     || if neighbor_passable { 0 } else { 7 },
                     |classifier| classifier.classify((cx, cy), (nx, ny), neighbor_use_bridge),
@@ -1352,21 +1450,23 @@ pub fn astar_search(
                 // Can_Enter_Cell. PathfinderClass+0x01 is constructor-zero and
                 // has no retail writer, so the dormant bridge-flank block does
                 // not inspect either cardinal beside a diagonal destination.
-                let base_cost = STEP_COST;
-                let mut step_cost = if terrain_cost == 100 {
-                    base_cost
-                } else {
-                    base_cost * 100 / terrain_cost as i32
-                };
+                let mut step_cost = STEP_COST;
                 step_cost = apply_search_cost_class_multiplier(
                     step_cost,
                     search_cost.effective_cost_class.unwrap_or(0),
                 );
 
-                // Cliff cost: uses effective path heights, NOT raw ground_levels
-                if current.height != neighbor_height {
-                    step_cost *= CLIFF_COST_MULTIPLIER;
-                }
+                // No height term. `AStar_compute_edge_cost` @ `0x00429830`
+                // multiplies by exactly four things — the `0x0081870C` class
+                // base, the code-2 blocker-prediction override, `4.0` when the
+                // destination carries `CellClass+0x140 & 0x40000` (the
+                // search-scoped bridge marker, applied below), and the dormant
+                // `PathfinderClass+0x01` flank term — and `AStar_main_loop` @
+                // `0x00429A90` adds only the direction tiebreak and one `FMUL`
+                // by `PathfinderClass+0x04`. Its seven reads of the cell level
+                // byte `+0x11B` all feed the bridge/layer selection, never a
+                // cost. A ×4 on height change would have made every ramp step
+                // cost as much as four flat ones.
 
                 // Entity soft-block cost (codes 2/5/6). Goal exempt. Crusher exempt.
                 if (nx, ny) != goal && !options.mover_is_crusher {
@@ -1475,7 +1575,9 @@ pub fn astar_search(
 }
 
 fn apply_search_cost_class_multiplier(step_cost: i32, cost_class: u8) -> i32 {
-    // Original: Pathfinding::NeighborStepCost indexes the YR table at 0x81870c.
+    // Original: `AStar_compute_edge_cost` @ `0x00429830` indexes the class base
+    // table at `0x0081870C` (read site `0x00429848`, its only reader). There is
+    // no `NeighborStepCost` symbol in this program.
     let multiplier = match cost_class {
         0 | 2 | 3 => 1,
         1 => 1000,
@@ -2351,6 +2453,16 @@ struct AStarNode {
 }
 
 impl Ord for AStarNode {
+    /// **VERA-internal tie-break, gamemd equivalent UNCHECKED.** Native
+    /// resolves an exact f-tie by its heap's insertion order, which a
+    /// `BinaryHeap` cannot reproduce; this orders by g descending, then y,
+    /// then x so the search is reproducible for lockstep and replay.
+    ///
+    /// Trigger: two open nodes with identical f. Player effect: a different
+    /// expansion order, and so possibly a different equal-cost route.
+    /// Frequency: uncommon once the 0.001-0.008 direction tiebreaks apply,
+    /// since they separate most otherwise-equal edges. Downstream risk: none
+    /// within VERA — it is what makes the search deterministic.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Primary: f_cost ascending (lower is better).
         // Tiebreak: higher g_cost preferred (closer to goal, more "explored").
@@ -2465,9 +2577,11 @@ pub fn find_path(grid: &PathGrid, start: (u16, u16), goal: (u16, u16)) -> Option
     Some(steps.into_iter().map(|s| (s.rx, s.ry)).collect())
 }
 
-/// A* pathfinding with optional terrain cost modifiers and entity blocking.
+/// A* pathfinding with optional land-row passability and entity blocking.
 ///
-/// When `costs` is `Some`, step cost is scaled by `100 / cost_at(x,y)`.
+/// When `costs` is `Some`, a cell whose land row is zero is closed; every
+/// non-zero row expands at the same step cost, which is what the native search
+/// does (see the provenance in `astar_search`).
 /// When `entity_blocks` is `Some`, cells in the set are treated as blocked
 /// UNLESS they are the goal cell.
 pub fn find_path_with_costs(

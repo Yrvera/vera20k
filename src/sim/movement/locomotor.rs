@@ -51,8 +51,26 @@ pub enum MovementLayer {
 
 /// Phase within a ground mover's movement cycle.
 ///
-/// 7-state machine matching the original engine's WalkLocomotionClass (+0x50).
-/// States 0-6 govern speed ramping, cell transitions, and obstacle handling.
+/// **VERA-internal, gamemd equivalent UNCHECKED.** The earlier claim here — a
+/// "7-state machine matching WalkLocomotionClass (+0x50)" — is refuted:
+/// `WalkLocomotionClass::Process` @ `0x0075AC80` toggles a byte at
+/// ILocomotion-frame `+0x31` and delegates to `ProcessMovement` @ `0x0075AEC0`,
+/// whose 1505 instructions contain no object-relative `+0x50` and no state
+/// switch; `DriveLocomotionClass::Process` @ `0x004B0500` branches on `+0x54`
+/// and `+0x5F` instead. The `+0x50` that does exist in that family is Drive's
+/// **piggyback slot**, in the *IPiggyback* frame at LocomotorBase+0x18
+/// (`Begin_Piggyback` @ `0x004AF8E0`; `Save` @ `0x004AF800` reaches the same
+/// slot as LocomotorBase `+0x68`) — a different frame from the ILocomotion one
+/// these phases would live in. The only numbered 0..=6 locomotor state machine
+/// in the binary is Jumpjet's, at *ILocomotion*-frame `+0x4C`, switched in
+/// `JumpjetLocomotionClass::Process` @ `0x0054AEC0`.
+///
+/// The variants below describe Drive behaviours — cruise speed, cell entry,
+/// crush, bridge — which Walk does not implement, so this is VERA's own
+/// ground-mover phasing. Trigger: every ground mover, every tick. Player
+/// effect: none identified; the phasing drives VERA's own step machine.
+/// Frequency: continuous. Downstream risk: it is the shape rows GSI-06.13 and
+/// GSI-06.14 will have to reconcile with the real `Process` bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GroundMovePhase {
     /// State 0: No movement order. Unit is stationary at a valid cell position.
@@ -196,7 +214,11 @@ pub struct LocomotorState {
     pub air_progress: SimFixed,
     /// Infantry lateral wobble phase (radians). Sine wave applied perpendicular
     /// to facing direction during walking, creating natural visual sway/spacing.
-    /// Original engine: WalkLocomotionClass +0x88 `LateralWobble` (double).
+    /// **VERA-internal, gamemd equivalent UNCHECKED.** No `+0x88` operand
+    /// appears anywhere in `WalkLocomotionClass::ProcessMovement` @
+    /// `0x0075AEC0`. A double at object `+0x88` does exist — in
+    /// `JumpjetLocomotionClass`, applied by `Update_Coordinates_And_Altitude`
+    /// @ `0x0054D0F0` in states 2 and 3.
     /// Render-only (f32) — does not affect simulation determinism.
     #[serde(skip, default)]
     pub infantry_wobble_phase: f32,
@@ -506,6 +528,23 @@ impl LocomotorState {
 
     /// Whether the active piggyback may be unwound now. The movement clause
     /// dominates: a moving unit never unwinds.
+    ///
+    /// **Recorded gap, not closed — VERA has no single locomotor dispatch
+    /// point.** `FootClass::AI` @ `0x004DA530` makes exactly *one* `Process`
+    /// dispatch per object per frame (it also calls `Is_Moving_Now` `+0x80`
+    /// four times and `QueryInterface` around it), `ILocomotion::Process`
+    /// (Drive ILocomotion vtable
+    /// `0x007E7EB0`, slot `+0x40` = `DriveLocomotionClass::Process` @
+    /// `0x004B0500`), and the installed object alone decides which body runs —
+    /// there is no kind switch anywhere. VERA instead runs about ten
+    /// independent per-kind world passes each tick, every one self-gating on
+    /// `locomotor.kind` or on a per-kind state component, with the piggyback
+    /// restore last. Trigger: every object, every tick. Player effect: none
+    /// named — but inter-family ordering becomes a property of the tick's pass
+    /// order rather than of the installed locomotor. Frequency: continuous.
+    /// Downstream risk: this is why a piggyback can be installed by one pass and
+    /// observed by another in the same tick, and it is the shape rows GSI-06.13
+    /// and GSI-06.14 have to build on.
     pub fn is_ok_to_end_piggyback(&self, context: EndGateContext) -> bool {
         piggyback::is_ok_to_end(self, context)
     }

@@ -95,6 +95,25 @@ fn height_source(entity: &GameEntity) -> HeightSource {
     }
 }
 
+/// An entity's total world Z in leptons — the VERA answer to the native
+/// object's coordinate `+0xA4`.
+///
+/// This is the coordinate frame, not the render frame: it is what
+/// `CenterViewCommandClass` and the follow camera read, so the `BuildingClass`
+/// -128/-128 art shift must stay out of it (see [`building_art_anchor`]).
+///
+/// An exact object coordinate is already total world Z and replaces both terms
+/// below; otherwise the coarse signed terrain level and the object's altitude
+/// above it compose, exactly as [`screen_position`] composes their pixel forms.
+pub fn world_z_leptons(entity: &GameEntity) -> i32 {
+    if let Some(exact_z_leptons) = entity.position.exact_z_leptons {
+        return exact_z_leptons;
+    }
+    // The level byte is signed everywhere else that reads it.
+    i32::from(entity.position.z as i8) * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS
+        + height_leptons(entity)
+}
+
 /// This entity's height above the ground, in leptons.
 ///
 /// Whichever state is carrying it — see [`HeightSource`] for why the order is

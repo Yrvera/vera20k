@@ -87,6 +87,19 @@ impl LandType {
 }
 
 /// Native TMP terrain byte to canonical land-type table.
+///
+/// Retail provenance: subtile land type — `IsometricTileTypeClass::GetSubtileLandType`
+/// @ `0x00544BE0`, indexing the 16-dword table at `0x008288E4` with the subtile
+/// record's byte `+0x29`. Entry-for-entry identical to this array
+/// (`[0, 8, 8, 8, 8, 10, 9, 3, 3, 2, 6, 1, 1, 0, 7, 3]` in `LandType` indices).
+///
+/// VERA-internal, gamemd has no equivalent: the bounds check in
+/// [`tmp_terrain_to_land_type`]. Native reads the byte with `MOVSX` at
+/// 0x00544C05 and indexes without a range test, so a terrain byte outside
+/// 0..=15 — including `0x80`..=`0xFF`, which index *backwards* from the table —
+/// reads whatever lies around it. Whether any retail `.tmp` carries such a byte
+/// is UNCHECKED; the guard makes VERA answer `Clear` where gamemd would answer
+/// with adjacent data.
 pub const TMP_TERRAIN_TO_LAND_TYPE: [LandType; 16] = [
     LandType::Clear,
     LandType::Ice,
@@ -434,6 +447,26 @@ fn built_in_semantics(section_name: &'static str) -> LandTypeSemantics {
     }
 }
 
+/// The seven authored per-SpeedType rows of one land-type section.
+///
+/// Retail provenance: land-type speed table —
+/// `RulesClass::ReadSpeedTypeLandTypeTable` @ `0x00674000`, filling the twelve
+/// 36-byte rows at `0x0089EA40`. The native row is nine dwords: `Foot`, `Track`,
+/// `Wheel`, `Hover`, a **`Winged` slot hard-stored as `1.0`** (`MOV dword ptr
+/// [EBX + 0xC], 0x3F800000` @ `0x00674148`, never read from INI — which is why [`SpeedCostProfile::cost_for_speed_type`]
+/// answers `Winged` with a constant), `Float`, `Amphibious`, `FloatBeach`, and
+/// the `Buildable` byte. Every value goes through `CCINIClass::ReadDouble`
+/// @ `0x005283D0` — `sscanf("%f")`, then `× 0.01` when `strchr` finds a `%`
+/// (0x00528576) — with a default of `1.0`, and is then capped by
+/// `if (1.0 <= value) value = 1.0`. A missing key inside a present section
+/// resolves to full speed.
+///
+/// A missing *section* does not: the native loop skips the whole row when
+/// `INIClass::FindSectionByName` returns 0, and the block at `0x0089EA40` is
+/// zero-filled in the image, so an unauthored land type is impassable to every
+/// SpeedType. VERA drops the row here too, and the consumer decides — see the
+/// recorded VERA-internal disagreement on
+/// `sim::pathfinding::terrain_cost::classify_terrain_cost`.
 fn parse_speed_costs(section: &IniSection) -> SpeedCostProfile {
     SpeedCostProfile {
         foot: parse_cost(section, "Foot"),
@@ -446,6 +479,21 @@ fn parse_speed_costs(section: &IniSection) -> SpeedCostProfile {
     }
 }
 
+/// One authored row, as a whole-percent 0..=100.
+///
+/// The `1.0` default and the upper cap are the native reader's own (see
+/// [`parse_speed_costs`]). Two VERA-internal differences, both inert on every
+/// stock value — retail authors these only as whole percents in `[Clear]`
+/// through `[Weeds]`:
+///
+/// - **the lower clamp.** gamemd caps the high side only, so a negative row
+///   would reach the movement chain as a negative multiplier; the `u8` storage
+///   here cannot carry one and floors it at zero instead. Trigger: a mod INI
+///   authoring a negative percentage. Player effect: none in stock play.
+/// - **whole-percent quantisation.** gamemd keeps each row as an `f32`; this
+///   truncates to a whole percent, so a modded `Track=72.5%` becomes 72.
+///   Trigger: a fractional percentage. Player effect: none in stock play, where
+///   every authored value is a multiple of five percent.
 fn parse_cost(section: &IniSection, key: &str) -> Option<u8> {
     let multiplier = section.get_percent(key).unwrap_or(1.0).clamp(0.0, 1.0);
     Some((multiplier * 100.0) as u8)
@@ -454,6 +502,53 @@ fn parse_cost(section: &IniSection, key: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sixteen dwords read out of `g_nTmpTerrainToLandTypeTable` at
+    /// `0x008288E4`, in order, as raw `LandType` indices.
+    const NATIVE_TMP_TERRAIN_TABLE: [u8; 16] =
+        [0, 8, 8, 8, 8, 10, 9, 3, 3, 2, 6, 1, 1, 0, 7, 3];
+
+    #[test]
+    fn tmp_terrain_table_matches_the_native_dwords() {
+        for (tmp_byte, native_index) in NATIVE_TMP_TERRAIN_TABLE.iter().copied().enumerate() {
+            assert_eq!(
+                tmp_terrain_to_land_type(tmp_byte as u8).as_index(),
+                native_index,
+                "TMP terrain byte {tmp_byte}"
+            );
+        }
+    }
+
+    #[test]
+    fn winged_ignores_the_authored_rows() {
+        // `RulesClass::ReadSpeedTypeLandTypeTable` stores 1.0 into the Winged
+        // slot without reading INI, so no land-type section can slow an
+        // aircraft down — including a section that zeroes every other row.
+        let ini = IniFile::from_str("[Rock]\nFoot=0%\nTrack=0%\nWheel=0%\nHover=0%\nFloat=0%\n");
+        let rock = TerrainRules::from_ini(&ini)
+            .semantics_for_land_type(LandType::Rock.as_index())
+            .copied()
+            .expect("rock semantics");
+        assert_eq!(rock.cost_for_speed_type(SpeedType::Foot), Some(0));
+        assert_eq!(rock.cost_for_speed_type(SpeedType::Winged), Some(100));
+        assert_eq!(
+            rock.speed_costs.speed_multiplier_for(SpeedType::Winged),
+            SIM_ONE
+        );
+    }
+
+    #[test]
+    fn an_authored_row_above_full_speed_caps_at_full_speed() {
+        // The native reader's own cap: `if (1.0 <= value) value = 1.0`.
+        let ini = IniFile::from_str("[Road]\nFoot=250%\nTrack=100%\n");
+        let road = TerrainRules::from_ini(&ini)
+            .semantics_for_land_type(LandType::Road.as_index())
+            .copied()
+            .expect("road semantics");
+        assert_eq!(road.cost_for_speed_type(SpeedType::Foot), Some(100));
+        // And an unauthored row defaults to full speed, not to zero.
+        assert_eq!(road.cost_for_speed_type(SpeedType::Hover), Some(100));
+    }
 
     #[test]
     fn terrain_rules_parse_known_sections_and_buildability() {

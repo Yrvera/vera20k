@@ -276,9 +276,45 @@ fn rate_to_frames(minutes: f64) -> u32 {
     (minutes * FRAMES_PER_MINUTE) as u32
 }
 
+/// Read a `Rate=`/`AARate=` minutes value the way `CCINIClass::ReadDouble` does.
+///
+/// The native reader at 0x005283D0 is `sscanf(value, "%f", &tmp)` against the
+/// format string at 0x00825BD8 — a **4-byte float** — and only then widens the
+/// result to a double. Parsing straight to `f64` keeps precision the engine
+/// never had, and because the frames conversion truncates (`Math__ftol` under
+/// the control word 0x00822D80 = 0x0E7F, chop, 53-bit) that extra precision
+/// lands on the wrong side of an integer boundary for three stock cadences:
+/// `[Guard] Rate=.030` is 26 frames and not 27, `[Area Guard] Rate=.040` is 35
+/// and not 36, `[Repair] Rate=.08` is 71 and not 72. Guard is the mission every
+/// idle unit holds, and its dispatch also consumes a scenario-RNG draw, so the
+/// difference moves deterministic state and not just a cadence.
+///
+/// Width is not the only thing that differs. `sscanf("%f")` takes a LEADING
+/// number, so `Rate=.030x` reads as `.030`, and there is a percent arm
+/// (`strchr(value,'%')` at 0x0052856E, then `FMUL` by the 0.01 at 0x007E3808).
+/// `ini_value::parse_read_double` is the repo's verified reproduction of the
+/// reader, so this routes through it rather than re-deriving a partial copy —
+/// which also brings the ASCII `strtrim` the loader applies, in place of
+/// Unicode `str::trim`. No stock `Rate=`/`AARate=` value exercises anything but
+/// the width, but a mod INI can.
 #[inline]
 fn parse_minutes(raw: &str) -> Option<f64> {
-    raw.trim().parse::<f64>().ok()
+    // Always `Some`: the key's presence is the caller's question, and this
+    // reader has no failure answer to give back.
+    //
+    // That is a deliberate VERA-internal choice, NOT a reproduction. On a failed
+    // `%f` the native reader does not preserve the default — it never tests
+    // sscanf's return value (the only `TEST EAX,EAX` on that path, 0x00528576,
+    // tests `strchr`), and the `FSTP double` at 0x00528569 overwrites the
+    // caller's default slot with whatever `FLD float [ESP+0x2C]` picked up. That
+    // source is the caller-pushed section-name argument slot: the section-name
+    // CRC on the cold path, or the section-name POINTER when the section is
+    // already cached — as it is for an `AARate` read straight after `Rate`.
+    // Either way gamemd answers a junk value with stale stack bits.
+    // `ini_value` deliberately declines to import that
+    // non-portable accident and returns a deterministic zero instead; a junk
+    // `Rate=` here yields 0 frames rather than the 14 it used to.
+    Some(crate::rules::ini_value::parse_read_double(raw))
 }
 
 /// One mission's processing cadence and behaviour flags.
@@ -290,6 +326,19 @@ pub struct MissionControlEntry {
     /// when the key is absent or zero).
     pub aa_rate_frames: u32,
     /// Weapons disabled → ignored as a target until it fires (`NoThreat=`, def no).
+    ///
+    /// **Parsed, no consumer.** Stock YR sets it on exactly two sections,
+    /// `[Harmless]` and `[Selling]`. Harmless is inert here — nothing shoots a
+    /// civilian anyway — but Selling is not. Trigger: an enemy building is
+    /// selected as a target during the seconds it spends on the Selling mission.
+    /// Player effect: retail stops treating a building the player has sold as
+    /// worth shooting, so the deconstruction runs out and the refund lands;
+    /// VERA's keeps drawing fire and can be destroyed instead, costing the
+    /// player the refund. Frequency: every contested sell — a few times a match
+    /// for an active player, and near-continuous when a base is being overrun.
+    /// Downstream risk: the consumer belongs in threat scoring
+    /// (`TechnoClass::Greatest_Threat`), which is not this row's owner; the
+    /// native reader of `NoThreat` is UNCHECKED.
     pub no_threat: bool,
     /// Frozen forever, never recovers (`Zombie=`, def no).
     pub zombie: bool,
@@ -410,8 +459,8 @@ impl MissionControl {
     /// Anti-air processing cadence in frames for a mission (0 if unknown).
     ///
     /// This is a *different* number from [`MissionControl::rate_frames`] on the
-    /// two stock missions that declare both: Guard resolves 27 / **14** and
-    /// Area Guard 36 / **28**, so a consumer that reaches for the wrong field
+    /// two stock missions that declare both: Guard resolves 26 / **14** and
+    /// Area Guard 35 / **28**, so a consumer that reaches for the wrong field
     /// is wrong by a factor of two.
     ///
     /// **Who actually reads it, and when** (resolved from the building Guard
@@ -431,13 +480,23 @@ impl MissionControl {
     /// - **Unarmed**, otherwise → reads `Rate` and returns **three times** it,
     ///   plus the same jitter.
     ///
-    /// So the selector is *the building is weapon-equipped*, NOT "the current
-    /// target is an aircraft" — which is what the key's name suggests and what
-    /// an earlier note here assumed. An armed structure re-arms at `AARate`
-    /// against ground and air alike.
+    /// So the selector is a property of the BUILDING, not of the target — NOT
+    /// "the current target is an aircraft", which is what the key's name
+    /// suggests and what an earlier note here assumed. An armed structure
+    /// re-arms at `AARate` against ground and air alike.
     ///
-    /// Whether any non-building handler reads `AARate` is UNCHECKED; a
-    /// binary-wide scan found only building-side readers.
+    /// The query itself is broader than "has a weapon": `BuildingClass +0x2AC`
+    /// (0x00458DB0) returns 1 for its vtable `+0x400` case BEFORE falling
+    /// through to the TechnoClass armed test at 0x00701120, so it is
+    /// *armed **or** occupied* — a garrisoned civilian building takes the
+    /// `AARate` path too.
+    ///
+    /// Two building handlers read the field, not one: `Mission_Guard`
+    /// 0x004496B0 at 0x004497B6, and `Mission_Attack` 0x0044ACF0 at 0x0044AD2D.
+    /// Whether any non-building handler reads `AARate` stays UNCHECKED — a
+    /// `FLD double [reg+0x18]` sweep found only those two, but that pattern
+    /// misses computed-base and indexed forms, and a scan that finds nothing
+    /// certifies nothing.
     ///
     /// No `sim/` caller reads this yet — VERA has no building mission-handler
     /// cadence (recorded gap GSI-07.02 G2).
@@ -627,6 +686,10 @@ mod mission_control_tests {
     fn rate_to_frames_uses_900_per_minute() {
         assert_eq!(rate_to_frames(1.0), 900);
         assert_eq!(rate_to_frames(0.016), 14); // 14.4 -> ftol 14 (stock, unchanged)
+        // `rate_to_frames` takes a double, so these are the exact-decimal
+        // answers. The INI path never produces them: `parse_minutes` widens an
+        // f32 first, so `.030` arrives as 0.029999999329447746 and truncates to
+        // 26. See `stock_rates_go_through_the_f32_widening` below.
         assert_eq!(rate_to_frames(0.030), 27);
         assert_eq!(rate_to_frames(0.040), 36);
         // ftol truncates toward zero: a modded rate whose ×900 has a ≥.5
@@ -642,8 +705,45 @@ mod mission_control_tests {
         assert_eq!(mv.rate_frames, 14);
         assert_eq!(mv.aa_rate_frames, 14); // copied from Rate
         let gd = mc.entry(MissionType::Guard).unwrap();
-        assert_eq!(gd.rate_frames, 27);
+        assert_eq!(gd.rate_frames, 26);
         assert_eq!(gd.aa_rate_frames, 14); // overridden by AARate
+    }
+
+    /// `CCINIClass::ReadDouble` 0x005283D0 parses `"%f"` — a 4-byte float — and
+    /// only then widens, so an INI rate never carries more precision than an
+    /// f32 can hold. Three stock cadences straddle an integer boundary because
+    /// of it, and reading them as `f64` would give each one an extra frame.
+    #[test]
+    fn stock_rates_go_through_the_f32_widening() {
+        for (section, mission, widened, exact_f64) in [
+            ("Guard", MissionType::Guard, 26u32, 27u32),
+            ("Area Guard", MissionType::AreaGuard, 35, 36),
+            ("Repair", MissionType::Repair, 71, 72),
+        ] {
+            let raw = match mission {
+                MissionType::Guard => ".030",
+                MissionType::AreaGuard => ".040",
+                _ => ".08",
+            };
+            let mc = MissionControl::from_ini(&ini(&format!("[{section}]\nRate={raw}\n")));
+            assert_eq!(
+                mc.rate_frames(mission),
+                widened,
+                "[{section}] Rate={raw} must widen through f32"
+            );
+            assert_eq!(
+                rate_to_frames(raw.parse::<f64>().unwrap()),
+                exact_f64,
+                "and an f64 parse would have given one frame more"
+            );
+        }
+        // Values whose x900 lands the same side of the boundary in both widths.
+        // Only `1` is exactly representable; the other three are inexact as f32
+        // AND as f64, but not near enough to a boundary for the width to matter.
+        for (raw, frames) in [(".016", 14u32), (".032", 28), (".1", 90), ("1", 900)] {
+            let mc = MissionControl::from_ini(&ini(&format!("[Move]\nRate={raw}\n")));
+            assert_eq!(mc.rate_frames(MissionType::Move), frames);
+        }
     }
 
     #[test]
@@ -651,7 +751,7 @@ mod mission_control_tests {
         let mc = MissionControl::from_ini(&ini("[Guard]\nRate=.030\nAARate=0\n"));
         let gd = mc.entry(MissionType::Guard).unwrap();
         assert_eq!(gd.aa_rate_frames, gd.rate_frames);
-        assert_eq!(gd.aa_rate_frames, 27);
+        assert_eq!(gd.aa_rate_frames, 26);
     }
 
     #[test]
@@ -730,14 +830,14 @@ mod mission_control_tests {
     #[test]
     fn guard_and_area_guard_keep_distinct_rate_and_aa_rate() {
         // The two stock missions whose AARate differs from Rate. A building
-        // cadence must read AARate (14 / 28), not Rate (27 / 36).
+        // cadence must read AARate (14 / 28), not Rate (26 / 35).
         let mc = MissionControl::from_ini(&ini(
             "[Guard]\nRate=.030\nAARate=.016\n[Area Guard]\nRate=.040\nAARate=.032\n",
         ));
-        assert_eq!(mc.rate_frames(MissionType::Guard), 27);
+        assert_eq!(mc.rate_frames(MissionType::Guard), 26);
         assert_eq!(mc.aa_rate_frames(MissionType::Guard), 14);
         // .032 * 900 = 28.8; ftol truncates toward zero -> 28 (round gives 29).
-        assert_eq!(mc.rate_frames(MissionType::AreaGuard), 36);
+        assert_eq!(mc.rate_frames(MissionType::AreaGuard), 35);
         assert_eq!(mc.aa_rate_frames(MissionType::AreaGuard), 28);
     }
 

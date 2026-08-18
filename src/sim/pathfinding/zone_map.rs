@@ -488,9 +488,44 @@ impl ZoneGrid {
         self.hierarchy = Some(hierarchy);
     }
 
-    /// O(1) reachability check: can a unit with this movement zone reach `to` from `from`?
-    /// Returns true if both cells are in the same zone or connected via adjacency.
-    /// For truly disconnected regions, this returns false without any A* search.
+    /// O(1) reachability check: can a unit with this movement zone reach `to`
+    /// from `from`?
+    ///
+    /// `MapClass::Can_Reach_Zone` @ `0x0056D100` is a **pure equality compare**
+    /// of the two `GetZoneID` results — it consults no adjacency graph and no
+    /// connected-components structure.
+    ///
+    /// **VERA-internal widening, gamemd has no equivalent:** the two arms below
+    /// that accept distinct zone IDs when the super-zone labels or the adjacency
+    /// graph connect them. Trigger: any pair of distinct zone IDs joined by an
+    /// adjacency edge. Player effect: VERA accepts a move order gamemd's
+    /// reachability test refuses. Frequency: **zero on the production path
+    /// today** — `build_zone_map_from_base_topology` deliberately returns an
+    /// empty adjacency, so `are_connected` is false for distinct IDs and this
+    /// collapses to the native equality. It becomes live the moment the legacy
+    /// incremental path (`zone_incremental`, which repopulates adjacency and
+    /// replaces the super-zone map) owns a production rebuild, and then it fires
+    /// on every ground move order. Downstream risk: high — it is the difference
+    /// between "one zone per reachable region" and "zones plus a graph", and the
+    /// two designs cannot both be right.
+    ///
+    /// Also not modelled, recorded: the native opens with `if (speed_type == -1)
+    /// return true`, a sentinel arm no caller can reach through
+    /// `AStar_pathfind_search` (it resolves `-1` to `TechnoType+0x5B4` first) but
+    /// which a caller passing a raw speed type would. Trigger and therefore
+    /// frequency: UNCHECKED — no VERA call site passes a sentinel today. Player
+    /// effect if it ever fires: gamemd waves the order through; VERA runs the
+    /// zone test. Downstream risk: none, it is the first line of the function.
+    ///
+    /// And the native's two off-playfield
+    /// short-circuits, which return `true` early when the source cell fails
+    /// `Is_Cell_In_Playfield(cell, 1)` but lies inside the isometric diamond,
+    /// and when the caller's flag is set with the source inside and the
+    /// destination outside-but-in-diamond. VERA returns `false` for either,
+    /// because an off-playfield cell yields `ZONE_INVALID`. Trigger: an order
+    /// whose endpoint is in the map border outside the playfield rect. Player
+    /// effect: the unit refuses an order retail accepts. Frequency: map-edge
+    /// clicks only. Downstream risk: none; both are head-of-function predicates.
     pub fn can_reach(
         &self,
         mz: MovementZone,

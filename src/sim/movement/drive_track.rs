@@ -4,7 +4,7 @@
 //! that vehicles turn smoothly while moving instead of stop-rotate-go. Track
 //! data was extracted from the original engine.
 //!
-//! - `TurnTrack[72]` — maps turn angles to curve indices
+//! - `TurnTrack[72]` — maps octant pairs to curve indices
 //! - `RawTrack[16]` — curve metadata (pointer, jump, entry, cell)
 //! - `TrackType` point arrays — the actual curve points
 //!
@@ -13,9 +13,16 @@
 //! based on their speed, producing smooth curved movement and gradual facing
 //! changes without separate rotation phases.
 //!
+//! **The 72-entry turn table at `0x007E7B28` is indexed `from_octant * 8 +
+//! to_octant`, not by turn angle.** Entry `i`'s `+4` dword is `(i & 7) * 0x20`,
+//! so the low three bits are the destination octant; entries 64..71 are
+//! `Force_Track`-only specials. Any comment describing it as "one entry per 5
+//! degrees" is wrong — the code selects correctly, the prose did not.
+//!
 //! ## How it works
 //! 1. When a vehicle transitions between cells with a facing change, the turn
-//!    angle selects a TurnTrack entry (72 entries, one per 5° increment).
+//!    octant pair selects a TurnTrack entry (72 entries, `from*8 + to` plus
+//!    eight Force_Track specials).
 //! 2. The TurnTrack references a RawTrack (normal or short curve variant).
 //! 3. The RawTrack's point array defines the smooth path through the cell.
 //! 4. Each tick, `point_index` advances based on speed; position and facing
@@ -115,7 +122,8 @@ pub struct RawTrack {
 
 /// Turn angle to track curve mapping.
 ///
-/// There are 72 turn configurations (one per 5° increment, 360/5=72).
+/// There are 72 TurnTrack entries: 64 indexed `from_octant * 8 + to_octant`,
+/// then eight `Force_Track`-only specials at 64..71.
 /// Each maps to a RawTrack index for normal-speed and short/fast turns.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct TurnTrack {
@@ -176,7 +184,17 @@ pub struct DriveTrackState {
 /// index directly, then ordinary movement resumes after the curve clears.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ForcedDriveTrackState {
-    /// Index into TURN_TRACKS, e.g. `0x47` for refinery exit.
+    /// Index into TURN_TRACKS. `0x47` is the **Tank Bunker eject**, not a refinery
+/// exit: `BuildingClass::UndockUnit` @ `0x004593A0` and
+/// `BuildingClass::ReleaseDockedHarvester` @ `0x004595C0` both push it, and
+/// both early-return unless the building's `+0x2E4` dock link is set, which
+/// only the bunker installer @ `0x00458E50` sets. VERA nevertheless uses it on
+/// the refinery interrupt path — VERA-internal, gamemd equivalent UNCHECKED.
+/// Trigger: a refinery sold or destroyed with a miner on the pad. Player
+/// effect: VERA runs a forced curve gamemd may not run there at all.
+/// Frequency: a handful of visible moments per ordinary match. Downstream
+/// risk: `sell_refinery_interrupts_docked_miner_with_force_track_0x47` pins
+/// the VERA behaviour, so settling this means re-reading that gate first.
     pub turn_track_index: u8,
     /// Runtime RawTrack progress.
     pub track: DriveTrackState,
@@ -190,7 +208,8 @@ pub struct ForcedDriveTrackState {
 
 /// 72 turn configurations extracted from the original engine.
 /// Each entry is 12 bytes: {normal_idx: u8, short_idx: u8, pad: [u8;2], face: i32, flag: i32}.
-/// Indexed by turn angle: entry i corresponds to a turn of i * (256/72) facing units.
+/// Indexed `from_octant * 8 + to_octant` for 0..63, then eight
+/// `Force_Track`-only specials at 64..71. NOT indexed by turn angle.
 pub const TURN_TRACKS: [TurnTrack; 72] = [
     // Entry  0: straight ahead (no turn)
     TurnTrack {
@@ -3422,7 +3441,7 @@ pub fn raw_track_points(track_index: u8) -> &'static [TrackPoint] {
     }
 }
 
-/// Look up the TurnTrack for a given turn angle index (0-71).
+/// Look up the TurnTrack for a given TurnTrack index (0-71).
 ///
 /// Returns None if the index is out of range.
 pub fn turn_track_at(index: usize) -> Option<&'static TurnTrack> {
@@ -3923,7 +3942,7 @@ pub fn begin_drive_track_with_head_offset(
 
 /// Begin a one-shot forced TurnTrack by direct index.
 ///
-/// Special TurnTracks such as refinery exit `0x47` are not selected from a
+/// Special TurnTracks such as the Tank Bunker eject `0x47` are not selected from a
 /// facing-pair formula; gamemd writes the table index directly through
 /// DriveLocomotion::Force_Track.
 pub fn begin_forced_turn_track(

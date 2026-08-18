@@ -194,7 +194,7 @@ fn parse_read_bool(default: bool, raw: &str) -> bool {
     }
 }
 
-fn parse_read_double(raw: &str) -> f64 {
+pub(crate) fn parse_read_double(raw: &str) -> f64 {
     let value = strtrim_ascii(raw);
     let widened = f64::from(parse_leading_f32(value));
     if value.as_bytes().contains(&b'%') {

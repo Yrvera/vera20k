@@ -1,14 +1,29 @@
 //! Path smoothing — post-processes raw A* paths for natural-looking movement.
 //!
-//! Two passes, matching the original YR engine:
+//! `AStar_main_loop` @ `0x00429A90` runs two passes on every successful search:
+//! `Path_smooth_corners` @ `0x0042B210` (call at `0x0042A415`) then
+//! `Path_optimize_straight_segments` @ `0x0042B7F0` (call at `0x0042A41E`).
 //!
 //! **Pass 1 — Zigzag smoothing**: Replaces 90-degree zigzag pairs (e.g. N then E)
 //! with a single diagonal shortcut (NE), if the shortcut cell is walkable and
 //! diagonal corner-cutting rules are satisfied.
 //!
-//! **Pass 2 — Drift correction**: Identifies segments where cumulative deviation
-//! from a straight line exceeds a threshold, then reroutes those segments with
-//! a straighter cardinal+diagonal decomposition.
+//! Ported from `Path_smooth_corners` / `Path_smooth_single_segment` @
+//! `0x0042B420`, but **not** completely: native rejects a replacement cell when
+//! any of three terms holds — the `+0x1AC` cell predicate, the `0x40000` search
+//! marker, or `Get_Slope_Cost_At_Cell(coord, this[0x87]) ×
+//! FootClass::Get_Slope_Speed_Factor() >= 1.0` — and carries a per-step z with a
+//! bridge lift (`if (z_prev - z == 4 && flags & 0x100) z += 4`) into that
+//! predicate. VERA validates with its `walkable` closure alone and carries no z.
+//! **VERA-internal, gamemd equivalent UNCHECKED.** Trigger: any smoothing
+//! candidate on sloped ground or across a bridge step. Player effect: VERA
+//! collapses a zigzag onto a slope retail routes around, and can smooth across a
+//! height step native keeps separate. Frequency: pass 1 runs on every successful
+//! A*, and slope terrain is on most retail maps. Downstream risk: the slope term
+//! needs two native helpers VERA does not have yet.
+//!
+//! **Pass 2 — absent.** `optimize_path` below is dead and models a different
+//! mechanism from `0x0042B7F0`; see its own record.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends only on sim/locomotor (MovementLayer).
@@ -350,12 +365,30 @@ const MAX_OPTIMIZE_STEPS: usize = 20;
 /// exceeds the distance traveled along the ideal line.
 const DRIFT_THRESHOLD: i32 = 1;
 
-/// Optimizes a path by correcting segments that drift too far from the ideal
-/// straight line between their endpoints.
+/// **Dead, and a different mechanism from the native second pass. Recorded, not
+/// closed.**
 ///
-/// Analyzes up to `MAX_OPTIMIZE_STEPS` steps. When cumulative perpendicular
-/// drift exceeds a threshold, the drifting segment is replaced with a straighter
-/// cardinal+diagonal decomposition.
+/// `find_drift_segment` accumulates `cum_dx`/`cum_dy` from `path[start]` to
+/// `path[i + 1]`, which is identically `ideal_dx`/`ideal_dy`, so the cross
+/// product is always zero, `drift_sq` is always zero, and the threshold test can
+/// never fire. This function returns its input unchanged for every path, and so
+/// does [`optimize_layered_path`].
+///
+/// Native's second pass, `Path_optimize_straight_segments` @ `0x0042B7F0`, is
+/// not a perpendicular-drift test at all: it scans a 20-step window, closes a
+/// segment when the running `|dx|` or `|dy|` *decreases* — an axis reversal —
+/// and otherwise reroutes when Chebyshev displacement from the segment origin
+/// fails to exceed a stored high-water mark. That is a loop detector, and its
+/// reroute writes `0xFFFFFFFE` delete markers with a final compaction, so the
+/// native pass **shortens** the path. This one splices a replacement and never
+/// deletes.
+///
+/// Trigger: every A* result — `AStar_main_loop` @ `0x00429A90` runs
+/// `Path_smooth_corners` @ `0x0042B210` then `0x0042B7F0` on every successful
+/// search. Player effect: VERA ships pass 1 only, so paths keep steps retail
+/// removes. Frequency: every path, every match. Downstream risk: fixing the
+/// tautology would enable a mechanism that is still not the native one, so the
+/// two have to be replaced together, not repaired in place.
 pub fn optimize_path(
     path: Vec<(u16, u16)>,
     walkable: &dyn Fn(u16, u16) -> bool,

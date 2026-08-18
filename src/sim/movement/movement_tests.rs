@@ -1619,8 +1619,8 @@ fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
     }
 }
 
-/// GSI-07.03: the walk locomotor's blocked-step Override fires exactly ONCE per
-/// block, and the mover stops where it stood.
+/// GSI-07.03: the blocked-step Override fires exactly ONCE per block, and the
+/// mover stops where it stood.
 ///
 /// The original's blocking-object body runs `Override_Mission(Attack, blocker,
 /// NULL)` and then falls into the shared tail — clear the stored path array,
@@ -1633,8 +1633,22 @@ fn code_two_post_scatter_wait_rearms_on_every_pass_while_the_block_holds() {
 /// tick two would overwrite its archived Move with Attack and every later
 /// Restore would hand it back Attack instead of its order — a unit losing its
 /// move order every time an enemy blocks it.
+/// Both locomotors that own the arm are covered: Walk and HOVER. Hover's
+/// movement processor `FUN_00514F70` carries its own `case 4: case 5:` pair
+/// (object arm Override at 0x00515C2C, wall arm at 0x00515C9C) — the Override
+/// itself is the same, though the stop route around it is not; see the residual
+/// on the gate in `movement_occupancy`. `Locomotor={4A582742-...}` has four
+/// uncommented users: [ROBO] the Robot Tank and the [LCRF]/[SAPC]/[YHVR]
+/// transports.
 #[test]
-fn gsi_07_03_blocked_infantry_overrides_onto_attack_exactly_once() {
+fn gsi_07_03_blocked_mover_overrides_onto_attack_exactly_once() {
+    use crate::rules::locomotor_type::LocomotorKind;
+    for kind in [LocomotorKind::Walk, LocomotorKind::Hover] {
+        blocked_override_fires_once_for(kind);
+    }
+}
+
+fn blocked_override_fires_once_for(mover_kind: crate::rules::locomotor_type::LocomotorKind) {
     use crate::rules::locomotor_type::LocomotorKind;
     use crate::sim::combat::TargetKind;
     use crate::sim::mission::leaf::MissionLeafState;
@@ -1648,7 +1662,7 @@ fn gsi_07_03_blocked_infantry_overrides_onto_attack_exactly_once() {
     let mut mover = GameEntity::test_default(1, "E1", "Americans", 1, 1);
     mover.category = EntityCategory::Infantry;
     mover.mission_leaf = MissionLeafState::for_entity_category(EntityCategory::Infantry);
-    mover.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Walk));
+    mover.locomotor = Some(LocomotorState::for_test_kind(mover_kind));
     let timer = mover.mission.dispatch_timer();
     mover.mission.apply_test_fixture(MissionTestFixture {
         current: MissionId::from_known(MissionType::Move),

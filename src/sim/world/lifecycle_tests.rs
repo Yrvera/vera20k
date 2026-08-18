@@ -4978,10 +4978,88 @@ fn blocked_step_override_does_not_fire_on_an_allied_blocker() {
     assert!(mover.navigation.suspended_nav_com.is_none());
 }
 
+/// A retask empties the Override archives but leaves the archived SELECTOR, and
+/// only the MEGAMISSION event does it — Stop is its own opcode and clears
+/// neither archive.
+#[test]
+fn retasking_clears_the_override_archives_but_not_the_archived_selector() {
+    use crate::sim::mission::retask::DockTeardown;
+
+    let mut sim = Simulation::new();
+    insert_entity(&mut sim, 1, EntityCategory::Infantry);
+    insert_entity(&mut sim, 2, EntityCategory::Unit);
+    let soviets = sim.interner.intern("Soviets");
+    sim.substrate.entities.get_mut(2).unwrap().owner = soviets;
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .mission
+        .apply_test_fixture(attack_fixture(MissionType::Move, MissionId::NONE));
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .navigation
+        .nav_com = Some(crate::sim::components::NavTargetRef::cell(7, 7));
+
+    // Override archives the selector, the target and the destination.
+    assert!(sim.mission_override_blocked_by_object(1, 2));
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert_eq!(
+        mover.mission.suspended(),
+        MissionId::from_known(MissionType::Move)
+    );
+    assert!(mover.navigation.suspended_nav_com.is_some());
+    // Plant an archived target too, so both halves of the clear are live rather
+    // than trivially already-`None`.
+    sim.substrate
+        .entities
+        .get_mut(1)
+        .unwrap()
+        .suspended_attack_target = Some(TargetKind::Entity(2));
+
+    // A player order retasks it. EventClass__Execute empties both archives
+    // right after its Queue_Mission, and deliberately leaves the archived
+    // SELECTOR alone — so a later Restore hands back the old mission with a
+    // null target and a null destination.
+    // Stop is NOT a MEGAMISSION: StopCommandClass::Execute pushes opcode 6 at
+    // 0x00730EE7. Case 6 does queue one mission — the ore-miner Guard at
+    // 0x004C7685 — but stores to neither archive anywhere in
+    // 0x004C74CB-0x004C76BB, so both must survive it.
+    sim.queue_mission_with_teardown(1, MissionType::Stop, DockTeardown::All);
+    assert!(
+        sim.substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .navigation
+            .suspended_nav_com
+            .is_some(),
+        "Stop is its own opcode and clears no archive"
+    );
+
+    sim.queue_megamission_with_teardown(1, MissionType::Move, DockTeardown::All);
+    let mover = sim.substrate.entities.get(1).unwrap();
+    assert!(
+        mover.suspended_attack_target.is_none(),
+        "SuspendedTarCom is cleared on every path"
+    );
+    assert!(
+        mover.navigation.suspended_nav_com.is_none(),
+        "SuspendedNavCom is cleared on the Foot arm"
+    );
+    assert_eq!(
+        mover.mission.suspended(),
+        MissionId::from_known(MissionType::Move),
+        "the archived selector itself survives"
+    );
+}
+
 /// Two blocked steps against two different blockers with no Restore between
 /// them: the second Override archives the FIRST override's mission, so a later
 /// Restore lands the object back on Attack and the original order is lost.
-/// Native, and it must survive the wiring â€” no caller-side clobber guard.
+/// Native, and it must survive the wiring — no caller-side clobber guard.
 #[test]
 fn second_blocked_step_override_clobbers_the_archived_mission() {
     let mut sim = Simulation::new();

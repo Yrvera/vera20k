@@ -898,18 +898,59 @@ pub(super) fn handle_deferred_occupancy(
             // an object overridden onto a wall would strand. It cannot arrive
             // here: `OccupiedEnemy` is built at exactly one place, inside the
             // blocker classifier, which has already resolved a live entity, and
-            // `FriendlyWall` has no producer at all because VERA does not
-            // classify wall overlays at cell entry yet. So this site is the body
-            // arm and only the body arm. A future wall-overlay producer must NOT
-            // route into this arm without a Restore path for cell targets.
+            // `FriendlyWall` has no producer at all — not because VERA
+            // ignores walls (the `cell_rect` wall gate is live and
+            // MovementZone-keyed) but because that gate answers a hard block
+            // where native answers 4 or 5. So this site is the body arm and only
+            // the body arm. A future wall-overlay producer must NOT route into
+            // this arm without a Restore path for cell targets.
             //
-            // ONLY THE WALK LOCOMOTOR TAKES THIS ARM IN THE ORIGINAL. An
+            // TWO LOCOMOTORS TAKE THIS ARM IN THE ORIGINAL: Walk and HOVER. An
             // exhaustive search of the Override vtable slot returns ten call
-            // sites; the walk locomotor owns two of them (a blocking *object*
-            // and a wall), while the drive and ship locomotors each own exactly
-            // one — the wall — and have no blocking-object arm at all. So a
-            // blocked vehicle never overrides onto Attack; it repaths. Vehicles
-            // keep the pre-existing behaviour below, unchanged.
+            // sites. Walk owns two of them (a blocking *object* and a wall).
+            // Hover's movement processor `FUN_00514F70` — reached from
+            // `HoverLocomotionClass__Move` 0x00514499/0x00514636 and
+            // `__SpeedUpdate` 0x00516309 — has its own `case 4: case 5:` pair:
+            // the object arm runs `CellClass__Find_Blocking_Object` 0x00515BB8
+            // -> `HouseClass__Is_Ally_ByObject` 0x00515BEF -> the Override at
+            // 0x00515C2C, and the wall arm sits at 0x00515C9C. Walk's run the
+            // same way: object at 0x0075BAEB, wall at 0x0075BB49 — both
+            // locomotors are object-first in address order. Drive and ship each
+            // own exactly one call site — the
+            // wall — and have no blocking-object arm at all, so a blocked tank
+            // still repaths rather than overriding.
+            //
+            // Hover is live stock, not dead data. `Locomotor={4A582742-…}` has
+            // exactly four uncommented users in rulesmd.ini: [ROBO] the Robot
+            // Tank, and three transports — [LCRF] Landing Craft, [SAPC] Armored
+            // Transport, [YHVR] Hover Transport Yuri. (The Floating Disc is
+            // [DISK] and uses the Jumpjet locomotor, so it never reaches this
+            // arm.) Gating on Walk alone left all four repathing where retail
+            // stops them, fights the blocker, and Restores the order afterwards
+            // — losing the whole Suspend/Restore pair this row owns.
+            //
+            // The Mech locomotor `FUN_005B01C0` has the arm too and is
+            // deliberately excluded: no CLSID installs it, so it is dormant.
+            //
+            // The two arms are NOT step-for-step identical, and the tail below
+            // describes Walk only. DRIFT, recorded not fixed: both Hover
+            // Override sites return straight to the function epilogue —
+            // 0x00515C32 and the epilogue after 0x00515C9C — with no
+            // path clear, no speed zero and no `Stop_Moving`. Hover reaches an
+            // equivalent stop by another route: every live caller passes
+            // `param_2 = 1`, so `case 4/5` first zeroes the speed fraction, sets
+            // `+0x5E0 = 0xFFFFFFFF`, calls the repath helper `FUN_005164D0`
+            // (which runs `FootClass__Find_Path`), and only then recurses with
+            // `param_2 = 0` to reach the Override. So a hovering mover ends the
+            // tick with a freshly computed path where a walking one ends with
+            // none, and VERA gives Hover the walk tail — a VERA-internal stop
+            // for that locomotor. Trigger: a Robot Tank or one of the three
+            // hover transports blocked by an enemy. Player effect: it re-paths a
+            // tick later than retail once the fight resolves. Frequency: only
+            // those four types, so occasional rather than constant — Robot Tanks
+            // are the one combat user. Downstream risk: none — the once-per-block
+            // Override is identical on both, and both end with no committed
+            // destination.
             //
             // After the body, the original falls straight into its "not class 1,
             // not class 7" tail and RETURNS: it clears the stored path array,
@@ -930,11 +971,13 @@ pub(super) fn handle_deferred_occupancy(
             // an object overridden onto a wall would strand. It cannot arrive
             // here: `OccupiedEnemy` is built at exactly one place, inside the
             // blocker classifier, which has already resolved a live entity, and
-            // `FriendlyWall` has no producer at all because VERA does not
-            // classify wall overlays at cell entry yet. So this site is the body
-            // arm and only the body arm. A future wall-overlay producer must NOT
-            // route into this arm without a Restore path for cell targets.
-            if mover_loco_kind == LocomotorKind::Walk {
+            // `FriendlyWall` has no producer at all — not because VERA
+            // ignores walls (the `cell_rect` wall gate is live and
+            // MovementZone-keyed) but because that gate answers a hard block
+            // where native answers 4 or 5. So this site is the body arm and only
+            // the body arm. A future wall-overlay producer must NOT route into
+            // this arm without a Restore path for cell targets.
+            if matches!(mover_loco_kind, LocomotorKind::Walk | LocomotorKind::Hover) {
                 crate::sim::mission::authority::override_mission_on_blocked_step(
                     entities, alliances, interner, entity_id, blocker_id,
                 );

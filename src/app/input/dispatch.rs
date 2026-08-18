@@ -142,10 +142,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
             if btn_state.is_pressed() {
                 // gamemd takes the mouse capture on the press edge whether or
                 // not the band drag arms: the modal gates live inside the
-                // drag-arm helper, not around the capture. The capture is what
-                // freezes edge auto-scroll for the length of the gesture.
-                state.match_state.input.tactical_mouse.left_held = true;
-                state.match_state.input.tactical_mouse.captured = true;
+                // drag-arm helper 0x004AC310, not around the capture. The
+                // capture is what freezes edge auto-scroll for the gesture.
+                //
+                // It refuses to arm at all when the shared capture byte is
+                // already held, so a left press landing mid right-drag records
+                // only the physical button. See `TacticalMouseState`.
+                if !state.match_state.input.tactical_mouse.begin_left_press() {
+                    return;
+                }
                 if state.match_state.input.targeting_mode.is_some()
                     || state.match_state.match_presentation.sidebar_gadget_state.repair_mode_on
                     || state.match_state.match_presentation.sidebar_gadget_state.sell_mode_on
@@ -156,8 +161,14 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     .match_state.input.selection_state
                     .begin_drag(state.match_state.input.cursor_x, state.match_state.input.cursor_y);
             } else {
-                state.match_state.input.tactical_mouse.left_held = false;
-                state.match_state.input.tactical_mouse.captured = false;
+                // Case 0x202 gates the whole release on the same shared capture
+                // byte and does NOT test which button set it. With the byte
+                // clear it exits having done nothing; with it set it runs
+                // BandBox_LeftUp and drops the capture, whichever button was
+                // holding it. See `TacticalMouseState::end_left_press`.
+                if !state.match_state.input.tactical_mouse.end_left_press() {
+                    return;
+                }
                 // Repair / Sell cursor modes consume the click — toggle repair or
                 // sell the own building under the cursor. The mode stays active
                 // (sticky) so the player can act on several buildings in a row.
@@ -193,6 +204,15 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 let mut action: SelectAction = state
                     .match_state.input.selection_state
                     .end_drag(release_point.0, release_point.1);
+                // BandBox_LeftUp 0x004AB9B0 does not early-return when nothing
+                // was armed: with the band flag clear it falls straight through
+                // to the action dispatch. So a release whose press never armed
+                // a drag -- because the shared capture byte was already held, or
+                // because a cursor mode swallowed the press -- is still an
+                // ordinary click at its own release point, not a no-op.
+                if matches!(action, SelectAction::None) {
+                    action = SelectAction::Click(release_point.0, release_point.1);
+                }
                 let shift = is_shift_held(state);
                 // A band box that caught no drawn object leaves the selection
                 // exactly as it was, and the release is handled as an ordinary
@@ -406,6 +426,17 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                     // Both selection arms of the band-box release open the
                     // action-line window, so the units just picked up flash
                     // whatever they are already doing.
+                    //
+                    // DRIFT, recorded not fixed: native runs
+                    // `ActionLines__StartTimer` 0x004ABCF0 on EVERY band
+                    // release, ahead of the `if (!bVar2)` bail, so a drag that
+                    // caught nothing still flashes the lines of whatever was
+                    // already selected. VERA only reaches here with a mutation,
+                    // because an empty catch returns `None`. Trigger: an empty
+                    // band drag over open ground. Player effect: the 25-frame
+                    // order-line flash on the existing group is missing.
+                    // Frequency: a few times a match. Downstream risk: none --
+                    // presentation only.
                     apply_selection_action_line_policy(
                         state,
                         ORDINARY_SELECTION_ACTION_LINE_POLICY,
@@ -420,7 +451,7 @@ pub(crate) fn tactical_mouse(state: &mut AppState, button: MouseButton, btn_stat
                 // the pan anchor and takes the capture, and only does that when
                 // no other button already holds it. Everything the player sees
                 // happens on the release edge.
-                if !state.match_state.input.tactical_mouse.captured {
+                if state.match_state.input.tactical_mouse.press_may_arm() {
                     state
                         .match_state.input.tactical_mouse
                         .begin_right_drag((state.match_state.input.cursor_x, state.match_state.input.cursor_y));
@@ -1012,10 +1043,13 @@ pub(crate) fn toggle_debug_pause(state: &mut AppState) {
 
 /// Handle one-shot gameplay hotkeys (called on key press, not held).
 ///
-/// **Modifier matching is exact.** Every stock binding names a precise modifier
-/// set, and a bare-key command is rejected outright while Shift, Ctrl or Alt is
-/// held — so holding Ctrl to force-fire or Alt to force-move and tapping a
-/// letter does nothing instead of firing Stop or Deploy.
+/// **Modifier matching is exact for all but five commands.** Every stock binding
+/// names a precise modifier set, and a bare-key command is normally rejected
+/// while Shift, Ctrl or Alt is held — so holding Ctrl to force-fire or Alt to
+/// force-move and tapping a letter does nothing instead of firing Stop or
+/// Deploy. The exceptions are the five classes that override
+/// `CommandClass::AcceptsModifiers`; see `hotkeys::HotkeyCommand`. TypeSelect is
+/// one of them, so Shift+T still reaches this tap/hold machinery.
 ///
 /// Dev/debug functions live behind the Ctrl+Shift chord, which stock binds
 /// nothing to, so bare keys stay free for stock game hotkeys.
@@ -1163,18 +1197,104 @@ fn dispatch_retail_hotkey(state: &mut AppState, command: HotkeyCommand) {
         HotkeyCommand::SidebarUp => sidebar_wheel_scroll(state, 1.0),
         HotkeyCommand::SidebarDown => sidebar_wheel_scroll(state, -1.0),
         HotkeyCommand::Options => handle_options_hotkey(state),
-        HotkeyCommand::CenterView
-        | HotkeyCommand::ToggleAlliance
-        | HotkeyCommand::PlaceBeacon
-        | HotkeyCommand::AllToCheer
-        | HotkeyCommand::Follow
-        | HotkeyCommand::PreviousObject
+        HotkeyCommand::CenterView => crate::app::input::camera::center_view_on_selection(state),
+        HotkeyCommand::Follow => crate::app::input::camera::toggle_follow_target(state),
+        // DEFERRED, not overlooked: waypoint planning mode is a whole input
+        // mode, and VERA has none of it. Prior research already handed this off:
+        // docs/research/DRIVE_QUEUED_CLICK_EVENT_PLANNING_MODE_OUTCOME_RESWARM_20260528.md,
+        // whose conclusion — implement it as a separate path-command surface,
+        // NOT as FootClass NavQueue entries — still stands.
+        //
+        // Mode edge. `PlanningModeCommandClass::Execute` 0x00536750 reads the
+        // key-up bit itself (`TEST AH,0x8`), so the mode is HELD, not toggled.
+        // It is not alone in that: `TypeSelectCommandClass::Execute` 0x005368B0
+        // has the identical prologue, and VERA already models that one as a
+        // both-edges held command in `handle_type_select_key_edge`. Press routes
+        // 0x00731A50 -> 0x006379C0, which sets the mode byte `DAT_00AC4CF4`,
+        // plays a sound and posts UI message 0x11C7. Release routes 0x00731A70
+        // -> 0x00637A10, which clears the mode byte and posts 0x11C8. That same
+        // mode byte is what `FUN_0063AB60` hands
+        // `ScrollClass__UpdateMouseScrolling` 0x00692F30 ahead of its capture
+        // routing.
+        //
+        // Command surface — THREE event types, not one, and the plan is streamed
+        // as it is drawn rather than shipped at the end:
+        //   * PLANCONNECT 0x2A — emitted by `FUN_0063AD50` once PER SELECTED
+        //     OBJECT PER CLICK, through the payload ctor 0x004C6780 and
+        //     `Try_Append_Event_To_OutList`.
+        //   * PLANCOMMIT 0x2B — the release event. Built with the 2-arg
+        //     `EventClass(house, type)` ctor 0x004C66C0, so it carries only the
+        //     type, the local house `g_PlayerPtr+0x30` and the frame. It carries
+        //     NO path data.
+        //   * PLANNODEDELETE 0x2C — `DeleteCommandClass::Execute` 0x00537F90 ->
+        //     0x00731A10 -> `FUN_00637D00`, i.e. the Delete key edits the plan
+        //     before it commits. `HotkeyCommand::Delete` below belongs to this
+        //     same deferred mode.
+        // All three land in one executor, `FUN_00637E00`. Module string
+        // `D:\ra2mdpost\PlanMgr.cpp` at 0x00836BD4.
+        //
+        // Storage is the row's named model: TWELVE `WaypointPathClass*` slots on
+        // HouseClass at +0x210..+0x23C with the active slot index at +0x20C
+        // (walked by `FUN_006DAD60`), the point count at path+0x38, and a
+        // per-object back-pointer at `TechnoClass+0x514`. Paths can loop
+        // (`WaypointPathClass+0x24`). The overlay is a dashed all-segment line
+        // with a per-point shroud test and MOUSE.SHA action 0x3C.
+        //
+        // INI: `MaxWaypointPathLength=15` caps the path (Rules+0x90), and
+        // `AddPlanningModeCommandSound=PlanningModeAdd` is a third sound, played
+        // per added node — start and end are not the whole set.
+        //
+        // Trigger: holding Z. Player effect: the key does nothing, so no
+        // multi-leg route can be planned. Frequency: occasional — a deliberate
+        // habit rather than a reflex. Downstream risk: bounded but wider than a
+        // single command — three new event types on the deterministic stream
+        // (row 89 owns the envelope), house-side path storage, and a new overlay
+        // layer. Nothing here needs rework to accommodate it later.
+        //
+        // Note the honest limit of the frequency call: VERA's Shift-queue is NOT
+        // an equivalent, and is itself VERA-internal with the gamemd equivalent
+        // UNIMPLEMENTED. It reproduces single-unit route geometry only. It
+        // cannot commit every selected unit's path at one instant, cannot edit
+        // nodes before committing, and cannot loop a path.
+        HotkeyCommand::PlanningMode => {}
+        // DEFERRED (row 86, GSI-14.05's selection-cycling half). Control groups
+        // themselves are implemented; these four verbs are not, and each needs
+        // its own mechanism rather than a shared one.
+        //
+        // `CombatantSelect` (P, Execute 0x005367F0) and `VeterancyNav`
+        // (Y, Execute 0x005369F0) share a prologue that hands
+        // `!(key >> 8) & 1` — the INVERTED Shift bit — to 0x00732280 and
+        // 0x007336C0 respectively. `FUN_00732280` is the closest of the four to
+        // landable: it is the TypeSelect escalation machine VERA already owns
+        // (`g_bTypeSelectAcrossMap`, `g_SelectionMode`, and the same
+        // screen/map/empty CSF feedback triple, string ids 0x3F5 / 0x3F3 /
+        // 0x3F1) driven by a different member predicate — a drawn-list test
+        // `FUN_007342C0` (`entry->+0x14 & 1`) plus a type flag at
+        // `TechnoTypeClass+0xDBC`, whose INI key is UNCHECKED. So closing it is
+        // "reuse `compute_type_select_tap`'s scope machinery with a combatant
+        // predicate", not new infrastructure.
+        //
+        // `NextObject` (N, Execute 0x00536610) and `PreviousObject`
+        // (M, Execute 0x00536A80) share an identical opening — 0x004AC820(0)
+        // then 0x004AC700(0, 0), which cancel the armed cursor modes — and
+        // differ only in a tail this session did not read. Their cycling order
+        // and wrap behaviour are UNCHECKED.
+        //
+        // Trigger: pressing P, Y, N or M. Player effect: the key does nothing.
+        // Frequency: occasional — control groups carry this load in ordinary
+        // play, and none of the four is a reflex. Downstream risk: none for
+        // Next/Previous/Veterancy, which are pure app-side selection changes;
+        // CombatantSelect touches the shared TypeSelect scope latch, so it
+        // should land beside that machinery rather than duplicating it.
+        HotkeyCommand::PreviousObject
         | HotkeyCommand::NextObject
         | HotkeyCommand::CombatantSelect
+        | HotkeyCommand::VeterancyNav => {}
+        HotkeyCommand::ToggleAlliance
+        | HotkeyCommand::PlaceBeacon
+        | HotkeyCommand::AllToCheer
         | HotkeyCommand::PageUser
         | HotkeyCommand::ScatterObject
-        | HotkeyCommand::VeterancyNav
-        | HotkeyCommand::PlanningMode
         | HotkeyCommand::Delete
         | HotkeyCommand::Taunt(_) => {}
     }

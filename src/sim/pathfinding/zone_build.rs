@@ -151,10 +151,21 @@ impl BaseEdgeBuckets {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BridgeRecordFilter {
-    /// `UpdateBridgeZonesHelper @ 0x0056C510` uses active records while adding
-    /// bridge zone edges; the verified loop does not read `bridge_kind`.
+    /// The bridge loop inside `MapClass::RebuildZoneConnectivity @ 0x0056C510`
+    /// gates only on the record's active byte at `+8` and never reads the kind
+    /// field at `+0xC`.
     AllActive,
-    /// `FindBridgeRecord @ 0x0056DA10` skips records where `bridge_kind != 0`.
+    /// `MapClass::FindBridgeRecord @ 0x0056DA10` skips records where
+    /// `bridge_kind != 0`.
+    ///
+    /// **The `active` term [`bridge_record_matches`] prefixes is VERA-internal
+    /// and gamemd has none** — `FindBridgeRecord` tests only the kind field and
+    /// deliberately ignores whether the bridge is intact. Trigger: a query
+    /// against a destroyed high bridge. Player effect: gamemd still redirects
+    /// through the record; VERA would not, refusing a move retail accepts.
+    /// Frequency: zero today — this variant is dead, and the live equivalent
+    /// `find_high_bridge_record` correctly ignores activity. Downstream risk:
+    /// it becomes a bridge move-refusal the moment anything wires this up.
     #[allow(dead_code)]
     HighActiveOnly,
 }
@@ -1649,8 +1660,16 @@ fn register_bridge_base_edges(
 /// Inject bridge adjacency edges into an existing adjacency graph.
 ///
 /// For each active bridge endpoint record, connects the ground zones at
-/// endpoint_a and endpoint_b. This mirrors gamemd.exe AddBridgeZoneEdges
-/// (0x005851b0) which adds bidirectional edges to the zone graph.
+/// endpoint_a and endpoint_b — one undirected pair in the flat per-MovementZone
+/// [`ZoneAdjacency`]. The native counterpart is the bridge loop inside
+/// `MapClass::RebuildZoneConnectivity` @ `0x0056C510`.
+///
+/// It is **not** `MapClass::AddBridgeZoneEdges` @ `0x005851B0`, despite the
+/// similar name: that one writes the three-level hierarchy graph at
+/// `MapClass+0x90` in 0x24-byte zone records, and inserts six directed edges
+/// per level from three cell pairs — (A, B), (A+dir, B+dir), (A−dir, B−dir) —
+/// with flag byte 0. Porting this function against that citation would inject
+/// spurious hierarchy edges and merge zones that are not connected.
 pub(crate) fn inject_bridge_adjacency(
     adj: &mut ZoneAdjacency,
     ground_zones: &[ZoneId],
@@ -1689,7 +1708,18 @@ pub(crate) fn inject_bridge_adjacency(
 
 /// Starting at `start_index`, return the first high-bridge record whose axis
 /// covers `query` within the requested perpendicular tolerance. Record
-/// activity is deliberately ignored.
+/// activity is deliberately ignored, matching `MapClass::FindBridgeRecord`
+/// @ `0x0056DA10`.
+///
+/// **VERA-internal, gamemd has no equivalent: the `min`/`max` normalisation of
+/// the axis span.** Native tests `A.y <= q.y <= B.y` (and `A.x <= q.x <= B.x`)
+/// with the endpoints in stored order, so a record whose B endpoint precedes A
+/// along the axis never matches there and `GetZoneID` answers `0xFFFFFFFF`.
+/// Trigger: a bridge endpoint record stored with its endpoints reversed —
+/// whether the record builder can produce one is UNCHECKED. Player effect: VERA
+/// redirects through such a bridge and accepts the move; gamemd refuses it.
+/// Frequency: unknown, and zero if records are always stored in ascending
+/// order. Downstream risk: low; pinning the construction order would settle it.
 pub(crate) fn find_high_bridge_record(
     bridge_records: &[BridgeEndpointRecord],
     start_index: usize,

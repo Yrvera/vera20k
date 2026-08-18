@@ -155,8 +155,13 @@ fn bridge_traversal_explicit_parent_unknown_height_requires_candidate_transition
     assert_eq!(result.path_height, 4);
 }
 
+/// Despite the old name, the diff here is **4**, not 0: the parent carries no
+/// structural bridge, so `parent_selected` is the path height (4) and the
+/// candidate is at level 0. `0x004D9D8F-0x004D9D94` allows that case — the
+/// parent's own level is neither `candidate ± 4`, so `JNZ 0x004D9E5E` takes
+/// the `XOR EAX,EAX` exit. The assertion below used to demand a block.
 #[test]
-fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
+fn bridge_traversal_allows_a_diff_four_edge_with_no_matching_parent_level() {
     let parent = bridge_test_cell(0, false, false, 0);
     let candidate = bridge_test_cell(0, false, false, 0);
     let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
@@ -172,7 +177,8 @@ fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
         },
     );
 
-    assert!(!result.allowed);
+    assert!(result.allowed);
+    assert!(!result.force_bridge_list);
 }
 
 #[test]
@@ -1468,6 +1474,49 @@ fn test_compute_neighbor_height_ramp_up() {
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 4 - 0 = 4, in [2,4] -> ramp up to bridge deck
     assert_eq!(compute_neighbor_height(4, &parent, &neighbor), 4);
+
+    // `AStar_create_node` @ 0x0042A460 accepts a drop of 2 or 3 as well —
+    // `abs((neighbor.Level - parent_height) + 3) <= 1` — and reads no
+    // bridgehead flag. Both cases used to carry the ground level instead.
+    assert_eq!(compute_neighbor_height(2, &parent, &neighbor), 4, "drop of 2");
+    assert_eq!(compute_neighbor_height(3, &parent, &neighbor), 4, "drop of 3");
+
+    let unflagged = PathCell {
+        transition: false,
+        ..neighbor
+    };
+    assert_eq!(
+        compute_neighbor_height(4, &parent, &unflagged),
+        4,
+        "a deck cell with no bridgehead flag still promotes",
+    );
+
+    // Drops outside 2..=4 stay on the ground plane.
+    assert_eq!(compute_neighbor_height(1, &parent, &neighbor), 0, "drop of 1");
+    assert_eq!(compute_neighbor_height(5, &parent, &neighbor), 0, "drop of 5");
+}
+
+#[test]
+fn bridge_traversal_allows_a_null_parent() {
+    // 0x004D9CC5 `TEST ESI,ESI; JZ 0x004D9E5E` reaches `XOR EAX,EAX`, so an
+    // unresolvable predecessor — the outer map ring — is allowed, not refused.
+    let candidate = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![candidate], 1, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(0, 0).unwrap(),
+            candidate_coord: (0, 0),
+            // West from column 0: the predecessor is off-map.
+            direction: 2,
+            path_height: 0,
+            parent: None,
+        },
+    );
+
+    assert!(result.allowed);
+    assert!(!result.force_bridge_list);
 }
 
 #[test]
@@ -1612,6 +1661,70 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
         has_damaged_data: false,
         bridgehead_anchor_class_at_load: None,
     }
+}
+
+#[test]
+fn a_height_change_costs_the_same_as_a_flat_step() {
+    // `AStar_compute_edge_cost` @ 0x00429830 has no height, level, slope or ramp
+    // term, and `AStar_main_loop` @ 0x00429A90's seven reads of the cell level
+    // byte +0x11B all feed the bridge/layer selection. A ramp step must
+    // therefore cost exactly one step.
+    //
+    // Row y=1 rises to level 1 in its middle three cells; row y=0 stays flat.
+    // Straight along y=1 is four steps crossing four height changes (up, level,
+    // level, down); the y=0 detour is also four steps but entirely flat. Under a
+    // ×4 height multiplier the straight run cost 13 steps against the detour's
+    // 4, so the search took the detour.
+    let build = |raised: bool| {
+        let mut cells = Vec::with_capacity(10);
+        for ry in 0..2u16 {
+            for rx in 0..5u16 {
+                let mut cell = make_resolved_cell(rx, ry);
+                if raised && ry == 1 {
+                    if (1..=3).contains(&rx) {
+                        cell.level = 1;
+                    } else {
+                        // The ±1 step is legal only when the *lower* cell is a
+                        // ramp, so the two cells flanking the rise carry one.
+                        cell.slope_type = 1;
+                    }
+                }
+                cells.push(cell);
+            }
+        }
+        ResolvedTerrainGrid::from_cells(5, 2, cells)
+    };
+
+    let route = |terrain: &ResolvedTerrainGrid| {
+        let grid = PathGrid::from_resolved_terrain(terrain);
+        find_path_with_costs(
+            &grid,
+            (0, 1),
+            (4, 1),
+            None,
+            None,
+            None,
+            Some(terrain),
+            None,
+            0,
+            false,
+            false,
+        )
+    };
+
+    let flat = build(false);
+    let raised = build(true);
+    assert_eq!(
+        raised.cell(2, 1).expect("raised cell").level,
+        1,
+        "precondition: the strip really is raised",
+    );
+    let flat_path = route(&flat).expect("flat route exists");
+    assert_eq!(
+        route(&raised),
+        Some(flat_path),
+        "a height change must not change the route",
+    );
 }
 
 #[test]

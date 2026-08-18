@@ -362,8 +362,10 @@ pub enum StateOutcome {
         /// re-evaluation. Orchestrator (Phase F Task 27) runs the actual
         /// rim helper.
         adjacent_bridges_dirty: Vec<(u16, u16)>,
-        /// Whether the zone graph needs rebuild (`InvalidateBridgeZones` →
-        /// `UpdateBridgeZonesHelper`). Orchestrator dispatches.
+        /// Whether the zone graph needs rebuild
+        /// (`MapClass::InvalidateBridgeZones` @ `0x0056DAE0` →
+        /// `MapClass::RebuildZoneConnectivity` @ `0x0056C510`). Orchestrator
+        /// dispatches.
         zones_dirty: bool,
         /// Cells whose visible terrain changed and must be marked dirty on the
         /// minimap. On a collapse this is the collapsed triple PLUS every

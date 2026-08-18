@@ -1303,8 +1303,9 @@ pub(crate) fn reconcile_low_bridge_surface_after_cache_load(
 
 /// Zone graph refresh. Per HIGH §12.8: walker emits `zones_dirty=true`
 /// only when a final-stage cell flips a `BridgeEndpointRecord.active`
-/// flag, mirroring the binary's `InvalidateBridgeZones` →
-/// `UpdateBridgeZonesHelper` chain. When set:
+/// flag, mirroring the binary's `MapClass::InvalidateBridgeZones`
+/// @ `0x0056DAE0` → `MapClass::RebuildZoneConnectivity` @ `0x0056C510`
+/// chain. When set:
 ///   1. Recompute every endpoint record's `active` flag from current
 ///      cell damage state — first destroyed cell in a group flips its
 ///      endpoint pair to `active = false`. Replaces the side-effect of

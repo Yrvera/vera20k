@@ -52,7 +52,7 @@ impl FacingClass {
         fc
     }
 
-    /// Update the rate of turn. Mirrors gamemd's SetROT (FUN_004C9680):
+    /// Update the rate of turn. Mirrors gamemd's SetROT (`FacingClass::Set_ROT` @ `0x004C9680`):
     /// clamps input > 126 to 127, then stores `(byte << 8)`.
     pub fn set_rot(&mut self, rot_byte: u8) {
         let clamped: u8 = if rot_byte > 0x7E { 0x7F } else { rot_byte };
@@ -145,8 +145,13 @@ impl FacingClass {
     }
 
     /// Snap setter — writes target to both current and prev, resets the
-    /// timer. Mirrors gamemd's UpdateFacing (FUN_004C9300) used by spawn /
-    /// locomotor takeoff / deploy paths that want no smoothing.
+    /// timer. Mirrors `FacingClass::UpdateFacing` @ `0x004C9300`.
+    ///
+    /// Its primary consumers are not spawn paths: `DriveLocomotionClass::
+    /// Process_Drive_Track` @ `0x004B1AC1` and its Ship twin @ `0x006A10FD`
+    /// snap the **body facing to each consumed track point's facing byte**,
+    /// so a Drive unit's hull facing is snapped rather than interpolated for
+    /// the whole duration of a curve. Spawn, takeoff and deploy use it too.
     /// Returns true if the destination changed.
     pub fn snap(&mut self, new_target: u16, binary_frame: u32) -> bool {
         let animated = self.current(binary_frame);

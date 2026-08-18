@@ -25,6 +25,11 @@ use crate::rules::locomotor_type::MovementZone;
 
 pub(crate) const ZONE_PRECHECK_LEVELS: usize = 3;
 const TOP_LEVEL: usize = 2;
+/// Per-terrain-type base cost `Zone_precheck` @ `0x0042C290` adds per hop, ×1000.
+///
+/// The native table is the eight f32s at `0x007E3794`
+/// (`[1.0, 0, 0, 1.0, 1.0, 0, 1.0, 1.0]`); this is that table scaled to
+/// integers, as is the `+1` edge-flag term against the native `0.001`.
 const ZONE_BASE_COSTS: [i32; passability::TERRAIN_TYPE_COUNT] =
     [1000, 0, 0, 1000, 1000, 0, 1000, 1000];
 
@@ -244,7 +249,7 @@ impl ZoneLevelGraph {
     }
 }
 
-/// Three-level hierarchy searched by gamemd-style `Zone_precheck`.
+/// Three-level hierarchy searched by `Zone_precheck` @ `0x0042C290`.
 #[derive(Debug, Clone)]
 pub(crate) struct ZoneHierarchy {
     levels: [ZoneLevelGraph; ZONE_PRECHECK_LEVELS],
@@ -375,6 +380,20 @@ pub(crate) enum ZonePrecheckOutcome {
     Failed,
 }
 
+/// **VERA-internal tie-break, gamemd equivalent UNCHECKED.** `Zone_precheck`
+/// @ `0x0042C290` uses a raw binary min-heap keyed on the float cost — sift-up
+/// stops on `parent <= new`, sift-down uses strict `<` — so its pop order among
+/// equal costs is heap-array order, not insertion order. This entry breaks ties
+/// FIFO on `sequence` instead, because heap-array order is not reproducible
+/// from a `BinaryHeap`.
+///
+/// Trigger: any two frontier zones with the same accumulated cost — pervasive,
+/// since [`ZONE_BASE_COSTS`] only ever contributes 0 or 1000 plus the `+1` edge
+/// flag. Player effect: a different coarse route is chosen, which stamps a
+/// different corridor and can hand the cell A* a different (still valid) path,
+/// so units take a different but legal route. Frequency: continuous on any real
+/// map. Downstream risk: the corridor is deterministic within VERA, so this
+/// costs replay nothing; it costs frame-for-frame comparison against gamemd.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct PrecheckQueueEntry {
     cost: i32,
@@ -397,7 +416,7 @@ impl PartialOrd for PrecheckQueueEntry {
     }
 }
 
-/// Flat/no-slope `Zone_precheck` foundation.
+/// Flat/no-slope `Zone_precheck` @ `0x0042C290` foundation.
 ///
 /// This intentionally models the precheck consumer and output shape only. Slope
 /// contribution is zero in this slice, and automatic failed-A* exclusion
@@ -455,6 +474,17 @@ fn search_precheck_level(
     }
     let start_record = graph.record(start)?;
     let goal_record = graph.record(goal)?;
+    // VERA-internal, gamemd has no equivalent: the two `start_record` terms.
+    // `Zone_precheck` @ 0x0042C290 never type-checks the start zone — it stamps
+    // it and searches, and short-circuits `start == goal` to success without
+    // any check at all. The goal is effectively gated on both sides, because
+    // native can only reach it through the `matrix[row*8+type] == 1` neighbour
+    // gate. Trigger: a start zone whose record type is impassable for the
+    // mover's row. Player effect: VERA refuses the whole precheck where gamemd
+    // would search. Frequency: near zero — a level-0 zone's record type is the
+    // class of its whole base node, so a unit standing on a cell legal for it
+    // has a passable record; it takes a bridge or wall boundary oddity to fire.
+    // Downstream risk: none, it is a head predicate.
     if !is_valid_zone_type(start_record.zone_type)
         || !is_valid_zone_type(goal_record.zone_type)
         || !passability::is_passable_for_zone(start_record.zone_type, movement_zone)

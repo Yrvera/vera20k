@@ -64,9 +64,31 @@ pub(crate) enum RuntimeBridgePolicyResult {
 
 /// Evaluate the runtime bridge mismatch branch without borrowing A* policy.
 ///
-/// Original: `FootClass::EvaluateCellEnterabilityOrCost` (YR 1.001) compares
-/// candidate `CellClass+0x140 & 0x100` with Foot `+0x8c`, sets `+0x68b` on a
-/// mismatch, then calls virtual `+0x29c` to select the local return path.
+/// Original: each locomotor's `Process_Movement` compares
+/// candidate `CellClass+0x140 & 0x100` with Foot `+0x8C`, sets `+0x68B` on a
+/// mismatch, then calls virtual `+0x29C` to select the local return path.
+///
+/// The comparison lives in each locomotor's own `Process_Movement`, not in a
+/// shared helper: `DriveLocomotionClass` @ `0x004B3376`-`0x004B339D`
+/// (`EDX = (cell->Flags >> 8) & 1`; `AL = [foot+0x8C]`; `XOR EDX,EAX; JZ`;
+/// `MOV byte [ECX+0x68B],1`; `CALL [vtable+0x29C]`), with twins at
+/// `0x0075B662` (Walk), `0x00515513` (Hover) and `0x006A29E0` (Ship) — four
+/// sites carrying the whole sequence. `0x006A3C19` and `0x00736038` are bare
+/// `[+0x68B] = 1` stores in unrelated branches, not twins of this comparison.
+/// There is no
+/// `FootClass::EvaluateCellEnterabilityOrCost` in this program.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED:** `pending_mismatch` is
+/// written on every call, so a matching tick clears it. Native `[foot+0x68B]`
+/// is write-1-only — initialised once in `FootClass::Constructor` @
+/// `0x004D33BA`, set at eleven locomotor sites, never cleared, and read by
+/// `FootClass::ComputeChecksum` @ `0x004DBAD0` (the read is at `0x004DBD0C`),
+/// so it is part of the sync
+/// checksum. Trigger: any tick where the candidate's bridge bit matches the
+/// mover's. Player effect: none today — the field has no reader outside tests
+/// and the only production caller passes a policy that never rejects.
+/// Frequency: zero while that holds. Downstream risk: a flip to authoritative
+/// would start from the wrong latch semantics and a wrong checksum input.
 pub(crate) fn evaluate_runtime_bridge_transition(
     state: &mut RuntimeBridgeTransitionState,
     candidate_bridge_bit: bool,

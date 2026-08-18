@@ -75,9 +75,41 @@ pub(crate) enum HotkeyResolution {
 }
 
 impl HotkeyCommand {
+    /// Native `CommandClass::AcceptsModifiers`, vtable slot +0x14, consulted by
+    /// the FIRST (base virtual-key) lookup in `Process_Command` 0x0055DEE0.
+    ///
+    /// The shared default body at 0x00535BD0 is `xor al,al; ret 4` — always
+    /// false — and 42 of the 47 command vtables point their +0x14 slot at it.
+    /// A rejected first lookup falls through to the second lookup keyed on
+    /// `key | modifiers`, which for a bare press is the same word, so "default"
+    /// is observationally "fires only when no modifier is held".
+    ///
+    /// Five classes override the slot, and they are why this cannot be one
+    /// blanket rule. `TypeSelect` (0x00536880), `CombatantSelect` (0x005367E0),
+    /// `VeterancyNav` (0x005369E0) and `HealthNav` (0x00536940) share the body
+    /// `mov eax,[esp+4]; shr eax,8; and eax,1; ret 4` — raw bit 8, the Shift
+    /// bit, ignoring Ctrl and Alt. `PlanningMode` (0x00536710) is
+    /// `mov eax,[esp+4]; test ah,7; ...` — true when any of Shift/Ctrl/Alt is
+    /// held. Those five keep firing from their bare-key binding with the
+    /// modifier down; the visible one in ordinary play is Shift+T, which stays
+    /// a type-select instead of being swallowed.
+    ///
+    /// Identified by walking the +0x14 data refs to 0x00535BD0 (42 hits, stride
+    /// 0x28 = one 9-slot vtable plus its RTTI word), then reading each gap
+    /// vtable's +0x04 `GetName` thunk back to its INI-name string. The set is
+    /// closed: the grid holds exactly 47 CommandClass vtables, so 42 defaults
+    /// plus these 5 account for all of them. Only four appear below — stock
+    /// ships `HealthNav` unbound, so it has no [`HotkeyCommand`] variant to gate.
+    ///
+    /// Consequence for VERA's dev chord: Ctrl+Shift+P now resolves to the retail
+    /// `CombatantSelect` instead of falling through to the pathgrid overlay
+    /// toggle, which keeps its F9 binding.
     fn accepts_base_modifiers(self, modifiers: ModifiersState) -> bool {
-        let _ = self;
-        modifier_bits(modifiers) == 0
+        match self {
+            Self::TypeSelect | Self::CombatantSelect | Self::VeterancyNav => modifiers.shift_key(),
+            Self::PlanningMode => modifier_bits(modifiers) != 0,
+            _ => modifier_bits(modifiers) == 0,
+        }
     }
 }
 
@@ -553,6 +585,100 @@ mod tests {
         assert_eq!(
             bindings.resolve(&key, KeyLocation::Standard, modifiers(true, true, false)),
             None
+        );
+    }
+
+    /// The five `AcceptsModifiers` overrides, against the stock bare-key
+    /// bindings: TypeSelect=84 (T), CombatantSelect=80 (P), VeterancyNav=89 (Y),
+    /// PlanningMode=90 (Z), plus StopObject=83 (S) as the unmodified default.
+    #[test]
+    fn modifier_accepting_commands_survive_their_modifier_and_defaults_do_not() {
+        let bindings = HotkeyBindings::from_ini_bytes(Some(
+            b"[Hotkey]\nTypeSelect=84\nCombatantSelect=80\nVeterancyNav=89\nPlanningMode=90\nStopObject=83\n",
+        ));
+        // Raw bit 8 only: Shift admits, Ctrl and Alt alone do not, and
+        // Ctrl+Shift still admits because the native body masks bit 8 alone.
+        for (letter, command) in [
+            ("t", HotkeyCommand::TypeSelect),
+            ("p", HotkeyCommand::CombatantSelect),
+            ("y", HotkeyCommand::VeterancyNav),
+        ] {
+            let key = character(letter);
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, ModifiersState::empty()),
+                Some(command),
+            );
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, modifiers(true, false, false)),
+                Some(command),
+            );
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, modifiers(true, true, false)),
+                Some(command),
+            );
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, modifiers(false, true, false)),
+                None,
+            );
+            assert_eq!(
+                bindings.resolve(&key, KeyLocation::Standard, modifiers(false, false, true)),
+                None,
+            );
+        }
+
+        // `test ah,7`: any single modifier admits PlanningMode, and so does none.
+        let planning = character("z");
+        for held in [
+            ModifiersState::empty(),
+            modifiers(true, false, false),
+            modifiers(false, true, false),
+            modifiers(false, false, true),
+            modifiers(true, true, false),
+        ] {
+            assert_eq!(
+                bindings.resolve(&planning, KeyLocation::Standard, held),
+                Some(HotkeyCommand::PlanningMode),
+            );
+        }
+
+        // The shared default body rejects every modifier state but the bare one.
+        let stop = character("s");
+        assert_eq!(
+            bindings.resolve(&stop, KeyLocation::Standard, ModifiersState::empty()),
+            Some(HotkeyCommand::StopObject),
+        );
+        for held in [
+            modifiers(true, false, false),
+            modifiers(false, true, false),
+            modifiers(false, false, true),
+        ] {
+            assert_eq!(bindings.resolve(&stop, KeyLocation::Standard, held), None);
+        }
+    }
+
+    /// A modifier-accepting command must not steal a key whose modified word is
+    /// separately bound: ScreenCapture=339 is Shift+S, and StopObject keeps the
+    /// default gate, so Shift+S resolves through the second lookup.
+    #[test]
+    fn second_lookup_still_wins_for_default_gated_commands() {
+        let bindings = HotkeyBindings::from_ini_bytes(Some(
+            b"[Hotkey]\nStopObject=83\nScreenCapture=339\nTypeSelect=84\n",
+        ));
+        assert_eq!(
+            bindings.resolve(
+                &character("s"),
+                KeyLocation::Standard,
+                modifiers(true, false, false)
+            ),
+            Some(HotkeyCommand::ScreenCapture),
+        );
+        assert_eq!(
+            bindings.resolve(
+                &character("t"),
+                KeyLocation::Standard,
+                modifiers(true, false, false)
+            ),
+            Some(HotkeyCommand::TypeSelect),
         );
     }
 

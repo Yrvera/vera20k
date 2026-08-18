@@ -174,8 +174,14 @@ pub(crate) struct LiveCellPassabilityQuery<'a> {
 }
 
 /// Evaluate one live Cell through the shared native leaf.
-// Native: CellClass::IsClearToMove @ YR 0x0047C650. Callers must still retain
-// their own +0x1AC, CanThisExistHere, aircraft, or virtual-Unlimbo decisions.
+// Native: `CellClass::CheckCellPassability` @ `0x004834A0`. Callers must still
+// retain their own +0x1AC, CanThisExistHere, aircraft, or virtual-Unlimbo
+// decisions.
+//
+// The earlier citation here — "CellClass::IsClearToMove @ 0x0047C650" — was
+// wrong twice over: `0x0047C650` is not a function entry, and the function
+// containing it is `Cell_passability_building_placement` @ `0x0047C620`, a
+// building-placement test whose tail returns the buildable flag.
 pub(crate) fn evaluate_live_cell_passability(
     query: LiveCellPassabilityQuery<'_>,
 ) -> IsClearToMoveResult {
@@ -249,8 +255,11 @@ pub(crate) fn evaluate_live_cell_passability(
 }
 
 /// Evaluate the native shared movement-clearance leaf without collapsing its callers.
-// Native: CellClass::IsClearToMove (YR 1.001) keeps Winged, bridge, raw-occupation,
-// and wall gates distinct; FootClass +0x1AC and object Unlimbo remain outside this seam.
+// Native: `CellClass::CheckCellPassability` @ `0x004834A0` keeps Winged, bridge,
+// raw-occupation and wall gates distinct; the FootClass +0x1AC predicate and
+// object Unlimbo remain outside this seam. Its Destroyer-class wall escape set
+// matches native's `{2, 3, 8, 0xC}`, tested at `0x004835A2`, `0x004835A7`,
+// `0x004835AC` and `0x004835C5`.
 pub(crate) fn evaluate_is_clear_to_move(input: IsClearToMoveRequest) -> IsClearToMoveResult {
     if input.speed_type == SpeedType::Winged {
         return IsClearToMoveResult::ClearWinged;

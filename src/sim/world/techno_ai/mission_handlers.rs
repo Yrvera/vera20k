@@ -85,6 +85,21 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
     let evaluation = match (input.category, input.mission) {
         // `FootClass::Mission_Move` is the native named location for this
         // handler-return cadence; movement execution remains in movement/.
+        // **Infantry take a leaf override first, and VERA does not model it.**
+        // `InfantryClass`'s Move slot is `+0x22C` = `0x0051F660`, which gates on
+        // `[this+0x6C4] ∈ {0x1B, 0x1C, 0x1D, 0x1E}` — a small per-infantry state
+        // enum, identity UNCHECKED, the same field `0x00521320` reads — and for
+        // a human-owned unit (`vtable+0x3C` → `HouseClass::IsControlledByHuman`
+        // @ `0x0050B730`) calls `Set_Destination(NULL, true)` through `+0x480`
+        // and returns 1, never entering `FootClass::Mission_Move` @ `0x004D4200`
+        // and never drawing its jitter. Trigger: a deployed infantryman ordered
+        // to move. Player effect: retail drops the destination and re-dispatches
+        // next frame; VERA keeps the destination and draws the cadence jitter.
+        // Frequency: GI, Guardian GI and Desolator deploy is routine, so this is
+        // not rare. Downstream risk: it is one RNG draw per occurrence, so the
+        // stream diverges too. **Note the frame trap**: `[this+0x6C4]` is a
+        // `UnitTypeClass*` on UnitClass and this state enum on InfantryClass,
+        // which caches its own type at `+0x6C0`.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Move)) => {
             if input.moving_or_queued {
                 MissionHandlerEvaluation::cadence(jittered_mission_cadence(
@@ -146,8 +161,22 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
-            // `UnitClass`'s Guard override: the two Unit-local deploy latches
-            // queue before the FootClass delegate and return 1.
+            // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
+            // wrong and the arm is dead.** The "three byte latches, then
+            // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
+            // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
+            // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
+            // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
+            // override `0x00740810` gates its `Queue_Mission(10)`/`return 1` on
+            // `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery checks, and
+            // its `Queue_Mission(0x10)` path returns `ftol(Rate) + Rand(0, 2)`
+            // rather than 1.
+            //
+            // Trigger: none today — both latch bytes have only `#[cfg(test)]`
+            // writers (`sim::mission::leaf`), so production never reaches
+            // either arm. Player effect: none. Frequency: zero. Downstream
+            // risk: the wrong native mapping would be carried straight into any
+            // future deploy work; the shape belongs on the Move arm.
             if input.unit_deploy_begin_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
@@ -163,7 +192,7 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // selectors — so it runs the Guard body. The cadence still comes from
         // the object's own mission slot (the timer lookup indexes on the
         // committed mission id, not on the handler's identity), and `[Sticky]
-        // Rate=.016` is 14 frames against Guard's 27. Stock skirmish maps park
+        // Rate=.016` is 14 frames against Guard's 26. Stock skirmish maps park
         // neutral civilian traffic on this.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Sticky)) => {
             evaluate_foot_guard_cadence(sim, rules, MissionType::Sticky, input.bunker_delegate)
@@ -301,12 +330,18 @@ impl MissionHandlerEvaluation {
 ///   Guard, which is what this returns;
 /// - the vehicle suppression byte that skips the queue entirely (its writer is
 ///   UNKNOWN, so modelling it would be inventing a gate);
-/// - the base hook's two EARLY returns, which suppress the whole selector for
-///   that arrival: a NavQueue pop, and a locomotor piggyback unwind. Both are
-///   inert here — `nav_queue` still has no production writer, and the piggyback
-///   unwind runs in the movement phase — but a future NavQueue writer must
-///   restore the early return or a waypointed unit will fall to Guard at the
-///   first leg instead of continuing to the next one.
+/// - the base hook's NavQueue pop and locomotor piggyback unwind. These are
+///   **not** early returns that suppress the selector — that reading was wrong.
+///   `FootClass::Enter_Idle_Mode` @ `0x004D82B0` pops `[this+0x598]` /
+///   `[this+0x58C]`, calls `Assign_Destination(next, 0)` and returns 1, but both
+///   leaves discard that return for control flow (`0x00738970` assigns it to a
+///   local and then unconditionally calls `+0x4AC`; `0x0051CBA0` the same).
+///   Waypointed movement continues because the pop **installs a destination**,
+///   so the leaf then reads `[this+0x5A4] != 0` and picks Move(2) on its own.
+///   Both are inert here — `nav_queue` has no production writer and the
+///   piggyback unwind runs in the movement phase — but a future NavQueue writer
+///   must pop *before* the selector reads the destination, not restore an early
+///   return that does not exist.
 pub(super) fn move_arrival_evaluation(
     rules: &RuleSet,
     input: MissionHandlerInput,
@@ -404,6 +439,23 @@ pub(super) fn foot_enter_idle_mode_queue(
     ) {
         return None;
     }
+    // **VERA-internal, gamemd equivalent UNCHECKED — two ordering/indexing
+    // differences, both inert today.** Native is
+    // `if (effective != -1) { entry = MissionControl[*(this+0xAC)];
+    // if (entry[+7] || entry[+5]) return; }` — the *effective* mission only
+    // gates whether to look at all, while the *committed* one at `+0xAC` indexes
+    // the table. This looks the entry up on `effective_mission`. And the
+    // infantry leaf tests the destination `[this+0x5A4]` **before** the
+    // Guard/AreaGuard and Zombie/Paralyzed gates, where this tests them first.
+    //
+    // Trigger: a caller whose committed and effective missions differ, or one
+    // that reaches here with both a destination and a frozen mission. Player
+    // effect: none today — the only live entry is the Attack handler's
+    // no-target exit, where committed == effective == Attack and `[Attack]`
+    // carries neither key. Frequency: zero. Downstream risk: a second producer
+    // would inherit both. (Curiosity for whoever ports it: with a current of -1
+    // and only a queued mission, native indexes `MissionControl[-1]` — an
+    // out-of-bounds read one entry below the array.)
     let frozen = input.effective_mission.is_some_and(|mission| {
         rules
             .mission_control
@@ -423,16 +475,53 @@ const AREA_GUARD_CADENCE_JITTER_MIN: u32 = 1;
 /// Largest value of the Area Guard cadence jitter draw (`RandomRanged(1, 5)`).
 const AREA_GUARD_CADENCE_JITTER_MAX: u32 = 5;
 
-/// `FootClass::Mission_AreaGuard` — "hold this spot and cover it".
+/// `FootClass::Mission_AreaGuard` 0x004D6AA0 — "hold this spot and cover it".
 ///
-/// With no target installed and the base can-acquire predicate satisfied, the
-/// handler runs the SAME shared target scanner the common AI body runs for
-/// Move/Guard/Harvest, but with the Area Guard threat mask (which is what
-/// widens the acquisition radius — see `combat::threat_range`). If that
-/// installs a target the handler returns one frame. Otherwise the cadence is
-/// the object's own `[Area Guard] Rate` plus a `RandomRanged(1, 5)` draw.
+/// With no target installed and the base can-acquire predicate satisfied
+/// (`TechnoClass::CanAcquireTarget` 0x007091D0 at 0x004D6EDB), the handler runs
+/// the SAME shared target scanner the common AI body runs for
+/// Move/Guard/Harvest — slot `+0x39C`, 0x00709820, called at 0x004D6F06 — but
+/// with the Area Guard threat mask (which is what widens the acquisition radius
+/// — see `combat::threat_range`). If that installs a target the handler returns
+/// one frame. Otherwise the cadence is the object's own `[Area Guard] Rate`
+/// plus a `RandomRanged(1, 5)` draw (0x004D7059).
 ///
 /// Deliberately NOT represented, recorded:
+/// - **the head hand-off arm.** Before anything else, `if ([this+0x2E4]) {
+///   Queue_Mission(Guard, commence=1); return 1; }` (0x004D6AAB). VERA has no
+///   field for `+0x2E4` and its identity is UNCHECKED. Trigger: whatever sets
+///   that dword. Player effect: retail drops such an object straight back onto
+///   plain Guard on its next dispatch; VERA keeps it area-guarding. Frequency:
+///   unknown pending the field's identity. Downstream risk: none — it is one
+///   queue call away once the field is named.
+/// - **the three containment latches** the head shares verbatim with
+///   `Mission_Guard` (0x004D6ACC-0x004D6B22) — same residual as recorded on
+///   [`evaluate_foot_guard_cadence`].
+/// - **the harvester-resume arm** (0x004D6D1A-0x004D6D69): for a `UnitClass`
+///   (`What_Am_I()` 1) whose type carries byte `+0xE0E`, the handler runs
+///   `Queue_Mission(Harvest, 0)`, calls `[vtable+0x1EC]` (Commence) and returns
+///   `RandomRanged(1, 10) + 1` — a different cadence AND a different draw from
+///   the `(1, 5)` above. Trigger: a miner on Area Guard. Player effect: retail
+///   puts it straight back to work; VERA's keeps area-guarding. Frequency:
+///   invisible today — the miner exclusion at the head of
+///   [`dispatch_supported_foot_mission_cadence`] keeps any miner not on Guard
+///   out of the handler, and the only route onto Area Guard is the Move-arrival
+///   promotion that is itself a recorded residual. Downstream risk is why it is
+///   written down: the `(1, 10) + 1` return is an RNG-consumption difference
+///   that lands the moment either of those two closes. `+0xE0E` is UNCHECKED.
+/// - **the tank-bunker adjacency scan** at 0x004D6F44, byte-for-byte the block
+///   recorded on [`evaluate_foot_guard_cadence`].
+/// - **the infantry idle action.** With still no target the handler calls
+///   `[vtable+0x478]` at 0x004D6F25 = `InfantryClass::UpdateIdleAction`
+///   0x0051CDB0, which fidgets the facing, can play an idle `VocClass` line, and
+///   draws `RandomRanged(0, 0x7FFFFFFE)` plus up to three more values. `Mission_Guard`
+///   calls it from the same no-target position. VERA has no infantry idle-action
+///   system. Trigger: any idle infantryman on Guard, Sticky or Area Guard.
+///   Player effect: retail infantry look around and shuffle while standing
+///   guard; VERA's stand still. Frequency: continuous, every idle infantryman
+///   in every match. Downstream risk: those draws are scenario-RNG consumption
+///   VERA does not make, so the streams cannot be compared frame-for-frame
+///   until an idle-action system lands.
 /// - **the guard post.** The original anchors the scan on a stored guard-post
 ///   target, defaulting it to the object's own cell the first time the handler
 ///   runs with none. VERA has no such field, so the scan is always anchored on
@@ -479,15 +568,116 @@ fn evaluate_foot_area_guard(
     MissionHandlerEvaluation::cadence(base.saturating_add(jitter))
 }
 
-/// `FootClass::Mission_Guard`, the body Guard(5) and Sticky(6) share.
+/// `FootClass::Mission_Guard` 0x004D5070, the body Guard(5) and Sticky(6) share.
+///
+/// **Shared for units. Infantry reach it only through a leaf override VERA does
+/// not model, recorded here.** `InfantryClass`'s slot `+0x21C` is `0x0051F620`,
+/// nine instructions: `CALL 0x00521320; CMP EAX,-1; JNZ` returns that value
+/// directly, and only `-1` falls through to the Foot body. `0x00521320` owns
+/// infantry deploy and undeploy on Guard; its arms return an animation-table
+/// duration (`Type+0xE3C` plus `+0x460`/`+0x3D0`/`+0x418`), or `Rate +
+/// RandomRanged(0, 2)`, or — on the radiation arm gated by `Type+0xD37`,
+/// Desolator-shaped — `Rate + RandomRanged(10, 0x14)`, a draw VERA never makes.
+/// Trigger: any infantryman on Guard or Sticky whose type can deploy.
+/// Player effect: a deploying GI, Guardian GI or Desolator re-dispatches on the
+/// Foot cadence instead of its animation's own length. Frequency: continuous
+/// wherever deployed infantry hold ground, which is ordinary play for both
+/// Allied and Soviet. Downstream risk: it consumes scenario RNG on the
+/// radiation arm, so the stream diverges as well as the cadence.
+///
+/// The Sticky half of the shared-slot claim is confirmed:
+/// `MissionClass::GetMissionTimerEntry` @ `0x005B3A00` is
+/// `&MissionControl + *(this+0xAC) * 8`, indexed on the **committed** mission —
+/// the same field the dispatcher switches on — so `[Sticky] Rate` reaches the
+/// shared body exactly as the arm below assumes, and nothing else in the binary
+/// distinguishes Sticky from Guard.
 ///
 /// `mission` is the object's OWN committed selector, not the handler's: the
 /// native timer lookup indexes the control table on the committed mission id,
 /// so the same handler re-arms a Guard object at `[Guard] Rate` and a Sticky
 /// object at `[Sticky] Rate`.
 ///
-/// Bunker delegation returns the base cadence; all represented local-guard
-/// paths take exactly one `RandomRanged(0, 2)`.
+/// **The handler performs no target acquisition.** Its only no-target tail call
+/// is `[vtable+0x478]` (0x004D51A6 and 0x004D51D8), which is the idle-action
+/// virtual — `InfantryClass::UpdateIdleAction` 0x0051CDB0 for infantry and the
+/// `XOR AL,AL; RET` stub 0x0041C040 for units — not the scanner. The scanner
+/// slot is `+0x39C` (0x00709820), which this handler never calls, so a guarding
+/// object acquires solely through the common AI body's block. VERA matches.
+///
+/// **Cadence.** Bunker delegation returns the base cadence with no draw; the
+/// ordinary path is `[Rate] + RandomRanged(0, 2)` (0x004D532F).
+///
+/// Deliberately NOT represented, recorded:
+/// - **the whole target-present arm** (0x004D51E0-0x004D5225). With `[this+0x2B4]`
+///   holding a target the handler skips both the bunker scan and the idle action
+///   and instead does `if (GetTechnoType()->[+0x390] && ObjectClass::GetHeight()
+///   0x005F5F40 == 0) TechnoClass::Set_Destination 0x00741970
+///   (FootClass::Find_Nearby_Passable_Cell(...), 1)`. That is a **destination
+///   write**, not a cadence value, so it is a behaviour contract rather than a
+///   timing detail. Trigger: every Guard dispatch of a grounded object that
+///   already holds a target and whose type carries `+0x390`. Player effect:
+///   retail shuffles such a guard onto a nearby passable cell while it engages;
+///   VERA's stands still. Frequency: the arm itself is entered continuously
+///   during any firefight, so until `+0x390` is named — its identity is
+///   UNCHECKED — the frequency cannot honestly be called low. Downstream risk:
+///   a destination write from the mission handler crosses into movement's
+///   ownership, so closing it needs the movement owner in the loop.
+/// - **the AI-only Sabotage queue** (0x004D523A-0x004D52A9): for an
+///   `InfantryClass` (`What_Am_I()` 0xF) whose house is not human-controlled
+///   (0x0050B730 on `[this+0x21C]`), that either carries type byte `+0xEC2` or
+///   passes `TechnoClass::HasWeaponAbility(0xE)` 0x0070D0D0, whose current
+///   mission is not already Sabotage, and whose target is a `BuildingClass`,
+///   `Queue_Mission(0x11, 0)`. Trigger: an AI demolition infantryman standing
+///   guard that picks up an enemy building. Player effect: retail's walks in and
+///   plants; VERA's shoots it instead. Frequency: **zero today** — the arm is
+///   gated on a non-human house and VERA has no AI opponent — and continuous
+///   once one lands, which is why it is recorded rather than left unwritten.
+///   `+0xEC2` is UNCHECKED.
+/// - **the two further containment latches.** The head takes three byte
+///   latches in order — `+0x68F` → `[vtable+0x340]` (0x004DFB70), `+0x690` →
+///   `[+0x348]`, `+0x691` → `[+0x34C]` — and each delegates, discards the
+///   result and returns the flat `ftol(Rate × 900)` with no jitter draw
+///   (0x004D5076-0x004D50CD). VERA models the first as `bunker_delegate`; the
+///   identity of the other two is UNCHECKED, and VERA carries no state that
+///   could be their equivalent, so there is nothing to gate on. The identical
+///   three-way head opens `FootClass::Mission_AreaGuard` at 0x004D6ACC, so this
+///   is a FootClass-wide containment cluster, not a bunker special case.
+///   Trigger: whichever containment those two bytes denote. Player effect:
+///   cadence only — a contained object re-dispatches on the flat rate instead
+///   of rate-plus-jitter. Frequency: unknown until the bytes are identified,
+///   which is why this cannot be closed by guessing. Downstream risk: one
+///   scenario-RNG draw per dispatch on those paths.
+/// - **the tank-bunker adjacency scan** (0x004D5116-0x004D51D2, repeated
+///   verbatim in Mission_AreaGuard at 0x004D6F44). Behind
+///   `TechnoClass::GetWeapon(1)` 0x0070E140 returning a live weapon whose
+///   warhead byte `+0x158` is set, the handler walks the eight-neighbour offset
+///   table at 0x0089F688 for a building whose type byte `+0x1575` is set and
+///   whose owner matches its own, then `Assign_Target` (`[+0x3C8]`), sets
+///   `+0x68E` and `Queue_Mission(1, 0)`. Trigger: a unit sitting on Guard in a
+///   cell orthogonally or diagonally adjacent to a tank bunker its own house
+///   owns. Player effect: retail garrisons the bunker by itself; VERA's unit
+///   stays outside. Frequency: near zero in ordinary skirmish — tank bunkers
+///   are pre-placed map objects on a minority of stock maps and are rarely
+///   captured. Downstream risk: none; `bunker_link` already exists, but the two
+///   gating flags (`+0x158` on the warhead, `+0x1575` on the building type) are
+///   UNCHECKED and would have to be resolved to INI keys first.
+/// - **the two cadence-tail short-circuits ahead of the jitter draw**
+///   (0x004D52A9-0x004D5341). First, a three-dword object timer at `+0x2EC`
+///   (start) / `+0x2F4` (delay): while it is live the handler returns its own
+///   remaining frames and draws NO RNG. `TechnoClass::Constructor` 0x006F2E86
+///   leaves it start=now, delay=0 — already expired — so the gate is inert
+///   until something arms it; the one arming site found is 0x007464AB, in code
+///   Ghidra has not bounded into a function, and the timer's role is UNCHECKED.
+///   Second, past that gate, `GetTechnoType()->[+0x6B0]` — the **`DistributedFire`**
+///   bool, key string 0x00843A64, read by `TechnoTypeClass::ReadINI` at
+///   0x00714850/0x00714864 — combined with the object counter `+0x468 > 0`
+///   returns **0**, re-dispatching on the next frame and again drawing nothing.
+///   Trigger: a `DistributedFire` type on Guard with a live spread-fire count.
+///   Player effect: it re-evaluates every frame instead of every ~26. Frequency:
+///   the Aegis Cruiser is the only stock `DistributedFire` type, so naval maps
+///   with an Allied player only. Downstream risk: VERA implements no
+///   distributed-fire mechanism at all (recorded at `passive_target_scan`), so
+///   the counter this gate reads has no VERA counterpart to bind to.
 fn evaluate_foot_guard_cadence(
     sim: &mut Simulation,
     rules: &RuleSet,

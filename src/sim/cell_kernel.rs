@@ -109,8 +109,10 @@ pub fn selected_cell_surface_height(floor_z: i32, deck_selected: bool) -> i32 {
     }
 }
 
-/// YR `MapClass::PickInfantrySublocation` alternate-list threshold. It uses the
-/// signed cell level plus four bridge levels, independent of the floor kernel.
+/// Alternate-list threshold: signed cell level plus four bridge levels,
+/// independent of the floor kernel. There is no
+/// `MapClass::PickInfantrySublocation` in this program — the name this
+/// comment used to carry was invented.
 pub fn selects_infantry_bridge_layer(has_high_bridge: bool, level: u8, input_z: i32) -> bool {
     let deck_z = i32::from(level as i8)
         .wrapping_add(4)
@@ -143,7 +145,8 @@ pub fn nearest_eligible_in_order<T>(
     winner.map(|(_, candidate)| candidate)
 }
 
-/// `CellClass::FindInfantrySubposition` preference. Low bytes are intentional.
+/// `CellClass::PlaceInfantryInCell` @ `0x00481180` preference. Low bytes are
+/// intentional. (There is no `CellClass::FindInfantrySubposition`.)
 pub fn infantry_preferred_spot(point: CellQueryPoint) -> u8 {
     let x = point.x & 0xff;
     let y = point.y & 0xff;
@@ -156,7 +159,7 @@ pub fn infantry_preferred_spot(point: CellQueryPoint) -> u8 {
     if bits == 0 { 0 } else { bits + 1 }
 }
 
-/// `FindInfantrySubposition` rejects vehicle occupation on either list and normal
+/// `PlaceInfantryInCell` @ `0x00481180` rejects vehicle occupation on either list and normal
 /// object occupation unless the caller proves the normal-list building traversable.
 pub fn infantry_occupation_allows(
     occupied_mask: u8,

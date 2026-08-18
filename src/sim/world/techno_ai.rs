@@ -2146,6 +2146,55 @@ mod tests {
     }
 
     #[test]
+    fn an_authored_map_mission_survives_the_spawn_and_suppresses_acquisition() {
+        // The middle stage of the MISSION= column's route: parse (map/entities)
+        // -> `commit_map_placement_mission` -> `passive_acquire_mission`. Stock
+        // maps park 46 civilian objects on Sticky and 627 on Sleep; if the
+        // authored value is dropped at spawn they all read as Guard and shoot.
+        // The GI is armed and its hostile neighbour is in range, so on the
+        // derived Guard it would acquire; the neighbour is `UNARM` so nothing
+        // can shoot back and drag the GI onto Attack by retaliation instead.
+        let rules = passive_rules();
+        let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        let mut sim = Simulation::with_seed(0x5CA1_AB1E_0011);
+        let mut sticky = passive_map_entity("Soviet", "GI", 20, 20, EntityCategory::Infantry);
+        sticky.mission = Some(MissionType::Sticky);
+        sim.spawn_from_map(
+            &[
+                passive_map_entity("Americans", "UNARM", 22, 20, EntityCategory::Unit),
+                sticky,
+            ],
+            Some(&rules),
+            &heights,
+        );
+        let spawned = sim.substrate.entities.get(2).expect("infantry present");
+        assert_eq!(
+            spawned.mission.current().known(),
+            Some(MissionType::Sticky),
+            "the authored MISSION= column must reach the committed selector at spawn"
+        );
+        assert_eq!(
+            spawned.passive_acquire_mission(),
+            MissionType::Sticky,
+            "`holds_until_retasked` must let the authored selector beat the derived Guard"
+        );
+        for _ in 0..90 {
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+        }
+        let sticky_unit = sim.substrate.entities.get(2).expect("infantry present");
+        assert_eq!(
+            sticky_unit.mission.current().known(),
+            Some(MissionType::Sticky),
+            "nothing retasked it, so it must still be on Sticky"
+        );
+        assert!(
+            sticky_unit.attack_target.is_none(),
+            "Sticky is outside the passive-acquire gate's three admitted missions"
+        );
+    }
+
+    #[test]
     fn can_passive_aquire_no_type_never_acquires() {
         // The enemy is UNARMED in both runs, so it can neither acquire nor
         // shoot — retaliation cannot muddy the result and a target on the
@@ -3358,7 +3407,7 @@ mod tests {
 
     /// Sticky and Guard dispatch through the same slot, so Sticky runs the
     /// Guard handler — but the cadence comes from the object's OWN mission
-    /// slot, so `[Sticky] Rate` (14) applies, not `[Guard] Rate` (27).
+    /// slot, so `[Sticky] Rate` (14) applies, not `[Guard] Rate` (26).
     #[test]
     fn sticky_runs_the_guard_handler_at_its_own_rate() {
         let mut sim = Simulation::with_seed(0x21C0);
@@ -3385,7 +3434,7 @@ mod tests {
                 .mission
                 .dispatch_timer(),
             MissionDispatchTimer::from_raw(0, 14 + jitter),
-            "[Sticky] Rate=.016 is 14 frames; [Guard] Rate=.030 would be 27"
+            "[Sticky] Rate=.016 is 14 frames; [Guard] Rate=.030 would be 26"
         );
         assert_eq!(
             sim.scenario_rng.logical_state(),
@@ -3513,7 +3562,7 @@ mod tests {
     }
 
     /// Area Guard has its own handler and its own cadence: `[Area Guard]
-    /// Rate=.040` is 36 frames, and the jitter draw is `RandomRanged(1, 5)` —
+    /// Rate=.040` is 35 frames, and the jitter draw is `RandomRanged(1, 5)` —
     /// NOT the `(0, 2)` every other absorbed handler takes. The fixture type
     /// carries no weapon, so the can-acquire predicate fails and the scan (with
     /// its own separate draw) never runs.
@@ -3543,8 +3592,8 @@ mod tests {
                 .expect("fixture entity")
                 .mission
                 .dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, 36 + jitter),
-            "[Area Guard] Rate=.040 is 36 frames; [Guard] Rate=.030 would be 27"
+            MissionDispatchTimer::from_raw(0, 35 + jitter),
+            "[Area Guard] Rate=.040 is 35 frames; [Guard] Rate=.030 would be 26"
         );
         assert_eq!(
             sim.scenario_rng.logical_state(),
@@ -4774,7 +4823,10 @@ mod tests {
     #[test]
     fn checkpoint_a_ordinary_drive_host_uses_exact_signed_dispatch_timer_domain() {
         for (timer, native_frame, expected_due) in [
-            (MissionDispatchTimer::from_raw(-1, 1), 120, true),
+            // The unanchored start skips the elapsed subtraction (0x005B308C)
+            // but still faces the shared `TEST EAX,EAX` at 0x005B309F with the
+            // raw delay, so it is due only when the delay is also zero.
+            (MissionDispatchTimer::from_raw(-1, 1), 120, false),
             (MissionDispatchTimer::from_raw(-1, 0), i32::MIN as u32, true),
             (MissionDispatchTimer::from_raw(10, 5), 9, false),
             (

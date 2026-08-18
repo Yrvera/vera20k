@@ -99,9 +99,33 @@ pub(super) fn handle_blocked_tick(
     // site; whether each of them maps onto one of the five native compares is
     // UNCHECKED and recorded separately.)
     if close_enough_abort && mcfg.close_enough > SIM_ZERO {
-        let dx = (goal.0 as i32 - current_pos.0 as i32).abs();
-        let dy = (goal.1 as i32 - current_pos.1 as i32).abs();
-        let dist = SimFixed::from_num((dx + dy) * 256);
+        // Native compares a genuine 3-D Euclidean lepton distance —
+        // `CoordStruct::Distance3D` @ `0x0041C380`, `Sqrt_Approx(z² + y² + x²)`
+        // then `Math::ftol` — against `Rules+0x1718` (`CloseEnough`, string
+        // `0x0083BD84`). `Process_Movement` compares it at `0x004B297F`,
+        // `0x004B2C5C`, `0x004B3141`, `0x004B37BE` and `0x004B42DB`.
+        //
+        // A Manhattan sum is never smaller than the Euclidean one, and the
+        // predicate is `dist < CloseEnough` → stop, so the old form made the
+        // abort fire *less* often: units kept pushing to the exact goal where
+        // retail already declared arrival. With stock `CloseEnough = 576` the
+        // only cell offsets that change answer are Δ(2,1) and Δ(1,2) —
+        // Manhattan 768 (no abort) against Euclidean 572 (abort).
+        //
+        // Two VERA-internal residuals remain, gamemd equivalent UNCHECKED.
+        // Z is dropped, because VERA's goal here is a cell pair with no height —
+        // it matters on bridge approaches. And the distance is measured between
+        // cell indices × 256 rather than between actual coordinates, so VERA is
+        // blind to sub-cell offsets, which is the larger of the two errors.
+        //
+        // Unpinned: `close_enough_abort` has two references in the whole
+        // tree, the path-test harness sets `close_enough` to zero which
+        // disables this branch, and no fixture drives a diagonal approach at
+        // the give-up radius. One at Δ(2,1) with `close_enough = 576` would
+        // pin the entire behaviour delta.
+        let dx = (goal.0 as i64 - current_pos.0 as i64).abs() * 256;
+        let dy = (goal.1 as i64 - current_pos.1 as i64).abs() * 256;
+        let dist = SimFixed::from_num(crate::util::fixed_math::isqrt_i64(dx * dx + dy * dy));
         if dist < mcfg.close_enough {
             log::info!(
                 "CLOSE_ENOUGH entity={} pos=({},{}) goal=({},{}) dist={} - stopping",

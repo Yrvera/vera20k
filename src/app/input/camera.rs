@@ -516,6 +516,71 @@ pub(crate) struct TacticalMouseState {
 }
 
 impl TacticalMouseState {
+    /// Whether a press edge may arm anything and take the capture.
+    ///
+    /// `Tactical_Mouse_Message_Handler` 0x006930A0 keeps ONE capture byte at
+    /// `+0x555A` for both buttons, and cases 0x201 (test at 0x00693194) and
+    /// 0x204 (test at 0x006932D5) each require it to be clear before they arm.
+    /// So whichever button presses first owns the gesture: a left press during a
+    /// right-drag pan arms no band box, and a right press during a band drag
+    /// records no pan anchor. Both are dropped rather than layered.
+    pub(crate) fn press_may_arm(&self) -> bool {
+        !self.captured
+    }
+
+    /// Left press edge. Returns whether the caller should arm the band drag.
+    ///
+    /// The physical-button byte is recorded either way, because
+    /// `ScrollClass__UpdateMouseScrolling` 0x00692F30 gates on the capture byte
+    /// first (0x00692F85) and then picks its branch from the LIVE button state
+    /// via `Input__IsLogicalMouseButtonActive` — button 1 before button 2. That
+    /// is what lets a left press interrupt a right-drag pan mid-gesture even
+    /// when the press itself armed nothing.
+    pub(crate) fn begin_left_press(&mut self) -> bool {
+        self.left_held = true;
+        if !self.press_may_arm() {
+            return false;
+        }
+        self.captured = true;
+        true
+    }
+
+    /// Left release edge. Returns whether the caller should run the release body.
+    ///
+    /// Case 0x202 (test at 0x00693232) gates on the same shared byte and does
+    /// not test which button set it: with the byte clear it exits having done
+    /// nothing, and with it set it runs `BandBox_LeftUp` 0x004AB9B0 and drops
+    /// the capture even when the right button was the one holding it.
+    pub(crate) fn end_left_press(&mut self) -> bool {
+        self.left_held = false;
+        if !self.captured {
+            return false;
+        }
+        self.captured = false;
+        // The threshold latch deliberately SURVIVES. Native's case 0x202 writes
+        // only the capture byte, at 0x00693290; the latch `this+0x5558`
+        // (0x00884D40) is SET at 0x006934B6 inside `Tactical_RightDrag_Pan` and
+        // cleared at 0x0069333F (case 0x204) and 0x006933B4 (case 0x205). Note
+        // `get_xrefs_to` alone sees only those two absolute stores — every other
+        // access is `this`-relative and produces no data xref, the standing
+        // `param_1` pointer-arithmetic pitfall.
+        //
+        // Clearing it here would flip the right-release cancel ladder, which
+        // case 0x205 gates at 0x00693397 and calls at 0x006933C6 only when the
+        // latch is CLEAR: a pan that crossed the threshold, then took a left
+        // click and a second still-held left press, would drop the player's
+        // whole selection on the right release where gamemd is silent.
+        //
+        // The engaged latch is cleared purely to keep the two pan latches from
+        // disagreeing about a gesture that has ended. It is a write native lacks
+        // — `this+0x554C` is only ever set, never cleared after a gesture — but
+        // it is unobservable: `right_drag_owns_frame` requires the capture, and
+        // the capture can only come back through `begin_right_drag`, which
+        // resets both latches anyway.
+        self.right_pan_engaged = false;
+        true
+    }
+
     /// Right press inside the play area: record the anchor and take the capture.
     /// The press itself has no game effect in gamemd.
     pub(crate) fn begin_right_drag(&mut self, cursor: (f32, f32)) {
@@ -867,6 +932,177 @@ pub(crate) fn cell_centre_world_point(rx: u16, ry: u16, z: u8) -> (f32, f32) {
     )
 }
 
+/// The view centre `CenterViewCommandClass` picks for a selection, in absolute
+/// leptons. `None` when nothing is selected.
+///
+/// `CenterViewCommandClass::Execute` 0x00536E00 bails on an empty selection and
+/// otherwise hands off to 0x004AE290, which is this reduction:
+///
+/// 1. Sum every selected object's coordinate (`+0x9C`, `+0xA0`, `+0xA4`) and
+///    divide by the count — the plain centroid.
+/// 2. **For three or more objects only**, find the object farthest from that
+///    centroid and average again with it removed: `(sum - outlier) / (n - 1)`.
+///    Dropping the straggler is what stops one scout on the far side of the map
+///    from dragging the view off the group the player actually looked at.
+///
+/// Two details of the original are load-bearing and reproduced exactly.
+/// `CoordStruct__Distance3D` 0x0041C380 truncates `sqrt(dx²+dy²+dz²)` to an
+/// integer before the comparison, and the comparison is a strict `<` against the
+/// running best, so objects whose distances truncate to the same lepton tie and
+/// the earliest in selection order wins. And the running best starts at zero
+/// with the outlier initialised to the origin, so a 3+ selection whose objects
+/// all sit exactly on the centroid never replaces it and divides the full sum by
+/// `n - 1` — a native quirk that lands the view off the group. It needs every
+/// object on the identical lepton coordinate, which stacking rules make
+/// unreachable in ordinary play; it is reproduced rather than silently repaired.
+pub(crate) fn selection_view_centre_leptons(coords: &[(i32, i32, i32)]) -> Option<(i32, i32, i32)> {
+    let count = i32::try_from(coords.len()).ok().filter(|n| *n > 0)?;
+    // Native accumulates in a 32-bit register and wraps; a debug build would
+    // otherwise panic where gamemd keeps going. Unreachable below five figures
+    // of selected units, but the project's scale target is 20 000.
+    let sum = coords.iter().fold((0i32, 0i32, 0i32), |acc, c| {
+        (
+            acc.0.wrapping_add(c.0),
+            acc.1.wrapping_add(c.1),
+            acc.2.wrapping_add(c.2),
+        )
+    });
+    // C integer division truncates toward zero, and so does Rust's.
+    let mean = (sum.0 / count, sum.1 / count, sum.2 / count);
+    if count <= 2 {
+        return Some(mean);
+    }
+
+    let mut best_distance = 0i32;
+    let mut outlier = (0i32, 0i32, 0i32);
+    for &coord in coords {
+        let distance = crate::util::native_x87::distance_3d_leptons(
+            [mean.0, mean.1, mean.2],
+            [coord.0, coord.1, coord.2],
+        );
+        if best_distance < distance {
+            best_distance = distance;
+            outlier = coord;
+        }
+    }
+
+    let divisor = count - 1;
+    Some((
+        (sum.0 - outlier.0) / divisor,
+        (sum.1 - outlier.1) / divisor,
+        (sum.2 - outlier.2) / divisor,
+    ))
+}
+
+/// Put an absolute lepton coordinate at the centre of the tactical viewport.
+///
+/// `TacticalClass__SetViewToCoordInstant` takes the whole coordinate, so the
+/// centre keeps both its sub-cell offset and its **Z**: the Z runs through
+/// `Tactical__AdjustForZ`, and dropping it would miss by 15 px per elevation
+/// level and by 216 px on an aircraft at the stock `FlightLevel` of 1500.
+pub(crate) fn center_camera_on_lepton_point(
+    state: &mut AppState,
+    lepton_x: i32,
+    lepton_y: i32,
+    lepton_z: i32,
+) {
+    let world = crate::util::lepton::absolute_leptons_to_screen(lepton_x, lepton_y, lepton_z);
+    let sw = state.render_width() as f32;
+    let sh = state.render_height() as f32;
+    let (tactical_w, tactical_h) =
+        tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (cx, cy) = tactical_camera_top_left(
+        world,
+        tactical_w as f32,
+        tactical_h as f32,
+        state.match_state.input.zoom_level,
+    );
+    state.match_state.input.camera_x = cx;
+    state.match_state.input.camera_y = cy;
+    clamp_camera_to_playable_area(state, sw, sh);
+}
+
+/// `CenterView` (Numpad 5 in the stock archive): snap the tactical view onto the
+/// current selection. Nothing selected means nothing happens.
+pub(crate) fn center_view_on_selection(state: &mut AppState) {
+    let ordered = crate::app::input::dispatch::selected_stable_ids_in_order(state);
+    let coords: Vec<(i32, i32, i32)> = {
+        let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+            return;
+        };
+        ordered
+            .iter()
+            .filter_map(|id| sim.entities().get(*id))
+            .map(|entity| entity_lepton_coord(entity))
+            .collect()
+    };
+    let Some((cx, cy, cz)) = selection_view_centre_leptons(&coords) else {
+        return;
+    };
+    center_camera_on_lepton_point(state, cx, cy, cz);
+}
+
+/// `Follow` (F): latch the camera onto the selection, or let it go.
+///
+/// `FollowCommandClass::Execute` 0x00537A10 is a toggle with a bias toward
+/// releasing: with nothing selected, or while already following anything at all,
+/// it clears the `DisplayClass` pair; only an idle camera plus a live selection
+/// latches, and it latches the FIRST object in the selection array rather than
+/// anything nearer the cursor.
+pub(crate) fn toggle_follow_target(state: &mut AppState) {
+    let already_following = state.match_state.input.follow_target.is_some();
+    let first_selected = crate::app::input::dispatch::selected_stable_ids_in_order(state)
+        .first()
+        .copied();
+    state.match_state.input.follow_target = match first_selected {
+        Some(id) if !already_following => Some(id),
+        _ => None,
+    };
+}
+
+/// Drive the follow camera for this tick.
+///
+/// Native hangs this off the very end of `LogicClass__PerTickUpdate`
+/// 0x0055B6B8, after every object, factory and house has updated: read the
+/// follow object and snap the view straight onto its coordinate. There is no
+/// easing and no dead zone, so the followed unit stays pinned to the centre and
+/// the player cannot scroll away while the latch is held.
+///
+/// The pair is cleared from two lifecycle points — `ObjectClass__Destroy`
+/// 0x005F5306 and `ObjectClass__Deselect` 0x005F4513 — so the camera is handed
+/// back when the followed object dies or leaves the selection.
+pub(crate) fn update_follow_camera(state: &mut AppState) {
+    let Some(id) = state.match_state.input.follow_target else {
+        return;
+    };
+    let coord = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+        .and_then(|sim| sim.entities().get(id))
+        .filter(|entity| entity.lifecycle.object_alive && entity.selected)
+        .map(entity_lepton_coord);
+    let Some((x, y, z)) = coord else {
+        state.match_state.input.follow_target = None;
+        return;
+    };
+    center_camera_on_lepton_point(state, x, y, z);
+}
+
+/// An entity's absolute lepton coordinate, the VERA equivalent of the native
+/// object's `+0x9C`/`+0xA0`/`+0xA4` triple.
+/// The Z is the composed world height, not the terrain level: a Kirov at the
+/// stock `FlightLevel` sits about six cells up in coordinate space, and the
+/// straggler search is a 3D distance, so feeding it ground height would drop a
+/// different object and move the centre on X and Y as well as Y-by-Z.
+fn entity_lepton_coord(entity: &crate::sim::game_entity::GameEntity) -> (i32, i32, i32) {
+    let cell = crate::util::lepton::LEPTONS_PER_CELL_I32;
+    let x = i32::from(entity.position.rx) * cell + entity.position.sub_x.to_num::<i32>();
+    let y = i32::from(entity.position.ry) * cell + entity.position.sub_y.to_num::<i32>();
+    (x, y, crate::render::locomotor_visual::world_z_leptons(entity))
+}
+
 pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
     let z = state.height_map().get(&(rx, ry)).copied().unwrap_or(0);
     let world = cell_centre_world_point(rx, ry, z);
@@ -977,6 +1213,72 @@ fn requested_scroll_survives_clamp(
 ) -> bool {
     let (dx, dy) = OCTANT_DELTA[scroll_dir_octant(direction)];
     (dx != 0.0 && clamped.0 != current.0) || (dy != 0.0 && clamped.1 != current.1)
+}
+
+/// The cursor a right-drag pan shows, or `None` when no pan owns the frame.
+///
+/// `Some(None)` is the plain pan cursor; `Some(Some(dir))` is the directional
+/// variant that says the map cannot scroll any further that way.
+///
+/// `Tactical_RightDrag_Pan` 0x00693440 ends every engaged frame by probing all
+/// four cardinals with a dry-run `Scroll_Map(dir, 1, 0)` and setting one bit per
+/// direction that came back blocked — bit index `dir / 2`, so bit 0 = north,
+/// 1 = east, 2 = south, 3 = west. It then indexes the 16-entry cursor table at
+/// `DAT_0083E790` with that mask and hands the result to the shape setter
+/// (`vtable +0x48`). Read out of the binary, that table is:
+///
+/// ```text
+///  mask 0 -> 0x3D    1 (N) -> 0x3E    3 (N|E) -> 0x3F    2 (E) -> 0x40
+///  6 (E|S) -> 0x41   4 (S) -> 0x42   12 (S|W) -> 0x43    8 (W) -> 0x44
+///  9 (W|N) -> 0x45   every other mask -> 0x3D
+/// ```
+///
+/// So 0x3D is the unconstrained pan shape and 0x3E..0x45 are the eight compass
+/// directions in N, NE, E, SE, S, SW, W, NW order. Contradictory masks — north
+/// AND south blocked, for instance — fall back to the plain shape rather than
+/// picking a diagonal.
+pub(crate) fn right_drag_pan_cursor_state(state: &AppState) -> Option<Option<ScrollDir>> {
+    // The gate is the capture, not the latch. Native writes this cursor from
+    // INSIDE `Tactical_RightDrag_Pan`, and `ScrollClass__UpdateMouseScrolling`
+    // 0x00692F30 only calls that with the capture byte +0x555A set, button 1
+    // inactive and button 2 active — which is `right_drag_owns_frame`. Gating on
+    // the engaged latch alone would let a left click taken mid-pan strand it set
+    // (the left release clears the capture, and the right release then skips its
+    // own cleanup), leaving the pan cursor suppressing every other cursor for
+    // the rest of the match.
+    if !state.match_state.input.tactical_mouse.right_drag_owns_frame()
+        || !state.match_state.input.tactical_mouse.right_pan_engaged
+    {
+        return None;
+    }
+    let sw = state.render_width() as f32;
+    let sh = state.render_height() as f32;
+    let mut mask: u8 = 0;
+    for (bit, dir) in [ScrollDir::N, ScrollDir::E, ScrollDir::S, ScrollDir::W]
+        .into_iter()
+        .enumerate()
+    {
+        if !camera_scroll_direction_allowed(state, dir, sw, sh) {
+            mask |= 1 << bit;
+        }
+    }
+    Some(blocked_mask_to_scroll_dir(mask))
+}
+
+/// The compass direction native's 16-entry pan-cursor table assigns to a
+/// blocked-direction mask, or `None` for the unconstrained pan shape.
+fn blocked_mask_to_scroll_dir(mask: u8) -> Option<ScrollDir> {
+    Some(match mask {
+        1 => ScrollDir::N,
+        3 => ScrollDir::NE,
+        2 => ScrollDir::E,
+        6 => ScrollDir::SE,
+        4 => ScrollDir::S,
+        12 => ScrollDir::SW,
+        8 => ScrollDir::W,
+        9 => ScrollDir::NW,
+        _ => return None,
+    })
 }
 
 /// Active edge intent plus whether the tactical clamp removes all requested
@@ -1647,5 +1949,216 @@ mod tests {
         mouse.release();
         assert!(!mouse.captured);
         assert!(!mouse.right_drag_owns_frame());
+    }
+
+    /// One and two objects take the plain centroid — the outlier pass is gated
+    /// on `2 < count`, so a pair never drops half of itself.
+    #[test]
+    fn one_or_two_objects_centre_on_the_plain_mean() {
+        assert_eq!(
+            selection_view_centre_leptons(&[(1000, 2000, 0)]),
+            Some((1000, 2000, 0))
+        );
+        assert_eq!(
+            selection_view_centre_leptons(&[(1000, 2000, 0), (2000, 4000, 0)]),
+            Some((1500, 3000, 0))
+        );
+        assert_eq!(selection_view_centre_leptons(&[]), None);
+    }
+
+    /// Three or more: the farthest object is dropped, so a straggler cannot drag
+    /// the view off the group.
+    #[test]
+    fn three_objects_drop_the_straggler_before_averaging() {
+        // Two together at x=1000 and 2000, one far away at x=30000.
+        let coords = [(1000, 0, 0), (2000, 0, 0), (30_000, 0, 0)];
+        // Plain mean would be 11000 — out in empty map between the group and the
+        // straggler. Dropping the straggler gives (1000+2000)/2 = 1500.
+        assert_eq!(
+            selection_view_centre_leptons(&coords),
+            Some((1500, 0, 0)),
+            "the view must land on the pair, not between the pair and the scout"
+        );
+    }
+
+    /// `CoordStruct__Distance3D` truncates to whole leptons and the comparison
+    /// is a strict `<`, so equal truncated distances keep the FIRST object in
+    /// selection order as the recorded straggler — later equals never displace
+    /// it.
+    #[test]
+    fn equal_truncated_distances_keep_the_earliest_object_as_the_straggler() {
+        // Symmetric about x = 200: both outer objects sit 100 from the mean.
+        let coords = [(100, 0, 0), (200, 0, 0), (300, 0, 0)];
+        // First-wins on the tie records (100,0,0), so the survivors average to
+        // (600 - 100) / 2.
+        assert_eq!(selection_view_centre_leptons(&coords), Some((250, 0, 0)));
+    }
+
+    /// The straggler search runs gamemd's approximate square root, not an exact
+    /// one. On a pure axis offset of `d` the exact root is `d` itself, so any
+    /// exact kernel round-trips every input; the native table does not.
+    #[test]
+    fn the_straggler_search_runs_the_native_approximate_root() {
+        use crate::util::native_x87::distance_3d_leptons;
+        // Pinned golden: the first axis offset where the table's answer is not
+        // the exact root. `isqrt` or `f64::sqrt` both return 129 here.
+        assert_eq!(distance_3d_leptons([0, 0, 0], [129, 0, 0]), 128);
+
+        // And the straggler search really runs that kernel. This selection
+        // centres on 129: the FIRST object is 128 out and the LAST is 129 out.
+        // The table truncates both to 128, so they tie and first-wins keeps the
+        // first as the straggler; an exact root separates them and would drop
+        // the last instead, moving the centre from 65 to 193.
+        let coords = [(257, 0, 0), (130, 0, 0), (0, 0, 0)];
+        assert_eq!(
+            distance_3d_leptons([129, 0, 0], [257, 0, 0]),
+            distance_3d_leptons([129, 0, 0], [0, 0, 0]),
+            "the two candidates must tie under the native table"
+        );
+        assert_ne!(
+            i64::from(128).pow(2).isqrt(),
+            i64::from(129).pow(2).isqrt(),
+            "an exact root would have separated them"
+        );
+        assert_eq!(selection_view_centre_leptons(&coords), Some((65, 0, 0)));
+    }
+
+    /// Distance is 3D: elevation decides the straggler when the ground plane
+    /// alone would tie.
+    #[test]
+    fn elevation_participates_in_the_straggler_search() {
+        let flat = [(0, 0, 0), (100, 0, 0), (200, 0, 0)];
+        let raised = [(0, 0, 0), (100, 0, 5000), (200, 0, 0)];
+        assert_ne!(
+            selection_view_centre_leptons(&flat),
+            selection_view_centre_leptons(&raised)
+        );
+    }
+
+    /// The native quirk, reproduced rather than repaired: with 3+ objects all on
+    /// the same coordinate no distance ever beats the initial zero, so the
+    /// origin stays the recorded outlier and the full sum is divided by n-1.
+    #[test]
+    fn a_fully_stacked_selection_reproduces_the_native_off_centre_divide() {
+        let coords = [(600, 900, 0), (600, 900, 0), (600, 900, 0)];
+        assert_eq!(selection_view_centre_leptons(&coords), Some((900, 1350, 0)));
+    }
+
+    /// A left click taken mid-pan ends the pan cursor but must NOT rewrite the
+    /// threshold latch, because the right release reads that latch to decide
+    /// whether to run its cancel ladder.
+    #[test]
+    fn a_left_release_mid_pan_ends_the_pan_but_keeps_the_threshold_latch() {
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        mouse.right_threshold_crossed = true;
+        mouse.right_pan_engaged = true;
+        assert!(mouse.right_drag_owns_frame());
+
+        // Left press is swallowed by the shared capture byte but still recorded.
+        assert!(!mouse.begin_left_press());
+        assert!(!mouse.right_drag_owns_frame(), "left freezes the pan");
+
+        // Left release takes the capture, so the pan can no longer own a frame.
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+        assert!(!mouse.right_drag_owns_frame());
+        assert!(
+            mouse.right_threshold_crossed,
+            "the threshold latch survives; the right-release cancel ladder reads it"
+        );
+
+        // A second left press re-takes the capture. The right release that
+        // follows must still see a crossed threshold and stay silent — clearing
+        // the latch above would have made it drop the whole selection.
+        assert!(mouse.begin_left_press());
+        assert!(mouse.captured);
+        assert!(mouse.right_threshold_crossed);
+    }
+
+    /// The pan cursor's 16-entry table, read out of `DAT_0083E790`. Only eight
+    /// masks name a direction; every other mask — including every contradictory
+    /// one, and the all-clear mask 0 — falls back to the plain pan shape.
+    #[test]
+    fn the_pan_cursor_table_names_eight_directions_and_falls_back_otherwise() {
+        // The eight table entries 0x3E..0x45, in the order the table lists them.
+        for (mask, expected) in [
+            (1u8, ScrollDir::N),
+            (3, ScrollDir::NE),
+            (2, ScrollDir::E),
+            (6, ScrollDir::SE),
+            (4, ScrollDir::S),
+            (12, ScrollDir::SW),
+            (8, ScrollDir::W),
+            (9, ScrollDir::NW),
+        ] {
+            assert_eq!(
+                blocked_mask_to_scroll_dir(mask),
+                Some(expected),
+                "mask {mask} must select {expected:?}"
+            );
+        }
+        // Nothing blocked, and the contradictory pairs north|south and east|west.
+        for mask in [0u8, 5, 10] {
+            assert_eq!(blocked_mask_to_scroll_dir(mask), None, "mask {mask}");
+        }
+        // Every mask the table maps back to the plain shape.
+        for mask in [7u8, 11, 13, 14, 15] {
+            assert_eq!(blocked_mask_to_scroll_dir(mask), None, "mask {mask}");
+        }
+    }
+
+    /// The four press/release orderings of a two-button chord, against the one
+    /// shared capture byte. Both press cases refuse to arm while it is set, and
+    /// the left release runs its body whenever it is set, whichever button set
+    /// it — so the release still fires after a swallowed press.
+    #[test]
+    fn one_capture_byte_arbitrates_both_buttons_across_all_four_orderings() {
+        // Baseline: an uncontested left click arms and then releases.
+        let mut mouse = TacticalMouseState::default();
+        assert!(mouse.begin_left_press());
+        assert!(mouse.captured);
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+
+        // R-down, L-down, L-up, R-up. The left press is swallowed, but its
+        // release still runs the body and takes the capture away from the pan.
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        assert!(!mouse.begin_left_press());
+        assert!(mouse.left_held, "the live button byte is recorded anyway");
+        assert!(!mouse.right_drag_owns_frame(), "left freezes the pan");
+        assert_eq!(mouse.right_anchor, (100.0, 100.0), "anchor is untouched");
+        assert!(mouse.end_left_press());
+        assert!(!mouse.captured);
+
+        // R-down, L-down, R-up, L-up. The right release already cleared the
+        // byte, so the trailing left release does nothing at all.
+        let mut mouse = TacticalMouseState::default();
+        mouse.right_held = true;
+        mouse.begin_right_drag((100.0, 100.0));
+        assert!(!mouse.begin_left_press());
+        mouse.right_held = false;
+        mouse.release();
+        assert!(!mouse.end_left_press());
+
+        // L-down, R-down, L-up. The right press finds the byte set, so it is
+        // swallowed and records no anchor; the left release still owns the
+        // ending and hands the byte back.
+        let mut mouse = TacticalMouseState::default();
+        assert!(mouse.begin_left_press());
+        mouse.right_held = true;
+        if mouse.press_may_arm() {
+            mouse.begin_right_drag((250.0, 250.0));
+        }
+        assert_eq!(
+            mouse.right_anchor,
+            (0.0, 0.0),
+            "the swallowed right press left the anchor alone"
+        );
+        assert!(mouse.end_left_press());
+        assert!(mouse.press_may_arm(), "the byte is free again");
     }
 }

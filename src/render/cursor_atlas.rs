@@ -42,8 +42,20 @@ pub(crate) enum CursorId {
     EngineerRepair,
     TogglePower,
     NoTogglePower,
-    /// 4-way pan cursor (frame 385 in mouse.sha).
+    /// 4-way pan cursor — cursor-table row 61, mouse.sha frame 385.
     Pan,
+    // Right-drag pan, directional variants. Cursor-table rows 62..69, mouse.sha
+    // frames 386..393, all count 1, rate 0, hotspot centre/centre. These are
+    // NOT the barred edge-scroll rows: those are rows 9..16 / frames 10..17 with
+    // edge-anchored hotspots.
+    PanN,
+    PanNE,
+    PanE,
+    PanSE,
+    PanS,
+    PanSW,
+    PanW,
+    PanNW,
     // Sell / repair mode cursors.
     Sell,
     SellUnit,
@@ -268,8 +280,22 @@ const CURSOR_DEFS: &[(CursorId, usize, usize, u64, CursorHotspot)] = &[
     (CursorId::NoMoveSW, 15, 1, 0, CursorHotspot::LeftBottom),
     (CursorId::NoMoveW, 16, 1, 0, CursorHotspot::LeftMiddle),
     (CursorId::NoMoveNW, 17, 1, 0, CursorHotspot::TopLeft),
-    // --- Preserved retail 4-way pan asset ---
+    // --- Right-drag pan, cursor-table rows 61..69 ---
+    // Read from the 28-byte descriptor table at 0x0082D028 (Set_Mouse_Cursor_Shape
+    // 0x005BDC80 indexes it by `shape * 0x1C`): rows 61..69 are StartFrame
+    // 385..393, each count 1, rate 0, hotspot sentinels 0x3039/0x3039 =
+    // centre/centre. The same decode reproduces rows 1..8 and 9..16 as the
+    // already-landed ScrollN..NW (frames 2..9) and NoMoveN..NW (frames 10..17)
+    // with all sixteen of their hotspots, so the stride and base are confirmed.
     (CursorId::Pan, 385, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanN, 386, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanNE, 387, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanE, 388, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanSE, 389, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanS, 390, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanSW, 391, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanW, 392, 1, 0, CursorHotspot::CenterMiddle),
+    (CursorId::PanNW, 393, 1, 0, CursorHotspot::CenterMiddle),
     // --- Sell / repair mode ---
     (
         CursorId::Sell,

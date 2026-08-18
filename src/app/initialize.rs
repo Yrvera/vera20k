@@ -373,6 +373,7 @@ impl App {
             queued_order_mode: render::OrderMode::Move,
             control_groups: vec![Vec::new(); 10],
             last_control_group_press: None,
+            follow_target: None,
             spawn_pick_pending: false,
             targeting_mode: None,
             building_placement_preview: None,

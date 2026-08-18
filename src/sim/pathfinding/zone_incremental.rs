@@ -53,8 +53,11 @@ impl PackedZoneCoord {
     }
 }
 
-/// Provenance selects the two distinct native one-cell helpers. It is never
-/// inferred from the target's current class.
+/// Provenance selects between the two distinct native one-cell helpers —
+/// `MapClass::AssignOrphanedCellZone` @ `0x0056D460` and
+/// `MapClass::MergeAdjacentCellZone` @ `0x0056D5A0`. It is never inferred from
+/// the target's current class: gamemd's distinction is which helper the caller
+/// chose, not anything readable off the cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZoneRepairKind {
     AssignOrphaned,
@@ -79,8 +82,19 @@ enum BaseRepairDecision {
 }
 
 /// Apply one verified base-cluster repair and then the shared local hierarchy
-/// updater. Current mutation owners wire the explicit provenance in their own
-/// Phase-3 items; callers without it must keep using a full rebuild.
+/// updater, `MapClass::IncrementalRebuildZoneGraphAroundCell` @ `0x00584550`.
+///
+/// The ordering is verified exhaustively by callers: all nine native callers of
+/// `AssignOrphanedCellZone`/`MergeAdjacentCellZone` call `0x00584550`
+/// unconditionally 11-15 bytes later, and every xref is an unconditional call.
+/// They are `AnimClass::Middle`, the area-damage helper,
+/// `CellClass::DestroyOverlay`, the post-destruction wall cleanup,
+/// sell-building-at-cell, `TerrainClass::Limbo`,
+/// `BuildingClass::Place_OccupyMap`, `OverlayClass::Mark`, and `FUN_0074E930`
+/// (call sites `0x0074EA05` / `0x0074EA10`).
+///
+/// Current mutation owners wire the explicit provenance in their own Phase-3
+/// items; callers without it must keep using a full rebuild.
 pub(crate) fn repair_zone_cell(
     zone_grid: &mut ZoneGrid,
     packed_coord: PackedZoneCoord,

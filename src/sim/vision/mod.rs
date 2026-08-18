@@ -581,7 +581,16 @@ impl FogState {
     /// Clear one cell's vector in native reverse order. Each shared record is
     /// first unlinked by exact ID from all footprint cells, then returned to
     /// the caller in destruction/invalidation order. Other empty vectors stay
-    /// allocated, matching `CellClass::ClearFoggedObjects @ 0x004802D0`.
+    /// allocated.
+    ///
+    /// **Provenance UNKNOWN.** The address this used to cite, `0x004802D0`, is
+    /// not a function entry — it lands mid-`CALL` inside `FUN_004802A0`, which
+    /// is a tile blitter (it reads `g_IsometricTileTypeClass_Array`, calls
+    /// `IsometricTileTypeClass::SubtileHasDamagedData` and blits to
+    /// `g_PrimarySurface`) and has nothing to do with fogged objects. And
+    /// `ClearFoggedObjects` is not a symbol in this program. The address stays
+    /// unbound rather than swapped for a positive match against an unrelated
+    /// function.
     pub fn clear_fogged_objects_at(
         &mut self,
         viewer: InternedId,
@@ -617,6 +626,19 @@ impl FogState {
 
     /// Recreate CellClass sensor storage for current map bounds. Sensor
     /// producers can then use add/remove calls without owning visibility maps.
+    ///
+    /// **The sensor plane has readers but no writer, and that is a live gap.**
+    /// This runs every tick, and `sensors_add_at` / `sensors_remove_at` have no
+    /// production caller — tests only — so `detects_cloak` is permanently
+    /// `false`. Three render sites consume it (`instances::units`,
+    /// `instances::shp`, `instances::helpers`) and feed it into
+    /// `tactical_entity_render_admission`. Trigger: a detector standing where a
+    /// cloaked or submerged enemy is. Player effect: retail reveals it; VERA
+    /// does not, so submarines and Mirage Tanks stay hidden from the units that
+    /// exist to find them. Frequency: not every match, but ordinary in any match
+    /// that fields either — naval maps and Allied mirrors. Downstream risk: the
+    /// producer is the row's remaining work; the footprint walk it would call is
+    /// already ported and verified against `TechnoClass::AddSensorsAt`.
     pub fn reset_sensor_counts(&mut self) {
         self.sensors_by_house.clear();
     }
@@ -629,7 +651,7 @@ impl FogState {
             .resize(usize::from(self.width) * usize::from(self.height), 0);
     }
 
-    /// Native `CellClass::SetCloakedByHouse @ 0x00487110`.
+    /// Native `FUN_00487110 (unlabelled; name not a symbol)`.
     pub fn set_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word_mut(rx, ry) else {
             return false;
@@ -640,7 +662,7 @@ impl FogState {
         changed
     }
 
-    /// Native `CellClass::ClearCloakedByHouse @ 0x00487130`.
+    /// Native `FUN_00487130 (unlabelled; name not a symbol)`.
     pub fn clear_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word_mut(rx, ry) else {
             return false;
@@ -651,8 +673,19 @@ impl FogState {
         changed
     }
 
-    /// Native `CellClass::IsSensedByHouse @ 0x004870B0`; the pinned label is
-    /// stale and this tests cloak-generator ownership, not sensor coverage.
+    /// Tests bit `house` of `CellClass+0x78`, the same word
+    /// `CellClass::IsVisibleToHouse` @ `0x004870B0` reads — its body is exactly
+    /// `return (this->dwVisibleToHouses & 1 << (house & 0x1F)) != 0;`. That
+    /// pinned label stands; the earlier claim here that it was stale, and that
+    /// the word means cloak-generator ownership rather than visibility, was
+    /// unfounded. What VERA stores in this plane is its own reading of the bit —
+    /// **VERA-internal, gamemd equivalent UNCHECKED**.
+    /// **Write-dead, and hashed.** `set_cloaked_by_house` and
+    /// `clear_cloaked_by_house` have no production caller, so this can never
+    /// return true — yet `cloaked_by_houses` is folded into the world hash, so
+    /// the first producer to land shifts every golden. Trigger: none today.
+    /// Player effect: none. Frequency: zero. Downstream risk: a guaranteed
+    /// golden re-baseline whenever the plane is wired.
     pub fn is_cloaked_by_house(&self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word(rx, ry) else {
             return false;
@@ -681,7 +714,7 @@ impl FogState {
         self.cloaked_by_houses.get_mut(index)
     }
 
-    /// Native `FootClass::Sensors_AddAt @ 0x004DE7B0`: outer-Y/inner-X strict
+    /// Native `TechnoClass::AddSensorsAt @ 0x004DE7B0`: outer-Y/inner-X strict
     /// circle and signed-word increment. Returned cells are the exact ordered
     /// boundary where native forces resident objects through virtual `+0x420`.
     pub fn sensors_add_at(
@@ -693,7 +726,7 @@ impl FogState {
         self.update_sensor_circle(house, center, radius, true)
     }
 
-    /// Paired `FootClass::Sensors_RemoveAt @ 0x004DE940` decrement walk.
+    /// Paired `TechnoClass::RemoveSensorsAt` @ `0x004DE940` decrement walk.
     pub fn sensors_remove_at(
         &mut self,
         house: InternedId,
@@ -1368,6 +1401,13 @@ const REVEAL_SPIRAL: [(i8, i8); 309] = [
     (-6, 4), (6, 4), (-6, 5), (6, 5), (-5, 6), (-4, 6), (4, 6), (5, 6), (-3, 7), (-2, 7),
     (2, 7), (3, 7), (-1, 8), (0, 8), (1, 8),
     // Sight 9: entries 205..253 (48 new)
+    // Native applies two further per-entry filters — `|dx| <= sight` and
+    // `ftol(Sqrt_Approx(dx² + dy²)) <= sight` — that VERA omits. Both are
+    // **provably inert over this whole table**, not merely unobserved: with ring
+    // membership `r = a + floor(b/2)` for `a = max(|dx|,|dy|)`, `b = min(...)`,
+    // `|dx| <= a <= r` always; and `a² + b² < (a + floor(b/2) + 1)²` reduces to
+    // `3k² + 2k < 2a(k + 1)` with `k = floor(b/2)`, which holds for every entry
+    // under truncation, and to `0 < k² + k + 0.25` under round-to-nearest.
     (-1, -9), (0, -9), (1, -9), (-3, -8), (-2, -8), (2, -8), (3, -8), (-5, -7), (-4, -7),
     (4, -7), (5, -7), (-6, -6), (6, -6), (-7, -5), (7, -5), (-7, -4), (7, -4), (-8, -3), (8, -3),
     (-8, -2), (8, -2), (-9, -1), (9, -1), (-9, 0), (9, 0), (-9, 1), (9, 1), (-8, 2), (8, 2),
@@ -1510,6 +1550,29 @@ pub fn apply_spy_sat(
 ///   - friendly viewers (owner + allies): set FLAG_GAP_FOG — the cell renders
 ///     half-bright fog while keeping the owner's own vision.
 /// Call AFTER spy_sat so gap wins in contested areas.
+///
+/// **Two VERA-internal departures, both recorded.**
+///
+/// 1. *The conceal is permanent.* Clearing `FLAG_REVEALED` destroys the
+///    player's map knowledge for good — the terrain stays black until it is
+///    physically re-seen. The live native gap path,
+///    `BuildingClass::UpdateGapGenerator_Tick` @ `0x00454DB0` → `FUN_00487110`,
+///    sets a per-house **bit** in `CellClass+0x78`, and `FUN_00487130` clears
+///    it, so when the generator dies prior knowledge is intact. (Note the
+///    footprint above matches `MapClass::Conceal_Radius` @ `0x00567F70`, but
+///    that function is not this behaviour's owner — its sole caller is
+///    `FUN_006E1A70`.) Trigger: any Gap Generator or Psychic Sensor covering
+///    ground the enemy has already scouted. Player effect: retail restores the
+///    old map when the generator falls; VERA leaves it black. Frequency: every
+///    match in which one is built. Downstream risk: making it reversible means a
+///    per-house bit plane, not a flag clear.
+/// 2. *`FLAG_GAP_FOG` has one consumer left and it is the wrong one.* The
+///    tactical shroud buffer deliberately stopped reading it, but the minimap
+///    still dims on it, so the generator's owner sees a half-dimmed patch on
+///    radar over territory that is full-bright on the tactical map. Trigger:
+///    owning a Gap Generator. Player effect: the two views disagree. Frequency:
+///    every frame while one is up. Downstream risk: either the flag or the
+///    minimap consumer is stale; they must be settled together.
 ///
 /// Takes a list of (owner_name, rx, ry, radius) for each gap generator.
 pub fn apply_gap_generators(

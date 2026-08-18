@@ -1666,6 +1666,30 @@ pub(super) fn advance_lepton_position(
             }
             return AdvanceResult::DriveTrackActive;
         }
+        // **VERA-internal, gamemd has no equivalent for the Walk arm.**
+        //
+        // `WalkLocomotionClass::ProcessMovement` @ `0x0075AEC0` has no
+        // whole-lepton quantizer: a walker takes a polar step. The facing is
+        // `ftol((atan2(cur.y - head.y, head.x - cur.x) - pi/2) *
+        // -10430.060040584269)` - note the **inverted Y** and the negative
+        // scale, both of which this project's N/S flip class turns on
+        // (`FILD`/`FISUB` pairs 0x0075BFED-0x0075C005, `FSUB [0x007E2820]`
+        // = pi/2, `FMUL [0x007E2818]`, ftol 0x0075C01C). The step is then
+        // `Sin`/`Cos` of `(facing16 - 0x3FFF) * -9.587672516830327e-05`
+        // (0x007E2810) scaled by `GetCurrentSpeed`, **subtracted** from the
+        // current coordinate (`FSUBR [ESP+0x1C]` at 0x0075C0A5) - and the
+        // step completes when the 2-D distance to
+        // the head falls under 17 leptons (`< 0x11`), snapping the coordinate
+        // through vtable `+0x1B4`. VERA has no Walk locomotor arm at all:
+        // infantry run through the generic `MovementTarget` interpolator, and
+        // this substitutes the frame budget on their behalf.
+        //
+        // Trigger: every infantry step. Player effect: the sub-lepton path
+        // shape and the exact tick a step completes follow a different rule
+        // than gamemd's, and a walker does not stay exactly on its facing
+        // ray. Frequency: continuous, for every infantryman in every match.
+        // Downstream risk: this is the substrate the rest of GSI-06.14 rests
+        // on, so closing it means a Walk locomotor arm, not a patch here.
         let whole_lepton_result = locomotor
             .as_ref()
             .is_some_and(|locomotor| locomotor.kind == LocomotorKind::Walk);
@@ -2150,22 +2174,18 @@ pub(super) fn process_cell_crossings(
         if let Some(loco) = locomotor {
             loco.layer = next_layer;
         }
-        if !reserve_destination_after_transition(
+        reserve_destination_after_transition(
             category,
             entity_id,
             locomotor,
-            drive_track_state,
             position,
             sub_cell,
-            target,
             next_layer,
             nx,
             ny,
             occupancy,
             snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
-        ) {
-            break;
-        }
+        );
         // After reservation, infantry sub_cell may have changed.
         if category == EntityCategory::Infantry {
             occupancy.update_sub_cell(nx, ny, entity_id, *sub_cell);

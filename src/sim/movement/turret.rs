@@ -14,7 +14,9 @@ use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
 use crate::util::fixed_math::{SimFixed, facing_from_delta_int_u16};
 
-/// Compute the signed shortest-path rotation from `current` to `target` in 8-bit facing space.
+/// Compute the signed shortest-path rotation from `current` to `target` in
+/// 8-bit facing space. No production caller; the live shortest-arc logic is the
+/// signed 16-bit subtraction inside `FacingClass::current`.
 /// Returns a value in -128..=127 (positive = clockwise, negative = counter-clockwise).
 pub fn shortest_rotation(current: u8, target: u8) -> i16 {
     let diff: i16 = target as i16 - current as i16;
@@ -26,17 +28,6 @@ pub fn shortest_rotation(current: u8, target: u8) -> i16 {
     } else {
         diff
     }
-}
-
-/// Convert native ROT degrees per reached frame into an 8-bit facing delta.
-pub fn rot_to_facing_delta(rot: i32) -> u8 {
-    if rot <= 0 {
-        return 0;
-    }
-    let numerator: u64 = rot as u64 * 256;
-    let denominator: u64 = 360;
-    let delta: u64 = numerator.div_ceil(denominator);
-    delta.clamp(1, 128) as u8
 }
 
 /// Compute 16-bit turret facing from source to target using lepton-precise
@@ -106,7 +97,8 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
             None => body_facing_to_turret(entity.facing),
         }
     } else {
-        // No target — return to body facing (research doc §5.1).
+        // No target — return to body facing. See the residual list on
+        // `tick_turret_rotation` for the three native arms this omits.
         body_facing_to_turret(entity.facing)
     };
     Some(desired)
@@ -116,11 +108,49 @@ pub(crate) fn desired_turret_facing(entity: &GameEntity, entities: &EntityStore)
 /// entity's desired facing.
 ///
 /// - If entity has AttackTarget: rotate barrel toward target (lepton-precise).
-/// - Otherwise: rotate barrel back to body facing (idle return — research
-///   doc §5.1, ledger #20).
+/// - Otherwise: rotate barrel back to body facing.
 ///
 /// Calls FacingClass::set, which is a no-op when the desired facing equals
 /// the current destination — so this function is idempotent.
+///
+/// `UnitClass::Facing_Update` @ `0x00736990` owns this natively, on the turret
+/// `FacingClass` at owner `+0x3A0`. Four of its behaviours are **not** modelled,
+/// recorded rather than approximated.
+///
+/// **These four apply to the live vehicle path too.** This function `continue`s
+/// past every `EntityCategory::Unit` while `L2_UNIT_POST_AUTHORITATIVE` holds,
+/// so the host that actually aims a vehicle turret is `sim::combat`'s
+/// `desired_turret_facing` sweep — the same omissions, one file over.
+///
+/// - **The idle dwell.** The native idle return is gated on
+///   `frame - owner+0x120 >= Rules+0xE04 + 5` (`0x00736B35`-`0x00736B7C`),
+///   where `Rules+0xE04` is `[General] GuardAreaTargetingDelay` (36 in stock),
+///   so the barrel holds its aim for ~41 frames — nearly three seconds — after
+///   losing a target. VERA returns to the hull on the same tick
+///   `attack_target` becomes `None`. Trigger: every kill and every target loss.
+///   Player effect: turrets whip back to hull-forward where retail holds.
+///   Frequency: dozens of times a minute in any engagement. Downstream risk:
+///   needs a per-entity last-target frame, which is new deterministic state.
+/// - **The NavCom aim.** When the idle return does fire and the unit is under a
+///   move order, native aims the turret at `owner+0x5A4`, the destination
+///   (`0x00736BB1`-`0x00736BC8`), not at the hull. VERA has only the two
+///   outcomes. Trigger: every move order to a turreted vehicle with no target.
+///   Player effect: the barrel tracks the hull through every drive-track curve
+///   instead of leading toward the destination. Frequency: constant.
+/// - **The rotation latch.** `owner+0x6AF` (cleared `0x00736AD5`, re-set from
+///   `Is_Rotating` at `0x00736B11`) suppresses the whole aim block on any frame
+///   after one in which the turret was turning, so native commits to each arc
+///   and steps in completed turns. VERA re-aims every tick, which against a
+///   moving target re-snapshots `prev` and restarts the timer, converging
+///   asymptotically. Trigger: any turreted unit tracking a mover. Frequency:
+///   continuous in combat. Downstream risk: one latch byte on the entity.
+/// - **The building anchor.** Native reaches the target through its `GetCoords`
+///   slot `+0x48`, which for `BuildingClass` returns the foundation centre;
+///   [`desired_turret_facing`] reads the raw NW-anchored position. A 3x3
+///   building aimed at from four cells is off by about 14 degrees. Trigger:
+///   every vehicle attack on a structure. Frequency: constant in any base
+///   assault, and it feeds the fire-alignment gate, so first-shot timing shifts
+///   with it.
 pub fn tick_turret_rotation(
     entities: &mut EntityStore,
     rules: &RuleSet,
@@ -205,17 +235,6 @@ mod tests {
         assert_eq!(shortest_rotation(250, 10), 16);
         // From 10 to 250: clockwise is +240, counter-clockwise is -16. Should pick -16.
         assert_eq!(shortest_rotation(10, 250), -16);
-    }
-
-    #[test]
-    fn test_rot_to_facing_delta() {
-        assert_eq!(rot_to_facing_delta(5), 4);
-
-        // ROT=0 -> 0
-        assert_eq!(rot_to_facing_delta(0), 0);
-
-        // ROT=7 (Grizzly): ceil(7 * 256 / 360) = 5.
-        assert_eq!(rot_to_facing_delta(7), 5);
     }
 
     #[test]

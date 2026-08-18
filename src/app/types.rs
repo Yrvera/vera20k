@@ -229,6 +229,13 @@ pub(crate) enum CursorFeedbackKind {
     /// Directional barred edge-scroll arrow when the tactical clamp removes
     /// every requested movement component.
     ScrollBlocked(ScrollDir),
+    /// The right-drag map pan's own cursor, shown for as long as the drag owns
+    /// the camera. Distinct from edge scroll: the pan holds the mouse capture,
+    /// which is exactly what stops edge scroll running.
+    Pan,
+    /// The pan cursor's directional variant, shown when the map cannot scroll
+    /// any further the way the table's blocked-direction mask points.
+    PanBlocked(ScrollDir),
     /// Move cursor minimap variant (frames 42–51) — shown when hovering over the minimap.
     MinimapMove,
     /// Deploy/undeploy cursor — shown when a Deployer unit hovers over itself.

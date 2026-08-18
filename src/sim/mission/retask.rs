@@ -23,16 +23,16 @@ use crate::sim::world::Simulation;
 ///
 /// | site | variant | cancels |
 /// |---|---|---|
-/// | Move | `All` | depot + aircraft RTB/wait + docked-idle |
-/// | Stop, RepairAtDepot | `Depot` | depot reservation only |
+/// | Move, Stop | `All` | depot + aircraft RTB/wait + docked-idle |
+/// | RepairAtDepot | `Depot` | depot reservation only |
 /// | Attack | `AircraftOnly` | aircraft RTB/wait + docked-idle (NOT depot) |
 /// | ForceAttack, ForceAttackCell, AttackMove | `IdleOnly` | docked-idle only |
 /// | EnterTransport, PlantC4, CaptureBuilding | `None` | nothing |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockTeardown {
-    /// Depot + aircraft RTB/wait + docked-idle (Move).
+    /// Depot + aircraft RTB/wait + docked-idle (Move, Stop).
     All,
-    /// Depot reservation only (Stop, RepairAtDepot).
+    /// Depot reservation only (RepairAtDepot).
     Depot,
     /// Aircraft RTB/wait + docked-idle, but NOT the depot reservation (Attack).
     AircraftOnly,
@@ -90,6 +90,59 @@ impl Simulation {
             now,
             &EntityReadyInputProvider,
         );
+    }
+
+    /// The same retask, plus the Override-archive clear that belongs to the
+    /// MEGAMISSION event specifically.
+    ///
+    /// Immediately after its `Queue_Mission` at 0x004C73B9,
+    /// `EventClass::Execute`'s MEGAMISSION arm empties the archives:
+    /// `MOV [EDI+0x5A8],0` (SuspendedNavCom) at 0x004C73C7 on the Foot arm the
+    /// `TEST byte [EDI+0x14],0x4` at 0x004C73BF selects, and
+    /// `MOV [EDI+0x2B8],0` (SuspendedTarCom) at 0x004C73D7 on the join — which
+    /// the non-Foot arm also reaches, via `0x004C7440: XOR EBP,EBP;
+    /// JMP 0x004C73D1`. `SuspendedMission` itself is deliberately left alone, so
+    /// a later Restore reinstates the old selector with a NULL target and NULL
+    /// destination.
+    ///
+    /// This is NOT the shared funnel's business, because not every player order
+    /// is a MEGAMISSION. Stop is its own opcode — `StopCommandClass::Execute`
+    /// pushes 6 at 0x00730EE7, and the table at 0x004C8114 routes 6 to
+    /// 0x004C74CB. That arm DOES queue a mission in one case, the ore miner on
+    /// Harvest or Return: `PUSH EDI; PUSH 5; CALL [EDX+0x1E8]` at 0x004C7685
+    /// (EDI is the function's zero register there) then Commence at 0x004C7696,
+    /// which `commit_stop_miner_guard` below implements. What it does not do,
+    /// anywhere in 0x004C74CB-0x004C76BB, is
+    /// store to `+0x2B8` or `+0x5A8`. Clearing there would leave a unit parked
+    /// after a Stop where retail resumes its archived move on the next Restore.
+    ///
+    /// Six commands `command_uses_megamission` also counts — Guard, MinerReturn,
+    /// EjectBunker, UnloadPassengers, HarvestCell, ToggleInfantryDeploy — write
+    /// their missions outside this funnel entirely and so still get no clear.
+    /// Pre-existing, not narrowed by the split. Trigger: one of those issued to
+    /// a unit already carrying an Override archive. Player effect: a later
+    /// Restore hands back a destination or target the order should have
+    /// cancelled. Frequency: Guard and MinerReturn are common orders, but the
+    /// archive has to be live for it to matter. Downstream risk: none — each is
+    /// one call away from the same helper.
+    ///
+    /// Without the clear on the sites that DO need it, a unit Overridden by a
+    /// blocked step or by the retaliation at 0x00702B41, then retasked, then
+    /// losing its new target, marched back to the destination the player had
+    /// cancelled or re-latched the cancelled target.
+    pub fn queue_megamission_with_teardown(
+        &mut self,
+        id: u64,
+        mission: MissionType,
+        teardown: DockTeardown,
+    ) {
+        self.queue_mission_with_teardown(id, mission, teardown);
+        if let Some(entity) = self.substrate.entities.get_mut(id) {
+            entity.suspended_attack_target = None;
+            if entity.category != crate::map::entities::EntityCategory::Structure {
+                entity.navigation.suspended_nav_com = None;
+            }
+        }
     }
 
     /// **Open: what a miner does when a Move order it was given finishes.**

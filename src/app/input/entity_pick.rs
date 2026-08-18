@@ -266,12 +266,52 @@ pub(crate) fn compute_click_selection_snapshot(
     let picked = entities.get(picked_sid)?;
     let type_str = interner.map_or("", |i| i.resolve(picked.type_ref));
     let admitted = static_selection_gate(picked, type_str, rules);
-    let incompatible_owner = current_selection
+    // A shift-click adds when the selection it is joining is the local player's,
+    // whatever was clicked. The native ACTION_SELECT arm asks
+    // `HouseClass__IsHumanPlayer(CurrentObjects[0]->Owner)` — 0x004ABD42 loads
+    // `CurrentObjects[0]`, calls its owner virtual `+0x3C`, and 0x004ABD50 calls
+    // 0x0050B6F0, whose real test is `house == g_PlayerPtr`; a false answer at
+    // 0x004ABD57 jumps to the replace path. It is a test on what is ALREADY
+    // selected, never on whether the clicked object matches it.
+    //
+    // Enemy clicks genuinely reach this arm. `TechnoClass__What_Action_OnObject`
+    // 0x006FFEC0 short-circuits to ACTION_SELECT at 0x00700107 whenever the
+    // Shift pair `DAT_00A8EC08`/`0C` is down and the Ctrl pair is not — gated on
+    // `IsHumanPlayer` of the SELECTED object's owner `[ESI+0x21C]`, with no test
+    // on the clicked object at all.
+    //
+    // That first test is only half the decision. The arm's add branch calls the
+    // clicked object's vtable `+0x14C` Select (TechnoClass vtable base
+    // 0x007F4960, slot 0x007F4AAC = `TechnoClass__Select` 0x006FBFA0), which
+    // always reaches `ObjectClass__Select` 0x005F4520. With a non-empty
+    // selection that body compares `IsHumanPlayer` of the NEW object against
+    // `IsHumanPlayer` of `CurrentObjects[0]` (0x005F45D2/0x005F45DF): differing
+    // answers fall to `Unselect_All_With_Mode_Reset` 0x0048DC90 at 0x005F45F8,
+    // and equal answers keep the selection only when that answer was true
+    // (0x005F45EF/0x005F45F6). So the selection survives a shift-click only when
+    // BOTH sides are the local player's — shift-clicking an enemy while your own
+    // army is selected drains the army and leaves the enemy alone selected.
+    //
+    // VERA-internal: gamemd always has a `g_PlayerPtr`, so it has no answer for
+    // "the local house is unknown". Sandbox and test callers pass no owner, and
+    // those keep the ordinary add/toggle rather than being forced down the
+    // replace path. gamemd equivalent UNCHECKED because the state cannot arise —
+    // both production call sites always pass a resolved owner and interner.
+    let owner_is_local = |entity: &crate::sim::game_entity::GameEntity| -> bool {
+        match (local_owner, interner) {
+            (Some(owner), Some(names)) => {
+                names.resolve(entity.owner).eq_ignore_ascii_case(owner)
+            }
+            _ => true,
+        }
+    };
+    let selection_is_local = current_selection
         .first()
         .and_then(|id| entities.get(*id))
-        .is_some_and(|first| first.owner != picked.owner);
+        .is_some_and(|first| owner_is_local(first));
+    let picked_is_local = owner_is_local(picked);
 
-    if !additive || current_selection.is_empty() || incompatible_owner {
+    if !additive || current_selection.is_empty() || !selection_is_local || !picked_is_local {
         return Some(SelectionMutation {
             clear: true,
             select: admitted.then_some(picked_sid).into_iter().collect(),
@@ -786,10 +826,10 @@ fn entities_in_rect(
 ///
 /// A single click reaches an object through a shorter chain than a band box
 /// does: only the band path asks `CanBeSelectedNow`, which refuses an object
-/// that is enslaved, mid-way through a deploy transition, linked into a bunker,
-/// or radio-docked on a building. The docked clause is the one players feel — it
-/// keeps the miner unloading on the refinery pad out of a box dragged across the
-/// base, while a direct click on that same miner still selects it.
+/// that is enslaved, powered down, linked into a bunker, or radio-docked on a
+/// building. The docked clause is the one players feel — it keeps the miner
+/// unloading on the refinery pad out of a box dragged across the base, while a
+/// direct click on that same miner still selects it.
 ///
 /// The radio-dock clause is a **pair** of tests, and both halves matter: the
 /// dock flag alone is not enough, the object also has to be standing on a
@@ -807,25 +847,33 @@ fn entities_in_rect(
 /// * The native bunker test reads one link field. VERA splits the link into an
 ///   approach marker and an installed link, and only the installed link is
 ///   treated as linked.
+///
+/// The powered-down clause reads byte `+0x1C8`, and it is NOT a deploy-transition
+/// flag. An exhaustive instruction search finds exactly three writers —
+/// `TechnoClass__Constructor` 0x006F2C9A initialises it,
+/// `TechnoClass__OnDeployBegin` 0x0070FD62 raises it, and
+/// `TechnoClass__OnUndeployComplete` 0x0070FC6D/0x0070FC7A clear it — and
+/// neither handler has a vtable or DATA reference. Their only callers are
+/// `HouseClass__LostPoweredCenter`, `HouseClass__Removed_From_Game`,
+/// `UnitClass__PerCellProcess` and `HouseClass__RobotTanksBackOnline`. So it is
+/// a *latch* held for as long as a Robot Tank is offline for want of a Robot
+/// Control Center — never raised by an infantry deploy toggle or an ordinary MCV
+/// deploy. VERA previously refused every mid-deploy object here, which is a gate
+/// gamemd does not have: it silently dropped GIs out of a box dragged over them
+/// during their deploy animation. That gate is gone; the offline latch itself
+/// waits on the Robot Control Center mechanism, which has no owner yet.
 fn can_be_selected_now(
     entity: &crate::sim::game_entity::GameEntity,
     entities: &EntityStore,
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> bool {
-    use crate::sim::deploy::DeployPhase;
     // BuildingClass answers false on the ordinary dynamic selection virtual.
     // TypeSelect owns the verified UndeploysInto fallback separately.
     if entity.category == EntityCategory::Structure {
         return false;
     }
     if entity.slave_harvester.is_some() {
-        return false;
-    }
-    if matches!(
-        entity.deploy_state,
-        Some(DeployPhase::Deploying { .. } | DeployPhase::Undeploying { .. })
-    ) {
         return false;
     }
     if entity.bunker_link.installed_in().is_some() {
@@ -1146,6 +1194,46 @@ mod tests {
         entity.lifecycle.in_limbo = false;
         entity.selected = selected;
         entity
+    }
+
+    /// `CanBeSelectedNow`'s byte `+0x1C8` is the Robot-Tank-offline latch, not a
+    /// deploy-transition flag: its only writers are `TechnoClass__OnDeployBegin`
+    /// 0x0070FD62 and `TechnoClass__OnUndeployComplete` 0x0070FC6D/0x0070FC7A,
+    /// reached only from the powered-center and robot-tank paths. A GI part-way
+    /// through its deploy toggle therefore stays band-selectable in gamemd, and
+    /// must here too.
+    #[test]
+    fn item83_a_deploying_object_is_still_band_selectable() {
+        use crate::sim::deploy::DeployPhase;
+        let rules = item83_rules();
+        let mut interner = StringInterner::new();
+        let owner = interner.intern("Americans");
+        let type_ref = interner.intern("GI");
+        let mut entity = item83_entity(
+            1,
+            5,
+            5,
+            owner,
+            type_ref,
+            EntityCategory::Infantry,
+            false,
+        );
+        let entities = EntityStore::new();
+
+        assert!(
+            can_be_selected_now(&entity, &entities, Some(&rules), Some(&interner)),
+            "an idle object is selectable"
+        );
+        for phase in [
+            DeployPhase::Deploying { ticks_remaining: 3 },
+            DeployPhase::Undeploying { ticks_remaining: 3 },
+        ] {
+            entity.deploy_state = Some(phase);
+            assert!(
+                can_be_selected_now(&entity, &entities, Some(&rules), Some(&interner)),
+                "gamemd has no deploy-transition clause here"
+            );
+        }
     }
 
     #[test]
@@ -1627,11 +1715,118 @@ mod tests {
             Some(&interner),
         )
         .expect("discovered nonlocal object owns the click");
+        // ObjectClass__Select drains the selection whenever the two sides
+        // disagree on IsHumanPlayer, so a shift-click on an enemy leaves the
+        // enemy alone selected. See the `selection_is_local` comment.
         assert!(
             nonlocal_click.clear,
-            "an incompatible local group is replaced"
+            "a shift-click on an enemy drains the local group"
         );
         assert_eq!(nonlocal_click.select, [2]);
+
+        // Both sides non-local also drains: equal IsHumanPlayer answers keep the
+        // selection only when that answer was true. This is the case the old
+        // owner-match predicate got wrong -- it saw two Soviets and added.
+        let enemy_group = compute_click_selection_snapshot(
+            &entities,
+            &[2, 1],
+            &[2],
+            None,
+            Some("Americans"),
+            x,
+            y,
+            30.0,
+            true,
+            Some(&rules),
+            None,
+            &heights,
+            None,
+            Some(&interner),
+        )
+        .expect("discovered nonlocal object owns the click");
+        assert!(
+            enemy_group.clear,
+            "an enemy group is replaced rather than extended"
+        );
+    }
+
+    /// The ordinary additive path, with a real local owner supplied — the
+    /// existing coverage passes `None` for the owner and so routes around the
+    /// `IsHumanPlayer` pair entirely.
+    #[test]
+    fn item83_shift_click_adds_only_while_both_sides_are_the_local_player() {
+        let rules = item83_rules();
+        let mut interner = StringInterner::new();
+        let americans = interner.intern("Americans");
+        let soviets = interner.intern("Soviet");
+        let unit_type = interner.intern("GI");
+        let mut entities = EntityStore::new();
+        entities.insert(item83_entity(
+            1,
+            5,
+            5,
+            americans,
+            unit_type,
+            EntityCategory::Infantry,
+            true,
+        ));
+        entities.insert(item83_entity(
+            2,
+            9,
+            9,
+            americans,
+            unit_type,
+            EntityCategory::Infantry,
+            false,
+        ));
+        let heights: std::collections::BTreeMap<(u16, u16), u8> = std::collections::BTreeMap::new();
+        let (x, y) = {
+            let target = entities.get(2).unwrap();
+            crate::render::locomotor_visual::screen_position(target)
+        };
+
+        // Both local: adds without clearing.
+        let added = compute_click_selection_snapshot(
+            &entities,
+            &[2, 1],
+            &[1],
+            None,
+            Some("Americans"),
+            x,
+            y,
+            30.0,
+            true,
+            Some(&rules),
+            None,
+            &heights,
+            None,
+            Some(&interner),
+        )
+        .expect("the local object owns the click");
+        assert!(!added.clear, "two local objects build one group");
+        assert_eq!(added.select, [2]);
+
+        // Flip the clicked object to an enemy: the same gesture now drains.
+        entities.get_mut(2).unwrap().owner = soviets;
+        let drained = compute_click_selection_snapshot(
+            &entities,
+            &[2, 1],
+            &[1],
+            None,
+            Some("Americans"),
+            x,
+            y,
+            30.0,
+            true,
+            Some(&rules),
+            None,
+            &heights,
+            None,
+            Some(&interner),
+        )
+        .expect("the enemy object owns the click");
+        assert!(drained.clear, "an enemy joins alone");
+        assert_eq!(drained.select, [2]);
     }
 
     #[test]
