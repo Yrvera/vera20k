@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::rules::ini_parser::IniSection;
 use crate::rules::particle_type::ParticleTypeId;
 use crate::util::fixed_math::{SIM_ZERO, SimFixed, sim_from_f32};
+use crate::util::native_x87::NativeF64Bits;
 
 /// Default `ParticlesPerCoord` from the constructor (Railgun field, parsed
 /// for every system).
@@ -108,9 +109,16 @@ pub struct ParticleSystemType {
     /// Random velocity perturbation scale.
     pub velocity_perturbation_coefficient: SimFixed,
 
-    // ── Spark-only (Tier 3 — parsed but unused) ──────────────────────
-    /// Probability of spawning a spark each tick.
-    pub spawn_spark_percentage: SimFixed,
+    // ── Spark-only ───────────────────────────────────────────────────
+    /// Probability of taking a spark burst this tick.
+    ///
+    /// Stored as the exact widened `ReadDouble` result, not `SimFixed`:
+    /// `ParticleSystemClass::AI_Spark @ 0x0062E840` compares the scaled RNG
+    /// draw against this as a *double* (`FCOMP double ptr [ECX + 0x2f8]` at
+    /// `0x0062E88D`). `[LGSparkSys] SpawnSparkPercentage=.2` is not
+    /// representable in `SimFixed`, and the ~3.05e-6 quantisation gap flips the
+    /// gate often enough to diverge the shared RNG stream.
+    pub spawn_spark_percentage: NativeF64Bits,
     /// Spark spawn frame counter.
     pub spark_spawn_frames: u32,
     /// Light radius for spark systems.
@@ -216,10 +224,9 @@ impl ParticleSystemType {
                 .map(sim_from_f32)
                 .unwrap_or(SIM_ZERO),
 
-            spawn_spark_percentage: section
-                .get_f32("SpawnSparkPercentage")
-                .map(sim_from_f32)
-                .unwrap_or(SIM_ZERO),
+            spawn_spark_percentage: NativeF64Bits::from_bits(
+                section.read_double("SpawnSparkPercentage", 0.0).to_bits(),
+            ),
             spark_spawn_frames: section
                 .get_i32("SparkSpawnFrames")
                 .map(|n| n.max(0) as u32)

@@ -1928,7 +1928,7 @@ fn gsi_04_07_damage_receiver_smoke_creation_precedes_retaliation() {
         sim.particle_systems()
             .get(system_id)
             .unwrap()
-            .marked_for_deletion,
+            .done_spawning,
         "recovery above ConditionYellow invokes mark-only ParticleSystem Destroy"
     );
     assert_eq!(

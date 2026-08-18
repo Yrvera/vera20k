@@ -325,7 +325,6 @@ impl Simulation {
             sys.coords.z.hash(hasher);
             sys.lifetime.hash(hasher);
             sys.facing.hash(hasher);
-            sys.marked_for_deletion.hash(hasher);
             sys.done_spawning.hash(hasher);
             sys.particles.len().hash(hasher);
             for p in &sys.particles {
@@ -2093,7 +2092,6 @@ mod particle_hash_tests {
             lifetime: -1,
             spark_spawn_frames: 0,
             facing: 0x1D,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: None,
             owner_entity: None,

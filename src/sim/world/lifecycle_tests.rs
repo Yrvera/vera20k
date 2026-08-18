@@ -1115,7 +1115,6 @@ fn insert_particle_system(sim: &mut Simulation, stable_id: u64) {
         lifetime: -1,
         spark_spawn_frames: 0,
         facing: 0,
-        marked_for_deletion: false,
         directionless: true,
         attached_entity: None,
         owner_entity: None,
@@ -2392,11 +2391,11 @@ fn pointer_expiry_clears_particle_owner_and_deletes_attached_system() {
 
     let owned = sim.substrate.particle_systems.get(1).unwrap();
     assert!(owned.owner_entity.is_none());
-    assert!(!owned.marked_for_deletion);
+    assert!(!owned.done_spawning);
     let attached = sim.substrate.particle_systems.get(2).unwrap();
     assert!(attached.owner_entity.is_none());
     assert!(attached.attached_entity.is_none());
-    assert!(attached.marked_for_deletion);
+    assert!(attached.done_spawning);
 }
 
 #[test]

@@ -203,8 +203,30 @@ fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId)
 ///   pinned replay hash and every combat test that depends on selection order;
 ///   it needs its own slice with a re-baseline. `ThreatPosed=` is also not
 ///   parsed anywhere despite 232 stock entries (141 of them `0`, i.e. "never
-///   pick me" — engineers, spies and the like), so the input the native score
-///   weights most heavily does not yet exist in the rules layer. `OmniFire=`
+///   pick me" — engineers, spies and the like).
+///
+///   **Correction to an earlier draft of this note**, which said `ThreatPosed=`
+///   was "the input the native score weights most heavily". It is not an input
+///   to the score at all. `ThreatPosed` reaches `TechnoTypeClass+0x670`
+///   (`TechnoTypeClass::ReadINI @ 0x007149CE`, via `ReadInteger @ 0x005276D0`,
+///   its only xref), whereas `TechnoClass::Calculate_Threat_Score @ 0x0070CD10`
+///   reads `TechnoType+0x2C0` for its special-threat term — the field this file
+///   already models as `special_threat_value`. What `+0x670` actually feeds is
+///   UNCHECKED; it is somewhere in candidate selection or the AI's own target
+///   picking, NOT in this score. Implementing it into the C term on the
+///   strength of the old note would have put a real key in the wrong place.
+///
+///   **A second gap in the score itself, newly found.** Native picks its five
+///   coefficients from ONE OF TWO sources, branching on the scorer's owning
+///   house byte `+0x1FB`: clear takes `Rules+0x1068`..`+0x108C`, set takes the
+///   scorer TYPE's own `+0x2C8`..`+0x2EC`. `calculate_ai_threat_score` below
+///   always reads the `Rules` set (`[General] Dumb*Coefficient`), so a type
+///   carrying its own coefficients is scored with the wrong weights. There is
+///   also a `Rules+0x1090` bonus term added when the scorer's `+0x5600` field
+///   matches a candidate field, which this file does not model either.
+///   The identity of house `+0x1FB`, type `+0x2C8`..`+0x2EC` and the `+0x5600`
+///   pair are all UNCHECKED — they are recorded here as read, not as named.
+///   `OmniFire=`
 ///   (18 stock) and `DistributedWeaponFire=` are parsed and read by nothing,
 ///   and spread-fire types are explicitly refused a target by the passive scan,
 ///   so an Aegis Cruiser never acquires at all. `OpportunityFire=` (14) is the
@@ -646,6 +668,14 @@ pub(crate) fn should_retaliate_from_damage(
             calculate_ai_threat_score(entities, victim_id, current_id, rules, interner, terrain),
             calculate_ai_threat_score(entities, victim_id, attacker_id, rules, interner, terrain),
         )
+        // This comparison changed behaviour in the GSI-05.13 slice, and the
+        // change is a correction rather than a side effect: `X87Chop53::compare`
+        // ordered on the exponent before settling zero operands, so any score in
+        // `(0, 1)` compared against an exactly-zero score came back as the
+        // SMALLER one. An AI defender holding a zero-scored current target used
+        // to refuse retaliation against a positive-scored attacker; it no longer
+        // does. Reachability needs an exactly-zero `calculate_ai_threat_score`,
+        // which the term structure makes uncommon but not impossible.
         && X87Chop53::compare(current_score, attacker_score) == X87Ordering::Greater
     {
         return false;

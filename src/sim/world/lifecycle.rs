@@ -2260,7 +2260,9 @@ impl Simulation {
                 }
                 if system.attached_entity == Some(expired_id) {
                     system.attached_entity = None;
-                    system.marked_for_deletion = true;
+                    // vtable `+0xF8`, the same mark the lifetime and
+                    // spawn-cutoff paths set.
+                    system.done_spawning = true;
                 }
             } else if is_projectile {
                 let present = self.projectiles.pointer_expired(
@@ -2361,7 +2363,7 @@ impl Simulation {
             .substrate
             .particle_systems
             .get(stable_id)
-            .is_some_and(|system| system.marked_for_deletion && system.particles.is_empty());
+            .is_some_and(|system| system.done_spawning && system.particles.is_empty());
         if !ready {
             return;
         }
@@ -2380,7 +2382,7 @@ impl Simulation {
             return anim.runtime.inactive;
         }
         if let Some(system) = self.substrate.particle_systems.get(stable_id) {
-            return system.marked_for_deletion && system.particles.is_empty();
+            return system.done_spawning && system.particles.is_empty();
         }
         if let Some(terrain) = self.production.terrain_objects.get(&stable_id) {
             return !terrain.is_live() && !terrain.in_logic_vector;

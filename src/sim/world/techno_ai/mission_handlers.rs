@@ -119,10 +119,93 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         // `UnitClass::Mission_Attack @ 0x007447A0` is a tail jump to
-        // `FootClass::Mission_Attack`; keep both categories on this one path.
+        // `FootClass::Mission_Attack`, so vehicles belong on this path.
+        //
+        // RESIDUAL (GSI-07.06) — **Infantry do NOT**, and that is not modelled.
+        // `InfantryClass`'s Attack slot `+0x210` is `0x0051F3E0`, a real
+        // override with three branches ahead of the Foot body:
+        // - Human-owned infantry whose DoType `[this+0x6C4]` is in
+        //   `{0x1B, 0x1C, 0x1D, 0x1E}` call vtable `+0x428` (`0x0051F330`, an
+        //   in-place re-acquire: keep firing if the target is still legal, else
+        //   rescan in range, else go idle — it never walks), then return the
+        //   PLAIN `ftol(Rate) + RandomRanged(0,2)`, skipping the whole Foot
+        //   body. So no half-cadence gate and no idle-mode exit. The same field
+        //   and value set gate `InfantryClass::Mission_Move` (`0x0051F660`),
+        //   recorded on the Move arm above.
+        //
+        //   The DoType identity is PROVED, not assumed. The sequence-name
+        //   pointer table is at `0x008255C8`, 42 entries, bounded by
+        //   `InfantryTypeClass::ReadSequenceData @ 0x00523D00`'s
+        //   `while (ptr < 0x825670)`. Indices `0x1B`..`0x1E` are `Deploy`,
+        //   `Deployed`, `DeployedFire`, `DeployedIdle`. Corroborated by
+        //   `InfantryClass::Do_Action @ 0x0051D6F0`, whose land-to-water remap
+        //   pairs (Walk/Crawl->Swim, Ready/Prone->Tread, Die1/Die2->WetDie1/2,
+        //   FireUp/FireProne->WetAttack) all decode exactly under this table,
+        //   and which plays `DeploySound=` on `0x1B` and `UndeploySound=` on
+        //   `0x1F`.
+        //
+        //   Trigger: an EXPLICIT player attack order given to an
+        //   already-deployed infantryman. Not merely "a deployed unit firing" —
+        //   auto-acquire while deployed does not reach here, because
+        //   `Mission_Guard` (`0x0051F620`) and `Mission_AreaGuard`
+        //   (`0x0051F640`) both route through `FUN_00521320`, which handles the
+        //   deployed state itself and calls `+0x428` directly without changing
+        //   mission.
+        //   Player effect: VERA runs the half-cadence test and the idle exit
+        //   that retail skips, so the dispatch cadence and the scenario-RNG
+        //   draw rate diverge for that engagement.
+        //   Frequency: several times per match in any game with Allied GIs or
+        //   Soviet Desolators — routine micro, not continuous. An earlier draft
+        //   of this note said continuous; that was wrong, and the correction is
+        //   the auto-acquire route above.
+        //
+        //   Stock infantry that can enter the set (`Deployer=` on
+        //   `InfantryTypeClass+0xEC8`): `E1`, `GGI`, `DESO`, `YURI`, `YURIPR`.
+        //   `CAOS` also carries `Deployer=` but is a voxel `UnitClass` and
+        //   never reaches these paths. `0x1E` is unreachable for every stock
+        //   type — `GISequence`/`GuardianGISequence` author
+        //   `DeployedIdle=0,0,0` and `Do_Action` rejects a zero frame count —
+        //   and `0x1D` is reachable only for `E1`/`GGI`/`DESO`.
+        //
+        //   **The frame trap has THREE meanings at this offset, not two.**
+        //   `InfantryClass` instance `+0x6C4` is this DoType (init `-1`);
+        //   `UnitClass` instance `+0x6C4` is a `UnitTypeClass*`; and
+        //   `TechnoTypeClass+0x6C4` is `UndeployDelay=` (stock `YURI=150`,
+        //   `YURIPR=75`). `Mission_Move` itself reads the TYPE one at
+        //   `0x0051F6A4` — loading `[ESI+0x6C0]` first — to decide whether an
+        //   AI-owned deployed unit undeploys immediately, so a port that reads
+        //   the instance field there gets Yuri Clone undeploy wrong.
+        // - A spy/engineer-class infantryman (`InfType+0xEC2`, or
+        //   `HasWeaponAbility(0xE)`) holding a BuildingClass target whose type
+        //   has `+0x1577` set and `+0x1701` clear takes
+        //   `Set_Destination(target, 1)` then `Assign_Mission(0x11 Sabotage)`
+        //   and returns 1. Frequency: low-to-moderate — the ordinary
+        //   right-click resolver usually issues the enter action directly, so
+        //   this is the force-fire / retarget path.
+        // - An AI-owned engineer or medic converts to Capture. Frequency: zero
+        //   today, because this project has no AI opponent.
+        //
+        // RESIDUAL (GSI-07.06) — two further Foot-body steps are absent:
+        // - Step 1, the `HoverAttack` re-anchor. When `TechnoType+0x390`
+        //   (`HoverAttack`, NOT `DefaultToGuardArea` — the research corpus has
+        //   those crossed) is set and `GetHeight() == 0`, native finds a nearby
+        //   passable cell and takes it as a destination every dispatch. Live
+        //   FootClass carriers in stock: `JUMPJET` (Rocketeer) and
+        //   `SCHP`/`SCHD` (Siege Chopper). Trigger: a landed Rocketeer or a
+        //   grounded Siege Chopper on Attack. Player effect: retail nudges them
+        //   off the spot; VERA's stay put. Frequency: routine in Allied and
+        //   Soviet mid-game. The key IS parsed, for locomotor selection only.
+        // - Step 2, the `[this+0x68E]` re-acquire, which runs
+        //   `Greatest_Threat` once and clears the flag. Frequency: ZERO today —
+        //   its only producers are the tank-bunker adjacency scans in
+        //   `Mission_Guard @ 0x004D51C5` and `Mission_AreaGuard @ 0x004D7018`,
+        //   both already recorded as residuals on their own arms. Downstream
+        //   risk is the reason it is written down: the consumer must land in
+        //   the same slice as the bunker scan, or a bunker-acquired unit keeps
+        //   the bunker as its target instead of re-picking one dispatch later.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
-            let delay = if foot_attack_in_half_cadence_band(sim, id) {
+            let delay = if foot_attack_in_half_cadence_band(sim, rules, id) {
                 cadence / 2
             } else {
                 cadence
@@ -782,14 +865,39 @@ fn jittered_mission_cadence(sim: &mut Simulation, rules: &RuleSet, mission: Miss
     base.saturating_add(jitter)
 }
 
-/// The representative Foot Attack cadence halves only inside the observed
-/// 282..=768 lepton band. Entity target positions are authoritative here;
-/// force-fire cell geometry is intentionally deferred with target routing.
-fn foot_attack_in_half_cadence_band(sim: &Simulation, id: u64) -> bool {
+/// Whether this dispatch takes `FootClass::Mission_Attack`'s halved cadence.
+///
+/// gamemd-derived: `FootClass::Mission_Attack @ 0x004D4DC0` halves its return
+/// only when a target is installed AND the attacker qualifies by TYPE AND the
+/// 2D distance falls in the close band. The type half is
+/// `(What_Am_I() == 0xF && InfantryType->CloseRange) || primaryWeapon.Range <
+/// 0x201` — an infantry type carrying `CloseRange=`, or any type whose primary
+/// reaches under 513 leptons.
+///
+/// That gate was missing, which is the whole point of this function's rewrite:
+/// without it every tank, rifle infantryman and artillery piece ran the halved
+/// cadence whenever it closed to 1.1–3 cells. 22 of the 93 stock vehicle and
+/// infantry types have a short enough primary; the other 71 must return the
+/// full cadence. Both branches draw the same jitter, so the cost is not an
+/// extra draw — it is that the Attack dispatch, and the scenario-RNG jitter it
+/// consumes, ran at roughly double the native rate through every close-quarters
+/// engagement.
+///
+/// UNCHECKED: the band's exact boundaries. The `282..=768` pair below is
+/// inherited from the earlier survey that wrote this function; a later reading
+/// put it at `[281.6, 769)`, which disagrees at both ends, and neither reading
+/// carries an address. Left as found rather than moved on prose.
+fn foot_attack_in_half_cadence_band(sim: &Simulation, rules: &RuleSet, id: u64) -> bool {
     const MIN_LEPTONS: i64 = 282;
     const MAX_LEPTONS: i64 = 768;
+    /// `CMP ..., 0x201` — the primary-weapon reach below which any type
+    /// qualifies, in leptons.
+    const CLOSE_PRIMARY_RANGE_LEPTONS: i64 = 0x201;
 
     let Some(attacker) = sim.substrate.entities.get(id) else {
+        return false;
+    };
+    if !foot_attack_type_takes_half_cadence(sim, rules, attacker, CLOSE_PRIMARY_RANGE_LEPTONS) {
         return false;
     };
     let Some(crate::sim::combat::AttackTarget {
@@ -804,6 +912,34 @@ fn foot_attack_in_half_cadence_band(sim: &Simulation, id: u64) -> bool {
     };
     let distance_sq = crate::sim::combat::lepton_distance_sq(&attacker.position, &target.position);
     distance_sq >= MIN_LEPTONS * MIN_LEPTONS && distance_sq <= MAX_LEPTONS * MAX_LEPTONS
+}
+
+/// The type half of the halved-cadence gate.
+///
+/// `What_Am_I() == 0xF` is InfantryClass, so `CloseRange=` only qualifies an
+/// infantry type — a vehicle carrying the key would NOT take the short path in
+/// native, and does not here.
+fn foot_attack_type_takes_half_cadence(
+    sim: &Simulation,
+    rules: &RuleSet,
+    attacker: &crate::sim::game_entity::GameEntity,
+    close_primary_range_leptons: i64,
+) -> bool {
+    let Some(object) = rules.object(sim.interner.resolve(attacker.type_ref)) else {
+        return false;
+    };
+    if attacker.category == EntityCategory::Infantry && object.close_range {
+        return true;
+    }
+    let Some(primary) = object
+        .primary
+        .as_deref()
+        .and_then(|name| rules.weapon(name))
+    else {
+        return false;
+    };
+    (primary.range * crate::util::fixed_math::SimFixed::from_num(256)).to_num::<i64>()
+        < close_primary_range_leptons
 }
 
 fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {

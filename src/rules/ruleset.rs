@@ -36,6 +36,7 @@ use crate::rules::superweapon_type::SuperWeaponType;
 use crate::rules::terrain_object_type::TerrainObjectType;
 use crate::rules::terrain_rules::TerrainRules;
 use crate::rules::tiberium_type::TiberiumTypeRegistry;
+use crate::rules::voxel_anim_type::{VoxelAnimType, VoxelAnimTypeId};
 use crate::rules::warhead_type::WarheadType;
 use crate::rules::weapon_type::WeaponType;
 use crate::util::fixed_math::{SimFixed, sim_from_f32};
@@ -1889,11 +1890,11 @@ impl GeneralRules {
             // URepairRate= is in minutes. Convert to ticks: minutes * 60 * 15 ticks/sec.
             unit_repair_rate_ticks: general
                 .get_f32("URepairRate")
-                .map(|minutes| (minutes
-                    * 60.0
-                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
-                .round()
-                .max(1.0) as u32)
+                .map(|minutes| {
+                    (minutes * 60.0 * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                        .round()
+                        .max(1.0) as u32
+                })
                 .unwrap_or(defaults.unit_repair_rate_ticks),
             repair_step: general
                 .get_i32("RepairStep")
@@ -1905,20 +1906,20 @@ impl GeneralRules {
                 .unwrap_or(defaults.repair_percent),
             reload_rate_ticks: general
                 .get_f32("ReloadRate")
-                .map(|minutes| (minutes
-                    * 60.0
-                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
-                .round()
-                .max(1.0) as u32)
+                .map(|minutes| {
+                    (minutes * 60.0 * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                        .round()
+                        .max(1.0) as u32
+                })
                 .unwrap_or(defaults.reload_rate_ticks),
             // PathDelay= is in minutes. Convert to ticks: minutes * 60 * 15.
             path_delay_ticks: general
                 .get_f32("PathDelay")
-                .map(|minutes| (minutes
-                    * 60.0
-                    * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
-                .round()
-                .max(1.0) as u16)
+                .map(|minutes| {
+                    (minutes * 60.0 * (crate::util::fixed_math::RA2_LOGIC_FRAMES_PER_SECOND as f32))
+                        .round()
+                        .max(1.0) as u16
+                })
                 .unwrap_or(defaults.path_delay_ticks),
             // BlockagePathDelay= is directly in frames (ticks).
             blockage_path_delay_ticks: general
@@ -2259,6 +2260,10 @@ pub struct RuleSet {
     particle_system_types: Vec<ParticleSystemType>,
     /// Uppercase name → `ParticleSystemTypeId` for case-insensitive lookup.
     particle_system_types_by_name: HashMap<String, ParticleSystemTypeId>,
+    /// `[VoxelAnims]` types in registry order. Index = `VoxelAnimTypeId.0`.
+    voxel_anim_types: Vec<VoxelAnimType>,
+    /// Uppercase name → `VoxelAnimTypeId` for case-insensitive lookup.
+    voxel_anim_types_by_name: HashMap<String, VoxelAnimTypeId>,
     /// Smudge type registry parsed from `[SmudgeTypes]` and per-name sections.
     /// Populated by `RuleSet::from_ini` from rulesmd.ini.
     pub smudge_types: SmudgeTypeRegistry,
@@ -2660,6 +2665,7 @@ impl RuleSet {
         let (particle_types, particle_types_by_name) = parse_particle_types(ini);
         let (particle_system_types, particle_system_types_by_name) =
             parse_particle_system_types(ini, &particle_types_by_name);
+        let (voxel_anim_types, voxel_anim_types_by_name) = parse_voxel_anim_types(ini);
 
         log::info!(
             "RuleSet loaded: {} objects ({} inf, {} veh, {} air, {} bld), \
@@ -2747,6 +2753,8 @@ impl RuleSet {
             particle_types_by_name,
             particle_system_types,
             particle_system_types_by_name,
+            voxel_anim_types,
+            voxel_anim_types_by_name,
             smudge_types: SmudgeTypeRegistry::from_rules_ini(ini),
             art_registry: crate::rules::art_data::ArtRegistry::empty(),
             effect_assets: crate::rules::effect_asset_catalog::EffectAssetCatalog::default(),
@@ -3031,6 +3039,23 @@ impl RuleSet {
             .copied()
     }
 
+    /// Look up a `[VoxelAnims]` type by ID. Panics if `id` is out of range.
+    pub fn voxel_anim_type(&self, id: VoxelAnimTypeId) -> &VoxelAnimType {
+        &self.voxel_anim_types[id.0 as usize]
+    }
+
+    /// Resolve a `[VoxelAnims]` type name to its ID (case-insensitive).
+    pub fn voxel_anim_type_id_by_name(&self, name: &str) -> Option<VoxelAnimTypeId> {
+        self.voxel_anim_types_by_name
+            .get(&name.to_ascii_uppercase())
+            .copied()
+    }
+
+    /// Number of `[VoxelAnims]` types loaded.
+    pub fn voxel_anim_type_count(&self) -> usize {
+        self.voxel_anim_types.len()
+    }
+
     /// Number of particle types loaded from `[Particles]`.
     pub fn particle_type_count(&self) -> usize {
         self.particle_types.len()
@@ -3283,7 +3308,10 @@ impl RuleSet {
         infantry_sequences: Option<&crate::rules::infantry_sequence::InfantrySequenceRegistry>,
     ) {
         self.animation_sequences =
-            crate::rules::animation_sequence::build_animation_sequence_catalog(self, infantry_sequences);
+            crate::rules::animation_sequence::build_animation_sequence_catalog(
+                self,
+                infantry_sequences,
+            );
     }
 
     pub(crate) fn animation_sequences(
@@ -3647,6 +3675,29 @@ fn parse_particle_types(ini: &IniFile) -> (Vec<ParticleType>, HashMap<String, Pa
 /// Two-pass parse of `[ParticleSystems]`: collect `Pending` entries and
 /// resolve each `HoldsWhat=` name against the already-built particle-type
 /// name map. Missing references log a warning and stay `None`.
+/// `[VoxelAnims]` registry: the flying-debris types a death throws.
+///
+/// Registry order is the id order, exactly as for particles and particle
+/// systems, because `DebrisTypes=` and `Spawns=` resolve by name and the ids
+/// are hashed.
+fn parse_voxel_anim_types(ini: &IniFile) -> (Vec<VoxelAnimType>, HashMap<String, VoxelAnimTypeId>) {
+    let ids: Vec<String> = parse_registry(ini, "VoxelAnims");
+    let mut types: Vec<VoxelAnimType> = Vec::with_capacity(ids.len());
+    let mut by_name: HashMap<String, VoxelAnimTypeId> = HashMap::with_capacity(ids.len());
+    for id in &ids {
+        let Some(section) = ini.section(id) else {
+            log::trace!(
+                "VoxelAnimType '{}' listed in [VoxelAnims] but has no section",
+                id
+            );
+            continue;
+        };
+        by_name.insert(id.to_ascii_uppercase(), VoxelAnimTypeId(types.len() as u32));
+        types.push(VoxelAnimType::from_ini_section(id, section));
+    }
+    (types, by_name)
+}
+
 fn parse_particle_system_types(
     ini: &IniFile,
     p_by_name: &HashMap<String, ParticleTypeId>,
@@ -3706,6 +3757,44 @@ fn parse_particle_system_types(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gsi_05_14_voxel_anim_registry_indexes_the_stock_list_order() {
+        // `[VoxelAnims]` is a numbered registry like `[Particles]`; ids are
+        // list order and `DebrisTypes=`/`Spawns=` resolve by name.
+        let ini = crate::rules::ini_parser::IniFile::from_str(
+            "[VoxelAnims]
+1=PIECE
+2=TIRE
+3=METEOR01
+\
+             [PIECE]
+Duration=75
+Elasticity=0
+\
+             [TIRE]
+Duration=150
+Elasticity=0.8
+\
+             [METEOR01]
+IsMeteor=yes
+Spawns=PEBBLE
+SpawnCount=3
+",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("voxel anim rules parse");
+        assert_eq!(rules.voxel_anim_type_count(), 3);
+        let piece = rules
+            .voxel_anim_type_id_by_name("piece")
+            .expect("case-insensitive lookup");
+        assert_eq!(piece.0, 0);
+        assert_eq!(rules.voxel_anim_type(piece).duration, 75);
+        let meteor = rules.voxel_anim_type_id_by_name("METEOR01").unwrap();
+        assert_eq!(meteor.0, 2);
+        let meteor = rules.voxel_anim_type(meteor);
+        assert!(meteor.is_meteor);
+        assert_eq!(meteor.spawns.as_deref(), Some("PEBBLE"));
+        assert_eq!(meteor.spawn_count, 3);
+    }
     use super::*;
     use crate::rules::ini_parser::RulesLayerKind;
 
@@ -5258,8 +5347,7 @@ ZAdjust=-10
         // orders wall selling depends on: `[OverlayTypes]` declaration order
         // IS the overlay ID, and `first_building_type_for_overlay` returns
         // the FIRST registered building even when a later one also matches.
-        let overlay_ini =
-            IniFile::from_str("[OverlayTypes]\n0=GASAND\n1=GAWALL\n2=CAWALL\n");
+        let overlay_ini = IniFile::from_str("[OverlayTypes]\n0=GASAND\n1=GAWALL\n2=CAWALL\n");
         let overlays =
             crate::rules::overlay_types::OverlayTypeRegistry::from_ini(&overlay_ini, None);
         assert_eq!(overlays.id_for_name("GAWALL"), Some(1));
@@ -5276,7 +5364,11 @@ ZAdjust=-10
             .first_building_type_for_overlay(1, &overlays)
             .expect("first registered building wins");
         assert_eq!(first.id, "GAWALL2");
-        assert!(rules.first_building_type_for_overlay(2, &overlays).is_none());
+        assert!(
+            rules
+                .first_building_type_for_overlay(2, &overlays)
+                .is_none()
+        );
     }
 
     #[test]
@@ -5736,6 +5828,9 @@ ZAdjust=-10
             reordered.simulation_config_hash(),
             "art section insertion order must not affect compatibility"
         );
-        assert_ne!(first.simulation_config_hash(), changed.simulation_config_hash());
+        assert_ne!(
+            first.simulation_config_hash(),
+            changed.simulation_config_hash()
+        );
     }
 }

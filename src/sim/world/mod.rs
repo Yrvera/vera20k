@@ -5701,6 +5701,89 @@ impl Simulation {
                 let stable_id = self.allocate_stable_id();
                 self.admit_wave(stable_id, wave);
             }
+            // gamemd-derived: `EBolt::Init @ 0x004C2A60` creates one spark
+            // system per electric bolt at `0x004C2B30`, passing
+            // `Rules+0x1020` (`[CombatDamage] DefaultSparkSystem`) and the
+            // bolt's TARGET endpoint — `EBolt+0x0C..0x14`, which
+            // `TechnoClass::CreateElectricBolt @ 0x006FD516` fills from the
+            // target object's coordinate virtual, and which `EBolt::Init`
+            // then hands the constructor by address. Owner house,
+            // attachment object and target object are all NULL; the
+            // fallback aim coordinate is `0x008A0E50`, a static all-zero
+            // triple, and `AI_Spark` never reads it. The handle is
+            // discarded: the system lives on the global particle list and
+            // expires on its own `Lifetime`.
+            //
+            // The path consumes no `ScenarioClass::Random` draws.
+            // `EBolt::Init` does take one `RandomRanged(0, 0x100)` at
+            // `0x004C2AA3`, but on the cosmetic `RandomClass` at
+            // `0x00886B88` — the one `LaserDrawClass::Draw` and
+            // `ThemeClass::Next_Song` also use — not the lockstep scenario
+            // stream, so it is not modelled here.
+            //
+            // VERA-internal ordering, gamemd equivalent UNCHECKED: native
+            // constructs the system inside `Fire_At`, i.e. during the
+            // firer's own AI. Whether that means it is visited by the SAME
+            // frame's object walk is UNCHECKED — the constructor's two
+            // appends (`0x0062DD7A` into the ParticleSystemClass instance
+            // registry at `0x00A80208`, and `0x0062DEF6` into the abstracts
+            // registry at `0x00B0F730`) are neither of them the per-frame
+            // walker, and the walker itself was not identified. This engine
+            // creates it in the post-combat walk that already admits Sonic
+            // and Magnetron waves from the same event list — after the
+            // logic walk — so its first burst lands no earlier than
+            // native's, and one frame later if native does visit
+            // same-frame. Bolt rendering itself is not implemented; the
+            // sparks are the part of the discharge that is a simulation
+            // object.
+            if let Some(spark_system_name) = rules.combat_damage.default_spark_system.as_deref()
+            {
+                for event in &combat_result.fire_events {
+                    let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id))
+                    else {
+                        continue;
+                    };
+                    if !weapon.is_electric_bolt {
+                        continue;
+                    }
+                    let Some(system_type) = rules.ps_type_id_by_name(spark_system_name) else {
+                        continue;
+                    };
+                    let coords = match event.target {
+                        crate::sim::combat::TargetKind::Entity(id) => {
+                            let Some(entity) = self.substrate.entities.get(id) else {
+                                continue;
+                            };
+                            glam::IVec3::new(
+                                i32::from(entity.position.rx) * 256
+                                    + entity.position.sub_x.to_num::<i32>(),
+                                i32::from(entity.position.ry) * 256
+                                    + entity.position.sub_y.to_num::<i32>(),
+                                i32::from(entity.position.z)
+                                    * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                            )
+                        }
+                        // VERA-internal, gamemd equivalent UNCHECKED: native
+                        // takes the bolt endpoint from the TARGET OBJECT's
+                        // coordinate virtual, and a cell target has no object
+                        // to ask, so ground height is not folded in here.
+                        crate::sim::combat::TargetKind::Cell(rx, ry) => glam::IVec3::new(
+                            i32::from(rx) * 256 + 128,
+                            i32::from(ry) * 256 + 128,
+                            0,
+                        ),
+                    };
+                    self.spawn_particle_system(
+                        system_type,
+                        coords,
+                        None,
+                        None,
+                        glam::IVec3::ZERO,
+                        None,
+                        rules,
+                    );
+                }
+            }
             // Collect fire events for render-side muzzle flash / projectile origin.
             self.invulnerability_impact_effects
                 .extend(combat_result.invulnerability_impact_effects.iter().copied());

@@ -428,7 +428,7 @@ mod tests {
         let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 1, 2, "score.map", 0);
         let header = crate::sim::snapshot::GameSnapshot::read_header(&bytes)
             .expect("v82 score snapshot header");
-        assert_eq!(header.version, 82);
+        assert_eq!(header.version, 83);
         let restored = crate::sim::snapshot::GameSnapshot::load(&bytes)
             .expect("v82 score snapshot")
             .sim;

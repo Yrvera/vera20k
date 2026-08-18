@@ -2707,10 +2707,62 @@ mod tests {
     }
 
     fn representative_foot_handler_rules() -> RuleSet {
+        // `TEST` carries a long primary on purpose: `FootClass::Mission_Attack`
+        // halves its cadence only for an infantry type with `CloseRange=` or a
+        // primary reaching under 513 leptons, so the DEFAULT fixture type must
+        // be one that does NOT qualify. `CLOSEINF` and `SHORTVEH` below are the
+        // two qualifying shapes.
         RuleSet::from_ini(&IniFile::from_str(
-            "[General]\n\n[Move]\nRate=.016\n\n[Attack]\nRate=.016\n\n[Guard]\nRate=.016\n\n[Hunt]\nRate=.016\n",
+            "[General]\n\n[Move]\nRate=.016\n\n[Attack]\nRate=.016\n\n             [Guard]\nRate=.016\n\n[Hunt]\nRate=.016\n\n             [VehicleTypes]\n0=TEST\n1=SHORTVEH\n\n             [InfantryTypes]\n0=CLOSEINF\n\n             [TEST]\nStrength=300\nPrimary=LONGGUN\n\n             [SHORTVEH]\nStrength=300\nPrimary=SHORTGUN\n\n             [CLOSEINF]\nStrength=100\nCloseRange=yes\nPrimary=LONGGUN\n\n             [LONGGUN]\nDamage=10\nROF=20\nRange=5\nWarhead=WH\n\n             [SHORTGUN]\nDamage=10\nROF=20\nRange=1\nWarhead=WH\n\n             [WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
         ))
         .expect("representative Foot handler rules parse")
+    }
+
+    /// Build an Attack-committed attacker of `type_name` two cells from a
+    /// target, i.e. squarely inside the close band, and return the sim.
+    fn attack_band_fixture(
+        seed: u64,
+        type_name: &str,
+        category: EntityCategory,
+    ) -> Simulation {
+        let mut sim = Simulation::with_seed(seed);
+        let mut attacker = entity_of(1, category);
+        attacker.attack_target = Some(AttackTarget::new(2));
+        update_mission_test_fixture(&mut attacker.mission, |fixture| {
+            fixture.current = MissionId::from_known(MissionType::Attack);
+            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
+        });
+        // 512 leptons from the target at (5, 5) — inside the 282..=768 band.
+        attacker.position.rx = 7;
+        attacker.owner = sim.interner.intern("Americans");
+        attacker.type_ref = sim.interner.intern(type_name);
+        sim.substrate.entities.insert(attacker);
+        register_entity(&mut sim, entity_of(2, EntityCategory::Unit));
+        sim
+    }
+
+    /// The dispatch delay one Attack visit installs, and the jitter draw it
+    /// took, for an attacker already inside the close band.
+    fn attack_band_delay(seed: u64, type_name: &str, category: EntityCategory) -> (i32, i32) {
+        let rules = representative_foot_handler_rules();
+        let mut sim = attack_band_fixture(seed, type_name, category);
+        let mut expected_rng = sim.clone_scenario_rng();
+        let jitter = expected_rng.next_range_u32_inclusive(0, 2) as i32;
+        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "both cadence arms draw the same jitter; the gate must not add or skip a draw"
+        );
+        let delay = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .mission
+            .dispatch_timer()
+            .delay();
+        (delay, 14 + jitter)
     }
 
     #[test]
@@ -2821,73 +2873,53 @@ mod tests {
     }
 
     #[test]
-    fn infantry_attack_handler_halves_jittered_cadence_inside_the_proven_band() {
-        let mut sim = Simulation::with_seed(0xA771);
-        let rules = representative_foot_handler_rules();
-        let mut infantry = entity_of(1, EntityCategory::Infantry);
-        infantry.attack_target = Some(AttackTarget::new(2));
-        update_mission_test_fixture(&mut infantry.mission, |fixture| {
-            fixture.current = MissionId::from_known(MissionType::Attack);
-            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
-        });
-        let target = entity_of(2, EntityCategory::Unit);
-        assert_eq!((target.position.rx, target.position.ry), (5, 5));
-        infantry.position.rx = 7; // 512 leptons: within FootClass::Mission_Attack band.
-        sim.substrate.entities.insert(infantry);
-        sim.substrate.entities.insert(target);
+    fn gsi_07_06_attack_cadence_halves_only_for_qualifying_types() {
+        // `FootClass::Mission_Attack @ 0x004D4DC0` halves its return only when a
+        // target is installed AND the type qualifies AND the distance is in the
+        // close band. The type half is
+        // `(What_Am_I() == 0xF && InfantryType->CloseRange) || primary.Range <
+        // 0x201`, and it was missing entirely — every tank and rifleman ran the
+        // halved cadence at 1.1-3 cells, doubling the Attack dispatch rate and
+        // the scenario jitter it consumes through every close engagement.
+        //
+        // All three fixtures sit at 512 leptons, so the band is satisfied and
+        // the ONLY thing under test is the type gate.
 
-        let mut expected_rng = sim.clone_scenario_rng();
-        let expected_delay = (14 + expected_rng.next_range_u32_inclusive(0, 2) as i32) / 2;
-        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
+        // A long-primary vehicle: the 71-of-93 stock majority. Full cadence.
+        let (delay, full) = attack_band_delay(0xA772, "TEST", EntityCategory::Unit);
+        assert_eq!(
+            delay, full,
+            "a 5-cell primary must not qualify; this is the case the old test pinned backwards"
+        );
 
-        assert_eq!(
-            sim.substrate
-                .entities
-                .get(1)
-                .unwrap()
-                .mission
-                .dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, expected_delay)
-        );
-        assert_eq!(
-            sim.scenario_rng.logical_state(),
-            expected_rng.logical_state()
-        );
+        // A long-primary infantryman is equally unqualified — being infantry is
+        // not sufficient without `CloseRange=`.
+        let (delay, full) = attack_band_delay(0xA771, "TEST", EntityCategory::Infantry);
+        assert_eq!(delay, full, "infantry alone does not qualify");
+
+        // A short primary qualifies whatever the category — `Range=1` is 256
+        // leptons, under the 0x201 threshold.
+        let (delay, full) = attack_band_delay(0xA773, "SHORTVEH", EntityCategory::Unit);
+        assert_eq!(delay, full / 2, "a sub-513-lepton primary qualifies");
+
+        // `CloseRange=` qualifies an INFANTRY type even with a long primary.
+        let (delay, full) = attack_band_delay(0xA774, "CLOSEINF", EntityCategory::Infantry);
+        assert_eq!(delay, full / 2, "CloseRange= qualifies an infantry type");
     }
 
     #[test]
-    fn unit_attack_delegates_to_the_foot_attack_cadence() {
-        let mut sim = Simulation::with_seed(0xA772);
-        let rules = representative_foot_handler_rules();
-        let mut unit = entity_of(1, EntityCategory::Unit);
-        unit.attack_target = Some(AttackTarget::new(2));
-        update_mission_test_fixture(&mut unit.mission, |fixture| {
-            fixture.current = MissionId::from_known(MissionType::Attack);
-            fixture.dispatch_timer = MissionDispatchTimer::at_frame(0);
-        });
-        let target = entity_of(2, EntityCategory::Unit);
-        unit.position.rx = 7; // 512 leptons: FootClass::Mission_Attack band.
-        register_entity(&mut sim, unit);
-        register_entity(&mut sim, target);
-
-        let mut expected_rng = sim.clone_scenario_rng();
-        let expected_delay = (14 + expected_rng.next_range_u32_inclusive(0, 2) as i32) / 2;
-        sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
-
+    fn gsi_07_06_close_range_does_not_qualify_a_vehicle() {
+        // `What_Am_I() == 0xF` is InfantryClass, so a VEHICLE carrying
+        // `CloseRange=` does not take the short path in native. The key is
+        // authored on three stock infantry types only, so this pins the gate's
+        // shape rather than a stock case.
+        let (delay, full) = attack_band_delay(0xA775, "CLOSEINF", EntityCategory::Unit);
         assert_eq!(
-            sim.substrate
-                .entities
-                .get(1)
-                .unwrap()
-                .mission
-                .dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, expected_delay)
-        );
-        assert_eq!(
-            sim.scenario_rng.logical_state(),
-            expected_rng.logical_state()
+            delay, full,
+            "CloseRange= on a vehicle must not halve the cadence — the native test is on the class"
         );
     }
+
 
     /// The Attack handler's only exit. With the shoot-at target gone and no
     /// destination left, the idle-mode selector commits Guard — and Guard is

@@ -49,5 +49,6 @@ pub mod terrain_asset_catalog;
 pub mod terrain_object_type;
 pub mod terrain_rules;
 pub mod tiberium_type;
+pub mod voxel_anim_type;
 pub mod warhead_type;
 pub mod weapon_type;
