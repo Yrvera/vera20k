@@ -144,9 +144,11 @@ enum ImmediateProjectileReason {
 /// reader, `Acceleration=` (6) is carried but unused by the advance, and
 /// `AirburstWeapon=` (1) has no consumer. The `airburst` bool it sits beside is
 /// carried into `ProjectileGuidance` and hashed, but its only behavioural read
-/// suppresses the cluster walk — it spawns no child, which is the gap. Two nearby keys are NOT gaps: `Floater=` (2) is read on
-/// both ballistic launch paths to halve gravity and is carried and hashed by
-/// the homing state, and `ShrapnelWeapon=` (5) is fully wired through
+/// suppresses the cluster walk — it spawns no child, which is the gap.
+///
+/// Two nearby keys are NOT gaps: `Floater=` (2) is read on both ballistic
+/// launch paths to halve gravity and is carried and hashed by the homing
+/// state, and `ShrapnelWeapon=` (5) is fully wired through
 /// `emit_projectile_shrapnel`, scenario-RNG cell selection included.
 /// - Trigger: firing any weapon whose projectile carries one of those keys —
 ///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
