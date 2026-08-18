@@ -4977,7 +4977,7 @@ fn linked_to_pivoting_then_unloading_on_pad_arrival() {
     // Place miner at the pad cell already facing 0x40 (East). This isolates
     // the Linked → Pivoting → Unloading transition from the per-tick
     // rotation step, so the test pins exactly the two-phase handshake
-    // without depending on the precise rot_to_facing_delta value.
+    // without depending on a precise per-frame rotation delta.
     let miner_id = spawn_miner(&mut sim, 1, MinerKind::War, 13, 11);
     {
         let entity = sim

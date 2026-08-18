@@ -183,6 +183,31 @@ pub(super) fn ship_process_target_speed_fraction(
     }
 }
 
+/// The `Accelerates=` ramp, `DriveLocomotionClass::Process_Drive_Track` @
+/// `0x004B0F20`. Three of its arms are **not** modelled, recorded here:
+///
+/// - **The second brake band.** Outside `SlowdownDistance`, when `owner+0x3CD`
+///   is set, native brakes by `rawSpeed × 0.0015` with a floor of `0.1`
+///   (`0x004B10FF`) — much gentler, to a much lower floor, than the arrival
+///   band. `+0x3CD` is written by `UnitClass::ReceiveDamage` `0x00737E51`,
+///   `TemporalClass::AI` `0x00629C69`, the teleport post-warp validation and
+///   the jumpjet touchdown, and `Process` @ `0x004B0500` also zeroes both drive
+///   slots on it — so it is load-bearing in two places. Its identity is
+///   UNCHECKED, which is why this carries no frequency clause yet: that is the
+///   gap to close before ranking it.
+/// - **The crush clamp.** While `owner+0x6B5` is set (raised at `0x004B1A2F`
+///   when the mover drives over a crushable, cleared in
+///   `UnitClass::PerCellProcess`), native replaces the whole ramp with
+///   `min(target, 0.2)` and writes it back to `drive+0x50` (`0x004B1146`).
+///   Trigger: a crusher mid-crush. Player effect: retail slows to a fifth speed
+///   over the victim. Frequency: rare — it lives inside the `Accelerates`
+///   branch, and stock marks every crusher tank `Accelerates=false`, so only
+///   harvester-class crushers reach it. Downstream risk: it writes the
+///   locomotor-owned slot, not just the owner's.
+/// - **The `Passive=` skip.** `UnitTypeClass+0xE0C` (stored at `0x0074783D`)
+///   disables the entire ramp for a UnitClass mover. Trigger: a `Passive=yes`
+///   type. Player effect: none observed. Frequency: zero in skirmish — stock
+///   `Passive=yes` is civilian traffic. Downstream risk: one `if`.
 #[allow(clippy::too_many_arguments)]
 fn update_vehicle_speed_fraction(
     target_slot: &mut SimFixed,
@@ -195,14 +220,22 @@ fn update_vehicle_speed_fraction(
     slowdown_distance: SimFixed,
     distance_to_goal: SimFixed,
 ) {
-    *target_slot = target_fraction.clamp(SIM_ZERO, SIM_ONE);
+    // The locomotor-owned target fraction is **not** clamped in gamemd.
+    // `Process_Movement` @ `0x004B2630` writes `drive+0x50` raw, so a healthy
+    // tracked mover going downhill on a 100% land row legitimately carries 1.2
+    // — the terrain chain's own tests assert the combined value exceeds 1.0.
+    // The only native clamp is inside `TechnoClass::SetSpeedFraction` @
+    // `0x004D3710`, and it applies to the owner's `+0x578`, not to this slot.
+    // Clamping here silently discarded the whole downhill bonus for every
+    // Drive and Ship mover.
+    *target_slot = target_fraction;
     if !accelerates {
-        *current_slot = *target_slot;
+        *current_slot = target_fraction.clamp(SIM_ZERO, SIM_ONE);
         return;
     }
 
     let target = *target_slot;
-    let mut current = (*current_slot).clamp(SIM_ZERO, SIM_ONE);
+    let mut current = *current_slot;
     if slowdown_distance > SIM_ZERO && distance_to_goal < slowdown_distance {
         current -= raw_speed_per_frame * decel_factor;
         if current < DRIVE_DESTINATION_BRAKE_FLOOR {
