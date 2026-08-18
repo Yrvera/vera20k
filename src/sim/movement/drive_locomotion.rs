@@ -214,16 +214,29 @@ pub(super) fn ship_process_target_speed_fraction(
 ///   it native skips the `drive+0x50` write *and* the whole ramp, setting the
 ///   owner fraction directly. VERA always writes and always ramps. Trigger:
 ///   a live `Force_Track` curve. `Force_Track` @ `0x004B0C40` is the only writer
-///   of a selector at or above 0x40, and its callers are
-///   `BuildingClass::UndockUnit` @ `0x004593A0` (selector `0x47`), the release
-///   path at `0x00459760` (`0x47`) and the bunker installer at `0x00458E50`
-///   (`0x43`..`0x46`). So the gate means: while on an undock or bunker curve,
-///   skip the ramp and drive at the 1.0 `Force_Track` installed. Player effect:
-///   VERA ramps where native jumps straight to full speed. Frequency: **every
-///   vehicle leaving a war factory or refinery** — continuous in ordinary
-///   skirmish. Downstream risk: `ForcedDriveTrackState` already carries a
+///   that can push the selector past 0x3F — both ordinary writers cap at 63 —
+///   and the three call sites that pass one are the **Yuri Tank Bunker**
+///   occupant lifecycle: the installer at `0x00458E50` (`0x43`..`0x46`, chosen
+///   by facing at `0x00459132`-`0x0045915C`), `BuildingClass::UndockUnit` @
+///   `0x004593A0` (`0x47`, pushed at `0x0045942C`) and
+///   `BuildingClass::ReleaseDockedHarvester` @ `0x004595C0` (`0x47`, pushed at
+///   `0x00459751`). The latter two early-return unless the building's `+0x2E4`
+///   dock link is set, and the installer is its only setter, so the whole family
+///   needs a garrisoned bunker. Stock `rulesmd.ini` has exactly one
+///   `Bunker=yes`: `[NATBNK]`.
+///
+///   So the gate means: while on a bunker install or eject curve, skip the ramp
+///   and drive at the 1.0 `Force_Track` installed. Player effect: VERA ramps
+///   where native jumps straight to full speed. Frequency: **zero in any match
+///   without a garrisoned Tank Bunker**, occasional in Yuri matchups — not the
+///   factory door. Downstream risk: `ForcedDriveTrackState` already carries a
 ///   full-speed constant, so the forced arm is approximated; what is missing is
-///   the same `< 0x40` gate inside `Process_Movement` @ `0x004B2630`.
+///   the same `< 0x40` gate inside `Process_Movement` @ `0x004B2630` (gates read
+///   at `0x004B0FA8` and `0x004B3DFA`).
+///
+///   `Force_Track` has three further callers, all passing `-1`:
+///   `TechnoClass::PerformDeploy` @ `0x007101B3`, `SuperClass::Launch` @
+///   `0x006CCAA2`, and `0x0062AB24`.
 /// - **The `Passive=` skip.** `UnitTypeClass+0xE0C` (stored at `0x0074783D`)
 ///   disables the entire ramp for a UnitClass mover. Trigger: a `Passive=yes`
 ///   type. Player effect: none observed. Frequency: zero in skirmish — stock

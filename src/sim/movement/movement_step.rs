@@ -1669,10 +1669,16 @@ pub(super) fn advance_lepton_position(
         // **VERA-internal, gamemd has no equivalent for the Walk arm.**
         //
         // `WalkLocomotionClass::ProcessMovement` @ `0x0075AEC0` has no
-        // whole-lepton quantizer: a walker takes a polar step - `atan2(head -
-        // cur)` for the facing, then `Sin`/`Cos` of
-        // `(facing16 - 0x3FFF) * -9.587672516830327e-05` scaled by
-        // `GetCurrentSpeed` - and completes its step when the 2-D distance to
+        // whole-lepton quantizer: a walker takes a polar step. The facing is
+        // `ftol((atan2(cur.y - head.y, head.x - cur.x) - pi/2) *
+        // -10430.060040584269)` - note the **inverted Y** and the negative
+        // scale, both of which this project's N/S flip class turns on
+        // (`FILD`/`FISUB` pairs 0x0075BFED-0x0075C005, `FSUB [0x007E2820]`
+        // = pi/2, `FMUL [0x007E2818]`, ftol 0x0075C01C). The step is then
+        // `Sin`/`Cos` of `(facing16 - 0x3FFF) * -9.587672516830327e-05`
+        // (0x007E2810) scaled by `GetCurrentSpeed`, **subtracted** from the
+        // current coordinate (`FSUBR [ESP+0x1C]` at 0x0075C0A5) - and the
+        // step completes when the 2-D distance to
         // the head falls under 17 leptons (`< 0x11`), snapping the coordinate
         // through vtable `+0x1B4`. VERA has no Walk locomotor arm at all:
         // infantry run through the generic `MovementTarget` interpolator, and
