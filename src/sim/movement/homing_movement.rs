@@ -321,42 +321,47 @@ impl HomingState {
     /// program's only writer zeroes them again, so a `u16` entity cell does
     /// reach it and the gate applies here exactly as it does to a stored Bullet.
     ///
-    /// RESIDUAL (GSI-05.11) — this arm and the stored-Bullet arm derive the
-    /// replacement cell differently. `notify_pointer_expired` feeds a stored
-    /// Bullet the `ObjectClass::GetCoords` truncation, which shifts a
-    /// BuildingClass from its stored NW anchor to the geometric foundation
-    /// centre; this arm is fed the raw `(position.rx, position.ry)`.
-    /// - Trigger: a homing missile losing a multi-cell building target.
-    /// - Player effect: the missile continues to the building's NW cell instead
-    ///   of its centre, so the impact lands up to half a foundation off.
-    /// - Frequency: every homing shot whose building target dies in flight.
-    ///   One attacker is enough — a V3, a Dreadnought or any burst weapon kills
-    ///   the structure with its own later missiles still travelling — so this
-    ///   is ordinary siege play, not a two-attacker coincidence.
-    /// - Downstream risk: aligning it means routing this arm through the same
-    ///   derivation, which moves the impact cell of an existing tested path, so
-    ///   it wants its own slice rather than a drive-by change here.
+    /// gamemd-derived: `BulletClass::PointerExpired @ 0x004684E0` has exactly
+    /// one target-repair arm, and it derives its replacement cell from the
+    /// expiring object's own `ObjectClass::GetCoords` (primary vtable `+0x48`),
+    /// truncated by the `(v + (v >> 31 & 0xFF)) >> 8` pair feeding
+    /// `MapCoord_Set`. A missile modelled as an entity with `HomingState` and a
+    /// missile stored in the projectile store are the same native Bullet, so
+    /// both are fed that one derivation — `target_cell` here is the caller's
+    /// `object_get_coords_cell`, which is what shifts a BuildingClass off its
+    /// stored NW anchor onto the geometric foundation centre.
+    ///
+    /// `None` stands for a coordinate that does not resolve to a map cell at
+    /// all. Native cannot reach it — `MapCoord_Set` always packs — so it is a
+    /// VERA-internal arm, shared with the store side, which takes the same
+    /// null-target outcome. It leaves the cached `last_known_*` steering coord
+    /// alone: there is no cell to cache, and the missile is target-null from
+    /// that point on.
     pub(crate) fn expire_object_target(
         &mut self,
         expired_id: u64,
-        target_cell: (u16, u16),
+        target_cell: Option<(u16, u16)>,
         target_is_high_flying: bool,
     ) -> bool {
         if self.target != Some(HomingTarget::Object(expired_id)) {
             return false;
         }
 
-        self.last_known_rx = target_cell.0;
-        self.last_known_ry = target_cell.1;
-        self.target = if target_is_high_flying
-            || target_cell == crate::sim::world::NULL_TARGET_CELL_SENTINEL
-        {
-            None
-        } else {
-            Some(HomingTarget::Cell {
-                rx: target_cell.0,
-                ry: target_cell.1,
-            })
+        if let Some((rx, ry)) = target_cell {
+            self.last_known_rx = rx;
+            self.last_known_ry = ry;
+        }
+        self.target = match target_cell {
+            Some(cell)
+                if !target_is_high_flying
+                    && cell != crate::sim::world::NULL_TARGET_CELL_SENTINEL =>
+            {
+                Some(HomingTarget::Cell {
+                    rx: cell.0,
+                    ry: cell.1,
+                })
+            }
+            _ => None,
         };
         true
     }

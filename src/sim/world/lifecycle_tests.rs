@@ -2466,6 +2466,69 @@ fn homing_target_expiry_uses_ground_cell_but_nulls_high_flying_target() {
 }
 
 #[test]
+fn gsi_05_11_homing_building_target_expiry_uses_foundation_center_cell() {
+    // `BulletClass::PointerExpired @ 0x004684E0` derives its replacement cell
+    // from the expiring object's `ObjectClass::GetCoords` (vtable +0x48), so an
+    // entity-hosted missile must land on the same foundation-centre cell the
+    // store-hosted arm already uses (see
+    // `gsi_05_04_building_get_coords_uses_foundation_center_cell`).
+    let mut sim = Simulation::new();
+    sim.session.map_width = 20;
+    sim.session.map_height = 20;
+    install_common_raw_terrain(&mut sim, 20, 20, 0, None);
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Structure);
+    let gapowr = sim.interner.intern("GAPOWR");
+    {
+        let target = sim.substrate.entities.get_mut(target_id).unwrap();
+        target.type_ref = gapowr;
+        target.foundation = "2x2".to_string();
+    }
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, common_raw_request(9, 11, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let missile_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, missile_id, EntityCategory::Unit);
+    assert!(attach_homing_state(
+        &mut sim.substrate.entities,
+        missile_id,
+        (2, 3),
+        target_id,
+        (9, 11),
+        SimFixed::from_num(10),
+        5,
+        0,
+        false,
+        false,
+        SimFixed::from_num(1),
+    ));
+
+    sim.uninit(target_id);
+
+    let homing = sim
+        .substrate
+        .entities
+        .get(missile_id)
+        .unwrap()
+        .homing_state
+        .clone()
+        .unwrap();
+    assert_eq!(
+        homing.target,
+        Some(HomingTarget::Cell { rx: 10, ry: 12 }),
+        "the entity-hosted arm takes the GetCoords foundation centre, not the stored NW anchor"
+    );
+    assert_eq!(
+        (homing.last_known_rx, homing.last_known_ry),
+        (10, 12),
+        "the cached last-known cell follows the same derivation"
+    );
+}
+
+#[test]
 fn expiring_mixed_size_passenger_updates_transport_total_exactly() {
     let mut sim = Simulation::new();
     insert_entity(&mut sim, 1, EntityCategory::Unit);
@@ -3368,7 +3431,14 @@ fn gsi_05_02_mixed_six_family_order_roundtrips_and_dispatches_every_slot() {
 #[test]
 fn substrate_registration_and_removal_dispatch_is_order_identical() {
     let (mut sim, mixed) = gsi_05_02_mixed_fixture();
-    let [terrain_id, entity_id, wave_id, anim_id, projectile_id, particle_id] = mixed;
+    let [
+        terrain_id,
+        entity_id,
+        wave_id,
+        anim_id,
+        projectile_id,
+        particle_id,
+    ] = mixed;
 
     // Re-registering an existing member of every family reports success and
     // appends nothing (the membership gate short-circuits before the push).
@@ -3399,7 +3469,13 @@ fn substrate_registration_and_removal_dispatch_is_order_identical() {
             .unwrap()
             .in_logic_vector
     );
-    assert!(sim.substrate.entities.get(entity_id).unwrap().in_logic_vector);
+    assert!(
+        sim.substrate
+            .entities
+            .get(entity_id)
+            .unwrap()
+            .in_logic_vector
+    );
     assert!(sim.substrate.anims.get(anim_id).unwrap().in_logic_vector);
     assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
     assert!(
@@ -3416,7 +3492,14 @@ fn substrate_registration_and_removal_dispatch_is_order_identical() {
     assert!(sim.register_live_object(wave_id));
     assert_eq!(
         sim.live_object_order_snapshot(),
-        vec![terrain_id, entity_id, anim_id, projectile_id, particle_id, wave_id]
+        vec![
+            terrain_id,
+            entity_id,
+            anim_id,
+            projectile_id,
+            particle_id,
+            wave_id
+        ]
     );
     assert!(sim.waves.get(wave_id).unwrap().in_logic_vector);
 

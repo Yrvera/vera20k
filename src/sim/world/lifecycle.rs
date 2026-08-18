@@ -1937,7 +1937,10 @@ impl Simulation {
         &mut self,
         listener_id: u64,
         expired_id: u64,
-        expired_cell: (u16, u16),
+        // The expiring object's `ObjectClass::GetCoords` cell — the single
+        // derivation `BulletClass::PointerExpired @ 0x004684E0` uses for both
+        // the entity-hosted and store-hosted missile arms.
+        expired_get_coords_cell: Option<(u16, u16)>,
         expired_is_high_flying: bool,
         expired_object_alive: bool,
         expired_health: u16,
@@ -2082,7 +2085,11 @@ impl Simulation {
         }
 
         if let Some(homing) = listener.homing_state.as_mut() {
-            homing.expire_object_target(expired_id, expired_cell, expired_is_high_flying);
+            homing.expire_object_target(
+                expired_id,
+                expired_get_coords_cell,
+                expired_is_high_flying,
+            );
         }
 
         if let Some(pending) = listener.pending_c4_detonation.as_mut()
@@ -2113,7 +2120,6 @@ impl Simulation {
     /// the same destructure.
     fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
         let Some((
-            expired_cell,
             expired_target_cell,
             expired_is_high_flying,
             expired_object_alive,
@@ -2126,7 +2132,6 @@ impl Simulation {
                 locomotor.is_airborne() && locomotor.altitude >= SimFixed::from_num(2 * 104)
             });
             (
-                (expired.position.rx, expired.position.ry),
                 object_get_coords_cell(expired),
                 high_flying,
                 expired.lifecycle.object_alive,
@@ -2161,18 +2166,32 @@ impl Simulation {
         // (0, 0). The third gate, `g_MapEditorMode`, is deliberately omitted:
         // it is zero for the whole of ordinary gameplay.
         //
-        // RESIDUAL (GSI-05.11) — the dummy cell is one process-global object
-        // and `Get_CellClass` restamps its coord on every miss anywhere in the
-        // program, so a native Bullet holding it reads whichever coordinate was
-        // requested most recently, not the one stamped for it. `Cell { rx, ry }`
-        // pins a stable coordinate instead. Trigger: two misses in the same
-        // frame while a Bullet holds a dummy target. Player effect: a homing
-        // shot that lost an unallocated-cell target would drift toward an
-        // unrelated cell in native and fly straight here. Frequency: needs a
-        // target to die on an unallocated cell first, which ordinary skirmish
-        // play does not produce. Downstream risk: none while no other system
-        // models the dummy; modelling it would mean sharing one mutable cell
-        // identity across the store, which the deterministic id model rejects.
+        // DRIFT (GSI-05.11) — recorded, not pending. `MapClass::Get_CellClass @
+        // 0x005657A0` stamps the requested packed coord into the shared dummy
+        // CellClass (`0x00ABDC50`, coord at `+0x24`) on both miss paths — an
+        // index outside `[0, 0x40000)` and an in-range NULL sparse slot — and
+        // returns that one process-global object. A native Bullet holding it
+        // therefore reads whichever coordinate was requested most recently
+        // anywhere in the program, not the one stamped when it took the target.
+        // `Cell { rx, ry }` pins a stable coordinate instead.
+        // - Trigger: any cell-lookup miss anywhere in the frame while a Bullet
+        //   holds a dummy target. The stamp is not confined to
+        //   `Get_CellClass`: the same fallback is inlined into
+        //   `Is_Cell_In_Playfield @ 0x00578498`, `Find_Nearby_Passable_Cell`,
+        //   `GetZoneID` and the bridge walkers among others.
+        // - Player effect: a homing shot that lost an unallocated-cell target
+        //   drifts toward an unrelated cell in native and flies straight here.
+        // - Frequency: needs a target to die on an unallocated cell — outside
+        //   the map diamond — first, which ordinary skirmish play does not
+        //   produce.
+        // - Downstream risk: none today. Reproducing it is not blocked by the
+        //   id model — a single hashed scalar on `Simulation` would carry the
+        //   coord — but it is not *correct* without also reproducing every
+        //   cell-lookup miss engine-wide in native call order, since that walk
+        //   is what decides which coord is current. That is the unbounded part,
+        //   and it is why this stays recorded rather than approximated: a
+        //   scalar fed by VERA's own miss order would be a different wrong
+        //   answer wearing native's shape.
         let projectile_replacement_target = (!expired_is_high_flying)
             .then_some(())
             .and(expired_target_cell)
@@ -2209,7 +2228,7 @@ impl Simulation {
                 self.notify_entity_pointer_expired(
                     listener_id,
                     expired_id,
-                    expired_cell,
+                    expired_target_cell,
                     expired_is_high_flying,
                     expired_object_alive,
                     expired_health,
