@@ -114,6 +114,21 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // once the timer crosses the cutoff, the system stops spawning.
     sys.spawn_timer += pst.slowdown;
     if pst.spawn_cutoff < sys.spawn_timer {
+        // DRIFT (GSI-05.13), recorded when `done_spawning` became the single
+        // `ParticleSystemClass+0xF8` flag: `AI_Gas @ 0x0062E6D0` never writes
+        // that byte — its only `0xf8` reference is `CALL dword ptr [EDX+0xf8]`
+        // at `0x0062E818`, the PARTICLE's destroy vtable. So this write now
+        // additionally retires the system, which it did not do before, and
+        // native does not.
+        // - Trigger: a Gas system whose spawn accumulator passes its cutoff.
+        // - Player effect: none today. Nothing in this engine spawns a Gas
+        //   system, and the two stock ones (`[GasCloudSys]`, `[PsychCloudSys]`)
+        //   author no `Slowdown=`, `SpawnCutoff=` or `Spawns=`, so the
+        //   accumulator never moves.
+        // - Frequency: zero occurrences in this build.
+        // - Downstream risk: whoever lands a Gas producer must decide this
+        //   first — either native has a cutoff writer this pass did not find,
+        //   or the Gas cutoff is not a `+0xF8` write and needs its own field.
         sys.done_spawning = true;
     }
 }

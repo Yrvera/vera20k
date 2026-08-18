@@ -311,6 +311,8 @@ impl Simulation {
         }
     }
 
+
+
     /// Hash all particle systems in stable-id order (BTreeMap iteration).
     /// Each system contributes its type, position, lifetime, and ordered particle list.
     fn hash_particle_systems(&self, hasher: &mut impl Hasher) {
@@ -323,7 +325,6 @@ impl Simulation {
             sys.coords.z.hash(hasher);
             sys.lifetime.hash(hasher);
             sys.facing.hash(hasher);
-            sys.done_spawning.hash(hasher);
             sys.done_spawning.hash(hasher);
             sys.particles.len().hash(hasher);
             for p in &sys.particles {
@@ -763,7 +764,9 @@ impl Simulation {
                 0u8.hash(hasher);
             }
             entity.body_frame_counter.hash(hasher);
-            if include_entity_animation_v44 && let Some(animation) = entity.animation.as_ref() {
+            if include_entity_animation_v44
+                && let Some(animation) = entity.animation.as_ref()
+            {
                 b"entity-animation-v1".hash(hasher);
                 animation.sequence.hash(hasher);
                 animation.frame_index.hash(hasher);

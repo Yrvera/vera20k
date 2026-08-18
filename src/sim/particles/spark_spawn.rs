@@ -318,6 +318,12 @@ fn construct_spark_particle(
     let lifetime_remaining = (particle_type.max_ec as i16).saturating_add(lifetime_extra);
 
     // `CellClass::GetGroundHeight` floor: `if (nZ <= ground) nZ = ground`.
+    //
+    // VERA-internal, gamemd equivalent UNCHECKED: a world that cannot be built
+    // — no resolved terrain or overlay grid — is treated as "no floor" rather
+    // than faulting. Native always has a map, so `GetGroundHeight` cannot fail
+    // there; the swallow is unreachable in production and exists so a fixture
+    // without terrain still exercises the spawn arithmetic.
     let ground_z = super::spark_world::SparkCollisionWorld::new(sim, rules)
         .ok()
         .and_then(|world| world.ground_height_at(system_coords.x, system_coords.y));
@@ -449,7 +455,6 @@ fn scaled_unit_draw(rng: &mut SimRng) -> Result<X87Value, SparkSpawnError> {
 /// VERA-internal, gamemd equivalent UNCHECKED: a zero divisor returns 0 where
 /// native raises `#DE`. Unreachable for the stock Spark particle types, which
 /// all author non-zero `XVelocity`/`YVelocity`/`ZVelocityRange`.
-#[allow(dead_code)] // Kept as the named primitive for the dead shared-draw divides.
 fn signed_modulo(raw: i32, divisor: i32) -> i32 {
     if divisor == 0 { 0 } else { raw % divisor }
 }

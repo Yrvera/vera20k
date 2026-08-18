@@ -26,7 +26,7 @@ use glam::IVec3;
 
 impl Simulation {
     /// Spawn a new particle system. Returns the new system's stable id, or
-    /// `None` if the type is `Spark` or `Railgun` (Tier 3 — not implemented).
+    /// `None` for a `Railgun` type, which is still unimplemented.
     ///
     /// gamemd-derived: `ParticleSystemClass::Constructor @ 0x0062DC50`. Spark
     /// systems are admitted and simulated — `particles/spark_spawn.rs` owns
@@ -40,10 +40,24 @@ impl Simulation {
     /// house, no attachment, handle discarded, no RNG consumed. That is the
     /// most frequent of native's five Spark producers by a wide margin: every
     /// Tesla Coil, Tesla Trooper, Tesla Tank, `AssaultBolt`, `EiffelBolt`,
-    /// `CRElectricBolt` and `TeslaFragment`/`ElectricFragment` shrapnel shot.
+    /// `CRElectricBolt` shot. It does NOT cover shrapnel bolts, which reach
+    /// `CreateElectricBolt` through a different seam — see the residual below.
     ///
-    /// RESIDUAL (GSI-05.13) — the other four native producers are not wired.
-    /// Their reachability is settled rather than assumed:
+    /// RESIDUAL (GSI-05.13) — the shrapnel seam and four other native
+    /// producers are not wired. Their reachability is settled rather than
+    /// assumed:
+    /// - `BulletClass::SpawnShrapnel @ 0x0046A310` calls `CreateElectricBolt`
+    ///   once per shrapnel bolt when the CHILD weapon carries `IsElectricBolt`.
+    ///   REACHABLE: `[TankBoltE]` and `[ElectricBoltE]` — the elite Tesla Tank
+    ///   and elite Tesla Coil weapons — use `Projectile=Electricbounce`, whose
+    ///   `ShrapnelWeapon=TeslaFragment, ShrapnelCount=2`, and
+    ///   `[TeslaFragment] IsElectricBolt=true`. So an elite Tesla shot throws
+    ///   two more spark systems this engine does not create.
+    ///   (`[ElectricFragment]` also sets the flag but is named by no stock
+    ///   `ShrapnelWeapon=`, so it is dead and deliberately not listed as a
+    ///   trigger.) The producer wired above walks `fire_events`, while
+    ///   `emit_projectile_shrapnel` pushes `projectile_spawns`, so wiring this
+    ///   arm means a second call site rather than a wider filter.
     /// - `TechnoClass::Fire_At @ 0x006FF1EC`, on `WeaponType+0x12A`
     ///   (`UseSparkParticles`), spawning `WeaponType+0x11C`
     ///   (`AttachedParticleSystem`) into `Techno+0x308`, one at a time.
@@ -59,13 +73,15 @@ impl Simulation {
     ///   a coordinate/frame modulo. REACHABLE but rare — a few frames per MCV
     ///   or Slave Miner deploy, taking two `RandomRanged(-100, 100)` draws.
     ///
-    /// - Trigger: repairing with an IFV, overloading a mind-controller, erasing
-    ///   with a Chrono Legionnaire, or deploying an MCV.
+    /// - Trigger: an elite Tesla shot, repairing with an IFV, overloading a
+    ///   mind-controller, erasing with a Chrono Legionnaire, or deploying an
+    ///   MCV.
     /// - Player effect: those four throw no sparks. The IFV repair arm is the
     ///   one a player watches — a repair beam with no welding shower.
-    /// - Frequency: the IFV arm follows every repair tick and is the only one
-    ///   of the four that is common; the deploy arm is a handful of frames a
-    ///   match.
+    /// - Frequency: the shrapnel arm is the common one — it follows every
+    ///   elite Tesla Tank and elite Tesla Coil discharge, and veterancy makes
+    ///   those ordinary in a long Soviet game. The IFV arm follows every repair
+    ///   tick; the deploy arm is a handful of frames a match.
     /// - Downstream risk: the `Fire_At` arm needs the `Techno+0x308` slot and
     ///   its clearing writer, which is UNCHECKED — the offset is shared across
     ///   several classes and the search for the writer was not settled. The
