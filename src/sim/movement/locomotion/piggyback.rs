@@ -1,9 +1,29 @@
 //! The one piggyback mechanism: a locomotor temporarily displacing another.
 //!
-//! `WalkLocomotionClass::IPiggyback::{BeginPiggyback,EndPiggyback}` owns one
-//! suspended `ILocomotion` reference. BEGIN takes that complete object, END
-//! transfers the same object back, and Walk save/load serializes it as a nested
-//! COM object. The Rust seam mirrors ownership, not COM refcounts.
+//! `IPiggyback` (IID at `0x00819088`) owns one suspended `ILocomotion`
+//! reference. BEGIN takes that complete object, END transfers the same object
+//! back, and save/load serializes it as a nested COM object. The Rust seam
+//! mirrors ownership, not COM refcounts.
+//!
+//! Six classes provide the interface, by vtable: Drive `0x007E7E8C`, Walk
+//! `0x007F69D4`, Teleport `0x007F4FDC`, Ship `0x007F2D68`, Jumpjet `0x007ECD44`
+//! and DropPod `0x007E8254`. Fly and Rocket have none.
+//!
+//! The verified bodies this module is modelled on are Drive's —
+//! `Begin_Piggyback` @ `0x004AF8E0` (`E_POINTER` on null, **`E_FAIL` when the
+//! slot is already occupied**, else store and AddRef), `End_Piggyback` @
+//! `0x004AF930` (`E_POINTER` on a null out-pointer, **`S_FALSE` when empty**,
+//! else transfer and null the slot), `Is_Ok_To_End` @ `0x004AF970`, and
+//! `Save` @ `0x004AF800`, whose one-byte presence flag precedes the
+//! `OleSaveToStream` of the stashed locomotor. Teleport's twins are
+//! `0x00719E90` / `0x00719EE0` / `0x00719F30`; Walk's are `0x0075C850` /
+//! `0x0075C8A0` / `0x0075C8E0`, none of them labelled in Ghidra, and
+//! `WalkLocomotionClass::Save` is not identified at all — which is why the
+//! save-shape claim above cites Drive.
+//!
+//! The slot itself is one interface pointer inside the *piggybacking*
+//! locomotor: Drive at IPiggyback-frame `+0x50` (LocomotorBase+0x68), Teleport
+//! at `+0x30`, Walk at `+0x20`.
 
 use std::ops::Deref;
 
@@ -144,6 +164,25 @@ impl LocomotorRuntime {
 
     /// Build an incoming runtime from the current host defaults. New callers
     /// should prefer `begin_with_runtime` when they already own an instance.
+    ///
+    /// **VERA-internal, gamemd has no equivalent.** Every native BEGIN site
+    /// installs a *freshly constructed* COM object — `CoCreateInstance(CLSID)`
+    /// then `Link_To_Object(owner)` and nothing else — so the temporary starts
+    /// default-initialised and the displaced locomotor keeps all of its state
+    /// untouched in the stash. This clones the displaced runtime and resets only
+    /// `phase`, `air_phase` and `payload`, so the temporary inherits
+    /// `altitude`, the hover throttle/speed/bob fields, `subcell_dest`, the two
+    /// speed fractions, `fly_current_speed`, the jumpjet fields **and
+    /// `powered`** — and [`install_into`] copies `powered` back on restore, so a
+    /// powered-off flag survives a swap in both directions, which native cannot
+    /// do.
+    ///
+    /// Trigger: every BEGIN. Player effect: none today — on a Chrono Miner,
+    /// which is the only stock unit that piggybacks, every carried field is
+    /// already zero or 1.0. Frequency: every Chrono Miner move order, with no
+    /// divergence. Downstream risk: the carried fields are deterministic state
+    /// and are hashed, so this becomes live the first time a hover, jumpjet or
+    /// air locomotor is piggybacked.
     pub fn replacement_from(
         state: &LocomotorState,
         kind: LocomotorKind,
@@ -337,13 +376,22 @@ pub fn is_ok_to_end(state: &LocomotorState, context: EndGateContext) -> bool {
         // field must be clear, the pending warp phase must be zero and the
         // owner must not be deploying. VERA carries the whole warp in
         // `teleport_state`, so that one flag stands for the warp-active byte
-        // and the pending warp phase together. The two owner bytes at +0x35 and
-        // +0x27C have no Rust model yet — VERA-internal, gamemd equivalent
+        // and the pending warp phase together. `+0x35` is a **locomotor** byte,
+        // not an owner one: `TeleportLocomotionClass::Is_Ok_To_End` @
+        // `0x00719F30` reads `*(char*)(this+0x1D)` where `this` is the
+        // IPiggyback sub-object at LocomotorBase+0x18. Only `+0x27C` is an
+        // owner field. Neither has a Rust model yet, nor does the first clause
+        // `Is_Moving() == 0` or the shared `owner+0x6AD`
+        // (`FootClass::bIsDeploying`) — VERA-internal, gamemd equivalent
         // UNCHECKED. This is the clause that hands a chrono-warped unit back to
         // its own locomotor when the warp finishes.
         LocomotorKind::Teleport => !context.owner_teleporting && !context.owner_deploying,
-        // No stock `Locomotor=` key selects these classes, so gamemd never
-        // reaches their END gate in ordinary play.
+        // None of these three has an `IPiggyback` vtable at all — the six
+        // providers are Drive `0x007E7E8C`, Walk `0x007F69D4`, Teleport
+        // `0x007F4FDC`, Ship `0x007F2D68`, Jumpjet `0x007ECD44` and DropPod
+        // `0x007E8254` — so gamemd can never reach an END gate for them. (The
+        // earlier reason given here, that no stock `Locomotor=` key selects
+        // them, is wrong for Rocket: three stock rows do select it.)
         LocomotorKind::Tunnel | LocomotorKind::Rocket | LocomotorKind::DropPod => false,
     }
 }

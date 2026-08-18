@@ -803,6 +803,23 @@ impl Simulation {
                     e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
+                // The END gate, read before the mutable borrow. All four native
+                // END callsites — `FootClass::AI` @ `0x004DAE78` and the three
+                // in `UnitClass::Set_Destination` @ `0x0074256C`, `0x0074262A`
+                // and `0x00742A1E` — run behind `IPiggyback::Is_Ok_To_End`.
+                // There is no ungated END anywhere in the binary, so Stop must
+                // not unwind a Chrono Miner that is still driving.
+                let may_end = self.substrate.entities.get(*entity_id).is_some_and(|e| {
+                    let gate = crate::sim::movement::locomotor_end_gate_context(e);
+                    e.locomotor.as_ref().is_some_and(|loco| {
+                        loco.is_overridden()
+                            && loco.can_restore_primary_from_piggyback(
+                                gate.owner_moving,
+                                gate.owner_teleporting,
+                                gate.owner_deploying,
+                            )
+                    })
+                });
                 if let Some(e) = self.substrate.entities.get_mut(*entity_id) {
                     e.teleport_state = None;
                     // Restore ground layer and base locomotor if overridden.
@@ -810,7 +827,7 @@ impl Simulation {
                         if loco.layer == MovementLayer::Underground {
                             loco.layer = MovementLayer::Ground;
                         }
-                        if loco.is_overridden() {
+                        if may_end {
                             loco.end_piggyback();
                         }
                     }
