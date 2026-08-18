@@ -46,9 +46,10 @@
 //!   `!BuildingClass::CanGarrison()` — the garrison flag, read at `0x004525F9`.
 //!   `Gate=` is a different field, `+0x16C0` (read by
 //!   `BuildingClass::TogglePowerOrGate` @ `0x004471CB`), and its arm is its own
-//!   branch: the gate occupant is either **skipped whole**, leaving the running
-//!   code untouched so an open gate leaves the cell clear, or **`return 7`** when
-//!   `occupant->Owner+0x1FA` is set. A gate never yields code 3. Trigger: any
+//!   branch, and it never reads the gate's open/closed state at all: the
+//!   occupant is **skipped whole**, leaving the running code untouched, whenever
+//!   `occupant->Owner+0x1FA` is clear, and is **`return 7`** when it is set. A
+//!   gate never yields code 3. Trigger: any
 //!   move order whose path crosses a friendly gate. Player effect: VERA's code 3
 //!   routes into the scatter arm, which asks a *structure* to move out of the
 //!   way; retail either walks through or treats it as solid. Frequency: common
@@ -80,11 +81,17 @@
 //!   `TechnoClass::Is_Crushable_By` @ `0x005F6D49` and by
 //!   `CellClass::RecalcZoneType` @ `0x00483CB5`). Stock `[GASAND]` is
 //!   `Wall=yes` + `Crushable=yes` + `CrushSound=WallCrushSandbag`. Trigger: a
-//!   `MovementZone=Crusher` or `AmphibiousCrusher` type (eleven stock entries)
-//!   meeting a sandbag wall. Player effect: retail drives through with a crush
-//!   sound; VERA stops. Frequency: sandbags are common map dressing and a common
-//!   early-game player wall. Downstream risk: none beyond plumbing the flag.
-//! - **The head-on deadlock exit** (`0x0073F9C0`-`0x0073FA30`, Unit only).
+//!   `MovementZone=Crusher` type meeting a sandbag wall. Stock `rulesmd.ini` has
+//!   exactly six — `[CMON]`, `[CMIN]`, `[HORV]`, `[HARV]`, `[SMON]`, `[SMIN]`,
+//!   all ore miners — and no uncommented `AmphibiousCrusher`. `[BFRT]` is
+//!   `CrusherAll`, already in the unconditional escape set and unaffected. So
+//!   this is a miners-versus-sandbags rule, not a battle-tank one. Player
+//!   effect: retail drives the miner through with a crush sound; VERA stops it.
+//!   Frequency: whenever a miner's ore route crosses a sandbag line — map
+//!   dressing on several stock maps. Downstream risk: none beyond plumbing the
+//!   flag.
+//! - **The head-on deadlock exit** (Unit only; the decisive instructions are the
+//!   octant compare and `0x0073FA10 CMP EAX,0x1FF / JG`).
 //!   Before conceding code 2 to a moving ally, native compares both objects'
 //!   `FacingClass::Current` octants — the second offset by `+0x7FFF`, so the test
 //!   is literally "facing each other" — and the `Math::atan2` of the lepton
@@ -100,17 +107,27 @@
 //! - **The unarmed-mover hard block.** [`classify_blocker`] returns
 //!   `OccupiedEnemy` for every non-friendly blocker; native checks armament
 //!   first — Infantry `GetWeaponRange(this, -1) < 1 && What_Am_I != 0x24` →
-//!   **7**, Unit `TypeClass+0xD28 == 0 && !HasWeaponAbility()` → 7 unless an
-//!   owner or `IsTrain` escape holds. Trigger: an Engineer, Spy or other
+//!   **7**. The Unit side is the same idea reached differently: the arm opens on
+//!   the crush gate `((TechnoTypeClass+0xD28 == 0 && !HasWeaponAbility()) ||
+//!   !Is_Crushable_By())` — where `+0xD28` is **`Crusher=`** (stored by
+//!   `TechnoTypeClass::ReadINI` @ `0x00714CE3` from the key at `0x0081BB58`),
+//!   **not** an armament field and **not** itself a return-7 — and the hard
+//!   block inside it is `GetWeapon(0)` (`TechnoClass::GetWeapon` @ `0x0070E140`,
+//!   vtable `+0x3F8`) coming back with a NULL WeaponType, escaped only by having
+//!   a weapon or by `IsTrain` (`+0xC94`). There is no owner escape.
+//!   Trigger: an Engineer, Spy or other
 //!   weaponless unit meeting an enemy on its path. Player effect: VERA pushes it
 //!   into the code-5 blocked-step attack override instead of routing around a
 //!   cell it can never clear. Frequency: a few times a match for any player who
 //!   uses Engineers or Spies. Downstream risk: low; it is a predicate on the
 //!   mover, not the cell.
 //! - **The infantry sub-cell tail.** Native's tail is explicit: `code == 0 &&
-//!   (OccupationFlags & 0x1C) == 0x1C` → **7**, and in the allied-occupier arm
-//!   `counter != 3 ? 6 : 2`, where `counter` counts the non-moving allied
-//!   infantry found during the walk. VERA's `check_terrain` returns
+//!   (OccupationFlags & 0x1C) == 0x1C` → **7**, and — behind a `code < 2` guard
+//!   at `0x0051C821` — in the allied-occupier arm `counter == 3 ? 6 : 2`
+//!   (`0x0051C826`-`0x0051C830`: `SUB / NEG / SBB / AND 0xFFFFFFFC / ADD 6`, so
+//!   a counter of exactly 3 gives 6 and anything else gives 2), where `counter`
+//!   counts the non-moving allied infantry found during the walk. VERA's
+//!   `check_terrain` returns
 //!   `NeedsBlockerCheck` with no counter and no `0x1C` test. Trigger: a fourth
 //!   infantryman ordered into a full friendly cell. Player effect: VERA yields 6
 //!   (scatter) where retail yields 2 (wait) or 7. Frequency: constant in
@@ -119,8 +136,9 @@
 //! - **Code 1 is the wrong producer.** VERA emits `Crushable` (code 1) for a
 //!   successful crush; gamemd returns **0** for a crush on the Unit latch path
 //!   and 2 when a vehicle also occupies the cell. Code 1 comes from an unrelated
-//!   `occupant+0x220 == 2` test in the non-allied branch, whose field identity is
-//!   UNCHECKED. Trigger: any crush. Player effect: **none today** — movement
+//!   `+0x220 == 2` test in the non-allied branch — where the base is **not** the
+//!   occupant but the return value of `FUN_0040DD20()`, and both the receiver's
+//!   type and the field's meaning are UNCHECKED. Trigger: any crush. Player effect: **none today** — movement
 //!   groups `Clear | Crushable` at the same call site. Frequency: n/a while the
 //!   cost table is unwired. Downstream risk: the moment `0x0081870C` is wired,
 //!   code 1 costs 1000× where code 0 costs 1×, so every crushable cell becomes a
@@ -139,7 +157,8 @@
 //!   already covered by the water-mover path and the two carrier aircraft use
 //!   `AircraftClass`'s own predicate. Frequency: effectively zero for this
 //!   owner. Downstream risk: none.
-//! - **The tube gates** (`0x0073F211`-`0x0073F2C2`): direction 8 — the sentinel
+//! - **The tube gates** (`0x0073F211` to the `RET 0x14` at `0x0073F2C6`):
+//!   direction 8 — the sentinel
 //!   edge `AStar_main_loop` emits as its ninth neighbour — requires a tube at the
 //!   cell and then **returns 0 immediately**, skipping the whole rest of the
 //!   predicate; Unit tests `tube+0x28 == 0` while **Infantry tests
@@ -891,13 +910,22 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
                 alliances,
                 interner,
             );
-            // VERA-internal generalisation, gamemd equivalent UNCHECKED: a
+            // **VERA-internal generalisation, gamemd equivalent UNCHECKED.** A
             // running code of 7 aborts the walk here. Native has no such
-            // threshold — it has four specific `return 7` sites (allied
-            // building, head-on, unarmed mover, garrison-not-allowed) and
-            // otherwise only ever raises. The outcome agrees wherever VERA's
-            // classifier produces 7 only at those four, which it does today;
-            // a fifth producer would silently inherit the early exit.
+            // threshold: the Unit walk alone carries about nine distinct
+            // `return 7` sites — the gate `Owner+0x1FA`, mission 0xB on the
+            // archive target, the unarmed mover, blocker `+0x16B6`, three inside
+            // the `What_Am_I == 0x24` arm, the allied building, the head-on
+            // exit, and garrison-can't-attack — and otherwise only ever raises.
+            //
+            // Trigger: any occupant classified 7 while further occupants remain
+            // in the list. Player effect: none observable — 7 is terminal for
+            // the caller either way, and nothing later in the walk can lower it.
+            // Frequency: every mixed-occupancy cell containing a hard blocker,
+            // which is common, with no divergence today. Downstream risk: a
+            // future classifier that produced 7 where native raises instead
+            // would silently inherit the early exit and skip the rest of the
+            // list.
             if candidate.yr_code() >= CellEntryResult::Impassable.yr_code() {
                 return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
             }

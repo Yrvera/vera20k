@@ -258,7 +258,8 @@ pub(crate) fn evaluate_live_cell_passability(
 // Native: `CellClass::CheckCellPassability` @ `0x004834A0` keeps Winged, bridge,
 // raw-occupation and wall gates distinct; the FootClass +0x1AC predicate and
 // object Unlimbo remain outside this seam. Its Destroyer-class wall escape set
-// matches native's `{2, 3, 8, 0xC}` at `0x004835BB`.
+// matches native's `{2, 3, 8, 0xC}`, tested at `0x004835A2`, `0x004835A7`,
+// `0x004835AC` and `0x004835C5`.
 pub(crate) fn evaluate_is_clear_to_move(input: IsClearToMoveRequest) -> IsClearToMoveResult {
     if input.speed_type == SpeedType::Winged {
         return IsClearToMoveResult::ClearWinged;

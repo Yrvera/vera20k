@@ -898,10 +898,12 @@ pub(super) fn handle_deferred_occupancy(
             // an object overridden onto a wall would strand. It cannot arrive
             // here: `OccupiedEnemy` is built at exactly one place, inside the
             // blocker classifier, which has already resolved a live entity, and
-            // `FriendlyWall` has no producer at all because VERA does not
-            // classify wall overlays at cell entry yet. So this site is the body
-            // arm and only the body arm. A future wall-overlay producer must NOT
-            // route into this arm without a Restore path for cell targets.
+            // `FriendlyWall` has no producer at all — not because VERA
+            // ignores walls (the `cell_rect` wall gate is live and
+            // MovementZone-keyed) but because that gate answers a hard block
+            // where native answers 4 or 5. So this site is the body arm and only
+            // the body arm. A future wall-overlay producer must NOT route into
+            // this arm without a Restore path for cell targets.
             //
             // TWO LOCOMOTORS TAKE THIS ARM IN THE ORIGINAL: Walk and HOVER. An
             // exhaustive search of the Override vtable slot returns ten call
@@ -969,10 +971,12 @@ pub(super) fn handle_deferred_occupancy(
             // an object overridden onto a wall would strand. It cannot arrive
             // here: `OccupiedEnemy` is built at exactly one place, inside the
             // blocker classifier, which has already resolved a live entity, and
-            // `FriendlyWall` has no producer at all because VERA does not
-            // classify wall overlays at cell entry yet. So this site is the body
-            // arm and only the body arm. A future wall-overlay producer must NOT
-            // route into this arm without a Restore path for cell targets.
+            // `FriendlyWall` has no producer at all — not because VERA
+            // ignores walls (the `cell_rect` wall gate is live and
+            // MovementZone-keyed) but because that gate answers a hard block
+            // where native answers 4 or 5. So this site is the body arm and only
+            // the body arm. A future wall-overlay producer must NOT route into
+            // this arm without a Restore path for cell targets.
             if matches!(mover_loco_kind, LocomotorKind::Walk | LocomotorKind::Hover) {
                 crate::sim::mission::authority::override_mission_on_blocked_step(
                     entities, alliances, interner, entity_id, blocker_id,
