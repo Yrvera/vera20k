@@ -124,24 +124,57 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // RESIDUAL (GSI-07.06) — **Infantry do NOT**, and that is not modelled.
         // `InfantryClass`'s Attack slot `+0x210` is `0x0051F3E0`, a real
         // override with three branches ahead of the Foot body:
-        // - Human-owned infantry whose sequence enum `[this+0x6C4]` is in
-        //   `{0x1B, 0x1C, 0x1D, 0x1E}` call vtable `+0x428`, then return the
-        //   PLAIN `ftol(Rate) + RandomRanged(0,2)` — skipping the whole Foot
-        //   body, so no half-cadence gate and no idle-mode exit. The same field
-        //   and the same value set gate `InfantryClass::Mission_Move`
-        //   (`0x0051F660`), recorded on the Move arm above.
-        //   Trigger: a deployed infantryman firing. Player effect: VERA runs
-        //   the half-cadence test and the idle exit that retail skips, so the
-        //   dispatch cadence and the scenario-RNG draw rate both diverge for
-        //   the whole engagement. Frequency: continuous — a deployed GI,
-        //   Guardian GI or Desolator shooting is among the most common states
-        //   in any skirmish.
-        //   **Not implemented because the gate's identity is UNCHECKED.**
-        //   `[this+0x6C4]` is believed to be the deploy family but no reading
-        //   proves it, and this engine already has a `deploy_state` that would
-        //   be the tempting mapping. Gating simulation behaviour on that guess
-        //   is exactly what the native-to-Rust rule forbids; the sequence enum
-        //   must be pinned first.
+        // - Human-owned infantry whose DoType `[this+0x6C4]` is in
+        //   `{0x1B, 0x1C, 0x1D, 0x1E}` call vtable `+0x428` (`0x0051F330`, an
+        //   in-place re-acquire: keep firing if the target is still legal, else
+        //   rescan in range, else go idle — it never walks), then return the
+        //   PLAIN `ftol(Rate) + RandomRanged(0,2)`, skipping the whole Foot
+        //   body. So no half-cadence gate and no idle-mode exit. The same field
+        //   and value set gate `InfantryClass::Mission_Move` (`0x0051F660`),
+        //   recorded on the Move arm above.
+        //
+        //   The DoType identity is PROVED, not assumed. The sequence-name
+        //   pointer table is at `0x008255C8`, 42 entries, bounded by
+        //   `InfantryTypeClass::ReadSequenceData @ 0x00523D00`'s
+        //   `while (ptr < 0x825670)`. Indices `0x1B`..`0x1E` are `Deploy`,
+        //   `Deployed`, `DeployedFire`, `DeployedIdle`. Corroborated by
+        //   `InfantryClass::Do_Action @ 0x0051D6F0`, whose land-to-water remap
+        //   pairs (Walk/Crawl->Swim, Ready/Prone->Tread, Die1/Die2->WetDie1/2,
+        //   FireUp/FireProne->WetAttack) all decode exactly under this table,
+        //   and which plays `DeploySound=` on `0x1B` and `UndeploySound=` on
+        //   `0x1F`.
+        //
+        //   Trigger: an EXPLICIT player attack order given to an
+        //   already-deployed infantryman. Not merely "a deployed unit firing" —
+        //   auto-acquire while deployed does not reach here, because
+        //   `Mission_Guard` (`0x0051F620`) and `Mission_AreaGuard`
+        //   (`0x0051F640`) both route through `FUN_00521320`, which handles the
+        //   deployed state itself and calls `+0x428` directly without changing
+        //   mission.
+        //   Player effect: VERA runs the half-cadence test and the idle exit
+        //   that retail skips, so the dispatch cadence and the scenario-RNG
+        //   draw rate diverge for that engagement.
+        //   Frequency: several times per match in any game with Allied GIs or
+        //   Soviet Desolators — routine micro, not continuous. An earlier draft
+        //   of this note said continuous; that was wrong, and the correction is
+        //   the auto-acquire route above.
+        //
+        //   Stock infantry that can enter the set (`Deployer=` on
+        //   `InfantryTypeClass+0xEC8`): `E1`, `GGI`, `DESO`, `YURI`, `YURIPR`.
+        //   `CAOS` also carries `Deployer=` but is a voxel `UnitClass` and
+        //   never reaches these paths. `0x1E` is unreachable for every stock
+        //   type — `GISequence`/`GuardianGISequence` author
+        //   `DeployedIdle=0,0,0` and `Do_Action` rejects a zero frame count —
+        //   and `0x1D` is reachable only for `E1`/`GGI`/`DESO`.
+        //
+        //   **The frame trap has THREE meanings at this offset, not two.**
+        //   `InfantryClass` instance `+0x6C4` is this DoType (init `-1`);
+        //   `UnitClass` instance `+0x6C4` is a `UnitTypeClass*`; and
+        //   `TechnoTypeClass+0x6C4` is `UndeployDelay=` (stock `YURI=150`,
+        //   `YURIPR=75`). `Mission_Move` itself reads the TYPE one at
+        //   `0x0051F6A4` — loading `[ESI+0x6C0]` first — to decide whether an
+        //   AI-owned deployed unit undeploys immediately, so a port that reads
+        //   the instance field there gets Yuri Clone undeploy wrong.
         // - A spy/engineer-class infantryman (`InfType+0xEC2`, or
         //   `HasWeaponAbility(0xE)`) holding a BuildingClass target whose type
         //   has `+0x1577` set and `+0x1701` clear takes
