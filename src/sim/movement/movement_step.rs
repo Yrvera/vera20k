@@ -1666,6 +1666,24 @@ pub(super) fn advance_lepton_position(
             }
             return AdvanceResult::DriveTrackActive;
         }
+        // **VERA-internal, gamemd has no equivalent for the Walk arm.**
+        //
+        // `WalkLocomotionClass::ProcessMovement` @ `0x0075AEC0` has no
+        // whole-lepton quantizer: a walker takes a polar step - `atan2(head -
+        // cur)` for the facing, then `Sin`/`Cos` of
+        // `(facing16 - 0x3FFF) * -9.587672516830327e-05` scaled by
+        // `GetCurrentSpeed` - and completes its step when the 2-D distance to
+        // the head falls under 17 leptons (`< 0x11`), snapping the coordinate
+        // through vtable `+0x1B4`. VERA has no Walk locomotor arm at all:
+        // infantry run through the generic `MovementTarget` interpolator, and
+        // this substitutes the frame budget on their behalf.
+        //
+        // Trigger: every infantry step. Player effect: the sub-lepton path
+        // shape and the exact tick a step completes follow a different rule
+        // than gamemd's, and a walker does not stay exactly on its facing
+        // ray. Frequency: continuous, for every infantryman in every match.
+        // Downstream risk: this is the substrate the rest of GSI-06.14 rests
+        // on, so closing it means a Walk locomotor arm, not a patch here.
         let whole_lepton_result = locomotor
             .as_ref()
             .is_some_and(|locomotor| locomotor.kind == LocomotorKind::Walk);

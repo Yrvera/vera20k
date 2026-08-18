@@ -191,8 +191,11 @@ pub(super) fn ship_process_target_speed_fraction(
 ///   (`0x004B10FF`) — much gentler, to a much lower floor, than the arrival
 ///   band. `+0x3CD` is written by `UnitClass::ReceiveDamage` `0x00737E51`,
 ///   `TemporalClass::AI` `0x00629C69`, the teleport post-warp validation and
-///   the jumpjet touchdown, and `Process` @ `0x004B0500` also zeroes both drive
-///   slots on it — so it is load-bearing in two places. Its identity is
+///   the jumpjet touchdown, and `Process` @ `0x004B0500` also zeroes the target
+///   speed on it — the two writes there are `[recv+0x4C]` and `[recv+0x50]` on
+///   the **ILocomotion** receiver, i.e. complete-object `+0x50`/`+0x54`, the two
+///   halves of one `double`. The integer movement residual at complete `+0x4C`
+///   is untouched. So it is load-bearing in two places. Its identity is
 ///   UNCHECKED, which is why this carries no frequency clause yet: that is the
 ///   gap to close before ranking it.
 /// - **The crush clamp.** While `owner+0x6B5` is set (raised at `0x004B1A2F`
@@ -210,9 +213,17 @@ pub(super) fn ship_process_target_speed_fraction(
 ///   `0x004B2630` and this function gate on `*(int*)(drive+0x58) < 0x40`; above
 ///   it native skips the `drive+0x50` write *and* the whole ramp, setting the
 ///   owner fraction directly. VERA always writes and always ramps. Trigger:
-///   whatever manoeuvre assigns a track index at or above 0x40 — UNCHECKED, and
-///   that is the prerequisite for ranking this. Player effect: VERA ramps where
-///   native jumps. Downstream risk: it is the same gate in two functions.
+///   a live `Force_Track` curve. `Force_Track` @ `0x004B0C40` is the only writer
+///   of a selector at or above 0x40, and its callers are
+///   `BuildingClass::UndockUnit` @ `0x004593A0` (selector `0x47`), the release
+///   path at `0x00459760` (`0x47`) and the bunker installer at `0x00458E50`
+///   (`0x43`..`0x46`). So the gate means: while on an undock or bunker curve,
+///   skip the ramp and drive at the 1.0 `Force_Track` installed. Player effect:
+///   VERA ramps where native jumps straight to full speed. Frequency: **every
+///   vehicle leaving a war factory or refinery** — continuous in ordinary
+///   skirmish. Downstream risk: `ForcedDriveTrackState` already carries a
+///   full-speed constant, so the forced arm is approximated; what is missing is
+///   the same `< 0x40` gate inside `Process_Movement` @ `0x004B2630`.
 /// - **The `Passive=` skip.** `UnitTypeClass+0xE0C` (stored at `0x0074783D`)
 ///   disables the entire ramp for a UnitClass mover. Trigger: a `Passive=yes`
 ///   type. Player effect: none observed. Frequency: zero in skirmish — stock
@@ -276,6 +287,19 @@ fn update_vehicle_speed_fraction(
 /// speed, then multiplies by owner `+0x578` and truncates again. Rust keeps the
 /// adjusted speed in leptons/second, so dividing by the 15-Hz native baseline
 /// recovers the first integer before applying the locomotor-owned fraction.
+///
+/// Two native terms are **not** modelled, recorded rather than guessed:
+/// - the elite multiply, `HasWeaponAbility(0)` -> `x Rules+0x678`, which sits
+///   *between* the two truncations (`0x004DB1E8`-`0x004DB205`). Trigger: an
+///   elite unit. Player effect: elites move at their veteran speed instead of
+///   their elite one. Frequency: every elite vehicle, which an active player
+///   accumulates over a long match. Downstream risk: none - one factor in the
+///   middle of a chain VERA already reproduces exactly.
+/// - the halving at `0x004DB226`: RTTI 1 (UnitClass) with `owner+0x6CC != -1`
+///   -> `speed / 2` via `CDQ/SUB/SAR 1`. `+0x6CC` is UNCHECKED, so this
+///   carries no frequency clause - naming that field is the prerequisite, and
+///   a factor of two on a vehicle's per-frame speed is first-order if it
+///   fires.
 pub(crate) fn owner_current_speed_from_fraction(
     adjusted_speed_per_second: SimFixed,
     current_speed_fraction: SimFixed,

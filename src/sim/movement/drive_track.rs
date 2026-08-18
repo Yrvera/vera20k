@@ -13,9 +13,16 @@
 //! based on their speed, producing smooth curved movement and gradual facing
 //! changes without separate rotation phases.
 //!
+//! **The 72-entry turn table at `0x007E7B28` is indexed `from_octant * 8 +
+//! to_octant`, not by turn angle.** Entry `i`'s `+4` dword is `(i & 7) * 0x20`,
+//! so the low three bits are the destination octant; entries 64..71 are
+//! `Force_Track`-only specials. Any comment describing it as "one entry per 5
+//! degrees" is wrong — the code selects correctly, the prose did not.
+//!
 //! ## How it works
 //! 1. When a vehicle transitions between cells with a facing change, the turn
-//!    angle selects a TurnTrack entry (72 entries, one per 5° increment).
+//!    octant pair selects a TurnTrack entry (72 entries, `from*8 + to` plus
+//!    eight Force_Track specials).
 //! 2. The TurnTrack references a RawTrack (normal or short curve variant).
 //! 3. The RawTrack's point array defines the smooth path through the cell.
 //! 4. Each tick, `point_index` advances based on speed; position and facing
@@ -115,7 +122,8 @@ pub struct RawTrack {
 
 /// Turn angle to track curve mapping.
 ///
-/// There are 72 turn configurations (one per 5° increment, 360/5=72).
+/// There are 72 TurnTrack entries: 64 indexed `from_octant * 8 + to_octant`,
+/// then eight `Force_Track`-only specials at 64..71.
 /// Each maps to a RawTrack index for normal-speed and short/fast turns.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct TurnTrack {
