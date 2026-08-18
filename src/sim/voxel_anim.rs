@@ -9,6 +9,16 @@
 //! sharing only `ObjectClass`. It is also not `sim::components::VoxelAnimation`,
 //! which is a per-entity HVA frame cursor.
 //!
+//! ## Not yet wired, deliberately
+//!
+//! The store is not in `world::substrate`, the state hash or the snapshot yet.
+//! That wiring lands in the SAME slice as the debris producer, not before:
+//! folding an always-empty store into the hash would move
+//! `GLOBAL_HARNESS_FINAL_HASH` and spend a re-baseline entry on plumbing, with
+//! no behaviour to cite for it. When the producer lands, the fold and the
+//! re-baseline go in together — and nothing may spawn a `VoxelAnimObject`
+//! before then, or it would be live and unhashed.
+//!
 //! ## Dependency rules
 //! - Part of sim/ — depends on rules/, map/, util/ and the rest of sim/.
 //! - sim/ NEVER depends on render/, ui/, sidebar/, audio/, net/.
