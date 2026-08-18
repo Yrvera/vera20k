@@ -1855,12 +1855,12 @@ fn gsi_04_07_damage_receiver_smoke_creation_precedes_retaliation() {
     );
     let system_id = victim
         .damage_smoke_system_id
-        .expect("yellow crossing attaches a Smoke system");
+        .expect("yellow crossing attaches a damage particle system");
     let system = sim.particle_systems().get(system_id).unwrap();
-    assert_eq!(
-        rules.particle_system_type(system.type_id).name,
-        "SmallGreySSys"
-    );
+    // The whole authored list is the selection space. `DamageParticleSystems=
+    // SparkSys,SmallGreySSys` is the dominant stock shape (81 of 141 entries),
+    // and the reversed list plus one draw over 0..=1 lands on the spark half.
+    assert_eq!(rules.particle_system_type(system.type_id).name, "SparkSys");
     assert_eq!(system.owner_entity, Some(victim_id));
     assert_eq!(system.attached_entity, None);
     assert_eq!(system.owner_house, None);
@@ -1871,10 +1871,10 @@ fn gsi_04_07_damage_receiver_smoke_creation_precedes_retaliation() {
     let mut expected_order = before_order;
     expected_order.push(system_id);
     assert_eq!(sim.live_object_order_snapshot(), expected_order);
-    assert_eq!(
+    assert_ne!(
         sim.scenario_rng.logical_state(),
         before_rng,
-        "reverse filtering leaves one Smoke choice, so RandomRanged(0,0) draws nothing"
+        "two candidates means a real RandomRanged(0,1) draw"
     );
 
     sim.commit_noncombat_aoe_hits(

@@ -9,8 +9,9 @@
 //!     shuffle within the last `insert_range` slots so the visual stream has
 //!     variety instead of strict FIFO.
 //!
-//! Tier 3 system types (`Spark`, `Railgun`) are accepted by the public entry
-//! point but logged + skipped — runtime spawn returns `None`.
+//! `Railgun` systems are still accepted by the public entry point but logged +
+//! skipped — runtime spawn returns `None`. `Spark` systems are live and run
+//! their own burst AI in `spark_system.rs`.
 
 use super::{Particle, ParticleSystem};
 use crate::rules::particle_system_type::{ParticleSystemBehavesLike, ParticleSystemTypeId};
@@ -26,7 +27,7 @@ use glam::IVec3;
 
 impl Simulation {
     /// Spawn a new particle system. Returns the new system's stable id, or
-    /// `None` if the type is `Spark` or `Railgun` (Tier 3 — not implemented).
+    /// `None` if the type is `Railgun`, which has no producer yet.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_particle_system(
         &mut self,
@@ -39,16 +40,17 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Option<u64> {
         let pst = rules.particle_system_type(type_id);
-        match pst.behaves_like {
-            ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {
-                log::warn!(
-                    "particles: Tier 3 PSC type {:?} requested at {:?} — skipped",
-                    pst.behaves_like,
-                    coords,
-                );
-                return None;
-            }
-            _ => {}
+        // RESIDUAL (GSI-05.13) — Railgun systems are still unbuilt. Native
+        // front-loads their whole beam of particles in one pass rather than
+        // spawning per frame, so they are a different producer, not a variant of
+        // the Spark burst below. Trigger: any `BehavesLike=Railgun` system —
+        // `SmallRailgunSys` and `LargeRailgunSys`. Player effect: prism and
+        // railgun weapons show no beam particles. Frequency: every shot from
+        // those weapons. Downstream risk: none on this path; the request is
+        // dropped before any state is allocated.
+        if pst.behaves_like == ParticleSystemBehavesLike::Railgun {
+            log::warn!("particles: Railgun PSC type requested at {coords:?} — skipped");
+            return None;
         }
         let directionless = pst.spawn_direction == IVec3::ZERO;
         let stable_id = self.allocate_stable_id();
@@ -135,17 +137,24 @@ impl Simulation {
                         .wrapping_add(offset.y),
                     i32::from(entity.position.z).wrapping_add(offset.z),
                 );
-                let smoke = object
+                // The whole authored list is the selection space. It used to
+                // be narrowed to Smoke because Spark had no producer, which both
+                // dropped the spark half of a mixed list and shortened the range
+                // the draw below is taken over. 126 of the 141 stock
+                // `DamageParticleSystems=` entries name `SparkSys`, and 27 name
+                // nothing else, so that narrowing left those types with no
+                // damage particles at all.
+                let candidates = object
                     .damage_particle_systems
                     .iter()
                     .rev()
                     .filter_map(|name| rules.ps_type_id_by_name(name))
                     .filter(|&id| {
                         rules.particle_system_type(id).behaves_like
-                            == ParticleSystemBehavesLike::Smoke
+                            != ParticleSystemBehavesLike::Railgun
                     })
                     .collect::<Vec<_>>();
-                Some((coords, stable_id, smoke))
+                Some((coords, stable_id, candidates))
             })
         else {
             return;
@@ -410,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_returns_none_for_spark_at_tier_2() {
+    fn spawn_admits_spark_systems() {
         let rules = build_rules("Spark", 50);
         let mut sim = Simulation::new();
         let result = sim.spawn_particle_system(
@@ -422,12 +431,12 @@ mod tests {
             None,
             &rules,
         );
-        assert!(result.is_none());
-        assert_eq!(sim.particle_systems().len(), 0);
+        assert!(result.is_some());
+        assert_eq!(sim.particle_systems().len(), 1);
     }
 
     #[test]
-    fn spawn_returns_none_for_railgun_at_tier_2() {
+    fn spawn_returns_none_for_railgun() {
         let rules = build_rules("Railgun", 50);
         let mut sim = Simulation::new();
         let result = sim.spawn_particle_system(
