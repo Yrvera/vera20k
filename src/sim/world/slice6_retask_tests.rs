@@ -170,8 +170,18 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // the v28/v29 gates, so both named legacy probes intentionally move with the
 // live composition; filtering them out would create an undocumented hybrid
 // schema rather than reproduce either probe's stated contract.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xFA1F_9E65_F1BD_497D;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xAAC4_502B_90AF_E0A6;
+// Re-baselined 2026-08-18: a mid-curve re-order now keeps the in-flight Drive
+// curve and anchors the new path at its committed head cell (`TechnoClass::
+// Set_Destination` @ 0x00741970 never touches the track cursor; see
+// movement_commands.rs). This fixture retasks a moving MTNK at ticks 1/3/5/7,
+// so its trajectory legitimately changes — previously each retask restarted
+// the curve at the cell lead-in, teleporting the body backward. Behavior-
+// bearing, NOT composition-only: position/movement state is hashed in every
+// schema, so all three probes move together. Rust regression ratchet; the
+// kept-curve contract is exercised by
+// `movement_tests::test_reissue_mid_curve_keeps_track_and_anchors_path_at_head`.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xF2F0_9EA2_E633_977D;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x18E3_B2D8_2E04_8245;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -262,7 +272,9 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0xAAC4_502B_90AF_E0A6;
 // exact, isolating the change from the retask behavior under test. This is a
 // Rust regression ratchet; the native sequence-timing sources are documented
 // by that commit, while non-stock READY/GUARD precedence remains UNCHECKED.
-const SLICE6_BASELINE_HASH: u64 = 0xB3F2_F453_2BAE_3FE7;
+// Re-baselined 2026-08-18 for the kept in-flight Drive curve on mid-curve
+// re-orders; see the dated comment at the two legacy probes above.
+const SLICE6_BASELINE_HASH: u64 = 0xD997_73E0_DDC6_FBEE;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

@@ -1230,6 +1230,172 @@ fn test_issue_move_command_starts_drive_track_for_initial_drive_turn() {
     assert_eq!(entity.facing_target, Some(0x60));
 }
 
+// `TechnoClass::Set_Destination` @ `0x00741970` records the new destination
+// (NavCom @ `0x004D94B0`, Drive coordinate @ `0x004AFD40`) without touching the
+// Drive track cursor: a curve already in flight keeps driving to its committed
+// head cell and the new path takes over there.
+#[test]
+fn test_reissue_mid_curve_keeps_track_and_anchors_path_at_head() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 3);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.facing = 64;
+    entities.insert(e);
+
+    // First order east installs a straight curve committed to head (3,3).
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (7, 3),
+        SimFixed::from_num(768),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    let entity = entities.get(1).expect("entity exists");
+    let track_before = entity.drive_track.as_ref().expect("curve installed");
+    let track_before = (track_before.raw_track_index, track_before.point_index);
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(
+        drive.occupation_head_to.map(|head| (head.rx, head.ry)),
+        Some((3, 3)),
+    );
+
+    // Re-order behind the body while the curve is in flight. Pre-fix this
+    // cleared/replaced the curve; the curve must survive untouched and the new
+    // path must start on its head so no position rewrite can occur.
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (0, 3),
+        SimFixed::from_num(768),
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    let entity = entities.get(1).expect("entity exists");
+    let track_after = entity.drive_track.as_ref().expect("in-flight curve kept");
+    assert_eq!(
+        (track_after.raw_track_index, track_after.point_index),
+        track_before,
+        "the in-flight curve must survive the re-order untouched"
+    );
+    let movement = entity.movement_target.as_ref().expect("movement target");
+    assert_eq!(
+        movement.path.first().copied(),
+        Some((3, 3)),
+        "new path is anchored at the curve's committed head cell"
+    );
+    assert_eq!(
+        movement.next_index, 0,
+        "the still-unreached head is itself the first queued node"
+    );
+    assert_eq!(movement.final_goal, Some((0, 3)));
+    let drive = entity.drive_locomotion.as_ref().expect("drive state");
+    assert_eq!(
+        drive.occupation_head_to.map(|head| (head.rx, head.ry)),
+        Some((3, 3)),
+        "the kept curve keeps its head-to occupation claim"
+    );
+    assert_eq!(drive.path.reference_cell, Some((3, 3)));
+    assert_eq!(drive.path.cursor, 0);
+    assert_eq!(entity.navigation.nav_com, Some(NavTargetRef::cell(0, 3)));
+}
+
+// The player-visible symptom of replacing an in-flight curve: the fresh curve's
+// cursor restarted at the lead-in point on the current cell centre, so every
+// mid-drive re-order teleported the body backward by its mid-cell progress.
+#[test]
+fn test_reissue_mid_curve_does_not_snap_position_backward() {
+    let mut entities = EntityStore::new();
+    let grid: PathGrid = PathGrid::new(20, 20);
+
+    let mut e = GameEntity::test_default(1, "HTNK", "Americans", 2, 3);
+    e.locomotor = Some(LocomotorState::for_test_kind(LocomotorKind::Drive));
+    e.facing = 64;
+    // No rules are loaded, so `accel_factor` is 0 and the Accelerates= ramp
+    // would hold the speed fraction at 0 forever; drive at constant speed.
+    e.drive_accelerates = false;
+    entities.insert(e);
+
+    // Slow enough that each tick pays about one 7-cost track point.
+    let speed = SimFixed::from_num(120);
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (7, 3),
+        speed,
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+
+    // Advance until the body sits visibly past its cell centre (sub_x 128)
+    // but has not crossed into (3,3) yet.
+    let mut lifecycle_requests = Vec::new();
+    let mut observed_mid_cell = false;
+    for _ in 0..50 {
+        tick_movement(&mut entities, &mut test_interner(), &mut lifecycle_requests);
+        let entity = entities.get(1).expect("entity exists");
+        if entity.position.rx > 2 {
+            break;
+        }
+        if entity.position.sub_x.to_num::<i32>() >= 168 {
+            observed_mid_cell = true;
+            break;
+        }
+    }
+    assert!(
+        observed_mid_cell,
+        "the curve never presented a mid-cell state past the centre"
+    );
+    let entity = entities.get(1).expect("entity exists");
+    assert!(entity.drive_track.is_some(), "curve still in flight");
+    let sub_x_before = entity.position.sub_x;
+    let east_before = i32::from(entity.position.rx) * 256 + sub_x_before.to_num::<i32>();
+
+    // Re-order further east mid-curve: the order itself must not move the
+    // body, and the next tick must continue forward — never snap back toward
+    // the cell centre.
+    assert!(issue_move_command(
+        &mut entities,
+        &grid,
+        1,
+        (9, 3),
+        speed,
+        false,
+        None,
+        None,
+        None,
+        false,
+    ));
+    let entity = entities.get(1).expect("entity exists");
+    assert_eq!(
+        entity.position.sub_x, sub_x_before,
+        "issuing the order must not move the body"
+    );
+    tick_movement(&mut entities, &mut test_interner(), &mut lifecycle_requests);
+    let entity = entities.get(1).expect("entity exists");
+    let east_after = i32::from(entity.position.rx) * 256 + entity.position.sub_x.to_num::<i32>();
+    assert!(
+        east_after > east_before,
+        "body must keep moving forward across a mid-curve re-order \
+         (east {east_before} -> {east_after}); a regression here is the \
+         backward-teleport-on-click symptom"
+    );
+}
+
 #[test]
 fn test_issue_move_command_no_path() {
     let mut entities = EntityStore::new();
