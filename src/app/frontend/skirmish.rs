@@ -427,6 +427,67 @@ mod tests {
         }
     }
 
+    fn nearoref_starts() -> [Waypoint; 8] {
+        [
+            Waypoint {
+                index: 0,
+                rx: 38,
+                ry: 63,
+            },
+            Waypoint {
+                index: 1,
+                rx: 53,
+                ry: 48,
+            },
+            Waypoint {
+                index: 2,
+                rx: 71,
+                ry: 32,
+            },
+            Waypoint {
+                index: 3,
+                rx: 99,
+                ry: 32,
+            },
+            Waypoint {
+                index: 4,
+                rx: 39,
+                ry: 106,
+            },
+            Waypoint {
+                index: 5,
+                rx: 68,
+                ry: 107,
+            },
+            Waypoint {
+                index: 6,
+                rx: 85,
+                ry: 90,
+            },
+            Waypoint {
+                index: 7,
+                rx: 100,
+                ry: 75,
+            },
+        ]
+    }
+
+    fn configure_nearoref_geometry(sim: &mut Simulation, map: &mut MapFile) {
+        map.header.width = 80;
+        map.header.height = 58;
+        map.header.local_left = 2;
+        map.header.local_top = 4;
+        map.header.local_width = 76;
+        map.header.local_height = 48;
+        sim.playfield_bounds = Some(PlayfieldBounds::from_map_header(&map.header));
+        sim.session.map_width = 138;
+        sim.session.map_height = 138;
+        sim.session.local_left = 2;
+        sim.session.local_top = 4;
+        sim.session.local_width = 76;
+        sim.session.local_height = 48;
+    }
+
     fn test_launch_starts() -> [Waypoint; 4] {
         [
             Waypoint {
@@ -617,6 +678,11 @@ mod tests {
         assert_eq!(starts.len(), 2);
         assert_eq!(starts[0], authored);
         assert_eq!(starts[1].index, 1);
+        assert_eq!(
+            (starts[1].rx, starts[1].ry),
+            (54, 21),
+            "first native ranged draw is Y, second is X"
+        );
         assert!(deficient_start_rect_track_passable(
             &terrain,
             &occupancy,
@@ -1794,6 +1860,79 @@ mod tests {
     }
 
     #[test]
+    fn nearoref_blocked_start_fallback_uses_full_cell_array_clamp() {
+        let mut sim = Simulation::with_seed(0);
+        let mut session = test_session();
+        session.local.start_position = LaunchStartPosition::Position(0);
+        session.opponents.clear();
+        session.options.bases = true;
+        session.options.unit_count = 0;
+        let starts = [Waypoint {
+            index: 0,
+            rx: 100,
+            ry: 75,
+        }];
+        let mut map = test_map_with_starts(&starts);
+        configure_nearoref_geometry(&mut sim, &mut map);
+        let terrain = test_terrain(138, 138);
+        let rules = test_standard_launch_rules();
+        let descriptor = launch_descriptor(&session);
+        initialize_skirmish_launch_houses(
+            &mut sim,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &descriptor,
+        );
+        sim.spawn_object(
+            "AMCV",
+            "Neutral",
+            100,
+            75,
+            STARTING_MCV_FACING,
+            &rules,
+            &test_height_map(),
+        )
+        .expect("authored start blocker");
+        let mut expected_rng = sim.scenario_rng.clone();
+        assert_eq!(
+            expected_rng.next_range_u32_inclusive(0, 7),
+            3,
+            "seed zero chooses the southeast radius-one spoke"
+        );
+        let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
+
+        let result = apply_explicit_skirmish_launch_session(
+            &mut sim,
+            &map,
+            &roster_with_neutral_and_playable(),
+            &rules,
+            &test_height_map(),
+            &terrain,
+            &descriptor,
+        );
+
+        assert_eq!(result.active_slots, 1);
+        assert_eq!(result.spawned_mcvs, 1);
+        assert_eq!(sim.entities().len(), 2);
+        assert_eq!(entity_position_for_owner(&sim, "Neutral"), Some((100, 75)));
+        assert_eq!(
+            entity_position_for_owner(&sim, "Player"),
+            Some((101, 76)),
+            "the valid spoke stays outside the old LocalSize box instead of clamping to (77,51)"
+        );
+        assert_eq!(
+            crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
+                .and_then(|house| house.base_center),
+            Some((100, 75)),
+            "fallback placement must not rewrite the assigned base center"
+        );
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state()
+        );
+    }
+
+    #[test]
     fn skirmish_start_unit_budget_is_global_but_house_pools_filter_tech_and_mask() {
         let rules = test_starting_unit_rules();
         let slots = normalized_launch_slots(&test_session());
@@ -1950,52 +2089,31 @@ mod tests {
         assert_eq!(ai_units, 4);
     }
 
-    /// NearOreF.MAP geometry: `Size=0,0,80,58`, `LocalSize=2,4,76,48`, with
-    /// authored starts far outside any axis-aligned reading of LocalSize but
-    /// inside the retail playfield diamond. gamemd unlimbos every starting MCV
-    /// exactly on its authored waypoint (mode `+0xC8` @ `0x005D7030`; diamond
-    /// gate in the scan-place helper @ `0x00688ED0`). The old LocalSize-shaped
-    /// `NativeStartBounds` gate rejected these cells and clamped the fallback
-    /// spiral onto the false edge, piling several MCVs into the same corner.
+    /// NearOreF.MAP geometry: `Size=0,0,80,58`, `LocalSize=2,4,76,48`.
+    /// GameMD unlimbos all eight starting MCVs exactly on their authored
+    /// waypoints. The former Cartesian LocalSize test accepted only indices 1
+    /// and 2, displaced the other six, and consumed fallback RNG.
     #[test]
-    fn starting_mcvs_spawn_on_authored_waypoints_outside_the_localsize_box() {
-        let mut sim = Simulation::new();
-        // Raw Size width feeds the diamond's `base`; LocalSize feeds its band
-        // constants. Stored verbatim, exactly as the map loader does.
-        sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds {
-            base: 80,
-            off_fc: 2,
-            off_100: 4,
-            off_104: 76,
-            off_108: 48,
-        });
-        sim.session.local_left = 2;
-        sim.session.local_top = 4;
-        sim.session.local_width = 76;
-        sim.session.local_height = 48;
-        // Canonical cell-array extent for an 80x58 map (~SizeW+SizeH).
-        sim.session.map_width = 138;
-        sim.session.map_height = 138;
-
-        // NearOreF waypoints 0 and 7: (38,63) fails the false box on ry,
-        // (100,75) fails it on both axes; both are inside the retail diamond.
-        let starts = [
-            Waypoint {
-                index: 0,
-                rx: 38,
-                ry: 63,
-            },
-            Waypoint {
-                index: 1,
-                rx: 100,
-                ry: 75,
-            },
-        ];
-        let map = test_map_with_starts(&starts);
-        let terrain = test_terrain(139, 139);
+    fn all_eight_nearoref_mcvs_spawn_on_authored_waypoints_without_fallback_rng() {
+        let mut sim = Simulation::with_seed(0);
+        let starts = nearoref_starts();
+        let mut map = test_map_with_starts(&starts);
+        configure_nearoref_geometry(&mut sim, &mut map);
+        let terrain = test_terrain(138, 138);
         let mut session = test_session();
         session.local.start_position = LaunchStartPosition::Position(0);
-        session.opponents[0].start_position = LaunchStartPosition::Position(1);
+        session.options.bases = true;
+        session.options.unit_count = 0;
+        let ai_template = session.opponents[0].clone();
+        session.opponents = (1..8)
+            .map(|index| SkirmishAiSlot {
+                color_index: (index + 1) as u8,
+                start_position: LaunchStartPosition::Position(index as u8),
+                ..ai_template.clone()
+            })
+            .collect();
+        let mut expected_rng = sim.scenario_rng.clone();
+        let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
             &mut sim,
@@ -2007,25 +2125,47 @@ mod tests {
             &launch_descriptor(&session),
         );
 
-        assert_eq!(result.spawned_mcvs, 2);
-        let mut cells: Vec<((u16, u16), String)> = sim
+        assert_eq!(result.active_slots, 8);
+        assert_eq!(result.spawned_mcvs, 8);
+        assert_eq!(sim.entities().len(), 8);
+        let cells: BTreeMap<String, (u16, u16)> = sim
             .entities()
             .values()
             .map(|entity| {
                 (
-                    (entity.position.rx, entity.position.ry),
                     sim.interner.resolve(entity.owner).to_string(),
+                    (entity.position.rx, entity.position.ry),
                 )
             })
             .collect();
-        cells.sort();
+        let expected_cells: BTreeMap<String, (u16, u16)> = starts
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let owner = if index == 0 {
+                    "Player".to_string()
+                } else {
+                    format!("Computer{index}")
+                };
+                (owner, (start.rx, start.ry))
+            })
+            .collect();
         assert_eq!(
-            cells,
-            vec![
-                ((38, 63), "Player".to_string()),
-                ((100, 75), "Computer1".to_string()),
-            ],
+            cells, expected_cells,
             "starting MCVs must unlimbo exactly on their authored waypoints"
+        );
+        for (owner, expected_cell) in &expected_cells {
+            assert_eq!(
+                crate::sim::house_state::house_state_for_owner(&sim.houses, owner, &sim.interner,)
+                    .and_then(|house| house.base_center),
+                Some(*expected_cell),
+                "{owner} must retain its authored base center"
+            );
+        }
+        assert_eq!(
+            sim.scenario_rng.logical_state(),
+            expected_rng.logical_state(),
+            "exact placement consumes only the final scenario synchronization draw"
         );
     }
 

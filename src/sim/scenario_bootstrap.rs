@@ -1849,6 +1849,38 @@ mod tests {
     }
 
     #[test]
+    fn nearoref_native_start_bounds_use_inclusive_full_cell_array_endpoints() {
+        let mut sim = Simulation::new();
+        sim.session.map_width = 138;
+        sim.session.map_height = 138;
+        sim.session.local_left = 2;
+        sim.session.local_top = 4;
+        sim.session.local_width = 76;
+        sim.session.local_height = 48;
+        let terrain = ResolvedTerrainGrid::from_cells(138, 138, Vec::new());
+
+        let bounds = NativeStartBounds::from_session(&sim, &terrain);
+
+        assert_eq!(
+            (
+                bounds.min_rx,
+                bounds.min_ry,
+                bounds.width,
+                bounds.height,
+                bounds.max_rx(),
+                bounds.max_ry(),
+            ),
+            (1, 1, 137, 137, 137, 137)
+        );
+        assert_eq!(bounds.clamp(0, 0), (1, 1));
+        assert_eq!(bounds.clamp(1, 1), (1, 1));
+        assert_eq!(bounds.clamp(100, 75), (100, 75));
+        assert_eq!(bounds.clamp(137, 137), (137, 137));
+        assert_eq!(bounds.clamp(138, 138), (137, 137));
+        assert_eq!(bounds.clamp(i32::MIN, i32::MAX), (1, 137));
+    }
+
+    #[test]
     fn untouched_bootstrap_cursors_match_fresh_descriptor_construction() {
         let seed = 0x51C0_1001;
         let expected = Simulation::from_descriptor(&descriptor(seed)).rng_state();
