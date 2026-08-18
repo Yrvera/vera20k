@@ -85,6 +85,21 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
     let evaluation = match (input.category, input.mission) {
         // `FootClass::Mission_Move` is the native named location for this
         // handler-return cadence; movement execution remains in movement/.
+        // **Infantry take a leaf override first, and VERA does not model it.**
+        // `InfantryClass`'s Move slot is `+0x22C` = `0x0051F660`, which gates on
+        // `[this+0x6C4] ∈ {0x1B, 0x1C, 0x1D, 0x1E}` — a small per-infantry state
+        // enum, identity UNCHECKED, the same field `0x00521320` reads — and for
+        // a human-owned unit (`vtable+0x3C` → `HouseClass::IsControlledByHuman`
+        // @ `0x0050B730`) calls `Set_Destination(NULL, true)` through `+0x480`
+        // and returns 1, never entering `FootClass::Mission_Move` @ `0x004D4200`
+        // and never drawing its jitter. Trigger: a deployed infantryman ordered
+        // to move. Player effect: retail drops the destination and re-dispatches
+        // next frame; VERA keeps the destination and draws the cadence jitter.
+        // Frequency: GI, Guardian GI and Desolator deploy is routine, so this is
+        // not rare. Downstream risk: it is one RNG draw per occurrence, so the
+        // stream diverges too. **Note the frame trap**: `[this+0x6C4]` is a
+        // `UnitTypeClass*` on UnitClass and this state enum on InfantryClass,
+        // which caches its own type at `+0x6C0`.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Move)) => {
             if input.moving_or_queued {
                 MissionHandlerEvaluation::cadence(jittered_mission_cadence(
@@ -146,8 +161,22 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
             }
         }
         (EntityCategory::Unit, Some(MissionType::Guard)) => {
-            // `UnitClass`'s Guard override: the two Unit-local deploy latches
-            // queue before the FootClass delegate and return 1.
+            // **VERA-internal, gamemd equivalent UNCHECKED — this mapping is
+            // wrong and the arm is dead.** The "three byte latches, then
+            // `Assign_Mission(5, 0)`, then `return 1`" shape lives at
+            // `0x00740A90`, which is vtable `+0x22C` — the **Move** slot, not
+            // Guard — reads `[this+0x6E0]`/`+0x6E1`/`+0x6E2`, and queues
+            // **Guard**, not Harvest or Unload. `UnitClass`'s real Guard
+            // override `0x00740810` gates its `Queue_Mission(10)`/`return 1` on
+            // `UnitTypeClass+0xE0E`/`+0xE0F` plus house and refinery checks, and
+            // its `Queue_Mission(0x10)` path returns `ftol(Rate) + Rand(0, 2)`
+            // rather than 1.
+            //
+            // Trigger: none today — both latch bytes have only `#[cfg(test)]`
+            // writers (`sim::mission::leaf`), so production never reaches
+            // either arm. Player effect: none. Frequency: zero. Downstream
+            // risk: the wrong native mapping would be carried straight into any
+            // future deploy work; the shape belongs on the Move arm.
             if input.unit_deploy_begin_active {
                 MissionHandlerEvaluation::queue(1, MissionType::Harvest)
             } else if input.unit_deploy_reverse_active {
@@ -301,12 +330,18 @@ impl MissionHandlerEvaluation {
 ///   Guard, which is what this returns;
 /// - the vehicle suppression byte that skips the queue entirely (its writer is
 ///   UNKNOWN, so modelling it would be inventing a gate);
-/// - the base hook's two EARLY returns, which suppress the whole selector for
-///   that arrival: a NavQueue pop, and a locomotor piggyback unwind. Both are
-///   inert here — `nav_queue` still has no production writer, and the piggyback
-///   unwind runs in the movement phase — but a future NavQueue writer must
-///   restore the early return or a waypointed unit will fall to Guard at the
-///   first leg instead of continuing to the next one.
+/// - the base hook's NavQueue pop and locomotor piggyback unwind. These are
+///   **not** early returns that suppress the selector — that reading was wrong.
+///   `FootClass::Enter_Idle_Mode` @ `0x004D82B0` pops `[this+0x598]` /
+///   `[this+0x58C]`, calls `Assign_Destination(next, 0)` and returns 1, but both
+///   leaves discard that return for control flow (`0x00738970` assigns it to a
+///   local and then unconditionally calls `+0x4AC`; `0x0051CBA0` the same).
+///   Waypointed movement continues because the pop **installs a destination**,
+///   so the leaf then reads `[this+0x5A4] != 0` and picks Move(2) on its own.
+///   Both are inert here — `nav_queue` has no production writer and the
+///   piggyback unwind runs in the movement phase — but a future NavQueue writer
+///   must pop *before* the selector reads the destination, not restore an early
+///   return that does not exist.
 pub(super) fn move_arrival_evaluation(
     rules: &RuleSet,
     input: MissionHandlerInput,
@@ -404,6 +439,23 @@ pub(super) fn foot_enter_idle_mode_queue(
     ) {
         return None;
     }
+    // **VERA-internal, gamemd equivalent UNCHECKED — two ordering/indexing
+    // differences, both inert today.** Native is
+    // `if (effective != -1) { entry = MissionControl[*(this+0xAC)];
+    // if (entry[+7] || entry[+5]) return; }` — the *effective* mission only
+    // gates whether to look at all, while the *committed* one at `+0xAC` indexes
+    // the table. This looks the entry up on `effective_mission`. And the
+    // infantry leaf tests the destination `[this+0x5A4]` **before** the
+    // Guard/AreaGuard and Zombie/Paralyzed gates, where this tests them first.
+    //
+    // Trigger: a caller whose committed and effective missions differ, or one
+    // that reaches here with both a destination and a frozen mission. Player
+    // effect: none today — the only live entry is the Attack handler's
+    // no-target exit, where committed == effective == Attack and `[Attack]`
+    // carries neither key. Frequency: zero. Downstream risk: a second producer
+    // would inherit both. (Curiosity for whoever ports it: with a current of -1
+    // and only a queued mission, native indexes `MissionControl[-1]` — an
+    // out-of-bounds read one entry below the array.)
     let frozen = input.effective_mission.is_some_and(|mission| {
         rules
             .mission_control
@@ -517,6 +569,28 @@ fn evaluate_foot_area_guard(
 }
 
 /// `FootClass::Mission_Guard` 0x004D5070, the body Guard(5) and Sticky(6) share.
+///
+/// **Shared for units. Infantry reach it only through a leaf override VERA does
+/// not model, recorded here.** `InfantryClass`'s slot `+0x21C` is `0x0051F620`,
+/// nine instructions: `CALL 0x00521320; CMP EAX,-1; JNZ` returns that value
+/// directly, and only `-1` falls through to the Foot body. `0x00521320` owns
+/// infantry deploy and undeploy on Guard; its arms return an animation-table
+/// duration (`Type+0xE3C` plus `+0x460`/`+0x3D0`/`+0x418`), or `Rate +
+/// RandomRanged(0, 2)`, or — on the radiation arm gated by `Type+0xD37`,
+/// Desolator-shaped — `Rate + RandomRanged(10, 0x14)`, a draw VERA never makes.
+/// Trigger: any infantryman on Guard or Sticky whose type can deploy.
+/// Player effect: a deploying GI, Guardian GI or Desolator re-dispatches on the
+/// Foot cadence instead of its animation's own length. Frequency: continuous
+/// wherever deployed infantry hold ground, which is ordinary play for both
+/// Allied and Soviet. Downstream risk: it consumes scenario RNG on the
+/// radiation arm, so the stream diverges as well as the cadence.
+///
+/// The Sticky half of the shared-slot claim is confirmed:
+/// `MissionClass::GetMissionTimerEntry` @ `0x005B3A00` is
+/// `&MissionControl + *(this+0xAC) * 8`, indexed on the **committed** mission —
+/// the same field the dispatcher switches on — so `[Sticky] Rate` reaches the
+/// shared body exactly as the arm below assumes, and nothing else in the binary
+/// distinguishes Sticky from Guard.
 ///
 /// `mission` is the object's OWN committed selector, not the handler's: the
 /// native timer lookup indexes the control table on the committed mission id,
