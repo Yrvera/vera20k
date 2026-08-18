@@ -1359,7 +1359,9 @@ pub fn astar_search(
                 // The current grid-level predicate can only produce the known
                 // clear/blocked endpoints (0/7). Keep that adaptation separate
                 // from terrain speed while preserving the YR coercion threshold.
-                // Original: FindPathRegular calls FootClass virtual +0x1AC.
+                // Original: `AStar_main_loop` @ `0x00429A90` calls the FootClass
+                // `+0x1AC` slot (`Can_Enter_Cell`). There is no `FindPathRegular`
+                // symbol in this program.
                 let raw_cost_class = options.search_cost_classifier.map_or_else(
                     || if neighbor_passable { 0 } else { 7 },
                     |classifier| classifier.classify((cx, cy), (nx, ny), neighbor_use_bridge),

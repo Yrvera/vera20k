@@ -14,8 +14,155 @@
 //! approximates the post-switch output of the original two-pass `Can_Enter_Cell`. See
 //! docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md §"Known Parity Boundary".
 //!
-//! TODO(RE): Cost-class refinements (search-time entity-block costs vs runtime bump) and
-//! some terrain edge cases still pending. Tracked separately from G2/G6.
+//! ## The native shape, and what is not modelled
+//!
+//! `UnitClass::Can_Enter_Cell` @ `0x0073F0A0` and `InfantryClass::Can_Enter_Cell`
+//! @ `0x0051BF90` are the `FootClass` `+0x1AC` slot (`0x007F5E1C` and
+//! `0x007EB204`). Both are **accumulators**: a running code later occupants may
+//! only raise, punctuated by hard `return 7` / `return 0` exits. `AStar_main_loop`
+//! @ `0x00429A90` expands a neighbour iff the code is below 7 and
+//! `AStar_compute_edge_cost` @ `0x00429830` indexes it into the float table at
+//! `0x0081870C` — `[1.0, 1000.0, 1.0, 1.0, 60.0, 20.0, 8.0, 10000.0]`, whose only
+//! reader is `0x00429848`. So codes 3, 4, 5 and 6 all still expand, at 1×, 60×,
+//! 20× and 8× the base step.
+//!
+//! Pre-flight, in order, before any code accumulates: the bridge-deck select from
+//! `Cell->Flags & 0x100`; the occupier/occupation snapshot; **Unit only** the
+//! `MovementRestrictedTo=` gate; the direction-8 tube endpoint test; the
+//! tube-direction consistency tests at this cell and at `(dir-4)&7`; **Infantry
+//! only** an unconditional admit when `level - Cell->Level > 4`; the `+0x1B0`
+//! slot (`CheckBridgeTraversal` @ `0x004D9C60`, FootClass-level — it is the same
+//! entry in both vtables); the deck swap; the playfield gate; and **Unit only**
+//! `FootClass::LocomotorPassabilityCheck` @ `0x004D9C10`, whose result **seeds**
+//! the running code (Infantry seeds a literal 0).
+//!
+//! VERA reproduces the accumulate-worst-code shape and the crush latch. What it
+//! does not, recorded rather than guessed and ordered by ordinary-skirmish
+//! impact:
+//!
+//! - **`Gate=` buildings take the garrison arm.** [`classify_blocker`] maps a
+//!   closed or opening `BuildingGateRuntime` to `ScatterRequired` (code 3), but
+//!   code 3 in gamemd is `BuildingTypeClass+0x16B7` plus
+//!   `!BuildingClass::CanGarrison()` — the garrison flag, read at `0x004525F9`.
+//!   `Gate=` is a different field, `+0x16C0` (read by
+//!   `BuildingClass::TogglePowerOrGate` @ `0x004471CB`), and its arm is its own
+//!   branch: the gate occupant is either **skipped whole**, leaving the running
+//!   code untouched so an open gate leaves the cell clear, or **`return 7`** when
+//!   `occupant->Owner+0x1FA` is set. A gate never yields code 3. Trigger: any
+//!   move order whose path crosses a friendly gate. Player effect: VERA's code 3
+//!   routes into the scatter arm, which asks a *structure* to move out of the
+//!   way; retail either walks through or treats it as solid. Frequency: common
+//!   from mid-game on, in every walled base. Downstream risk: the test
+//!   `friendly_closed_or_opening_gate_returns_code_3_not_code_6` pins the wrong
+//!   mapping and must be re-baselined with the fix.
+//! - **The wall arm produces the wrong code, not no code.** `cell_rect`'s
+//!   `is_wall_overlay` / `WallBlocked` path is live and MovementZone-keyed, and
+//!   its Destroyer-class escape set matches native's `{2, 3, 8, 0xC}` at
+//!   `0x004835BB`. But it answers a **hard block** where native answers **4** for
+//!   a friendly wall and **5** for an enemy one (Unit: `OverlayTypeClass+0x2A8`
+//!   at `0x0073F420` with the `Crushable=` gate `+0x22D` at `0x0073F42E`;
+//!   Infantry: `5 - isAlly`), and 4 and 5 both still expand in the A*. Retail
+//!   therefore routes *through* a wall line at 60×/20× cost and stops at it;
+//!   VERA reports no path. [`CellEntryResult::FriendlyWall`] consequently has no
+//!   producer. Trigger: any expansion into a `Wall=yes` overlay cell. Player
+//!   effect: a move order whose destination is enclosed by walls is refused
+//!   outright instead of routing to the wall and stopping. Frequency: pre-placed
+//!   civilian fences appear on most stock maps, so this fires many times a match
+//!   even against players who never build walls. Downstream risk: codes 4 and 5
+//!   feed the blocked-step Override arm, whose wall case targets a *cell* rather
+//!   than an object and has no Restore path (see `movement_occupancy`); a
+//!   producer must land together with that arm. **Do not add a second wall gate
+//!   on top of the existing one.**
+//! - **A crusher can never cross a crushable wall.** `cell_rect`'s
+//!   `wall_allows_crusher` is a hardcoded `false` because the parsed overlay
+//!   model does not carry `OverlayTypeClass+0x22D` = `Crushable=` (written by
+//!   `ObjectTypeClass::ReadINI` @ `0x005F9426`, read by
+//!   `TechnoClass::Is_Crushable_By` @ `0x005F6D49` and by
+//!   `CellClass::RecalcZoneType` @ `0x00483CB5`). Stock `[GASAND]` is
+//!   `Wall=yes` + `Crushable=yes` + `CrushSound=WallCrushSandbag`. Trigger: a
+//!   `MovementZone=Crusher` or `AmphibiousCrusher` type (eleven stock entries)
+//!   meeting a sandbag wall. Player effect: retail drives through with a crush
+//!   sound; VERA stops. Frequency: sandbags are common map dressing and a common
+//!   early-game player wall. Downstream risk: none beyond plumbing the flag.
+//! - **The head-on deadlock exit** (`0x0073F9C0`-`0x0073FA30`, Unit only).
+//!   Before conceding code 2 to a moving ally, native compares both objects'
+//!   `FacingClass::Current` octants — the second offset by `+0x7FFF`, so the test
+//!   is literally "facing each other" — and the `Math::atan2` of the lepton
+//!   delta, and returns **7** when they are closing on the same octant within
+//!   `Sqrt_Approx(...) < 0x200` leptons (`0x0073FA10 CMP EAX,0x1FF / JG`).
+//!   Trigger: two friendly vehicles meeting head-on inside two cells. Player
+//!   effect: retail makes one treat the cell as impassable and re-path; VERA has
+//!   both wait and shuffle. Frequency: continuous in any traffic. Downstream
+//!   risk: code 2 is also what arms the ten-step blocker-prediction loop in
+//!   `AStar_compute_edge_cost`, so the wrong code feeds the wrong cost branch.
+//!   `InfantryClass::Can_Enter_Cell` has no equivalent — its ally-and-moving arm
+//!   goes straight to code 2.
+//! - **The unarmed-mover hard block.** [`classify_blocker`] returns
+//!   `OccupiedEnemy` for every non-friendly blocker; native checks armament
+//!   first — Infantry `GetWeaponRange(this, -1) < 1 && What_Am_I != 0x24` →
+//!   **7**, Unit `TypeClass+0xD28 == 0 && !HasWeaponAbility()` → 7 unless an
+//!   owner or `IsTrain` escape holds. Trigger: an Engineer, Spy or other
+//!   weaponless unit meeting an enemy on its path. Player effect: VERA pushes it
+//!   into the code-5 blocked-step attack override instead of routing around a
+//!   cell it can never clear. Frequency: a few times a match for any player who
+//!   uses Engineers or Spies. Downstream risk: low; it is a predicate on the
+//!   mover, not the cell.
+//! - **The infantry sub-cell tail.** Native's tail is explicit: `code == 0 &&
+//!   (OccupationFlags & 0x1C) == 0x1C` → **7**, and in the allied-occupier arm
+//!   `counter != 3 ? 6 : 2`, where `counter` counts the non-moving allied
+//!   infantry found during the walk. VERA's `check_terrain` returns
+//!   `NeedsBlockerCheck` with no counter and no `0x1C` test. Trigger: a fourth
+//!   infantryman ordered into a full friendly cell. Player effect: VERA yields 6
+//!   (scatter) where retail yields 2 (wait) or 7. Frequency: constant in
+//!   infantry-heavy play. Downstream risk: the counter has to be threaded
+//!   through the walk, which is the one structural change on this list.
+//! - **Code 1 is the wrong producer.** VERA emits `Crushable` (code 1) for a
+//!   successful crush; gamemd returns **0** for a crush on the Unit latch path
+//!   and 2 when a vehicle also occupies the cell. Code 1 comes from an unrelated
+//!   `occupant+0x220 == 2` test in the non-allied branch, whose field identity is
+//!   UNCHECKED. Trigger: any crush. Player effect: **none today** — movement
+//!   groups `Clear | Crushable` at the same call site. Frequency: n/a while the
+//!   cost table is unwired. Downstream risk: the moment `0x0081870C` is wired,
+//!   code 1 costs 1000× where code 0 costs 1×, so every crushable cell becomes a
+//!   near-wall to the search. The crush-latch comment on
+//!   [`classify_occupied_cell_with_layers_and_ignored`] is correct for
+//!   `UnitClass` and **false for Infantry**, which has no crush latch at all.
+//! - **`MovementRestrictedTo=`** (`UnitTypeClass+0xDFC`, Unit only): when set,
+//!   the cell's land type must equal it. LandType 10 (Tunnel) is exempt from the
+//!   equality test but carries its own rule — `g_IsometricTileTypeClass_Array`
+//!   entries with `(+0x2E4, +0x2E8)` of `(5,3)` or `(4,3)` are impassable unless
+//!   `bIsoSubTileIndex == 2`, and `(3,4)` or `(3,5)` unless it is `6`. The
+//!   overlay window `0xED..=0xEE` escapes the return-7 only when the mover's
+//!   level does **not** match the cell's (`0x0073F1FD JNZ`). Trigger: stock
+//!   `rulesmd.ini` sets the key on `[HYD]`, `[SQD]`, `[ASW]` and `[HORNET]`,
+//!   always `=Water`. Player effect: none observed — the two naval types are
+//!   already covered by the water-mover path and the two carrier aircraft use
+//!   `AircraftClass`'s own predicate. Frequency: effectively zero for this
+//!   owner. Downstream risk: none.
+//! - **The tube gates** (`0x0073F211`-`0x0073F2C2`): direction 8 — the sentinel
+//!   edge `AStar_main_loop` emits as its ninth neighbour — requires a tube at the
+//!   cell and then **returns 0 immediately**, skipping the whole rest of the
+//!   predicate; Unit tests `tube+0x28 == 0` while **Infantry tests
+//!   `tube+0x28 == tube+0x24`**. Separately, any direction whose delta from the
+//!   tube's own direction falls in `3..=5` is impassable, tested both at this
+//!   cell and at the back-step cell `(dir-4)&7`. Trigger: pathing into or along a
+//!   tube cell. Player effect: VERA admits tube-adjacent steps native refuses,
+//!   and misses the direction-8 fast admit. Frequency: tube maps only.
+//!   Downstream risk: none; it is a leaf predicate.
+//! - **The AI-only overlay arm** (`0x0073F3EC`-`0x0073F41D`):
+//!   `OverlayTypeClass+0x2AA != 0` and the mover's house not human-controlled
+//!   and `g_GameMode == 0` → 7. Infantry has the same arm without the game-mode
+//!   term. Trigger: an AI mover in campaign. Player effect: none in skirmish.
+//!   Frequency: zero until an AI opponent exists. Downstream risk: none.
+//! - **The end-of-list land-row test.** Native checks
+//!   `LandTypeSpeedBuildabilityRows[Cell->LandType][speed] == 0.0` **after** the
+//!   object walk and only on the ground list; VERA applies it in the terrain
+//!   head. Trigger: a bridge-deck step over a zero-row ground cell — water under
+//!   a bridge. Player effect: native can still return an object code there;
+//!   VERA answers impassable from the head. Frequency: every bridge crossing
+//!   over water. Downstream risk: the deck plane suppresses the test in native,
+//!   which VERA's `is_elevated_bridge_cell` arm already approximates in
+//!   `TerrainCostGrid`, so the observable outcome usually agrees.
 //!
 //! ## Dependency rules
 //! - Part of sim/ — depends on sim/bump_crush, sim/entity_store, sim/locomotor,
@@ -60,6 +207,9 @@ pub enum CellEntryResult {
     /// Code 3: Allied building/scatter-required soft block.
     ScatterRequired { blocker_id: Option<u64> },
     /// Code 4: Friendly wall/overlay soft block.
+    ///
+    /// **No producer.** VERA does not classify wall overlays at cell entry; see
+    /// the module header for the native arm and its residual.
     FriendlyWall,
     /// Code 5: Enemy unit occupying. Attack blocker while waiting.
     OccupiedEnemy { blocker_id: u64 },
@@ -124,8 +274,14 @@ pub struct SearchCellCostDecision {
 
 /// Apply the search-only cost-class gate used after YR's `FootClass` +0x1AC call.
 ///
-/// Original: `FindPathRegular` (YR 1.001) coerces classes below 7 to zero when
-/// its bridge/coercion gate is set, then rejects effective classes at or above 7.
+/// Original: `AStar_main_loop` @ `0x00429A90`, immediately after the `+0x1AC`
+/// call — `if (gate && class < 7) class = 0;` then reject `class >= 7`.
+///
+/// The gate is neither bridge nor coercion: it is `TechnoTypeClass+0xC94`, read
+/// at `0x00429B64` and `0x00429C79`, which `TechnoTypeClass::ReadINI` binds at
+/// `0x00712284` to the key string at `0x008444BC` = **`IsTrain`**. No stock
+/// `rulesmd.ini` entry sets it, so this arm is a correctly-shaped model of a
+/// mechanism nothing in stock YR enables — latent, not live.
 pub fn search_cell_cost_decision(
     raw_cost_class: u8,
     coerce_to_zero_gate: bool,
@@ -188,7 +344,10 @@ pub struct CanEnterCellContext<'a> {
 /// `PathGrid` is a coarse structural filter. Final terrain legality must also
 /// consult the mover's SpeedType against the resolved target LandType/speed row
 /// so a PathGrid-walkable water cell is still illegal for ordinary ground movers.
-// Original: FootClass::EvaluateCellEnterabilityOrCost (YR 1.001 vfunc +0x1AC).
+// Original: the `FootClass` `+0x1AC` slot — `UnitClass::Can_Enter_Cell` @
+// `0x0073F0A0` (`0x007F5E1C`) and `InfantryClass::Can_Enter_Cell` @
+// `0x0051BF90` (`0x007EB204`). There is no `EvaluateCellEnterabilityOrCost`
+// symbol in this program; the earlier name here was invented.
 pub fn evaluate_can_enter_cell(ctx: CanEnterCellContext<'_>) -> CanEnterCellResult {
     match ctx.terrain_layer {
         MovementLayer::Ground => evaluate_ground_cell_entry(ctx),
@@ -603,13 +762,16 @@ pub fn check_terrain_with_layers(
 /// This is Phase 2 — runs outside the mutable entity borrow so it can read
 /// blocker properties from EntityStore.
 ///
-/// Check order (current approximation of original engine priority):
-/// 1. Crush: if all occupants are crushable → Crushable
+/// Check order, mirroring `UnitClass::Can_Enter_Cell` @ `0x0073F0A0`'s object
+/// walk:
+/// 1. Crush: crushability is a latch consulted after the walk, not an early exit
 /// 2. Blocker friendship: enemy → OccupiedEnemy, friendly → moving/stationary
 /// 3. JumpJet override: codes < 7 treated as Clear
 ///
-/// TODO(RE): The recovered candidate predicate also folds in bridge legality and
-/// additional terrain/object state before these occupancy outcomes are chosen.
+/// The terrain and layer half of the native predicate runs before this, in
+/// [`evaluate_can_enter_cell`]. The arms of the native walk this phase does not
+/// produce — the wall/overlay codes and the head-on facing test — are recorded
+/// in the module header rather than approximated here.
 pub fn classify_occupied_cell(
     target: (u16, u16),
     target_layer: MovementLayer,
@@ -729,6 +891,13 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
                 alliances,
                 interner,
             );
+            // VERA-internal generalisation, gamemd equivalent UNCHECKED: a
+            // running code of 7 aborts the walk here. Native has no such
+            // threshold — it has four specific `return 7` sites (allied
+            // building, head-on, unarmed mover, garrison-not-allowed) and
+            // otherwise only ever raises. The outcome agrees wherever VERA's
+            // classifier produces 7 only at those four, which it does today;
+            // a fifth producer would silently inherit the early exit.
             if candidate.yr_code() >= CellEntryResult::Impassable.yr_code() {
                 return apply_overrides(CellEntryResult::Impassable, mover_locomotor);
             }
@@ -739,10 +908,20 @@ pub fn classify_occupied_cell_with_layers_and_ignored(
     }
 
     if !saw_candidate {
-        // No identifiable blocker. With bypass_grid, this means the cell
-        // contained only structures that we're permitted to drive through —
-        // treat as Clear. Without bypass_grid, this is unexpected (Phase 1
-        // would have returned Clear if the cell were truly empty).
+        // **VERA-internal, gamemd has no equivalent.** Exhausting the object
+        // list in either `Can_Enter_Cell` simply falls through to the tail with
+        // the running code unchanged — a walk that found nothing returns 0.
+        // This arm fabricates a hard block instead, on the reasoning that Phase
+        // 1 would have answered Clear for a genuinely empty cell.
+        //
+        // Trigger: the occupancy grid says a cell has occupants but none of them
+        // resolves to a live `EntityStore` entity the walk will look at.
+        // Player effect: the mover is told the cell is impassable and the order
+        // is refused or re-pathed; retail would have entered. Frequency: zero
+        // while occupancy and `EntityStore` agree — it is a consistency
+        // backstop, not a modelled rule. Downstream risk: it converts any future
+        // occupancy desync from a silent inconsistency into a visible refused
+        // order, which is arguably the safer failure but is not parity.
         if ignored_blockers.is_some() {
             return apply_overrides(CellEntryResult::Clear, mover_locomotor);
         }
@@ -887,7 +1066,23 @@ fn classify_blocker(
 
 /// Apply locomotor-specific overrides to a cell entry result.
 ///
-/// JumpJet: all codes except Impassable treated as Clear (deep_113 line 861).
+/// **VERA-internal, gamemd equivalent UNCHECKED.** JumpJet: every code except
+/// Impassable is lowered to Clear. The previous citation here — "deep_113 line
+/// 861" — is not an address or a named research doc and does not meet the
+/// provenance form; it is dropped rather than dressed up.
+///
+/// The nearest native mechanism runs the other way round.
+/// `FootClass::LocomotorPassabilityCheck` @ `0x004D9C10` dispatches the mover's
+/// locomotor vtable `+0x1C` and **seeds** the running code before the occupant
+/// walk, is Unit-only, is gated on a caller flag byte, and can only be raised
+/// afterwards — nothing in either `Can_Enter_Cell` lowers an accumulated code at
+/// the end. What `JumpjetLocomotionClass+0x1C` returns is UNCHECKED. Trigger:
+/// any jumpjet mover meeting an occupied or soft-blocked cell. Player effect:
+/// jumpjets ignore ground traffic, which is the retail feel; whether they ignore
+/// it by this route is unverified. Frequency: every Rocketeer and Floating Disc
+/// order. Downstream risk: replacing this with the native seed changes where the
+/// locomotor hook sits relative to the walk, so it is a restructure rather than
+/// a swap.
 fn apply_overrides(result: CellEntryResult, locomotor: LocomotorKind) -> CellEntryResult {
     if locomotor == LocomotorKind::Jumpjet && !matches!(result, CellEntryResult::Impassable) {
         return CellEntryResult::Clear;
