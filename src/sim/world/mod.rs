@@ -31,8 +31,8 @@ mod lifecycle_tests;
 mod team_script_vm_tests;
 
 pub(crate) use lifecycle::{
-    ConcealOutcome, LifecycleOutput, PlacementEvidence, RevealOutcome, RevealPosition,
-    RevealRequest, UninitContext,
+    ConcealOutcome, LifecycleOutput, NULL_TARGET_CELL_SENTINEL, PlacementEvidence, RevealOutcome,
+    RevealPosition, RevealRequest, UninitContext,
 };
 #[cfg(test)]
 pub(crate) use lifecycle::{LifecycleTestEvent, RevealFailure};

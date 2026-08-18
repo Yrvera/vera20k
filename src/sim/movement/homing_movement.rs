@@ -314,10 +314,26 @@ impl std::hash::Hash for HomingState {
 impl HomingState {
     /// Apply BulletClass's pointer-expired target branch.
     ///
-    /// Normal gameplay has map-editor suppression disabled, and Rust entity
-    /// cells cannot carry the native off-map sentinel. The remaining retail
-    /// split is therefore ground object -> explicit cell, high-flying object
-    /// -> null.
+    /// Normal gameplay has map-editor suppression disabled, so the retail split
+    /// is ground object -> explicit cell, high-flying object -> null, and the
+    /// coordinate sentinel -> null. That sentinel is the cell (0, 0): both
+    /// `DAT_0089DDF0`/`DAT_0089DDF2` words are zero in the image and the
+    /// program's only writer zeroes them again, so a `u16` entity cell does
+    /// reach it and the gate applies here exactly as it does to a stored Bullet.
+    ///
+    /// RESIDUAL (GSI-05.11) — this arm and the stored-Bullet arm derive the
+    /// replacement cell differently. `notify_pointer_expired` feeds a stored
+    /// Bullet the `ObjectClass::GetCoords` truncation, which shifts a
+    /// BuildingClass from its stored NW anchor to the geometric foundation
+    /// centre; this arm is fed the raw `(position.rx, position.ry)`.
+    /// - Trigger: a homing missile losing a multi-cell building target.
+    /// - Player effect: the missile continues to the building's NW cell instead
+    ///   of its centre, so the impact lands up to half a foundation off.
+    /// - Frequency: every homing shot whose building target dies in flight,
+    ///   which needs two attackers on one structure — uncommon but not rare.
+    /// - Downstream risk: aligning it means routing this arm through the same
+    ///   derivation, which moves the impact cell of an existing tested path, so
+    ///   it wants its own slice rather than a drive-by change here.
     pub(crate) fn expire_object_target(
         &mut self,
         expired_id: u64,
@@ -330,7 +346,9 @@ impl HomingState {
 
         self.last_known_rx = target_cell.0;
         self.last_known_ry = target_cell.1;
-        self.target = if target_is_high_flying {
+        self.target = if target_is_high_flying
+            || target_cell == crate::sim::world::NULL_TARGET_CELL_SENTINEL
+        {
             None
         } else {
             Some(HomingTarget::Cell {

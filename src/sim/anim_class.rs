@@ -857,7 +857,8 @@ impl Simulation {
     }
 
     /// Clear the owner link both ways. This is the `AnimClass::Destroy @
-    /// 0x004255B0` order — owner callback (`FUN_00710410`, here the
+    /// 0x004255B0` order — owner callback (the owner's vtable `+0x60`, whose
+    /// Techno/Object implementation is `FUN_00710410`; here the
     /// `damage_fire_anim_ids` slot clear) before the owner pointer itself.
     ///
     /// RESIDUAL (GSI-05.12) — owner-relative attachment is not modelled.
@@ -883,10 +884,14 @@ impl Simulation {
     ///   `anim_render_destination` in `app/presentation/instances/overlays.rs`
     ///   short-circuits any owned anim to `AnimRenderDestination::Existing`,
     ///   which is what keeps `FIRE01`..`FIRE03` (no `Layer=` key in artmd) off
-    ///   the `Top` default. Frequency: every frame of every burning building.
-    ///   Open question, not covered by any check: whether that parent-adjacent
-    ///   path sorts identically to native layer-2 ground sorting, which reaches
-    ///   `ground_order.anim_object_draw` by a different route.
+    ///   the `Top` default. Trigger: drawing any owner-attached anim, i.e. every
+    ///   burning building. Player effect: if the parent-adjacent path and native
+    ///   layer-2 ground sorting disagree, a damage fire draws in front of or
+    ///   behind a ground object it should be behind or in front of. Frequency:
+    ///   every frame of every burning building. Whether they do disagree is the
+    ///   open question — nothing checks the two orders against each other, and
+    ///   native reaches its ordering through `ground_order.anim_object_draw` by
+    ///   a different route.
     /// - Downstream risk: the mechanism blocks every native producer that does
     ///   attach — paradrop `PARACH`, the `BEHIND` marker, non-building muzzle
     ///   anims, EMPulse sparks, Psychic Dominator per-victim anims,
@@ -934,18 +939,24 @@ impl Simulation {
     ///
     /// RESIDUAL (GSI-05.12) — the marker is checked much earlier in the visit
     /// than native checks it. The gate sits 0x89F bytes into `AnimClass::AI`
-    /// (`0x00423AC0`..`0x0042435F`) and the prefix carries no `+0x19B` guard of
-    /// its own, so native runs all of it once on a detached anim:
+    /// (`0x00423AC0`..`0x0042435F`). Two `+0x19B` sites do sit inside that span —
+    /// the trailer guard at `0x004242B0` noted above and the `0x147C` writer at
+    /// `0x00424358` noted below — but none of the items enumerated here carries
+    /// a guard of its own, so native runs every one of them on a detached anim:
     /// `AnimClass::UpdateLoopingSound @ 0x00750D40` (entered on
     /// `Anim+0x198 == 0` and `AnimType+0x2F8 != -1`); `BounceAI` plus the
     /// `AnimType+0x354` `ObjectClass::AI` call; the bouncer-impact block on
     /// instance byte `+0x194`, which itself contains `AnimClass::Constructor`
-    /// calls and an `Apply_area_damage` call; three `+0x199` visibility and
-    /// validity writers; and the `+0x11B` frame-equality cleanup. `visit_anim`
+    /// calls and an `Apply_area_damage` call; the `+0x19D` draw-suppression
+    /// writers at `0x00423B5C`, `0x00423B7F`/`0x00423B88` and
+    /// `0x00423BB8`/`0x00423BC1`; and the `+0x11B` frame-equality cleanup at
+    /// `0x00423C03`..`0x00423C1D`. `visit_anim`
     /// runs only the make-infantry occupation mark before its own gate, so a
     /// detached anim skips every one of them.
     /// - Trigger: a building destroyed while its damage-fire anims are live.
-    /// - Player effect: audible, not visual. `[FIRE01]`/`[FIRE02]` carry
+    /// - Player effect: audible only, because the `+0x19D` writes cannot reach
+    ///   a `DrawIt` — the same call destroys the anim a few instructions later.
+    ///   `[FIRE01]`/`[FIRE02]` carry
     ///   `StartSound=BuildingFireBig` and `[FIRE03]`
     ///   `StartSound=BuildingFireMed`, so `AnimType+0x2F8 != -1` holds for
     ///   exactly this trigger and native's looping-sound maintenance does run
@@ -953,8 +964,10 @@ impl Simulation {
     ///   corpus's own open item — OQ-09 in
     ///   `ANIMCLASS_DETACHEDOWNER_MARKER_0X19B_CONSUMERS_GHIDRA_REPORT.md`,
     ///   deferred — so this is UNCHECKED, not clean. The spawn/damage half of
-    ///   the prefix is unreachable today: the bouncer-impact block needs
-    ///   `Bouncer=` anims, which have no producer here.
+    ///   the prefix is unreachable today: the bouncer-impact block needs a
+    ///   bounce simulation, and there is none — `Bouncer=` is parsed into
+    ///   `art_data.rs`'s `bouncer` flag but has no sim consumer, and damage-fire
+    ///   anims are not bouncers in any case.
     /// - Frequency: every destroyed building that had reached a damage-fire
     ///   threshold, so several times in an ordinary skirmish.
     /// - Downstream risk: grows with every anim producer added; the bouncer
@@ -970,7 +983,8 @@ impl Simulation {
     /// second writer of the marker — native re-reads coords, resolves the cell
     /// through `MapClass::Get_CellClass_At_Coord @ 0x00565730`, tests it via
     /// `0x0047C520`, and sets `+0x19B = 1` at `0x00424358`. A third writer, the
-    /// `AnimType+0x360` overlay-bound path at `0x00424429`, sits after the gate
+    /// `AnimType+0x360` overlay-bound path entered at `0x004243C2` and writing at
+    /// `0x00424427`, sits after the gate
     /// and is out of scope here. Neither has an analogue in this store.
     ///
     /// RESIDUAL (GSI-05.12, structural) — `runtime.inactive` doubles as this

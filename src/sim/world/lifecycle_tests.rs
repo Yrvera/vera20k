@@ -4197,6 +4197,13 @@ fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
 /// The sentinel arm of `BulletClass::PointerExpired`: `0x0046856E`/`0x0046857C`
 /// compare the truncated cell against `DAT_0089DDF0`/`DAT_0089DDF2`, both of
 /// which are zero, and a match writes the zeroed `EBX` into the target slot.
+///
+/// The scenario is production-unreachable on both sides, and deliberately so:
+/// native's diamond guard never allocates index 0, and a production
+/// `ResolvedTerrainGrid` carries the same allocation mask. The rectangular
+/// `from_cells` grid this test builds is what lets a unit stand there at all.
+/// The arm is modelled because it is the native gate, not because play reaches
+/// it.
 #[test]
 fn gsi_05_04_sentinel_origin_cell_target_becomes_explicit_null() {
     let mut sim = Simulation::new();
@@ -4242,8 +4249,9 @@ fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
     // `ObjectClass::IsHighFlying @ 0x005F6B90` is the only thing keeping this
     // target from becoming the aircraft's Cell: drop that gate and the three
     // *target* assertions below flip to `Cell { rx: 13, ry: 15 }`. The two
-    // `source_id` assertions do not move — native's `+0xB0` clear at
-    // `0x00468503` is unconditional.
+    // `source_id` assertions do not move — native's firer clear at
+    // `0x00468503` is gated on the firer matching the expiring pointer
+    // (`0x004684FF`), never on the high-flying predicate.
     install_common_raw_terrain(&mut sim, 32, 32, 0, None);
 
     let target_id = sim.allocate_stable_id();
