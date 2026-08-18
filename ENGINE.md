@@ -64,8 +64,9 @@ Order: `docs/research/` → live Ghidra decompilation → repo `ini/` → retail
 any conflict: **binary → Ghidra → docs**.
 
 Skill instructions write `<main-checkout>` for the primary repository root. Gitignored
-corpora (`docs/`, `ini/`, `tools/research_index/`) exist only there — never in worktrees;
-from a worktree, resolve the main checkout with `git worktree list`.
+corpora (`docs/`, `ini/`, and the built index `tools/research_index/.cache/`) exist only
+there — never in worktrees; from a worktree, resolve the main checkout with
+`git worktree list`. The research-index *code* is tracked and present in every worktree.
 
 Grep the INI files before implementing; never hardcode animation names, frame counts, timing, or
 constants. `rules(md).ini` = gameplay data, `art(md).ini` = all visual/animation data including
@@ -244,7 +245,7 @@ bulk-annotate, or hand-edit generated files.
   Every PR targets `main`. Delete merged feature branches when safe. Do not create a long-lived
   `dev` branch; use a temporary integration branch only when the user explicitly requests one.
 - Gitignored, local-only — never write commit steps for these: `docs/` (except `_config.yml`,
-  `index.md`, and `system-map/`), `ini/`, `tools/research_index/`, `.mcp.json`, `.claude/` and
+  `index.md`, and `system-map/`), `ini/`, `tools/research_index/.cache/`, `.mcp.json`, `.claude/` and
   `.agents/` (except their `skills/` trees, which are tracked — `ghidra-up` alone stays local),
   `todo/`, and root `*.md` other than `README.md`, `CLAUDE.md`, `ENGINE.md`, and `AGENTS.md`
   (`LOCAL.md` stays local).
