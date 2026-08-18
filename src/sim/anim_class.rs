@@ -856,6 +856,44 @@ impl Simulation {
         }
     }
 
+    /// Clear the owner link both ways. This is the `AnimClass::Destroy @
+    /// 0x004255B0` order — owner callback (`FUN_00710410`, here the
+    /// `damage_fire_anim_ids` slot clear) before the owner pointer itself.
+    ///
+    /// RESIDUAL (GSI-05.12) — owner-relative attachment is not modelled.
+    /// `AnimClass::SetOwnerObject @ 0x00424B50` rewrites the anim coordinate to
+    /// `anim_abs - owner_abs` on attach and `AnimClass::GetCoords @ 0x00422BE0`
+    /// then returns `stored_offset + owner.GetCoords()`; `GetLayer @
+    /// 0x00424CB0` forces layer 2 for any attached anim; and native scans the
+    /// global anim array so the owner's "has attached anim" byte
+    /// (`Object+0x84`) clears only after the *last* attached anim leaves. The
+    /// three pieces have different exposure here:
+    /// - Moving owner. Trigger: an attached anim whose owner changes position.
+    ///   Player effect would be a stale draw position. Frequency: zero
+    ///   occurrences in this build — the only production attach site is the
+    ///   building damage-fire slot below and buildings do not move; every other
+    ///   anim producer emits an unattached `WorldEffect` row.
+    /// - Multi-attached owner. Trigger: a building past a damage-fire
+    ///   threshold, which fills two or more slots. Frequency: every such
+    ///   building, so continuously in ordinary play. Player effect: none —
+    ///   `detach_anim_from_owner` below already clears only the slot equal to
+    ///   the departing anim, and no consumer of `Object+0x84` exists on the
+    ///   building side, so the shared-owner scan has nothing to guard yet.
+    /// - Layer override. Approximated rather than absent:
+    ///   `anim_render_destination` in `app/presentation/instances/overlays.rs`
+    ///   short-circuits any owned anim to `AnimRenderDestination::Existing`,
+    ///   which is what keeps `FIRE01`..`FIRE03` (no `Layer=` key in artmd) off
+    ///   the `Top` default. Frequency: every frame of every burning building.
+    ///   Open question, not covered by any check: whether that parent-adjacent
+    ///   path sorts identically to native layer-2 ground sorting, which reaches
+    ///   `ground_order.anim_object_draw` by a different route.
+    /// - Downstream risk: the mechanism blocks every native producer that does
+    ///   attach — paradrop `PARACH`, the `BEHIND` marker, non-building muzzle
+    ///   anims, EMPulse sparks, Psychic Dominator per-victim anims,
+    ///   CaptureManager, transport/enter `+0x1D4`, deploy/undeploy `+0x130`,
+    ///   terrain catch-fire, and building damage side-effect debris. Temporal
+    ///   `SQDG` needs more than `SetOwnerObject`: it also registers in
+    ///   `g_AnimClass_RemoveListeners`, which has no analogue here.
     pub(crate) fn detach_anim_from_owner(&mut self, id: AnimId) -> Option<u64> {
         let owner_id = self.anim(id).and_then(|anim| anim.owner_entity)?;
         if let Some(owner) = self.substrate.entities.get_mut(owner_id) {
@@ -871,6 +909,77 @@ impl Simulation {
         Some(owner_id)
     }
 
+    /// Owner expiry, dispatched from `ObjectClass::UnInit -> Detach_From_All_Lists`
+    /// before the owner's conceal and alive clear. `AnimClass::Detach @
+    /// 0x00425150` removes the anim from its display layer, calls the owner
+    /// callback, clears the owner pointer, sets the detached marker
+    /// `AnimClass+0x19B = 1`, and calls anim vtable `+0x124(0)`.
+    ///
+    /// `Detach` itself neither destroys nor deactivates — that is deferred into
+    /// the marker. `AnimClass::AI @ 0x00423AC0` reloads `+0x19B` at `0x0042435F`
+    /// and `JNZ 0x00424B38`, whose two instructions call anim vtable `+0xF8`
+    /// (`AnimClass::Destroy`) and return. `runtime.inactive` is that marker: set
+    /// here, checked at the head of `visit_anim`, which calls `destroy_anim` and
+    /// returns. The `StopSound` frame and the pending-delete frame therefore
+    /// land where native puts them, because `destroy_anim` owns both; draw
+    /// suppression is owned separately by the `DisplayRemove` push below plus
+    /// the `runtime.inactive` skip in
+    /// `app/presentation/instances/overlays.rs`, mirroring native hiding
+    /// through `DisplayClass::RemoveFromLayer` rather than through a `DrawIt`
+    /// branch on `+0x19B`. The marker is serialized, matching native
+    /// `SaveExtras`; it suppresses the trailer spawn, because `visit_anim`
+    /// gates ahead of the trailer block exactly as native guards its trailer
+    /// block on `+0x19B == 0` at `0x004242B0`; and the `Next=` transition
+    /// clears it, matching native's `+0x19B = 0` write there.
+    ///
+    /// RESIDUAL (GSI-05.12) — the marker is checked much earlier in the visit
+    /// than native checks it. The gate sits 0x89F bytes into `AnimClass::AI`
+    /// (`0x00423AC0`..`0x0042435F`) and the prefix carries no `+0x19B` guard of
+    /// its own, so native runs all of it once on a detached anim:
+    /// `AnimClass::UpdateLoopingSound @ 0x00750D40` (entered on
+    /// `Anim+0x198 == 0` and `AnimType+0x2F8 != -1`); `BounceAI` plus the
+    /// `AnimType+0x354` `ObjectClass::AI` call; the bouncer-impact block on
+    /// instance byte `+0x194`, which itself contains `AnimClass::Constructor`
+    /// calls and an `Apply_area_damage` call; three `+0x199` visibility and
+    /// validity writers; and the `+0x11B` frame-equality cleanup. `visit_anim`
+    /// runs only the make-infantry occupation mark before its own gate, so a
+    /// detached anim skips every one of them.
+    /// - Trigger: a building destroyed while its damage-fire anims are live.
+    /// - Player effect: audible, not visual. `[FIRE01]`/`[FIRE02]` carry
+    ///   `StartSound=BuildingFireBig` and `[FIRE03]`
+    ///   `StartSound=BuildingFireMed`, so `AnimType+0x2F8 != -1` holds for
+    ///   exactly this trigger and native's looping-sound maintenance does run
+    ///   one more time before the destroy. What that last pass emits is the
+    ///   corpus's own open item — OQ-09 in
+    ///   `ANIMCLASS_DETACHEDOWNER_MARKER_0X19B_CONSUMERS_GHIDRA_REPORT.md`,
+    ///   deferred — so this is UNCHECKED, not clean. The spawn/damage half of
+    ///   the prefix is unreachable today: the bouncer-impact block needs
+    ///   `Bouncer=` anims, which have no producer here.
+    /// - Frequency: every destroyed building that had reached a damage-fire
+    ///   threshold, so several times in an ordinary skirmish.
+    /// - Downstream risk: grows with every anim producer added; the bouncer
+    ///   half becomes live the moment `Bouncer=` debris exists. The named
+    ///   acceptance check is
+    ///   `inactive_anim_runs_pre_destroy_ai_prefix_before_destroy`, and the
+    ///   corpus's negative fact applies verbatim: do not place the inactive
+    ///   check at the top of AI unless every pre-check side effect is proven
+    ///   irrelevant.
+    ///
+    /// Separately unmodelled, and not a consequence of the ordering above: the
+    /// `Rules+0x147C` occupied-cell path at `0x00424322`..`0x0042435E` is a
+    /// second writer of the marker — native re-reads coords, resolves the cell
+    /// through `MapClass::Get_CellClass_At_Coord @ 0x00565730`, tests it via
+    /// `0x0047C520`, and sets `+0x19B = 1` at `0x00424358`. A third writer, the
+    /// `AnimType+0x360` overlay-bound path at `0x00424429`, sits after the gate
+    /// and is out of scope here. Neither has an analogue in this store.
+    ///
+    /// RESIDUAL (GSI-05.12, structural) — `runtime.inactive` doubles as this
+    /// store's "ready for pending delete" predicate
+    /// (`world/lifecycle.rs pending_object_is_ready`), so the marker and object
+    /// liveness are one field where native keeps display-layer membership
+    /// separate from both. No behavioral divergence is known from this; it is
+    /// recorded because a future attached-anim producer that must survive its
+    /// owner would have to split them first.
     pub(crate) fn expire_anim_owner_reference(&mut self, id: AnimId, expired_id: u64) -> bool {
         if self.anim(id).and_then(|anim| anim.owner_entity) != Some(expired_id) {
             return false;
