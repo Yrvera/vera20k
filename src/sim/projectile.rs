@@ -246,8 +246,11 @@ pub(crate) fn cell_target_coord(
                     0
                 })
         })
-        // Headless store tests have no map substrate; production CellClass
-        // targets are admitted only from an allocated resolved-terrain slot.
+        // A Cell target may legitimately name a cell with no allocated
+        // CellClass: `MapClass::Get_CellClass @ 0x005657A0` answers those with
+        // the shared dummy at `0x00ABDC50`, whose 64 bytes are zero, so native
+        // reads level 0 and slope 0 there and lands on floor height 0 as well.
+        // Headless store tests reach the same arm by having no map substrate.
         .unwrap_or(0);
     ProjectileCoord::new(x, y, z)
 }
