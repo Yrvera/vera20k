@@ -142,8 +142,9 @@ enum ImmediateProjectileReason {
 /// vertical launch, scatter, proximity detection and cliff collision have no
 /// implementation to fall back on. `DetonationAltitude=` (4) is parsed with no
 /// reader, `Acceleration=` (6) is carried but unused by the advance, and
-/// `AirburstWeapon=` (1) has no consumer — the `airburst` bool only suppresses
-/// the cluster walk. Two nearby keys are NOT gaps: `Floater=` (2) is read on
+/// `AirburstWeapon=` (1) has no consumer. The `airburst` bool it sits beside is
+/// carried into `ProjectileGuidance` and hashed, but its only behavioural read
+/// suppresses the cluster walk — it spawns no child, which is the gap. Two nearby keys are NOT gaps: `Floater=` (2) is read on
 /// both ballistic launch paths to halve gravity and is carried and hashed by
 /// the homing state, and `ShrapnelWeapon=` (5) is fully wired through
 /// `emit_projectile_shrapnel`, scenario-RNG cell selection included.

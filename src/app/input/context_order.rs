@@ -266,16 +266,20 @@ const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 /// RESIDUAL (GSI-07.34) — one half of the type test is missing here. The key
 /// IS parsed (`rules/object_type.rs` into `prevent_attack_move`); what is
 /// absent is a reader — `entity_can_attack_move` below never consults it.
-/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Of
-/// the eleven, six are refused anyway by the aircraft rule (`SHAD`, `ORCA`,
-/// `BEAG`, `HIND`, `SCHP`, `SCHD`); the five that slip through are the three
-/// Engineers, the Spy, and Boris (`CCOMAND`, an infantry type), each carrying a
-/// real `Primary=` and so passing the weapon half.
-/// - Trigger: attack-moving a selection containing an Engineer, a Spy or Boris.
-/// - Player effect: they take the order and walk into the fight, where retail
-///   leaves the chord inert for them.
-/// - Frequency: every mixed attack-move that sweeps up an Engineer or Boris —
-///   common, since players band-select whole groups.
+/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Only
+/// two of the eleven are refused anyway by the aircraft rule above — `ORCA` and
+/// `BEAG`, the sole `[AircraftTypes]` members of the set. The other nine slip
+/// through, each carrying a real `Primary=` and so passing the weapon half: the
+/// three Engineers and the Spy (`DefuseKit`/`MakeupKit`), Boris (`CCOMAND`, an
+/// infantry type), and the four `[VehicleTypes]` helicopters `SHAD`, `HIND`,
+/// `SCHP` and `SCHD` (`BlackHawkCannon`), which `ObjectCategory` derives from
+/// list membership and so classifies as ordinary units, not aircraft.
+/// - Trigger: attack-moving a selection containing any of those nine.
+/// - Player effect: they take the order and move into the fight, where retail
+///   leaves the chord inert for them — an Engineer walks into fire, and a
+///   Nighthawk full of infantry flies at the enemy instead of holding.
+/// - Frequency: every mixed attack-move that sweeps one up — common, since
+///   players band-select whole groups.
 /// - Downstream risk: none beyond this predicate; the field is already on the
 ///   type, so the fix is one read. The gamemd rule itself is verified — this is
 ///   a missing consumer, not missing evidence.
