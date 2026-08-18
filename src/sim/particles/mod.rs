@@ -32,6 +32,7 @@ pub mod fire;
 pub mod gas;
 pub mod smoke;
 pub mod spark;
+pub mod spark_spawn;
 pub mod spark_world;
 pub mod spawn;
 pub mod system_ai;
@@ -54,13 +55,28 @@ pub struct ParticleSystem {
     pub lifetime: i32,
     pub spark_spawn_frames: i32,
     pub facing: u8,
-    pub marked_for_deletion: bool,
     pub directionless: bool,
     pub attached_entity: Option<u64>,
     pub owner_entity: Option<u64>,
     #[serde(with = "ivec3_serde")]
     pub target_coords: IVec3,
     pub owner_house: Option<InternedId>,
+    /// `ParticleSystemClass+0xF8` — one byte with two jobs, and this engine
+    /// used to model it as two fields that drifted apart.
+    ///
+    /// gamemd-derived: `ParticleSystemClass::AI @ 0x0062FD60` decrements the
+    /// lifetime at `+0xEC` and calls vtable `+0xF8` when it reaches exactly
+    /// zero; that entry (`0x006301E0`) does nothing but `*(byte*)(this+0xF8) =
+    /// 1`. `AI_Smoke @ 0x0062ED40` sets the same byte at `0x0062F218` when its
+    /// spawn accumulator passes `SpawnCutoff`, and reads it at `0x0062F047` to
+    /// skip spawning; `AI_Spark @ 0x0062E840` sets it at `0x0062EC73` when the
+    /// spark countdown runs out. Removal is then
+    /// `alive && this[+0xF8] && particle_count == 0`.
+    ///
+    /// So "finished spawning" and "marked for removal" are not two states in
+    /// native — they are one. Splitting them here let a system with
+    /// `Lifetime=-1` (which every stock Spark system has, since none authors
+    /// `Lifetime=`) finish spawning, empty out, and then never retire.
     pub done_spawning: bool,
 }
 
@@ -238,7 +254,6 @@ mod tests {
             lifetime: -1,
             spark_spawn_frames: 0,
             facing: 0x1D,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: None,
             owner_entity: None,

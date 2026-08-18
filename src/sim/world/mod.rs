@@ -661,8 +661,7 @@ pub struct Simulation {
     /// BulletClass AI results produced in mixed Logic order and consumed at
     /// the existing combat receiver seam later in this master frame.
     #[serde(skip)]
-    pub(crate) pending_projectile_detonations:
-        Vec<crate::sim::projectile::ProjectileDetonation>,
+    pub(crate) pending_projectile_detonations: Vec<crate::sim::projectile::ProjectileDetonation>,
     /// WaveClass AI damage requests produced in mixed Logic order and consumed
     /// at the established wave-damage receiver seam later in this frame.
     #[serde(skip)]
@@ -786,7 +785,8 @@ pub struct Simulation {
     pub(crate) super_weapons:
         BTreeMap<InternedId, BTreeMap<InternedId, crate::sim::superweapon::SuperWeaponInstance>>,
     /// Active lightning storm state (global — only one at a time).
-    pub(crate) lightning_storm: Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
+    pub(crate) lightning_storm:
+        Option<crate::sim::superweapon::lightning_storm::LightningStormState>,
     /// Whether superweapon grants have been initialized from map-placed buildings.
     pub(crate) super_weapons_initialized: bool,
     /// Per-cell terrain speed modifier config (slope climb/descend).
@@ -1059,24 +1059,22 @@ impl crate::sim::combat::CombatInlineHooks for SimulationCombatInlineHooks<'_> {
         }
         if let Some(events) = borrowed_sound_events {
             std::mem::swap(&mut self.sim.sound_events, events);
-            self.sim
-                .apply_fatal_lifecycle_stage(
-                    rules,
-                    stage,
-                    stable_id,
-                    category,
-                    borrowed_terrain,
-                );
+            self.sim.apply_fatal_lifecycle_stage(
+                rules,
+                stage,
+                stable_id,
+                category,
+                borrowed_terrain,
+            );
             std::mem::swap(&mut self.sim.sound_events, events);
         } else {
-            self.sim
-                .apply_fatal_lifecycle_stage(
-                    rules,
-                    stage,
-                    stable_id,
-                    category,
-                    borrowed_terrain,
-                );
+            self.sim.apply_fatal_lifecycle_stage(
+                rules,
+                stage,
+                stable_id,
+                category,
+                borrowed_terrain,
+            );
         }
         if let Some(state) = borrowed_terrain_area_state.as_deref_mut() {
             state.swap_authority(
@@ -1918,7 +1916,6 @@ impl Simulation {
         )
     }
 
-
     /// Resolve an entity's type to its `ObjectType` in one precomputed hop
     /// (two array indexes, no string allocation). Falls back to the name path
     /// when the table is unbuilt (test setups that skip `resolve_type_handles`),
@@ -2307,9 +2304,11 @@ impl Simulation {
             .filter(|speed| *speed <= crate::sim::game_options::IN_GAME_OPTIONS_MAX_SPEED);
         let execute_tick = self.session.tick.saturating_add(1);
         for owner in self.due_command_house_order(&self.pending_commands, execute_tick) {
-            for command in self.pending_commands.iter().filter(|command| {
-                command.execute_tick <= execute_tick && command.owner == owner
-            }) {
+            for command in self
+                .pending_commands
+                .iter()
+                .filter(|command| command.execute_tick <= execute_tick && command.owner == owner)
+            {
                 if !self.houses.contains_key(&owner) {
                     continue;
                 }
@@ -2645,8 +2644,7 @@ impl Simulation {
         for entity in self.substrate.entities.values_mut() {
             if enabled {
                 if entity.debug_log.is_none() {
-                    entity.debug_log =
-                        Some(crate::sim::debug_event_log::DebugEventLog::new());
+                    entity.debug_log = Some(crate::sim::debug_event_log::DebugEventLog::new());
                 }
             } else {
                 entity.debug_log = None;
@@ -2729,11 +2727,7 @@ impl Simulation {
         stable_id
     }
 
-    pub(crate) fn admit_wave(
-        &mut self,
-        stable_id: u64,
-        wave: crate::sim::wave::Wave,
-    ) -> u64 {
+    pub(crate) fn admit_wave(&mut self, stable_id: u64, wave: crate::sim::wave::Wave) -> u64 {
         self.waves.spawn(stable_id, wave);
         let registered = self.register_wave(stable_id);
         debug_assert!(registered);
@@ -2777,10 +2771,7 @@ impl Simulation {
                         .projectiles
                         .get(id)
                         .is_some_and(|projectile| projectile.in_logic_vector)
-                    || self
-                        .waves
-                        .get(id)
-                        .is_some_and(|wave| wave.in_logic_vector),
+                    || self.waves.get(id).is_some_and(|wave| wave.in_logic_vector),
                 "logic order id {id} is missing or not membership-flagged",
             );
         }
@@ -3541,10 +3532,13 @@ impl Simulation {
             let (dirty_cells, synchronous_passability_changed) =
                 grid.take_dirty_cells_with_passability_signal();
             let synchronous_navigation_cells = grid.take_synchronous_navigation_cells();
-            navigation_rebuild_requested |= synchronous_passability_changed
-                || !synchronous_navigation_cells.is_empty();
+            navigation_rebuild_requested |=
+                synchronous_passability_changed || !synchronous_navigation_cells.is_empty();
 
-            let terrain = self.resolved_terrain.as_mut().expect("overlay-ready terrain");
+            let terrain = self
+                .resolved_terrain
+                .as_mut()
+                .expect("overlay-ready terrain");
             let registry = overlay_registry.expect("overlay-ready registry");
             for &(rx, ry) in &dirty_cells {
                 navigation_rebuild_requested |=
@@ -4165,8 +4159,7 @@ impl Simulation {
             height_map,
             overlay_registry,
         );
-        let placed_building_owner =
-            self.successful_non_wall_placement_owner(cmd, applied, rules);
+        let placed_building_owner = self.successful_non_wall_placement_owner(cmd, applied, rules);
         let spawned_entity = placed_building_owner.is_some()
             || applied
                 && matches!(
@@ -5460,10 +5453,8 @@ impl Simulation {
             let logic_order = self.live_object_order_snapshot();
             // BulletClass/WaveClass AI already ran at each object's mixed
             // LogicClass slot. Keep their established receiver boundary here.
-            let projectile_detonations =
-                std::mem::take(&mut self.pending_projectile_detonations);
-            let sonic_damage_requests =
-                std::mem::take(&mut self.pending_wave_damage_requests);
+            let projectile_detonations = std::mem::take(&mut self.pending_projectile_detonations);
+            let sonic_damage_requests = std::mem::take(&mut self.pending_wave_damage_requests);
             // Rules-less fixture dispatch is the only producer of this
             // compatibility buffer. If a caller supplies Rules later in the
             // same frame, retain the live one-receiver-at-a-time contract.
@@ -5701,6 +5692,77 @@ impl Simulation {
                 let stable_id = self.allocate_stable_id();
                 self.admit_wave(stable_id, wave);
             }
+            // gamemd-derived: `EBolt::Init @ 0x004C2A60` creates one spark
+            // system per electric bolt at `0x004C2B30`, passing
+            // `Rules+0x1020` (`[CombatDamage] DefaultSparkSystem`) and the
+            // bolt's TARGET endpoint — `EBolt+0x0C..0x14`, which
+            // `TechnoClass::CreateElectricBolt @ 0x006FD516` fills from the
+            // target object's coordinate virtual, and which `EBolt::Init` then
+            // hands the constructor by address. Owner house, attachment object
+            // and target object are all NULL; the fallback aim coordinate is
+            // `0x008A0E50`, a static all-zero triple, and `AI_Spark` never
+            // reads it. The handle is discarded: the system lives on the global
+            // particle list and expires on its own `Lifetime`.
+            //
+            // The path consumes no `ScenarioClass::Random` draws. `EBolt::Init`
+            // does take one `RandomRanged(0, 0x100)` at `0x004C2AA3`, but on
+            // the cosmetic `RandomClass` at `0x00886B88` — the one
+            // `LaserDrawClass::Draw` and `ThemeClass::Next_Song` also use — not
+            // the lockstep scenario stream, so it is not modelled here.
+            //
+            // VERA-internal ordering, gamemd equivalent UNCHECKED: native
+            // constructs inside `Fire_At` and the constructor appends to the
+            // logic array at `0x0062DD7A`, so the system is visited during the
+            // SAME frame's object walk. This engine creates it in the
+            // post-combat walk that already admits Sonic and Magnetron waves
+            // from the same event list — after the logic walk — so its first
+            // burst lands one frame later than native's. That delay is
+            // self-consistent across peers and costs no draws, but it is a
+            // recorded divergence, not an equivalence. Bolt rendering itself is
+            // not implemented; the sparks are the part of the discharge that is
+            // a simulation object.
+            if let Some(spark_system_name) = rules.combat_damage.default_spark_system.as_deref() {
+                for event in &combat_result.fire_events {
+                    let Some(weapon) = rules.weapon(self.interner.resolve(event.weapon_id)) else {
+                        continue;
+                    };
+                    if !weapon.is_electric_bolt {
+                        continue;
+                    }
+                    let Some(system_type) = rules.ps_type_id_by_name(spark_system_name) else {
+                        continue;
+                    };
+                    let coords = match event.target {
+                        crate::sim::combat::TargetKind::Entity(id) => {
+                            let Some(entity) = self.substrate.entities.get(id) else {
+                                continue;
+                            };
+                            glam::IVec3::new(
+                                i32::from(entity.position.rx) * 256
+                                    + entity.position.sub_x.to_num::<i32>(),
+                                i32::from(entity.position.ry) * 256
+                                    + entity.position.sub_y.to_num::<i32>(),
+                                i32::from(entity.position.z)
+                                    * crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS,
+                            )
+                        }
+                        crate::sim::combat::TargetKind::Cell(rx, ry) => glam::IVec3::new(
+                            i32::from(rx) * 256 + 128,
+                            i32::from(ry) * 256 + 128,
+                            0,
+                        ),
+                    };
+                    self.spawn_particle_system(
+                        system_type,
+                        coords,
+                        None,
+                        None,
+                        glam::IVec3::ZERO,
+                        None,
+                        rules,
+                    );
+                }
+            }
             // Collect fire events for render-side muzzle flash / projectile origin.
             self.invulnerability_impact_effects
                 .extend(combat_result.invulnerability_impact_effects.iter().copied());
@@ -5886,8 +5948,8 @@ impl Simulation {
         self.debug_assert_logic_membership_consistent();
         #[cfg(debug_assertions)]
         self.debug_assert_lifecycle_consistent();
-        let terminal_score_finalized = self.natural_outcome_exit_ready()
-            && self.finalize_terminal_score_snapshot();
+        let terminal_score_finalized =
+            self.natural_outcome_exit_ready() && self.finalize_terminal_score_snapshot();
         let state_hash = self.state_hash();
         TickResult {
             tick: self.session.tick,

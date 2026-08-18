@@ -28,44 +28,63 @@ impl Simulation {
     /// Spawn a new particle system. Returns the new system's stable id, or
     /// `None` if the type is `Spark` or `Railgun` (Tier 3 — not implemented).
     ///
-    /// RESIDUAL (GSI-05.13) — Spark systems are absent on both ends, and the
-    /// contract for both is verified. The system AI is
-    /// `ParticleSystemClass::AI_Spark @ 0x0062E840`: guard `+0xF0 > 0`; burst
-    /// gate `+0xF0 == 1` or `RandomRanged(0, 0x7ffffffe) * 2^-31 <=` the
-    /// *double* at `pstype+0x2F8`; burst size `|Next()| % (cap/2) + cap/2`;
-    /// three shared draws taken unconditionally where the first divides by
-    /// `YVelocity` and lands on Y and the second divides by `XVelocity` and
-    /// lands on X; per particle one lifetime draw and a conditional color draw
-    /// inside `ParticleClass::Constructor @ 0x0062B5E0`, then three velocity
-    /// draws with the Z one absolute; magnitude `Sqrt_Approx((x*x + y*y) +
-    /// z*z)` read off the x87 stack at `0x0062EA85`, offset added, renormalise,
-    /// rescale by the original magnitude; countdown then deletion; and a facing
-    /// walk that steps -3 clamping at `0x11` below `0x12`, +3 clamping at
-    /// `0x29` above `0x28`, or holds.
+    /// gamemd-derived: `ParticleSystemClass::Constructor @ 0x0062DC50`. Spark
+    /// systems are admitted and simulated — `particles/spark_spawn.rs` owns
+    /// `ParticleSystemClass::AI_Spark @ 0x0062E840`'s burst half and
+    /// `particles/spark.rs` the per-particle kernel. Railgun is still refused.
     ///
-    /// Its producer is a different function again: `TechnoClass::AI_Update @
-    /// 0x006F9E50` walks the type's `DamageParticleSystems=` list *forward* at
-    /// `0x006FAD5D` admitting only `BehavesLike == Spark` into its own slot
-    /// `+0x308`, gated by a health-band chance from `RulesClass+0x558` below
-    /// ConditionRed or `+0x560` above, compared strictly less-than at
-    /// `0x006FAE24`. That is why the Smoke-only filter in
-    /// `maintain_damage_smoke_after_receive` below is correct and must stay:
-    /// `TechnoClass::ReceiveDamage @ 0x00701900` really does admit only
-    /// `BehavesLike == Smoke` into `+0x310`.
-    /// - Trigger: any unit damaged past ConditionYellow whose
-    ///   `DamageParticleSystems=` names a Spark system — 126 of the 141 stock
-    ///   entries do, and 26 name nothing else.
-    /// - Player effect: damaged vehicles smoke but never spark.
-    /// - Frequency: continuous — every unit that survives a hit.
-    /// - Downstream risk: the producer needs a second attached-system slot
-    ///   beside `damage_smoke_system_id` and a per-tick chance draw, so it moves
-    ///   the shared RNG stream on a high-frequency seam and the pinned replay
-    ///   hash with it. `SpawnSparkPercentage` must also be widened: it is a
-    ///   `double` natively and `SimFixed` here, and for `[LGSparkSys]`'s `.2`
-    ///   the 3.05e-6 gap flips the gate often enough to diverge the stream.
-    ///   `spark.rs` and `spark_world.rs` already hold the verified per-particle
-    ///   kernel and its collision inputs, so the missing work is the two
-    ///   loops, not the math.
+    /// The electric-bolt producer is wired: `sim/world/mod.rs`'s post-combat
+    /// walk creates one `[CombatDamage] DefaultSparkSystem` per
+    /// `IsElectricBolt=yes` discharge at the bolt's target endpoint, matching
+    /// `EBolt::Init @ 0x004C2A60`'s construction at `0x004C2B30` — no owner
+    /// house, no attachment, handle discarded, no RNG consumed. That is the
+    /// most frequent of native's five Spark producers by a wide margin: every
+    /// Tesla Coil, Tesla Trooper, Tesla Tank, `AssaultBolt`, `EiffelBolt`,
+    /// `CRElectricBolt` and `TeslaFragment`/`ElectricFragment` shrapnel shot.
+    ///
+    /// RESIDUAL (GSI-05.13) — the other four native producers are not wired.
+    /// Their reachability is settled rather than assumed:
+    /// - `TechnoClass::Fire_At @ 0x006FF1EC`, on `WeaponType+0x12A`
+    ///   (`UseSparkParticles`), spawning `WeaponType+0x11C`
+    ///   (`AttachedParticleSystem`) into `Techno+0x308`, one at a time.
+    ///   REACHABLE: stock authors it once, on `[RepairBullet]`
+    ///   (`AttachedParticleSystem=WeldingSys`), carried by the IFV's
+    ///   `Weapon2`/`EliteWeapon2` — the repair IFV's welding sparks.
+    /// - `CaptureManagerClass::Update @ 0x00471C15`, mind-control overload past
+    ///   the first `OverloadCount` tier. REACHABLE in any Yuri match; five
+    ///   iterations, each taking two `RandomRanged(-200, 200)` draws first.
+    /// - `WarpAttachClass::UpdateAttack @ 0x0062A103`, Chrono Legionnaire
+    ///   erasure. REACHABLE.
+    /// - `UnitClass::AI @ 0x007361A4`, mid-deploy, gated on `Techno+0x1C8` and
+    ///   a coordinate/frame modulo. REACHABLE but rare — a few frames per MCV
+    ///   or Slave Miner deploy, taking two `RandomRanged(-100, 100)` draws.
+    ///
+    /// - Trigger: repairing with an IFV, overloading a mind-controller, erasing
+    ///   with a Chrono Legionnaire, or deploying an MCV.
+    /// - Player effect: those four throw no sparks. The IFV repair arm is the
+    ///   one a player watches — a repair beam with no welding shower.
+    /// - Frequency: the IFV arm follows every repair tick and is the only one
+    ///   of the four that is common; the deploy arm is a handful of frames a
+    ///   match.
+    /// - Downstream risk: the `Fire_At` arm needs the `Techno+0x308` slot and
+    ///   its clearing writer, which is UNCHECKED — the offset is shared across
+    ///   several classes and the search for the writer was not settled. The
+    ///   overload and deploy arms take RNG draws *before* their spawn, so both
+    ///   move the shared stream and want their own slice with a re-baseline.
+    ///
+    /// NOT_APPLICABLE_PROVEN, and recorded so it is not re-attempted: the
+    /// `DamageParticleSystems=` Spark producer in
+    /// `TechnoClass::AI_Update @ 0x006FADB3` is Tiberian Sun legacy and never
+    /// runs in stock YR, despite 126 of the 141 stock `DamageParticleSystems=`
+    /// entries naming a Spark system. Its top gate at `0x006FACD9` reads
+    /// `TechnoType+0xC8F`, whose only setter is `0x005243E7` in
+    /// `InfantryTypeClass::ReadINI`, conditional on the section's `Cyborg=`
+    /// bool — and no stock INI authors `Cyborg=` (`rulesmd.ini:3581` mentions
+    /// it only in a TS-inherited comment). Implementing it would both add
+    /// sparks retail does not show and consume `ScenarioClass::Random` draws
+    /// gamemd does not take, which desyncs. The `Smoke` producer below is a
+    /// different function (`TechnoClass::ReceiveDamage @ 0x00701900`) and is
+    /// not affected.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_particle_system(
         &mut self,
@@ -78,16 +97,13 @@ impl Simulation {
         rules: &RuleSet,
     ) -> Option<u64> {
         let pst = rules.particle_system_type(type_id);
-        match pst.behaves_like {
-            ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {
-                log::warn!(
-                    "particles: Tier 3 PSC type {:?} requested at {:?} — skipped",
-                    pst.behaves_like,
-                    coords,
-                );
-                return None;
-            }
-            _ => {}
+        if pst.behaves_like == ParticleSystemBehavesLike::Railgun {
+            log::warn!(
+                "particles: Tier 3 PSC type {:?} requested at {:?} — skipped",
+                pst.behaves_like,
+                coords,
+            );
+            return None;
         }
         let directionless = pst.spawn_direction == IVec3::ZERO;
         let stable_id = self.allocate_stable_id();
@@ -102,7 +118,6 @@ impl Simulation {
             lifetime: pst.lifetime,
             spark_spawn_frames: pst.spark_spawn_frames as i32,
             facing: 0x1D,
-            marked_for_deletion: false,
             directionless,
             attached_entity,
             owner_entity,
@@ -142,9 +157,11 @@ impl Simulation {
                 && let Some(system) = self.particle_systems_mut().get_mut(system_id)
             {
                 // ParticleSystemClass vtable +0xF8 is the mark-only Destroy
-                // entry. The owner slot remains live until pointer expiry at
-                // physical finalization, preventing a same-frame duplicate.
-                system.marked_for_deletion = true;
+                // entry — its body is `*(byte*)(this+0xF8) = 1`, the same byte
+                // the lifetime and spawn-cutoff paths set. The owner slot
+                // remains live until pointer expiry at physical finalization,
+                // preventing a same-frame duplicate.
+                system.done_spawning = true;
             }
             return;
         }
@@ -449,7 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn spawn_returns_none_for_spark_at_tier_2() {
+    fn gsi_05_13_spawn_admits_spark_systems() {
+        // `ParticleSystemClass::AI_Spark @ 0x0062E840` is implemented, so the
+        // Tier-3 refusal that used to sit here is gone for Spark. Railgun is
+        // still refused; see the test below.
         let rules = build_rules("Spark", 50);
         let mut sim = Simulation::new();
         let result = sim.spawn_particle_system(
@@ -461,8 +481,11 @@ mod tests {
             None,
             &rules,
         );
-        assert!(result.is_none());
-        assert_eq!(sim.particle_systems().len(), 0);
+        let id = result.expect("Spark systems are admitted");
+        assert_eq!(sim.particle_systems().len(), 1);
+        let system = sim.particle_systems().get(id).expect("stored system");
+        assert_eq!(system.facing, 0x1D, "ParticleSystem+0xF4 starts at 0x1D");
+        assert!(!system.done_spawning);
     }
 
     #[test]
@@ -763,5 +786,184 @@ mod tests {
 
         // advance=trunc(300/1/(0+1)+1)=301; byte store keeps 45.
         assert_eq!(sys.particles[0].state_ai_advance, 45);
+    }
+}
+
+#[cfg(test)]
+mod gsi_05_13_electric_bolt_sparks {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::command::{Command, CommandEnvelope};
+    use crate::sim::components::Health;
+    use crate::sim::game_entity::GameEntity;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::world::{RevealOutcome, Simulation};
+    use std::collections::BTreeMap;
+
+    /// A Tesla-shaped fixture: one `IsElectricBolt=yes` weapon, the
+    /// `[CombatDamage] DefaultSparkSystem` key it resolves through, and the
+    /// stock-shaped Spark system and particle it names.
+    fn tesla_rules() -> RuleSet {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=TESLA\n1=TARGET\n\n\
+             [TESLA]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=CoilBolt\n\n\
+             [TARGET]\nStrength=400\nArmor=heavy\nSpeed=6\n\n\
+             [CoilBolt]\nDamage=40\nROF=50\nRange=6\nWarhead=AP\nIsElectricBolt=yes\n\n\
+             [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\n\
+             [CombatDamage]\nDefaultSparkSystem=SparkSys\n\n\
+             [ParticleSystems]\n1=SparkSys\n\n\
+             [SparkSys]\nBehavesLike=Spark\nHoldsWhat=Spark\nParticleCap=6\n\
+             SparkSpawnFrames=1\nSpawnSparkPercentage=1\nLightSize=15\nLifetime=200\n\n\
+             [Particles]\n1=Spark\n\n\
+             [Spark]\nBehavesLike=Spark\nMaxEC=500\nXVelocity=10\nYVelocity=10\n\
+             MinZVelocity=40\nZVelocityRange=15\n\
+             ColorList=(255,255,255),(200,200,80),(200,10,10),(0,0,0)\nColorSpeed=.13\n",
+        );
+        RuleSet::from_ini(&ini).expect("tesla rules parse")
+    }
+
+    fn unit(id: u64, type_ref: &str, rx: u16, ry: u16, owner: &str, hp: u16) -> GameEntity {
+        let mut entity = GameEntity::test_default(id, type_ref, owner, rx, ry);
+        entity.health = Health {
+            current: hp,
+            max: hp,
+        };
+        entity
+    }
+
+    #[test]
+    fn firing_an_electric_bolt_weapon_spawns_a_spark_system_at_the_target() {
+        // `EBolt::Init @ 0x004C2A60` constructs one particle system per bolt at
+        // `0x004C2B30` from `Rules+0x1020` (`DefaultSparkSystem`) at the bolt's
+        // target endpoint, and discards the handle. Before this row a Tesla
+        // discharge produced nothing at all.
+        let rules = tesla_rules();
+        let mut sim = Simulation::new();
+        sim.input_delay_ticks = 0;
+        // Ids come from the shared allocator: a particle system takes one from
+        // the same space, and the store asserts they never collide.
+        let attacker = sim.allocate_stable_id();
+        let target = sim.allocate_stable_id();
+        sim.substrate
+            .entities
+            .insert(unit(attacker, "TESLA", 5, 5, "Americans", 300));
+        sim.substrate
+            .entities
+            .insert(unit(target, "TARGET", 8, 5, "Soviet", 400));
+        // The test interner is a thread-local the inserts above write into, so
+        // it must be cloned into the sim AFTER they run.
+        sim.interner = crate::sim::intern::test_interner();
+        assert!(matches!(
+            sim.reveal(attacker),
+            RevealOutcome::Revealed { .. }
+        ));
+        assert!(matches!(sim.reveal(target), RevealOutcome::Revealed { .. }));
+
+        let owner_id = sim.interner.intern("Americans");
+        let grid = PathGrid::test_all_passable(64, 64);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+
+        sim.queue_command(CommandEnvelope::new(
+            owner_id,
+            sim.session.tick + 1,
+            Command::Attack {
+                attacker_id: attacker,
+                target_id: target,
+            },
+        ));
+
+        let mut spark_system_id = None;
+        for _ in 0..200 {
+            let pending = sim.take_due_commands();
+            sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+            if let Some((&id, _)) = sim.particle_systems().iter().next() {
+                spark_system_id = Some(id);
+                break;
+            }
+        }
+
+        let id = spark_system_id.expect("an electric-bolt discharge spawns a spark system");
+        let system = sim.particle_systems().get(id).expect("stored system");
+        assert_eq!(
+            rules.particle_system_type(system.type_id).behaves_like,
+            crate::rules::particle_system_type::ParticleSystemBehavesLike::Spark
+        );
+        // The bolt's target endpoint: the target sits at cell (8, 5), and
+        // `GameEntity::test_default` centres it in the cell.
+        assert_eq!(system.coords.x / 256, 8);
+        assert_eq!(system.coords.y / 256, 5);
+        assert!(
+            system.owner_entity.is_none() && system.attached_entity.is_none(),
+            "EBolt passes neither an owner house nor an attachment object"
+        );
+    }
+
+    #[test]
+    fn a_weapon_without_the_electric_bolt_flag_spawns_no_spark_system() {
+        // The discriminator: the same fixture with `IsElectricBolt` absent must
+        // produce nothing, or the test above would pass on any fire event.
+        let ini_text = "[VehicleTypes]\n0=TESLA\n1=TARGET\n\n\
+             [TESLA]\nStrength=300\nArmor=heavy\nSpeed=6\nPrimary=CoilBolt\n\n\
+             [TARGET]\nStrength=400\nArmor=heavy\nSpeed=6\n\n\
+             [CoilBolt]\nDamage=40\nROF=50\nRange=6\nWarhead=AP\n\n\
+             [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n\n\
+             [CombatDamage]\nDefaultSparkSystem=SparkSys\n\n\
+             [ParticleSystems]\n1=SparkSys\n\n\
+             [SparkSys]\nBehavesLike=Spark\nHoldsWhat=Spark\nParticleCap=6\n\
+             SparkSpawnFrames=1\nSpawnSparkPercentage=1\nLifetime=200\n\n\
+             [Particles]\n1=Spark\n\n\
+             [Spark]\nBehavesLike=Spark\nMaxEC=500\nXVelocity=10\nYVelocity=10\n\
+             MinZVelocity=40\nZVelocityRange=15\n";
+        let rules = RuleSet::from_ini(&IniFile::from_str(ini_text)).expect("rules parse");
+        let mut sim = Simulation::new();
+        sim.input_delay_ticks = 0;
+        // Ids come from the shared allocator: a particle system takes one from
+        // the same space, and the store asserts they never collide.
+        let attacker = sim.allocate_stable_id();
+        let target = sim.allocate_stable_id();
+        sim.substrate
+            .entities
+            .insert(unit(attacker, "TESLA", 5, 5, "Americans", 300));
+        sim.substrate
+            .entities
+            .insert(unit(target, "TARGET", 8, 5, "Soviet", 400));
+        // The test interner is a thread-local the inserts above write into, so
+        // it must be cloned into the sim AFTER they run.
+        sim.interner = crate::sim::intern::test_interner();
+        assert!(matches!(
+            sim.reveal(attacker),
+            RevealOutcome::Revealed { .. }
+        ));
+        assert!(matches!(sim.reveal(target), RevealOutcome::Revealed { .. }));
+
+        let owner_id = sim.interner.intern("Americans");
+        let grid = PathGrid::test_all_passable(64, 64);
+        let height_map: BTreeMap<(u16, u16), u8> = BTreeMap::new();
+        sim.queue_command(CommandEnvelope::new(
+            owner_id,
+            sim.session.tick + 1,
+            Command::Attack {
+                attacker_id: attacker,
+                target_id: target,
+            },
+        ));
+
+        let mut fired = false;
+        for _ in 0..200 {
+            let pending = sim.take_due_commands();
+            sim.advance_tick(&pending, Some(&rules), &height_map, Some(&grid), None, 100);
+            if !sim.fire_events.is_empty() {
+                fired = true;
+            }
+        }
+        assert!(
+            fired,
+            "the fixture must actually fire, or it proves nothing"
+        );
+        assert_eq!(
+            sim.particle_systems().len(),
+            0,
+            "only IsElectricBolt weapons spawn the spark system"
+        );
     }
 }

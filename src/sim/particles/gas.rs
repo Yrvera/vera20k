@@ -255,7 +255,6 @@ mod tests {
             lifetime: -1,
             spark_spawn_frames: 0,
             facing: 0x1D,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: None,
             owner_entity: None,

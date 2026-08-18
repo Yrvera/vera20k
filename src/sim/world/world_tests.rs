@@ -305,7 +305,6 @@ fn particle_frame_boundary_fixture(frame_count: u16) -> (Simulation, RuleSet) {
         lifetime: 100,
         spark_spawn_frames: 0,
         facing: 0,
-        marked_for_deletion: false,
         directionless: false,
         attached_entity: None,
         owner_entity: None,

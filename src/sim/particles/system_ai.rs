@@ -106,12 +106,18 @@ pub(crate) fn tick_particle_system(sim: &mut Simulation, rules: &RuleSet, id: u6
 
     tick_one_system(&mut sys, sim, rules);
 
+    // `ParticleSystemClass::AI @ 0x0062FD60`: decrement `+0xEC`, and when the
+    // decremented value is exactly zero call vtable `+0xF8` — an entry
+    // (`0x006301E0`) whose whole body is `*(byte*)(this+0xF8) = 1`. A negative
+    // lifetime (`Lifetime=` absent, which is every stock Spark system) walks
+    // past zero and never triggers it, exactly as here.
     sys.lifetime -= 1;
     if sys.lifetime == 0 {
-        sys.marked_for_deletion = true;
+        sys.done_spawning = true;
     }
 
-    let retires = sys.marked_for_deletion && sys.particles.is_empty();
+    // `alive && this[+0xF8] && particle_count == 0`, from the same function.
+    let retires = sys.done_spawning && sys.particles.is_empty();
     sim.particle_systems_mut().reinsert_after_tick(sys);
     if retires {
         sim.retire_particle_system(id);
@@ -133,9 +139,29 @@ fn tick_one_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleS
         ParticleSystemBehavesLike::Smoke => tick_smoke(sys, sim, rules),
         ParticleSystemBehavesLike::Gas => tick_gas(sys, sim, rules),
         ParticleSystemBehavesLike::Fire => tick_fire(sys, sim, rules),
-        ParticleSystemBehavesLike::Spark | ParticleSystemBehavesLike::Railgun => {
+        ParticleSystemBehavesLike::Spark => tick_spark(sys, sim, rules),
+        ParticleSystemBehavesLike::Railgun => {
             // Tier 3 — no-op.
         }
+    }
+}
+
+/// gamemd-derived: `ParticleSystemClass::AI_Spark @ 0x0062E840` in its native
+/// order — the burst/countdown/facing half first (`spark_spawn.rs`), then the
+/// per-particle dispatch and the backward destroy walk at `0x0062ECE9`.
+fn tick_spark(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
+    if let Err(error) = super::spark_spawn::spark_spawn_pass(sys, sim, rules) {
+        log::warn!(
+            "particles: Spark system {} spawn pass failed: {error}",
+            sys.stable_id
+        );
+        return;
+    }
+    if let Err(error) = tick_spark_system_compat(sys, sim, rules) {
+        log::warn!(
+            "particles: Spark system {} particle pass failed: {error}",
+            sys.stable_id
+        );
     }
 }
 
@@ -151,12 +177,11 @@ fn tick_fire(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     super::fire::tick_system(sys, sim, rules);
 }
 
-/// Internal activation-gate owner for the Ghidra-backed Spark path.
+/// The per-particle half of `AI_Spark`: `ParticleClass::AI_Dispatch` forward
+/// over every particle, then the backward destroy walk at `0x0062ED0E`.
 ///
-/// Normal particle-system dispatch deliberately does not call this yet. The
-/// function exists so parity tests and the eventual activation change use the
-/// verified begin/query/finish ownership boundary instead of inventing another.
-#[allow(dead_code)]
+/// Production dispatch reaches this through [`tick_spark`]; parity tests call
+/// it directly so both use the same begin/query/finish ownership boundary.
 pub(crate) fn tick_spark_system_compat(
     sys: &mut ParticleSystem,
     sim: &mut Simulation,
@@ -167,8 +192,7 @@ pub(crate) fn tick_spark_system_compat(
     })
 }
 
-// Shared tested kernel behind the deferred production activation gate.
-#[allow(dead_code)]
+// Shared kernel behind both the production dispatch and the parity tests.
 fn tick_spark_system_with_query<F>(
     sys: &mut ParticleSystem,
     sim: &mut Simulation,
@@ -250,7 +274,6 @@ mod tests {
             lifetime,
             spark_spawn_frames: 0,
             facing: 0x1D,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: None,
             owner_entity: None,
@@ -413,7 +436,56 @@ mod tests {
     }
 
     #[test]
-    fn spark_and_railgun_dispatch_is_a_no_op() {
+    fn gsi_05_13_lifetimeless_spark_system_retires_without_a_lifetime() {
+        // `[SparkSys]` — the `[CombatDamage] DefaultSparkSystem` every electric
+        // bolt resolves through — authors no `Lifetime=`, so `pst.lifetime` is
+        // -1 and the countdown at `0x0062FD8B` walks past zero forever.
+        // Removal therefore cannot come from the lifetime; it comes from the
+        // shared `+0xF8` byte, which `AI_Spark` sets at `0x0062EC73` when the
+        // spark countdown runs out. Modelling that byte as two Rust booleans
+        // and retiring on only one of them leaked a system per Tesla discharge
+        // for the rest of the match.
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[General]
+FixtureOnly=1
+             [ParticleSystems]
+1=SparkSys
+             [SparkSys]
+BehavesLike=Spark
+ParticleCap=6
+             SparkSpawnFrames=1
+SpawnSparkPercentage=1
+",
+        ))
+        .expect("lifetimeless spark rules parse");
+        assert_eq!(
+            rules.particle_system_type(ParticleSystemTypeId(0)).lifetime,
+            -1,
+            "the fixture must reproduce the stock missing-Lifetime default"
+        );
+
+        let mut sim = Simulation::with_seed(17);
+        let mut system = fake_system(ParticleSystemTypeId(0), -1);
+        system.spark_spawn_frames = 1;
+        let id = insert_live_system(&mut sim, system);
+
+        tick_particle_systems(&mut sim, &rules);
+
+        // `retire_particle_system` conceals and queues; the store entry is
+        // dropped by the later pending-delete flush, so the queue is the
+        // observable decision here.
+        assert!(
+            sim.substrate.pending_delete.contains(&id),
+            "a done-spawning, empty system retires even with Lifetime absent"
+        );
+    }
+
+    #[test]
+    fn spark_and_railgun_systems_survive_a_tick_with_nothing_to_do() {
+        // Spark dispatch is live (`tick_spark`), Railgun is still a no-op.
+        // Neither may retire a system early: the fixture system has exhausted
+        // its spawn frames and holds no particles, so `AI_Spark`'s guard at
+        // `0x0062E855` falls straight through and the lifetime alone governs.
         for behaves in ["Spark", "Railgun"] {
             let rules = build_rules(behaves, 100);
             let mut sim = Simulation::new();

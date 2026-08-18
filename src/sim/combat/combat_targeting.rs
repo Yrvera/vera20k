@@ -646,6 +646,14 @@ pub(crate) fn should_retaliate_from_damage(
             calculate_ai_threat_score(entities, victim_id, current_id, rules, interner, terrain),
             calculate_ai_threat_score(entities, victim_id, attacker_id, rules, interner, terrain),
         )
+        // This comparison changed behaviour in the GSI-05.13 slice, and the
+        // change is a correction rather than a side effect: `X87Chop53::compare`
+        // ordered on the exponent before settling zero operands, so any score in
+        // `(0, 1)` compared against an exactly-zero score came back as the
+        // SMALLER one. An AI defender holding a zero-scored current target used
+        // to refuse retaliation against a positive-scored attacker; it no longer
+        // does. Reachability needs an exactly-zero `calculate_ai_threat_score`,
+        // which the term structure makes uncommon but not impossible.
         && X87Chop53::compare(current_score, attacker_score) == X87Ordering::Greater
     {
         return false;

@@ -250,8 +250,29 @@ impl X87Chop53 {
     }
 
     pub fn compare(lhs: X87Value, rhs: X87Value) -> X87Ordering {
-        if lhs.is_zero() && rhs.is_zero() {
-            return X87Ordering::Equal;
+        // Zero has to be settled before `magnitude_cmp`, which orders on the
+        // exponent first. A zero carries exponent 0, so comparing it against a
+        // value below 1 — whose exponent is negative — would otherwise report
+        // that value as the SMALLER one. `FCOM` against `+0.0` is exactly the
+        // shape every unit-interval probability gate uses, so this is not a
+        // corner case.
+        match (lhs.is_zero(), rhs.is_zero()) {
+            (true, true) => return X87Ordering::Equal,
+            (true, false) => {
+                return if rhs.sign {
+                    X87Ordering::Greater
+                } else {
+                    X87Ordering::Less
+                };
+            }
+            (false, true) => {
+                return if lhs.sign {
+                    X87Ordering::Less
+                } else {
+                    X87Ordering::Greater
+                };
+            }
+            (false, false) => {}
         }
         let ordering = if lhs.sign != rhs.sign {
             if lhs.sign {
@@ -448,6 +469,29 @@ fn shift_right_jam_u128(value: u128, distance: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compare_orders_against_zero_by_sign_not_exponent() {
+        use super::{NativeF64Bits, X87Chop53, X87Ordering};
+
+        // `FCOM` against `+0.0` is the shape every unit-interval probability
+        // gate uses. `magnitude_cmp` orders on the exponent first, and a zero
+        // carries exponent 0, so before the fix a value in `(0, 1)` — whose
+        // exponent is negative — compared as the SMALLER one.
+        let zero = X87Chop53::load_f64(NativeF64Bits::POSITIVE_ZERO).expect("zero loads");
+        let negative_zero = X87Chop53::load_f64(NativeF64Bits::NEGATIVE_ZERO).expect("zero loads");
+        let half = X87Chop53::load_f64(NativeF64Bits::HALF).expect("0.5 loads");
+        let minus_half = X87Chop53::neg(half);
+
+        assert_eq!(X87Chop53::compare(half, zero), X87Ordering::Greater);
+        assert_eq!(X87Chop53::compare(zero, half), X87Ordering::Less);
+        assert_eq!(X87Chop53::compare(minus_half, zero), X87Ordering::Less);
+        assert_eq!(X87Chop53::compare(zero, minus_half), X87Ordering::Greater);
+        // x87 treats the two zeroes as equal.
+        assert_eq!(X87Chop53::compare(zero, negative_zero), X87Ordering::Equal);
+        // A value at or above 1 was already ordered correctly; keep it pinned.
+        let one = X87Chop53::load_f64(NativeF64Bits::ONE).expect("1.0 loads");
+        assert_eq!(X87Chop53::compare(one, zero), X87Ordering::Greater);
+    }
     use super::*;
 
     fn f32_value(bits: u32) -> X87Value {

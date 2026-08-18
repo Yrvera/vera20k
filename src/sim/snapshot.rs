@@ -258,7 +258,7 @@ use crate::sim::world::Simulation;
 // and prevents score-bonus Scenario RNG draws from repeating after load.
 // Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
 // SetGameSpeed transition. Appending the enum variant changes the bincode schema.
-const SNAPSHOT_VERSION: u32 = 82;
+const SNAPSHOT_VERSION: u32 = 83;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2542,10 +2542,16 @@ mod tests {
     /// `AnimClass::SetOwnerObject @ 0x00424B50`. The layout is unchanged, so
     /// old bytes still decode — and would then be re-resolved through the owner
     /// a whole owner-coordinate away, moving every attached anim and the
-    /// returned hash with it. Cross-version load is refused for that reason.
+    /// returned hash with it. Cross-version load is refused for that reason;
+    /// 82 -> 83 collapsed `ParticleSystem`'s `marked_for_deletion` and
+    /// `done_spawning` into the single `done_spawning`, which is what
+    /// `ParticleSystemClass+0xF8` actually is — one byte set by the lifetime
+    /// countdown, the spawn cutoff and the spark countdown alike, and read by
+    /// both the spawn gate and the removal predicate. A serialized field is
+    /// gone, so old bytes no longer decode.
     #[test]
-    fn gsi_13_06_snapshot_version_is_82() {
-        assert_eq!(super::SNAPSHOT_VERSION, 82);
+    fn gsi_13_06_snapshot_version_is_83() {
+        assert_eq!(super::SNAPSHOT_VERSION, 83);
     }
 
     #[test]
@@ -2593,7 +2599,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
         let header = GameSnapshot::read_header(&bytes).expect("v82 building-overlay header");
-        assert_eq!(header.version, 82);
+        assert_eq!(header.version, 83);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("v82 building-overlay snapshot")
             .sim;
@@ -2818,7 +2824,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
         let header = GameSnapshot::read_header(&bytes).expect("v82 GameSpeed header");
-        assert_eq!(header.version, 82);
+        assert_eq!(header.version, 83);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("v82 GameSpeed snapshot")
             .sim;
@@ -3212,7 +3218,6 @@ mod tests {
                 lifetime: -1,
                 spark_spawn_frames: 0,
                 facing: 0x1D,
-                marked_for_deletion: false,
                 directionless: true,
                 attached_entity: None,
                 owner_entity: Some(entity_id),
@@ -3922,7 +3927,6 @@ mod tests {
             lifetime: -1,
             spark_spawn_frames: 0,
             facing: 0x1d,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: Some(entity_id),
             owner_entity: Some(entity_id),
@@ -4010,7 +4014,6 @@ mod tests {
             lifetime: -1,
             spark_spawn_frames: 0,
             facing: 0x1d,
-            marked_for_deletion: false,
             directionless: false,
             attached_entity: Some(999),
             owner_entity: Some(entity_id),

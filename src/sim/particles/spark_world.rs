@@ -108,6 +108,17 @@ impl<'a> SparkCollisionWorld<'a> {
         })
     }
 
+    /// `CellClass::GetGroundHeight` at one world coordinate.
+    ///
+    /// `ParticleClass::Constructor @ 0x0062B5E0` floors a new particle's Z on
+    /// this before `Set_Raw_Coords`, so the spawn path needs it without
+    /// building a whole motion step. `None` when the coordinate has no
+    /// resolved cell, which the caller treats as "no floor".
+    pub(super) fn ground_height_at(&self, world_x: i32, world_y: i32) -> Option<i32> {
+        let (_, _, cell) = self.cell_for_world_coords(world_x, world_y).ok()?;
+        ground_height_leptons(cell.level, cell.slope_type, world_x, world_y).ok()
+    }
+
     fn cell_for_world_coords(
         &self,
         world_x: i32,
