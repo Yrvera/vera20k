@@ -534,5 +534,5 @@ The Rust impl correctly omits these from `ProjectileType`. They should land on t
 - `BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md` (BulletClass instance layout — sister doc, kept as-is)
 
 ### INI files checked
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — `[Projectiles]` section + 56 BulletType section bodies
-- `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` — sample art-section bodies for bullet `Image=` references
+- `ini/rulesmd.ini` — `[Projectiles]` section + 56 BulletType section bodies
+- `ini/artmd.ini` — sample art-section bodies for bullet `Image=` references

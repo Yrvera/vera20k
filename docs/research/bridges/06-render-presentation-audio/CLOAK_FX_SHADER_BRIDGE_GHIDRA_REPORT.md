@@ -1230,17 +1230,17 @@ For pixel-correct parity verification during Phase 2 implementation.
 - `0x00A8ED6B` → FUN_004F4780 + Main_Game refs (= `g_IsMapEditor` per behavioral inference)
 
 ### Prior research consulted (VERIFIED/EXTENDED, NOT re-derived)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CLOAKING_VISUAL_PIPELINE.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CLOAKING_STEALTH_SYSTEM_GHIDRA_REPORT.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CLOAKING_INTERACTIONS_REPORT.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DISGUISE_SYSTEM_GHIDRA_REPORT.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SENSOR_CLOAK_DETECTION.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_CLOAK_SENSOR_GHIDRA_REPORT.md` (HIGH)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md` (HIGH) — for color-0 transparency invariant
+- `docs/research/CLOAKING_VISUAL_PIPELINE.md` (HIGH)
+- `docs/research/CLOAKING_STEALTH_SYSTEM_GHIDRA_REPORT.md` (HIGH)
+- `docs/research/CLOAKING_INTERACTIONS_REPORT.md` (HIGH)
+- `docs/research/DISGUISE_SYSTEM_GHIDRA_REPORT.md` (HIGH)
+- `docs/research/SENSOR_CLOAK_DETECTION.md` (HIGH)
+- `docs/research/BUILDINGCLASS_CLOAK_SENSOR_GHIDRA_REPORT.md` (HIGH)
+- `docs/research/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md` (HIGH) — for color-0 transparency invariant
 
 ### INI files
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — all cloak/disguise/sensor keys
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rules.ini` — base RA2 confirmation
+- `ini/rulesmd.ini` — all cloak/disguise/sensor keys
+- `ini/rules.ini` — base RA2 confirmation
 
 ### Investigation plan executed
-- `c:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-11-cloak-fx-investigation-plan.md`
+- `docs/plans/2026-05-11-cloak-fx-investigation-plan.md`

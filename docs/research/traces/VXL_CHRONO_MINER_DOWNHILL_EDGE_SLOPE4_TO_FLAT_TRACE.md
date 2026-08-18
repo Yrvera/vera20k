@@ -90,11 +90,11 @@ Evidence:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VXL_SLOPE_CELL_SAMPLING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VOXEL_SLOPE_TILT_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TMP_PER_TILE_HEIGHT_BYTE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TELEPORT_LOCOMOTION_IMPLEMENTATION_REFERENCE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/CMIN.md`
+- `docs/research/VXL_SLOPE_CELL_SAMPLING_GHIDRA_REPORT.md`
+- `docs/research/VOXEL_SLOPE_TILT_SYSTEM.md`
+- `docs/research/TMP_PER_TILE_HEIGHT_BYTE_GHIDRA_REPORT.md`
+- `docs/research/TELEPORT_LOCOMOTION_IMPLEMENTATION_REFERENCE.md`
+- `docs/research/units/allied/CMIN.md`
 - Ghidra read-only decompilation this run: `DriveLocomotionClass__Process @ 004B0500`, `DriveLocomotionClass__Draw_Matrix @ 004AFF60`, `VXL_InterpolatedFacing @ 00755A40`, `Matrix3x4_BuildFromRotateXAndFacing @ 005AE6F0`, `VXL_MasterLighting_Init @ 00754CB0`.
 
 ## Tally

@@ -32,7 +32,7 @@ This is a quick-reference doc; cross-reference the canonical
 
 ## rulesmd.ini — `[YADOG]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4913`:
+Verbatim from `ini/rulesmd.ini:4913`:
 
 ```ini
 [YADOG]

@@ -109,5 +109,5 @@ Not audited and not modified in this slot. Existing trace text that says "ROT=10
 - Ghidra decompiled / assembly context: `TechnoTypeClass::Constructor @ 0x00710AF0`, default store `+0x398=15` at `0x00710CAB`.
 - Ghidra decompiled: `UnitClass::Constructor @ 0x007353C0`, `+0x71C` reads at `0x00735570` and `0x00735584`.
 - Ghidra decompiled: `FUN_004C9680 @ 0x004C9680`, facing-rate clamp/shift setter.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[CMIN]` lines `7364`, `7378`, `7398`.
+- INI checked: `ini/rulesmd.ini` `[CMIN]` lines `7364`, `7378`, `7398`.
 - Prior report referenced: `DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md` OQ-7.

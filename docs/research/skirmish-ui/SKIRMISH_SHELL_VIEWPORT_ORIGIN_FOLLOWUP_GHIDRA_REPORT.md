@@ -3,7 +3,7 @@
 Date: 2026-05-16
 
 Parent report:
-`C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
+`docs/research/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
 
 Scope: targeted follow-up only. This resolves the two open questions from the
 parent report:
@@ -255,7 +255,7 @@ right-panel bottom-cap rect at y `577`.
   - `RightPanel__ComputeLayoutRects`
   - `RightPanel__Draw`
 - Retail asset headers read from:
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2.mix`
+  - `<ra2-install>/ra2.mix`
   - nested `neutral.mix`
 - Parent report:
   - `SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`

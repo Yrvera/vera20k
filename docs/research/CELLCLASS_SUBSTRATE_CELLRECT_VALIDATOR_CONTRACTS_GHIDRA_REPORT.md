@@ -197,10 +197,10 @@ Current Rust has pieces, but not the native validator boundary:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`: no replacement needed after 2026-05-28 correction; keep the inline correction that `FUN_0047C550` is thiscall with cell as implicit receiver.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace any wording that calls `Cell+0xDC` `GapGenBitmask` with: "`CellClass+0xDC` is a per-house/base-placement reservation bitmask. `Find_Nearby_Passable_Cell` passes `-1` to `CellRect__CheckOccupancy`, so this reservation bitmask is skipped on that path; checked GapGen code writes `CellClass+0x78`, and sensor counts use `CellClass+0x7C`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any `g_PassabilityMatrix[speed_type * 8 + ...]` wording with: "`ZonePassabilityMatrix` rows are `MovementZone`/reduced-zone rows; `SpeedType` belongs to the SpeedType/LandType speed table used by `CellClass__CheckCellPassability`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`CellRect__CheckOccupancy -- no other units blocking`" with: "`CellRect__CheckOccupancy @ 0x00586780` rejects ground-list RTTI `0x24`, optional `CellClass+0xDC` reservation bits, `CellClass+0x44/+0x4C/+0x11C`, ground-list building objects, and out-of-playfield rectangles; in FNPC the reservation arg is `-1`, so `+0xDC` is skipped."
+- `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`: no replacement needed after 2026-05-28 correction; keep the inline correction that `FUN_0047C550` is thiscall with cell as implicit receiver.
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace any wording that calls `Cell+0xDC` `GapGenBitmask` with: "`CellClass+0xDC` is a per-house/base-placement reservation bitmask. `Find_Nearby_Passable_Cell` passes `-1` to `CellRect__CheckOccupancy`, so this reservation bitmask is skipped on that path; checked GapGen code writes `CellClass+0x78`, and sensor counts use `CellClass+0x7C`."
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any `g_PassabilityMatrix[speed_type * 8 + ...]` wording with: "`ZonePassabilityMatrix` rows are `MovementZone`/reduced-zone rows; `SpeedType` belongs to the SpeedType/LandType speed table used by `CellClass__CheckCellPassability`."
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`CellRect__CheckOccupancy -- no other units blocking`" with: "`CellRect__CheckOccupancy @ 0x00586780` rejects ground-list RTTI `0x24`, optional `CellClass+0xDC` reservation bits, `CellClass+0x44/+0x4C/+0x11C`, ground-list building objects, and out-of-playfield rectangles; in FNPC the reservation arg is `-1`, so `+0xDC` is skipped."
 
 ## 10. Remaining Uncertainty
 
@@ -211,12 +211,12 @@ Current Rust has pieces, but not the native validator boundary:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELLRECT_CHECKPASSABILITY_0056E7C0_FULL_ARG_DECODE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELLRECT_CHECKOCCUPANCY_00586780_FULL_BLOCKER_TREE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELLCLASS_0XDC_RESERVATION_LIFECYCLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/bridges/02-cell-state-layering-zones/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/AUDIT_LOG.md` 2026-05-28 validator audit entry
+- `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
+- `docs/research/CELLRECT_CHECKPASSABILITY_0056E7C0_FULL_ARG_DECODE_GHIDRA_REPORT.md`
+- `docs/research/CELLRECT_CHECKOCCUPANCY_00586780_FULL_BLOCKER_TREE_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_0XDC_RESERVATION_LIFECYCLE_GHIDRA_REPORT.md`
+- `docs/research/bridges/02-cell-state-layering-zones/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
+- `docs/research/AUDIT_LOG.md` 2026-05-28 validator audit entry
 - Prior evidence addresses cited by those reports: `0x0056E7C0`, `0x00586780`, `0x004834A0`, `0x0047C550`, `0x0047C520`, `0x00578390`, `0x0056DC20`, `0x005060B0`, `0x0056D230`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/passability.rs`, `src/sim/pathfinding/zone_build.rs`, `src/sim/pathfinding/cell_entry.rs`, `src/sim/occupancy.rs`, `src/sim/production/production_placement.rs`, `src/sim/production/production_spawn.rs`, `src/sim/world/mod.rs`
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`
+- Rust scan: `src/sim/pathfinding/passability.rs`, `src/sim/pathfinding/zone_build.rs`, `src/sim/pathfinding/cell_entry.rs`, `src/sim/occupancy.rs`, `src/sim/production/production_placement.rs`, `src/sim/production/production_spawn.rs`, `src/sim/world/mod.rs`

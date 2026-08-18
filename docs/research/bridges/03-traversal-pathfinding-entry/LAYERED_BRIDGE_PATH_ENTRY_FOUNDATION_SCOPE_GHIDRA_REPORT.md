@@ -164,5 +164,5 @@ If a doc implies low bridge records should use the high-bridge redirect path, re
 - Rust: `src/sim/pathfinding/zone_search.rs`
 - Rust: `src/sim/movement/movement_path.rs`
 - Rust: `src/sim/movement/movement_commands.rs`
-- Docs: `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
-- Docs: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/PATHFIND_INFANTRY_LOW_BRIDGE_RAMP_TRACE.md`
+- Docs: `docs/research/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
+- Docs: `docs/research/traces/PATHFIND_INFANTRY_LOW_BRIDGE_RAMP_TRACE.md`

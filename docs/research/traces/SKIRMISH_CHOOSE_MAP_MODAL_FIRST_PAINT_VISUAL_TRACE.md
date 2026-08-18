@@ -36,7 +36,7 @@ Current Rust now reaches:
 ### Stage 1 - Trigger to modal screen
 
 - **gamemd:** `0x006ACEE0` hides the setup HWND, calls `0x005E68A0`, creates dialog resource `0x6B`, shows chooser, and pumps the modal. Active in standard offline YR per `SKIRMISH_CHOOSE_MAP_MODAL_FLOW_GHIDRA_REPORT.md`.
-- **Rust:** click identifies `ChooseMap0x5aa`, but `handle_skirmish_shell_action` treats `ChooseMap` as no-op at `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:585`.
+- **Rust:** click identifies `ChooseMap0x5aa`, but `handle_skirmish_shell_action` treats `ChooseMap` as no-op at `src/app.rs:585`.
 - **Player-visible result:** clicking Choose Map leaves the setup screen visible; no modal first paint occurs.
 - **Verdict:** FAIL.
 
@@ -50,56 +50,56 @@ Current Rust now reaches:
 ### Stage 3 - Dialog `0x6B` background/chrome asset
 
 - **gamemd:** dialog `0x6B` uses `MnScrnLCustomizeBattle.shp` at 800 width and `MnScrnLCustomizeBattle.PAL`; active in standard YR per `SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`.
-- **Rust:** the shell atlas loads `MNSCRNS.SHP` and `MnScrnLCoopGameSetup.shp`, not `MnScrnLCustomizeBattle.shp`, at `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:166`; `MnScrnLCustomizeBattle.shp` remains classified as a research candidate at `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:357`.
+- **Rust:** the shell atlas loads `MNSCRNS.SHP` and `MnScrnLCoopGameSetup.shp`, not `MnScrnLCustomizeBattle.shp`, at `src/render/skirmish_shell_chrome.rs:166`; `MnScrnLCustomizeBattle.shp` remains classified as a research candidate at `src/render/skirmish_shell_chrome.rs:357`.
 - **Player-visible result:** even if the modal were entered, it would not have the retail Choose Map background/chrome.
 - **Verdict:** NOT-IMPLEMENTED.
 
 ### Stage 4 - Dialog and listbox geometry model
 
 - **gamemd:** resource `0x6B` is `533x369`; at 800x600 centered in the shell base this gives dialog `(133,115,533,369)`. Verified controls: `0x6EB` local `(77,78,130,211)` -> screen `(210,193,130,211)`, `0x553` local `(225,78,130,211)` -> screen `(358,193,130,211)`.
-- **Rust:** `compute_choose_map_modal_layout(800,600)` returns those same dialog/list rectangles at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:508`, with test assertions at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:743`.
+- **Rust:** `compute_choose_map_modal_layout(800,600)` returns those same dialog/list rectangles at `src/ui/skirmish_shell/layout.rs:508`, with test assertions at `src/ui/skirmish_shell/layout.rs:743`.
 - **Player-visible result:** the in-memory helper has the verified modal/listbox bounds, but this helper is not consumed by rendering yet.
 - **Verdict:** PASS for helper geometry only.
 
 ### Stage 5 - Button geometry
 
 - **gamemd:** resource `0x6B` buttons are local `UseMap 0x6C5=(425,122,108,23)`, `CreateRandomMap 0x583=(425,149,108,23)`, `Cancel 0x5C0=(425,346,108,23)`.
-- **Rust:** helper uses local `UseMap=(374,80,112,30)`, `Cancel=(374,116,112,30)`, `CreateRandomMap=(374,152,112,30)` at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:518`.
+- **Rust:** helper uses local `UseMap=(374,80,112,30)`, `Cancel=(374,116,112,30)`, `CreateRandomMap=(374,152,112,30)` at `src/ui/skirmish_shell/layout.rs:518`.
 - **Player-visible result:** if drawn, buttons would be horizontally/vertically misplaced and wrong-sized; Cancel would appear in the upper right instead of the bottom right.
 - **Verdict:** FAIL.
 
 ### Stage 6 - Title/static/preview geometry
 
 - **gamemd:** resource `0x6B` has title static `0x694=(425,1,108,10)`, preview/static `0x468=(428,23,96,69)`, heading statics `(77,60,130,10)` and `(225,60,130,10)`, select-engagement static `(80,20,257,12)`, status strip `0x695=(2,355,303,12)`.
-- **Rust:** `ChooseMapModalLayout` only models `title` and `preview` at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:176`; their current rects are local title `(0,20,533,24)` and preview `(374,202,128,96)` at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:521`.
+- **Rust:** `ChooseMapModalLayout` only models `title` and `preview` at `src/ui/skirmish_shell/layout.rs:176`; their current rects are local title `(0,20,533,24)` and preview `(374,202,128,96)` at `src/ui/skirmish_shell/layout.rs:521`.
 - **Player-visible result:** the title/preview would be in the wrong locations and several required static labels/status text areas have no represented rectangle.
 - **Verdict:** FAIL.
 
 ### Stage 7 - Modal rendering path
 
 - **gamemd:** first paint draws the separate dialog `0x6B` after setup is hidden.
-- **Rust:** `render_skirmish_shell_with_atlas` always computes and draws setup `0x102` through `compute_layout`, `build_skirmish_shell_instances`, and `build_shell_text_draws` at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1818`; no branch calls `compute_choose_map_modal_layout`.
+- **Rust:** `render_skirmish_shell_with_atlas` always computes and draws setup `0x102` through `compute_layout`, `build_skirmish_shell_instances`, and `build_shell_text_draws` at `src/app_skirmish_shell_render.rs:1818`; no branch calls `compute_choose_map_modal_layout`.
 - **Player-visible result:** there are no modal sprites, no modal text, and no modal scissor/list areas.
 - **Verdict:** NOT-IMPLEMENTED.
 
 ### Stage 8 - Owner-drawn modal buttons
 
 - **gamemd:** Use Map, Cancel, and Create Random Map are owner-drawn shell buttons using the normal 30-height button PCX path (`bue_*30` / `bde_*30`).
-- **Rust:** reusable `push_button_30` exists at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:343`, but it is only called for the setup Start/Back/Choose Map buttons at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1171`.
+- **Rust:** reusable `push_button_30` exists at `src/app_skirmish_shell_render.rs:343`, but it is only called for the setup Start/Back/Choose Map buttons at `src/app_skirmish_shell_render.rs:1171`.
 - **Player-visible result:** modal buttons do not render.
 - **Verdict:** NOT-IMPLEMENTED.
 
 ### Stage 9 - Listbox frame, rows, scrollbars
 
 - **gamemd:** `0x6EB` and `0x553` are real `LISTBOX` controls with owner-draw fixed style `0x151`; row backing uses item data, no display-name sort, and scrollbar PCXs when needed.
-- **Rust:** there is no modal listbox renderer. Existing dropdown rendering uses generic solid fills/outlines and combo scrollbar helpers at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:640`, not dialog `0x6B` listboxes.
+- **Rust:** there is no modal listbox renderer. Existing dropdown rendering uses generic solid fills/outlines and combo scrollbar helpers at `src/app_skirmish_shell_render.rs:640`, not dialog `0x6B` listboxes.
 - **Player-visible result:** no listbox frame, no highlighted row, no native scrollbar, and no mode/map rows appear.
 - **Verdict:** NOT-IMPLEMENTED.
 
 ### Stage 10 - List row height and text insets
 
 - **gamemd:** exact owner-drawn listbox row internals were explicitly left as remaining uncertainty in the visual-layout report.
-- **Rust:** helper hit testing assumes `CHOOSE_MAP_LIST_ROW_H = 16` at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:30`, but no retail row-paint numbers were computed for comparison.
+- **Rust:** helper hit testing assumes `CHOOSE_MAP_LIST_ROW_H = 16` at `src/ui/skirmish_shell/layout.rs:30`, but no retail row-paint numbers were computed for comparison.
 - **Player-visible result:** row cadence/text inset parity cannot be claimed.
 - **Verdict:** UNCHECKED.
 
@@ -120,7 +120,7 @@ Current Rust now reaches:
 ### Stage 13 - Text rendering for modal labels
 
 - **gamemd:** labels include `GUI:ChooseMap`, `GUI:SelectEngagement`, `GUI:GameType`, `GUI:GameMap`, `GUI:Blank`, and button labels from the resource.
-- **Rust:** `build_shell_text_draws` renders setup labels only; modal labels are absent at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1423`.
+- **Rust:** `build_shell_text_draws` renders setup labels only; modal labels are absent at `src/app_skirmish_shell_render.rs:1423`.
 - **Player-visible result:** no modal captions, headings, button text, or bottom status/help text.
 - **Verdict:** NOT-IMPLEMENTED.
 
@@ -134,22 +134,22 @@ Current Rust now reaches:
 ### Stage 15 - First-paint draw order
 
 - **gamemd:** modal background/chrome must appear behind owner-drawn listboxes/buttons/statics; setup controls are not visible behind it.
-- **Rust:** no modal draw-order function exists; setup draw order remains active through `skirmish_shell_semantic_draw_order` at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1067`.
+- **Rust:** no modal draw-order function exists; setup draw order remains active through `skirmish_shell_semantic_draw_order` at `src/app_skirmish_shell_render.rs:1067`.
 - **Player-visible result:** no modal layering can be validated or matched.
 - **Verdict:** NOT-IMPLEMENTED.
 
 ### Stage 16 - Retail asset coverage for first paint
 
 - **gamemd:** first paint needs `MnScrnLCustomizeBattle.shp/.PAL`, owner-drawn button PCXs, listbox primitive/scrollbar art, and shell text.
-- **Rust:** button PCXs and scrollbar PCXs are loaded in the atlas at `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:188`, but the modal background pair is absent and no modal-specific draw path consumes any of them.
+- **Rust:** button PCXs and scrollbar PCXs are loaded in the atlas at `src/render/skirmish_shell_chrome.rs:188`, but the modal background pair is absent and no modal-specific draw path consumes any of them.
 - **Player-visible result:** partial asset coverage exists in memory, but the modal still paints nothing.
 - **Verdict:** FAIL.
 
 ## Top Player-Visible Gaps
 
 1. Clicking Choose Map now opens Rust modal state, but the parent setup remains drawn underneath; gamemd `0x006ACEE0` hides setup and calls modal wrapper `0x005E68A0`.
-2. Modal background/chrome is missing; atlas loads setup backgrounds at `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:166`; gamemd `0x6B` uses `MnScrnLCustomizeBattle.shp/.PAL`.
-3. Modal buttons are modeled at wrong rects; Rust uses local `(374,80,112,30)` etc. at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:518`; gamemd resource uses `UseMap=(425,122,108,23)`, `CreateRandomMap=(425,149,108,23)`, `Cancel=(425,346,108,23)`.
+2. Modal background/chrome is missing; atlas loads setup backgrounds at `src/render/skirmish_shell_chrome.rs:166`; gamemd `0x6B` uses `MnScrnLCustomizeBattle.shp/.PAL`.
+3. Modal buttons are modeled at wrong rects; Rust uses local `(374,80,112,30)` etc. at `src/ui/skirmish_shell/layout.rs:518`; gamemd resource uses `UseMap=(425,122,108,23)`, `CreateRandomMap=(425,149,108,23)`, `Cancel=(425,346,108,23)`.
 4. Modal title/preview/statics are wrong or absent; Rust title/preview at `layout.rs:521` do not match gamemd `0x694=(425,1,108,10)`, `0x468=(428,23,96,69)`, headings/status statics.
 5. Listboxes now render through a primitive modal path, but not through gamemd's owner-drawn `0x6EB` and `0x553` listbox paint path.
 
@@ -168,9 +168,9 @@ Current Rust now reaches:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODE_CATEGORY_0X6EB_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_ACCEPT_CANCEL_SIDE_EFFECTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_FLOW_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODE_CATEGORY_0X6EB_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_ACCEPT_CANCEL_SIDE_EFFECTS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_FLOW_GHIDRA_REPORT.md`
 - Rust contrast scan: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`.

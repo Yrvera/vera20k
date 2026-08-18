@@ -235,16 +235,16 @@ No Rust files were edited in this investigation.
   - `0x0073D0C3..0x0073D11C` (`DrawExtras` Harvester/+6D2/movement gates)
   - `0x0073EA8D..0x0073EB19` (state-1 short-retarget branch)
 - Prior reports read:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_FSM_ORE_DEPLETION_RETARGET_ARCHIVE_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/OREGATH_RENDERING_GHIDRA_REPORT.md`
+  - `docs/research/miner/traces/MINER_FSM_ORE_DEPLETION_RETARGET_ARCHIVE_TRACE.md`
+  - `docs/research/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
+  - `docs/research/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
+  - `docs/research/miner/OREGATH_RENDERING_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[General]` and `[HARV]`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini` base `[HARV]` fallback
+  - `ini/rulesmd.ini` `[General]` and `[HARV]`
+  - `ini/rules.ini` base `[HARV]` fallback
 - Rust scanned read-only:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/animation.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
+  - `src/sim/miner/miner_system.rs`
+  - `src/sim/miner/mod.rs`
+  - `src/sim/miner/miner_tests.rs`
+  - `src/sim/animation.rs`
+  - `src/sim/components.rs`

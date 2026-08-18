@@ -239,6 +239,6 @@ None for the scoped factory timer start, progress-step boundary, and factory-com
 ## Sources
 
 - Ghidra decompile/disassembly: `0x004C9B20`, `0x004C9EA0`, `0x004C9FB0`, `0x00426630`, `0x004C9C70`, `0x004FA350`, `0x004CA130`, `0x004CA1A0`, `0x004CA5A0`, `0x0055AFB0`.
-- Prior reports: `C:/Users/enok/Documents/ra2-rust-game-docs/GRIZZLY_BUILDTIMEMULTIPLIER_CONSUMER_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/FACTORY_CLASS_BUILD_SPEED_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/FACTORYCLASS_AND_CAMEOENTRY_STRUCT_LAYOUT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/STRIP_AI_FACTORY_DELIVERY_GLOBALS_AND_QUEUE_RESTART_GHIDRA_REPORT.md`.
-- INI files: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_tech.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue_tests.rs`.
+- Prior reports: `docs/research/GRIZZLY_BUILDTIMEMULTIPLIER_CONSUMER_GHIDRA_REPORT.md`, `docs/research/FACTORY_CLASS_BUILD_SPEED_GHIDRA_REPORT.md`, `docs/research/FACTORYCLASS_AND_CAMEOENTRY_STRUCT_LAYOUT.md`, `docs/research/STRIP_AI_FACTORY_DELIVERY_GLOBALS_AND_QUEUE_RESTART_GHIDRA_REPORT.md`.
+- INI files: `ini/rulesmd.ini`, `ini/rules.ini`.
+- Rust scan: `src/sim/production/production_tech.rs`, `src/sim/production/production_queue.rs`, `src/sim/production/production_queue_tests.rs`.

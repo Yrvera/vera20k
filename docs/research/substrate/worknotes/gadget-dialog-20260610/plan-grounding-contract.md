@@ -1,7 +1,7 @@
 # Plan-grounding lane — BEHAVIOR-CONTRACT DETAILS (A0/A1/A4/A5 + D-B3 + R1)
 
 Date: 2026-06-10. Lane: plan-grounding-contract. Ghidra MCP read-only; worktree anchors verified against
-`C:/Users/enok/Documents/ra2-uigadget-worktree` @ commit 7b79a186 (branch ui-gadget-substrate).
+`<local>/Documents/ra2-uigadget-worktree` @ commit 7b79a186 (branch ui-gadget-substrate).
 
 Provenance tags per claim:
 - **[V]** VERIFIED-LIVE this lane (MCP call cited inline)

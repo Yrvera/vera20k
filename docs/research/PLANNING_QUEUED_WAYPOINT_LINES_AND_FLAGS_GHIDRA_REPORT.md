@@ -141,5 +141,5 @@ This slot did not modify Rust. Source scan found visible target-line work in `sr
 - Ghidra decompiled: `0x006DAD60`, `0x00763980`, `0x00763BA0`, `0x006DBB60`, `0x0073CEC0`, `0x00731BF0`, `0x004AAF00`, `0x004AC700`, `0x005090F0`, `0x004DC840`, `0x004D8420`, `0x004D8E25`, `0x005BE970`, `0x005BE990`
 - Ghidra assembly/xrefs: `0x006D463F`, `0x006D46C6`, `0x006DAE02`, `0x006DB155`, `0x0073D3E7`, `0x00671DBF`, `0x006692D4`, `0x00669B31`, `0x00669716`
 - Memory inspected: `0x0082604C` (`MOUSE.SHA`), `0x008458F8` (`FLAGFLY.SHP`), `0x00842940` dash pattern, `0x0082D6B8` mouse action `0x3C`, `0x0083B43C`, `0x0083AB88`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:424`, `:630`, `:631`, `:632`, `:670`; base `rules.ini` matching defaults
-- Prior context checked: `C:/Users/enok/Documents/ra2-rust-game-docs/PLACEMENT_RALLY_WAYPOINT_VISUALS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_LINES_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`
+- INI checked: `ini/rulesmd.ini:424`, `:630`, `:631`, `:632`, `:670`; base `rules.ini` matching defaults
+- Prior context checked: `docs/research/PLACEMENT_RALLY_WAYPOINT_VISUALS_GHIDRA_REPORT.md`, `docs/research/TARGET_LINES_GHIDRA_REPORT.md`, `docs/research/TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`

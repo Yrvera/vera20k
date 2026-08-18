@@ -252,7 +252,7 @@ Evidence: source table read and first source sample `0x0058611B..0x00586170`, se
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
+- `docs/research/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
   - Replace: "Full `Zone_Estimate_Slope_Cost` internals were not re-documented here; only the call/added-cost contract was verified."
   - With: "Full helper internals are documented in `ZONE_ESTIMATE_SLOPE_COST_GHIDRA_REPORT.md`: level 0 returns 0; level 1 reads the neighbor representative from the level-1 graph and indexes `Foot+0x21C + 0x57E4`; level 2 uses level-2 representatives, 130-wide `+0x59F0` corner samples, direction-specific two-corner mins, and returns their arithmetic half-sum. `Zone_precheck` adds `ftol(helper_result * slope_factor)` only when slope factor is greater than `1e-5`."
 

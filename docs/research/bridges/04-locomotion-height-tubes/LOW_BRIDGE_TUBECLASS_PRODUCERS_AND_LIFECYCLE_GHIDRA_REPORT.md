@@ -201,7 +201,7 @@ Same-cell shells may still be live and important for predicates, cursor/action r
 Plain-text search command:
 
 ```text
-rg "\[Tubes\]" "C:/Users/enok/Documents/Command and Conquer Red Alert II" "C:/Users/enok/Documents/ra2-rust-game" -n --glob "*.map" --glob "*.yrm" --glob "*.mpr" --glob "*.ini"
+rg "\[Tubes\]" "<ra2-install>" "." -n --glob "*.map" --glob "*.yrm" --glob "*.mpr" --glob "*.ini"
 ```
 
 Result: no hits in plain-text files visible at those paths.

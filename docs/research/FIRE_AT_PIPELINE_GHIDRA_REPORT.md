@@ -9,7 +9,7 @@ date: 2026-04-23
 **Confidence:** High (primary + upstream callers decompiled end-to-end)
 **Active in YR:** Yes — every weapon discharge in a YR skirmish runs this pipeline.
 
-This report complements `C:/Users/enok/Documents/ra2-rust-game-docs/FIRE_AT_ANALYSIS.md`,
+This report complements `docs/research/FIRE_AT_ANALYSIS.md`,
 which covers the *internals* of `Fire_At` itself. The scope here is the **pipeline around**
 `Fire_At` — the per-tick callers that select a weapon, validate the shot, and dispatch
 the actual call, plus verification spot-checks on critical claims from the existing doc.
@@ -1049,16 +1049,16 @@ while `InRange` requires geometry.
 - `0x0046B270` — small helper: reads `weapon+0x130`
 
 ### Existing docs referenced
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIRE_AT_ANALYSIS.md` (primary prior report — extended here, not duplicated)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_COMBAT_WEAPON_SYSTEMS_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BURST_WEAPON_FIRING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_ACQUISITION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_MISSION_ATTACK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MISSION_ATTACK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GATTLING_WEAPON_STAGE_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AIRBURST_SUB_WEAPON_SPAWN_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_TARGET_FIELDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md`
+- `docs/research/FIRE_AT_ANALYSIS.md` (primary prior report — extended here, not duplicated)
+- `docs/research/TECHNOCLASS_COMBAT_WEAPON_SYSTEMS_REPORT.md`
+- `docs/research/BURST_WEAPON_FIRING_GHIDRA_REPORT.md`
+- `docs/research/TARGET_ACQUISITION_GHIDRA_REPORT.md`
+- `docs/research/FOOTCLASS_MISSION_ATTACK_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_MISSION_ATTACK_GHIDRA_REPORT.md`
+- `docs/research/GATTLING_WEAPON_STAGE_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/AIRBURST_SUB_WEAPON_SPAWN_GHIDRA_REPORT.md`
+- `docs/research/TECHNOCLASS_TARGET_FIELDS_GHIDRA_REPORT.md`
+- `docs/research/WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md`
 
 ### INI files checked
 - `ini/rulesmd.ini` (YR patch — authoritative)

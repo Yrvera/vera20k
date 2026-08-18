@@ -65,13 +65,13 @@ Retail YR building sections in `ini/rulesmd.ini` commonly set all three; example
 
 | Rust area | Status vs verified binary | Evidence |
 |---|---|---|
-| `ObjectType` parsing `Strength=` | MATCH for key/default storage | `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:808` uses `get_i32("Strength").unwrap_or(0)` |
-| `ObjectType` parsing `Armor=` | MATCH for key/default string | `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:809` uses `get("Armor").unwrap_or("none")` |
-| `ObjectType` parsing `Sight=` | MATCH for key/default storage | `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:824` uses `get_i32("Sight").unwrap_or(0)` |
-| Map entity health max | MATCH for using `Strength=` as max; UNKNOWN for exact map-token edge cases beyond 0..256 | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs:73-90` scales `map_ent.health` by `obj.strength` |
-| Production spawn current/max health | MATCH for ordinary nonzero-strength stock buildings | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs` sets current=max=`obj.strength.max(1)`; native `BuildingClass::Init_Managers @ 0x00442C40` copies `Type+0xA0` to both HP fields before constructor return |
-| Runtime vision radius | MATCH for using `Sight=` as entity vision radius with Rust cap | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs:106-109`, `:319`; `GameEntity::new` stores `vision_range` at `game_entity.rs:323-327` |
-| Armor lookup for damage | MATCH for type-field lookup in Rust's implemented AoE path | `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_aoe.rs:159-165` and `:264-270` |
+| `ObjectType` parsing `Strength=` | MATCH for key/default storage | `src/rules/object_type.rs:808` uses `get_i32("Strength").unwrap_or(0)` |
+| `ObjectType` parsing `Armor=` | MATCH for key/default string | `src/rules/object_type.rs:809` uses `get("Armor").unwrap_or("none")` |
+| `ObjectType` parsing `Sight=` | MATCH for key/default storage | `src/rules/object_type.rs:824` uses `get_i32("Sight").unwrap_or(0)` |
+| Map entity health max | MATCH for using `Strength=` as max; UNKNOWN for exact map-token edge cases beyond 0..256 | `src/sim/world/world_spawn.rs:73-90` scales `map_ent.health` by `obj.strength` |
+| Production spawn current/max health | MATCH for ordinary nonzero-strength stock buildings | `src/sim/world/world_spawn.rs` sets current=max=`obj.strength.max(1)`; native `BuildingClass::Init_Managers @ 0x00442C40` copies `Type+0xA0` to both HP fields before constructor return |
+| Runtime vision radius | MATCH for using `Sight=` as entity vision radius with Rust cap | `src/sim/world/world_spawn.rs:106-109`, `:319`; `GameEntity::new` stores `vision_range` at `game_entity.rs:323-327` |
+| Armor lookup for damage | MATCH for type-field lookup in Rust's implemented AoE path | `src/sim/combat/combat_aoe.rs:159-165` and `:264-270` |
 
 ## 7. Coverage Ledger
 
@@ -108,6 +108,6 @@ Retail YR building sections in `ini/rulesmd.ini` commonly set all three; example
 ## Sources
 
 - Ghidra decompilation / assembly context: `ObjectTypeClass::ReadINI`, `ObjectTypeClass::Constructor`, `TechnoTypeClass::ReadINI`, `TechnoTypeClass::Constructor`, `BuildingClass::ReadFromINI`, `FactoryClass::StartProduction @ 0x004C9C70`, `BuildingTypeClass` create-instance slot `0x0045E880`, `BuildingClass::Constructor @ 0x0043B740`, `BuildingClass::Init_Managers @ 0x00442C40`, `ObjectClass::Constructor @ 0x005F3900`, `ObjectClass::GetHealthRatio @ 0x005F5C60`, `BuildingClass::Mission_Construction @ 0x00449A50`.
-- Existing reports referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_UNLIMBO_AND_PLACEMENT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/combat/systems/verses_armor_matrix.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`.
-- INI files checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`.
-- Rust files checked read-only: `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_entity.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_aoe.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/vision/mod.rs`.
+- Existing reports referenced: `docs/research/BUILDINGCLASS_UNLIMBO_AND_PLACEMENT.md`, `docs/research/combat/systems/verses_armor_matrix.md`, `docs/research/FACTORYCLASS_PRODUCTION_DEEP_DIVE.md`, `docs/research/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`.
+- INI files checked: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`.
+- Rust files checked read-only: `src/rules/object_type.rs`, `src/sim/world/world_spawn.rs`, `src/sim/game_entity.rs`, `src/sim/components.rs`, `src/sim/combat/combat_aoe.rs`, `src/sim/vision/mod.rs`.

@@ -193,9 +193,9 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGLIGHTCLASS_SPOTLIGHT_PATH_GHIDRA_REPORT.md`: replace Q17 deferred wording with: "`FUN_005FF250/850/2D0` construct, rasterize, remove, and free the endpoint glow primitive; the beam body is two `DSurface +0x38` brightening line calls after `+0x78` clip/bounds calls. The line worker brightens existing 16-bit RGB channels and clamps to `0xFF`, with spotlight passing z-write flag `0`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGLIGHTCLASS_SPOTLIGHT_PATH_GHIDRA_REPORT.md`: replace Q18 deferred wording with: "`ProcessCellAction(0x23)` is live from mode-1 spotlight search when a non-ally object is inside threshold. It calls the generic attached-trigger/event processor on owner `+0x34`; event `0x23` is exact-match generic trigger event evaluation, not a direct spotlight-specific damage/reveal/tint side effect."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_FINAL_SYSTEM_MODEL_SYNTHESIS.md` and `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_POST_REINVESTIGATION_SYSTEM_MODEL_SYNTHESIS.md`: any line saying spotlight rasterization/cell action is deferred can be updated to point at this report while keeping spotlights outside ordinary ambience/lamp implementation scope.
+- `docs/research/BUILDINGLIGHTCLASS_SPOTLIGHT_PATH_GHIDRA_REPORT.md`: replace Q17 deferred wording with: "`FUN_005FF250/850/2D0` construct, rasterize, remove, and free the endpoint glow primitive; the beam body is two `DSurface +0x38` brightening line calls after `+0x78` clip/bounds calls. The line worker brightens existing 16-bit RGB channels and clamps to `0xFF`, with spotlight passing z-write flag `0`."
+- `docs/research/BUILDINGLIGHTCLASS_SPOTLIGHT_PATH_GHIDRA_REPORT.md`: replace Q18 deferred wording with: "`ProcessCellAction(0x23)` is live from mode-1 spotlight search when a non-ally object is inside threshold. It calls the generic attached-trigger/event processor on owner `+0x34`; event `0x23` is exact-match generic trigger event evaluation, not a direct spotlight-specific damage/reveal/tint side effect."
+- `docs/research/MAP_LIGHTING_FINAL_SYSTEM_MODEL_SYNTHESIS.md` and `docs/research/MAP_LIGHTING_POST_REINVESTIGATION_SYSTEM_MODEL_SYNTHESIS.md`: any line saying spotlight rasterization/cell action is deferred can be updated to point at this report while keeping spotlights outside ordinary ambience/lamp implementation scope.
 
 ## Remaining Uncertainty
 

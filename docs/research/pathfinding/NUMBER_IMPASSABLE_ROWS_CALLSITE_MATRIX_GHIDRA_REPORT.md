@@ -88,5 +88,5 @@ Rust also has a row-filter implementation in `src/sim/production/production_tech
 
 - Ghidra: `0x00458A00`, `0x0073F0A0`, `0x0073F5A2`, `0x0073F76D`, `0x0047C520`, `0x0065AD50`, `0x0045FE50`, `0x0046013A`.
 - Existing docs: `BUILDING_PATH_BLOCKING_PASSABILITY_DISCREPANCY_GHIDRA_REPORT.md`, `UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`, `BUILDINGTYPECLASS_CTOR_DEFAULTS.md`, `BUILDINGTYPECLASS_FIELDS.csv`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
+- INI: `ini/rulesmd.ini`, `ini/rules.ini`.
 - Rust scan only: `src/rules/object_type.rs`, `src/sim/production/production_tech.rs`, `src/sim/pathfinding/core.rs`, `src/sim/movement/bump_crush.rs`, `src/app_init.rs`, `src/app_sim_tick.rs`.

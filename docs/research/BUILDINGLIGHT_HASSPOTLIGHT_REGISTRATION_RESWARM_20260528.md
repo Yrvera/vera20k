@@ -178,7 +178,7 @@ Rust should keep `HasSpotlight` separate from the point-light fields. `BuildingL
 | `FUN_0055BAA0` helper behavior | verified | decompile `0x0055BAA0`; prior helper report | none |
 | `[General]` spotlight rule readers | verified | strings and xrefs `0x00671755..0x00671816` | none for key ownership |
 | Standard repo INI activation | verified negative | `rg -i "HasSpotlight" ini/rules.ini ini/rulesmd.ini ini/art.ini ini/artmd.ini` returned no matches | none for repo INI |
-| Configured retail visible-file activation | verified negative for visible files | `rg -i "HasSpotlight" "C:/Users/enok/Documents/Command and Conquer Red Alert II"` returned no matches | packed archive internals were not decoded in this slot |
+| Configured retail visible-file activation | verified negative for visible files | `rg -i "HasSpotlight" "<ra2-install>"` returned no matches | packed archive internals were not decoded in this slot |
 | Rust parser/surface scan | verified | `rg` over `src`; `src/rules/object_type.rs`, `src/map/lighting.rs`, `src/app_init.rs` | implementation absent |
 | Exact spotlight pixels/cell action | deferred | existing reports `BUILDINGLIGHTCLASS_BEAM_RASTERIZATION_AND_CELLACTION_0X23_GHIDRA_REPORT.md` | out-of-scope here; already covered elsewhere |
 
@@ -254,5 +254,5 @@ Asset role matrix:
 - Ghidra read-only string/xref evidence: `HasSpotlight @ 0x0081AEA0`, xref `0x0045FEEC`; `Spotlight*` strings `0x0083B850..0x0083B8B0`, xrefs `0x00671755..0x00671809`; `BuildingLightClass__Constructor` xrefs from `0x00441187` and `0x006C0451`; `FUN_00437050` vtable data xref `0x007E3BA8`; `FUN_0055BAA0` xrefs include `0x00435B01` and `0x00437070`.
 - Ghidra assembly contexts: `0x0045DFDA`, `0x0045FEE5..0x0045FEF4`, `0x00441169..0x00441190`, `0x00435907..0x0043591C`, `0x00435AF0..0x00435B01`, `0x00435B06..0x00435B3F`, `0x0043705F..0x00437075`, `0x00671755..0x00671816`.
 - Prior reports referenced: `docs/research/BUILDINGLIGHTCLASS_SPOTLIGHT_PATH_GHIDRA_REPORT.md`, `docs/research/BUILDINGLIGHTCLASS_BEAM_RASTERIZATION_AND_CELLACTION_0X23_GHIDRA_REPORT.md`, `docs/research/LOGIC_OBJECT_REGISTRATION_HELPER_FUN_0055BAA0_GHIDRA_REPORT.md`, `docs/research/DIRECT_NON_REVEAL_FUN_0055BAA0_CALLERS_RESWARM_20260528.md`.
-- INI scans: `ini/rules.ini`, `ini/rulesmd.ini`, `ini/art.ini`, `ini/artmd.ini`; visible configured retail files under `C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+- INI scans: `ini/rules.ini`, `ini/rulesmd.ini`, `ini/art.ini`, `ini/artmd.ini`; visible configured retail files under `<ra2-install>/`.
 - Rust scans: `src/rules/object_type.rs`, `src/map/lighting.rs`, `src/app_init.rs`, plus `rg` over `src` for `HasSpotlight`, `BuildingLight`, and spotlight terms.

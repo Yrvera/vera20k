@@ -159,15 +159,15 @@ None.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:6603`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:280`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:330`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/facing_table.rs:88`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/mod.rs:181`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_commands.rs:153`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs:70`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs:816`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track.rs:3467`
+- `docs/research/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini:6603`
+- `src/util/fixed_math.rs:280`
+- `src/util/fixed_math.rs:330`
+- `src/util/facing_table.rs:88`
+- `src/sim/movement/mod.rs:181`
+- `src/sim/movement/movement_commands.rs:153`
+- `src/sim/movement/movement_step.rs:70`
+- `src/sim/movement/movement_tick.rs:816`
+- `src/sim/movement/drive_track.rs:3467`
 
 Status: COMPLETE

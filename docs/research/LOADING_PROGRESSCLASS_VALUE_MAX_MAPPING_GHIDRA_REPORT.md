@@ -235,11 +235,11 @@ Asset role matrix:
 
 ## 16. Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md` should replace any wording that says progress clip math is "truncate-toward-zero, clamp to `0..=frame_width`, and `max_value == 0` behavior" with:
+`docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md` should replace any wording that says progress clip math is "truncate-toward-zero, clamp to `0..=frame_width`, and `max_value == 0` behavior" with:
 
 > Progress value mapping must model gamemd `ProgressClass`: standard offline Skirmish initializes one lane with max `100.0`; `FUN_0069AE90` admits only strict advancing milestones; `FUN_00643C50` stores `max * 0.01 * percent`, clamps only above max, and skips unchanged stored values. The visible `PROGBARM.SHP` frame-0 clip width is `Math__ftol(frame0_width * lane/max)` through gamemd's `Math__ftol/FISTP` helper. Do not claim a native lower clamp, draw-helper `0..=frame_width` clamp, or zero-max fallback; standard path remains in range by initialization and callback gating.
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/PROGBARM_PROGRESSCLASS_DRAW_GEOMETRY_GHIDRA_REPORT.md` can keep its formula, but future summaries should expand "`ftol`" to "`Math__ftol @ 0x007C5F00` using x87 `FISTP` under startup FPU control word `DAT_00822D80`".
+`docs/research/PROGBARM_PROGRESSCLASS_DRAW_GEOMETRY_GHIDRA_REPORT.md` can keep its formula, but future summaries should expand "`ftol`" to "`Math__ftol @ 0x007C5F00` using x87 `FISTP` under startup FPU control word `DAT_00822D80`".
 
 ## Sources
 

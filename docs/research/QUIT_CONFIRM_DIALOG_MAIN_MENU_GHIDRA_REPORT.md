@@ -327,4 +327,4 @@ Binary/memory evidence:
 
 Prior reports referenced:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_DIALOG_0XE2_FULL_VISIBLE_COMPOSITION_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_DIALOG_0XE2_FULL_VISIBLE_COMPOSITION_GHIDRA_REPORT.md`

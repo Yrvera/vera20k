@@ -177,16 +177,16 @@ Replace the Grizzly elite cadence wording in `units/allied/MTNK.md` with:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VETERANCY_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/combat/systems/veterancy_weapon_swap.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BURST_WEAPON_FIRING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/timing/weapon-rof-burst.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPONTYPECLASS_VERIFICATION_AND_CONSUMERS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_weapon.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/weapon_type.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`
+- `docs/research/VETERANCY_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/combat/systems/veterancy_weapon_swap.md`
+- `docs/research/BURST_WEAPON_FIRING_GHIDRA_REPORT.md`
+- `docs/research/timing/weapon-rof-burst.md`
+- `docs/research/WEAPONTYPECLASS_VERIFICATION_AND_CONSUMERS_GHIDRA_REPORT.md`
+- `docs/research/WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md`
+- `docs/research/units/allied/MTNK.md`
+- `ini/rulesmd.ini`
+- `ini/rules.ini`
+- `src/sim/combat/combat_weapon.rs`
+- `src/sim/combat/mod.rs`
+- `src/rules/weapon_type.rs`
+- `src/rules/object_type.rs`

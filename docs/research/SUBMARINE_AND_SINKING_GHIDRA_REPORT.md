@@ -803,7 +803,7 @@ added.
   - `UnitTypeClass::ReadINI` — 0x007478A3 (NonVehicle offset +0xE1B)
   - `RulesClass::ReadCombatDamage` — 0x0066BFA0 (SplashList parse)
   - `RulesClass::ReadGeneral` — 0x0066F16C (ShipSinkingWeight parse)
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — all naval
+- `ini/rulesmd.ini` — all naval
   unit sections, torpedo/sonic weapon sections, splash/wake general keys.
 - Prior research:
   - `CLOAKING_STEALTH_SYSTEM_GHIDRA_REPORT.md` — full cloak pipeline

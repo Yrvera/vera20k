@@ -145,7 +145,7 @@ Delta from binary: gamemd's ordinary runtime model is dirty-cell/list/rectangle 
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-05-08-disparity-scan-pathfinding.md` says `0x40000` is set during `CellClass::RecalcAttributes`. Replacement wording: "`CellClass::RecalcAttributes @ 0x0047D2B0` does not write `Cell+0x140` bit `0x40000`; the scoped passability recalc writes/mirrors `ZoneType` and level and may set bits `0x10000`/`0x20000`. Treat any `0x40000` cliff-ramp source as unresolved here or cite the actual writer."
+- `docs/gap-scans/2026-05-08-disparity-scan-pathfinding.md` says `0x40000` is set during `CellClass::RecalcAttributes`. Replacement wording: "`CellClass::RecalcAttributes @ 0x0047D2B0` does not write `Cell+0x140` bit `0x40000`; the scoped passability recalc writes/mirrors `ZoneType` and level and may set bits `0x10000`/`0x20000`. Treat any `0x40000` cliff-ramp source as unresolved here or cite the actual writer."
 
 ## Sources
 

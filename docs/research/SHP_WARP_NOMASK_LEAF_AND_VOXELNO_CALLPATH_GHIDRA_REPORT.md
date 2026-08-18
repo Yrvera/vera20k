@@ -192,10 +192,10 @@ Asset role matrix:
 
 ## 13. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/SHP_TECHNO_WARP_DRAW_PATH_GHIDRA_REPORT.md`: replace the deferred UnitClass wording with: "UnitClass `Voxel=no` SHP vehicle bodies do not route directly through `TechnoClass_DrawSHP`. The UnitClass vtable at `0x007F5C70` has `+0x554 = 0x0073B470`; read-only bytes in that function dispatch `vtable+0x55C`, which resolves to `UnitClass__Draw_Sprite_With_BridgeFudge @ 0x0073B140`. That path builds `0x2800`-rooted SHP flags and calls `Blitter_selector` plus `Standard_SHP_blitter` directly."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CLOAKING_VISUAL_PIPELINE.md`: replace blanket `flags&6 == 4 -> +0x78` wording with: "`+0x78` is only the standard no-mask 50% family selected when `0x3000` is clear and `0x800` is set. UnitClass SHP vehicle warp via `0x0073B140` normally uses `0x2804`, so it selects `+0xA4`, while no-mask `0x0E04`-style callers select `+0x78`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md`: add: "SHP UnitClass `Voxel=no` vehicle bodies have a separate UnitClass path (`0x0073B470 -> 0x0073B140`) and should not be generalized from VXL `TechnoClass::Draw` or `TechnoClass_DrawSHP` alone."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ZBUFFER_DEPTH_SYSTEM.md`: refine the `+0x78` row with: "The standard no-mask `+0x78` forward leaf uses `vtable_ZBuf_50pct_blend +0x4 = 0x004941E0`; despite the vtable name, the inspected scanline method does not read/write `g_ZBuffer`; it reads A-buffer/remap/intensity and half-blends into destination pixels."
+- `docs/research/SHP_TECHNO_WARP_DRAW_PATH_GHIDRA_REPORT.md`: replace the deferred UnitClass wording with: "UnitClass `Voxel=no` SHP vehicle bodies do not route directly through `TechnoClass_DrawSHP`. The UnitClass vtable at `0x007F5C70` has `+0x554 = 0x0073B470`; read-only bytes in that function dispatch `vtable+0x55C`, which resolves to `UnitClass__Draw_Sprite_With_BridgeFudge @ 0x0073B140`. That path builds `0x2800`-rooted SHP flags and calls `Blitter_selector` plus `Standard_SHP_blitter` directly."
+- `docs/research/CLOAKING_VISUAL_PIPELINE.md`: replace blanket `flags&6 == 4 -> +0x78` wording with: "`+0x78` is only the standard no-mask 50% family selected when `0x3000` is clear and `0x800` is set. UnitClass SHP vehicle warp via `0x0073B140` normally uses `0x2804`, so it selects `+0xA4`, while no-mask `0x0E04`-style callers select `+0x78`."
+- `docs/research/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md`: add: "SHP UnitClass `Voxel=no` vehicle bodies have a separate UnitClass path (`0x0073B470 -> 0x0073B140`) and should not be generalized from VXL `TechnoClass::Draw` or `TechnoClass_DrawSHP` alone."
+- `docs/research/ZBUFFER_DEPTH_SYSTEM.md`: refine the `+0x78` row with: "The standard no-mask `+0x78` forward leaf uses `vtable_ZBuf_50pct_blend +0x4 = 0x004941E0`; despite the vtable name, the inspected scanline method does not read/write `g_ZBuffer`; it reads A-buffer/remap/intensity and half-blends into destination pixels."
 
 ## Sources
 
@@ -207,5 +207,5 @@ Asset role matrix:
 - Ghidra read-only decompile: `Blitter_Scanline_Blend50pct_Remap @ 0x004941E0`.
 - Ghidra read-only disassembly success: `0x0073B470..0x0073B61F`, `0x00490B90..0x00490DF6`, `0x0048EBF0..0x0048F9BF`, `0x004941E0..0x0049429F`.
 - Retail `gamemd.exe` PE byte read, image base `0x00400000`, vtable pointers at `0x007F61C4` and `0x007F61CC`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` (`[DLPH]`, `[DRON]`, `[SQD] Voxel=no`).
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` (`[CLEG] Teleporter=yes` for SHP teleport contrast).
+- INI: `ini/artmd.ini` (`[DLPH]`, `[DRON]`, `[SQD] Voxel=no`).
+- INI: `ini/rulesmd.ini` (`[CLEG] Teleporter=yes` for SHP teleport contrast).

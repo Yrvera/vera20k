@@ -32,7 +32,7 @@ veterancy abilities, hardcoded behavior).
 
 ## rulesmd.ini — `[DOG]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4369`:
+Verbatim from `ini/rulesmd.ini:4369`:
 
 ```ini
 [DOG]
@@ -115,7 +115,7 @@ ImmuneToPsionics/IFVMode/Trainable/Natural).
 
 ## artmd.ini — `[DOG]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:366`:
+`ini/artmd.ini:366`:
 
 ```ini
 [DOG] ; Soviet Attack Dog
@@ -230,7 +230,7 @@ annotation.
 
 ## Voices and sounds
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`:
+`ini/soundmd.ini`:
 
 | INI key on DOG | soundmd block | Resolved samples |
 |----------------|---------------|------------------|

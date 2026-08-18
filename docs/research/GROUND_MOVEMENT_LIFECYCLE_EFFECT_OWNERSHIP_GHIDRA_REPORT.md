@@ -59,7 +59,7 @@ runs at all. These are mechanism DRIFT, not implementation details.
 All binary checks targeted the active retail `gamemd.exe` identified by the
 read-only `get_current_program_info(program="gamemd.exe")` call as x86
 little-endian 32-bit with image base `0x00400000`, loaded from
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`.
+`<ra2-install>/gamemd.exe`.
 
 Rust conclusions are frozen to clean HEAD
 `cbf4d8711d6c136964a2e9210c442e1c79542d69`. Its simulation tree differs from

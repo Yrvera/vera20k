@@ -31,7 +31,7 @@ Authoritative deep RE:
 
 ## rulesmd.ini — `[CLEG]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4125`:
+Verbatim from `ini/rulesmd.ini:4125`:
 
 ```ini
 [CLEG]
@@ -149,7 +149,7 @@ Implicit defaults:
 
 ## artmd.ini — `[CLEG]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:223`:
+`ini/artmd.ini:223`:
 
 ```ini
 [CLEG] ; Chrono Legion

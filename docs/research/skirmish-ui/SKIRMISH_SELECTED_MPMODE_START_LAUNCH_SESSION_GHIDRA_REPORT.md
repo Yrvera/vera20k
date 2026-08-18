@@ -235,6 +235,6 @@ Adversarial corner-case checks:
 
 - Ghidra read-only decompile: `0x006AE2C0`, `0x006AE3F0`, `0x006ACEE0`, `0x005E7160`, `0x005D6130`, `0x005D7590`, `0x005D5B60`, `0x005D7CE0`, `0x00686B20`, `0x005D6310`.
 - Ghidra assembly contexts: `0x006AE31C..0x006AE37B`, `0x005E734F..0x005E7388`, `0x006AD2BA..0x006AD34B`, `0x006AD34B..0x006AD36B`, `0x005D6BE0..0x005D6C63`.
-- Prior reports checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_MPMODES_SESSION_PACKING_BROAD_RECHECK_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`, `ini/rulesmd.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_modes.rs`, `src/skirmish_launch.rs`, `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish.rs`, `src/app_init.rs`, `src/app_transitions.rs`.
+- Prior reports checked: `docs/research/skirmish-ui/SKIRMISH_MPMODES_SESSION_PACKING_BROAD_RECHECK_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`.
+- INI checked: `ini/mpmodesmd.ini`, `ini/rulesmd.ini`.
+- Rust scanned: `src/skirmish_modes.rs`, `src/skirmish_launch.rs`, `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish.rs`, `src/app_init.rs`, `src/app_transitions.rs`.

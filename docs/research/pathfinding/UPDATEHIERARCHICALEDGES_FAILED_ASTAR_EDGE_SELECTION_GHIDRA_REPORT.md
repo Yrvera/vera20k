@@ -179,10 +179,10 @@ No INI key is read directly by `0x0042CCD0` or `0x0042CF80`.
 
 ## 11. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-design.md`
+- `docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-design.md`
   - Replace: "Implement the flat retry producer in `zone_hierarchy.rs` or `zone_search.rs` using `ZonePrecheckResult.paths`."
   - With: "Implement the flat retry producer using retained `ZonePrecheckResult.paths` plus current/start cell, per-level cell-zone ids, hierarchy graph adjacency, mover passability/cell-entry inputs, and a `FloodFillReachableZones`-equivalent split detector. `paths` alone are insufficient, but no A* frontier context is required by gamemd's scoped producer."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`
+- `docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`
   - Existing Task 8 gate is directionally correct. Tighten Step 5 wording to: "Use `ZonePrecheckResult.paths` only as one producer input; exact retry also requires current/start cell, per-level zone ids, hierarchy graph adjacency, mover passability/cell-entry inputs, and the `FloodFillReachableZones` split result. Do not require A* frontier context unless a future contradiction is found."
 
 ## Sources

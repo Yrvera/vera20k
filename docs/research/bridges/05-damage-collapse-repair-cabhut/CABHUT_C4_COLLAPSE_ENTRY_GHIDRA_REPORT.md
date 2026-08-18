@@ -191,7 +191,7 @@ Scanned Rust surfaces:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CABHUT_PER_CELL_DESTRUCTION_CASCADE_TRACE.md`
+- `docs/research/traces/CABHUT_PER_CELL_DESTRUCTION_CASCADE_TRACE.md`
   - Replace lines 100-105 and 130-133 wording with: "gamemd's CABHUT overlay path calls `DestroyBridgeFromCell_*`, which canonicalizes from the matched overlay cell and then calls a bounded `CollapseBridge_*_*` walker. The walker measures both axial extents, biases the start point, runs at most four axial steps with up to three per-step `DestroyBridge_*` attempts, and stops early when the next cell leaves the bridge overlay band. It does not walk the entire bridge span in one call."
   - Replace lines 389-394 wording with: "`DestroyBridgeFromCell_High @ 0x5749C0` should be modeled as canonical start selection plus bounded collapse dispatch, not as a single-shot full-span collapse."
 

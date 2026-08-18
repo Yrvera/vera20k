@@ -252,5 +252,5 @@ Current Rust surfaces scanned:
 - Ghidra read-only decompile/callees: `UnitClass::PerCellProcess @ 0x00739EC0`.
 - Ghidra read-only decompile: `TechnoClass::AI_Update @ 0x006F9E50`.
 - Ghidra read-only memory: `0x00816CC8 -> 0x00816E34`, bytes `"Enter\0"`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `[Enter] Rate=.016`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `miner_system.rs`, `miner_tests.rs`.
+- INI checked: `ini/rulesmd.ini`, `[Enter] Rate=.016`.
+- Rust scanned: `src/sim/miner/miner_dock_sequence.rs`, `miner_system.rs`, `miner_tests.rs`.

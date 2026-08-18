@@ -229,9 +229,9 @@ Asset role matrix:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/SIDEBAR_RADAR_POSITIONING.md`: replace the section title `FUN_0072ead0 -- Radar Frame Close Transition` with `FUN_0072EAD0 -- MP*SCRN* transition movie draw; this function does not draw g_RadarFrameClose_SHP / SSCRA*`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/SIDEBAR_RADAR_POSITIONING.md`: replace any wording that places `SSCRA*` through the right-panel `DAT_00B0FC1C` path with `SSCRA* is drawn by the owner-draw static path for child 0x72B under dialogs 0x103/0xBC7; standard resource geometry maps the child to 423x229, so the 424x230 SSCRA* frame draws at child origin and clips rather than centering.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_CHROME_COMPOSITING.md`: replace generic close-frame wording with `Current Rust uses generic radar.shp, but native Soviet shell/radar paths use separate SSCRBK*/SSCRT*/SSCRA* and MPSSCRN* assets; SSCRA* is consumed by the owner-draw static path for radar dialog child 0x72B, not by FUN_0072EAD0.`
+- `docs/research/SIDEBAR_RADAR_POSITIONING.md`: replace the section title `FUN_0072ead0 -- Radar Frame Close Transition` with `FUN_0072EAD0 -- MP*SCRN* transition movie draw; this function does not draw g_RadarFrameClose_SHP / SSCRA*`.
+- `docs/research/SIDEBAR_RADAR_POSITIONING.md`: replace any wording that places `SSCRA*` through the right-panel `DAT_00B0FC1C` path with `SSCRA* is drawn by the owner-draw static path for child 0x72B under dialogs 0x103/0xBC7; standard resource geometry maps the child to 423x229, so the 424x230 SSCRA* frame draws at child origin and clips rather than centering.`
+- `docs/research/RADAR_CHROME_COMPOSITING.md`: replace generic close-frame wording with `Current Rust uses generic radar.shp, but native Soviet shell/radar paths use separate SSCRBK*/SSCRT*/SSCRA* and MPSSCRN* assets; SSCRA* is consumed by the owner-draw static path for radar dialog child 0x72B, not by FUN_0072EAD0.`
 
 ## Remaining Uncertainty
 

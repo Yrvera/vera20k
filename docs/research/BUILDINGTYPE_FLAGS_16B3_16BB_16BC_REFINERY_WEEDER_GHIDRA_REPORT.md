@@ -122,9 +122,9 @@ The suspicious current drift is in `src/sim/miner/miner_dock_sequence.rs::refine
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "Branch 1 is gated by `BuildingTypeClass+0x16BC`, which the BuildingType reader maps to `Weeder`; stock GAREFN/NAREFN do not set `Weeder`, so this is not the standard stock refinery miner-deposit branch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`: replace row 35 wording that says refinery branch fixed / GAREFN-NAREFN pad `(12,11)` with "UNCHANGED/STALE: `GetDockCoord` `+0x16BC` branch is Weeder, not stock refinery; standard DockUnload refinery CAN_DOCK acceptance remains NW+(3,1), pending parent reconciliation."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_system.md`: replace "Refinery dock pad — NW+3 -> NW+2 (every miner deposit)" with "Do not apply NW+2 to stock refinery deposits; verify/undo stale Weeder-vs-refinery reclassification and keep stock DockUnload accepted cell NW+(3,1) unless other slots contradict."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "Branch 1 is gated by `BuildingTypeClass+0x16BC`, which the BuildingType reader maps to `Weeder`; stock GAREFN/NAREFN do not set `Weeder`, so this is not the standard stock refinery miner-deposit branch."
+- `docs/research/coord-cell-conversions/_parity.md`: replace row 35 wording that says refinery branch fixed / GAREFN-NAREFN pad `(12,11)` with "UNCHANGED/STALE: `GetDockCoord` `+0x16BC` branch is Weeder, not stock refinery; standard DockUnload refinery CAN_DOCK acceptance remains NW+(3,1), pending parent reconciliation."
+- `docs/research/coord-cell-conversions/_system.md`: replace "Refinery dock pad — NW+3 -> NW+2 (every miner deposit)" with "Do not apply NW+2 to stock refinery deposits; verify/undo stale Weeder-vs-refinery reclassification and keep stock DockUnload accepted cell NW+(3,1) unless other slots contradict."
 
 ## Sources
 
@@ -132,6 +132,6 @@ The suspicious current drift is in `src/sim/miner/miner_dock_sequence.rs::refine
 - Ghidra string searches: `"DockUnload" -> 0x0081AA94`, `"Refinery" -> 0x0081AA5C`, `"Weeder" -> 0x0081AC50`
 - Ghidra byte-reference searches: `94 AA 81 00 -> 0x004609DE`, `5C AA 81 00 -> 0x00460A5C`, `50 AC 81 00 -> 0x004604BA`
 - Ghidra vtable memory: `0x007E45B0..0x007E45FF`, entry `0x007E45D4 = 0x0045FE50`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+- INI: `ini/rulesmd.ini`, `ini/rules.ini`
 - Rust scan: `src/rules/object_type.rs`, `src/rules/ruleset.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`
 

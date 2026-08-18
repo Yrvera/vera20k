@@ -203,5 +203,5 @@ Proposed Rust test names:
 - Fresh Ghidra decompile: `0x005E68A0`, `0x00622820`, `0x006040B0`.
 - Fresh Ghidra assembly/context: `0x006AD947`, `0x005E68B7..0x005E68D5`, `0x00611CBA`, `0x00611D17`, `0x00611D39`, `0x00611E28`, `0x00611E75`, `0x005E6E44`, `0x005E6E5F`, `0x005E6E92`.
 - Fresh string search: `STT:ScenarioButtonCancel @ 0x00834824`, `STT:ScenarioButtonRandom @ 0x00834840`, `STT:ScenarioButtonUseMap @ 0x0083485C`, `STT:ScenarioMapThumbnail @ 0x00834878`, `STT:ScenarioListMaps @ 0x00834894`, `STT:ScenarioListGameType @ 0x008348AC`.
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_STATUS_HOVER_MAPPING_GHIDRA_REPORT.md`.
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_modes.rs`.
+- Prior report: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_STATUS_HOVER_MAPPING_GHIDRA_REPORT.md`.
+- Current Rust scan: `src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_modes.rs`.

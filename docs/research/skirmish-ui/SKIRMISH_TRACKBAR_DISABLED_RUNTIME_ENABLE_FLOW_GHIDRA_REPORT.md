@@ -205,5 +205,5 @@ Evidence: source scan `rg` over `src/ui/skirmish_shell`, `src/app_skirmish_shell
 - Ghidra decompiled/read-only: `OwnerDraw_Trackbar_0061D950 @ 0x0061D950`
 - Ghidra byte-pattern/read-only: scoped ID hits for `0x529`, `0x511`, `0x50C`; `EnableWindow` import-call hits checked for standard `0x102` functions
 - Prior docs checked: `SKIRMISH_TRACKBAR_CHANGED_VALUE_SOUND_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`, `SKIRMISH_AI_ROW_STATE_LABELS_AND_ITEM_DATA_GHIDRA_REPORT.md`, `SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`, `SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`
+- Rust scanned: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`, `src/app.rs`

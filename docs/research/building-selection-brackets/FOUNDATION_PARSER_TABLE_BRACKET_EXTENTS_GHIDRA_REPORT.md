@@ -176,6 +176,6 @@ No Rust files were modified.
 - Ghidra decompile/disassembly: `0x00474DA0`, `0x0045FE50`, `0x0045DD90`, `0x00464AF0`, `0x007C8D20`
 - Ghidra assembly context: `0x004610DE`, `0x00461225..0x00461257`
 - Static memory reads: `0x0081B9D8`, `0x0081BB68`, `0x008192B8`, `0x00819310`
-- Existing report checked: `C:/Users/enok/Documents/ra2-rust-game-docs/building-selection-brackets/BUILDINGTYPE_DIMENSION2_BRACKET_EXTENTS_GHIDRA_REPORT.md`
+- Existing report checked: `docs/research/building-selection-brackets/BUILDINGTYPE_DIMENSION2_BRACKET_EXTENTS_GHIDRA_REPORT.md`
 - INI files checked: `ini/art.ini`, `ini/artmd.ini`, `ini/rules.ini`, `ini/rulesmd.ini`
 - Rust files checked: `src/sim/production/production_tech.rs`, `src/app_selection_brackets.rs`, `src/app_render/build_instances.rs`

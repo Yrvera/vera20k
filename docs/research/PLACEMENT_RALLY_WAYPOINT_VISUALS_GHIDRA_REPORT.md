@@ -396,9 +396,9 @@ Ranked by visible impact:
 - `MaximumBuildingPlacementFailures = 3` (AI retry limit, not rendering)
 
 **Prior reports extended:**
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_LINES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FACTORY_RALLY_POINT_LINE_CALLER_COLOR_GATE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PLANNING_QUEUED_WAYPOINT_LINES_AND_FLAGS_GHIDRA_REPORT.md`
+- `docs/research/TARGET_LINES_GHIDRA_REPORT.md`
+- `docs/research/FACTORY_RALLY_POINT_LINE_CALLER_COLOR_GATE_GHIDRA_REPORT.md`
+- `docs/research/PLANNING_QUEUED_WAYPOINT_LINES_AND_FLAGS_GHIDRA_REPORT.md`
 
 **Rust files referenced:**
 - [`src/render/selection_overlay.rs:507-552`](src/render/selection_overlay.rs#L507-L552)

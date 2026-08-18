@@ -101,8 +101,8 @@ Evidence:
 
 ## Stale Doc Fixes Suggested
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md`: replace "Bullet speed" in the `[105mm]` / `[105mmE]` comparison with "weapon speed field; arcing `Cannon` launch/timing is handled by generic `BulletClass` ballistic setup and impact occurs on bullet detonation, not on the firing tick."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md`: expand the projectile section with: "Stock Grizzly uses `[Cannon] Image=120MM`, not a Grizzly-specific projectile. `TechnoClass::Fire_At` launches a live arcing `BulletClass`; damage and impact animations occur when `BulletClass::AI` reaches a detonation condition and calls `WarheadTypeClass::Detonate`."
+- `docs/research/units/allied/MTNK.md`: replace "Bullet speed" in the `[105mm]` / `[105mmE]` comparison with "weapon speed field; arcing `Cannon` launch/timing is handled by generic `BulletClass` ballistic setup and impact occurs on bullet detonation, not on the firing tick."
+- `docs/research/units/allied/MTNK.md`: expand the projectile section with: "Stock Grizzly uses `[Cannon] Image=120MM`, not a Grizzly-specific projectile. `TechnoClass::Fire_At` launches a live arcing `BulletClass`; damage and impact animations occur when `BulletClass::AI` reaches a detonation condition and calls `WarheadTypeClass::Detonate`."
 
 ## Status
 

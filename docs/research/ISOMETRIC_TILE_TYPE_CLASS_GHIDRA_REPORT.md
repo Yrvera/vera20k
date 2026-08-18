@@ -481,7 +481,7 @@ in gamemd.exe (verified by string search):
 
 ## 10. Current Rust Implementation Status
 
-Mapping of Ghidra findings to `c:/Users/enok/Documents/ra2-rust-game/src/`:
+Mapping of Ghidra findings to `src/`:
 
 | Binary system | Rust file | Status |
 |---------------|-----------|--------|

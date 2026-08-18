@@ -271,4 +271,4 @@ VERSION.TXT-derived numbers. If `FUN_0074FAE0` runs standalone, both integers de
 COMPLETE
 
 Report written to:
-`C:/Users/enok/Documents/ra2-rust-game-docs/VERSION_TXT_RESOLUTION_AND_FALLBACK_GHIDRA_REPORT.md`
+`docs/research/VERSION_TXT_RESOLUTION_AND_FALLBACK_GHIDRA_REPORT.md`

@@ -1,7 +1,7 @@
 # RMG unconsumed options — UrbanPresence, Accessibility, RegionSize
 
 **Target:** gamemd.exe (verified `get_current_program_info`: name `gamemd.exe`, image base `00400000`,
-`executable_path` `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`).
+`executable_path` `<ra2-install>/gamemd.exe`).
 **Date:** 2026-07-25
 **Scope:** the three MapSeed random-map-generator options that the Rust port parses, clamps,
 randomizes and round-trips but never feeds into `PipelineInputs` — `urban_presence`,

@@ -242,8 +242,8 @@ This report covers input hit-testing rather than paint composition. The relevant
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ScrollClass_research.md`: replace "Radar click handling converts the clicked radar pixel to a cell coordinate using `RadarClass__CellToRadarPixel` (inverse)" with "Radar click handling uses radar content-relative pixel-to-object/cell reverse mapping (`RadarClass__GetObjectAtRadarPixel @ 0x00656750`) and then sets the tactical viewport through `FUN_006D6070`; `RadarClass__CellToRadarPixel @ 0x006550C0` is the forward cell-to-radar projection."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/MouseClass_research.md`: replace "slot +0x074 `0x00654490` Radar_ClickHandler" with "`0x00654490` is `RadarClass__ComputeRadarMapBounds`, not a click handler; the radar camera setter wrapper observed in this pass is `0x00653F70 -> 0x006D6070`."
+- `docs/research/ScrollClass_research.md`: replace "Radar click handling converts the clicked radar pixel to a cell coordinate using `RadarClass__CellToRadarPixel` (inverse)" with "Radar click handling uses radar content-relative pixel-to-object/cell reverse mapping (`RadarClass__GetObjectAtRadarPixel @ 0x00656750`) and then sets the tactical viewport through `FUN_006D6070`; `RadarClass__CellToRadarPixel @ 0x006550C0` is the forward cell-to-radar projection."
+- `docs/research/MouseClass_research.md`: replace "slot +0x074 `0x00654490` Radar_ClickHandler" with "`0x00654490` is `RadarClass__ComputeRadarMapBounds`, not a click handler; the radar camera setter wrapper observed in this pass is `0x00653F70 -> 0x006D6070`."
 
 ## 11. Remaining Uncertainty
 

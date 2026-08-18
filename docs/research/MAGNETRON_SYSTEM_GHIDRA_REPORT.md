@@ -285,7 +285,7 @@ line and separate `VoiceSecondaryWeaponAttack=MagnetronMagneShakeVoice` handle t
 
 ## 4. INI Keys
 
-All values verified from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` (the
+All values verified from `ini/rulesmd.ini` (the
 base `rules.ini` has no Magnetron entries — YR-only unit).
 
 ### 4.1 Unit `[TELE]` — lines 8586–8637

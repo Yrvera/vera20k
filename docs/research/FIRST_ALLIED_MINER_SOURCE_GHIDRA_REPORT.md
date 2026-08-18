@@ -135,31 +135,31 @@ The implementation risk is not adding CMIN to AMCV/GACNST or start seeding; the 
 
 ## 12. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/CMIN.md:127` should replace:
+- `docs/research/units/allied/CMIN.md:127` should replace:
   - Old: `Allied ConYard's FreeUnit=CMIN spawns the first one on deploy.`
   - New: `Verified 2026-05-21: stock CMIN is excluded from random starting-unit generation by AllowedToStartInMultiplayer=no. AMCV-created GACNST does not spawn CMIN; the first confirmed stock Allied CMIN source is GAREFN completion/placement via [GAREFN] FreeUnit=CMIN.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/CMIN.md:280` should replace:
+- `docs/research/units/allied/CMIN.md:280` should replace:
   - Old: `AllowedToStartInMultiplayer=no -- Allied ConYard spawns first CMIN via its FreeUnit= line (the Allied-side FreeHarvester mechanism).`
   - New: `AllowedToStartInMultiplayer=no excludes CMIN from the lobby starting-unit complement. The first confirmed stock Allied CMIN is created later by the Allied refinery's section-local FreeUnit=CMIN path, not by GACNST/ConYard deploy.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md:384` should replace "only the AMCV -> GACNST -> free CMIN starter sequence" with "AMCV start plus later GAREFN FreeUnit=CMIN; no GACNST free-miner spawn."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/soviet/HARV.md:114` and `:325` contain analogous ConYard/free-harvester wording and should be rechecked against `[NAREFN] FreeUnit=HARV`; this report did not freshly investigate Soviet start.
+- `docs/research/units/allied/MTNK.md:384` should replace "only the AMCV -> GACNST -> free CMIN starter sequence" with "AMCV start plus later GAREFN FreeUnit=CMIN; no GACNST free-miner spawn."
+- `docs/research/units/soviet/HARV.md:114` and `:325` contain analogous ConYard/free-harvester wording and should be rechecked against `[NAREFN] FreeUnit=HARV`; this report did not freshly investigate Soviet start.
 
 ## Sources
 
 - Existing Ghidra reports/docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/GACNST_FREE_UNIT_AFTER_AMCV_DEPLOY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/GAME_START_INITIALIZATION.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SPAWN_POINT_ASSIGNMENT_SYSTEM.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`
+  - `docs/research/GACNST_FREE_UNIT_AFTER_AMCV_DEPLOY_GHIDRA_REPORT.md`
+  - `docs/research/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`
+  - `docs/research/GAME_START_INITIALIZATION.md`
+  - `docs/research/SPAWN_POINT_ASSIGNMENT_SYSTEM.md`
+  - `docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`
 - INI files checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Rust files scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_refinery.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
+  - `src/app_skirmish.rs`
+  - `src/sim/game_options.rs`
+  - `src/sim/production/production_refinery.rs`
+  - `src/rules/ruleset.rs`
 
 ## Status
 

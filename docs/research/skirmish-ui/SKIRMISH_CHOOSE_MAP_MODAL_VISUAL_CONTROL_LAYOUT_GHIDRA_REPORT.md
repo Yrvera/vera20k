@@ -21,7 +21,7 @@ The implementation-facing visual model is:
 
 ## 2. Resource Template `0x6B`
 
-Fresh local PE resource extraction from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` found:
+Fresh local PE resource extraction from `<ra2-install>/gamemd.exe` found:
 
 | Field | Value | Evidence | Active in YR |
 |---|---:|---|---|

@@ -286,7 +286,7 @@ All five variants are attempted sequentially; in all YR skirmish maps only
 
 ## 11. Rust Implementation Status
 
-File: `c:/Users/enok/Documents/ra2-rust-game/src/map/map_file.rs`
+File: `src/map/map_file.rs`
 
 | Aspect | gamemd.exe behavior | Rust status |
 |--------|---------------------|-------------|

@@ -229,10 +229,10 @@ Replacement wording for stale combo-popup claims:
 - Ghidra read-only assembly context: `FUN_0060D450 @ 0x0060D450`.
 - Ghidra read-only assembly context: registered `ComboDropWin` WndProc block `0x0060D540..0x0060F311`.
 - Ghidra read-only decompile/check: `FUN_0060D320` adjacent owner-draw state lookup helper.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_COMBOBOX_00617250_GHIDRA_REPORT.md`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`.
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`.
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_COMBOBOX_00617250_GHIDRA_REPORT.md`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`.
+- Rust read-only scan: `src/ui/skirmish_shell/layout.rs`.
+- Rust read-only scan: `src/ui/skirmish_shell/state.rs`.
+- Rust read-only scan: `src/app_skirmish_shell_render.rs`.

@@ -294,7 +294,7 @@ No "only first dirty cell" pathology.
 
 ## Report File
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/traces/CABHUT_BRIDGE_COLLAPSE_VISUAL_TRACE.md`
+`docs/research/traces/CABHUT_BRIDGE_COLLAPSE_VISUAL_TRACE.md`
 
 ---
 

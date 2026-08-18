@@ -815,5 +815,5 @@ For implementation, every one of these must match gamemd.exe exactly:
 - `GATTLING_WEAPON_STAGE_SYSTEM_GHIDRA_REPORT.md` (Type+0xCD5 IsGattling flag)
 
 **INI files checked:**
-- `c:\Users\enok\Documents\ra2-rust-game\ini\rulesmd.ini` — ROT, ROF, Burst, OmniFire, FireAngle, OpportunityFire, TurretAnim*, [General] VeteranROF, CloseEnough, MissileROTVar
-- `c:\Users\enok\Documents\ra2-rust-game\ini\artmd.ini` — TurretOffset, sprite-related turret keys
+- `ini/rulesmd.ini` — ROT, ROF, Burst, OmniFire, FireAngle, OpportunityFire, TurretAnim*, [General] VeteranROF, CloseEnough, MissileROTVar
+- `ini/artmd.ini` — TurretOffset, sprite-related turret keys

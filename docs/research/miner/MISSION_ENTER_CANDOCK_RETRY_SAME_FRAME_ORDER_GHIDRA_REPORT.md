@@ -134,10 +134,10 @@ Therefore a waiting miner at art `QueueingCell=NW+(4,1)` can claim the contact o
 
 Current Rust surfaces scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`: `tick_miners` snapshots miners sorted by stable id and processes each snapshot in order. Shared dock state mutates during this pass, so a later waiter can observe an earlier releaser's contact clear in the same Rust tick.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`: `RefineryDockContacts` stores contacts, a deterministic waiting retry queue, contact-entered state, and pad occupancy. `hello_or_wait` accepts only when capacity is free and the waiting miner is at the queue front.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`: `phase_departing` releases pad/contact and does not call a promotion callback; `phase_mission_enter` owns retry/admission and distinguishes accepted-cell movement from entered/pad handoff.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`: current tests now cover waiter-after-releaser same-tick admission, waiter-before-releaser non-promotion, approach HELLO-only behavior, and QueueingCell-to-accepted-cell movement before entered state.
+- `src/sim/miner/miner_system.rs`: `tick_miners` snapshots miners sorted by stable id and processes each snapshot in order. Shared dock state mutates during this pass, so a later waiter can observe an earlier releaser's contact clear in the same Rust tick.
+- `src/sim/miner/miner_dock.rs`: `RefineryDockContacts` stores contacts, a deterministic waiting retry queue, contact-entered state, and pad occupancy. `hello_or_wait` accepts only when capacity is free and the waiting miner is at the queue front.
+- `src/sim/miner/miner_dock_sequence.rs`: `phase_departing` releases pad/contact and does not call a promotion callback; `phase_mission_enter` owns retry/admission and distinguishes accepted-cell movement from entered/pad handoff.
+- `src/sim/miner/miner_tests.rs`: current tests now cover waiter-after-releaser same-tick admission, waiter-before-releaser non-promotion, approach HELLO-only behavior, and QueueingCell-to-accepted-cell movement before entered state.
 
 Rust appears to match the core static ordering better than the earlier partial report described. Remaining implementation caution: Rust uses stable-id order, not gamemd's live-object vector identity/order. That is deterministic and acceptable internally, but parity tests should phrase expectations as order-dependent rather than universal same-tick or universal next-tick takeover.
 
@@ -212,7 +212,7 @@ Rust appears to match the core static ordering better than the earlier partial r
 - Ghidra read-only decompile: `RadioClass::Receive_Radio @ 0x0065A820`.
 - Ghidra assembly context: `0x0055B608..0x0055B619`, `0x005B307A..0x005B30C1`, `0x0073E1F6`, `0x0073E24F`, `0x0073E279`.
 - Prior docs: `BUILDING_RECEIVE_RADIO_0X08_CLEARANCE_QUEUE_GHIDRA_REPORT.md`, `CHRONO_MINER_DOCK_ARRIVAL_LINK_TIMING_GHIDRA_REPORT.md`, `TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_FRAME_ORDER_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
+- INI checked: `ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
 - Rust scanned: `src/sim/miner/miner_system.rs`, `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`.
 
 ## Status

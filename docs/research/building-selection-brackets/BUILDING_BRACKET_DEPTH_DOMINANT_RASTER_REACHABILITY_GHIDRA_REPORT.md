@@ -1,6 +1,6 @@
 # Building Bracket Depth-Dominant Raster Reachability - Ghidra Report
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/building-selection-brackets/BUILDING_BRACKET_DEPTH_DOMINANT_RASTER_REACHABILITY_GHIDRA_REPORT.md`  
+**Report path:** `docs/research/building-selection-brackets/BUILDING_BRACKET_DEPTH_DOMINANT_RASTER_REACHABILITY_GHIDRA_REPORT.md`  
 **Target:** building bracket depth-dominant raster reachability  
 **Status:** COMPLETE  
 **Active in YR:** Yes for the selected-building bracket path; No for depth-dominant raster reachability in normal stock building bracket lines.  

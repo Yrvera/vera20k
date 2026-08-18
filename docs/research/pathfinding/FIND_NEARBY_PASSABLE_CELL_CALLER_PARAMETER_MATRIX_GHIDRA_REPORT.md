@@ -70,7 +70,7 @@ Active in YR: Yes. Do not call `param_13` "reject bridge" in Rust. The observed 
 
 ## Stale Doc Replacement Wording
 
-Doc path: `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
+Doc path: `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
 
 Replace the parameter table wording for `param_6`:
 

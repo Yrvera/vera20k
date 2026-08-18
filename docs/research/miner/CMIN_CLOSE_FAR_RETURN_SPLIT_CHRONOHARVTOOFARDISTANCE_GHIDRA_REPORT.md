@@ -147,16 +147,16 @@ Residual implementation caveat: Rust clamps configured threshold values to at le
 ## 11. Stale Docs / Follow-up Wording
 
 - `CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md` section 6 — **[RESOLVED 2026-05-25, re-confirmed 2026-07-19]** this pointer is itself now stale: that doc's §6 (and its top supersession note) were already updated on 2026-05-25 and no longer claim a hardcoded 2-cell inbound warp threshold. Its §5 also already attributes the inbound warp to the teleport *locomotor* (StateMachineTick), not to state-2 — consistent with the phase-3 chrono-warp-trigger reframe. No edit needed there.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/CMIN.md` wording that describes the split as ore-field distance should be narrowed. Replacement wording: "In `Mission_Harvest` state 2, CMIN compares its current object-coordinate distance to the candidate refinery against `ChronoHarvTooFarDistance * 256`; ore-field distance is not the measured value for this return split."
+- `docs/research/units/allied/CMIN.md` wording that describes the split as ore-field distance should be narrowed. Replacement wording: "In `Mission_Harvest` state 2, CMIN compares its current object-coordinate distance to the candidate refinery against `ChronoHarvTooFarDistance * 256`; ore-field distance is not the measured value for this return split."
 
 ## Sources
 
 - Ghidra read-only decompile: `UnitClass::Mission_Harvest @ 0x0073E5E0`.
 - Ghidra read-only decompile: `BuildingClass::Receive_Radio @ 0x0043C2D0`.
 - Ghidra read-only decompile: `RulesClass::ReadGeneral @ 0x00670003`.
-- Existing reports: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CMIN_STATE2_CLOSE_FAR_RETURN_TO_MISSION_ENTER_DISPATCH_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_MISSION_ENTER_REFINERY_RETRY_QUEUE_LOOP_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`.
+- Existing reports: `docs/research/miner/CMIN_STATE2_CLOSE_FAR_RETURN_TO_MISSION_ENTER_DISPATCH_GHIDRA_REPORT.md`; `docs/research/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`; `docs/research/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`; `docs/research/UNIT_MISSION_ENTER_REFINERY_RETRY_QUEUE_LOOP_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini`; `ini/rules.ini`; `ini/artmd.ini`; `ini/art.ini`.
+- Rust scan: `src/rules/ruleset.rs`; `src/sim/miner/mod.rs`; `src/sim/miner/miner_system.rs`; `src/sim/miner/miner_dock_sequence.rs`; `src/sim/miner/miner_tests.rs`.
 
 ## Status
 

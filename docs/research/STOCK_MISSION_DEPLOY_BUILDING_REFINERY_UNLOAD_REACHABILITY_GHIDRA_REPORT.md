@@ -221,11 +221,11 @@ No Rust or repo source files were edited. The current Rust direction already app
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch any claim that stock `HARV/CMIN` require `UnitType+0x5E0 > 0`; they can reach the harvester branch through the `<= 0` path and `Harvester=yes`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch the `PathType::Has_Valid_Steps` polarity if it says valid steps take cleanup or direct `return 5`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`: narrow any language that frames `ReleaseDockedHarvester` / `Force_Track(0x47)` as normal stock refinery completion.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`: its earlier uncertainty about `DAT_0089F6A0` value is superseded by `0x0049F2F0`, which initializes the lookup as `(-1,0)`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CHRONO_MINER_NAVCOM_RADIO_SYSTEM_MODEL_SYNTHESIS.md`: remains broadly correct; link this report as the canonical branch-polarity and state-4 evidence.
+- `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch any claim that stock `HARV/CMIN` require `UnitType+0x5E0 > 0`; they can reach the harvester branch through the `<= 0` path and `Harvester=yes`.
+- `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`: patch the `PathType::Has_Valid_Steps` polarity if it says valid steps take cleanup or direct `return 5`.
+- `docs/research/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`: narrow any language that frames `ReleaseDockedHarvester` / `Force_Track(0x47)` as normal stock refinery completion.
+- `docs/research/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`: its earlier uncertainty about `DAT_0089F6A0` value is superseded by `0x0049F2F0`, which initializes the lookup as `(-1,0)`.
+- `docs/research/CHRONO_MINER_NAVCOM_RADIO_SYSTEM_MODEL_SYNTHESIS.md`: remains broadly correct; link this report as the canonical branch-polarity and state-4 evidence.
 
 ## Sources
 

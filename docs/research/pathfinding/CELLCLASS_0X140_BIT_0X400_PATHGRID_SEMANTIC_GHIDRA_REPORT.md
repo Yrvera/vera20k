@@ -200,7 +200,7 @@ Rust comparison is read-only and implementation-facing only:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_PASSABILITY_BUILDING_PLACEMENT_FLAGS_GHIDRA_REPORT.md` OQ-6 replacement wording:
+- `docs/research/CELL_PASSABILITY_BUILDING_PLACEMENT_FLAGS_GHIDRA_REPORT.md` OQ-6 replacement wording:
   "`CellClass+0x140 bit 0x400` is a bridge-state inactive/fallback endpoint marker, written by `CellClass::SetBridgeDirection_NESW/NWSE` when their state argument is zero and cleared by normal bridge overlay marking with state `1`. It blocks `0x0047C620` terrain fallback placement and is read by bridge destruction fallback and Ion Cannon impact-Z logic. It is not the A* bridge approach cost flag; A* uses `0x40000`."
 
 ## 10. Remaining Uncertainty

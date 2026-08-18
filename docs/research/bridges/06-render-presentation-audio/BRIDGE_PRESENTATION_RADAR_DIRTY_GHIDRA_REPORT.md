@@ -218,12 +218,12 @@ Collapse handling in `src/sim/world/bridge_orchestrator.rs:328..334` applies fal
 - Ghidra decompile: `RadarClass__MarkTerrainDirty @ 0x006551C0`, `RadarClass__ClearBackground @ 0x00655250`, `RadarClass__MarkCellDirty @ 0x006562D0`, `RadarClass__RenderCellPixel @ 0x00655C50`
 - Ghidra decompile: `CellClass__SetBridgeDirection_NESW @ 0x0047E040`, `CellClass__SetBridgeDirection_NWSE @ 0x0047E470`
 - Ghidra decompile: `MapClass__RepairBridgeWalker_NS_Low @ 0x0057F6A0`, `EW_Low @ 0x0057FBC0`, `NS_High @ 0x005800D0`, `EW_High @ 0x00580600`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADAR_EVENT_CLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RADAR_MINIMAP_PIXEL_RENDER_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/BRIDGE_DEEP_SLOT5_AUDIO_RENDER_PRESENTATION_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/walker.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/radar.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/minimap.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
+- `docs/research/RADAR_EVENT_CLASS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RADAR_MINIMAP_PIXEL_RENDER_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
+- `docs/research/traces/BRIDGE_DEEP_SLOT5_AUDIO_RENDER_PRESENTATION_TRACE.md`
+- `src/sim/world/world_orders.rs`
+- `src/sim/bridge_state/walker.rs`
+- `src/sim/radar.rs`
+- `src/render/minimap.rs`
+- `src/app_sim_tick.rs`

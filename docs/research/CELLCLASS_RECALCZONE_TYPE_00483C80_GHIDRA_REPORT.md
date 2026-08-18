@@ -147,9 +147,9 @@ Tiny details:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PASSABILITY_VERIFIED.md`: replace "Column 1 is IsCrate" with "Column 1 is assigned when an overlay's inherited `ObjectTypeClass+0x22D Crushable=` flag is true; `OverlayTypeClass+0x2AA Crate=` is not read by `CellClass::RecalcZoneType @ 0x00483C80`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TODO_ZONE_FIDELITY_FIXES.md`: replace "If road overlay (IsRoad) -> ZoneType 1 (Road)" with "If overlay `Crushable=` (`OverlayType/ObjectType+0x22D`) -> ZoneType 1; this check precedes `Wall=`."
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/passability.rs`: replace comments describing matrix columns as local `LandType` with "The binary matrix columns are reduced `ZoneType` values from `CellClass::RecalcZoneType`; local land-type remaps must be treated as compatibility shims, not the source of truth."
+- `docs/research/ZONE_PASSABILITY_VERIFIED.md`: replace "Column 1 is IsCrate" with "Column 1 is assigned when an overlay's inherited `ObjectTypeClass+0x22D Crushable=` flag is true; `OverlayTypeClass+0x2AA Crate=` is not read by `CellClass::RecalcZoneType @ 0x00483C80`."
+- `docs/research/TODO_ZONE_FIDELITY_FIXES.md`: replace "If road overlay (IsRoad) -> ZoneType 1 (Road)" with "If overlay `Crushable=` (`OverlayType/ObjectType+0x22D`) -> ZoneType 1; this check precedes `Wall=`."
+- `src/sim/pathfinding/passability.rs`: replace comments describing matrix columns as local `LandType` with "The binary matrix columns are reduced `ZoneType` values from `CellClass::RecalcZoneType`; local land-type remaps must be treated as compatibility shims, not the source of truth."
 
 ## Sources
 

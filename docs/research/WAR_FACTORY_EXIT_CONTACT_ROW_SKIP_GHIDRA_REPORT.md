@@ -174,9 +174,9 @@ Rust delta:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BIB_SYSTEM_GHIDRA_REPORT.md`: replace wording that says `DAT_0089F690` magnitude/east edge still needs runtime verification with: "`Foundation_direction_table_init @ 0x0049F2F0` initializes `DAT_0089F690` to `(1,0)`, so the HasBib branch probes the east neighbor; this is separate from `NumberImpassableRows`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/fidelity-checks/refinery-placement-bib.md`: replace the final "does not cover" line "`The Can_Enter_Cell HasBib edge-relaxation (see N1 above - needs runtime data)`" with: "`The HasBib east-edge relaxation is covered in N1; war-factory `NumberImpassableRows` contact row-skip is a separate live `Can_Enter_Cell` exception.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_PATH_BLOCKING_PASSABILITY_DISCREPANCY_GHIDRA_REPORT.md`: replace wording that says row-count reachability is not exhausted for war factories with: "`For stock land war-factory produced vehicles, row-count reachability is confirmed: successful exit creates reciprocal RadioClass contact, then `UnitClass::Can_Enter_Cell` uses `NumberImpassableRows=1` to skip same-building cells at `x >= origin+1` for that contacted mover.`"
+- `docs/research/BIB_SYSTEM_GHIDRA_REPORT.md`: replace wording that says `DAT_0089F690` magnitude/east edge still needs runtime verification with: "`Foundation_direction_table_init @ 0x0049F2F0` initializes `DAT_0089F690` to `(1,0)`, so the HasBib branch probes the east neighbor; this is separate from `NumberImpassableRows`."
+- `docs/fidelity-checks/refinery-placement-bib.md`: replace the final "does not cover" line "`The Can_Enter_Cell HasBib edge-relaxation (see N1 above - needs runtime data)`" with: "`The HasBib east-edge relaxation is covered in N1; war-factory `NumberImpassableRows` contact row-skip is a separate live `Can_Enter_Cell` exception.`"
+- `docs/research/BUILDING_PATH_BLOCKING_PASSABILITY_DISCREPANCY_GHIDRA_REPORT.md`: replace wording that says row-count reachability is not exhausted for war factories with: "`For stock land war-factory produced vehicles, row-count reachability is confirmed: successful exit creates reciprocal RadioClass contact, then `UnitClass::Can_Enter_Cell` uses `NumberImpassableRows=1` to skip same-building cells at `x >= origin+1` for that contacted mover.`"
 
 ## Sources
 
@@ -191,8 +191,8 @@ Rust delta:
 - Ghidra decompile: `0x006F4AB0` `TechnoClass::Receive_Radio`
 - Ghidra decompile: `0x00737430` `UnitClass::Receive_Radio`
 - Ghidra decompile: `0x0049F2F0` `Foundation_direction_table_init`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_PATH_BLOCKING_PASSABILITY_DISCREPANCY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `docs/research/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
+- `docs/research/BUILDING_PATH_BLOCKING_PASSABILITY_DISCREPANCY_GHIDRA_REPORT.md`
+- `docs/research/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`

@@ -3,7 +3,7 @@
 **Date:** 2026-05-21  
 **Address(es):** `0x00640710`, `0x00641B00`, `0x00689D30`, `0x006418B0`  
 **Investigation Mode:** coverage-map  
-**Claimed Scope:** Standard retail offline Skirmish map files in `C:/Users/enok/Documents/Command and Conquer Red Alert II/` with extensions `.mmx`, `.yro`, `.map`, `.mpr`, `.yrm`: `[PreviewPack]` presence/decode, `[Header] NumberStartingPoints` / `WaypointN` presence, live `STARTBUT.SHP` overlay eligibility, and baked red preview-marker pixels.  
+**Claimed Scope:** Standard retail offline Skirmish map files in `<ra2-install>/` with extensions `.mmx`, `.yro`, `.map`, `.mpr`, `.yrm`: `[PreviewPack]` presence/decode, `[Header] NumberStartingPoints` / `WaypointN` presence, live `STARTBUT.SHP` overlay eligibility, and baked red preview-marker pixels.  
 **Non-Scope:** MIX-contained maps not present as root stock map files, custom user maps, runtime screenshot capture, exact `STARTBUT.SHP` pixel clipping, map chooser list filtering/sorting, and generated random-map UI beyond prior binary facts.  
 **Confidence:** High for the 54 local retail root map files and the binary gates checked here. Medium for treating this as the full "stock map" universe because this pass did not enumerate nested archive map lists beyond the local retail root files.  
 **Active in YR:** Yes. The selected-map preview decode path is active in offline Skirmish, and the retail files checked here are the local map files consumed by that flow.
@@ -27,7 +27,7 @@ Only 9 maps, all `.yro`, contain `[Header] NumberStartingPoints` with a value in
 
 Local data source:
 
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/`
+`<ra2-install>/`
 
 Files scanned:
 
@@ -166,5 +166,5 @@ Implementation fixture implication:
 - Ghidra decompile: `[Header]` preview metadata helper `FUN_00689D30`.
 - Ghidra decompile: PreviewPack writer `0x006418B0`.
 - Prior docs: `PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`, `GENERATE_TERRAIN_PREVIEW_START_MARKERS_GHIDRA_REPORT.md`, `SCENARIO_PREVIEW_HEADER_DEFAULTS_AND_DUSTBOWL_SOURCE_PATH_GHIDRA_REPORT.md`.
-- Local retail data: `C:/Users/enok/Documents/Command and Conquer Red Alert II/*.mmx`, `*.yro`, `Dustbowl.map`.
+- Local retail data: `<ra2-install>/*.mmx`, `*.yro`, `Dustbowl.map`.
 - Current Rust reference: `src/map/preview.rs`, `src/app_list_maps.rs`, `src/app_skirmish_shell_render.rs`.

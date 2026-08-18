@@ -24,7 +24,7 @@ Ghidra trace of the `UseOwnName`/`RequiredHouses`/`RevealOnFire` flag paths.
 
 ## rulesmd.ini — `[SNIPE]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4278`:
+Verbatim from `ini/rulesmd.ini:4278`:
 
 ```ini
 [SNIPE]
@@ -133,7 +133,7 @@ UseOwnName=true
 
 ## artmd.ini — `[SNIPE]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:301`:
+`ini/artmd.ini:301`:
 
 ```ini
 [SNIPE] ; Sniper

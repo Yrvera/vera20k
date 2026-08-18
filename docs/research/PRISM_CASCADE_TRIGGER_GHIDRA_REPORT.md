@@ -584,7 +584,7 @@ called against both `rules*.ini` and `art*.ini` for each building type,
 and the art file's `IsAnimDelayedFire` and `DelayedFireDelay` keys
 overwrite the same struct offsets (+0x16a7 and +0x16ec).
 
-In `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`:
+In `ini/artmd.ini`:
 
 ```
 [NATSLA]
@@ -1282,11 +1282,11 @@ without resetting count — a contrived edge case.
   `0x0044B5BB`, `0x0044B65C` (mode=1)
 
 **INI files checked:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — `[General]`,
+- `ini/rulesmd.ini` — `[General]`,
   `[ATESLA]`, `[PrismShot]`, `[PrismSupport]`, `[PrismWarhead]`
-- `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` — `[GAPRIS_A]`,
+- `ini/artmd.ini` — `[GAPRIS_A]`,
   `[GAPRIS_AD]`, `[GAPRIS_B]`, `[GAPRIS_BD]`
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rules.ini` — `[General]`
+- `ini/rules.ini` — `[General]`
   (`PrismSupportDelay=60` differs from YR's `45`)
 
 **String addresses:**

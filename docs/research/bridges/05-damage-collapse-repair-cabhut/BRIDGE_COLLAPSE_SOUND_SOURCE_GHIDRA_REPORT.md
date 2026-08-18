@@ -187,7 +187,7 @@ Proposed Rust test names:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CABHUT_BRIDGE_COLLAPSE_VISUAL_TRACE.md`: replace "BlowUpBridge contains splash-sound call chain but exact sound ID is unidentified" with "BlowUpBridge has no direct sound call. Its bridge-collapse sound comes indirectly from the spawned `BridgeExplosions` anim's `StartSound`/fallback `Report` field; standard YR maps `TWLT026/TWLT036/TWLT050/TWLT070` to `ExplosionShard/Explosion06/Explosion07/Explosion09`."
+- `docs/research/traces/CABHUT_BRIDGE_COLLAPSE_VISUAL_TRACE.md`: replace "BlowUpBridge contains splash-sound call chain but exact sound ID is unidentified" with "BlowUpBridge has no direct sound call. Its bridge-collapse sound comes indirectly from the spawned `BridgeExplosions` anim's `StartSound`/fallback `Report` field; standard YR maps `TWLT026/TWLT036/TWLT050/TWLT070` to `ExplosionShard/Explosion06/Explosion07/Explosion09`."
 
 ## Sources
 
@@ -198,9 +198,9 @@ Proposed Rust test names:
 - Ghidra `AnimClass::AI @ 0x00423AC0`
 - Ghidra `VocClass::PlayAt @ 0x007509E0`
 - Ghidra string xrefs: `BridgeExplosions @ 0x0083CEDC`, `MetallicDebris @ 0x0083CEF0`, `StartSound @ 0x00818418`, `Report @ 0x00818410`, `EVA_BridgeRepaired @ 0x00825538`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ANIMATION_SOUNDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGEEXPLOSIONS_RULES_OFFSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `ini/soundmd.ini`
+- `docs/research/ANIMATION_SOUNDS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGEEXPLOSIONS_RULES_OFFSETS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`

@@ -119,8 +119,8 @@ Current Rust far-return staging also uses `refinery_queue_cell` in `src/sim/mine
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md` section 6.1 uses wording that says "if InDockQueue(sender)" before the hardcoded cell calculation. Replacement wording: "The function checks contact membership and may try HELLO if a free contact exists, but the standard DockUnload `0x13`/`0x12` sequence is not guarded by a final `InDockQueue(sender)` hard reject; no-slot/no-contact can still return `1` after direct `0x12` assignment/deferral."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md` stage 5 says `0x0E` returns NEGATORY when no slot is available. Replacement wording: "`HELLO(0x02)` can reject when Contacts[] is full, but `BuildingClass::Receive_Radio` case `0x0E` standard DockUnload does not itself hard-return `10` merely because no free contact slot exists; it can still send `0x13`/`0x12` and return `1` without `0x18/0x16`."
+- `docs/research/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md` section 6.1 uses wording that says "if InDockQueue(sender)" before the hardcoded cell calculation. Replacement wording: "The function checks contact membership and may try HELLO if a free contact exists, but the standard DockUnload `0x13`/`0x12` sequence is not guarded by a final `InDockQueue(sender)` hard reject; no-slot/no-contact can still return `1` after direct `0x12` assignment/deferral."
+- `docs/research/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md` stage 5 says `0x0E` returns NEGATORY when no slot is available. Replacement wording: "`HELLO(0x02)` can reject when Contacts[] is full, but `BuildingClass::Receive_Radio` case `0x0E` standard DockUnload does not itself hard-return `10` merely because no free contact slot exists; it can still send `0x13`/`0x12` and return `1` without `0x18/0x16`."
 
 ## 10. Negative Facts / Do Not Do
 
@@ -147,6 +147,6 @@ Current Rust far-return staging also uses `refinery_queue_cell` in `src/sim/mine
 - Ghidra live decompile: `FootClass::Mission_Enter @ 0x004D9290`
 - `ini/rulesmd.ini`
 - `ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`
+- `docs/research/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`

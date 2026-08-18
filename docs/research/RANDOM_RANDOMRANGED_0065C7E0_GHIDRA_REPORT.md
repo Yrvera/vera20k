@@ -158,12 +158,12 @@ Visible initialization / seeding:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`: replace `| 0x0065C7E0 | DamageFireAnims (related) | - | DAMAGE_FIRE_ANIMS |` with `| 0x0065C7E0 | Random::RandomRanged | Inclusive sorted-bound deterministic RNG helper using ScenarioClass random state in representative gameplay callers | RANDOM_RANDOMRANGED_0065C7E0 |`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`: after the sentence "`RandomRanged(1, strength)` uses inclusive bounds", add `Helper contract verified in RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md: equal bounds return without a draw, reversed bounds are sorted, ordinary spans use mask-and-reject sampling from Scenario+0x218, not modulo.`
+- `docs/research/ADDRESS_MAP.md`: replace `| 0x0065C7E0 | DamageFireAnims (related) | - | DAMAGE_FIRE_ANIMS |` with `| 0x0065C7E0 | Random::RandomRanged | Inclusive sorted-bound deterministic RNG helper using ScenarioClass random state in representative gameplay callers | RANDOM_RANDOMRANGED_0065C7E0 |`.
+- `docs/research/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`: after the sentence "`RandomRanged(1, strength)` uses inclusive bounds", add `Helper contract verified in RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md: equal bounds return without a draw, reversed bounds are sorted, ordinary spans use mask-and-reject sampling from Scenario+0x218, not modulo.`
 
 ## Sources
 
-- Binary static disassembly of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`:
+- Binary static disassembly of `<ra2-install>/gamemd.exe`:
   - `0x0065C7E0..0x0065C88A` - target helper.
   - `0x0065C780..0x0065C7D0` - raw 250-word RNG draw helper.
   - `0x0065C6D0..0x0065C777` - RNG initializer.
@@ -173,10 +173,10 @@ Visible initialization / seeding:
   - Initialization windows: `0x006832C8..0x006832D4`, `0x00683564..0x0068356C`, `0x0052FDEE..0x0052FE51`.
 - Import table: `0x007E1138` maps to `KERNEL32.GetTickCount`.
 - Rust scan:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/rng.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_hash.rs`
+  - `src/sim/rng.rs`
+  - `src/sim/world/mod.rs`
+  - `src/sim/world/world_hash.rs`
 - Prior docs referenced for caller context only:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/REPAIRBRIDGEWALKER_BODIES_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+  - `docs/research/REPAIRBRIDGEWALKER_BODIES_GHIDRA_REPORT.md`

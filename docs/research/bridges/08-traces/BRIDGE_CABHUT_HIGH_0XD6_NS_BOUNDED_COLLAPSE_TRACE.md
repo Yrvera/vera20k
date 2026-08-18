@@ -51,16 +51,16 @@ Verdict tally: PASS: 5 | FAIL: 2 | UNCHECKED: 3 | NOT-IMPLEMENTED: 0
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_SYSTEM_MODEL_SYNTHESIS.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CABHUT_C4_COLLAPSE_ENTRY_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_SYSTEM_MODEL_SYNTHESIS.md`
+- `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/CABHUT_C4_COLLAPSE_ENTRY_GHIDRA_REPORT.md`
 - Ghidra read-only decompile: `BuildingClass::Update @ 0x0043FB20`
 - Ghidra read-only decompile: `MapClass::DestroyBridge_High_OnHutDeath @ 0x00574000`
 - Ghidra read-only decompile: `MapClass::DestroyBridgeFromCell_High @ 0x005749C0`
 - Ghidra read-only decompile: `MapClass::CollapseBridge_NS_High @ 0x00575BA0`
 - Ghidra xrefs: `0x00574000` called from `BuildingClass::Update @ 0x0044031B` and `BombClass::Detonate @ 0x00438982`; `0x00575BA0` called from `DestroyBridgeFromCell_High @ 0x00574B8D/0x00574BDA/0x00574C13`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/walker.rs`
+- `ini/rulesmd.ini`
+- `src/sim/world/bridge_orchestrator.rs`
+- `src/sim/world/world_orders.rs`
+- `src/sim/bridge_state/mod.rs`
+- `src/sim/bridge_state/walker.rs`

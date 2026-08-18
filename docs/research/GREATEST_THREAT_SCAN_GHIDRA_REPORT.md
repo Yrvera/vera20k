@@ -723,16 +723,16 @@ Collected from the resolutions above — things the port MUST do to match the bi
 * `0x007E9228..0x007E9250`: 6 IEEE 754 doubles (approach thresholds)
 
 **Docs referenced:**
-* `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_ACQUISITION_GHIDRA_REPORT.md` — parent threat-system report
-* `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_MISSION_ATTACK_GHIDRA_REPORT.md` — Mission_Attack dispatch + §3 partial sketch of this function
-* `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_VTABLE_COMPLETE.md` — vtable slot identities
-* `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_MISSION_HANDLERS_GHIDRA_REPORT.md` — vtable dispatch summary
-* `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_STRUCT_LAYOUT.md` — instance field offsets (source of the +0x688 label conflict)
-* `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_PATHFINDING_AND_MOVEMENT.md` — g_DirectionOffsets reference
-* `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md` §11.7 — g_DirectionOffsets layout
+* `docs/research/TARGET_ACQUISITION_GHIDRA_REPORT.md` — parent threat-system report
+* `docs/research/FOOTCLASS_MISSION_ATTACK_GHIDRA_REPORT.md` — Mission_Attack dispatch + §3 partial sketch of this function
+* `docs/research/FOOTCLASS_VTABLE_COMPLETE.md` — vtable slot identities
+* `docs/research/FOOTCLASS_MISSION_HANDLERS_GHIDRA_REPORT.md` — vtable dispatch summary
+* `docs/research/FOOTCLASS_STRUCT_LAYOUT.md` — instance field offsets (source of the +0x688 label conflict)
+* `docs/research/FOOTCLASS_PATHFINDING_AND_MOVEMENT.md` — g_DirectionOffsets reference
+* `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md` §11.7 — g_DirectionOffsets layout
 
 **INI:**
-* `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`: `CloseRange=`, `GuardRange=`, `DefaultToGuardArea=`, `HunterSeeker=`, `VirtualScanner`, `CanApproachTarget=`, `MyEffectivenessCoefficient*` family. Most feed `TechnoClass::Greatest_Threat`, not this function. `OpportunityFire=` is read from the same INI but lives at `TypeClass+0x6AF` and does NOT interact with this function — see `OPPORTUNITY_FIRE_GHIDRA_REPORT.md`.
+* `ini/rulesmd.ini`: `CloseRange=`, `GuardRange=`, `DefaultToGuardArea=`, `HunterSeeker=`, `VirtualScanner`, `CanApproachTarget=`, `MyEffectivenessCoefficient*` family. Most feed `TechnoClass::Greatest_Threat`, not this function. `OpportunityFire=` is read from the same INI but lives at `TypeClass+0x6AF` and does NOT interact with this function — see `OPPORTUNITY_FIRE_GHIDRA_REPORT.md`.
 
 **Rust source:**
 * [src/sim/combat/combat_targeting.rs](../src/sim/combat/combat_targeting.rs) — current threat scanning implementation

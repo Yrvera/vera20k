@@ -96,13 +96,13 @@ Current Rust mismatch/risk:
 
 ## Stale-Doc Replacement Wording
 
-Exact path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_DROPDOWN_ROW_INTERNAL_PAINT_GHIDRA_REPORT.md`
+Exact path: `docs/research/skirmish-ui/SKIRMISH_DROPDOWN_ROW_INTERNAL_PAINT_GHIDRA_REPORT.md`
 
 Replace any wording equivalent to "Rust clipping is sufficient for long dropdown labels" with:
 
 > ComboDropWin row text is not merely clipped or wrapped. The binary measures the UTF-16 scratch string against `current_client_width - 0x14` and zero-terminates one UTF-16 code unit at a time until the measured width fits, then draws the shortened single-line string with `FUN_00621040` flag `0x04`. Rust must use an equivalent no-wrap pre-truncation path for exact long-label parity.
 
-Exact path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`
+Exact path: `docs/research/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`
 
 Replace any wording that groups dropdown row text with ordinary clipped shell text with:
 

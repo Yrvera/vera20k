@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-28  
 **Scope:** `TechnoClass::Draw` behavior when `IsWarpingOut` or `IsBeingWarped` is true, and the Rust-facing unit render delta.  
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game/docs/research/TECHNOCLASS_DRAW_BEINGWARPED_TRANSLUCENCY_GHIDRA_REPORT.md`
+**Report path:** `docs/research/TECHNOCLASS_DRAW_BEINGWARPED_TRANSLUCENCY_GHIDRA_REPORT.md`
 
 ## Working Notes
 

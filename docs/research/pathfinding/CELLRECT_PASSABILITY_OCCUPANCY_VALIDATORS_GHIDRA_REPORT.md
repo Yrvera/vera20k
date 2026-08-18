@@ -181,8 +181,8 @@ Current Rust has the relevant surfaces but not a unified binary-compatible `Cell
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace the `CheckOccupancy` summary "`Checks the entire foundation rectangle for object occupation`" with "`Checks the entire rectangle for cell-field blockers, object-list blockers, optional house/site reservation bits, and playfield containment; dynamic unit occupancy is only one adjacent concept and `Cell+0xDC` is skipped when the layer argument is `-1`.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`Occupancy check: CellRect__CheckOccupancy (0x586780) -- no other units blocking`" with "`Optional rectangle occupancy/blocker check: `CellRect__CheckOccupancy @ 0x00586780`; it rejects `Cell+0x44/+0x4C/+0x11C`, RTTI `0x24`, building occupants, optional `Cell+0xDC` reservation bits, and out-of-playfield rectangles. In `Find_Nearby_Passable_Cell`, the reservation layer is `-1`, so `Cell+0xDC` is skipped.`"
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace the `CheckOccupancy` summary "`Checks the entire foundation rectangle for object occupation`" with "`Checks the entire rectangle for cell-field blockers, object-list blockers, optional house/site reservation bits, and playfield containment; dynamic unit occupancy is only one adjacent concept and `Cell+0xDC` is skipped when the layer argument is `-1`.`"
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`Occupancy check: CellRect__CheckOccupancy (0x586780) -- no other units blocking`" with "`Optional rectangle occupancy/blocker check: `CellRect__CheckOccupancy @ 0x00586780`; it rejects `Cell+0x44/+0x4C/+0x11C`, RTTI `0x24`, building occupants, optional `Cell+0xDC` reservation bits, and out-of-playfield rectangles. In `Find_Nearby_Passable_Cell`, the reservation layer is `-1`, so `Cell+0xDC` is skipped.`"
 
 ## 10. Remaining Uncertainty
 

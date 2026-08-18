@@ -153,6 +153,6 @@ the next cell before detecting the wall one cell ahead.
 
 ## Report File
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/traces/PATHFIND_REPATH_MIDROUTE_BLOCK_TRACE.md`
+`docs/research/traces/PATHFIND_REPATH_MIDROUTE_BLOCK_TRACE.md`
 
 **Status: COMPLETE**

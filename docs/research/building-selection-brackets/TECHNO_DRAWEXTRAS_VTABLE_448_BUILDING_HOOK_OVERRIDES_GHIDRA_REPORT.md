@@ -76,4 +76,4 @@ The slot looks like a reserved/alliance overlay hook from its placement and gate
 - Ghidra decompile: `BuildingClass::Constructor @ 0x0043B740`
 - Ghidra read memory: `0x007E4304`, `0x007E42F4`, `0x007E3EBC`
 - Ghidra search byte pattern: `c0 60 6f 00`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:755`
+- INI: `ini/rulesmd.ini:755`

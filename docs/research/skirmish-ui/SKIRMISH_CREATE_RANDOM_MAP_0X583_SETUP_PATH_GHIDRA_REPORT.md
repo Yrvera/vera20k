@@ -190,13 +190,13 @@ Rust now has a random sentinel shape but not the native command-side seed/option
 
 ## Stale Docs / Follow-up Docs
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_PREVIEW_REFRESH_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_PREVIEW_REFRESH_GHIDRA_REPORT.md`
 
 Replace OQ-12 with:
 
 > `[RESOLVED] OQ-12 - Create Random Map command 0x583 hides the chooser, calls 0x005E8590, and only continues when the random-map dialog returns 1. The accepted path saves DAT_00ABDFD8 seed/options to RandMap.Sed through 0x00597730, replaces DAT_00AC1154 from RandMap.img, update-or-appends exactly one RandMap.Sed scenario record, reselects that record in listbox 0x553, restores the previous committed index before the normal accept helper, and then commits through 0x005E7160. Terrain formulas inside 0x00598960 remain owned by the generator-internals report.`
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`
 
 Refine the sentinel creation/update paragraph with:
 

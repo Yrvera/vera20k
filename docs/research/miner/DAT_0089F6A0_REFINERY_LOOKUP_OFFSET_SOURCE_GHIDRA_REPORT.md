@@ -225,4 +225,4 @@ None for the target slice. A live debugger byte read was unavailable, but static
 - Ghidra `decompile_function 0x0073D630`
 - Ghidra `get_assembly_context 0x0073E022,0x0073E030,0x0073E195,0x0073E19C,0x0073E2D5,0x0073E2DC`
 - Ghidra `decompile_function 0x0047C520`
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`
+- Prior report: `docs/research/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`

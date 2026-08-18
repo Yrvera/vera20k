@@ -133,7 +133,7 @@ Negative caller distinction:
 
 ## 6. Current Rust Implementation Status
 
-Observed Rust surface: `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`.
+Observed Rust surface: `src/sim/passenger.rs`.
 
 - `PassengerCargo.passengers` is documented as "boarding order (FIFO unload)" and `board()` appends with `Vec::push`.
 - `unload_first()` removes index `0`, so current ordinary behavior is FIFO.
@@ -192,7 +192,7 @@ Adversarial corner-case answers:
 
 Stale Docs / Follow-up Docs:
 
-- Path: `C:/Users/enok/Documents/ra2-rust-game-docs/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`
+- Path: `docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`
 - Replacement wording: `Generic vehicle transport unload pops the cargo linked-list head. Ordinary generic vehicle boarding inserts each newly accepted passenger at the cargo head through CargoClass::AddPassenger @ 0x004733A0, so ordinary player-visible generic transport unload is LIFO (newest boarder unloads first), not FIFO. AddPassenger has a conditional pre-linked-tail splice: if the passenger being inserted already has a +0x30 tail whose first node has Object+0x14 bit 0x4 set, the contiguous flagged tail remains immediately behind the inserted passenger and the old cargo head is attached after that tail.`
 
 ## 10. Negative Facts / Do Not Do
@@ -216,8 +216,8 @@ Stale Docs / Follow-up Docs:
 - Ghidra decompile/disassembly: `FUN_004DE710 @ 0x004DE710`, `0x004DE710..0x004DE74D`.
 - Ghidra decompile/disassembly: `FUN_00710670 @ 0x00710670`, `0x00710670..0x007106DA`.
 - Ghidra decompile/disassembly: `UnitClass::PerCellProcess @ 0x00739EC0`, relevant ranges `0x0073A237..0x0073A2E4` and `0x0073A64A..0x0073A78C`.
-- Prior context report: `C:/Users/enok/Documents/ra2-rust-game-docs/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`.
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`.
+- Prior context report: `docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`.
+- Current Rust scan: `src/sim/passenger.rs`.
 
 ## Status
 

@@ -125,11 +125,11 @@ This report does not recommend replacing all `Option` APIs. It identifies that R
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_LIFECYCLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ISOMAPPACK5_DECODER_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FULL_PASSABILITY_RECALC_0047D2B0_GHIDRA_REPORT.md`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
+- `docs/research/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
+- `docs/research/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`
+- `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_LIFECYCLE_GHIDRA_REPORT.md`
+- `docs/research/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`
+- `docs/research/ISOMAPPACK5_DECODER_GHIDRA_REPORT.md`
+- `docs/research/FULL_PASSABILITY_RECALC_0047D2B0_GHIDRA_REPORT.md`
+- Rust scan: `src/map/resolved_terrain.rs`, `src/sim/pathfinding/core.rs`, `src/sim/bridge_state/mod.rs`, `src/sim/overlay_grid.rs`

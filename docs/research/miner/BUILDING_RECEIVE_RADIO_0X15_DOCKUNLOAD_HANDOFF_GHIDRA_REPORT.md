@@ -202,7 +202,7 @@ Verified binary finding: if a stock refinery `+0x2E4` writer exists, it is not i
 - Ghidra `decompile_function 0065ACB0` - `RadioClass__Transmit_Radio_ToFirst`.
 - Ghidra `decompile_function 0065A970` - `RadioClass__Transmit_Radio_Impl`.
 - Ghidra `decompile_function 00739EC0` - `UnitClass__PerCellProcess` pad-arrival sender.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_CHRONO_MINER_DOCK_ARRIVAL_00739EC0_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/UNITCLASS_PERCELLPROCESS_CHRONO_MINER_DOCK_ARRIVAL_00739EC0_GHIDRA_REPORT.md`
+- `docs/research/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini` local stock YR data for CMIN/HARV/GAREFN/NAREFN.

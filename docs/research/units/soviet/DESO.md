@@ -26,7 +26,7 @@ for the visual beam: [RAD_BEAM_CLASS_GHIDRA_REPORT.md](../../RAD_BEAM_CLASS_GHID
 
 ## rulesmd.ini — `[DESO]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4816`:
+Verbatim from `ini/rulesmd.ini:4816`:
 
 ```ini
 [DESO]
@@ -144,7 +144,7 @@ IFVMode=9
 
 ## artmd.ini — `[DESO]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:214`:
+`ini/artmd.ini:214`:
 
 ```ini
 [DESO] ; Desolator

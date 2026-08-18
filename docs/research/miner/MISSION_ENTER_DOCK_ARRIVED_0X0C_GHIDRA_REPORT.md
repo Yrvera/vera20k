@@ -88,5 +88,5 @@ No `0x0C` appears in this sender order.
 - Ghidra `decompile_function 00739ec0`; `get_assembly_context 0073a503`.
 - Ghidra `decompile_function 0043c2d0`; `get_assembly_context 0043c788`.
 - Ghidra `get_assembly_context 00737776,0073777a`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` line hits for `[CMIN]`, `[HARV]`, `[GAREFN]`, `[NAREFN]`.
+- `ini/rulesmd.ini` line hits for `[CMIN]`, `[HARV]`, `[GAREFN]`, `[NAREFN]`.
 - Prior docs: `RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`, `UNITCLASS_ENTERBUILDINGORDOCK_GHIDRA_REPORT.md`, `UNITCLASS_PERCELLPROCESS_CHRONO_MINER_DOCK_ARRIVAL_00739EC0_GHIDRA_REPORT.md`, `BUILDING_RECEIVE_RADIO_0X15_DOCKUNLOAD_HANDOFF_GHIDRA_REPORT.md`, `RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`.

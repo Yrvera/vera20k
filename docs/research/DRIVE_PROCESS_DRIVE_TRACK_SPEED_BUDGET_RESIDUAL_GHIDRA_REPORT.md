@@ -191,9 +191,9 @@ This is not a full miss: Rust now models the `7` point cost and residual interpo
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/PROCESS_DRIVE_TRACK_DECOMPILATION.md`: replace `TechnoType+0xDBD = is_formation_leader` with "`TechnoType+0xDBD` is `Accelerates`; false jumps to direct `SetSpeedFraction(DriveLocomotion+0x50)`, true enters the Drive ramp/brake branch. Convoy/follower propagation is separate and uses owner `+0x6C8` after the speed-fraction write."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/DRIVE_LOCOMOTION_CLASS.md`: replace the `+0xDBD` field label `is_formation_leader` with "`Accelerates` bool; default true; active Drive consumer at `0x004B0F74..0x004B0F81`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GRIZZLY_ACCELERATES_FALSE_SEMANTICS_GHIDRA_REPORT.md`: current Rust status is stale. Replacement wording: "Rust now parses `ObjectType::accelerates` and carries Drive runtime speed-fraction scaffold fields, but `Accelerates=true` Drive speed ramp and DriveLocomotion-owned residual budget are still not the active movement authority; normal Drive still advances from generic `MovementTarget.current_speed * cell_speed_mod` plus `DriveTrackState.residual`."
+- `docs/research/PROCESS_DRIVE_TRACK_DECOMPILATION.md`: replace `TechnoType+0xDBD = is_formation_leader` with "`TechnoType+0xDBD` is `Accelerates`; false jumps to direct `SetSpeedFraction(DriveLocomotion+0x50)`, true enters the Drive ramp/brake branch. Convoy/follower propagation is separate and uses owner `+0x6C8` after the speed-fraction write."
+- `docs/research/DRIVE_LOCOMOTION_CLASS.md`: replace the `+0xDBD` field label `is_formation_leader` with "`Accelerates` bool; default true; active Drive consumer at `0x004B0F74..0x004B0F81`."
+- `docs/research/GRIZZLY_ACCELERATES_FALSE_SEMANTICS_GHIDRA_REPORT.md`: current Rust status is stale. Replacement wording: "Rust now parses `ObjectType::accelerates` and carries Drive runtime speed-fraction scaffold fields, but `Accelerates=true` Drive speed ramp and DriveLocomotion-owned residual budget are still not the active movement authority; normal Drive still advances from generic `MovementTarget.current_speed * cell_speed_mod` plus `DriveTrackState.residual`."
 
 ## Sources
 
@@ -202,7 +202,7 @@ This is not a full miss: Rust now models the `7` point cost and residual interpo
 - Ghidra decompile: `DriveLocomotionClass::Process @ 0x004B0500`
 - Ghidra decompile/context: `FootClass::GetCurrentSpeed @ 0x004DB1A0`
 - Ghidra decompile/context: `TechnoClass::SetSpeedFraction @ 0x004D3710`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GRIZZLY_ACCELERATES_FALSE_SEMANTICS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/DRIVE_PROCESS_MOVEMENT_GHIDRA_REPORT.md`
+- `docs/research/GRIZZLY_ACCELERATES_FALSE_SEMANTICS_GHIDRA_REPORT.md`
+- `docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`
+- `docs/research/DRIVE_PROCESS_MOVEMENT_GHIDRA_REPORT.md`
 - Current Rust scan: `src/sim/components.rs`, `src/sim/movement/drive_locomotion.rs`, `src/sim/movement/movement_tick.rs`, `src/sim/movement/drive_track.rs`, `src/rules/object_type.rs`

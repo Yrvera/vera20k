@@ -13,7 +13,7 @@ Concrete unit: `[CMIN]` Chrono Miner.
 Retail/YR data:
 
 - `rulesmd.ini [CMIN]` uses `Locomotor={4A582747-9839-11d1-B709-00A024DDAFD1}`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/CMIN.md` records that Chrono Miner uses `TeleportLocomotionClass`, but short-distance movement piggybacks Drive locomotion. This keeps Drive VXL slope drawing relevant for ordinary ramp crossing.
+- `docs/research/units/allied/CMIN.md` records that Chrono Miner uses `TeleportLocomotionClass`, but short-distance movement piggybacks Drive locomotion. This keeps Drive VXL slope drawing relevant for ordinary ramp crossing.
 - `artmd.ini [CMIN]` has `Voxel=yes` and `Remapable=yes`, so the VXL tilt path is the visible body-render path.
 
 Active YR check: Drive locomotion is active in standard YR vehicles and in Chrono Miner short-distance piggyback movement. The functions checked here are not the dormant Tunnel/TS tilt path.

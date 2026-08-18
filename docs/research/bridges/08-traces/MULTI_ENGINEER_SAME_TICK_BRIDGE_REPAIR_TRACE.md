@@ -4,7 +4,7 @@
 
 **Status:** PARTIAL. Ghidra MCP was not available in this session, so binary-side same-tick object ordering and duplicate engineer-entry behavior could not be re-read live. Existing research docs are used as pointers/evidence where they already report Ghidra-verified YR-active paths. Per trace-swarm rules, no stage is marked PASS without a literal computed comparison against both Rust and gamemd.
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/MULTI_ENGINEER_SAME_TICK_BRIDGE_REPAIR_TRACE.md`
+**Report path:** `docs/research/traces/MULTI_ENGINEER_SAME_TICK_BRIDGE_REPAIR_TRACE.md`
 
 ## Scope
 

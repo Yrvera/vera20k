@@ -187,14 +187,14 @@ Representative stock passengers have `OpenTransportWeapon=` assignments, includi
 
 Rust surfaces scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:570` stores `open_topped`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:1084` parses `OpenTopped=`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:480` and `:732` set `PassengerRole::Inside`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:490` and `:745` assign `WeaponOverride::OpenTransport` to the transport when boarding an OpenTopped transport.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:975..1005` normal unload pops one passenger and immediately sets `PassengerRole::None` / position.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:1028..1058` issues a random scatter-like move after unload.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:1370` skips inside-transport attackers.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:925..930` blanket-kills non-garrison transport riders on transport destruction.
+- `src/rules/object_type.rs:570` stores `open_topped`.
+- `src/rules/object_type.rs:1084` parses `OpenTopped=`.
+- `src/sim/passenger.rs:480` and `:732` set `PassengerRole::Inside`.
+- `src/sim/passenger.rs:490` and `:745` assign `WeaponOverride::OpenTransport` to the transport when boarding an OpenTopped transport.
+- `src/sim/passenger.rs:975..1005` normal unload pops one passenger and immediately sets `PassengerRole::None` / position.
+- `src/sim/passenger.rs:1028..1058` issues a random scatter-like move after unload.
+- `src/sim/combat/mod.rs:1370` skips inside-transport attackers.
+- `src/sim/combat/mod.rs:925..930` blanket-kills non-garrison transport riders on transport destruction.
 
 Rust has no explicit per-passenger `Techno+0x82` equivalent. `PassengerRole::Inside` currently conflates hidden/contained state with OpenTopped passenger firing eligibility and with normal cargo storage. That cannot express native normal-unload timing: inside cargo with `+0x82=1`, popped but not yet placed with `+0x82=1`, then successfully placed with `+0x82=0`.
 
@@ -220,7 +220,7 @@ Rust has no explicit per-passenger `Techno+0x82` equivalent. `PassengerRole::Ins
 
 ## 10. Stale Docs / Follow-Up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md` should replace any broad "cleared when it leaves" wording with: "Successful generic passenger unload from `UnitClass::Mission_Deploy_Building @ 0x0073D630` calls `TechnoClass::ClearInOpenTransport @ 0x007104A0` only after passenger placement virtual `+0xD8` succeeds, gated by transport type `OpenTopped` byte `+0x5E4`; failed placement re-adds cargo without this clear."
+- `docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md` should replace any broad "cleared when it leaves" wording with: "Successful generic passenger unload from `UnitClass::Mission_Deploy_Building @ 0x0073D630` calls `TechnoClass::ClearInOpenTransport @ 0x007104A0` only after passenger placement virtual `+0xD8` succeeds, gated by transport type `OpenTopped` byte `+0x5E4`; failed placement re-adds cargo without this clear."
 - The same doc should keep fatal `CargoClass::ClearAllInOpenTransport @ 0x007104C0` separate from normal unload: fatal death clears the cargo chain before ejection/death attempts, while normal unload clears one passenger after successful placement.
 - Rust comments that describe generic unload as scatter should be updated in a later implementation/doc patch to distinguish generic vehicle transport move mission `2` from garrison/sell/destruction scatter behavior.
 
@@ -275,14 +275,14 @@ Rust has no explicit per-passenger `Techno+0x82` equivalent. `PassengerRole::Ins
   - `0x00473430..0x00473447`
   - `0x004733A0..0x0047342C`
 - Research docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/SET_IN_OPEN_TRANSPORT_VTABLE_3D0_RESWARM_20260528.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/CARGO_CLEAR_ALL_IN_OPEN_TRANSPORT_DAMAGE_TIMING_RESWARM_20260528.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
+  - `docs/research/GENERIC_TRANSPORT_MANUAL_UNLOAD_MAPPING_GHIDRA_REPORT.md`
+  - `docs/research/SET_IN_OPEN_TRANSPORT_VTABLE_3D0_RESWARM_20260528.md`
+  - `docs/research/CARGO_CLEAR_ALL_IN_OPEN_TRANSPORT_DAMAGE_TIMING_RESWARM_20260528.md`
+  - `docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+  - `ini/rulesmd.ini`
 - Rust scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_weapon.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`
+  - `src/sim/passenger.rs`
+  - `src/sim/combat/mod.rs`
+  - `src/sim/combat/combat_weapon.rs`
+  - `src/rules/object_type.rs`

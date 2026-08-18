@@ -192,7 +192,7 @@ No Rust files were modified by this investigation.
 |---|---|---|---|---|---|---|
 | Stock `DockUnload` `CAN_DOCK(0x0E)` sends `MOVE_TO_CELL(0x12)` to building NW `+(3,1)` as a `CellClass*`. | `0x0043C2D0`; `0x0041BEA0`; `0x004D8FB0`; `rulesmd.ini:11726`, `12519` | none observed for accepted helper; dirty pad helper is separate and suspicious if used for accepted cell | `src/sim/miner/miner_dock_sequence.rs::refinery_can_dock_queue_cell`; `src/sim/miner/miner_system.rs::refinery_dock_cell` | Preserve `(rx+3, ry+1)` for accepted stock refinery admission. | Proposed test: `stock_refinery_can_dock_move_to_cell_uses_nw_plus_3_1` | Do not replace accepted target with `GetDockCoord` `NW+(2,1)` or art `QueueingCell=4,1`. |
 | Accepted `0x0E` does not read `QueueingCell`, `DockingOffset`, `NumberOfDocks`, foundation dimensions, or `GetDockCoord`. | `0x0043C2D0`; negative contrast `0x00447B20`; `artmd.ini:1716`, `1773` | current Rust mostly preserves split; dirty `refinery_pad_cell` doc says retail `(+2,+1)` and may mislead | `src/sim/miner/miner_dock_sequence.rs::resolve_refinery_cells`; tests around accepted vs pad/wait cells | Keep wait/far staging and physical/later pad concepts separate from accepted `0x0E`. | Proposed test: `refinery_candock_ignores_queueingcell_and_dockingoffset` | Do not make `QueueingCell`, `DockingOffset0`, or foundation width affect accepted stock admission. |
-| Stale coord-cell row 35 should not be treated as proof that every miner deposit uses `NW+(2,1)`. | `0x0043C2D0`; `0x00447B20`; coord-cell doc's own unverified flag note | doc delta, not Rust delta by itself | `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`; `fn-building-getdockcoord.md`; `_system.md` | Reword row/fix-list so `GetDockCoord +0x16BC` is not standard refinery accepted admission. | Proposed test: `refinery_pad_doc_contradiction_keeps_candock_cell_at_13_11` | Do not mark `NW+3 -> NW+2` as a fixed stock miner-deposit parity item. |
+| Stale coord-cell row 35 should not be treated as proof that every miner deposit uses `NW+(2,1)`. | `0x0043C2D0`; `0x00447B20`; coord-cell doc's own unverified flag note | doc delta, not Rust delta by itself | `docs/research/coord-cell-conversions/_parity.md`; `fn-building-getdockcoord.md`; `_system.md` | Reword row/fix-list so `GetDockCoord +0x16BC` is not standard refinery accepted admission. | Proposed test: `refinery_pad_doc_contradiction_keeps_candock_cell_at_13_11` | Do not mark `NW+3 -> NW+2` as a fixed stock miner-deposit parity item. |
 
 ## 10. Negative Facts / Do Not Do
 
@@ -210,9 +210,9 @@ No Rust files were modified by this investigation.
 
 ## 12. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "Branch `Type+0x16BC` returns packed `NW+(2,1)` centered lepton coordinates, but this slot did not prove it is stock `GAREFN/NAREFN` refinery admission; stock accepted `BuildingClass::Receive_Radio(0x0E)` uses `DockUnload` and sends `NW+(3,1)` without calling `GetDockCoord`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`: replace row 35's stock-refinery FIXED wording with "DRIFT/STALE: `GetDockCoord` `NW+(2,1)` is not the standard accepted stock refinery `CAN_DOCK` target; `Receive_Radio(0x0E)` sends `NW+(3,1)` for `DockUnload=yes`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_system.md`: replace "Refinery dock pad - NW+3 -> NW+2 (every miner deposit)" with "Reconcile stale GetDockCoord/refinery-pad claim: stock accepted miner admission remains `NW+(3,1)`; `NW+(2,1)` is a separate `GetDockCoord +0x16BC` branch until proven live for a stock consumer."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "Branch `Type+0x16BC` returns packed `NW+(2,1)` centered lepton coordinates, but this slot did not prove it is stock `GAREFN/NAREFN` refinery admission; stock accepted `BuildingClass::Receive_Radio(0x0E)` uses `DockUnload` and sends `NW+(3,1)` without calling `GetDockCoord`."
+- `docs/research/coord-cell-conversions/_parity.md`: replace row 35's stock-refinery FIXED wording with "DRIFT/STALE: `GetDockCoord` `NW+(2,1)` is not the standard accepted stock refinery `CAN_DOCK` target; `Receive_Radio(0x0E)` sends `NW+(3,1)` for `DockUnload=yes`."
+- `docs/research/coord-cell-conversions/_system.md`: replace "Refinery dock pad - NW+3 -> NW+2 (every miner deposit)" with "Reconcile stale GetDockCoord/refinery-pad claim: stock accepted miner admission remains `NW+(3,1)`; `NW+(2,1)` is a separate `GetDockCoord +0x16BC` branch until proven live for a stock consumer."
 
 ## Sources
 
@@ -223,9 +223,9 @@ No Rust files were modified by this investigation.
 - Ghidra decompile: `RadioClass__Transmit_Radio_Impl @ 0x0065A970`.
 - Ghidra decompile: `BuildingClass__GetDockCoord @ 0x00447B20`.
 - Ghidra decompile: `UnitClass__PerCellProcess @ 0x00739EC0`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DOCKING_QUEUE_EXIT_REFERENCE_POINTS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`.
+- `docs/research/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
+- `docs/research/DOCKING_QUEUE_EXIT_REFERENCE_POINTS_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
+- `ini/rulesmd.ini`.
+- `ini/artmd.ini`.
+- Rust scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_system.rs`, `src/sim/miner/miner_tests.rs`.

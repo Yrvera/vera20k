@@ -357,19 +357,19 @@ The deferred set is intentionally narrow: it does not block implementation of st
   - `bst_uckg/chkg/uchk/chkd.pcx @ 0x00835E5C..0x00835E8C`
   - `BTN-MINS.SHP @ 0x0083FDB8`, `BTN-PLUS.SHP @ 0x0083FDC8`
 - Prior research checked:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_RENDERER_CALLER_PIXEL_CONTRACT_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_TEXT_RENDERER_CALLER_PIXEL_CONTRACT_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Rust scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu.rs`
+  - `src/ui/skirmish_shell/layout.rs`
+  - `src/ui/skirmish_shell/state.rs`
+  - `src/app_skirmish_shell_render.rs`
+  - `src/sim/game_options.rs`
+  - `src/ui/main_menu.rs`

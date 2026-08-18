@@ -157,5 +157,5 @@ COMPLETE for the scoped standard scenario-load repaint cadence, `+0x64` switch, 
 
 - Ghidra decompile: `FUN_0069AE90`, `FUN_00643C50`, `FUN_00643AE0`, `FUN_00642A60`, `FUN_00642C20`, `FUN_00642C80`, `ScenarioClass__Read_Scenario`, `FUN_00598960`, `FUN_0060F9A0`.
 - Ghidra assembly context: `0x0061D6D0..0x0061D94B`, `0x00684700..0x00684706`, `0x005989F5..0x005989FB`, `0x0060FBD4`, `0x0060FF70`.
-- Prior report checked: `C:/Users/enok/Documents/ra2-rust-game-docs/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md`.
+- Prior report checked: `docs/research/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md`.
 - Rust scan: `src/app.rs`, `src/app_transitions.rs`, `src/ui/main_menu.rs`.

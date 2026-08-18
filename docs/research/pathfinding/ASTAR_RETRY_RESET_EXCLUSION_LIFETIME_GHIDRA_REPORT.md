@@ -205,13 +205,13 @@ No INI key is read directly by the retry/reset lifecycle code in this slice.
 
 ## 12. Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDERCLASS_GHIDRA_REPORT.md`
+`docs/research/PATHFINDERCLASS_GHIDRA_REPORT.md`
 
 Replace the "Per-Search Reset" heading and the retry-loop pseudocode wording with:
 
 > `PathfinderClass__Reset @ 0x0042A5B0` is a scratch reset, not the full per-search initializer. It clears pool counters, the A* open heap, the `Zone_precheck` heap, and advances the marker epoch; on epoch wrap it fully clears marker/cost arrays. It does not clear `Pathfinder+0x38`, `+0x3C`, the three edge-exclusion vectors at `+0x74/+0x8C/+0xA4`, or the selected hierarchy paths/lengths at `+0xBC/+0xC74`. `AStar_pathfind_search @ 0x0042C900` clears the exclusion vectors once at outer search entry. On failed hierarchical A*, the retry order is `UpdateHierarchicalEdges -> Reset -> reread +0x38 -> budget check -> Zone_precheck`; exclusions and validity survive Reset. The default budget is five total A* attempts, not five retries after the first.
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
+`docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
 
 Replace simplified "Reset clears open/closed sets" and "up to 5 attempts" wording with:
 

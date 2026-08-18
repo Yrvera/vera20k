@@ -1,6 +1,6 @@
 # Surface::Draw_Line Bracket Raster Path - Ghidra Report
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/SURFACE_DRAW_LINE_BRACKET_RASTER_GHIDRA_REPORT.md`  
+**Report path:** `docs/research/SURFACE_DRAW_LINE_BRACKET_RASTER_GHIDRA_REPORT.md`  
 **Target:** `Surface::Draw_Line` bracket raster path  
 **Status:** COMPLETE  
 **Active in YR:** Yes  
@@ -24,7 +24,7 @@ Verify exact clipping, endpoint inclusion, integer stepping, and whether current
 
 ## Rust Comparison
 
-Verified source read, not binary evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app_selection_brackets.rs` currently emits one `SpriteInstance` per pixel from `emit_line`. It computes:
+Verified source read, not binary evidence: `src/app_selection_brackets.rs` currently emits one `SpriteInstance` per pixel from `emit_line`. It computes:
 
 ```text
 steps = ceil(max(abs(dx), abs(dy)))
@@ -54,4 +54,4 @@ Inference: sprite quads can match the visible bracket raster only if Rust first 
 - Ghidra decompile: clip helper `FUN_007BC2B0`
 - Ghidra memory read: DSurface vtable `0x007E85D4..0x007E8624`
 - Ghidra decompile: `TechnoClass::DrawBracketCorner @ 0x006F5EF0`
-- Source read only: `C:/Users/enok/Documents/ra2-rust-game/src/app_selection_brackets.rs`
+- Source read only: `src/app_selection_brackets.rs`

@@ -40,19 +40,19 @@ Existing Ghidra reports confirm this is active in standard YR, not dormant TS le
 
 ## Checked Rust Evidence
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:319` computes right-panel rects.
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:690` asserts the 800x600 right-panel rects.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:98` loads the scoped SHP atlas entries.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:109` loads `SDTP.SHP` with `SHELL.PAL`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:116` loads `SDBTNBKGD.SHP` with `SHELL2.PAL`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:123` loads `SDBTM.SHP` with `SHELL.PAL`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:130` loads optional `SDBTNANM.SHP` frame `10`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:158` loads `LWSCRNL.SHP` with `SHELL.PAL`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:141` clips native `SDBTM` source by top rows.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1011` selects `LWSCRNL` for width `800`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1042` computes the lower strip rect from native asset size and shell bottom.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1065` returns `false` for the standard offline first-paint frame-10 overlay gate.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1123` emits the scoped chrome stack in order.
+- `src/ui/skirmish_shell/layout.rs:319` computes right-panel rects.
+- `src/ui/skirmish_shell/layout.rs:690` asserts the 800x600 right-panel rects.
+- `src/render/skirmish_shell_chrome.rs:98` loads the scoped SHP atlas entries.
+- `src/render/skirmish_shell_chrome.rs:109` loads `SDTP.SHP` with `SHELL.PAL`.
+- `src/render/skirmish_shell_chrome.rs:116` loads `SDBTNBKGD.SHP` with `SHELL2.PAL`.
+- `src/render/skirmish_shell_chrome.rs:123` loads `SDBTM.SHP` with `SHELL.PAL`.
+- `src/render/skirmish_shell_chrome.rs:130` loads optional `SDBTNANM.SHP` frame `10`.
+- `src/render/skirmish_shell_chrome.rs:158` loads `LWSCRNL.SHP` with `SHELL.PAL`.
+- `src/app_skirmish_shell_render.rs:141` clips native `SDBTM` source by top rows.
+- `src/app_skirmish_shell_render.rs:1011` selects `LWSCRNL` for width `800`.
+- `src/app_skirmish_shell_render.rs:1042` computes the lower strip rect from native asset size and shell bottom.
+- `src/app_skirmish_shell_render.rs:1065` returns `false` for the standard offline first-paint frame-10 overlay gate.
+- `src/app_skirmish_shell_render.rs:1123` emits the scoped chrome stack in order.
 
 ## Failures
 
@@ -73,8 +73,8 @@ Aggregate pixel equality is unchecked. This report compares numeric rects, asset
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SDBTM_BOTTOM_CAP_SOURCE_CLIP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`
+- `docs/research/skirmish-ui/SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SDBTM_BOTTOM_CAP_SOURCE_CLIP_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`
+- `docs/research/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`
 - Rust files checked: `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`, `src/app.rs`.

@@ -223,8 +223,8 @@ Not audited in depth for this slot. The parent lifecycle report already records 
   - `BulletClass::Init @ 0x004664C0`
   - `TechnoClass::Fire_At @ 0x006FDD50`
 - INI files:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+  - `ini/rulesmd.ini`
+  - `ini/artmd.ini`
 - Prior reports:
   - `GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
   - `DRAGON_RENDER_AND_GUARDWH_IMPACT_PRESENTATION_GHIDRA_REPORT.md`

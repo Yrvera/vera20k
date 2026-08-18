@@ -170,10 +170,10 @@ Scanned surfaces:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`: replace `0x0082A594 | int[12][8] | Passability matrix (hardcoded)` with `0x0082A594 | int[13][8] / 416 bytes | ZonePassabilityMatrix; rows are MovementZone 0..12, columns are reduced CellClass zone type 0..7, only value 1 passes`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`: replace `ZonePassabilityMatrix | 13x8 i32 (1=pass/2=block/3=special)` with `ZonePassabilityMatrix | 13x8 i32 (1=pass; 2=blocked; 3=blocked sentinel/out-of-bounds; only ==1 passes)`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any wording of `g_PassabilityMatrix[speed_type * 8 + edge_type]` or `SpeedType x LandType` with `g_PassabilityMatrix[movementZone * 8 + reducedZoneType]`, where `movementZone` is `TechnoTypeClass+0x5B4` and `reducedZoneType` is `CellClass+0x4C`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PASSABILITY_VERIFIED.md`: no dimension replacement needed in the checked current text; its 13x8 and `3`-blocked correction matches this investigation.
+- `docs/research/ADDRESS_MAP.md`: replace `0x0082A594 | int[12][8] | Passability matrix (hardcoded)` with `0x0082A594 | int[13][8] / 416 bytes | ZonePassabilityMatrix; rows are MovementZone 0..12, columns are reduced CellClass zone type 0..7, only value 1 passes`.
+- `docs/research/ADDRESS_MAP.md`: replace `ZonePassabilityMatrix | 13x8 i32 (1=pass/2=block/3=special)` with `ZonePassabilityMatrix | 13x8 i32 (1=pass; 2=blocked; 3=blocked sentinel/out-of-bounds; only ==1 passes)`.
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any wording of `g_PassabilityMatrix[speed_type * 8 + edge_type]` or `SpeedType x LandType` with `g_PassabilityMatrix[movementZone * 8 + reducedZoneType]`, where `movementZone` is `TechnoTypeClass+0x5B4` and `reducedZoneType` is `CellClass+0x4C`.
+- `docs/research/ZONE_PASSABILITY_VERIFIED.md`: no dimension replacement needed in the checked current text; its 13x8 and `3`-blocked correction matches this investigation.
 
 ## Sources
 

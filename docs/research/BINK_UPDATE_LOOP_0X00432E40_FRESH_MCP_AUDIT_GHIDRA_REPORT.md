@@ -111,7 +111,7 @@ Evidence: MCP disassembly `0x00615B99..0x00615BD0`: timer calls `[vtable+0x04]`,
 
 ## 8. Stale-Doc Replacement Wording
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
+`docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
 
 Replace:
 
@@ -129,7 +129,7 @@ With:
 
 > Under CPU pressure, current Rust advances according to elapsed wall-clock with a fixed max-4 cap. gamemd advances according to repeated `_BinkWait` results inside each timer poll, so the number of frames per poll is Bink-SDK-gated rather than elapsed-accumulator-gated.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
+`docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
 
 Replace:
 
@@ -146,5 +146,5 @@ With:
 - Ghidra MCP `disassemble_function`: `0x00432E40`, `0x00433040`, `0x005C0580`, `0x006153E0`, `0x005C07D0`.
 - Ghidra MCP `read_memory`: `0x007EE154` vtable bytes.
 - Ghidra MCP `get_bulk_xrefs`: `0x00432E40`, `0x00433040`, `0x005C0580`, `0x007EE154`.
-- Rust source scan: `C:/Users/enok/Documents/ra2-rust-game/src/render/bink_movie.rs`.
+- Rust source scan: `src/render/bink_movie.rs`.
 

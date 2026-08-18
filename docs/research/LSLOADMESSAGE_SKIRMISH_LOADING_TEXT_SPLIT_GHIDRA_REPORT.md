@@ -73,14 +73,14 @@ Determine whether `LSLoadMessage`, `LSLoadBriefing`, `[Briefing]`, or scenario/m
 
 ## Stale Docs / Suggested Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASSET_PARSING_BRIDGES_GHIDRA_REPORT.md`: replace broad wording like "Various scenario sub-INI reads (Briefing, UIName, LSLoadMessage, etc.)" with "Campaign-only `MISSIONMD.INI` metadata reads under `g_GameMode == 0` include `Briefing`, `UIName`, `LSLoadMessage`, `LSLoadBriefing`, and LS background/location keys; standard offline Skirmish (`g_GameMode == 5`) skips this block."
+- `docs/research/ASSET_PARSING_BRIDGES_GHIDRA_REPORT.md`: replace broad wording like "Various scenario sub-INI reads (Briefing, UIName, LSLoadMessage, etc.)" with "Campaign-only `MISSIONMD.INI` metadata reads under `g_GameMode == 0` include `Briefing`, `UIName`, `LSLoadMessage`, `LSLoadBriefing`, and LS background/location keys; standard offline Skirmish (`g_GameMode == 5`) skips this block."
 
 ## Sources
 
 - Ghidra read-only: `ScenarioClass__Read_Scenario @ 0x00684620`, `ScenarioClass__Read_Scenario_INI @ 0x00686730`, `ScenarioClass__Full_Init @ 0x00686B20`, `FUN_00643AE0`, `FUN_00643720`, `FUN_00643670`, `FUN_0068AD70`.
 - Ghidra xrefs/strings: `LSLoadMessage @ 0x0083DC28`, `LSLoadBriefing @ 0x0083DC18`, `Briefing @ 0x00839718`, `MISSIONMD.INI @ 0x00839724`, `SPLDBR.SHP @ 0x0083DA40`, `PROGBARM.SHP @ 0x0083DA30`.
-- Repo INI evidence: `C:/Users/enok/Documents/ra2-rust-game/ini/missionmd.ini:11`.
+- Repo INI evidence: `ini/missionmd.ini:11`.
 - Existing docs: `LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md`, `LOADING_SCREEN_WM_PAINT_MODE2_COMPOSITION_GHIDRA_REPORT.md`, `SKIRMISH_START_TO_LOADING_SCREEN_ACTIVATION_GHIDRA_REPORT.md`, `SCENARIO_INIT_DEEP_DIVE.md`.
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Current Rust scan: `src/ui/main_menu.rs`, `src/app.rs`.
 
 **Status:** COMPLETE.

@@ -111,6 +111,6 @@ Read-only scan only. Current Rust has an A-buffer-like shroud multiply path in `
 
 - Ghidra decompiled/read-only: `0x006D3D10`, `0x006D3660`, `0x004112D0`, `0x00411330`, `0x004801F0`, `0x0047EFE0`, `0x0047F250`, `0x006D8700`, `0x006FB170`, `0x006FB470`
 - Ghidra assembly context: `0x006D3F9F..0x006D3FA7`
-- INI checked read-only: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- Prior bracket source: `C:/Users/enok/Documents/ra2-rust-game-docs/building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`
-- Prior shroud source: `C:/Users/enok/Documents/ra2-rust-game-docs/SHROUD_FOG_RENDERING_PIPELINE.md`
+- INI checked read-only: `ini/rulesmd.ini`
+- Prior bracket source: `docs/research/building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`
+- Prior shroud source: `docs/research/SHROUD_FOG_RENDERING_PIPELINE.md`

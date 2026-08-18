@@ -58,7 +58,7 @@ bottom     = (632,577,168,23)
 
 For 1024x768 the centered shell formula yields `(744,661,168,23)`. For 640x480 it yields `(472,451,168,29)`.
 
-**Evidence:** `0x0072EE88..0x0072EE95` computes/stores `DAT_00B0FA20`; `0x0072EEA0..0x0072EED2` writes `DAT_00B0FC28` with `x=local_right-SDBTM.w`, `y=tile_y+tile_count*tile_h`, `w=SDBTM.w`, `h=effective_h-(SDTP.h+tile_count*tile_h)`. Existing Rust tests encode the same expected rects at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:245`.  
+**Evidence:** `0x0072EE88..0x0072EE95` computes/stores `DAT_00B0FA20`; `0x0072EEA0..0x0072EED2` writes `DAT_00B0FC28` with `x=local_right-SDBTM.w`, `y=tile_y+tile_count*tile_h`, `w=SDBTM.w`, `h=effective_h-(SDTP.h+tile_count*tile_h)`. Existing Rust tests encode the same expected rects at `src/ui/skirmish_shell/layout.rs:245`.  
 **Active in YR:** Yes for standard shell layout.
 
 ### 3.3 Draw call consumes `DAT_00B0FC28` as origin, not as scaling box
@@ -104,7 +104,7 @@ At 800x600 that is `23 / 65`; at 640x480 it is `29 / 65`; at 1024x768 it is agai
 
 Current Skirmish Rust does not do that: `push_entry` always uses the full `entry.uv_size` for the destination rectangle, and `SDBTM` is emitted through `push_entry`, so the full 65-row source is resampled into the shorter destination.
 
-**Evidence:** `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:85` and `:91..95` use full UVs; `:557..558` emits `right_panel_bottom_sdbtm` via `push_entry`. The main-menu shell already has the equivalent crop helper at `C:/Users/enok/Documents/ra2-rust-game/src/app_main_menu_shell_render.rs:166` and `:176..183`.  
+**Evidence:** `src/app_skirmish_shell_render.rs:85` and `:91..95` use full UVs; `:557..558` emits `right_panel_bottom_sdbtm` via `push_entry`. The main-menu shell already has the equivalent crop helper at `src/app_main_menu_shell_render.rs:166` and `:176..183`.  
 **Active in YR:** Rust comparison only; gamemd behavior is active in YR as above.
 
 ## 4. INI Keys
@@ -123,7 +123,7 @@ No INI key participates in this bottom-cap source/clip behavior. Inputs are shel
 
 ## 6. Current Rust Implementation Status
 
-Skirmish layout computes the same destination bottom rects as gamemd for the checked sizes (`800x600`, `1024x768`, `640x480`) in `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:245`.
+Skirmish layout computes the same destination bottom rects as gamemd for the checked sizes (`800x600`, `1024x768`, `640x480`) in `src/ui/skirmish_shell/layout.rs:245`.
 
 Skirmish rendering still samples the full atlas UV into `layout.right_panel.bottom`, which vertically compresses the `SDBTM.SHP` source. The main-menu shell already contains a matching crop pattern, but this slot did not modify any Rust.
 
@@ -152,4 +152,4 @@ Skirmish rendering still samples the full atlas UV into `layout.right_panel.bott
 
 - Ghidra decompile/assembly: `0x006AE2C0`, `0x006AE3F0`, `0x00621E90`, `0x0072E450`, `0x0072EC70`, `0x004AED70`, `0x00421B60`, `0x0069E7E0`.
 - Prior docs read first: `SKIRMISH_SHELL_CHROME_800X600_TRACE.md`, `SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_VIEWPORT_ORIGIN_FOLLOWUP_GHIDRA_REPORT.md`.
-- Rust comparison references: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_main_menu_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`.
+- Rust comparison references: `src/app_skirmish_shell_render.rs`, `src/app_main_menu_shell_render.rs`, `src/ui/skirmish_shell/layout.rs`.

@@ -8,18 +8,18 @@
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_OWNERDRAW_VARIANT_WRITERS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PRIMITIVE_BEVEL_FRAME_COLORS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_OWNERDRAW_VARIANT_WRITERS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_PRIMITIVE_BEVEL_FRAME_COLORS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md`
+- `docs/research/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/ui/skirmish_shell/state.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/sim/game_options.rs`
 
 ## Active YR Confirmation
 
@@ -51,35 +51,35 @@ Dialog `0x102` resource DLU rects -> Win32 child control placement -> common own
 
 **Stage:** Checkbox control rects  
 **Player-visible difference:** Short Game, MCV Repacks, Crates Appear, and Super Weapons icons and labels render one pixel left of retail.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:201`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:469`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:473`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:477`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:481`  
+**Rust:** `src/ui/skirmish_shell/layout.rs:201`, `src/ui/skirmish_shell/layout.rs:469`, `src/ui/skirmish_shell/layout.rs:473`, `src/ui/skirmish_shell/layout.rs:477`, `src/ui/skirmish_shell/layout.rs:481`  
 **gamemd evidence:** `SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md` section 2 lists retail control rects at x `72`, active via dialog `0x102` and `FUN_006AE6E0`.
 
 ### 2. Unit Count trackbar is one pixel too high
 
 **Stage:** Trackbar control rects  
 **Player-visible difference:** The unit-count slider rail/thumb/value text row appears one pixel above retail and can crowd the Crates/Super Weapons rows differently.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:376`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:464`  
+**Rust:** `src/ui/skirmish_shell/layout.rs:376`, `src/ui/skirmish_shell/layout.rs:464`  
 **gamemd evidence:** `SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md` section 2 lists `0x50C` as `[404,341,128,21]`; standard init at `FUN_006AE6E0`.
 
 ### 3. Trackbar plaque art is placed one pixel left and usually one pixel too low
 
 **Stage:** Trackbar plaque geometry  
 **Player-visible difference:** The numeric plaque art behind Game Speed/Credits/Unit Count values is not aligned like retail; the text may look centered over a shifted plate.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:222`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:728`  
+**Rust:** `src/ui/skirmish_shell/layout.rs:222`, `src/app_skirmish_shell_render.rs:728`  
 **gamemd evidence:** `OwnerDraw_Trackbar_0061D950` paint geometry uses local x `client_width - 50 + 1 = 79`, y `-1` for `trofm/trofl/trofr`, verified in `SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`.
 
 ### 4. Trackbar/button dark text color is channel-swapped
 
 **Stage:** Shell text colors  
 **Player-visible difference:** Trackbar numeric values and owner-draw button text use the wrong dark tint, reading as swapped blue/red relative to the verified source color.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:45`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1547`  
+**Rust:** `src/app_skirmish_shell_render.rs:45`, `src/app_skirmish_shell_render.rs:1547`  
 **gamemd evidence:** `SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md` verifies packed `0x00000C05` is RGB `(5,12,0)`, and `SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md` already records this as a visible fail for trackbar values.
 
 ### 5. Checkbox/static label color is not the verified owner-draw source color
 
 **Stage:** Shell text colors  
 **Player-visible difference:** Checkbox labels and other normal shell labels are muted tan instead of the verified source yellow used by the owner-draw text wrapper.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:46`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1527`  
+**Rust:** `src/app_skirmish_shell_render.rs:46`, `src/app_skirmish_shell_render.rs:1527`  
 **gamemd evidence:** `SKIRMISH_SHELL_TEXT_PIXEL_CONTRACT_HOTFIX_SCAN_GHIDRA_REPORT.md` verifies `DAT_00AC18A4 = 0x0000FFFF`, interpreted by `FUN_00621040` as RGB `(255,255,0)`, active for checkbox/static/combo label callers.
 
 ## Not Implemented

@@ -181,6 +181,6 @@ The only material uncertainty inside this slice is the exact runtime `Cell+0x38`
 - Ghidra: `MapClass::Get_CellClass` at `0x005657A0`
 - Ghidra: `Find_Nearby_Passable_Cell` at `0x0056DC20`
 - Ghidra: `FUN_0065E660` paradrop spawner at `0x0065E660` spot-check for target-cell argument
-- Prior doc checked: `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`
+- Prior doc checked: `docs/research/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`
 - Rust checked: `src/sim/superweapon/paradrop.rs`, `src/sim/pathfinding/core.rs`, `src/map/resolved_terrain.rs`
 - INI checked: `ini/rulesmd.ini`, `ini/rules.ini`

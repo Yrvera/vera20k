@@ -122,8 +122,8 @@ None found in the scoped current Rust behavior.
 - Rust: `src/sim/miner/miner_dock_sequence.rs:86`, `:104`, `:611`, `:659`, `:673`
 - Rust tests: `src/sim/miner/miner_tests.rs:539`, `:1085`, `:1133`, `:1166`
 - INI: `ini/rulesmd.ini:294`, `:7361`, `:7364`, `:7396`, `:11726`, `:11729`; `ini/artmd.ini:1773`
-- Docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_SYSTEM_OVERVIEW.md`
-- Docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`
-- Docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
+- Docs: `docs/research/miner/CHRONO_MINER_SYSTEM_OVERVIEW.md`
+- Docs: `docs/research/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`
+- Docs: `docs/research/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
 - Ghidra read-only: `UnitClass__Mission_Harvest @ 0x0073E5E0`
 - Ghidra read-only: `BuildingClass__Receive_Radio @ 0x0043C2D0`

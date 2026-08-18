@@ -638,10 +638,10 @@ this YR-live path, the proximity detector is still active because `ROT=60`.
   - `ProximityDetector::Init @ 0x004E1100`
   - `ProximityDetector::Set/Arm @ 0x004E1130`
   - `ProximityDetector::Check @ 0x004E11F0`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`
+- `ini/rulesmd.ini`
+- `ini/rules.ini`
+- `ini/artmd.ini`
+- `ini/art.ini`
 - `BULLETCLASS_INIT_AND_FIRE_GHIDRA_REPORT.md`
 - `BULLET_CLASS_AI_GHIDRA_REPORT.md`
 - `BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`

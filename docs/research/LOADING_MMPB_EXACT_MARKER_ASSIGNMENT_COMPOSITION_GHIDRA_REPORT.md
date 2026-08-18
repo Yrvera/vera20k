@@ -563,7 +563,7 @@ Its tuple description `{385,270,200,200}; {499,379,216,166}; {570,424,300,260} a
 
 ### Retail and repository evidence
 
-- Active retail root: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`
+- Active retail root: `<ra2-install>/`
 - Fresh filename-hash corroboration: `MMPB.SHP -> 0xA107C32F`
 - Existing compiled retail archive probe: `ra2md.mix -> localmd.mix`, matching `0xA107C32F` entry size `200`
 - Prior retail metadata probe recorded in `skirmish-ui/SKIRMISH_MAP_PREVIEW_MARKER_ASSET_LAYOUT_GHIDRA_REPORT.md`: `mmpb.shp`, one frame, `12x12`

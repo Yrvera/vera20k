@@ -172,11 +172,11 @@ Proposed tests:
 
 ## Stale Docs / Follow-up Docs
 
-Suggested replacement for `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md` rows that say later milestones are not yet known:
+Suggested replacement for `docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md` rows that say later milestones are not yet known:
 
 > The `Full_Init` milestone ledger after first renderer milestone `3` is verified in `LOADING_FULL_INIT_PROGRESS_SEQUENCE_AFTER_00552D60_GHIDRA_REPORT.md`. App-loop loading may use the Section 6 ordered ledger for `Full_Init` phase boundaries, preserve monotonic suppression for raw lower/duplicate calls, and present the separately verified outer selected-map terminal `100` before game entry. Other outer-wrapper callbacks remain separate scope.
 
-Suggested replacement for `C:/Users/enok/Documents/ra2-rust-game/docs/implementation-queue/2026-05-23-implementation-queue-loading-screen.md` readiness language:
+Suggested replacement for `docs/implementation-queue/2026-05-23-implementation-queue-loading-screen.md` readiness language:
 
 > The `Full_Init` later-milestone blocker and outer selected-map terminal `100` boundary are closed for the scoped standard Skirmish loading path. Remaining exactification gates include native `ProgressClass+0x64` lifecycle, pixel/dwell capture, and the separate `mmpb.shp`/post-marker text blockers.
 

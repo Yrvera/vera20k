@@ -197,7 +197,7 @@ Current Rust tube movement does not match the verified final-Z/timing behavior:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/IMPLEMENTATION_LOW_BRIDGE_TUBECLASS_HEIGHT_LAYER_TRACE.md`: replace Stage 5/Stage 8 unresolved wording with: "UnitClass TubeMovement final Z is accumulated at object `+0x570`: producers seed it as `entry_ground + signed_trunc((exit_ground-entry_ground)/TubeClass+0x1C0)`, each completed in-tube step adds the same signed quotient, and unit final landing writes `TubeClass+0x28` X/Y with this accumulated Z. Infantry TubeMovement shares the traversal cadence but final landing calls infantry placement and uses `CellClass::GetGroundHeight`, so infantry final Z differs from units."
+- `docs/research/traces/IMPLEMENTATION_LOW_BRIDGE_TUBECLASS_HEIGHT_LAYER_TRACE.md`: replace Stage 5/Stage 8 unresolved wording with: "UnitClass TubeMovement final Z is accumulated at object `+0x570`: producers seed it as `entry_ground + signed_trunc((exit_ground-entry_ground)/TubeClass+0x1C0)`, each completed in-tube step adds the same signed quotient, and unit final landing writes `TubeClass+0x28` X/Y with this accumulated Z. Infantry TubeMovement shares the traversal cadence but final landing calls infantry placement and uses `CellClass::GetGroundHeight`, so infantry final Z differs from units."
 
 ## Sources
 
@@ -209,9 +209,9 @@ Current Rust tube movement does not match the verified final-Z/timing behavior:
 - Ghidra decompile: `InfantryClass::AI @ 0x0051BF00`
 - Ghidra decompile: `DriveLocomotionClass::Process_Drive_Track @ 0x004B0F20`
 - Ghidra assembly contexts: `WalkLocomotionClass::ProcessMovement @ 0x0075B3FC..0x0075B54A`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBECLASS_PRODUCERS_AND_LIFECYCLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/IMPLEMENTATION_LOW_BRIDGE_TUBECLASS_HEIGHT_LAYER_TRACE.md`
+- `docs/research/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
+- `docs/research/LOW_BRIDGE_TUBECLASS_PRODUCERS_AND_LIFECYCLE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
+- `docs/research/traces/IMPLEMENTATION_LOW_BRIDGE_TUBECLASS_HEIGHT_LAYER_TRACE.md`
 - Rust scan: `src/sim/movement/tube_movement.rs`, `src/map/tube_facts.rs`, `src/map/resolved_terrain.rs`, `src/sim/pathfinding/core.rs`
 - INI scan: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`

@@ -157,18 +157,18 @@ None for this bounded scenario.
   - `BuildingClass__Unlimbo @ 0x00440580`
   - `BuildingClass__OnConstructionComplete @ 0x00445F80`
 - Research docs:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGTYPE_LIGHT_KEYS_READINI_CONSTANTS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
+  - `docs/research/BUILDINGTYPE_LIGHT_KEYS_READINI_CONSTANTS_GHIDRA_REPORT.md`
+  - `docs/research/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
+  - `docs/research/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
 - Rust source:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:1112`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:1113`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:389`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:426`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:427`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:842`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:184`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:201`
+  - `src/rules/object_type.rs:1112`
+  - `src/rules/object_type.rs:1113`
+  - `src/map/lighting.rs:389`
+  - `src/map/lighting.rs:426`
+  - `src/map/lighting.rs:427`
+  - `src/map/lighting.rs:842`
+  - `src/app_init.rs:184`
+  - `src/app_init.rs:201`
 
 ## Status
 

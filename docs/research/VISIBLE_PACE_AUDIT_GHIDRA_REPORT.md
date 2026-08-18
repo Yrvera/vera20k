@@ -50,7 +50,7 @@ YR `rulesmd.ini` patches the base RA2 value, so the default multiplayer/skirmish
 settings+0x08 = ReadInt(section, "GameSpeed", RulesClass+0x14A0)
 ```
 
-The local retail `RA2MD.INI` checked at `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2MD.INI` has `[Options] GameSpeed=3` and no `[Skirmish] GameSpeed=`, so normal skirmish falls back to rules speed `1`, not options speed `3`.
+The local retail `RA2MD.INI` checked at `<ra2-install>/RA2MD.INI` has `[Options] GameSpeed=3` and no `[Skirmish] GameSpeed=`, so normal skirmish falls back to rules speed `1`, not options speed `3`.
 
 ### Live Speed Propagation
 
@@ -101,7 +101,7 @@ Rust increments/derives its synthetic `binary_frame` at the start of `Simulation
 
 The only checked direct `45 FPS` claim is in the repo documentation:
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/index.md` says the sim runs at fixed 45 ticks/sec and refers to 45 FPS as standard multiplayer FPS.
+- `docs/index.md` says the sim runs at fixed 45 ticks/sec and refers to 45 FPS as standard multiplayer FPS.
 
 The checked GameMD evidence does not verify that as the default YR skirmish gameplay frame rate. Binary evidence supports:
 
@@ -116,20 +116,20 @@ Conclusion: 45 may be a community label, implementation target, or multiplayer/n
 
 | Surface | Classification | Rust evidence | Player-visible symptom |
 |---|---|---|---|
-| App fixed-step scheduling / `sim_speed_tps` | Unknown / needs probe | `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs:24` re-exports `SIM_TICK_HZ`; `:36` maps speed byte to TPS; `:44` defaults to speed 1. `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs:222` scales elapsed time by `sim_speed_tps / SIM_TICK_HZ`. | Default speed is now based on the correct stored speed byte, but the effective number of sim ticks per wall second must be measured. |
-| `SIM_TICK_HZ=45`, `SIM_TICK_MS=22` | Unknown / risky | `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:47` comments 15 Hz, but `:51` sets 45. `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs:27` derives 22 ms ticks. | Any raw per-tick visible system can run at a Rust-specific cadence rather than GameMD frame cadence. |
-| Movement dt | Unknown / likely too fast unless conversion was intentionally seconds-based | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1063` passes `tick_ms`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs:351` converts to fixed seconds. | Unit cells/sec may not match retail if `Speed=` was calibrated as frame-based but Rust schedules ~speed-1 bucket-rate ticks. |
-| RA2 `Speed=` conversion | Unknown / needs binary or retail movement probe | `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:381` uses `floor(speed * 256 / 60) * 15`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs:72` applies a development 3x MCV boost. | A known Speed= unit may cross cells too quickly/slowly; MCV movement is deliberately non-retail during diagnosis. |
-| Synthetic `binary_frame` derivation/order | Probably too slow for speed-1 wall-clock and one-frame early in ordering | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1014` adds `tick_ms`, then `:1015` computes `binary_frame = total_sim_ms * 15 / 1000` at tick start. | Facing/turret/frame-timer consumers can be phase-shifted and may advance at ~15/sec while standard skirmish logic throttles differently. |
-| Gas/smoke/fire particle cadence | Probably too fast for raw particle AI; partially correct for normalized fire spawn | `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1407` ticks particles every Rust sim tick. Gas/smoke/fire use `sim.tick` gates in `gas.rs:38`, `gas.rs:146`, `smoke.rs:32`, `fire.rs:185`, `fire.rs:203`. `spawn.rs:152` implements normalized `StateAIAdvance`. | Smoke/gas/fire can animate/drift/spawn at Rust tick speed. FireStream state-advance initialization is much improved, but cadence still needs measurement. |
-| Spark/Railgun particles | Unknown for pace because absent | `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/spawn.rs:42` skips Spark/Railgun; `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/system_ai.rs:109` no-ops them. | Sparks and railgun trails are missing, not merely wrong-speed. |
-| `WorldEffect` / AnimClass-like effects | Probably wrong across speed settings; possibly too slow at speed 1 | `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:563` stores `rate_ms`; `:586` ticks by milliseconds. `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1507` ticks effects with `tick_ms`. | Explosions/chrono/wake effects approximate 15fps wall-clock, not full AnimClass frame semantics with normalization and late frame ordering. |
-| Building active/idle/damage-fire overlays | Probably wrong; likely too slow at speed 1 if GameMD tick is bucket-throttled | `C:/Users/enok/Documents/ra2-rust-game/src/app_building_anim.rs:25` and `:69` use app wall-clock `dt_ms`; `:207` advances damage fires by `rate_ms`. | Building anims can drift from retail; slot AnimClass replacement/frame-preservation rules are not represented by a wall-clock overlay loop. |
-| Infantry animation cadence | Unknown / likely wrong, not simply fast/slow | `C:/Users/enok/Documents/ra2-rust-game/src/rules/infantry_sequence.rs:24` hardcodes ms defaults; `C:/Users/enok/Documents/ra2-rust-game/src/sim/animation.rs:338` advances by elapsed ms. | Infantry walk/fire/prone/death sequences may each differ because GameMD uses action timers and selected normalized actions. |
-| SHP vehicle animation cadence | Unknown / likely wrong, not simply fast/slow | `C:/Users/enok/Documents/ra2-rust-game/src/rules/shp_vehicle_sequence.rs:19` hardcodes ms defaults; scan found no `WalkRate`/`IdleRate` consumer. | Dolphins, terror drones, squid, and other SHP vehicles do not follow raw frame modulo gates. |
-| Parachute descent | Probably too fast if Rust schedules speed-1 as ~63 22ms ticks/sec | `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/parachute_descent.rs:99` runs one descent integration per sim tick; `tick_ms` only gates pause. | Paradrops may land too quickly relative to retail. |
-| PARACH animation | Probably too slow relative to current descent | `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:1111` reads `[PARACH] Rate`; `:1113` converts it to ms. `C:/Users/enok/Documents/ra2-rust-game/src/app_chute_anim.rs:67` advances frames by app `dt_ms`. | Canopy frame loop and falling body can visibly disagree. |
-| Garrison muzzle overlays | Probably wrong; likely too slow and wrong ownership/model | `C:/Users/enok/Documents/ra2-rust-game/src/app_building_anim.rs:642` handles only garrison flashes; `:692` hardcodes `67 ms`. | Garrison fire flashes may not match AnimClass timing or port cadence. |
+| App fixed-step scheduling / `sim_speed_tps` | Unknown / needs probe | `src/app_types.rs:24` re-exports `SIM_TICK_HZ`; `:36` maps speed byte to TPS; `:44` defaults to speed 1. `src/app_sim_tick.rs:222` scales elapsed time by `sim_speed_tps / SIM_TICK_HZ`. | Default speed is now based on the correct stored speed byte, but the effective number of sim ticks per wall second must be measured. |
+| `SIM_TICK_HZ=45`, `SIM_TICK_MS=22` | Unknown / risky | `src/util/fixed_math.rs:47` comments 15 Hz, but `:51` sets 45. `src/app_types.rs:27` derives 22 ms ticks. | Any raw per-tick visible system can run at a Rust-specific cadence rather than GameMD frame cadence. |
+| Movement dt | Unknown / likely too fast unless conversion was intentionally seconds-based | `src/sim/world/mod.rs:1063` passes `tick_ms`; `src/sim/movement/movement_tick.rs:351` converts to fixed seconds. | Unit cells/sec may not match retail if `Speed=` was calibrated as frame-based but Rust schedules ~speed-1 bucket-rate ticks. |
+| RA2 `Speed=` conversion | Unknown / needs binary or retail movement probe | `src/util/fixed_math.rs:381` uses `floor(speed * 256 / 60) * 15`; `src/sim/world/world_commands.rs:72` applies a development 3x MCV boost. | A known Speed= unit may cross cells too quickly/slowly; MCV movement is deliberately non-retail during diagnosis. |
+| Synthetic `binary_frame` derivation/order | Probably too slow for speed-1 wall-clock and one-frame early in ordering | `src/sim/world/mod.rs:1014` adds `tick_ms`, then `:1015` computes `binary_frame = total_sim_ms * 15 / 1000` at tick start. | Facing/turret/frame-timer consumers can be phase-shifted and may advance at ~15/sec while standard skirmish logic throttles differently. |
+| Gas/smoke/fire particle cadence | Probably too fast for raw particle AI; partially correct for normalized fire spawn | `src/sim/world/mod.rs:1407` ticks particles every Rust sim tick. Gas/smoke/fire use `sim.tick` gates in `gas.rs:38`, `gas.rs:146`, `smoke.rs:32`, `fire.rs:185`, `fire.rs:203`. `spawn.rs:152` implements normalized `StateAIAdvance`. | Smoke/gas/fire can animate/drift/spawn at Rust tick speed. FireStream state-advance initialization is much improved, but cadence still needs measurement. |
+| Spark/Railgun particles | Unknown for pace because absent | `src/sim/particles/spawn.rs:42` skips Spark/Railgun; `src/sim/particles/system_ai.rs:109` no-ops them. | Sparks and railgun trails are missing, not merely wrong-speed. |
+| `WorldEffect` / AnimClass-like effects | Probably wrong across speed settings; possibly too slow at speed 1 | `src/sim/components.rs:563` stores `rate_ms`; `:586` ticks by milliseconds. `src/sim/world/mod.rs:1507` ticks effects with `tick_ms`. | Explosions/chrono/wake effects approximate 15fps wall-clock, not full AnimClass frame semantics with normalization and late frame ordering. |
+| Building active/idle/damage-fire overlays | Probably wrong; likely too slow at speed 1 if GameMD tick is bucket-throttled | `src/app_building_anim.rs:25` and `:69` use app wall-clock `dt_ms`; `:207` advances damage fires by `rate_ms`. | Building anims can drift from retail; slot AnimClass replacement/frame-preservation rules are not represented by a wall-clock overlay loop. |
+| Infantry animation cadence | Unknown / likely wrong, not simply fast/slow | `src/rules/infantry_sequence.rs:24` hardcodes ms defaults; `src/sim/animation.rs:338` advances by elapsed ms. | Infantry walk/fire/prone/death sequences may each differ because GameMD uses action timers and selected normalized actions. |
+| SHP vehicle animation cadence | Unknown / likely wrong, not simply fast/slow | `src/rules/shp_vehicle_sequence.rs:19` hardcodes ms defaults; scan found no `WalkRate`/`IdleRate` consumer. | Dolphins, terror drones, squid, and other SHP vehicles do not follow raw frame modulo gates. |
+| Parachute descent | Probably too fast if Rust schedules speed-1 as ~63 22ms ticks/sec | `src/sim/movement/parachute_descent.rs:99` runs one descent integration per sim tick; `tick_ms` only gates pause. | Paradrops may land too quickly relative to retail. |
+| PARACH animation | Probably too slow relative to current descent | `src/rules/ruleset.rs:1111` reads `[PARACH] Rate`; `:1113` converts it to ms. `src/app_chute_anim.rs:67` advances frames by app `dt_ms`. | Canopy frame loop and falling body can visibly disagree. |
+| Garrison muzzle overlays | Probably wrong; likely too slow and wrong ownership/model | `src/app_building_anim.rs:642` handles only garrison flashes; `:692` hardcodes `67 ms`. | Garrison fire flashes may not match AnimClass timing or port cadence. |
 | Non-garrison muzzle overlays | Unknown pace because mostly absent | Current scan only found garrison-specific muzzle flash handling. | Normal shots can lack muzzle flashes entirely. |
 
 ## 5. Smallest Empirical Rust Probes
@@ -173,9 +173,9 @@ These probes should stay sim-side or app-orchestration-side only; sim logic must
 - Ghidra decompile: `FUN_0069BAB0 @ 0x0069BAB0`
 - Ghidra decompile: `FUN_0069BB40 @ 0x0069BB40`
 - Ghidra decompile: `FUN_005B67F0 @ 0x005B67F0`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SPEED_AND_PARTICLE_NORMALIZED_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_ANIMATION_VISIBLE_LEFTOVERS_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`
+- Existing report: `docs/research/SKIRMISH_SPEED_AND_PARTICLE_NORMALIZED_GHIDRA_REPORT.md`
+- Existing report: `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- Existing report: `docs/research/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
+- Existing report: `docs/research/TICK_ANIMATION_VISIBLE_LEFTOVERS_GHIDRA_REPORT.md`
+- Existing report: `docs/research/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`
 - Rust files cited in section 4.

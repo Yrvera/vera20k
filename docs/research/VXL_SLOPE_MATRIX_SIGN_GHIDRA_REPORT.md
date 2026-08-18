@@ -65,7 +65,7 @@ Stop after proving the sign convention for slope_type 2 and 4, and after checkin
 
 ## Stale-Doc Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VOXEL_SLOPE_TILT_SYSTEM.md`: the `Rust Engine Status` bullet `Slope tilt matrix computation and application during VXL rendering` is stale if the current Rust file is authoritative; suggested replacement: `Slope tilt matrix computation is implemented in src/render/vxl_raster.rs; remaining risk is visual validation of world-direction/model-axis mapping.`
+- `docs/research/VOXEL_SLOPE_TILT_SYSTEM.md`: the `Rust Engine Status` bullet `Slope tilt matrix computation and application during VXL rendering` is stale if the current Rust file is authoritative; suggested replacement: `Slope tilt matrix computation is implemented in src/render/vxl_raster.rs; remaining risk is visual validation of world-direction/model-axis mapping.`
 
 ## Conclusion
 

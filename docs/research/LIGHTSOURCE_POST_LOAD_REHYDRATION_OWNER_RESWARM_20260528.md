@@ -168,7 +168,7 @@ Active in YR: Yes for the listed code sites; no save/load owner verified.
 
 Method:
 
-- Local PE byte scan of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`.
+- Local PE byte scan of `<ra2-install>/gamemd.exe`.
 - Scanned executable sections for `FF 90..97 DC 04 00 00` (`CALL [reg+0x4DC]`).
 - Scanned for direct `E8 rel32` calls targeting `0x00445F80`.
 - Ghidra assembly/decompile was used to classify the found call sites.
@@ -257,32 +257,32 @@ Post-load light state must be rebuilt by a restore/rebuild step outside these or
 
 Verified behavior -> `BuildingClass::Load` zeroes `+0x614` and does not pointer-fix it.
 Rust delta -> Treat building light handles/contributions as transient rebuildable render/app state, not authoritative save state.
-Affected surfaces -> [src/sim/snapshot.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/snapshot.rs), [src/sim/world/mod.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs), [src/app_input.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_input.rs), [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs), [src/map/lighting.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs).
+Affected surfaces -> [src/sim/snapshot.rs](src/sim/snapshot.rs), [src/sim/world/mod.rs](src/sim/world/mod.rs), [src/app_input.rs](src/app_input.rs), [src/app_init.rs](src/app_init.rs), [src/map/lighting.rs](src/map/lighting.rs).
 Acceptance scenario -> Save/load a map with a live lamp building; after load, app/render lighting is rebuilt from stable loaded building state, not from a serialized light handle.
 Suggested test -> `building_point_light_rebuilt_after_snapshot_load_without_serialized_handle`.
 
 Verified behavior -> Only `Unlimbo` and `OnConstructionComplete` allocate building `+0x614`; both gate on `LightIntensity != 0` and enable with mode `0`.
 Rust delta -> Keep the point-light collection/allocation gate as `LightIntensity != 0`, and eventually model native enable/disable timing separately from type parsing.
-Affected surfaces -> [src/map/lighting.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs), [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs), future building placement/completion hooks.
+Affected surfaces -> [src/map/lighting.rs](src/map/lighting.rs), [src/app_init.rs](src/app_init.rs), future building placement/completion hooks.
 Acceptance scenario -> A building with default/nonzero `LightVisibility` but zero `LightIntensity` emits no light before or after load.
 Suggested test -> `light_visibility_without_intensity_does_not_rehydrate_light`.
 
 Verified behavior -> No general static post-load `OnConstructionComplete` caller exists, and force argument `1` does not allocate for already placed buildings.
 Rust delta -> Do not copy a fake "first loaded tick calls construction complete for all buildings" mechanism. Rebuild render-side lights explicitly after snapshot load.
-Affected surfaces -> [src/app_input.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_input.rs), [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs).
+Affected surfaces -> [src/app_input.rs](src/app_input.rs), [src/app_init.rs](src/app_init.rs).
 Acceptance scenario -> Loading a save should not rerun construction-complete side effects such as free-unit spawn, owner bonuses, EVA, wall connection, or superweapon events merely to restore lighting.
 Suggested test -> `snapshot_load_rebuilds_lighting_without_construction_complete_side_effects`.
 
 Verified behavior -> Online/offline/damage/sell/destructor paths only toggle or remove existing light pointers.
 Rust delta -> When native light handles exist, power/death/sell hooks should toggle/remove contributions only when an owned runtime source exists; snapshot load should create/rebuild equivalent runtime source state before such toggles matter.
-Affected surfaces -> future power/building lifecycle code, [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs), [src/map/lighting.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs).
+Affected surfaces -> future power/building lifecycle code, [src/app_init.rs](src/app_init.rs), [src/map/lighting.rs](src/map/lighting.rs).
 Acceptance scenario -> Save/load an offline or destroyed lamp building; it must not become lit solely because the type has `LightIntensity`.
 Suggested tests -> `offline_building_light_stays_inactive_after_snapshot_load`, `destroyed_building_light_not_recreated_after_load`.
 
 Current Rust note:
 
-- [src/app_input.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_input.rs) already rebuilds `state.lighting_grid` after snapshot load via `rebuild_lighting_grid_from_sim`.
-- [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs) collects live structures with `!dying` and `health.current > 0`, then derives point lights from rules.
+- [src/app_input.rs](src/app_input.rs) already rebuilds `state.lighting_grid` after snapshot load via `rebuild_lighting_grid_from_sim`.
+- [src/app_init.rs](src/app_init.rs) collects live structures with `!dying` and `health.current > 0`, then derives point lights from rules.
 - This is directionally aligned with the static-code finding that the native handle is transient. It is still not full gamemd mechanism parity because native has `LightSourceClass` active/detail state and immediate dirty-cell recompute semantics.
 
 ## Negative Facts / Do Not Do
@@ -330,10 +330,10 @@ Current Rust note:
   - `CALL [reg+0x4DC]` hits: `0x00414F85`, `0x00414FC3`, `0x00448CEF`, `0x00449AD4`, `0x0044D68A`, `0x004CD050`, `0x004CDB9F`, `0x004D8D8B`, `0x006E42BB`.
   - Direct `CALL 0x00445F80`: none.
 - Local Rust scan:
-  - [src/map/lighting.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs)
-  - [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs)
-  - [src/app_input.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_input.rs)
-  - [src/sim/snapshot.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/snapshot.rs)
+  - [src/map/lighting.rs](src/map/lighting.rs)
+  - [src/app_init.rs](src/app_init.rs)
+  - [src/app_input.rs](src/app_input.rs)
+  - [src/sim/snapshot.rs](src/sim/snapshot.rs)
 - Prior research map:
   - `LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
   - `BUILDING_LIGHTSOURCE_POST_LOAD_REHYDRATE_GHIDRA_REPORT.md`

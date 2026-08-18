@@ -1397,12 +1397,12 @@ No other §9.1 claims are affected by this correction.
 - `"MissileSafetyAltitude"` @ 0x0083CA9C
 
 ### Prior research docs referenced
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLET_CLASS_AI_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETCLASS_TRAJECTORY_AND_HOMING.md`
+- `docs/research/BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`
+- `docs/research/BULLET_CLASS_AI_GHIDRA_REPORT.md`
+- `docs/research/BULLETCLASS_TRAJECTORY_AND_HOMING.md`
 - `docs/FIRE_AT_PIPELINE_GHIDRA_REPORT.md` (in-repo)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIRE_AT_ANALYSIS.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AIRBURST_SUB_WEAPON_SPAWN_GHIDRA_REPORT.md`
+- `docs/research/FIRE_AT_ANALYSIS.md`
+- `docs/research/AIRBURST_SUB_WEAPON_SPAWN_GHIDRA_REPORT.md`
 
 ### INI files checked
 - `ini/rulesmd.ini` — 58 BulletType sections, confirmed via parallel agent scan

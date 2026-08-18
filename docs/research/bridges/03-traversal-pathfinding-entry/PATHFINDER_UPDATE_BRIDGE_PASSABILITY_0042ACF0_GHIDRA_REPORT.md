@@ -225,11 +225,11 @@ Read-only scan only:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_STANDALONE_FUNCTIONS_GHIDRA_REPORT.md` replacement wording:
+- `docs/research/PATHFINDING_STANDALONE_FUNCTIONS_GHIDRA_REPORT.md` replacement wording:
   "`CellClass+0x140 bit 0x40000` is the temporary Pathfinder bridge-approach A* cost marker. `AStar_compute_edge_cost @ 0x00429830` multiplies destination-cell cost by 4.0 when it is set. The verified writer/clearer is `PathfinderClass::UpdateBridgePassability @ 0x0042ACF0`, called before and after A* under `PathfinderClass+0x3C != 0`; do not describe this as a permanent cliff-ramp flag set by `CellClass::RecalcAttributes`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/fidelity-checks/bridge-cost-penalty.md` replacement wording:
+- `docs/fidelity-checks/bridge-cost-penalty.md` replacement wording:
   "`0x40000` is not a terrain cliff-ramp bit. It is a transient Pathfinder bridge-approach cost marker toggled around individual A* searches by `0x0042ACF0`; it should be modeled as a per-search cost overlay, not as static terrain or walkability."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATH_SMOOTHING_AND_SPEED_RAMPING_GHIDRA_REPORT.md` replacement wording:
+- `docs/research/PATH_SMOOTHING_AND_SPEED_RAMPING_GHIDRA_REPORT.md` replacement wording:
   "Where this report calls `0x40000` a cliff/impassable-edge flag, replace with: `temporary Pathfinder bridge-approach cost marker; reader cost multiplier is verified at `0x00429830`, writer/cleanup lifecycle at `0x0042ACF0`."
 
 ## 10. Remaining Uncertainty

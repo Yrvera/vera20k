@@ -131,5 +131,5 @@ Rust-facing delta:
 - Ghidra read-only decompile: `[Header]` loader `FUN_00689D30 @ 0x00689D30`.
 - Ghidra-backed prior report: `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md` for `0x00699980`, `0x005D63E0`, `0x0069AE10`, and source strings.
 - Ghidra-backed prior report: `SKIRMISH_RETAIL_STOCK_MAP_PREVIEW_CENSUS_GHIDRA_REPORT.md` for root-file baseline and PreviewPack gate `0x00641B00`.
-- Local retail data: `C:/Users/enok/Documents/Command and Conquer Red Alert II/langmd.mix`, `multimd.mix`, `expandmd01.mix`, `ra2.mix`, `MULTI.MIX`.
-- Rust contrast: `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`.
+- Local retail data: `<ra2-install>/langmd.mix`, `multimd.mix`, `expandmd01.mix`, `ra2.mix`, `MULTI.MIX`.
+- Rust contrast: `src/app_list_maps.rs`.

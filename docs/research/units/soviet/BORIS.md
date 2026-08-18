@@ -25,7 +25,7 @@ Ghidra trace of the airstrike subsystem flags.
 
 ## rulesmd.ini — `[BORIS]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4593`:
+Verbatim from `ini/rulesmd.ini:4593`:
 
 ```ini
 [BORIS]
@@ -179,7 +179,7 @@ SelfHealing=yes
 
 ## artmd.ini — `[BORIS]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:411`:
+`ini/artmd.ini:411`:
 
 ```ini
 [BORIS] ; Boris

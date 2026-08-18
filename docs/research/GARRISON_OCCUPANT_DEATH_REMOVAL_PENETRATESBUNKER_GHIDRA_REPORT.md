@@ -148,7 +148,7 @@ Rust models garrison occupants as `PassengerCargo.passengers` plus `PassengerCar
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`
   - Replace line 19 wording: "`0x664` ... (probable) Index for garrison fire rotation" with "`0x69C` is the verified current garrison fire index; `0x664` was not confirmed as this index."
   - Replace open question 2 with: "Resolved by `GARRISON_OCCUPANT_DEATH_REMOVAL_PENETRATESBUNKER_GHIDRA_REPORT.md`: no standard YR `PenetratesBunker` path removes `CanBeOccupied` garrison occupants from `BuildingClass+0x684`; `PenetratesBunker` gates `TechnoClass+0x2E4` bunker/shelter damage routing."
   - Replace open question 3 with: "Resolved by later garrison reports: current garrison fire index is `BuildingClass+0x69C`; weapon selection, fire coords, `Fire_At` advance, sell reset, and kill-credit lookup use that field."

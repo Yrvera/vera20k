@@ -108,8 +108,8 @@ That is acceptable for the current high-level object result, because no visible 
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md` section 11 should replace its uncertainty sentence with: `Resolved by FAILED_REDEPLOY_LIMBO_UNIT_CLEANUP_GHIDRA_REPORT.md: the constructed AMCV is not deleted, uninitialized, pending-delete queued, or swept from Unit/Object/RTTI arrays on the failed UnitClass::Unlimbo branch. It remains an alive, in-limbo registered UnitClass; later gameplay consequences beyond the immediate no-visible-AMCV result require runtime probing.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md` coverage row "New unit deletion after failed unlimbo in same function" should replace "deeper global limbo cleanup deferred" with: `deeper global cleanup resolved by FAILED_REDEPLOY_LIMBO_UNIT_CLEANUP_GHIDRA_REPORT.md: no destructor/UnInit/pending-delete/global-array removal is reached for the failed AMCV.`
+- `docs/research/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md` section 11 should replace its uncertainty sentence with: `Resolved by FAILED_REDEPLOY_LIMBO_UNIT_CLEANUP_GHIDRA_REPORT.md: the constructed AMCV is not deleted, uninitialized, pending-delete queued, or swept from Unit/Object/RTTI arrays on the failed UnitClass::Unlimbo branch. It remains an alive, in-limbo registered UnitClass; later gameplay consequences beyond the immediate no-visible-AMCV result require runtime probing.`
+- `docs/research/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md` coverage row "New unit deletion after failed unlimbo in same function" should replace "deeper global limbo cleanup deferred" with: `deeper global cleanup resolved by FAILED_REDEPLOY_LIMBO_UNIT_CLEANUP_GHIDRA_REPORT.md: no destructor/UnInit/pending-delete/global-array removal is reached for the failed AMCV.`
 
 ## 10. Negative Facts / Do Not Do
 
@@ -126,6 +126,6 @@ Runtime side effects of the live registered limbo AMCV after several ticks are n
 ## Sources
 
 - Ghidra read-only decompiled: `BuildingClass__Sell @ 0x00449C30`, `UnitClass` full constructor `0x007353C0`, `UnitClass` destructor body `0x00735780`, `UnitClass__Unlimbo @ 0x00737BA0`, `FootClass__Unlimbo @ 0x004D7170`, `TechnoClass__Unlimbo @ 0x006F6CA0`, `ObjectClass__Reveal @ 0x005F4EC0`, `ObjectClass__Constructor @ 0x005F3900`, `ObjectClass__UnInit @ 0x005F65F0`, `ObjectClass__Destructor @ 0x005F3B80`, `FootClass__Constructor @ 0x004D31E0`, `FootClass` destructor body `0x004D3590`, `Detach_From_All_Lists`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`.
+- Prior docs referenced: `docs/research/GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md`, `docs/research/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini:3041`, `ini/rulesmd.ini:6969..6983`, `ini/rulesmd.ini:11622..11634`.
 - Rust scanned for handoff only: `src/sim/world/mod.rs:958..1004`, `src/sim/world/world_spawn.rs:292..443`, `src/sim/world/world_spawn.rs:590..631`, `src/sim/world/world_spawn.rs:679..691`.

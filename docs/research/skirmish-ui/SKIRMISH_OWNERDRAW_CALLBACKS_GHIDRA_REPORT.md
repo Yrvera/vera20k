@@ -592,7 +592,7 @@ Ghidra functions decompiled / disassembled:
 
 Prior reports referenced:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`

@@ -155,11 +155,11 @@ Proposed Rust test names:
 
 ## 16. Stale Docs / Follow-up Docs
 
-Suggested replacement wording for `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md`:
+Suggested replacement wording for `docs/plans/2026-05-23-standard-offline-skirmish-loading-plan.md`:
 
 > Standard offline Skirmish loading progress is a null-HWND direct-draw path. `Read_Scenario` initializes `ProgressClass+0x64` to zero, so advancing `FUN_0069AE90` milestones call `FUN_00643AE0` and then `FUN_004F4780(0)` before loader execution continues. Rust must render and present at advancing native milestones; a single loading frame followed by synchronous map load is not equivalent. Duplicate/lower milestones must not present.
 
-Suggested replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md`:
+Suggested replacement wording for `docs/research/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md`:
 
 > The standard offline Skirmish progress branch is now verified as null-HWND direct draw: `ScenarioClass__Read_Scenario` passes zero into `FUN_00642A60`, leaving `ProgressClass+0x64` null; changed progress values call `FUN_00643AE0(-1,-1)`, which draws the progress rows and calls `FUN_004F4780(0)` to blit to the visible client surface. The non-null `SendMessageA(WM_PAINT)` branch is real but not the ordinary Skirmish scenario-load path.
 

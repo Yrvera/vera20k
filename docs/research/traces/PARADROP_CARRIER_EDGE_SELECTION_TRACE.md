@@ -4,8 +4,8 @@ Scenario: paradrop target `(50,20)` on a `100x100` Rust map. Trace only carrier 
 
 ## Sources Used
 
-- Rust current implementation: `C:/Users/enok/Documents/ra2-rust-game/src/sim/superweapon/paradrop.rs`, `src/sim/world/edge_cell.rs`, `src/sim/house_state.rs`, `src/sim/superweapon/paradrop_tests.rs`.
-- Verified gamemd research: `C:/Users/enok/Documents/ra2-rust-game-docs/PDPLANE_SPAWNER_EDGE_SILENT_PATH_GHIDRA_REPORT.md`, `PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`, `LOCAL_GRID_CELL_SKEW_TRANSFORMS_GHIDRA_REPORT.md`.
+- Rust current implementation: `src/sim/superweapon/paradrop.rs`, `src/sim/world/edge_cell.rs`, `src/sim/house_state.rs`, `src/sim/superweapon/paradrop_tests.rs`.
+- Verified gamemd research: `docs/research/PDPLANE_SPAWNER_EDGE_SILENT_PATH_GHIDRA_REPORT.md`, `PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`, `LOCAL_GRID_CELL_SKEW_TRANSFORMS_GHIDRA_REPORT.md`.
 - Ghidra MCP attempted read-only decompile for `0x004AA440`, `0x004AAB30`, `0x0050DA80`, `0x0065E660`; tool returned function-not-found, so no fresh decompile was available in this slot.
 
 ## Active YR Confirmation

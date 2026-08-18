@@ -512,7 +512,7 @@ modder use.
 
 ## 6. Current Rust Implementation Status
 
-Source: grep for `burst|Burst` in `C:/Users/enok/Documents/ra2-rust-game/src/`.
+Source: grep for `burst|Burst` in `src/`.
 
 **What exists:**
 - `src/rules/weapon_type.rs:54,193` — `WeaponType::burst: i32`, parsed from `Burst=` INI

@@ -173,9 +173,9 @@ Deferred items are not load-bearing for the Rust bridge-damage parser ownership 
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`: replace the Open Question "Runtime SpecialFlags constructor default..." with: "Closed by `SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`: `FUN_006B8AE0` applies `flags = (flags & 0xFFF88088) | 0x8088`; constructor `0x006832C0` calls it for active scenario flags and init `0x0052F620` calls it for staging `DAT_00A8E960`, so bit `0x8000` defaults on."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SPECIAL_FLAGS_SYSTEM.md`: replace the uncertain `DAT_00A8E960 uses a DIFFERENT bit layout` paragraph with: "For the bridge-destruction bit specifically, staging and active flags both use bit `0x8000`. `Full_Init` clears staging bit `0x8000` when `g_GameMode != 0 && DAT_00A8B260 == 0`, then later copies `DAT_00A8E960` into active `*g_ScenarioClass_Instance` for multiplayer. This report does not claim the other packed lobby bits."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SCENARIO_INIT_DEEP_DIVE.md`: replace wording that calls bit `0x8000` "superweapons flag" with: "`0x8000` is `DestroyableBridges`; in multiplayer, `DAT_00A8B260 == 0` clears this bridge-destruction bit in staging before staging is copied to active scenario flags."
+- `docs/research/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`: replace the Open Question "Runtime SpecialFlags constructor default..." with: "Closed by `SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`: `FUN_006B8AE0` applies `flags = (flags & 0xFFF88088) | 0x8088`; constructor `0x006832C0` calls it for active scenario flags and init `0x0052F620` calls it for staging `DAT_00A8E960`, so bit `0x8000` defaults on."
+- `docs/research/SPECIAL_FLAGS_SYSTEM.md`: replace the uncertain `DAT_00A8E960 uses a DIFFERENT bit layout` paragraph with: "For the bridge-destruction bit specifically, staging and active flags both use bit `0x8000`. `Full_Init` clears staging bit `0x8000` when `g_GameMode != 0 && DAT_00A8B260 == 0`, then later copies `DAT_00A8E960` into active `*g_ScenarioClass_Instance` for multiplayer. This report does not claim the other packed lobby bits."
+- `docs/research/SCENARIO_INIT_DEEP_DIVE.md`: replace wording that calls bit `0x8000` "superweapons flag" with: "`0x8000` is `DestroyableBridges`; in multiplayer, `DAT_00A8B260 == 0` clears this bridge-destruction bit in staging before staging is copied to active scenario flags."
 
 ## Sources
 
@@ -198,9 +198,9 @@ Deferred items are not load-bearing for the Rust bridge-damage parser ownership 
   - `0x0068794D..0x00687966`
   - `0x00687C16..0x00687C29`
 - Docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SPECIAL_FLAGS_SYSTEM.md`
+  - `docs/research/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
+  - `docs/research/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`
+  - `docs/research/SPECIAL_FLAGS_SYSTEM.md`
 - INI checked:
   - `ini/rulesmd.ini:804`, `ini/rulesmd.ini:3029`
   - `ini/rules.ini:664`, `ini/rules.ini:2509`

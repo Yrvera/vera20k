@@ -132,14 +132,14 @@ Second, near the final detonation path, if the bullet still has a target pointer
   - `+0x58 -> 0x00486890`
   - `+0xA4 -> 0x00557E10`
 - Prior reports:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_TARGET_TYPE_HOMING_GROUND_ROCKETEER_AIRCRAFT_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_ARMING_PROXIMITY_DETECTOR_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/ABSTRACTCLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
+  - `docs/research/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
+  - `docs/research/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`
+  - `docs/research/AAHEATSEEKER2_TARGET_TYPE_HOMING_GROUND_ROCKETEER_AIRCRAFT_GHIDRA_REPORT.md`
+  - `docs/research/AAHEATSEEKER2_ARMING_PROXIMITY_DETECTOR_GHIDRA_REPORT.md`
+  - `docs/research/ABSTRACTCLASS_GHIDRA_REPORT.md`
+  - `docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3868`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:22574..22575`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:25679..25690`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:14755..14760`
+  - `ini/rulesmd.ini:3868`
+  - `ini/rulesmd.ini:22574..22575`
+  - `ini/rulesmd.ini:25679..25690`
+  - `ini/artmd.ini:14755..14760`

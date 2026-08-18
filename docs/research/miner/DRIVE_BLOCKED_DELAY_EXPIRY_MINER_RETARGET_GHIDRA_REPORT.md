@@ -252,10 +252,10 @@ Current Rust is closer to the corrected model than the older stuck-watchdog trac
   - `MissionClass::Commence @ 0x005B3570`
   - `MissionClass::Mission_Dispatch @ 0x005B3060`
 - Prior docs:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_STUCK_WATCHDOG_RETARGET_ON_UNREACHABLE_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DRIVELOCOMOTION_BLOCKED_DELAY_TIMER_CHRONO_MINER_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_HARVEST_STATE_RETARGET_VISUAL_FLAG_GHIDRA_REPORT.md`
+  - `docs/research/miner/traces/MINER_STUCK_WATCHDOG_RETARGET_ON_UNREACHABLE_TRACE.md`
+  - `docs/research/miner/DRIVELOCOMOTION_BLOCKED_DELAY_TIMER_CHRONO_MINER_GHIDRA_REPORT.md`
+  - `docs/research/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
+  - `docs/research/miner/HARV_HARVEST_STATE_RETARGET_VISUAL_FLAG_GHIDRA_REPORT.md`
 - INI:
   - `ini/rulesmd.ini` `PathDelay=.01`, `BlockagePathDelay=60`, `[CMIN] Harvester=yes`, `[CMIN] Locomotor={4A582747-9839-11d1-B709-00A024DDAFD1}`
 - Rust scanned:

@@ -99,13 +99,13 @@ NOT-IMPLEMENTED: 0
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/CHRONO_MINER_ORE_DUMP_DEPOSIT_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_RECEIVE_RADIO_REFINERY_0X0E_NON_ACCEPTED_PATHS_GHIDRA_REPORT.md`
+- `docs/research/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`
+- `docs/research/miner/traces/CHRONO_MINER_ORE_DUMP_DEPOSIT_TRACE.md`
+- `docs/research/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`
+- `docs/research/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
+- `docs/research/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`
+- `docs/research/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
+- `docs/research/BUILDING_RECEIVE_RADIO_REFINERY_0X0E_NON_ACCEPTED_PATHS_GHIDRA_REPORT.md`
 - Ghidra decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`
 - Ghidra decompile: `BuildingClass::Receive_Radio @ 0x0043C2D0`
 - Ghidra decompile: `FUN_0065ADF0 @ 0x0065ADF0`

@@ -153,14 +153,14 @@ Risk:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
+- `docs/research/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
 - Read-only Ghidra MCP `decompile_function 0x0073D450` (`UnitClass__Harvest_Ore_Tick`)
 - Read-only Ghidra MCP `decompile_function 0x00480A80` (`CellClass__Reduce_Tiberium`)
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/overlays.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_ui_overlays.rs`
+- `ini/rulesmd.ini`
+- `src/sim/miner/miner_system.rs`
+- `src/sim/miner/mod.rs`
+- `src/sim/production/production_queue.rs`
+- `src/app_instances/overlays.rs`
+- `src/app_ui_overlays.rs`

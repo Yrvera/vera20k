@@ -4,7 +4,7 @@ Complete reverse-engineering of how gamemd.exe sets up a new game: player creati
 color/side assignment, spawn point allocation, MCV deployment, and starting credits.
 
 Sources: Reports 047, 048, 051, 056, 057, 085, 086, 105, 109, 110, 112 from
-`c:\Users\enok\Documents\gidra\reports\`, and `docs/MCV_DEPLOY_GHIDRA_REPORT.md`,
+`<local>/Documents/gidra/reports/`, and `docs/MCV_DEPLOY_GHIDRA_REPORT.md`,
 `docs/HOUSECLASS_GHIDRA_REPORT.md`.
 
 ---

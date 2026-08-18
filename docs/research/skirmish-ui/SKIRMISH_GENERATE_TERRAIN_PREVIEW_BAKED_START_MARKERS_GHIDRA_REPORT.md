@@ -199,6 +199,6 @@ This slot did not edit Rust. Implementation implications are research-only:
 
 - Ghidra decompile: `0x00641140`, `0x0068BD80`, `0x0068BCC0`, `0x0068BDC0`, `0x006418B0`, `0x00687CE0`, `0x00596300`, `0x00598960`, `0x006D62E0`
 - Ghidra disassembly: `0x00641140`
-- Parent report: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`
-- Retail sample check: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map` contains `[Preview]`, `[PreviewPack]`, and `[Waypoints]`
-- Rust status check: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
+- Parent report: `docs/research/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`
+- Retail sample check: `<ra2-install>/Dustbowl.map` contains `[Preview]`, `[PreviewPack]`, and `[Waypoints]`
+- Rust status check: `src/map/preview.rs`, `src/app_skirmish_shell_render.rs`

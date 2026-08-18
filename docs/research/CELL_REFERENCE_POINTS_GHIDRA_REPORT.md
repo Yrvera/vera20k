@@ -270,14 +270,14 @@ Observed gaps/deltas:
   - `BulletClassBulletDetonationImpactDamage @ 0x00468D80`
   - `Apply_area_damage @ 0x00489280`
 - Prior research:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_COMPUTE_ZADJUST_FORMULA_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/WARHEAD_DETONATE_GHIDRA_REPORT.md`
+  - `docs/research/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
+  - `docs/research/CELL_COMPUTE_ZADJUST_FORMULA_GHIDRA_REPORT.md`
+  - `docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
+  - `docs/research/WARHEAD_DETONATE_GHIDRA_REPORT.md`
 - Rust surfaces scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/util/lepton.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_aoe.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/in_range.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/homing_movement.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs`
+  - `src/util/lepton.rs`
+  - `src/sim/combat/mod.rs`
+  - `src/sim/combat/combat_aoe.rs`
+  - `src/sim/combat/in_range.rs`
+  - `src/sim/movement/homing_movement.rs`
+  - `src/map/resolved_terrain.rs`

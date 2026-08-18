@@ -18,7 +18,7 @@ The remaining bridge gaps resolve to four practical implementation rules:
 
 ## 2. Retail Stock-map `[Tubes]` Prevalence
 
-Scan target: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+Scan target: `<ra2-install>/`.
 
 Raw map-section scan:
 
@@ -36,7 +36,7 @@ Raw map-section scan:
 Additional full-install literal scan:
 
 ```text
-rg -a -n -i "\[Tubes\]" "C:\Users\enok\Documents\Command and Conquer Red Alert II"
+rg -a -n -i "\[Tubes\]" "<ra2-install>"
 ```
 
 Result: no matches.
@@ -234,19 +234,19 @@ Required follow-up implementation effects:
   - `ShipLocomotionClass__Process @ 0x0069FC10`
   - `FUN_0069F450`
 - Local data scanned:
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/MAPS01.MIX`
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/MAPS02.MIX`
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/mapsmd03.mix`
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/MULTI.MIX`
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/multimd.mix`
-  - `C:/Users/enok/Documents/Command and Conquer Red Alert II/expandmd01.mix`
+  - `<ra2-install>/MAPS01.MIX`
+  - `<ra2-install>/MAPS02.MIX`
+  - `<ra2-install>/mapsmd03.mix`
+  - `<ra2-install>/MULTI.MIX`
+  - `<ra2-install>/multimd.mix`
+  - `<ra2-install>/expandmd01.mix`
   - loose `.mmx/.yro/.map/.mpr/.yrm`
 - Docs consulted:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_ZONE_PRECHECK_LANDTYPE10_CONNECTIVITY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBEMOVEMENT_FINAL_Z_INTERPOLATION_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SUPERWEAPON_BRIDGE_AOE_IMPACT_Z_THREADING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOCOMOTOR_DRIVE_SHIP_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
+  - `docs/research/LOW_BRIDGE_ZONE_PRECHECK_LANDTYPE10_CONNECTIVITY_GHIDRA_REPORT.md`
+  - `docs/research/LOW_BRIDGE_TUBEMOVEMENT_FINAL_Z_INTERPOLATION_GHIDRA_REPORT.md`
+  - `docs/research/SUPERWEAPON_BRIDGE_AOE_IMPACT_Z_THREADING_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_LOCOMOTOR_DRIVE_SHIP_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
 - Rust surfaces scanned:
   - `src/map/tubes.rs`
   - `src/map/resolved_terrain.rs`

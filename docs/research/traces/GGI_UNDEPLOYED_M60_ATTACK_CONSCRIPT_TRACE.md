@@ -10,10 +10,10 @@ PASS: 7 | FAIL: 0 | UNCHECKED: 4 | NOT-IMPLEMENTED: 0
 
 ## Sources Checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/GGI.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_COMBAT_WEAPON_SYSTEMS_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/timing/weapon-rof-burst.md`
+- `docs/research/GGI_GHIDRA_REPORT.md`
+- `docs/research/units/allied/GGI.md`
+- `docs/research/TECHNOCLASS_COMBAT_WEAPON_SYSTEMS_REPORT.md`
+- `docs/research/timing/weapon-rof-burst.md`
 - `ini/rulesmd.ini`, `ini/artmd.ini`, `ini/soundmd.ini`
 - Rust source under `src/sim/combat`, `src/sim/animation.rs`, `src/rules`, `src/app_fire_effects.rs`, and `src/audio/events.rs`
 

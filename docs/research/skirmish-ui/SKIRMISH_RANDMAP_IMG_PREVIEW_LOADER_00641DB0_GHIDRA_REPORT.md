@@ -196,9 +196,9 @@ No INI key is directly read by `0x00641DB0` or the `RandMap.img` writer. The ima
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_PREVIEW_REFRESH_GHIDRA_REPORT.md` OQ-12 replacement:
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_PREVIEW_REFRESH_GHIDRA_REPORT.md` OQ-12 replacement:
   > `[RESOLVED] OQ-12 - Create Random Map preview is a command-side exception, not passive row browsing. The random-map dialog writes runtime `RandMap.img` from `DAT_00ABE154+0` on shutdown when a generated preview exists. Accepted setup replaces `DAT_00AC1154`, calls `0x00641DB0("RandMap.img")`, and later random branches inspect wrapper `+0`; if null, they fall back to `0x005E74E0`. The image is PCX-style and dimensioned from `GenerateTerrainPreview`, not `[PreviewPack]` or a fixed UI control size.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_SETUP_PATH_GHIDRA_REPORT.md` follow-up wording:
+- `docs/research/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_SETUP_PATH_GHIDRA_REPORT.md` follow-up wording:
   > `The `RandMap.img` preview branch loads a runtime PCX-style image written by the random-map dialog shutdown path. `0x005E8590` does not itself prove drawable preview success; callers must inspect wrapper `+0` and use the documented fallback/blank behavior.`
 
 ## Sources

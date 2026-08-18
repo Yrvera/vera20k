@@ -117,7 +117,7 @@ Current Rust implements functional modal display, but its visual composition is 
 
 ## 10. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Modal helper `0x005D3490` writes message/body text to child `0x5B0`, second text to child `0x5AE`, optional button text to controls `2` and `0x5AF` only when non-empty" with: "Modal helper `0x005D3490` selects RT_DIALOG `0xCE/0x120/0x121` from optional button-text presence. Ordinary Start validation uses `0xCE`: static `0x5B0` receives body text and owner-draw button `0x5AE` receives `TXT_OK`; optional button controls `2` and `0x5AF` exist only in `0x120/0x121`."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Modal helper `0x005D3490` writes message/body text to child `0x5B0`, second text to child `0x5AE`, optional button text to controls `2` and `0x5AF` only when non-empty" with: "Modal helper `0x005D3490` selects RT_DIALOG `0xCE/0x120/0x121` from optional button-text presence. Ordinary Start validation uses `0xCE`: static `0x5B0` receives body text and owner-draw button `0x5AE` receives `TXT_OK`; optional button controls `2` and `0x5AF` exist only in `0x120/0x121`."
 - `docs/contracts/2026-05-23-skirmish-ui-shell-implementation-contract.md`: replace the validation-modal visual implication "render helpers for `validation_modal` exist" with: "current render helpers are functional but visually wrong for native parity: native `0xCE` uses a mode-2 `PUDLGBGN.SHP`/`DIALOGN.PAL` background and `MNBTTN.SHP`/`MAINBTTN.PAL` OK button, not a flat panel with `push_button_30`."
 
 ## 11. Remaining Uncertainty

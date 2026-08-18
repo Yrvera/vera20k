@@ -627,7 +627,7 @@ oscillation documented above is exactly the kind of thing it will trip over.
 
 ### Direct consequence for `src/sim/movement/ready_producer.rs`
 
-Read at C:\Users\enok\Documents\ra2-rust-game\src\sim\movement\ready_producer.rs
+Read at src/sim/movement/ready_producer.rs
 (lines 194-221). Two of its three assertions are **confirmed correct**, one is wrong:
 
 1. `Native predicate: moving_byte != 0 && applied_speed > 0 && head_to_nonnull` —

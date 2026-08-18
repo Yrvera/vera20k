@@ -92,7 +92,7 @@ The path is live in standard offline Skirmish because previous reports verify Cr
 
 | Area | Current Rust status | Evidence |
 |---|---|---|
-| scenario records | `SkirmishScenarioRecord` already has `SkirmishScenarioKind::RandomMapSentinel` and `RANDMAP_SED = "RandMap.Sed"` | `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs` |
+| scenario records | `SkirmishScenarioRecord` already has `SkirmishScenarioKind::RandomMapSentinel` and `RANDMAP_SED = "RandMap.Sed"` | `src/skirmish_scenarios.rs` |
 | random sentinel filtering/upsert | mode-gated sentinel insertion/update exists; current random sentinel has no min/max `2/4` parity in the struct constructor | `src/skirmish_scenarios.rs`, `src/ui/skirmish_shell/state.rs` |
 | launch session | `SkirmishLaunchSession.selected_map_file` stores a string and Start passes it into `GameScreen::Loading` | `src/skirmish_launch.rs`, `src/ui/skirmish_shell/state.rs`, `src/app.rs` |
 | map loading | `load_map_by_name_or_path` searches real files/extensions and will fail or attempt normal file loading for `RandMap.Sed`; no `.sed`/random-generation branch exists | `src/app_list_maps.rs`, `src/app_init.rs` |
@@ -157,14 +157,14 @@ Rust has part of the shell record model, but the post-load branch is missing: se
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`: replace OQ-9 wording with:
+- `docs/research/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`: replace OQ-9 wording with:
   > For the random sentinel, the selected-record loader still copies record `+0x58` (`RandMap.Sed`) into `ScenarioClass+0x125C`. `ScenarioClass__Read_Scenario @ 0x00684620` detects the `.SED` suffix, sets `ScenarioClass+0x34BD = 1`, calls `0x00597A10` with `ECX=0x00ABDFD8` and the local filename, then on success calls `0x00598960(0,0)` and `ScenarioClass__Post_Map_Init(1)`. After the branch it copies the original local filename back into `ScenarioClass+0x125C`; no generated map filename replaces `RandMap.Sed`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`: replace "launch detects the `.SED` filename suffix and runs the random-map generation path" with:
+- `docs/research/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`: replace "launch detects the `.SED` filename suffix and runs the random-map generation path" with:
   > Launch detects the `.SED` suffix, calls the seed-load wrapper `0x00597A10` with the local filename, calls `0x00598960(0,0)` only on success, then retains the original `.SED` filename in `ScenarioClass+0x125C` while generated map state is in memory.
 
 ## Sources
 
 - Ghidra read-only decompile / assembly: `0x00684620`, `0x00684961..0x006849BF`, `0x00597A10`, `0x00598960`, `0x00686890`, `0x00686730`, `0x00596300`, `0x00595680`, `0x00597260`, `0x00597380`, `0x00597430`, `0x005975E0`, `0x005981F0`, `0x00599650`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`.
-- Local INI: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs`; `src/ui/skirmish_shell/state.rs`; `src/skirmish_launch.rs`; `src/app.rs`; `src/app_init.rs`; `src/app_list_maps.rs`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_RANDMAP_SED_RANDOM_MAP_BEHAVIOR_GHIDRA_REPORT.md`.
+- Local INI: `ini/mpmodesmd.ini`; `ini/rulesmd.ini`.
+- Rust scan: `src/skirmish_scenarios.rs`; `src/ui/skirmish_shell/state.rs`; `src/skirmish_launch.rs`; `src/app.rs`; `src/app_init.rs`; `src/app_list_maps.rs`.

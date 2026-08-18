@@ -208,9 +208,9 @@ For 0 <= damage < Strength, probability of stage advance is damage / (Strength +
 - Ghidra assembly context: callsite `0x0075F477`
 - Ghidra decompile: `UnitClass::PerCellProcess @ 0x00739EC0`
 - Ghidra assembly context: callsite `0x0073B056`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WALL_DAMAGE_STAGE_INCREMENTER_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WALL_CONNECTION_AND_DESTRUCTION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_tests.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
+- `docs/research/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`
+- `docs/research/WALL_DAMAGE_STAGE_INCREMENTER_GHIDRA_REPORT.md`
+- `docs/research/WALL_CONNECTION_AND_DESTRUCTION_GHIDRA_REPORT.md`
+- `src/sim/overlay_grid.rs`
+- `src/sim/combat/combat_tests.rs`
+- `src/sim/world/mod.rs`

@@ -352,7 +352,7 @@ Consumer cross-check (read-only):
 
 Prior reports referenced:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/QUIT_CONFIRM_DIALOG_MAIN_MENU_GHIDRA_REPORT.md`
+- `docs/research/QUIT_CONFIRM_DIALOG_MAIN_MENU_GHIDRA_REPORT.md`
   - This report fills its "Resource Template `0x120` Note" open item
     (section starts at line ~228 of that doc). Outcome: that doc
     correctly identified the IDs (`0x5B0`, `0x5AE`, `0x5AF`, `2`) and

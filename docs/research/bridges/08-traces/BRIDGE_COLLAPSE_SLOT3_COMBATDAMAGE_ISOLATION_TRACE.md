@@ -34,16 +34,16 @@ For the concrete scenario where a modded rules INI changes `[CombatDamage] Destr
 
 ### Rust
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:715` defines `BridgeRules` and documents that `[CombatDamage] DestroyableBridges=` is not the gameplay gate.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:751` reads `[CombatDamage] BridgeStrength`, but `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:757` sets `destroyable_by_default = true` without reading `[CombatDamage] DestroyableBridges`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:2501` has the focused regression test `combatdamage_destroyablebridges_no_does_not_clear_default_bridge_flag` asserting that `[CombatDamage] DestroyableBridges=no` leaves `destroyable_by_default == true`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:11` defines `BridgeDestroyabilityMode` and `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:50` resolves the effective flag: campaign/editor uses map override or default `true`; skirmish/multiplayer uses session `bridge_destruction`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:450` selects `SkirmishOrMultiplayer { bridge_destruction: session.options.bridges_destroyable }` when a skirmish launch session exists, else `CampaignOrEditor`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init_helpers.rs:362` computes the effective bridge destroyable bool from map/session mode and passes it to `BridgeRuntimeState::from_resolved_terrain` at `C:/Users/enok/Documents/ra2-rust-game/src/app_init_helpers.rs:369`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:740` stores the bool and `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:794` exposes it as `is_destroyable()`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:1878` and `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:1914` emit bridge damage only for `warhead.wall && weapon.damage > 0`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1297` forwards combat bridge events to the bridge orchestrator.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:63` reads `sim.bridge_state`; if `is_destroyable()` is false, it returns before bridge damage dispatch. In this scenario, the traced Rust value is `true`, so the gate remains open.
+- `src/rules/ruleset.rs:715` defines `BridgeRules` and documents that `[CombatDamage] DestroyableBridges=` is not the gameplay gate.
+- `src/rules/ruleset.rs:751` reads `[CombatDamage] BridgeStrength`, but `src/rules/ruleset.rs:757` sets `destroyable_by_default = true` without reading `[CombatDamage] DestroyableBridges`.
+- `src/rules/ruleset.rs:2501` has the focused regression test `combatdamage_destroyablebridges_no_does_not_clear_default_bridge_flag` asserting that `[CombatDamage] DestroyableBridges=no` leaves `destroyable_by_default == true`.
+- `src/map/basic.rs:11` defines `BridgeDestroyabilityMode` and `src/map/basic.rs:50` resolves the effective flag: campaign/editor uses map override or default `true`; skirmish/multiplayer uses session `bridge_destruction`.
+- `src/app_init.rs:450` selects `SkirmishOrMultiplayer { bridge_destruction: session.options.bridges_destroyable }` when a skirmish launch session exists, else `CampaignOrEditor`.
+- `src/app_init_helpers.rs:362` computes the effective bridge destroyable bool from map/session mode and passes it to `BridgeRuntimeState::from_resolved_terrain` at `src/app_init_helpers.rs:369`.
+- `src/sim/bridge_state/mod.rs:740` stores the bool and `src/sim/bridge_state/mod.rs:794` exposes it as `is_destroyable()`.
+- `src/sim/combat/mod.rs:1878` and `src/sim/combat/mod.rs:1914` emit bridge damage only for `warhead.wall && weapon.damage > 0`.
+- `src/sim/world/mod.rs:1297` forwards combat bridge events to the bridge orchestrator.
+- `src/sim/world/bridge_orchestrator.rs:63` reads `sim.bridge_state`; if `is_destroyable()` is false, it returns before bridge damage dispatch. In this scenario, the traced Rust value is `true`, so the gate remains open.
 
 ## Player-Visible Findings
 

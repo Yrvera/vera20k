@@ -173,7 +173,7 @@ Stock content references `SparkSys` and `LGSparkSys` through damage particle sys
 
 ## Stale Docs / Replacement Wording
 
-Affected doc: `C:/Users/enok/Documents/ra2-rust-game-docs/PARTICLESYSTEMCLASS_GHIDRA_REPORT.md`
+Affected doc: `docs/research/PARTICLESYSTEMCLASS_GHIDRA_REPORT.md`
 
 Replacement wording for stale sections around the old `FUN_0062E280`, `FUN_005FF850`, and `FUN_005FF2D0` descriptions:
 
@@ -196,5 +196,5 @@ Replacement wording for stale sections around the old `FUN_0062E280`, `FUN_005FF
 - Ghidra decompile/xrefs: light-effect constructor `FUN_005FF250`, draw/apply `FUN_005FF850`, remove `FUN_005FF2D0`, updater `FUN_005FF390`, draw-all `FUN_005FFFA0`.
 - Ghidra decompile/assembly: `ParticleSystemTypeClass__ReadINI` `0x006442D0`.
 - Ghidra xrefs/callers: `LogicClassPerTickUpdateLiveVector`, `TacticalClass_Draw`, `TechnoClass__AI_Update`, `CaptureManagerClass__Update`, `WarpAttachClass__UpdateAttack`.
-- INI evidence: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/rules/particle_system_type.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/system_ai.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`.
+- INI evidence: `ini/rulesmd.ini`, `ini/rules.ini`.
+- Rust scan: `src/rules/particle_system_type.rs`, `src/sim/particles/system_ai.rs`, `src/map/lighting.rs`, `src/app_init.rs`.

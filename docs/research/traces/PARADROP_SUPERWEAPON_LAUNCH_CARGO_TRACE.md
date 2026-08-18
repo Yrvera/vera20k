@@ -123,13 +123,13 @@ NOT-IMPLEMENTED: 0
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PDPLANE_SPAWNER_EDGE_SILENT_PATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_MISSION_TRANSITIONS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_DROP_CADENCE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/superweapon/paradrop.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/edge_cell.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/occupancy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
+- `docs/research/PDPLANE_SPAWNER_EDGE_SILENT_PATH_GHIDRA_REPORT.md`
+- `docs/research/PARADROP_MISSION_TRANSITIONS_GHIDRA_REPORT.md`
+- `docs/research/PARADROP_DROP_CADENCE_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `src/sim/superweapon/paradrop.rs`
+- `src/sim/world/world_spawn.rs`
+- `src/sim/world/edge_cell.rs`
+- `src/sim/passenger.rs`
+- `src/sim/occupancy.rs`
+- `src/rules/ruleset.rs`

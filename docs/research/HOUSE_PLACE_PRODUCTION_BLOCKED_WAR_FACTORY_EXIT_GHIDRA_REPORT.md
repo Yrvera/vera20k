@@ -196,8 +196,8 @@ Tick-cycle context: `FactoryClass::AI @ 0x004C9B20` sets `IsSuspended = true` an
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/timing/unit-build-time.md`: patched 2026-05-21 to describe pending vehicle globals, successful `Place_Production` restart, and blocked WF vehicle pending behavior.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_OPEN_QUESTIONS_VERIFICATION_R3.md`: no correction needed for the claim that stock WF ground exit does not call `GetDockCellForObject`; sibling slot 4 corroborates it. If edited, narrow wording to say stock land WF initial unlimbo uses `GetExitCoord=512,256,0`, while later door/bib state uses `ExitList+0x28`.
+- `docs/research/timing/unit-build-time.md`: patched 2026-05-21 to describe pending vehicle globals, successful `Place_Production` restart, and blocked WF vehicle pending behavior.
+- `docs/research/BUILDINGCLASS_OPEN_QUESTIONS_VERIFICATION_R3.md`: no correction needed for the claim that stock WF ground exit does not call `GetDockCellForObject`; sibling slot 4 corroborates it. If edited, narrow wording to say stock land WF initial unlimbo uses `GetExitCoord=512,256,0`, while later door/bib state uses `ExitList+0x28`.
 
 ## Sources
 
@@ -213,19 +213,19 @@ Tick-cycle context: `FactoryClass::AI @ 0x004C9B20` sets `IsSuspended = true` an
   - `BuildingClass::ClearBibArea @ 0x00449540`
   - `FUN_0044D880 @ 0x0044D880`
 - Prior docs checked:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/RALLY_POINTS_AND_UNIT_SPAWNING.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/timing/unit-build-time.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_OPEN_QUESTIONS_VERIFICATION_R3.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SCATTER_ALL_CALLERS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
+  - `docs/research/RALLY_POINTS_AND_UNIT_SPAWNING.md`
+  - `docs/research/timing/unit-build-time.md`
+  - `docs/research/BUILDINGCLASS_OPEN_QUESTIONS_VERIFICATION_R3.md`
+  - `docs/research/SCATTER_ALL_CALLERS_GHIDRA_REPORT.md`
+  - `docs/research/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
 - INI files checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`
+  - `ini/rulesmd.ini`
+  - `ini/artmd.ini`
+  - `ini/rules.ini`
+  - `ini/art.ini`
 - Rust surfaces scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_spawn.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement_tests.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_tech.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/mod.rs`
+  - `src/sim/production/production_queue.rs`
+  - `src/sim/production/production_spawn.rs`
+  - `src/sim/production/production_placement_tests.rs`
+  - `src/sim/production/production_tech.rs`
+  - `src/sim/production/mod.rs`

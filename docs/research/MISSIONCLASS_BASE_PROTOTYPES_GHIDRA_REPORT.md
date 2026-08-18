@@ -341,7 +341,7 @@ RadioClass 0x007F0508, TechnoClass 0x007F4960, FootClass 0x007E8C94,
 UnitClass 0x007F5C70, AircraftClass 0x007E22A4, BuildingClass 0x007E3EBC.
 Slot semantics proven from MissionClass base vtable 0x007EDCC0 (all seven slots
 read back to the seven base functions). Snapshot before mutations:
-C:/Users/enok/Documents/ghidra-backups/2026-08-17-tier1 (15 files, 162,144,265 bytes, verified).
+<local>/Documents/ghidra-backups/2026-08-17-tier1 (15 files, 162,144,265 bytes, verified).
 
 42-row disposition:
 - 24 INHERITED base (Radio all 7; Techno/Foot/Unit/Building +0x184,+0x1E8,+0x1EC,+0x1F0

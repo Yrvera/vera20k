@@ -137,11 +137,11 @@ Replacement wording for the deferred MTNK FLH note:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FLH_TURRET_AND_VISUAL_OFFSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GRIZZLY_TURRET_ROT_BODY_FIRE_SPLIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_VTABLE_COMPLETE.md`
+- `docs/research/FLH_TURRET_AND_VISUAL_OFFSETS_GHIDRA_REPORT.md`
+- `docs/research/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`
+- `docs/research/GRIZZLY_TURRET_ROT_BODY_FIRE_SPLIT_GHIDRA_REPORT.md`
+- `docs/research/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`
+- `docs/research/TECHNOCLASS_VTABLE_COMPLETE.md`
 - `ini/rulesmd.ini`
 - `ini/artmd.ini`
 - Rust scanned: `src/sim/world/mod.rs`, `src/sim/combat/mod.rs`, `src/app_fire_effects.rs`, `src/app_instances/units.rs`, `src/rules/flh.rs`, `src/rules/art_data.rs`

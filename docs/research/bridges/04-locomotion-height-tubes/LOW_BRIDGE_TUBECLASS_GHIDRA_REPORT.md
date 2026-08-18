@@ -417,12 +417,12 @@ Current Rust already has `BridgeEndpointRecord.bridge_kind`, which removes one r
 
 ### Docs and repo files checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_MAP_BUILD_LEVEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATH_SMOOTHING_AND_SPEED_RAMPING_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
+- `docs/research/BRIDGE_SYSTEM.md`
+- `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`
+- `docs/research/ZONE_MAP_BUILD_LEVEL_GHIDRA_REPORT.md`
+- `docs/research/PATH_SMOOTHING_AND_SPEED_RAMPING_GHIDRA_REPORT.md`
 - `docs/gap-scans/2026-05-15-disparity-scan-bridges-end-to-end.md`
 - `docs/gap-scans/2026-05-15-disparity-scan-bridge-business-logic.md`
 - `src/map/resolved_terrain.rs`

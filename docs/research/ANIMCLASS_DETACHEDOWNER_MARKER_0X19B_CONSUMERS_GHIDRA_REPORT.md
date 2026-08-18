@@ -114,9 +114,9 @@ Rust currently has no `+0x19B` analogue:
 
 ## 10. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIM_CLASS_GHIDRA_REPORT.md`: replace "`+0x19B IsInactive: suppresses drawing and AI`" with "`+0x19B` is an AI-consumed inactive/pending-destroy byte. `AnimClass::AI` uses it to suppress trailer spawn and route the anim to `Destroy`; it is checked after top-of-AI maintenance, not at function entry. `AnimClass::DrawIt` does not directly test `+0x19B`; owner-expiry detach hides by `RemoveFromLayer` and then AI destroys the anim."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMCLASS_ATTACHEDOWNER_DETACH_LIFECYCLE_GHIDRA_REPORT.md`: replace "may let the anim continue ownerless depending on its state" with "sets `+0x19B=1`; the anim is removed from display immediately and `AnimClass::AI` destroys it on its next AI visit after native pre-check maintenance."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMCLASS_CHAINING_DAMAGE_OWNERSHIP.md`: replace any claim that trailers are the only visible effect of `+0x19B` with "`+0x19B` skips trailer creation and then takes the AI destroy tail; `Next=` clears it when reusing the same object."
+- `docs/research/ANIM_CLASS_GHIDRA_REPORT.md`: replace "`+0x19B IsInactive: suppresses drawing and AI`" with "`+0x19B` is an AI-consumed inactive/pending-destroy byte. `AnimClass::AI` uses it to suppress trailer spawn and route the anim to `Destroy`; it is checked after top-of-AI maintenance, not at function entry. `AnimClass::DrawIt` does not directly test `+0x19B`; owner-expiry detach hides by `RemoveFromLayer` and then AI destroys the anim."
+- `docs/research/ANIMCLASS_ATTACHEDOWNER_DETACH_LIFECYCLE_GHIDRA_REPORT.md`: replace "may let the anim continue ownerless depending on its state" with "sets `+0x19B=1`; the anim is removed from display immediately and `AnimClass::AI` destroys it on its next AI visit after native pre-check maintenance."
+- `docs/research/ANIMCLASS_CHAINING_DAMAGE_OWNERSHIP.md`: replace any claim that trailers are the only visible effect of `+0x19B` with "`+0x19B` skips trailer creation and then takes the AI destroy tail; `Next=` clears it when reusing the same object."
 
 ## Sources
 

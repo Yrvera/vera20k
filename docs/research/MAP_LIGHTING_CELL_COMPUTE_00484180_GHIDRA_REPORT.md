@@ -332,6 +332,6 @@ Observed deltas:
 
 - Ghidra decompiles: `0x00484180`, `0x00483E30`, `0x00484050`, `0x005558E0`, `0x00555AC0`, `0x00544E70`, `0x00554760`, `0x00554A60`, `0x00554A80`, `0x00554AA0`, `0x00554AF0`, `0x00554D50`, `0x0053A100`, `0x0053A110`, `0x0053B400`, `0x00568CB9`, `0x006851F0`, `0x00687AE3`, `0x005FA370`, `0x005FA782`.
 - Local disassembly from retail `gamemd.exe`: `0x00484180..0x00484675`, `0x005558E0..0x00555AB7`, `0x00544E70..0x00544FFF`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` lines 767-768, 3653-3657, 17214-17395.
+- INI checked: `ini/rulesmd.ini` lines 767-768, 3653-3657, 17214-17395.
 - Rust checked: `src/map/lighting.rs`, `src/app_init.rs`, `src/rules/object_type.rs`, `src/rules/art_data.rs`.
 - Prior docs checked: `BUILDINGTYPECLASS_CTOR_DEFAULTS.md`, `MAP_LIGHTING_AND_LIGHT_POSTS_SYSTEM_MODEL_SYNTHESIS.md`, `PIXEL_FX_CLASS_GHIDRA_REPORT.md`.

@@ -265,4 +265,4 @@ Active in YR for self-teleport: **No** (PostWarpValidation unreachable on this p
 
 ---
 
-*Report file: `C:/Users/enok/Documents/ra2-rust-game-docs/POSTWARP_VALIDATION_INVALID_TERRAIN_GHIDRA_REPORT.md`*
+*Report file: `docs/research/POSTWARP_VALIDATION_INVALID_TERRAIN_GHIDRA_REPORT.md`*

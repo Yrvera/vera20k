@@ -10,7 +10,7 @@ buttons are owner-draw type `1` and draw `SDBTNANM.SHP` frames `2`/`4`. Use
 current button asset-family contract.
 
 **Date:** 2026-05-17  
-**Program:** `gamemd.exe` loaded in live Ghidra MCP from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`  
+**Program:** `gamemd.exe` loaded in live Ghidra MCP from `<ra2-install>/gamemd.exe`  
 **Primary addresses:** `0x0072CF40`, `0x00622B50`, `0x00621E90`, `0x0060CF00`, `0x00612B70`, `0x00621040`, `0x00640710`, `0x00640A40`  
 **Overall confidence:** High for standard offline Skirmish dialog `0x102` at 640/800-width background selection, button PCX path, text wrapper behavior, and preview marker ordering. Medium for `>800` background output because lower-level null-SHP draw behavior was not resolved.  
 **Active in YR:** Yes for the offline Skirmish caller/dialog path except `0x00640A40`, which is active YR preview/assigned-player marker code but not reached by the confirmed offline Skirmish dialog first-paint path.
@@ -360,7 +360,7 @@ Verified binary findings above are separate from these inferences/open items:
 
 Fresh Ghidra MCP evidence used in this pass:
 
-- `list_instances`: connected to `gamemd.exe`, image base `0x00400000`, executable path `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`.
+- `list_instances`: connected to `gamemd.exe`, image base `0x00400000`, executable path `<ra2-install>/gamemd.exe`.
 - `0x0072CF40` decompile/disassembly: guard, exact width-800 branch, `MnScrnLCoopGameSetup.shp/.PAL` loads.
 - `0x0072CF90` decompile: paired cleanup.
 - `0x0072ADE0` decompile: PAL decode/convert object construction.

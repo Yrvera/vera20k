@@ -176,8 +176,8 @@ Rust has order-dependent refinery tests, but it does not model the native Missio
 - Ghidra read-only decompile: `Random__RandomRanged @ 0x0065C7E0`.
 - Ghidra read-only decompile: `MissionClass::Queue_Mission @ 0x005B35E0`, `MissionClass::Commence @ 0x005B3570`, `UnitClass::ShouldIdle @ 0x00744270`.
 - Raw `gamemd.exe` bytes inspected at `0x004D946C`, `0x005B3700`, `0x005B3A00`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
-- Existing reports referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_ENTER_CANDOCK_RETRY_SAME_FRAME_ORDER_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_MISSION_ENTER_REFINERY_RETRY_QUEUE_LOOP_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
+- Existing reports referenced: `docs/research/miner/MISSION_ENTER_CANDOCK_RETRY_SAME_FRAME_ORDER_GHIDRA_REPORT.md`, `docs/research/UNIT_MISSION_ENTER_REFINERY_RETRY_QUEUE_LOOP_GHIDRA_REPORT.md`.
 
 ## Status
 

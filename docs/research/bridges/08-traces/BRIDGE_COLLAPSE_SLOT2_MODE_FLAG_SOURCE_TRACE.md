@@ -22,14 +22,14 @@ Input map line: `DestroyableBridges=no`, parsed boolean `false`.
 
 | Stage | Our output | gamemd output | Verdict | Evidence |
 |---|---:|---:|---|---|
-| Parse map `[SpecialFlags] DestroyableBridges=no` | `SpecialFlagsSection.destroyable_bridges = Some(false)` | Reader sees key value `false` when the mode permits this key | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:77`; gamemd report `SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md:55` |
-| Campaign/editor owner selection | effective flag `false` / bit 0 | active SpecialFlags bit `0x8000` cleared | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:50`; gamemd report lines 65-71 |
-| Skirmish with `BridgeDestruction=yes` | effective flag `true` / bit 1 | map key ignored; staging/default bit remains set and is copied active | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:52`; `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:451`; gamemd report lines 73-75 |
-| Skirmish with `BridgeDestruction=no` | effective flag `false` / bit 0 | map key ignored; session byte clears staging bit `0x8000`; active copy has bit clear | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs:52`; gamemd report lines 73-75 |
-| Apply chosen source during bridge-state construction | `BridgeRuntimeState::from_resolved_terrain(..., destroyable, ...)` receives the effective flag | active `ScenarioClass.SpecialFlags & 0x8000` is the runtime consumer bit | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/app_init_helpers.rs:362`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:519`; gamemd report lines 99-101 |
-| Weapon bridge-damage outer gate when flag is false | returns early; no bridge dispatch/collapse from this weapon gate | `Apply_area_damage` skips bridge tile damage when `(SpecialFlags & 0x8000) == 0` | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:62`; weapon report lines 47-53 |
-| Weapon bridge-damage outer gate when flag is true | continues to BridgeStrength/path dispatch | `Apply_area_damage` continues to `Wall=yes` and bridge damage paths | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:62`; weapon report lines 22 and 47-53 |
-| Local skirmish session option source | `SkirmishLaunchOptions.bridges_destroyable` defaults true and flows into init mode | `BridgeDestruction=yes` is the retail lobby/default source for staging ownership | PASS | Rust `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs:118`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs:56`; gamemd report lines 79-81 |
+| Parse map `[SpecialFlags] DestroyableBridges=no` | `SpecialFlagsSection.destroyable_bridges = Some(false)` | Reader sees key value `false` when the mode permits this key | PASS | Rust `src/map/basic.rs:77`; gamemd report `SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md:55` |
+| Campaign/editor owner selection | effective flag `false` / bit 0 | active SpecialFlags bit `0x8000` cleared | PASS | Rust `src/map/basic.rs:50`; gamemd report lines 65-71 |
+| Skirmish with `BridgeDestruction=yes` | effective flag `true` / bit 1 | map key ignored; staging/default bit remains set and is copied active | PASS | Rust `src/map/basic.rs:52`; `src/app_init.rs:451`; gamemd report lines 73-75 |
+| Skirmish with `BridgeDestruction=no` | effective flag `false` / bit 0 | map key ignored; session byte clears staging bit `0x8000`; active copy has bit clear | PASS | Rust `src/map/basic.rs:52`; gamemd report lines 73-75 |
+| Apply chosen source during bridge-state construction | `BridgeRuntimeState::from_resolved_terrain(..., destroyable, ...)` receives the effective flag | active `ScenarioClass.SpecialFlags & 0x8000` is the runtime consumer bit | PASS | Rust `src/app_init_helpers.rs:362`; `src/sim/bridge_state/mod.rs:519`; gamemd report lines 99-101 |
+| Weapon bridge-damage outer gate when flag is false | returns early; no bridge dispatch/collapse from this weapon gate | `Apply_area_damage` skips bridge tile damage when `(SpecialFlags & 0x8000) == 0` | PASS | Rust `src/sim/world/bridge_orchestrator.rs:62`; weapon report lines 47-53 |
+| Weapon bridge-damage outer gate when flag is true | continues to BridgeStrength/path dispatch | `Apply_area_damage` continues to `Wall=yes` and bridge damage paths | PASS | Rust `src/sim/world/bridge_orchestrator.rs:62`; weapon report lines 22 and 47-53 |
+| Local skirmish session option source | `SkirmishLaunchOptions.bridges_destroyable` defaults true and flows into init mode | `BridgeDestruction=yes` is the retail lobby/default source for staging ownership | PASS | Rust `src/skirmish_launch.rs:118`; `src/sim/game_options.rs:56`; gamemd report lines 79-81 |
 | Network multiplayer session option source | no separate multiplayer launch/session bridge-destruction handoff found in this trace | gamemd multiplayer uses session staging `DAT_00A8E960` and `DAT_00A8B260` | NOT-IMPLEMENTED | Rust search found only `SkirmishLaunchSession`; gamemd report lines 32-34 and 73-75 |
 | Actual full collapse outcome after the allowed gate | not computed in this slot | not computed in this slot | UNCHECKED | Downstream RNG/state/render/audio are assigned to other bridge-collapse slots |
 
@@ -51,16 +51,16 @@ Player-visible NOT-IMPLEMENTED item: true network multiplayer launch/session own
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PHASE_F_BRIDGE_DAMAGE_DISPATCH_VERIFICATION.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init_helpers.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
+- `docs/research/SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`
+- `docs/research/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
+- `docs/research/PHASE_F_BRIDGE_DAMAGE_DISPATCH_VERIFICATION.md`
+- `src/map/basic.rs`
+- `src/app_init.rs`
+- `src/app_init_helpers.rs`
+- `src/skirmish_launch.rs`
+- `src/sim/game_options.rs`
+- `src/sim/bridge_state/mod.rs`
+- `src/sim/world/bridge_orchestrator.rs`
 
 ## Verdict Tally
 

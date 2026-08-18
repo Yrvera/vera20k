@@ -1,7 +1,7 @@
 # Airfield Radio CachedDock Contact Lifetime - Ghidra Report
 
 Target: `AIRFIELD_RADIO_CACHEDDOCK_CONTACT_LIFETIME`
-Report path: `C:/Users/enok/Documents/ra2-rust-game-docs/AIRFIELD_RADIO_CACHEDDOCK_CONTACT_LIFETIME_GHIDRA_REPORT.md`
+Report path: `docs/research/AIRFIELD_RADIO_CACHEDDOCK_CONTACT_LIFETIME_GHIDRA_REPORT.md`
 Date: 2026-05-22
 Mode: `/re-investigate` exhaustive-slice
 Status: COMPLETE

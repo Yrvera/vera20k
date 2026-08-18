@@ -224,7 +224,7 @@ Rust has since implemented the user-input changed-value sound path. The table be
 
 ## Stale Docs / Follow-up Docs
 
-- Prior trace wording in `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md` saying `VocClass__PlayAtPos(1.0, 0)` is underspecified. Replacement wording: "When the quantized trackbar value/range/min changes on a user-input path, gamemd sends parent `WM_HSCROLL 0x114` first, then plays `[AudioVisual] GenericClick` from `RulesClass + 0x70C` via `VocClass__PlayAtPos` with volume `1.0`, handle/source `0`, and `EDX=0x2000`, unless the control sound-suppression byte `+0x108` is nonzero."
+- Prior trace wording in `docs/research/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md` saying `VocClass__PlayAtPos(1.0, 0)` is underspecified. Replacement wording: "When the quantized trackbar value/range/min changes on a user-input path, gamemd sends parent `WM_HSCROLL 0x114` first, then plays `[AudioVisual] GenericClick` from `RulesClass + 0x70C` via `VocClass__PlayAtPos` with volume `1.0`, handle/source `0`, and `EDX=0x2000`, unless the control sound-suppression byte `+0x108` is nonzero."
 
 ## Sources
 

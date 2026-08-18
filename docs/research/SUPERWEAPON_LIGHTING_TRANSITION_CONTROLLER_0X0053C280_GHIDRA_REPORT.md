@@ -213,14 +213,14 @@ Concrete proposed Rust test names:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTNING_STORM_SUPERWEAPON_GHIDRA_REPORT.md` section "Shared Lighting System" replacement wording:
+- `docs/research/LIGHTNING_STORM_SUPERWEAPON_GHIDRA_REPORT.md` section "Shared Lighting System" replacement wording:
   - Replace "PD_State == 1 OR NukeFlash active selects Flash ambient `+0x3560`; else if LS_Active selects LS ambient `+0x3548`" with "If `DAT_00A9FABC == 1` or `DAT_00A9FAB0 != 0`, the controller selects nuke/flash ambient `+0x3560` and profile channels `+0x3564/+0x3568/+0x356C`. Else, if `DAT_00A9FAB4 != 0`, Lightning Storm selects the Ion/Lightning profile `+0x3548/+0x354C/+0x3550/+0x3554`."
   - Replace "intensity = `+0x3554/+0x356C/+0x3588`" with "the controller scales RGB/profile channel fields by `*1000/100` and passes them as three arguments to `0x0053AD00`; `+0x3554`, `+0x356C`, and `+0x3588` are the third profile channels in their respective branches."
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PSYCHIC_DOMINATOR_SUPERWEAPON_GHIDRA_REPORT.md` section "ScenarioClass Lighting Offsets" replacement wording:
+- `docs/research/PSYCHIC_DOMINATOR_SUPERWEAPON_GHIDRA_REPORT.md` section "ScenarioClass Lighting Offsets" replacement wording:
   - Replace `+0x3554 NukeAmbientChangeRate`, `+0x3560 LightningStorm ambient`, `+0x356C LightningStormChangeRate`, and `+0x3588 DominatorBlue / PD blue tint` ambiguity with "Lightning/Ion branch uses `+0x3548/+0x354C/+0x3550/+0x3554`; nuke/flash branch uses `+0x3560/+0x3564/+0x3568/+0x356C`; `+0x3578` is the parsed `NukeAmbientChangeRate` but is not read by `0x0053C280`; PD branch uses `+0x357C/+0x3580/+0x3584/+0x3588`; `+0x3594` is parsed `DominatorAmbientChangeRate` but is not read by `0x0053C280`."
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SUPERWEAPON_SYSTEM_CONSOLIDATED_REPORT.md` section "Shared Lighting System" replacement wording:
+- `docs/research/SUPERWEAPON_SYSTEM_CONSOLIDATED_REPORT.md` section "Shared Lighting System" replacement wording:
   - Replace priority wording with "Priority is nuke/flash profile when `DAT_00A9FABC == 1` or `DAT_00A9FAB0 != 0`, then Lightning/Ion profile when `DAT_00A9FAB4 != 0`, then normal restore for PD state 0 or 5, else Dominator profile for PD states 1-4."
 
 ## Sources

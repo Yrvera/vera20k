@@ -135,5 +135,5 @@ No Rust files were modified.
 
 - Ghidra decompile/assembly: `0x00458A00`, `0x00458A30..0x00458A72`, `0x00458E50`, `0x00458E5B`, `0x00458E99`, `0x00459301..0x0045936F`, `0x0044B780`, `0x0044B797..0x0044B7A3`, `0x0073F0A0`, `0x0073F74B..0x0073F774`, `0x0045FE50`.
 - Existing docs checked: `BUNKER_SYSTEM_GHIDRA_REPORT.md`, `NUMBER_IMPASSABLE_ROWS_CALLSITE_MATRIX_GHIDRA_REPORT.md`, `.swarm-claims.md`.
-- INI/art: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:719`, `:13722..13751`; `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:5019..5035`.
+- INI/art: `ini/rulesmd.ini:719`, `:13722..13751`; `ini/artmd.ini:5019..5035`.
 - Rust scan only: `src/rules/object_type.rs`, `src/app_init.rs`, `src/app_sim_tick.rs`, `src/sim/production/production_tech.rs`, `src/sim/pathfinding/core.rs`.

@@ -106,7 +106,7 @@ Relevant surfaces:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md` lines 394-397 should be narrowed. Replacement wording:
+- `docs/research/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md` lines 394-397 should be narrowed. Replacement wording:
   "This function is a BuildingClass vtable `+0x1AC` placement/static predicate wrapper. The verified helper path is BuildingType vtable `+0xA8` / `Cell_passability_building_placement @ 0x0047C620`; do not cite engineer capture or runtime unit pathing as verified uses unless separately traced."
 
 ## 10. Negative Facts / Do Not Do

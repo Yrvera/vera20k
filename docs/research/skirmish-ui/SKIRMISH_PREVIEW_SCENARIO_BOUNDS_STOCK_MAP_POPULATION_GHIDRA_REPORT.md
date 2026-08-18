@@ -81,7 +81,7 @@ If `[Header]` is absent, the default values survive because the `ReadInt` defaul
 
 Loose retail sample `Dustbowl.map` has `[Preview]`, `[PreviewPack]`, `[Map] Size`, `[Map] LocalSize`, and `[Waypoints]`, but no `[Header]`:
 
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map:251` `[Preview]`
+- `<ra2-install>/Dustbowl.map:251` `[Preview]`
 - `.../Dustbowl.map:252` `Size=0,0,138,75`
 - `.../Dustbowl.map:254` `[PreviewPack]`
 - `.../Dustbowl.map:531` `[Map]`
@@ -122,5 +122,5 @@ Rust currently keeps `preview_source_bounds` empty in `src/app_list_maps.rs` bec
 ## Sources
 
 - Ghidra: `0x00641EE0`, `0x00641F72`, `0x00689D30`, `0x006ACEE0`, `0x006AE3F0`, `0x00640710`, `0x0068AD70`, `0x00687D80`, `0x006874F8`.
-- Retail data: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
-- Parent report: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`.
+- Retail data: `<ra2-install>/Dustbowl.map`.
+- Parent report: `docs/research/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`.

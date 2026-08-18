@@ -136,13 +136,13 @@ Current Rust does not model the native pending-delete queue as a separate late-t
 
 | Rust surface | Current behavior | Delta |
 |---|---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:804` `handle_entity_deaths` | collects death effects, clears targets, sets `dying=true` for animated entities or immediately removes non-animated entities from `EntityStore` | no `UnInit -> pending-delete -> late drain` split |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:975` | calls `clear_targets_on_dead_entity` before Rust death marking/despawn | partially resembles notification, but not native pending-delete/destructor ordering |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:985` | animated entities get `dying=true`, clear attack/movement/selection, and remain stored until animation completes | native objects are concealed, alive-cleared, queued, then normally destructed late in the same `Main_Tick`; death animation objects are separate lifecycle objects where applicable |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:1000` | structures/vehicles are immediately removed from occupancy and `EntityStore` | native does not call scalar destructor inline in `UnInit`; free is late drain |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs:292` | app ticks death animations after `Simulation::advance_tick`, then calls `sim.despawn_entity` for finished IDs | not equivalent to native late pending-delete drain; physical removal can be many animation ticks later |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:675` `despawn_entity` | removes occupancy/radio/entity and unregisters live object in one call | no global queue, no `IsDead` gate, no all-duplicate queue removal, no scalar-destructor-like class cleanup staging |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:618` | live-object unregister is a direct retain on Rust IDs | native drain is separate from live-vector iteration and heap destruction |
+| `src/sim/combat/mod.rs:804` `handle_entity_deaths` | collects death effects, clears targets, sets `dying=true` for animated entities or immediately removes non-animated entities from `EntityStore` | no `UnInit -> pending-delete -> late drain` split |
+| `src/sim/combat/mod.rs:975` | calls `clear_targets_on_dead_entity` before Rust death marking/despawn | partially resembles notification, but not native pending-delete/destructor ordering |
+| `src/sim/combat/mod.rs:985` | animated entities get `dying=true`, clear attack/movement/selection, and remain stored until animation completes | native objects are concealed, alive-cleared, queued, then normally destructed late in the same `Main_Tick`; death animation objects are separate lifecycle objects where applicable |
+| `src/sim/combat/mod.rs:1000` | structures/vehicles are immediately removed from occupancy and `EntityStore` | native does not call scalar destructor inline in `UnInit`; free is late drain |
+| `src/app_sim_tick.rs:292` | app ticks death animations after `Simulation::advance_tick`, then calls `sim.despawn_entity` for finished IDs | not equivalent to native late pending-delete drain; physical removal can be many animation ticks later |
+| `src/sim/world/mod.rs:675` `despawn_entity` | removes occupancy/radio/entity and unregisters live object in one call | no global queue, no `IsDead` gate, no all-duplicate queue removal, no scalar-destructor-like class cleanup staging |
+| `src/sim/world/mod.rs:618` | live-object unregister is a direct retain on Rust IDs | native drain is separate from live-vector iteration and heap destruction |
 
 ## 7. Coverage Ledger
 
@@ -192,9 +192,9 @@ Deferred items are outside the claimed slice. They do not affect the proved queu
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/OBJECTCLASS_UNINIT_DEATH_CLEANUP_ORDERING_RESWARM_20260528.md`: replace the deferred note "pending-delete drain processor out of scope" with: "Follow-up `PENDING_DELETE_DRAIN_DESTRUCTOR_TIMING_RESWARM_20260528.md` verifies drain `FUN_00725C70`, active `Main_Tick` call at `0x0055DE9F` after `LogicClassPerTickUpdateLiveVector`, all static drain callers, duplicate queue compaction, `Release` then scalar-deleting destructor dispatch, and the Building/Unit/Infantry/Aircraft `Object+0x90=1` pre-destructor restore."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`: add: "Objects queued by `ObjectClass::UnInit` normally remain heap-live until the late pending-delete drain in `Main_Tick` after the live object-vector tick. Physical free is not inline with conceal/limbo."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMCLASS_GLOBAL_OBJECT_REGISTRATION_LIFETIME_RESWARM_20260527.md`: replace "pending-delete cleanup timing not exhausted" with a reference to this report's `Main_Tick @ 0x0055DE9F` drain and `FUN_00725C70` delete sequence.
+- `docs/research/OBJECTCLASS_UNINIT_DEATH_CLEANUP_ORDERING_RESWARM_20260528.md`: replace the deferred note "pending-delete drain processor out of scope" with: "Follow-up `PENDING_DELETE_DRAIN_DESTRUCTOR_TIMING_RESWARM_20260528.md` verifies drain `FUN_00725C70`, active `Main_Tick` call at `0x0055DE9F` after `LogicClassPerTickUpdateLiveVector`, all static drain callers, duplicate queue compaction, `Release` then scalar-deleting destructor dispatch, and the Building/Unit/Infantry/Aircraft `Object+0x90=1` pre-destructor restore."
+- `docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`: add: "Objects queued by `ObjectClass::UnInit` normally remain heap-live until the late pending-delete drain in `Main_Tick` after the live object-vector tick. Physical free is not inline with conceal/limbo."
+- `docs/research/ANIMCLASS_GLOBAL_OBJECT_REGISTRATION_LIFETIME_RESWARM_20260527.md`: replace "pending-delete cleanup timing not exhausted" with a reference to this report's `Main_Tick @ 0x0055DE9F` drain and `FUN_00725C70` delete sequence.
 
 ## Sources
 
@@ -202,4 +202,4 @@ Deferred items are outside the claimed slice. They do not affect the proved queu
 - Ghidra xrefs/read-only: `get_function_xrefs(0x00725C70)`, `get_xrefs_to(0x00B0F69C)`, `get_xrefs_to(0x00B0F6A8)`, data xrefs to type descriptors `0x00818D60`, `0x00842D80`, `0x00825508`, `0x00817B90`.
 - Ghidra assembly contexts/read-only: `0x005F662C..0x005F667D`, `0x00725C71..0x00725D86`, `0x0055DC9E`, `0x0055DE4F..0x0055DEA4`, `0x00725857..0x007258C9`.
 - Prior docs referenced: `OBJECTCLASS_UNINIT_DEATH_CLEANUP_ORDERING_RESWARM_20260528.md`, `OBJECTCLASS_GHIDRA_REPORT.md`, `ABSTRACTCLASS_GHIDRA_REPORT.md`, `ANIMCLASS_GLOBAL_OBJECT_REGISTRATION_LIFETIME_RESWARM_20260527.md`.
-- Rust files scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/entity_store.rs`.
+- Rust files scanned: `src/sim/combat/mod.rs`, `src/sim/world/mod.rs`, `src/app_sim_tick.rs`, `src/sim/entity_store.rs`.

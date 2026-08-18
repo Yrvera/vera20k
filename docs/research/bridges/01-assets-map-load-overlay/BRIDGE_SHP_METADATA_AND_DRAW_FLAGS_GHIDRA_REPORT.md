@@ -42,8 +42,8 @@ No separate railing-shadow draw call was found in the main railing emitter. Rail
 
 Full per-frame dump:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SHP_METADATA_DUMP.csv`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SHP_METADATA_RAW_DUMP.txt`
+- `docs/research/BRIDGE_SHP_METADATA_DUMP.csv`
+- `docs/research/BRIDGE_SHP_METADATA_RAW_DUMP.txt`
 
 The CSV has 648 data rows with:
 
@@ -406,8 +406,8 @@ The next renderer work should instead be gated on:
 - Ghidra: `SHP_frame_data_getter @ 0x0069E740`
 - Ghidra: `SHP_frame_rect_getter @ 0x0069E7E0`
 - Ghidra: `SHP_frame_flag_check @ 0x0069E900`
-- Retail asset dump: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SHP_METADATA_DUMP.csv`
-- Retail asset dump: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SHP_METADATA_RAW_DUMP.txt`
+- Retail asset dump: `docs/research/BRIDGE_SHP_METADATA_DUMP.csv`
+- Retail asset dump: `docs/research/BRIDGE_SHP_METADATA_RAW_DUMP.txt`
 - Rust comparison: `src/assets/shp_file.rs`
 - Rust comparison: `src/render/bridge_atlas.rs`
 - Rust comparison: `src/render/bridge_railing_atlas.rs`

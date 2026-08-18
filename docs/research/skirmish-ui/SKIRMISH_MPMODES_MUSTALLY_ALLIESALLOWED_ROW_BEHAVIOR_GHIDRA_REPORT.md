@@ -233,6 +233,6 @@ No Rust files were modified by this investigation.
 
 - Ghidra read-only decompile/recheck: `0x004E5B60`, `0x004E5D60`, `0x004E5ED0`, `0x004E6030`, `0x005D5B60`, `0x006ADC20`, `0x006AE6E0`, `0x006ACEE0`.
 - Ghidra read-only assembly contexts: `0x005D5DC0..0x005D5DCD`, `0x005D5DD0..0x005D5DDD`, `0x005D5DE0..0x005D5E08`, `0x006AD2BA..0x006AD34B`, `0x006AD4DF..0x006AD4E6`, `0x006AD61C..0x006AD641`.
-- INI/data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`, `ini/rulesmd.ini`, `ini/rules.ini`.
+- INI/data checked: `ini/mpmodesmd.ini`, `ini/rulesmd.ini`, `ini/rules.ini`.
 - Prior reports referenced: `SKIRMISH_MPMODES_OVERRIDE_PAYLOAD_VALUES_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_SESSION_PACKING_BROAD_RECHECK_GHIDRA_REPORT.md`, `SKIRMISH_TEAM_COMBO_SENTINEL_LABELS_AND_VALUES_GHIDRA_REPORT.md`, `SKIRMISH_TEAM_NONE_INSERTION_VTABLE_0X2C_GHIDRA_REPORT.md`, `SKIRMISH_START_POSITION_COMBO_POPULATION_GHIDRA_REPORT.md`, `SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_modes.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/app_skirmish.rs`.
+- Rust scanned: `src/skirmish_modes.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/app_skirmish.rs`.

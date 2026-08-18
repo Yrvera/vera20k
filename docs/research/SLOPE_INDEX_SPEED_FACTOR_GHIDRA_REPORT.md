@@ -314,7 +314,7 @@ No SpecialFlags gating around the writer or the readers; this is YR-live code.
 - `get_xrefs_to 0x4E1570` (ForEach_SetSlopeIndex) → all 20+ refs are `[DATA]` (vtable entries), none code
 
 **INI cross-check:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — 6 unique
+- `ini/rulesmd.ini` — 6 unique
   `ThreatAvoidanceCoefficient=` lines (1.0 and 0.65 variants) on harvester-class
   unit sections.
 

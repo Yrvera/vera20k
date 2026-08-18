@@ -125,8 +125,8 @@ PASS: 1 | FAIL: 5 | UNCHECKED: 2 | NOT-IMPLEMENTED: 1
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FLH_TURRET_AND_VISUAL_OFFSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
+- `docs/research/FLH_TURRET_AND_VISUAL_OFFSETS_GHIDRA_REPORT.md`
+- `docs/research/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini` (`[APOC]`, `[120mmx]`)
 - `ini/artmd.ini` (`[MTNK]`)
 - Current Rust scan: `src/app_fire_effects.rs`, `src/util/flh_transform.rs`, `src/sim/combat/mod.rs`, `src/sim/world/mod.rs`, `src/rules/art_data.rs`, `src/app_sim_tick.rs`, `src/app_building_anim.rs`

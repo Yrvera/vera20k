@@ -132,9 +132,9 @@ Rust currently transfers neutral garrison ownership immediately in `src/sim/pass
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording: "`BuildingClass::CanDock @ 0x00457CE0` is the main civilian-garrison entry validator. `BuildingClass::CanGarrison @ 0x004525F0` is a gate-style passability helper used by `Can_Enter_Cell`: non-`Gate=` buildings return true, while `Gate=yes` buildings require mission `0x18` and the `Building+0x350` gate helper to be open/enterable. Do not describe `CanGarrison` as the garrison entry validator."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for warp note: "`CanDock` calls `TechnoClass::IsMindControlled @ 0x007105E0`, which reads `Techno+0x2C0/+0x2C4`. This scoped helper does not prove a chrono-warp/being-warped gate."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/INFANTRY_BUILDING_OCCUPANT_PATHING_GHIDRA_REPORT.md` remains directionally correct; add precision: "`CanGarrison` true for non-`Gate=` is a helper default, but the infantry caller only reaches it under its `BuildingType+0x16B7` branch in the verified result-code path."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording: "`BuildingClass::CanDock @ 0x00457CE0` is the main civilian-garrison entry validator. `BuildingClass::CanGarrison @ 0x004525F0` is a gate-style passability helper used by `Can_Enter_Cell`: non-`Gate=` buildings return true, while `Gate=yes` buildings require mission `0x18` and the `Building+0x350` gate helper to be open/enterable. Do not describe `CanGarrison` as the garrison entry validator."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for warp note: "`CanDock` calls `TechnoClass::IsMindControlled @ 0x007105E0`, which reads `Techno+0x2C0/+0x2C4`. This scoped helper does not prove a chrono-warp/being-warped gate."
+- `docs/research/INFANTRY_BUILDING_OCCUPANT_PATHING_GHIDRA_REPORT.md` remains directionally correct; add precision: "`CanGarrison` true for non-`Gate=` is a helper default, but the infantry caller only reaches it under its `BuildingType+0x16B7` branch in the verified result-code path."
 
 ## Negative Facts / Do Not Do
 

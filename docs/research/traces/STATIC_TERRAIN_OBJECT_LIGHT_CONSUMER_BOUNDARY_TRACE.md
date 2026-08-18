@@ -64,11 +64,11 @@ NOT-IMPLEMENTED: 1
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TERRAIN_OBJECT_LIGHT_KEYS_AND_LIGHTSOURCE_OWNERSHIP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTING_DRAW_CONSUMERS_CELL_FIELDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/overlays.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/terrain_object_type.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- `docs/research/TERRAIN_OBJECT_LIGHT_KEYS_AND_LIGHTSOURCE_OWNERSHIP_GHIDRA_REPORT.md`
+- `docs/research/LIGHTING_DRAW_CONSUMERS_CELL_FIELDS_GHIDRA_REPORT.md`
+- `docs/research/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
+- `src/app_instances/overlays.rs`
+- `src/map/lighting.rs`
+- `src/app_init.rs`
+- `src/rules/terrain_object_type.rs`
+- `ini/rulesmd.ini`

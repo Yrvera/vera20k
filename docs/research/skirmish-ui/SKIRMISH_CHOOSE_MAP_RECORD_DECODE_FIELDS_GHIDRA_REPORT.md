@@ -162,5 +162,5 @@ Rust currently has a lightweight map-entry model and not the retail record/globa
 ## Sources
 
 - Ghidra decompile: `0x005E7BF0`, `0x0069A3B0`, `0x0069A980`, `0x0069AD80`, `0x0069ADF0`, `0x0069AC30`, `0x0069ACC0`, `0x006994F0`, `0x00699980`, `0x005E7160`, `0x006ACEE0`, `0x005E2EF0`, `0x005E2F60`, `0x007B7140`, `0x007CA489`, `0x007CA422`, `0x005E6520`.
-- Prior reports read: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_RETURN_CONTRACT_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`; preview lifecycle/decode reports in the same folder for non-scope separation.
+- Prior reports read: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_RETURN_CONTRACT_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`; preview lifecycle/decode reports in the same folder for non-scope separation.
 - Rust scan: `src/app_list_maps.rs`, `src/app.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`.

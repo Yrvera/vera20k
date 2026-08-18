@@ -123,4 +123,4 @@ Read-only source scan found bracket instances in `src/app_selection_brackets.rs`
 
 - Ghidra decompiled/read-only: `0x006DBB60`, `0x004BFD30`, `0x007BD130`, `0x006D3F50`, `0x006D2B60`, `0x007BCFB0`, `0x00547CF0`, `0x00480350`, `0x006D2DE0`, `0x006D7F20`, `0x006D8DB0`, `0x006F5EF0`, `0x006F5190`, `0x006F60D0`, `0x0043D290`, `0x00705E00`, `0x00490B90`, `0x004978C0`, `0x00497100`, `0x00706640`, `0x00706ED0`, `0x00490E50`, `0x00495BC0`
 - Prior docs cross-checked: `building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`, `building-selection-brackets/SURFACE_DRAW_LINE_BRACKET_RASTER_GHIDRA_REPORT.md`, `building-selection-brackets/DRAWBRACKETCORNER_DRAWLINE3D_STUB_RASTER_GHIDRA_REPORT.md`, `ZBUFFER_DEPTH_SYSTEM.md`
-- Source read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_selection_brackets.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_render/draw_passes.rs`
+- Source read-only scan: `src/app_selection_brackets.rs`, `src/app_render/draw_passes.rs`

@@ -263,7 +263,7 @@ even in deficit.
 
 ---
 
-**Report file:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/POWER_BAR_FLASH_PHASE_TRACE.md`
+**Report file:** `docs/research/traces/POWER_BAR_FLASH_PHASE_TRACE.md`
 
 **PASS: 8 | FAIL: 5 | UNCHECKED: 0 | NOT-IMPLEMENTED: 0**
 

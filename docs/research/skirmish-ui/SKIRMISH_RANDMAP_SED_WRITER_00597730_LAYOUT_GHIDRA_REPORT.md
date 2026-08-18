@@ -166,11 +166,11 @@ No local repo `ini/rules*.ini` key controls these `.SED` fields. Theater data fi
 
 ## 6. Current Rust Implementation Status
 
-Rust has only the sentinel shell state. [src/skirmish_scenarios.rs](C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs:14) defines `RANDMAP_SED`, and [src/skirmish_scenarios.rs](C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs:82) creates a `RandomMapSentinel` with no seed/options model, no `.SED` layout parser/writer, `min_players=None`, `max_players=None`, and `official=false`.
+Rust has only the sentinel shell state. [src/skirmish_scenarios.rs](src/skirmish_scenarios.rs:14) defines `RANDMAP_SED`, and [src/skirmish_scenarios.rs](src/skirmish_scenarios.rs:82) creates a `RandomMapSentinel` with no seed/options model, no `.SED` layout parser/writer, `min_players=None`, `max_players=None`, and `official=false`.
 
-[src/ui/skirmish_shell/state.rs](C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:185) can upsert a random sentinel display name, but it does not model accepted random-map dialog state, seed/options, or native `.SED` persistence. [src/app.rs](C:/Users/enok/Documents/ra2-rust-game/src/app.rs:676) currently logs that Create Random Map generation is not implemented.
+[src/ui/skirmish_shell/state.rs](src/ui/skirmish_shell/state.rs:185) can upsert a random sentinel display name, but it does not model accepted random-map dialog state, seed/options, or native `.SED` persistence. [src/app.rs](src/app.rs:676) currently logs that Create Random Map generation is not implemented.
 
-Launch still treats requested map strings as ordinary concrete maps. [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:255) routes requested map names to [src/app_list_maps.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs:147), which checks files/extensions and has no `.sed` random seed branch.
+Launch still treats requested map strings as ordinary concrete maps. [src/app_init.rs](src/app_init.rs:255) routes requested map names to [src/app_list_maps.rs](src/app_list_maps.rs:147), which checks files/extensions and has no `.sed` random seed branch.
 
 ## 7. Coverage Ledger
 
@@ -232,13 +232,13 @@ Launch still treats requested map strings as ordinary concrete maps. [src/app_in
 
 ### Stale Docs / Follow-up Docs
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_SETUP_PATH_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_SETUP_PATH_GHIDRA_REPORT.md`
 
 Replace the deferred layout sentence with:
 
 > `0x00597730` resolves through `MapSeedClass` vtable `+0x8` to writer `0x00597760`, which emits a `[RandomMap]` section containing `Description`, `Width`, `Height`, `NumPlayers`, `Seed`, `MapType`, `Theater`, `Time`, `RegionSize`, `Ruggedness`, `Accessibility`, `WaterAmount`, `Tiberium`, `TiberiumLayout`, `Vegetation`, `UrbanPresence`, and `Resources`. Integer fields are signed decimal `%d`; `Description` is comma-separated hex UTF-16 code units. Reader `0x00597A30` uses current object fields as per-key defaults and does not visibly clamp before launch calls `0x00598960(0,0)`.
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
 
 Refine the clamp statement with:
 

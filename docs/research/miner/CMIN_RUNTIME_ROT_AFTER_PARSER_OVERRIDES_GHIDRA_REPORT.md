@@ -62,11 +62,11 @@ DriveLocomotion consumers read the same `type+0x71C` byte through a type pointer
 
 ## 6. Current Rust Implementation Status
 
-Rust currently models `ObjectType::turret_rot` as the `ROT` value used for body/facing movement, but `ObjectType::from_section` overrides it to `10` whenever `Harvester=yes`. Active Rust surface: `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:897` through `:905`.
+Rust currently models `ObjectType::turret_rot` as the `ROT` value used for body/facing movement, but `ObjectType::from_section` overrides it to `10` whenever `Harvester=yes`. Active Rust surface: `src/rules/object_type.rs:897` through `:905`.
 
 That is a binary mismatch for the `ROT=` field verified here: stock CMIN/HARV should keep `turret_rot = 5` if this Rust field represents `TechnoTypeClass+0x71C`. A distinct field should be introduced only if `UnitTypeClass+0x398` is later needed for NaturalMission/sequence behavior. Active in YR: Yes for parser behavior; Rust delta inferred from source scan, not binary.
 
-Rust miner pivot currently reads `obj.turret_rot` in `dock_pivot_rot_byte` and therefore inherits the parser mismatch. Active Rust surface: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:71` through `:75`, `:694` through `:702`, and `:723` through `:742`.
+Rust miner pivot currently reads `obj.turret_rot` in `dock_pivot_rot_byte` and therefore inherits the parser mismatch. Active Rust surface: `src/sim/miner/miner_dock_sequence.rs:71` through `:75`, `:694` through `:702`, and `:723` through `:742`.
 
 ## 7. Coverage Ledger
 
@@ -102,10 +102,10 @@ Rust miner pivot currently reads `obj.turret_rot` in `dock_pivot_rot_byte` and t
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md`: replace "prior docs report harvester parse override to 10" / OQ-7 wording with: "Parser follow-up verifies stock CMIN `ROT=` remains `5`; the harvester/weeder write to `UnitTypeClass+0x398=10` is not the `ROT=` field consumed by UnitClass/DriveLocomotion facing setup."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/CHRONO_MINER_LOCOMOTION_DRIVE_PHASE_TRACE.md`: replace "writes 10 to TypeClass+0x398 after standard ReadInt" if used as a ROT claim with: "`UnitTypeClass+0x398=10` is a separate harvester/weeder field; stock CMIN effective `ROT=` remains `5`."
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:897`: comment is stale if it claims gamemd forces `ROT=10`; replace with: "gamemd writes a separate UnitType `+0x398=10` for Harvester/Weeder, but `ROT=` remains the parsed `TechnoType+0x71C` value."
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs:3486`: replace "With Harvester=yes ROT=10 override" with: "Stock harvester `ROT=` remains 5; any `+0x398=10` behavior is not the ROT/facing field."
+- `docs/research/miner/DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md`: replace "prior docs report harvester parse override to 10" / OQ-7 wording with: "Parser follow-up verifies stock CMIN `ROT=` remains `5`; the harvester/weeder write to `UnitTypeClass+0x398=10` is not the `ROT=` field consumed by UnitClass/DriveLocomotion facing setup."
+- `docs/research/miner/traces/CHRONO_MINER_LOCOMOTION_DRIVE_PHASE_TRACE.md`: replace "writes 10 to TypeClass+0x398 after standard ReadInt" if used as a ROT claim with: "`UnitTypeClass+0x398=10` is a separate harvester/weeder field; stock CMIN effective `ROT=` remains `5`."
+- `src/rules/object_type.rs:897`: comment is stale if it claims gamemd forces `ROT=10`; replace with: "gamemd writes a separate UnitType `+0x398=10` for Harvester/Weeder, but `ROT=` remains the parsed `TechnoType+0x71C` value."
+- `src/sim/miner/miner_tests.rs:3486`: replace "With Harvester=yes ROT=10 override" with: "Stock harvester `ROT=` remains 5; any `+0x398=10` behavior is not the ROT/facing field."
 
 ## Negative Facts / Do Not Do
 
@@ -122,5 +122,5 @@ Rust miner pivot currently reads `obj.turret_rot` in `dock_pivot_rot_byte` and t
 - Ghidra decompiled / assembly context: `UnitClass::Constructor @ 0x007353C0`, `+0x71C` reads `0x00735570` and `0x00735584`.
 - Ghidra decompiled / assembly context: `FUN_004C9680 @ 0x004C9680`, clamp/shift range `0x004C9680..0x004C9696`.
 - Ghidra decompiled: `DriveLocomotionClass__Update_Facing_From_Type @ 0x004B04D0`, `DriveLocomotionClass::Process @ 0x004B0500`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[CMIN]`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/CMIN_RUNTIME_ROT_PARSER_OVERRIDE_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini` `[CMIN]`.
+- Prior docs referenced: `docs/research/miner/DRIVELOCOMOTION_PROCESS_DRIVE_TRACK_CHRONO_MINER_004B0F20_GHIDRA_REPORT.md`; `docs/research/CMIN_RUNTIME_ROT_PARSER_OVERRIDE_GHIDRA_REPORT.md`.

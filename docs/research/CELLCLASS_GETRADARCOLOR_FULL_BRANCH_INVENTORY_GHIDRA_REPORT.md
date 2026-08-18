@@ -270,17 +270,17 @@ This function does not draw pixels directly. It provides raw RGB triples consume
 
 ## 13. Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_RENDERING.md`
+`docs/research/RADAR_MINIMAP_RENDERING.md`
 
 Replace the start of section `5.2 CellClass::GetRadarColor` with:
 
 > `CellClass::GetRadarColor @ 0x0047C060` first checks the cell object list for RTTI `0x24`; in YR this is `TerrainClass`, not `BuildingClass`, and the branch writes fixed `(200,200,160)` to both raw RGB outputs. Building/object dots are handled by the later radar object tracker. The bridge branch checks `Cell+0x140 & 0x100` and uses `BRIDGE1` frame `0`. The overlay branch skips `-1,100,101,231,232,239`; non-tiberium overlays use `OverlayClass::GetRadarColor` with frame `1` for `[0x4A,0x63]` or `[0xCD,0xE6]`, otherwise `Cell+0x11E`; tiberium overlays with `+0x29C` use SHP frame metadata at frame `Cell+0x11E`; tiberium fallback without `+0x29C` writes `(170,170,130)`. The terrain fallback reads TMP subimage RGB at `+0x2B..+0x2D`, applies theater brightness, then halves channels with `>> 1`; missing subimage returns `(60,60,60)`.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
+`docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
 
 Replace the color priority list with the same wording above, or at minimum replace "Building occupier (RTTI 0x24)" with "TerrainClass occupier (RTTI 0x24)" and replace "Wall overlay" with "tiberium-overlay fallback `(170,170,130)` after `OverlayToTiberiumIndex`".
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/ADDRESS_MAP.md`
+`docs/research/ADDRESS_MAP.md`
 
 Replace:
 

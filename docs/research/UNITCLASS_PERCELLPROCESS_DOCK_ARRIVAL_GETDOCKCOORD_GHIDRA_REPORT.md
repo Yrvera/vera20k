@@ -163,13 +163,13 @@ Therefore the evidence supports a two-coordinate model for stock 4x3 refineries:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md` replacement wording:
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md` replacement wording:
   - Replace "Refinery pad branch (`BuildingTypeClass+0x16bc != 0`)" with "`Weeder=yes` branch (`BuildingTypeClass+0x16BC != 0`): returns `NW+(2,1)`."
   - Replace "Only branch 1 is active for refineries in standard YR" with "For stock GAREFN/NAREFN, branch 1 is not active; the stock refinery path uses `Refinery=yes` at `+0x16BB`, which for 4x3 foundations also converts to cell `NW+(2,1)`."
   - Replace branch 2 wording "GetCoords of requester" with "GetCoords of the building object via the helper's `ECX=this` dispatch; the requester argument is present at the call site but is not the coordinate source for the stock `+0x16BB` result."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md` row 35 replacement wording:
+- `docs/research/coord-cell-conversions/_parity.md` row 35 replacement wording:
   - "`BuildingClass__GetDockCoord` stock refinery branch is active through `BuildingTypeClass+0x16BB Refinery=yes`, not `+0x16BC`. For 4x3 GAREFN/NAREFN at NW `(10,10)`, it returns dock cell `(12,11)`. This does not replace the accepted `CAN_DOCK(0x0E)` move target `(13,11)`; it is the later PerCellProcess pad-arrival coordinate used before radio `0x15`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_system.md` replacement wording:
+- `docs/research/coord-cell-conversions/_system.md` replacement wording:
   - "Refinery dock pad" should distinguish: accepted `0x0E` target `NW+(3,1)`, stock `GetDockCoord`/PerCellProcess dock-arrival coordinate `NW+(2,1)`, and QueueingCell/wait target `NW+(4,1)`.
 
 ## Sources
@@ -180,10 +180,10 @@ Therefore the evidence supports a two-coordinate model for stock 4x3 refineries:
 - Ghidra `get_assembly_context` around `0x00447B2D`, `0x00447B35`, `0x00447B64`, `0x00447B9E`, `0x00447BA6`
 - Ghidra `decompile_function 0x0043C2D0`
 - Ghidra `decompile_function 0x005F6C80`; `get_assembly_context 0x005F6C80`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_DOCKING_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `docs/research/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`
+- `docs/research/miner/BUILDING_DOCKING_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`
+- `src/sim/miner/miner_dock_sequence.rs`
+- `src/sim/miner/miner_tests.rs`

@@ -159,11 +159,11 @@ Scanned for comparison only; no code was changed.
 - Ghidra read-only decompile: `BuildingClass__Receive_Radio @ 0x0043C2D0`
 - Ghidra read-only decompile: `TechnoClass__Set_Destination` / unit override path @ `0x00741970`
 - Ghidra read-only decompile: `BuildingClass__GetDockCoord @ 0x00447B20`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CHRONO_MINER_TELEPORT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/NUMBEROFDOCKS_VS_DOCKOFFSET_RECONCILE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/chrono_miner_full_cargo_return_teleport_to_refinery_pad_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/chrono_miner_forced_return_unload_command_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/MINER_FSM_FULL_CARGO_RETURN_RESERVE_REFINERY_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/chrono_miner_return_state_anchor_reserved_refinery_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+- `docs/research/CHRONO_MINER_TELEPORT_GHIDRA_REPORT.md`
+- `docs/research/NUMBEROFDOCKS_VS_DOCKOFFSET_RECONCILE_GHIDRA_REPORT.md`
+- `docs/research/traces/chrono_miner_full_cargo_return_teleport_to_refinery_pad_TRACE.md`
+- `docs/research/traces/chrono_miner_forced_return_unload_command_TRACE.md`
+- `docs/research/traces/MINER_FSM_FULL_CARGO_RETURN_RESERVE_REFINERY_TRACE.md`
+- `docs/research/traces/chrono_miner_return_state_anchor_reserved_refinery_TRACE.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`

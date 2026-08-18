@@ -2,7 +2,7 @@
 
 Target: GetHeight() < -4 bracket dim-color reachability for standard selected Yuri's Revenge buildings.
 
-Report path: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_BRACKET_GETHEIGHT_DIM_COLOR_REACHABILITY_FOLLOWUP_GHIDRA_REPORT.md`
+Report path: `docs/research/BUILDING_BRACKET_GETHEIGHT_DIM_COLOR_REACHABILITY_FOLLOWUP_GHIDRA_REPORT.md`
 
 Status: COMPLETE
 

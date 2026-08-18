@@ -112,6 +112,6 @@ This report did not modify Rust code.
 ## Sources
 
 - Ghidra decompiled/read: `0x0041BEA0`, `0x00447AC0`, `0x005F65A0`, `0x005F6940`, `0x0043C2D0`, `0x004595C0`, `0x00447B20`.
-- Cross-check docs: `C:/Users/enok/Documents/ra2-rust-game-docs/COORDINATE_SYSTEM_GAMEMD.md`, `FOUNDATION_CENTER_INVESTIGATION.md`, `miner/CHRONO_MINER_POST_UNLOAD_EXIT_ANCHOR_GHIDRA_REPORT.md`, `miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
+- Cross-check docs: `docs/research/COORDINATE_SYSTEM_GAMEMD.md`, `FOUNDATION_CENTER_INVESTIGATION.md`, `miner/CHRONO_MINER_POST_UNLOAD_EXIT_ANCHOR_GHIDRA_REPORT.md`, `miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
 - INI data: `ini/artmd.ini:1706-1716`, `ini/artmd.ini:1763-1773`, `ini/artmd.ini:1799-1804`, `ini/rulesmd.ini:11722-11727`, `ini/rulesmd.ini:12515-12520`, `ini/rulesmd.ini:13234`.
 - Rust status scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_system.rs`, `src/sim/combat/mod.rs`, `src/sim/world/world_spawn.rs`, `src/app_entity_pick.rs`.

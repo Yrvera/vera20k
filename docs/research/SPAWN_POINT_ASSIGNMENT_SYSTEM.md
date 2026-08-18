@@ -4,8 +4,8 @@ Complete reverse-engineering of the spawn point assignment pipeline: how gamemd.
 collects start positions from map waypoints, assigns them to players (human-first,
 AI-second), and selects positions using distance-based algorithms.
 
-Sources: Decompiled C files 085, 086, 109 from `C:\Users\enok\Documents\gidra\gidra c files\`,
-reports 085, 086, 109, 110, 112 from `C:\Users\enok\Documents\gidra\reports\`,
+Sources: Decompiled C files 085, 086, 109 from `<local>/Documents/gidra/gidra c files\`,
+reports 085, 086, 109, 110, 112 from `<local>/Documents/gidra/reports/`,
 and `docs/GAME_START_INITIALIZATION.md`.
 
 ---

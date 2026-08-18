@@ -34,19 +34,19 @@ Gamemd active standard YR path is verified in existing Ghidra reports as:
 
 Stage 1 - standard reachability: a normal player entering Skirmish in Rust still does not necessarily see the recovered pixel chrome. The code path is gated by `RA2_DEV_SKIRMISH_SHELL` / `dev_skirmish_shell_enabled`, and `render_skirmish_shell` is only called from the `GameScreen::MainMenu` branch when that flag is true. Player-visible effect: the screen can functionally enter setup but will not look retail-complete by default.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:67`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:406`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:1292`.
+Rust evidence: `src/app.rs:67`, `src/app.rs:406`, `src/app.rs:1292`.
 
 Gamemd evidence: `FUN_006AE2C0` calls the Skirmish background loader, creates dialog `0x102`, and pumps it as the normal offline Skirmish setup UI without a dev flag.
 
 ## Checked Passes
 
-Right-panel geometry is numerically equal for the checked 800x600 rects: `SDTP=(632,0,168,199)`, tile origin `(632,199)`, `tile_count=9`, and `SDBTM=(632,577,168,23)`. Rust evidence is in `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:336` and the parity assertions at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:707`.
+Right-panel geometry is numerically equal for the checked 800x600 rects: `SDTP=(632,0,168,199)`, tile origin `(632,199)`, `tile_count=9`, and `SDBTM=(632,577,168,23)`. Rust evidence is in `src/ui/skirmish_shell/layout.rs:336` and the parity assertions at `src/ui/skirmish_shell/layout.rs:707`.
 
-`SDBTNANM` frame 10 is correctly absent on first paint. Gamemd evidence is the data `+0xD4` zero-fill/read/inversion in `SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`; Rust evidence is `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1061` and the test at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:2258`.
+`SDBTNANM` frame 10 is correctly absent on first paint. Gamemd evidence is the data `+0xD4` zero-fill/read/inversion in `SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`; Rust evidence is `src/app_skirmish_shell_render.rs:1061` and the test at `src/app_skirmish_shell_render.rs:2258`.
 
-`SDBTM` no longer has the old compressed-source mismatch. Rust now uses `push_entry_top_clipped_native`, and the local test verifies `uv_size.y=0.23` for a `23/65` visible slice. Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:141`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1148`, and `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:2123`.
+`SDBTM` no longer has the old compressed-source mismatch. Rust now uses `push_entry_top_clipped_native`, and the local test verifies `uv_size.y=0.23` for a `23/65` visible slice. Rust evidence: `src/app_skirmish_shell_render.rs:141`, `src/app_skirmish_shell_render.rs:1148`, and `src/app_skirmish_shell_render.rs:2123`.
 
-Semantic order now matches the common parent/chrome sequence for this slice. Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1067` and the emission order at `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1119`.
+Semantic order now matches the common parent/chrome sequence for this slice. Rust evidence: `src/app_skirmish_shell_render.rs:1067` and the emission order at `src/app_skirmish_shell_render.rs:1119`.
 
 ## Unchecked
 
@@ -58,9 +58,9 @@ Right-panel static text, combo internals, flag PCX statics, map preview content,
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SDBTM_BOTTOM_CAP_SOURCE_CLIP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SDBTM_BOTTOM_CAP_SOURCE_CLIP_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`
 - Rust files checked: `src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`, `src/ui/skirmish_shell/layout.rs`.

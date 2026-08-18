@@ -758,7 +758,7 @@ This makes the ship list to the appropriate side relative to its travel directio
 
 ## 16. Current Rust Implementation Status
 
-Mapped against `c:/Users/enok/Documents/ra2-rust-game/src/`:
+Mapped against `src/`:
 
 | System | File:line | Status |
 |---|---|---|

@@ -561,7 +561,7 @@ exactly.
 
 The doc claims "artmd `[MTNK]` block is the Apocalypse's live art
 because APOC's rulesmd has `Image=MTNK`". Verified:
-`c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:7791` reads
+`ini/rulesmd.ini:7791` reads
 `Image=MTNK` inside the `[APOC]` block (lines 7788–7827). Confirms the
 doc's interpretation — Grizzly's `Image=GTNK` redirects to artmd
 `[GTNK]`, while Apocalypse's `Image=MTNK` consumes the stale-labeled

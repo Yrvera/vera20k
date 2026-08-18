@@ -43,7 +43,7 @@ Read-only binary spot-check:
 
 Retail asset probe method:
 
-- Retail root: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`
+- Retail root: `<ra2-install>/`
 - Existing repo readers used: `AssetManager::new`, `AssetManager::load_all_disk_mixes`, `AssetManager::load_nested`, `ShpFile::from_bytes`.
 - Theater mixes explicitly loaded for the probe: `temperat.mix`, `snow.mix`, `urban.mix`, `urbann.mix`, `desert.mix`, `lunar.mix` plus their iso/md companions where present.
 - Parser cross-check: raw SHP header word at offset `+6` matched `ShpFile::frames.len()` for every file below.
@@ -182,8 +182,8 @@ As of the 2026-05-24 TIBTRE implementation pass, current Rust has been updated t
 ## Sources
 
 - Ghidra read-only decompilation: `TerrainClass::AI @ 0x0071C730`, `CDTimerClass::GetTimeRemaining @ 0x00426630`, `FUN_005F9070`, `TerrainTypeClass::ReadINI_Full @ 0x0071DEA0`, `TerrainClass` constructor `0x0071BB90`.
-- Retail install: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+- Retail install: `<ra2-install>/`.
 - Retail parser output from existing repo readers: `AssetManager` plus `ShpFile::from_bytes`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `ini/artmd.ini`, `ini/art.ini`.
+- INI: `ini/rulesmd.ini`, `ini/artmd.ini`, `ini/art.ini`.
 - Prior research: `TIBTRE_TERRAINCLASS_AI_TIMING_AND_RNG_GHIDRA_REPORT.md`, `BRIDGE_BODY_ASSET_RESOLUTION_GHIDRA_REPORT.md`.
-- Rust comparison: `C:/Users/enok/Documents/ra2-rust-game/src/sim/terrain_spawn.rs`.
+- Rust comparison: `src/sim/terrain_spawn.rs`.

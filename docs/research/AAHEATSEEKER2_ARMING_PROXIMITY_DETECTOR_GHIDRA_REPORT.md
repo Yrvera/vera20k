@@ -162,7 +162,7 @@ Parity consequence: AAHeatSeeker2 can home toward a moving target while its prox
   - `0x004E11F6..0x004E12A4`
   - `0x0046C0B7..0x0046C0E8`
 - Prior report:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
+  - `docs/research/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:25678..25687`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini:18505..18514`
+  - `ini/rulesmd.ini:25678..25687`
+  - `ini/rules.ini:18505..18514`

@@ -103,19 +103,19 @@ PASS: 7 | FAIL: 2 | UNCHECKED: 2 | NOT-IMPLEMENTED: 1
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_FSM_ORE_DEPLETION_RETARGET_ARCHIVE_TRACE.md`
+- `docs/research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
+- `docs/research/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
+- `docs/research/miner/traces/MINER_FSM_ORE_DEPLETION_RETARGET_ARCHIVE_TRACE.md`
 - Read-only Ghidra decompile: `CellClass::Reduce_Tiberium` at `00480A80`
 - Read-only Ghidra decompile: `UnitClass::Mission_Harvest` at `0073E5E0`
 - Read-only Ghidra decompile: `FootClass::Scan_For_Tiberium` at `004DD0A0`
 - Read-only Ghidra decompile: `FootClass::Search_For_Tiberium_And_Move` at `004DCFE0`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/ore_growth.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
+- `ini/rulesmd.ini`
+- `src/sim/miner/miner_system.rs`
+- `src/sim/miner/mod.rs`
+- `src/sim/overlay_grid.rs`
+- `src/sim/ore_growth.rs`
+- `src/app_sim_tick.rs`
 
 ## Status
 

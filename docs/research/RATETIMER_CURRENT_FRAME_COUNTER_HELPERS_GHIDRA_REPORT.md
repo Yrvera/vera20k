@@ -194,15 +194,15 @@ This helper contract is not itself INI-driven. It consumes durations supplied by
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_ARMING_PROXIMITY_DETECTOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BODY_ROCKING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_UPDATE_ANIMATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/facing_class.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/superweapon/invulnerability.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/animation.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_building_anim.rs`
+- `docs/research/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
+- `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- `docs/research/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
+- `docs/research/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`
+- `docs/research/AAHEATSEEKER2_ARMING_PROXIMITY_DETECTOR_GHIDRA_REPORT.md`
+- `docs/research/BODY_ROCKING_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_UPDATE_ANIMATION_GHIDRA_REPORT.md`
+- `src/sim/movement/facing_class.rs`
+- `src/sim/superweapon/invulnerability.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/animation.rs`
+- `src/app_building_anim.rs`

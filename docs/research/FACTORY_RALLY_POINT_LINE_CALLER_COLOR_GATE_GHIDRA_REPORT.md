@@ -189,4 +189,4 @@ Missing relative to verified gamemd output: selected-building rally line render,
 - PE/vtable byte check: `gamemd.exe` VA `0x007E4140` -> dword `0x00455DA0`; VA `0x007F43A8` -> dword `0x006DBB60`
 - INI checked: `ini/rulesmd.ini` factory/repair/cloning keys listed in section 4
 - Rust scanned: `src/app_context_order.rs`, `src/sim/production/production_queue.rs`, `src/sim/world/world_commands.rs`, `src/ui/in_game_hud.rs`
-- Prior context, not ground truth: `C:/Users/enok/Documents/ra2-rust-game-docs/PLACEMENT_RALLY_WAYPOINT_VISUALS_GHIDRA_REPORT.md`, `TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`, `UNITACTIONLINES_OPTION_RENDERPASS_GATE_GHIDRA_REPORT.md`
+- Prior context, not ground truth: `docs/research/PLACEMENT_RALLY_WAYPOINT_VISUALS_GHIDRA_REPORT.md`, `TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`, `UNITACTIONLINES_OPTION_RENDERPASS_GATE_GHIDRA_REPORT.md`

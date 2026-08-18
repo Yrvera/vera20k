@@ -209,6 +209,6 @@ The zero-link state-4 branch:
 - Ghidra assembly context: `0x0065A895..0x0065A8A0`.
 - Ghidra read-only decompile: `TechnoClass::Receive_Radio @ 0x006F4AB0`.
 - Ghidra assembly context: `0x006F4B72`, `0x006F4BA6`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `ini/artmd.ini`, `ini/rules.ini`, `ini/art.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`.
+- INI checked: `ini/rulesmd.ini`, `ini/artmd.ini`, `ini/rules.ini`, `ini/art.ini`.
+- Rust scanned: `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/mod.rs`.
 - Related prior reports consulted: `RADIO_0X15_START_UNLOAD_SIDE_EFFECTS_GHIDRA_REPORT.md`, `RADIO_0X18_CONTACT_FLAG_LIFECYCLE_GHIDRA_REPORT.md`, `BUILDING_RECEIVE_RADIO_DOCK_CLEARANCE_HANDOFF_EXIT_GHIDRA_REPORT.md`.

@@ -267,9 +267,9 @@ Proposed Rust test names:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/CHRONO_MINER_POST_DUMP_EXIT_MOVEMENT_SWARM_20260520_TRACE.md`: replace any unsuperseded statement saying normal stock post-dump exit uses `ReleaseDockedHarvester` / `Force_Track(0x47)` / queue-cell destination with: "Normal stock zero-link `CMIN/HARV -> GAREFN/NAREFN` cargo-empty exit does not call `ReleaseDockedHarvester`, does not run `Force_Track(0x47)`, and does not install a `QueueingCell` or `(-1,+1)` exit destination; those belong to conditional reciprocal-link or interrupt paths."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`: if it calls `QueueingCell=4,1` the accepted dock cell, replace with: "The accepted receiver `0x0E` target is `building NW+(3,1)`; `QueueingCell=4,1` is a `Mission_Harvest` fallback/wait seed."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`: no replacement needed; this report corroborates its stock land-WF `ExitCoord` finding.
+- `docs/research/miner/traces/CHRONO_MINER_POST_DUMP_EXIT_MOVEMENT_SWARM_20260520_TRACE.md`: replace any unsuperseded statement saying normal stock post-dump exit uses `ReleaseDockedHarvester` / `Force_Track(0x47)` / queue-cell destination with: "Normal stock zero-link `CMIN/HARV -> GAREFN/NAREFN` cargo-empty exit does not call `ReleaseDockedHarvester`, does not run `Force_Track(0x47)`, and does not install a `QueueingCell` or `(-1,+1)` exit destination; those belong to conditional reciprocal-link or interrupt paths."
+- `docs/research/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`: if it calls `QueueingCell=4,1` the accepted dock cell, replace with: "The accepted receiver `0x0E` target is `building NW+(3,1)`; `QueueingCell=4,1` is a `Mission_Harvest` fallback/wait seed."
+- `docs/research/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`: no replacement needed; this report corroborates its stock land-WF `ExitCoord` finding.
 
 ## Negative Facts / Do Not Do
 
@@ -300,13 +300,13 @@ Proposed Rust test names:
 - Ghidra live decompile: `BuildingClass::GetExitCoord @ 0x0044F640`
 - Ghidra live decompile: `BuildingClass::GetDockCellForObject @ 0x0044EFB0`
 - Ghidra live decompile: `RadioClass::FindDockSlot @ 0x0065AD90`, `FUN_0065ADF0 @ 0x0065ADF0`, `RadioClass::Set_Contact_Count @ 0x0065AE60`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_STATE2_TOOFAR_BRANCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_POST_UNLOAD_EXIT_PATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CHRONO_MINER_REFINERY_CONTACT_SATURATION_QUEUE_EVICTION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AIRFIELD_RADIO_CACHEDDOCK_CONTACT_LIFETIME_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_RECEIVE_RADIO_REFINERY_0X0E_NON_ACCEPTED_PATHS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_RECEIVE_RADIO_DOCK_CLEARANCE_HANDOFF_EXIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `docs/research/miner/HARV_STATE2_TOOFAR_BRANCH_GHIDRA_REPORT.md`
+- `docs/research/miner/HARV_POST_UNLOAD_EXIT_PATH_GHIDRA_REPORT.md`
+- `docs/research/CHRONO_MINER_REFINERY_CONTACT_SATURATION_QUEUE_EVICTION_GHIDRA_REPORT.md`
+- `docs/research/AIRFIELD_RADIO_CACHEDDOCK_CONTACT_LIFETIME_GHIDRA_REPORT.md`
+- `docs/research/BUILDING_RECEIVE_RADIO_REFINERY_0X0E_NON_ACCEPTED_PATHS_GHIDRA_REPORT.md`
+- `docs/research/BUILDING_RECEIVE_RADIO_DOCK_CLEARANCE_HANDOFF_EXIT_GHIDRA_REPORT.md`
+- `docs/research/BUILDING_GETDOCKCELLFOROBJECT_STOCK_WAR_FACTORY_EXIT_GHIDRA_REPORT.md`
 - Rust scan: `src/rules/object_type.rs`, `src/rules/art_data.rs`, `src/rules/ruleset.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/docking/pad_geometry.rs`, `src/sim/docking/aircraft_dock.rs`, `src/sim/production/production_spawn.rs`

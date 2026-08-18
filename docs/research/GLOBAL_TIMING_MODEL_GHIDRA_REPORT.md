@@ -354,9 +354,9 @@ This section records current implementation surfaces only. It is not an implemen
 - Ghidra decompile: `SessionClass__ReadSkirmishSettings @ 0x00697F10`
 - Ghidra decompile: `FUN_005B67F0 @ 0x005B67F0`
 - Ghidra decompile: `LogicClassPerTickUpdateLiveVector @ 0x0055AFB0` (formerly `LogicClass__PerTickUpdate`)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DEFAULT_SKIRMISH_FRAME_PACE_EXTENSION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
+- `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- `docs/research/DEFAULT_SKIRMISH_FRAME_PACE_EXTENSION_GHIDRA_REPORT.md`
+- `docs/research/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
+- `docs/research/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`
 - Rust files read: `src/util/fixed_math.rs`, `src/app_types.rs`, `src/app_sim_tick.rs`, `src/sim/world/mod.rs`, `src/rules/art_data.rs`, `src/sim/combat/mod.rs`, `src/sim/animation.rs`

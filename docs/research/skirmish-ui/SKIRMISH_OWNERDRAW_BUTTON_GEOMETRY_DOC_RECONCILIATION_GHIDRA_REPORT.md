@@ -116,13 +116,13 @@ One real geometry/art mismatch remains in the pressed/down state: retail `bde_li
 
 ## 10. Stale Docs / Follow-Up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md` replacement wording:
+- `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md` replacement wording:
   "Current Rust no longer has the older released-state geometry failures: Start/Choose/Back 800x600 snap rects, released 30px up-art vertical placement, fixed-right/fixed-bottom text rects, destination cap overlap, and centered middle source phase are implemented. Remaining geometry/art delta: pressed/down state must use the binary's selected-30-family y baseline and table right-cap destination width even though the retail `bde_*30` PCXs are 27px high and `bde_ri30.pcx` is 7px wide. Text color is handled by the button color audit."
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_RECHECK_800X600_GHIDRA_REPORT.md` replacement wording:
+- `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_RECHECK_800X600_GHIDRA_REPORT.md` replacement wording:
   "Superseded for current-Rust geometry status by `SKIRMISH_OWNERDRAW_BUTTON_GEOMETRY_DOC_RECONCILIATION_GHIDRA_REPORT.md`: the previous 'only middle source phase remains' claim is stale because current Rust now has centered middle phase. The current geometry deltas are pressed/down-state y baseline (+1px too low in Rust) and pressed right-cap destination anchor/table width."
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_START_CHOOSE_BACK_OWNER_DRAW_BUTTONS_800X600_TRACE.md` replacement wording:
+- `docs/research/traces/SKIRMISH_START_CHOOSE_BACK_OWNER_DRAW_BUTTONS_800X600_TRACE.md` replacement wording:
   "Keep as historical trace only. Current Rust has fixed art y for released state, pressed art movement concept, button rects, cap overlap, middle source phase, and text rect geometry. It still needs a pressed/down asset correction because retail down PCXs are 27px high and the binary anchors them from the selected 30-family baseline."
 
 ## Sources

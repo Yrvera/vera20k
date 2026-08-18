@@ -215,5 +215,5 @@ Active in YR: Rust status is not binary evidence; included only for implementati
 
 - Ghidra read-only decompile: `0x004BFD30`, `0x007BC2B0`, `0x006DBB60`, `0x006F5EF0`, `0x006F60D0`, `0x006F5190`, `0x004801F0`, `0x0047EFE0`, `0x0047F250`
 - Prior reports used as seeds/cross-checks: `building-selection-brackets/SURFACE_DRAW_LINE_BRACKET_RASTER_GHIDRA_REPORT.md`, `building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`, `building-selection-brackets/BUILDING_BRACKET_DEPTH_DOMINANT_RASTER_REACHABILITY_GHIDRA_REPORT.md`
-- INI read-only grep: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- INI read-only grep: `ini/rules.ini`, `ini/rulesmd.ini`
 - Rust source read-only comparison: `src/app_selection_brackets.rs`, `src/app_render/draw_passes.rs`

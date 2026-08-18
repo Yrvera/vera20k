@@ -526,7 +526,7 @@ order regardless of approach direction.
 
 ## Tier 8 application record (2026-08-17, Claude Code session)
 
-Corridor row 8. Snapshot: `C:/Users/enok/Documents/ghidra-backups/2026-08-17-pre-tier8`
+Corridor row 8. Snapshot: `<local>/Documents/ghidra-backups/2026-08-17-pre-tier8`
 (17 files, 243,605,513 bytes, verified with the program closed).
 
 Structs created: `/UnitClass` **2280 B (0x8E8)**, 12 fields; `/InfantryClass` **1776 B (0x6F0)**,

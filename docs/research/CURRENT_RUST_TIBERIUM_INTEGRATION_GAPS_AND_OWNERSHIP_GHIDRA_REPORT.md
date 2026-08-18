@@ -150,18 +150,18 @@ Also replace any phrase claiming `miner::reduce_tiberium` mirrors `CellClass::Re
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/contracts/2026-05-23-chrono-miner-reduce-tiberium-implementation-contract.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIBERIUM_QUEUE_SEEDING_AND_TIMING_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_types.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/ore_growth.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/terrain_spawn.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/smudge_dispatch.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_hash.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
+- `docs/contracts/2026-05-23-chrono-miner-reduce-tiberium-implementation-contract.md`
+- `docs/research/TIBERIUM_QUEUE_SEEDING_AND_TIMING_REPORT.md`
+- `docs/research/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
+- `src/sim/miner/mod.rs`
+- `src/sim/miner/miner_system.rs`
+- `src/sim/production/production_types.rs`
+- `src/sim/production/production_queue.rs`
+- `src/sim/ore_growth.rs`
+- `src/sim/overlay_grid.rs`
+- `src/sim/terrain_spawn.rs`
+- `src/sim/combat/mod.rs`
+- `src/sim/combat/smudge_dispatch.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/world/world_hash.rs`
+- `src/app_sim_tick.rs`

@@ -24,7 +24,7 @@ This is a quick-reference doc; cross-reference the canonical
 
 ## rulesmd.ini — `[YENGINEER]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:5058`:
+Verbatim from `ini/rulesmd.ini:5058`:
 
 ```ini
 [YENGINEER]
@@ -111,7 +111,7 @@ IFVMode/Trainable etc.).
 
 ## artmd.ini — `[YENGINEER]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:437`:
+`ini/artmd.ini:437`:
 
 ```ini
 [YENGINEER] ; Yuri Engineer
@@ -160,7 +160,7 @@ INI blocks.
 
 ## Voices and sounds
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`:
+`ini/soundmd.ini`:
 
 | INI key on YENGINEER | soundmd block | Resolved samples |
 |---------------------|---------------|------------------|

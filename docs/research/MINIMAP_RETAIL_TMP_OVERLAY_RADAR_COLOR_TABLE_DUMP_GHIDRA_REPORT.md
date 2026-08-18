@@ -29,7 +29,7 @@ Representative values already disprove current Rust parity: retail `TIB01` frame
 
 ## 3. Representative TMP Terrain Values
 
-Retail asset root: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+Retail asset root: `<ra2-install>/`.
 
 | Asset | Source | Grid / tile | First non-empty subimage metadata | Active in YR |
 |---|---|---|---|---|
@@ -134,13 +134,13 @@ This report covers visual color source metadata, not draw composition.
 
 ## 13. Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_RENDERING.md`
+`docs/research/RADAR_MINIMAP_RENDERING.md`
 
 Replace any statement implying ore/gem minimap colors are density-interpolated, INI `RadarColor=` driven, or rendered-pixel averaged with:
 
 > Overlay and tiberium minimap terrain colors are loaded from resolved SHP(TS) frame-header radar RGB bytes at frame header `+0x0C..+0x0E`. For example, retail `tib01.tem` frame 11 is `(169,155,61)` and retail `gem01.tem` frame 11 is `(114,111,118)`; these values do not match INI `RadarColor=` and are not rendered-pixel averages.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
+`docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
 
 Replace the old high-level color list with:
 
@@ -150,7 +150,7 @@ Replace the old high-level color list with:
 
 - Ghidra decompile: `CellClass__GetRadarColor @ 0x0047C060`, `OverlayClass__GetRadarColor @ 0x005FED00`, `GetTiberiumRadarColor @ 0x0069E860`, `ApplyTheaterBrightness @ 0x00661190`.
 - Prior branch report: `docs/research/CELLCLASS_GETRADARCOLOR_FULL_BRANCH_INVENTORY_GHIDRA_REPORT.md`.
-- Retail assets under `C:/Users/enok/Documents/Command and Conquer Red Alert II/`: `ra2.mix`, `ra2md.mix`, nested `isotemp.mix`, `temperat.mix`, `isosnow.mix`, `snow.mix`, `isourb.mix`, `urban.mix`, `isoubn.mix`, `urbann.mix`.
+- Retail assets under `<ra2-install>/`: `ra2.mix`, `ra2md.mix`, nested `isotemp.mix`, `temperat.mix`, `isosnow.mix`, `snow.mix`, `isourb.mix`, `urban.mix`, `isoubn.mix`, `urbann.mix`.
 - Rust parser surfaces: `src/assets/tmp_decode.rs`, `src/assets/shp_file.rs`, `src/render/minimap_helpers.rs`, `src/render/overlay_atlas.rs`, `src/map/overlay_types.rs`.
 
 ## Status

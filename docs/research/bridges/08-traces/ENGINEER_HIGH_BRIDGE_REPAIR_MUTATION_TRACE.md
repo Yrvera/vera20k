@@ -72,11 +72,11 @@ This test covers the Rust mutation path but does not prove gamemd numerical equa
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REPAIRBRIDGEWALKER_BODIES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REPAIRBRIDGEWALKER_FIELD_11E_FOLLOWUP.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/walker.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/rng.rs`
+- `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+- `docs/research/REPAIRBRIDGEWALKER_BODIES_GHIDRA_REPORT.md`
+- `docs/research/REPAIRBRIDGEWALKER_FIELD_11E_FOLLOWUP.md`
+- `src/sim/world/world_orders.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/bridge_state/mod.rs`
+- `src/sim/bridge_state/walker.rs`
+- `src/sim/rng.rs`

@@ -136,4 +136,4 @@ Active in YR: Not applicable to Rust status.
 - Ghidra decompiled: `ActionLines__StartTimer` `0x0070D150`.
 - Ghidra decompiled/listed: `OptionsClass__SetDefaults` `0x005FA350`; `OptionsClass__ReadFromINI` `0x005FA620`; `TechnoClass__SetDrawHealthBarsFlag` `0x0070D180`.
 - Ghidra memory reads: vtable entries `0x007E26DC`, `0x007E90CC`, `0x007EB490`, `0x007F60A8`.
-- Starting reference only: `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_LINES_GHIDRA_REPORT.md`.
+- Starting reference only: `docs/research/TARGET_LINES_GHIDRA_REPORT.md`.

@@ -186,7 +186,7 @@ Recommended replacement wording for older docking/unload docs:
 - Ghidra `decompile_function 0065A970` - `RadioClass::Transmit_Radio_Impl`.
 - Ghidra assembly contexts for all `+0x274` and `+0x278` call-pattern sites; literal `0x08` sites at `0x0051A80C`, `0x00522AA2`, `0x0073A93D`, `0x00746142`.
 - Ghidra assembly contexts `0x0065AD30..0x0065AD3D` and `0x0065AE30..0x0065AE54`.
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_RECEIVE_RADIO_0X08_CLEARANCE_QUEUE_GHIDRA_REPORT.md`.
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
+- Prior report: `docs/research/miner/BUILDING_RECEIVE_RADIO_0X08_CLEARANCE_QUEUE_GHIDRA_REPORT.md`.
+- Prior report: `docs/research/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
 - `ini/rulesmd.ini`.
 - Rust scan: `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`.

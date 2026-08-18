@@ -175,8 +175,8 @@ Static scan only:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/WAVECLASS_AI_AND_CORRECTIONS_ADDENDUM.md` section "CRITICAL: IsSonic is TS-LEGACY DEAD CODE IN YR" is stale. Replacement wording: "`IsSonic=` is stock-live in current repo YR data: `rulesmd.ini` sets `IsSonic=Yes` on `[SonicZap]` and `[SonicZapE]`, and `TechnoClass::Fire_At @ 0x006FF43F..0x006FF470` gates WaveClass type 0 construction on `WeaponTypeClass+0x130`. The earlier zero-match result came from a case-sensitive grep; the INI parser accepts capitalized `Yes`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/WAVECLASS_GHIDRA_REPORT.md` section 8 overstates WaveClass triggers by grouping laser/radbeam flags under `+0x130`. Replacement wording: "`WeaponTypeClass+0x130 IsSonic` triggers WaveClass type 0; `WeaponTypeClass+0x15C IsMagBeam` triggers WaveClass type 3. `IsLaser`, `DiskLaser`, `IsBigLaser`, and `IsRadBeam` route to other beam classes per `WAVECLASS_AI_AND_CORRECTIONS_ADDENDUM.md`."
+- `docs/research/WAVECLASS_AI_AND_CORRECTIONS_ADDENDUM.md` section "CRITICAL: IsSonic is TS-LEGACY DEAD CODE IN YR" is stale. Replacement wording: "`IsSonic=` is stock-live in current repo YR data: `rulesmd.ini` sets `IsSonic=Yes` on `[SonicZap]` and `[SonicZapE]`, and `TechnoClass::Fire_At @ 0x006FF43F..0x006FF470` gates WaveClass type 0 construction on `WeaponTypeClass+0x130`. The earlier zero-match result came from a case-sensitive grep; the INI parser accepts capitalized `Yes`."
+- `docs/research/WAVECLASS_GHIDRA_REPORT.md` section 8 overstates WaveClass triggers by grouping laser/radbeam flags under `+0x130`. Replacement wording: "`WeaponTypeClass+0x130 IsSonic` triggers WaveClass type 0; `WeaponTypeClass+0x15C IsMagBeam` triggers WaveClass type 3. `IsLaser`, `DiskLaser`, `IsBigLaser`, and `IsRadBeam` route to other beam classes per `WAVECLASS_AI_AND_CORRECTIONS_ADDENDUM.md`."
 
 ## Sources
 

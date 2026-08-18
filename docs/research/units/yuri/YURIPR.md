@@ -25,7 +25,7 @@ Authoritative deep RE for mind-control:
 
 ## rulesmd.ini — `[YURIPR]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:5246`:
+Verbatim from `ini/rulesmd.ini:5246`:
 
 ```ini
 [YURIPR]
@@ -173,7 +173,7 @@ SelfHealing=yes
 
 ## artmd.ini — `[YURIX]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:339`:
+`ini/artmd.ini:339`:
 
 ```ini
 [YURIX] ; Yuri Prime

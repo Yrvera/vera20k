@@ -174,13 +174,13 @@ None.
 - Ghidra read-only decompile: `DriveLocomotionClass__Process @ 0x004B0500`
 - Ghidra read-only decompile: `DriveLocomotionClass__Process_Movement @ 0x004B2630`
 - Ghidra xref: `DriveLocomotionClass__Can_Use_Track` vtable data reference at `0x007E7F54`
-- Existing research: `C:/Users/enok/Documents/ra2-rust-game-docs/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
-- Existing research: `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
-- Existing research: `C:/Users/enok/Documents/ra2-rust-game-docs/DRIVE_LOCOMOTION_HELPERS_GHIDRA_REPORT.md`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:330`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track.rs:3547`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track.rs:3467`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:6603`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:6636`
+- Existing research: `docs/research/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
+- Existing research: `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
+- Existing research: `docs/research/DRIVE_LOCOMOTION_HELPERS_GHIDRA_REPORT.md`
+- Rust: `src/util/fixed_math.rs:330`
+- Rust: `src/sim/movement/drive_track.rs:3547`
+- Rust: `src/sim/movement/drive_track.rs:3467`
+- INI: `ini/rulesmd.ini:6603`
+- INI: `ini/rulesmd.ini:6636`
 
 Status: COMPLETE

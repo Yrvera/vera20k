@@ -4,7 +4,7 @@
 **Investigation mode:** exhaustive slice  
 **Primary function:** `Apply_area_damage @ 0x00489280`  
 **Program:** active Ghidra program `/gamemd.exe`, x86 32-bit, image base `0x00400000`  
-**Retail file checked:** `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, SHA-256 `1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`  
+**Retail file checked:** `<ra2-install>/gamemd.exe`, SHA-256 `1cdd1180e49024fbda8ad568caac2e86e856063ff67ab38f62b7d2c7bb84298c`  
 **Scope:** collection order, filters, layers, fixed records, target lifetime, receiver arguments, Cartesian world-lepton conversion, distance adjustments, non-HP ordering, all static xrefs, and focused Rust handoff  
 **Non-scope:** implementing Rust, running the game/debugger, driving an Oracle, changing another research report, or re-deriving the concrete receiver internals owned by Tasks 1/2
 

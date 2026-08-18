@@ -131,7 +131,7 @@ Conditional / not claimed:
 
 ## Stale-Doc Replacement Wording
 
-No direct stale-doc replacement is required for the latest tooltip overlap report. Suggested extension wording for `C:/Users/enok/Documents/ra2-rust-game/docs/research/TOOLTIP_MANAGER_SIDEBAR_OVERLAP_PIXELS_GHIDRA_REPORT.md` if it is later amended:
+No direct stale-doc replacement is required for the latest tooltip overlap report. Suggested extension wording for `docs/research/TOOLTIP_MANAGER_SIDEBAR_OVERLAP_PIXELS_GHIDRA_REPORT.md` if it is later amended:
 
 > In-game sidebar tooltip text is measured with `BitFont__MeasureText` and drawn with `FUN_00434CD0` using native wrap/clipping. The popup box applies measured width `+4` and height `+3`, remeasures long text with `region_width - 4`, then draws text once at outer `x + 2`, `y + 4` in the current sidebar text color. Glyph pixels are direct 1bpp-to-16bpp writes with per-pixel clipping; there is no tooltip text shadow or alpha glyph pass.
 
@@ -151,6 +151,6 @@ COMPLETE for the scoped normal in-game tooltip glyph raster, line wrapping, padd
 - `SidebarClass__GetTooltipText @ 0x006AC210`.
 - `SidebarClass__GetCameoTooltip @ 0x006A92E0`.
 - `PowerClass__GetTooltipText @ 0x00640450`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/TOOLTIP_MANAGER_SIDEBAR_OVERLAP_PIXELS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BITFONT_SHELL_TEXT_GHIDRA_REPORT.md`.
+- `docs/research/TOOLTIP_MANAGER_SIDEBAR_OVERLAP_PIXELS_GHIDRA_REPORT.md`.
+- `docs/research/BITFONT_SHELL_TEXT_GHIDRA_REPORT.md`.
 - Focused Rust scan: `src/render/bit_font.rs`, `src/assets/fnt_file.rs`, `src/app_render/draw_passes.rs`, `src/render/sidebar_text.rs`, `src/app_sidebar_text.rs`.

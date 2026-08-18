@@ -258,13 +258,13 @@ No Rust was modified by this investigation.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`: any wording implying event `0x1F` is a general "BridgeDestroyed" runtime event should be replaced with: "The bridge span-collapse path delivers numeric trigger event `0x1F` to tagged cells only; it is trigger-only and distinct from the separate event `0x18` destroyed registry path."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`: any wording saying `RepairBridgeSegment` has 7 event call sites should be treated as stale for exact count; the decompile has four horizontal and three decompiler-visible vertical explicit calls in current output, while prior event report lists seven assembly push sites. The load-bearing fact is the repeated gated `0x1F` trigger-only calls, not the exact prose count.
+- `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`: any wording implying event `0x1F` is a general "BridgeDestroyed" runtime event should be replaced with: "The bridge span-collapse path delivers numeric trigger event `0x1F` to tagged cells only; it is trigger-only and distinct from the separate event `0x18` destroyed registry path."
+- `docs/research/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`: any wording saying `RepairBridgeSegment` has 7 event call sites should be treated as stale for exact count; the decompile has four horizontal and three decompiler-visible vertical explicit calls in current output, while prior event report lists seven assembly push sites. The load-bearing fact is the repeated gated `0x1F` trigger-only calls, not the exact prose count.
 
 ## Sources
 
 - Ghidra decompile: `0x0047DD70`, `0x005F4160`, `0x004D3780`, `0x005683C0`, `0x005687F0`, `0x00575BA0`, `0x00575870`, `0x00575540`, `0x00575220`, `0x00576BA0`, `0x0047E040`, `0x00575EE0`, `0x006E53A0`, `0x0071F680`, `0x00421EA0`, `0x00424CE0`, `0x006D3D10`.
 - Ghidra assembly context: `0x0047DD84..0x0047DDAE`, `0x0047DDBA..0x0047DDC9`, `0x005F416A..0x005F41A1`, `0x005684B1`, `0x005688E1`, `0x00575E42..0x00575E4F`, `0x0057778A..0x00577795`, `0x005778CC..0x005778D9`, event push sites `0x00575F95`, `0x00576007`, `0x0057606C`, `0x005760CC`, `0x00576137`, `0x0057619C`, `0x005761DE`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`.
+- INI: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`.
 - Existing docs: `BRIDGEEXPLOSIONS_RULES_OFFSETS_GHIDRA_REPORT.md`, `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`, `BRIDGE_DESTROYED_TRIGGER_EVENT_0X1F_GHIDRA_REPORT.md`, `BRIDGE_DROPIN_ONBRIDGE_RELAYER_GHIDRA_REPORT.md`, `HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`, `BRIDGE_ZONE_LIFECYCLE_GHIDRA_REPORT.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`, `src/sim/world/mod.rs`, `src/audio/events.rs`.
+- Rust scan: `src/sim/world/bridge_orchestrator.rs`, `src/sim/world/mod.rs`, `src/audio/events.rs`.

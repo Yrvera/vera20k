@@ -528,16 +528,16 @@ This is a source scan, not a judgment that each difference is wrong. It identifi
 
 | Rust path | Current timing behavior found | Parity risk |
 | --- | --- | --- |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs` | Defines `SIM_TICK_HZ`, `SIM_TICK_MS`, `DEFAULT_YR_SKIRMISH_GAME_SPEED=1`, `GAME_SPEED_BUCKET_MS=16`, and `tps_for_game_speed`. | Good recognition of YR speed byte and bucket, but must align with late GameMD frame counter semantics. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs` | `advance_fixed_simulation` scales elapsed by `sim_speed_tps / SIM_TICK_HZ`; scheduler uses fixed steps. | GameMD local speed throttles frame advance rather than scaling all elapsed time consumers independently. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs` | Tracks `total_sim_ms`; computes `binary_frame = (total_sim_ms * 15) / 1000`; many systems receive `tick_ms`; combat samples `barrel.current(binary_frame)` at start of tick; several effects use `rate_ms: 67`. | Synthetic 15 FPS frame may diverge from GameMD frame counter, especially around late increment and speed byte normalization. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/animation.rs` | Uses `elapsed_ms`, `tick_ms`, `dt_ms`, sequence `tick_ms`, and ms-based harvest/voxel animation. | GameMD AnimClass and infantry actions are frame-delay based with selective speed normalization. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_building_anim.rs` | Uses elapsed-ms timers for crane, idle anim, damage fire overlays, radar state, and garrison muzzle flashes; common `rate_ms: 67`. | Building anims in GameMD use frame counters, modulo checks, CDTimer, and selective normalized helper. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_chute_anim.rs` | Parachute animation uses `elapsed_ms/rate_ms`. | Needs validation against actual GameMD chute/AnimClass frame delay path. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_fire_effects.rs` | Muzzle flashes use `elapsed_ms/rate_ms`. | GameMD muzzle/anim effects often use AnimClass or frame gates; ms may drift. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/overlays.rs` | Terrain overlay frame uses `idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS`, often `67` ms. | Overlay animation should be checked against frame-counter or art/rules timing path. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/units.rs` | Facing samples `current(sim.binary_frame)`. | RateTimer should sample the same authoritative GameMD frame counter used by simulation timers. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/mod.rs` | Movement update is passed `tick_ms`. | Locomotion can remain modern internally only if observable per-frame movement cadence matches GameMD. |
+| `src/app_types.rs` | Defines `SIM_TICK_HZ`, `SIM_TICK_MS`, `DEFAULT_YR_SKIRMISH_GAME_SPEED=1`, `GAME_SPEED_BUCKET_MS=16`, and `tps_for_game_speed`. | Good recognition of YR speed byte and bucket, but must align with late GameMD frame counter semantics. |
+| `src/app_sim_tick.rs` | `advance_fixed_simulation` scales elapsed by `sim_speed_tps / SIM_TICK_HZ`; scheduler uses fixed steps. | GameMD local speed throttles frame advance rather than scaling all elapsed time consumers independently. |
+| `src/sim/world/mod.rs` | Tracks `total_sim_ms`; computes `binary_frame = (total_sim_ms * 15) / 1000`; many systems receive `tick_ms`; combat samples `barrel.current(binary_frame)` at start of tick; several effects use `rate_ms: 67`. | Synthetic 15 FPS frame may diverge from GameMD frame counter, especially around late increment and speed byte normalization. |
+| `src/sim/animation.rs` | Uses `elapsed_ms`, `tick_ms`, `dt_ms`, sequence `tick_ms`, and ms-based harvest/voxel animation. | GameMD AnimClass and infantry actions are frame-delay based with selective speed normalization. |
+| `src/app_building_anim.rs` | Uses elapsed-ms timers for crane, idle anim, damage fire overlays, radar state, and garrison muzzle flashes; common `rate_ms: 67`. | Building anims in GameMD use frame counters, modulo checks, CDTimer, and selective normalized helper. |
+| `src/app_chute_anim.rs` | Parachute animation uses `elapsed_ms/rate_ms`. | Needs validation against actual GameMD chute/AnimClass frame delay path. |
+| `src/app_fire_effects.rs` | Muzzle flashes use `elapsed_ms/rate_ms`. | GameMD muzzle/anim effects often use AnimClass or frame gates; ms may drift. |
+| `src/app_instances/overlays.rs` | Terrain overlay frame uses `idle_anim_elapsed_ms / TERRAIN_ANIM_RATE_MS`, often `67` ms. | Overlay animation should be checked against frame-counter or art/rules timing path. |
+| `src/app_instances/units.rs` | Facing samples `current(sim.binary_frame)`. | RateTimer should sample the same authoritative GameMD frame counter used by simulation timers. |
+| `src/sim/movement/mod.rs` | Movement update is passed `tick_ms`. | Locomotion can remain modern internally only if observable per-frame movement cadence matches GameMD. |
 
 ## Findings Matrix
 
@@ -606,7 +606,7 @@ Additional caution notes:
 
 ## Related Existing Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
+- `docs/research/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
+- `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- `docs/research/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
 

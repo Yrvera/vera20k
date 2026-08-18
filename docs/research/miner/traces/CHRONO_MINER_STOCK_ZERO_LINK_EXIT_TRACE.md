@@ -61,7 +61,7 @@ Supporting reports:
 
 ## Verification
 
-Ran in `C:/Users/enok/Documents/ra2-rust-game`:
+Ran in `.`:
 
 ```text
 cargo test chrono_departing -- --nocapture

@@ -180,8 +180,8 @@ Active in YR: Conditional. Evidence: decompile/assembly `0x006AD2BA..0x006AD34B`
 
 ## 12. Stale Docs / Follow-up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Start is not modeled as a native disabled control during the modal" with "Rust models the native modal-time disabled Start effect by rendering/input-blocking Start while `validation_modal.is_some()`, but it does not model a separate HWND-style disable before validation. Native disables Start after Start command notification `0`, calls the blocking modal on failures, and re-enables Start after the modal returns."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_FAILURE_SHELL_MODAL_CURRENT_RECHECK_GHIDRA_REPORT.md`: replace "it does not model native transient `EnableWindow(0/1)`" with "it approximates native `EnableWindow(0/1)` by tying disabled rendering/input to `validation_modal.is_some()`; native disables before validation and re-enables after modal return, but static evidence does not prove a forced pre-modal disabled repaint."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Start is not modeled as a native disabled control during the modal" with "Rust models the native modal-time disabled Start effect by rendering/input-blocking Start while `validation_modal.is_some()`, but it does not model a separate HWND-style disable before validation. Native disables Start after Start command notification `0`, calls the blocking modal on failures, and re-enables Start after the modal returns."
+- `docs/research/skirmish-ui/SKIRMISH_START_FAILURE_SHELL_MODAL_CURRENT_RECHECK_GHIDRA_REPORT.md`: replace "it does not model native transient `EnableWindow(0/1)`" with "it approximates native `EnableWindow(0/1)` by tying disabled rendering/input to `validation_modal.is_some()`; native disables before validation and re-enables after modal return, but static evidence does not prove a forced pre-modal disabled repaint."
 
 ## Sources
 

@@ -8,14 +8,14 @@
 
 ## Sources
 
-- Verified gamemd research: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
-- Verified gamemd research: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
-- Verified gamemd research: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
-- INI values: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- Verified gamemd research: `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
+- Verified gamemd research: `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
+- Verified gamemd research: `docs/research/skirmish-ui/SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`
+- Rust code: `src/ui/skirmish_shell/layout.rs`
+- Rust code: `src/ui/skirmish_shell/state.rs`
+- Rust code: `src/app_skirmish_shell_render.rs`
+- Rust code: `src/app.rs`
+- INI values: `ini/rulesmd.ini`
 
 ## Active YR Confirmation
 
@@ -48,21 +48,21 @@ Mouse down on current credits thumb -> trackbar y gate -> thumb hit gate -> drag
 
 **Stage:** Changed-value notification  
 **Player-visible difference:** The native trackbar has a value-changed message boundary on every changed drag update. Rust updates local state directly and exposes no equivalent action/notification. This may not show as a separate visual for the current credits label, but it is the ordering boundary that gamemd uses before sound and parent processing.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:388`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:650`  
+**Rust:** `src/ui/skirmish_shell/state.rs:388`, `src/app.rs:650`  
 **gamemd evidence:** `OwnerDraw_Trackbar_0061D950` final branch at `0x0061E609`; verified report line says parent `WM_HSCROLL 0x114`, low word `5`, high word current absolute value.
 
 ### 2. Missing trackbar click/drag sound
 
 **Stage:** Changed-value sound  
 **Player-visible difference:** Retail plays a UI click when the drag changes credits; Rust is silent.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:388`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:592`  
+**Rust:** `src/ui/skirmish_shell/state.rs:388`, `src/app.rs:592`  
 **gamemd evidence:** `OwnerDraw_Trackbar_0061D950` final branch plays `VocClass__PlayAtPos(1.0, 0)` when value changed, sound suppression is zero, and the branch permits sound.
 
 ### 3. Trackbar value text color is channel-swapped
 
 **Stage:** Displayed value render  
 **Player-visible difference:** The numeric credits value is the right text and position but the wrong dark color: Rust uses RGB `(0,12,5)` where the verified packed shell color decodes to `(5,12,0)`.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:45`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1547`  
+**Rust:** `src/app_skirmish_shell_render.rs:45`, `src/app_skirmish_shell_render.rs:1547`  
 **gamemd evidence:** `FUN_00621040` shell text wrapper decodes packed caller color `0x00000C05` as RGB `(5,12,0)`; active for trackbar numeric text via `OwnerDraw_Trackbar_0061D950`.
 
 ## Adjacent Findings

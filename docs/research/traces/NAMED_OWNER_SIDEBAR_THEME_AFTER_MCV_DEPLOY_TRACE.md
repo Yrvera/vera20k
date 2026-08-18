@@ -158,8 +158,8 @@ PASS: 3 | FAIL: 2 | UNCHECKED: 2 | NOT-IMPLEMENTED: 0
 - `src/app_sidebar_build.rs`
 - `src/app_render/build_instances.rs`
 - `src/app_render/draw_passes.rs`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COUNTRY_SIDE_TYPE_CLASSES.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COUNTRY_ICON_SHP_SELECTOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SIDEBAR_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`
+- `docs/research/COUNTRY_SIDE_TYPE_CLASSES.md`
+- `docs/research/COUNTRY_ICON_SHP_SELECTOR_GHIDRA_REPORT.md`
+- `docs/research/SIDEBAR_SYSTEM_GHIDRA_REPORT.md`
 

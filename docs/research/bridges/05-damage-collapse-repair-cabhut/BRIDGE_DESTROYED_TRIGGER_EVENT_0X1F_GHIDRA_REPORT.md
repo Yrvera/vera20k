@@ -110,7 +110,7 @@ No rules/art INI key controls this broadcast. It is controlled by scenario trigg
 | `[Events]` | Stores event condition kinds | Must include condition kind `31` for this exact hook |
 | `[Actions]` | Trigger actions | Determines actual script effect if event matches |
 
-Top-level installed skirmish map files scanned in `C:/Users/enok/Documents/Command and Conquer Red Alert II/` (`*.map`, `*.mmx`, `*.mpr`, `*.yrm`) had no `[Events]` condition kind `31`. Some skirmish maps do have triggers for ambient/audio timing; absence of event 31, not absence of triggers, is the relevant fact. MIX-packed internal map corpus was not decoded in this slot.
+Top-level installed skirmish map files scanned in `<ra2-install>/` (`*.map`, `*.mmx`, `*.mpr`, `*.yrm`) had no `[Events]` condition kind `31`. Some skirmish maps do have triggers for ambient/audio timing; absence of event 31, not absence of triggers, is the relevant fact. MIX-packed internal map corpus was not decoded in this slot.
 
 Active in YR: Conditional. Scenario triggers are live in YR; the event is dormant unless authored.
 
@@ -193,8 +193,8 @@ Acceptance test-name proposals:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_PROCESSCELLACTION_0x1F_0x30_GHIDRA_REPORT.md`: replace "TriggerEvent::BridgeDestroyed = 0x1F" with "The bridge span-collapse path delivers numeric event `0x1F`; exact public/editor enum label remains unverified. Keep it distinct from the separate destroyed-event registry path that uses `0x18`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md` section 19 item 4: replace "what do actions 31 and 48 do? Likely tag-trigger fires" with "`0x1F` is verified as a bridge span-collapse trigger-event broadcast via `0x00575EE0 -> 0x006E53A0`, gated by `CellClass+0x3C`; it has no direct bridge mutation and may remain a skirmish no-op until campaign triggers are supported."
+- `docs/research/TECHNOCLASS_PROCESSCELLACTION_0x1F_0x30_GHIDRA_REPORT.md`: replace "TriggerEvent::BridgeDestroyed = 0x1F" with "The bridge span-collapse path delivers numeric event `0x1F`; exact public/editor enum label remains unverified. Keep it distinct from the separate destroyed-event registry path that uses `0x18`."
+- `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md` section 19 item 4: replace "what do actions 31 and 48 do? Likely tag-trigger fires" with "`0x1F` is verified as a bridge span-collapse trigger-event broadcast via `0x00575EE0 -> 0x006E53A0`, gated by `CellClass+0x3C`; it has no direct bridge mutation and may remain a skirmish no-op until campaign triggers are supported."
 
 ## Sources
 
@@ -202,4 +202,4 @@ Acceptance test-name proposals:
 - Ghidra assembly context: `0x00575F95`, `0x00576007`, `0x0057606C`, `0x005760CC`, `0x00576137`, `0x0057619C`, `0x005761DE`, `0x0071F680`.
 - Existing docs: `TECHNOCLASS_PROCESSCELLACTION_0x1F_0x30_GHIDRA_REPORT.md`, `BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`, `FUN_006E61F0_BRIDGE_LINKED_PREDICATE_GHIDRA_REPORT.md`, `UNREGISTERBRIDGEREPAIRHUT_AND_HUT_REGISTRY_GHIDRA_REPORT.md`.
 - Rust scan: `src/sim/world/bridge_orchestrator.rs`, `src/sim/trigger_runtime.rs`, `src/map/events.rs`, `src/map/cell_tags.rs`, `src/map/trigger_graph.rs`.
-- Map scan: PowerShell parse of top-level installed `*.map`, `*.mmx`, `*.mpr`, `*.yrm` under `C:/Users/enok/Documents/Command and Conquer Red Alert II/`; result: no `[Events]` condition kind `31` in top-level files.
+- Map scan: PowerShell parse of top-level installed `*.map`, `*.mmx`, `*.mpr`, `*.yrm` under `<ra2-install>/`; result: no `[Events]` condition kind `31` in top-level files.

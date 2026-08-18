@@ -72,10 +72,10 @@ Let frame `F` be the frame where miner A's `UnitClass::Mission_Deploy_Building @
 
 Relevant Rust surfaces scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`: `RefineryDockContacts` has `contacts`, deterministic `waiting_retry_queue`, `contact_entered`, and `on_pad`. The older `DockReservations` FIFO remains as compatibility/test surface.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`: `phase_departing` releases `on_pad` and contact immediately for stock state-4 handoff; `phase_mission_enter` retries admission and gates entry on `pad_clear_or_self`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`: `tick_miners` snapshots miners sorted by stable_id and processes each snapshot in order, while writes to shared dock reservations are visible during the same processing pass.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`: useful focused tests exist, especially `occupied_can_dock_defers_without_clearing_waiting_miner_target`, `queued_miner_enters_after_contact_and_pad_are_released`, `empty_unload_gate_releases_dock_on_next_stock_state4_handoff`, and `queued_miner_takes_over_immediately_after_empty_gate_handoff`.
+- `src/sim/miner/miner_dock.rs`: `RefineryDockContacts` has `contacts`, deterministic `waiting_retry_queue`, `contact_entered`, and `on_pad`. The older `DockReservations` FIFO remains as compatibility/test surface.
+- `src/sim/miner/miner_dock_sequence.rs`: `phase_departing` releases `on_pad` and contact immediately for stock state-4 handoff; `phase_mission_enter` retries admission and gates entry on `pad_clear_or_self`.
+- `src/sim/miner/miner_system.rs`: `tick_miners` snapshots miners sorted by stable_id and processes each snapshot in order, while writes to shared dock reservations are visible during the same processing pass.
+- `src/sim/miner/miner_tests.rs`: useful focused tests exist, especially `occupied_can_dock_defers_without_clearing_waiting_miner_target`, `queued_miner_enters_after_contact_and_pad_are_released`, `empty_unload_gate_releases_dock_on_next_stock_state4_handoff`, and `queued_miner_takes_over_immediately_after_empty_gate_handoff`.
 
 Rust status: coverage is good for contact release and immediate deterministic retry, but not enough for the full binary acceptance surface. The current tests do not cover reversed stable-id/object-order admission, and the handoff tests often place B directly on the accepted cell rather than proving B first receives movement from art wait cell `NW+(4,1)` to accepted cell `NW+(3,1)` before `0x18/0x16`.
 
@@ -132,9 +132,9 @@ Rust status: coverage is good for contact release and immediate deterministic re
 
 ## 10. Stale Docs / Follow-up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_DOCKING_SYSTEM_GHIDRA_REPORT.md`: replace any refinery queue/promoter wording with: "Stock refinery zero-link release frees RadioClass contacts via `BREAK(3)`; the next miner is admitted only when that miner's own `Mission_Enter` retry sends `CAN_DOCK(0x0E)`. No separate release-time refinery promotion callback is verified."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/TWO_CHRONO_MINERS_SAME_REFINERY_FULL_CARGO_QUEUE_TAKEOVER_TRACE.md`: replace unchecked takeover wording with: "B's first accepted-cell movement is commanded on B's first eligible `Mission_Enter` dispatch after A's `BREAK(3)` contact release; this can be the same frame only if B has not yet run in the live-object pass and its mission timer is due."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_DOCK_UNLOAD.md` and `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_DOCK_UNLOAD_SEQUENCE.md`: replace normal stock unload release wording with: "Normal stock `CMIN/HARV` refinery unload completes through zero-link `UnitClass::Mission_Deploy_Building` state 4; `ReleaseDockedHarvester` is for nonzero-link/interrupt contexts, not this healthy handoff."
+- `docs/research/miner/BUILDING_DOCKING_SYSTEM_GHIDRA_REPORT.md`: replace any refinery queue/promoter wording with: "Stock refinery zero-link release frees RadioClass contacts via `BREAK(3)`; the next miner is admitted only when that miner's own `Mission_Enter` retry sends `CAN_DOCK(0x0E)`. No separate release-time refinery promotion callback is verified."
+- `docs/research/miner/traces/TWO_CHRONO_MINERS_SAME_REFINERY_FULL_CARGO_QUEUE_TAKEOVER_TRACE.md`: replace unchecked takeover wording with: "B's first accepted-cell movement is commanded on B's first eligible `Mission_Enter` dispatch after A's `BREAK(3)` contact release; this can be the same frame only if B has not yet run in the live-object pass and its mission timer is due."
+- `docs/research/miner/HARVESTER_DOCK_UNLOAD.md` and `docs/research/miner/HARVESTER_DOCK_UNLOAD_SEQUENCE.md`: replace normal stock unload release wording with: "Normal stock `CMIN/HARV` refinery unload completes through zero-link `UnitClass::Mission_Deploy_Building` state 4; `ReleaseDockedHarvester` is for nonzero-link/interrupt contexts, not this healthy handoff."
 
 ## Sources
 
@@ -147,7 +147,7 @@ Rust status: coverage is good for contact release and immediate deterministic re
 - Ghidra read-only decompile: `RadioClass::Transmit_Radio_Impl @ 0x0065A970`.
 - Ghidra read-only decompile: `RadioClass::Receive_Radio @ 0x0065A820`.
 - Prior reports: `TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_TIMING_GHIDRA_REPORT.md`, `TWO_CMIN_ONE_REFINERY_TAKEOVER_TIMING_GHIDRA_REPORT.md`, `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`, `MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`.
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`.
 - Rust scanned: `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_system.rs`, `src/sim/miner/miner_tests.rs`.
 
 ## Status

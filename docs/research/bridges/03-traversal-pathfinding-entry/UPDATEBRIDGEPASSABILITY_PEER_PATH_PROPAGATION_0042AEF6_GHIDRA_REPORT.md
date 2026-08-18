@@ -194,10 +194,10 @@ No stale-doc replacement wording was found for the scoped peer propagation facts
 
 ## Sources
 
-- Local read-only PE disassembly of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, image base `0x00400000`, range `0x0042AE00..0x0042AFC0`.
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`.
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_0042ACF0_OBJECT_0X678_GATE_GHIDRA_REPORT.md`.
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
-- Existing trace: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DIRECTION_8_SENTINEL_INVALID_BYTES_TRACE.md`.
+- Local read-only PE disassembly of `<ra2-install>/gamemd.exe`, image base `0x00400000`, range `0x0042AE00..0x0042AFC0`.
+- Existing Ghidra report: `docs/research/PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`.
+- Existing Ghidra report: `docs/research/PATHFINDER_0042ACF0_OBJECT_0X678_GATE_GHIDRA_REPORT.md`.
+- Existing Ghidra report: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
+- Existing Ghidra report: `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
+- Existing trace: `docs/research/traces/DIRECTION_8_SENTINEL_INVALID_BYTES_TRACE.md`.
 - Rust scan: `src/sim/pathfinding/core.rs`, `src/sim/movement/bump_crush.rs`, `src/sim/movement/movement_path.rs`, `src/sim/pathfinding/zone_search.rs`.

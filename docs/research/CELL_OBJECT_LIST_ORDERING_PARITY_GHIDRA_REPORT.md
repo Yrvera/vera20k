@@ -112,8 +112,8 @@ Bridge collapse Rust now relayers dropped deck entities by clearing `on_bridge`,
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md` Section "Current Rust implications" should replace "Rust vector/list order may differ and affect targeting/passability edge cases if not normalized" with: "Current Rust `OccupancyGrid` has an explicit `CellListInsertion` model matching verified gamemd structure-vs-non-structure insertion, but every first-match consumer still needs audit: use `CellOccupancy::iter_layer` for binary-style CellClass scans, and document any consumer that intentionally uses category/count semantics."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_OCCUPANCY_ORDERING_GHIDRA_REPORT.md` Section 4.1 should replace "Current `OccupancyGrid::add` appends every occupant" with: "Current `OccupancyGrid::add` accepts `CellListInsertion` and inserts non-buildings before the first same-layer occupant while inserting buildings after the last same-layer occupant."
+- `docs/research/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md` Section "Current Rust implications" should replace "Rust vector/list order may differ and affect targeting/passability edge cases if not normalized" with: "Current Rust `OccupancyGrid` has an explicit `CellListInsertion` model matching verified gamemd structure-vs-non-structure insertion, but every first-match consumer still needs audit: use `CellOccupancy::iter_layer` for binary-style CellClass scans, and document any consumer that intentionally uses category/count semantics."
+- `docs/research/CELL_OCCUPANCY_ORDERING_GHIDRA_REPORT.md` Section 4.1 should replace "Current `OccupancyGrid::add` appends every occupant" with: "Current `OccupancyGrid::add` accepts `CellListInsertion` and inserts non-buildings before the first same-layer occupant while inserting buildings after the last same-layer occupant."
 
 ## Sources
 

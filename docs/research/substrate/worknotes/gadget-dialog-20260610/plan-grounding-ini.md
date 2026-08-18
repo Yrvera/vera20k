@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-10
 **Plan scope:** A0/A1/A4/A5 + D-B3 + R1 (ui::gadget substrate).
-**Sources:** `ini/` in MAIN repo `C:/Users/enok/Documents/ra2-rust-game` (canonical); all `src/` file:line anchors verified against the WORKTREE `C:/Users/enok/Documents/ra2-uigadget-worktree` (branch `ui-gadget-substrate` @ 7b79a186). No Ghidra used; binary claims cite existing docs.
+**Sources:** `ini/` in MAIN repo `.` (canonical); all `src/` file:line anchors verified against the WORKTREE `<local>/Documents/ra2-uigadget-worktree` (branch `ui-gadget-substrate` @ 7b79a186). No Ghidra used; binary claims cite existing docs.
 
 ---
 

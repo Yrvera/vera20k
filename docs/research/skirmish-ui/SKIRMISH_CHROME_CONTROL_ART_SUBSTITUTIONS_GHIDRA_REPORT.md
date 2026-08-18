@@ -165,11 +165,11 @@ Proposed Rust test names:
 
 ## 10. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
   - Replace current Rust status wording that says checkbox/trackbar rendering is missing with: "Current Rust now loads and renders standard checkbox `cue_i/cce_i`, trackbar `trakgrip/trof*`, primitive rail, and option state/input. Remaining art fidelity risks are primitive color model, non-flag PCX alpha, and final pixel screenshot validation."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PRIMITIVE_BEVEL_FRAME_COLORS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_PRIMITIVE_BEVEL_FRAME_COLORS_GHIDRA_REPORT.md`
   - Add follow-up wording: "Rust has a pre-rendered RGBA implementation of the verified `FUN_006208F0` geometry; this should be audited against the active DirectDraw-converted color values before treating bevel pixel color as final."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md`
   - Add current-Rust update: "Asset names and disabled alpha are present, but `push_button_30` still scales the cap/middle/right pieces to the full control height; retail blits/tile-fills native 30 px PCX art."
 
 ## Sources

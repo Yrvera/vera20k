@@ -507,7 +507,7 @@ not a separate engineering effort.
    the plan marked this as optional. If no shipping TMP uses 17+, the
    degenerate-matrix divergence is theoretical; if some do, it is
    high-frequency and worth a renderer fallback. Recommended next step:
-   glob `C:/Users/enok/Documents/Command and Conquer Red Alert II/*.mix`
+   glob `<ra2-install>/*.mix`
    for embedded TMPs and tally the `+0x2A` byte distribution in a separate
    investigation pass.
 2. ~~**Slope interpolation trigger.**~~ **RESOLVED 2026-05-19** — the

@@ -62,7 +62,7 @@ granted to this task.
 
 | Field | Value | Evidence |
 |---|---|---|
-| Path | `C:\Users\enok\Documents\Command and Conquer Red Alert II\gamemd.exe` | direct read-only filesystem inspection |
+| Path | `<ra2-install>\gamemd.exe` | direct read-only filesystem inspection |
 | Size | `5,286,504` bytes | `Get-Item` |
 | SHA-256 | `1CDD1180E49024FBDA8AD568CAAC2E86E856063FF67AB38F62B7D2C7BB84298C` | `Get-FileHash -Algorithm SHA256` |
 | File/product version | `1.11` | executable version resource |
@@ -110,7 +110,7 @@ This investigation:
 - did not inject a DLL or enroll a hook manifest;
 - did not send native input;
 - did not create, replace, finalize, restore, or remove oracle evidence;
-- did not write under `C:\Users\enok\Documents\vera20k-oracle`;
+- did not write under `<local>/Documents/vera20k-oracle`;
 - did not edit Rust, run Cargo, stage, commit, or mutate Ghidra.
 
 The only write is this public research report.
@@ -236,7 +236,7 @@ Read-only `oracle.py doctor` at `2026-07-21T23:44:15.277369Z` returned
 | Check | Status | Exact observed fact |
 |---|---|---|
 | reviewed tool spec | `PASS` | spec id `vera20k-oracle-tools-2026-07-10.1`, SHA-256 `0CB86F8F...E5D162C` |
-| local root | `PASS` | `C:\Users\enok\AppData\Local\VERA20k\oracle`, inspected without mutation |
+| local root | `PASS` | `<local>/AppData/Local/VERA20k/oracle`, inspected without mutation |
 | local tool lock | `LOCAL_TOOL_LOCK_INVALID` | lock `spec_sha256` differs from reviewed spec |
 | native capture build | `NATIVE_CAPTURE_INVALID` | enrolled `build.ps1` expected `89531586...B146C`, observed `1A8A4CFD...FC18` |
 | native capture enrollment | `NATIVE_CAPTURE_UNENROLLED` | valid lock and valid build are both required |

@@ -4,8 +4,8 @@ Date: 2026-05-17
 
 Parent reports:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
 
 Scope: targeted follow-up on two open questions from the visual-assets report:
 the exact `Ra2ts_s/l` Bink playback/update path and the duplicate-asset

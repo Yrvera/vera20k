@@ -72,11 +72,11 @@
 - Ghidra MCP read-only `decompile_function 0x00480A80`.
 - Ghidra MCP read-only `decompile_function 0x00489280`.
 - Ghidra MCP read-only `decompile_function 0x00424F00`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REDUCE_TIBERIUM_FULL_REMOVAL_SIDE_EFFECTS_AND_RETURN_VALUE_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/combat/systems/splash_cellspread.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/smudge_dispatch.rs`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`.
+- `docs/research/REDUCE_TIBERIUM_FULL_REMOVAL_SIDE_EFFECTS_AND_RETURN_VALUE_GHIDRA_REPORT.md`.
+- `docs/research/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md`.
+- `docs/research/combat/systems/splash_cellspread.md`.
+- `src/sim/miner/mod.rs`.
+- `src/sim/combat/mod.rs`.
+- `src/sim/combat/smudge_dispatch.rs`.
+- `src/sim/overlay_grid.rs`.
 

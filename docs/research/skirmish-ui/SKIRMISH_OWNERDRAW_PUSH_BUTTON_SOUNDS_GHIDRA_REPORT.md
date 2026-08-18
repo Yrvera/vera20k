@@ -158,7 +158,7 @@ Base RA2 has the same relevant defaults: `ini/rules.ini` contains `GUIMainButton
 
 ## 11. Stale Docs / Follow-up Docs
 
-No stale-doc replacement wording found. This report extends `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md` by confirming modal `0x6B` reuse and by spelling out Rust test surfaces; it does not contradict that report.
+No stale-doc replacement wording found. This report extends `docs/research/skirmish-ui/SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md` by confirming modal `0x6B` reuse and by spelling out Rust test surfaces; it does not contradict that report.
 
 ## 12. Remaining Uncertainty
 

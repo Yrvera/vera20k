@@ -167,9 +167,9 @@ Rust delta for this report is now mostly guardrail maintenance: preserve the hig
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/PATHFIND_INFANTRY_LOW_BRIDGE_RAMP_TRACE.md`: replace Stage 1 `Status: UNCHECKED` wording with:
+- `docs/research/traces/PATHFIND_INFANTRY_LOW_BRIDGE_RAMP_TRACE.md`: replace Stage 1 `Status: UNCHECKED` wording with:
   - `Status: PASS (binary precheck slice verified): Zone_precheck consumes hierarchical zone graph levels built after all-active bridge/tube record insertion. Intact low BridgeRecord kind=1 records are included by UpdateBridgeZonesHelper/BuildZoneLevel, while FindBridgeRecord remains high-only for lookup/redirect consumers. For unobstructed LandType-10 tube cells, RecalcZoneType falls to default zone type 0, which Infantry and normal ground vehicle rows pass in g_PassabilityMatrix. Rust now has focused regression coverage in stock_low_bridge_auto_shell_zone_grid_uses_low_records_without_explicit_tubes.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`: replace `edge flags (low byte = 1 if bridge-edge)` with:
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`: replace `edge flags (low byte = 1 if bridge-edge)` with:
   - `edge flags (low byte causes the 0.001 zone-precheck tiebreak when nonzero; bridge/tube insertion helpers observed here write zero, so this must not be named bridge-edge without qualification).`
 
 ## Sources

@@ -11,18 +11,18 @@
 ## Evidence Used
 
 - Current Rust:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/aircraft/drop_payload.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/parachute_descent.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_chute_anim.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/overlays.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/shp.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/art_data.rs`
+  - `src/sim/aircraft/drop_payload.rs`
+  - `src/sim/movement/parachute_descent.rs`
+  - `src/app_chute_anim.rs`
+  - `src/app_instances/overlays.rs`
+  - `src/app_instances/shp.rs`
+  - `src/rules/ruleset.rs`
+  - `src/rules/art_data.rs`
 - Data:
   - `ini/rulesmd.ini`: `FlightLevel=1500`, `ParachuteMaxFallRate=-3`, `NoParachuteMaxFallRate=-100`, `Parachute=PARACH`, `BombParachute=PARABOMB`, `ChuteSound=ParachuteDrop`
   - `ini/artmd.ini`: `[PARACH] Rate=400`, `LoopStart=20`, `LoopEnd=39`, `LoopCount=30`, `AltPalette=yes`, `ZAdjust=-10`
 - Verified research:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/PARACHUTED_INFANTRY_DESCENT_RENDER_GHIDRA_REPORT.md`
+  - `docs/research/PARACHUTED_INFANTRY_DESCENT_RENDER_GHIDRA_REPORT.md`
 - Read-only Ghidra spot checks:
   - `AircraftClass::Drop_Payload @ 0x00415C60`
   - `ObjectClass::Unlimbo @ 0x005F5940`

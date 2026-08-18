@@ -21,7 +21,7 @@ Authoritative deep RE:
 
 ## rulesmd.ini — `[IVAN]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4547`:
+Verbatim from `ini/rulesmd.ini:4547`:
 
 ```ini
 [IVAN]
@@ -138,7 +138,7 @@ Trainable=no
 
 ## artmd.ini — `[IVAN]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:358`:
+`ini/artmd.ini:358`:
 
 ```ini
 [IVAN] ; Crazy Ivan

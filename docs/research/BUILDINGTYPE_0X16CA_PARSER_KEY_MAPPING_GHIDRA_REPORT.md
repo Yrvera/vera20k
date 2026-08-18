@@ -148,6 +148,6 @@ GREEN for parser mapping and standard-YR non-use. No Rust or in-repo doc edits w
 
 - Ghidra HTTP read-only queries: `get_xrefs_to 0x0081A828`, `get_xrefs_to 0x0081A9C8`, `disassemble_function 0x0045FE50`, `disassemble_function 0x0045DD90`, `disassemble_function 0x007393C0`, `disassemble_function 0x00443B90`, `disassemble_function 0x007087C0`.
 - Retail executable string grep: `Artillary` at file offset `0x41A828` / VA `0x0081A828`; `TickTank` at file offset `0x41A9C8` / VA `0x0081A9C8`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/AMCV_DEPLOY_FACING_RULE_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MASTER_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/units/AUDIT_INDEX.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `rulesmd.ini`, `art.ini`, `artmd.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`.
+- Prior docs referenced: `docs/research/AMCV_DEPLOY_FACING_RULE_GHIDRA_REPORT.md`, `docs/research/BUILDINGCLASS_MASTER_GHIDRA_REPORT.md`, `docs/research/units/AUDIT_INDEX.md`.
+- INI checked: `ini/rules.ini`, `rulesmd.ini`, `art.ini`, `artmd.ini`.
+- Rust scanned: `src/rules/object_type.rs`.

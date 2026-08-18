@@ -173,8 +173,8 @@ Stale replacement wording found:
 - Ghidra `decompile_function 0x00737430`
 - Ghidra `get_function_xrefs 0x004DA530`, `0x006F9E50`, `0x005B3060`, `0x004D9290`, `0x00739EC0`, `0x007416A0`
 - Ghidra disassembly spot-check ranges `0x00736430..0x007364A7`, `0x004DA850..0x004DA8DB`, `0x005B3060..0x005B3357`, `0x00739EC0..0x0073B0B7`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REFINERY_DOCK_0X16_BRIDGE_VERIFICATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_DOCK_EXIT_CHAIN_VERIFIED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_DOCK_UNLOAD.md`
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
+- `docs/research/REFINERY_DOCK_0X16_BRIDGE_VERIFICATION_GHIDRA_REPORT.md`
+- `docs/research/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
+- `docs/research/miner/REFINERY_DOCK_EXIT_CHAIN_VERIFIED_GHIDRA_REPORT.md`
+- `docs/research/miner/HARVESTER_DOCK_UNLOAD.md`
+- Current Rust scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/mod.rs`

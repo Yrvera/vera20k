@@ -171,7 +171,7 @@ Asset role matrix:
 
 ## Sources
 
-- Retail binary static disassembly from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`:
+- Retail binary static disassembly from `<ra2-install>/gamemd.exe`:
   - `0x005C05F0` - explicit draw thunk
   - `0x00433060..0x00433171` - explicit copy path
   - `0x004328D5..0x00432903` - Bink destination surface assignment

@@ -15,7 +15,7 @@ Stop conditions: Mark PARTIAL if exact chosen runtime route cannot be observed w
 
 ## 1. Overview
 
-The best stock-map-derived scenario for this slot is loose `Carville.mmx` from `C:/Users/enok/Documents/Command and Conquer Red Alert II/`. It is a shipped snow map with twelve low-branch CABHUT no-overlay fallback placements and enough bridge surface to make a low bridge collapse route test meaningful.
+The best stock-map-derived scenario for this slot is loose `Carville.mmx` from `<ra2-install>/`. It is a shipped snow map with twelve low-branch CABHUT no-overlay fallback placements and enough bridge surface to make a low bridge collapse route test meaningful.
 
 The proposed scenario is: use Carville start waypoints `1=(79,50)` and `0=(49,87)`, collapse the low bridge controlled by the CABHUT at `(57,49)` whose static fallback starter is `(60,52):0x11380`, then re-query the route between those start/goal cells. This should become a fixture/instrumentation test, not yet a parity assertion for a specific north/south detour, because the exact post-collapse zone IDs and chosen zone chain were not observed from a live gamemd run.
 

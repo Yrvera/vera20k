@@ -105,10 +105,10 @@ Direct xrefs to `0x00608440` in this Ghidra image:
 
 Current Rust forces the overlay active:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:461` defines `right_panel_frame10_overlay_active`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:464` returns `true`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:544` uses that helper to emit overlay sprites.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs:100` loads optional `SDBTNANM.SHP` frame `10`.
+- `src/app_skirmish_shell_render.rs:461` defines `right_panel_frame10_overlay_active`.
+- `src/app_skirmish_shell_render.rs:464` returns `true`.
+- `src/app_skirmish_shell_render.rs:544` uses that helper to emit overlay sprites.
+- `src/render/skirmish_shell_chrome.rs:100` loads optional `SDBTNANM.SHP` frame `10`.
 
 **Parity result:** Rust forcing `true` diverges from gamemd standard offline Skirmish first paint. For standard offline `0x102` first paint, gamemd gate byte is zero and the overlay loop is skipped.
 
@@ -140,4 +140,4 @@ Current Rust forces the overlay active:
 - Ghidra decompile / assembly context: `0x006AE2C0`, `0x006AE3F0`, `0x00622B50`, `0x00621E90`, `0x0072E450`, `0x00608440`, `0x00623340`, `0x0060CF00`, `0x0060C540`.
 - Ghidra xrefs: `get_function_xrefs 0x00608440`, `get_function_xrefs 0x006084A0`.
 - Prior docs read: `SKIRMISH_SHELL_CHROME_800X600_TRACE.md`, `SKIRMISH_RIGHT_PANEL_SDBTNANM_FRAME10_STATE_FLAG_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_BACKGROUND_OVERLAY_PLACEMENT_FOLLOWUP_GHIDRA_REPORT.md`, `SKIRMISH_RIGHT_PANEL_SHELL_ASSET_PALETTE_SELECTION_GHIDRA_REPORT.md`.
-- Rust source checked: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`.
+- Rust source checked: `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`.

@@ -233,5 +233,5 @@ No stale-doc correction is required for the two reconciled reports. This report 
 - Ghidra read-only xrefs/context: `0x005D6130` xref from `0x005E6EDE`; `0x005D63E0` xrefs from `0x005E6AA0`, `0x005E6F27`, `0x006AEB62`; `0x005E68A0` xref from `0x006AD947`; `0x005E7160` xrefs from `0x005E6B2F`, `0x005E6B67`; assembly context `0x005D625B..0x005D62A0`, `0x005E71E5..0x005E7382`, `0x005D6419..0x0069AE30`.
 - Ghidra memory/string evidence: `0x0082BC30 = RandMap.Sed`, `0x0083F668 = standard`, `0x00830A18 = MPModesMD.ini`.
 - Docs reconciled: `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_MODAL_RETURN_CONTRACT_GHIDRA_REPORT.md`.
-- INI/data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- INI/data checked: `ini/mpmodesmd.ini`.
 - Rust scan: `src/ui/skirmish_shell/state.rs`, `src/app_list_maps.rs`, `src/app_init.rs`, `src/skirmish_launch.rs`.

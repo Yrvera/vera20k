@@ -17,7 +17,7 @@ No Cargo command, staging, commit, or Ghidra mutation was performed.
 ## 1. Target identity and evidence rules
 
 The only open Ghidra program was `gamemd.exe`, loaded from
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` as PE x86
+`<ra2-install>/gamemd.exe` as PE x86
 32-bit, image base `0x00400000`. The retail file SHA-256 was
 `1CDD1180E49024FBDA8AD568CAAC2E86E856063FF67AB38F62B7D2C7BB84298C`.
 

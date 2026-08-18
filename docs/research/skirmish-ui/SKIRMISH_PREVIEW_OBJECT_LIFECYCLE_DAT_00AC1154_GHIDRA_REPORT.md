@@ -177,5 +177,5 @@ Rust currently has only metadata and deliberately disables real preview drawing:
 
 - Fresh Ghidra decompiles: `0x006AE2C0`, `0x006AE3F0`, `0x006AE6E0`, `0x006ACEE0`, `0x006406E0`, `0x006406F0`, `0x0069ADF0`, `0x0069AE70`, `0x0058BB30`, `0x005E74E0`, `0x00641B00`, `0x00641DB0`, `0x00641EE0`, `0x00689D30`, `0x00640710`.
 - Fresh Ghidra assembly context: call sites `0x006AEEAD..0x006AEEE0`, `0x006AD9A1..0x006AD9D4`, `0x006ADB02`, `0x006AE398`, `0x005E78B7..0x005E78CB`, `0x00642079..0x006420A9`.
-- Existing reports: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_BACKGROUND_TEXT_PREVIEW_GHIDRA_REPORT.md`.
+- Existing reports: `docs/research/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`, `docs/research/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md`, `docs/research/SKIRMISH_SHELL_BACKGROUND_TEXT_PREVIEW_GHIDRA_REPORT.md`.
 - Rust scan: `src/map/preview.rs`, `src/app_list_maps.rs`, `src/app_skirmish_shell_render.rs`.

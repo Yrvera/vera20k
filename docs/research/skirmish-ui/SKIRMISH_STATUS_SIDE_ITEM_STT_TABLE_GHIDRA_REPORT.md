@@ -170,14 +170,14 @@ Rust therefore has enough semantic data to build a mapper without changing the c
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`: replace "exact numeric id -> every country key table if needed" with "Resolved by `SKIRMISH_STATUS_SIDE_ITEM_STT_TABLE_GHIDRA_REPORT.md`: side item data maps `-3 -> STT:PlayerSideObserver`, `-2 -> STT:PlayerSideRandom`, and `0..9 -> STT:PlayerSideAmerica/Korea/France/Germany/Britain/Libya/Iraq/Cuba/Russia/YuriCountry`; standard offline population inserts `-2` and `0..9`, not Observer."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`: replace "This report did not expand those helper families" for side/country with "The side/country helper family is now expanded in `SKIRMISH_STATUS_SIDE_ITEM_STT_TABLE_GHIDRA_REPORT.md`; use its exact item-data table for side dropdown item-specific status."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`: replace "exact numeric id -> every country key table if needed" with "Resolved by `SKIRMISH_STATUS_SIDE_ITEM_STT_TABLE_GHIDRA_REPORT.md`: side item data maps `-3 -> STT:PlayerSideObserver`, `-2 -> STT:PlayerSideRandom`, and `0..9 -> STT:PlayerSideAmerica/Korea/France/Germany/Britain/Libya/Iraq/Cuba/Russia/YuriCountry`; standard offline population inserts `-2` and `0..9`, not Observer."
+- `docs/research/skirmish-ui/SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`: replace "This report did not expand those helper families" for side/country with "The side/country helper family is now expanded in `SKIRMISH_STATUS_SIDE_ITEM_STT_TABLE_GHIDRA_REPORT.md`; use its exact item-data table for side dropdown item-specific status."
 
 ## Sources
 
 - Ghidra decompile: `FUN_004E3830`, `FUN_004E4170`, `FUN_004E38A0`, `FUN_004E3A00`, `FUN_006AE3F0`.
 - Ghidra assembly contexts: `0x006AE31C..0x006AE328`, `0x006AE4C0..0x006AE5C9`, `0x004E3830..0x004E3898`, `0x004E38A0..0x004E39F1`, `0x004E4170..0x004E41C3`, `0x004E3A3E..0x004E3AC8`.
 - Retail string evidence: ASCII string blocks in `gamemd.exe`, `language.mix`, and `langmd.mix` for `STT:PlayerSide*` keys.
-- INI data: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:959`, `:960..971`, country sections `:3219..3332`.
+- INI data: `ini/rulesmd.ini:959`, `:960..971`, country sections `:3219..3332`.
 - Prior docs: `SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`, `SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`, `SKIRMISH_SIDE_COMBO_OPEN_SCROLL_SELECT_SOUND_TRACE.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/combos.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/hit_test.rs`.
+- Rust scan: `src/ui/main_menu.rs`, `src/ui/skirmish_shell/state/combos.rs`, `src/ui/skirmish_shell/state/hit_test.rs`.

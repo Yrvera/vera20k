@@ -128,8 +128,8 @@ Rust has a `HouseState.base_center` field in `src/sim/house_state.rs`, and AI co
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_DEPLOY_GHIDRA_REPORT.md:173`: replace `Handle fog/shroud reveal for local player` with `For non-human owners, the generic deploy success path sets building bytes +0x6CA/+0x6CB; the separate ConstructionYard setup branch is AI/non-player-control only and contains no local view-centering or shroud-reveal call.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md:679`: replace `UnitClass::Deploy (0x007393c0) -- updates base center when MCV deploys` with `UnitClass::Deploy updates `House+0x5490` only in multiplayer when the deployed building is `ConstructionYard=yes` and the owner is not player-control; local/player-control MCV deploy skips this special branch.`
+- `docs/research/MCV_DEPLOY_GHIDRA_REPORT.md:173`: replace `Handle fog/shroud reveal for local player` with `For non-human owners, the generic deploy success path sets building bytes +0x6CA/+0x6CB; the separate ConstructionYard setup branch is AI/non-player-control only and contains no local view-centering or shroud-reveal call.`
+- `docs/research/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md:679`: replace `UnitClass::Deploy (0x007393c0) -- updates base center when MCV deploys` with `UnitClass::Deploy updates `House+0x5490` only in multiplayer when the deployed building is `ConstructionYard=yes` and the owner is not player-control; local/player-control MCV deploy skips this special branch.`
 
 ## Negative Facts / Do Not Do
 

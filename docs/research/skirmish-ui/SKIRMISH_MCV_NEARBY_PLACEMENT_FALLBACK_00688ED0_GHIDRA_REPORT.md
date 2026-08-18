@@ -162,7 +162,7 @@ The inspected `nearoref.map` fixture (SHA-256 `E976C159DABAA9C4D95D6EE59863C01D8
 (39,106) (68,107) (85,90) (100,75)
 ```
 
-All eight satisfy the native diamond. Current Rust instead constructs the axis-aligned box `x=2..77, y=4..51`, so only `(53,48)` and `(71,32)` pass unchanged. Directly clamping the six rejected starts to that wrong box produces `(38,51)`, `(77,32)`, `(39,51)`, `(68,51)`, `(77,51)`, `(77,51)`: the exact edge/corner collapse pattern behind the reported pile-up. The actual Rust fallback probes around each origin and occupancy nudges collisions, so final cells depend on RNG and prior spawns, but the false rejection and edge concentration do not. Fixture evidence: `C:/Users/enok/Documents/cncnet-yr-client-package/package/Maps/Yuri's Revenge/nearoref.map`, `[Map]` and `[Waypoints]`; Rust bounds and fallback cited in section 5.
+All eight satisfy the native diamond. Current Rust instead constructs the axis-aligned box `x=2..77, y=4..51`, so only `(53,48)` and `(71,32)` pass unchanged. Directly clamping the six rejected starts to that wrong box produces `(38,51)`, `(77,32)`, `(39,51)`, `(68,51)`, `(77,51)`, `(77,51)`: the exact edge/corner collapse pattern behind the reported pile-up. The actual Rust fallback probes around each origin and occupancy nudges collisions, so final cells depend on RNG and prior spawns, but the false rejection and edge concentration do not. Fixture evidence: `<local>/Documents/cncnet-yr-client-package/package/Maps/Yuri's Revenge/nearoref.map`, `[Map]` and `[Waypoints]`; Rust bounds and fallback cited in section 5.
 
 ## 4. INI Keys
 
@@ -270,7 +270,7 @@ The existing test `skirmish_mcv_start_uses_radius_fallback_when_start_cell_block
 
 ## Sources and reproducibility
 
-- Active binary: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, x86 PE image base `0x00400000`, size `5,286,504`, SHA-256 `1CDD1180E49024FBDA8AD568CAAC2E86E856063FF67AB38F62B7D2C7BB84298C`; Ghidra project `testProsjekt`, program `/gamemd.exe`, analysis complete.
+- Active binary: `<ra2-install>/gamemd.exe`, x86 PE image base `0x00400000`, size `5,286,504`, SHA-256 `1CDD1180E49024FBDA8AD568CAAC2E86E856063FF67AB38F62B7D2C7BB84298C`; Ghidra project `testProsjekt`, program `/gamemd.exe`, analysis complete.
 - Helper evidence: `get_function_by_address(address="0x00688ED0", program="gamemd.exe")`; `decompile_function(address="0x00688ED0", program="gamemd.exe", timeout=60)`; `disassemble_function(address="0x00688ED0", program="gamemd.exe")`; `get_function_callers(address="0x00688ED0", program="gamemd.exe")`; `get_xrefs_to(address="0x00688ED0", program="gamemd.exe")`.
 - Bounds evidence: `decompile_function` and `disassemble_function` with `program="gamemd.exe"` at `0x00578460`, `0x00565C10`, and `0x00567230`; `decompile_function` at `0x00686B20`, `0x00654490`, and `0x006E21E0`; `audit_global` for `0x0087F8E4`, `0x0087F8E8`, `0x0087F8EC`, `0x0087F8F0`, `0x0087F90C`, `0x0087F910`, `0x0087F914`, and `0x0087F918`.
 - Startup/caller evidence: `decompile_function` at `0x0068BDC0`, `0x00688380`, `0x0050E000`, `0x0050DEF0`, `0x0050DF30`, `0x00686890`, `0x005D6D80`, and `0x005D7030`; `read_memory(address="0x007EE184", length=208, program="gamemd.exe")` for `MultiplayerBattle` vtable ownership.

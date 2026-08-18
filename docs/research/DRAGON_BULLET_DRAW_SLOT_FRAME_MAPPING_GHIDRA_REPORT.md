@@ -216,8 +216,8 @@ Observed, not modified:
   - `decompile_function 0x0046BEE0` BulletTypeClass parser.
   - `read_memory 0x007F4890` frame lookup table.
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:25678-25687`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:14755-14760`
+  - `ini/rulesmd.ini:25678-25687`
+  - `ini/artmd.ini:14755-14760`
 - Prior reports:
   - `GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
   - `DRAGON_RENDER_AND_GUARDWH_IMPACT_PRESENTATION_GHIDRA_REPORT.md`

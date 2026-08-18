@@ -299,7 +299,7 @@ Deferred ratio is 3/18. The report is complete for standard `HARV`/`CMIN` intege
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/CHRONO_MINER_MISSION_HARVEST_TRACE.md` contains stale wording that subsequent bales happen every `HarvesterLoadRate=2` frames because the step counter is not reset. The current direct `0x0073D450` decompile shows successful standard extraction resets `param_1[0x3E]=0` and rate/step fields to `HarvesterLoadRate`. Replacement wording: "After successful standard ore/gem extraction, `Harvest_Ore_Tick` resets the StepTimer fields to a fresh `HarvesterLoadRate` cycle; tests should verify the observed gate from direct runtime or StepTimer semantics, not assume a 2-frame subsequent cadence."
+- `docs/research/miner/traces/CHRONO_MINER_MISSION_HARVEST_TRACE.md` contains stale wording that subsequent bales happen every `HarvesterLoadRate=2` frames because the step counter is not reset. The current direct `0x0073D450` decompile shows successful standard extraction resets `param_1[0x3E]=0` and rate/step fields to `HarvesterLoadRate`. Replacement wording: "After successful standard ore/gem extraction, `Harvest_Ore_Tick` resets the StepTimer fields to a fresh `HarvesterLoadRate` cycle; tests should verify the observed gate from direct runtime or StepTimer semantics, not assume a 2-frame subsequent cadence."
 - Any document or test that equates `9 * HarvesterLoadRate = 18` with a
   helper call exactly at `F+18` is stale. The ninth increment is post-mission at
   `F+18`; the helper call is `F+19` on the ordinary live path.
@@ -338,20 +338,20 @@ Deferred ratio is 3/18. The report is complete for standard `HARV`/`CMIN` intege
   - `decompile_function 0x00486E30` - weed reduction helper
   - `decompile_function 0x007C5F00` - `Math__ftol`
 - Prior docs read:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_HARVEST_STATE_RETARGET_VISUAL_FLAG_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/TIBERIUM_QUEUE_SEEDING_AND_TIMING_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DRIVE_BLOCKED_DELAY_EXPIRY_MINER_RETARGET_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/RULESCLASS_FIELDS.csv`
+  - `docs/research/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
+  - `docs/research/miner/HARV_HARVEST_STATE_RETARGET_VISUAL_FLAG_GHIDRA_REPORT.md`
+  - `docs/research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
+  - `docs/research/TIBERIUM_QUEUE_SEEDING_AND_TIMING_REPORT.md`
+  - `docs/research/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
+  - `docs/research/miner/DRIVE_BLOCKED_DELAY_EXPIRY_MINER_RETARGET_GHIDRA_REPORT.md`
+  - `docs/research/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
+  - `docs/research/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`
+  - `docs/research/RULESCLASS_FIELDS.csv`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Rust scanned read-only:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
+  - `src/sim/miner/miner_system.rs`
+  - `src/sim/miner/mod.rs`
+  - `src/sim/miner/miner_tests.rs`
+  - `src/sim/production/production_queue.rs`

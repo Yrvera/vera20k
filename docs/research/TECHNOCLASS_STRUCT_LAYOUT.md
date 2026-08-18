@@ -381,7 +381,7 @@ These three fields form a `RateTimer` for weapon firing:
 
 Corridor: `docs/plans/2026-08-17-ghidra-typing-corridor-program.md` row 6, "TechnoClass sim
 fields". Snapshot before mutations:
-`C:/Users/enok/Documents/ghidra-backups/2026-08-17-pre-tier6` (17 files, 243,359,753 bytes,
+`<local>/Documents/ghidra-backups/2026-08-17-pre-tier6` (17 files, 243,359,753 bytes,
 byte-count verified with the program closed). Live Ghidra is the authority on applied-ness.
 
 Re-rank check: the goal stream is unchanged (Phase 5; PR #131 still open as a draft; recent

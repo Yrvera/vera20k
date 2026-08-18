@@ -194,5 +194,5 @@ Replace any wording like "`0x16` schedules its own later retry" with:
 - Ghidra assembly: `0x004D9140..0x004D9197`
 - Ghidra decompile: `FootClass::Mission_Enter @ 0x004D9290`
 - Ghidra assembly: `0x004D92B2..0x004D92BF`, `0x004D946C..0x004D9497`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- INI: `ini/rulesmd.ini`
 - Rust scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_dock.rs`, `src/sim/miner/mod.rs`

@@ -22,7 +22,7 @@ The asset dump also resolves several stale assumptions: Soviet `POWERP.SHP` is `
 
 ## 2. Evidence Sources
 
-- Retail install path: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`
+- Retail install path: `<ra2-install>/`
 - Read-only Python inspector over retail MIX/SHP bytes, using the same documented Westwood MIX/SHP(TS) structures as `src/assets/mix_archive.rs` and `src/assets/shp_file.rs`.
 - XCC global mix database was used only to label unknown nested archive hashes: `0x7B512B17 = neutral.mix`, `0xC93B27A0 = ntrlmd.mix`.
 - Read-only Ghidra spot-checks:
@@ -200,10 +200,10 @@ Do not interpret the missing `Button12..24` as proof that the binary skips them.
 - Ghidra read-only decompile: `SidebarClass__LoadSHPs @ 0x006A5840`
 - Ghidra read-only decompile: `RadarBackground_SHPLoad @ 0x0072D460`
 - Ghidra read-only decompile: `RadarTransitionMovie_SHPLoad @ 0x0072D830`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2.mix -> sidec02.mix`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2.mix -> sidec01.mix`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2.mix -> neutral.mix`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2md.mix -> ntrlmd.mix`
+- `<ra2-install>/ra2.mix -> sidec02.mix`
+- `<ra2-install>/ra2.mix -> sidec01.mix`
+- `<ra2-install>/ra2.mix -> neutral.mix`
+- `<ra2-install>/ra2md.mix -> ntrlmd.mix`
 - `C:/Program Files (x86)/XCC/Utilities/global mix database.dat`
 - `docs/research/SIDEBAR_SOVIET_SHP_LOAD_PATH_FUN_006D02B0_GHIDRA_REPORT.md`
 - `docs/research/SOVIET_RADAR_LEFT_PANEL_SHP_SELECTORS_FOLLOWUP_GHIDRA_REPORT.md`

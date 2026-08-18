@@ -139,10 +139,10 @@ Current Rust-facing delta for this slice: do not add any `CMIN` spawn to `deploy
 
 ## 12. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/AMCV.md:476` should replace:
+- `docs/research/units/allied/AMCV.md:476` should replace:
   - Old: `The [General] FreeUnit= / FreeHarvester= mechanism on GACNST: when GACNST is deployed (from AMCV), it spawns a free CMIN nearby. This is the symmetric Allied-side equivalent of NACNST's FreeUnit=HARV.`
   - New: `Verified 2026-05-21: AMCV-created GACNST does not spawn CMIN. The binary's FreeUnit consumer is BuildingClass::OnConstructionComplete reading BuildingTypeClass+0xEA0; stock [GACNST] has no FreeUnit key, while stock [GAREFN] has FreeUnit=CMIN. Do not attach free-miner creation to AMCV deploy or ConstructionYard=yes.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/soviet/HARV.md:114` and `:325` contain analogous stale wording that says Soviet ConYard deploy spawns HARV; this report did not investigate SMCV/NACNST, but the stock INI pattern suggests those lines should be rechecked before implementation.
+- `docs/research/units/soviet/HARV.md:114` and `:325` contain analogous stale wording that says Soviet ConYard deploy spawns HARV; this report did not investigate SMCV/NACNST, but the stock INI pattern suggests those lines should be rechecked before implementation.
 
 ## Sources
 
@@ -153,11 +153,11 @@ Current Rust-facing delta for this slice: do not add any `CMIN` spawn to `deploy
   - `Mission_Construction @ 0x00449A50`
   - `BuildingClass::Unlimbo @ 0x00440580`
 - Docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MISSION_GUARD_AND_CONSTRUCTION.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGTYPECLASS_CTOR_DEFAULTS.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/AMCV.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/units/structures/GACNST.md`
+  - `docs/research/BUILDINGCLASS_MISSION_GUARD_AND_CONSTRUCTION.md`
+  - `docs/research/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`
+  - `docs/research/BUILDINGTYPECLASS_CTOR_DEFAULTS.md`
+  - `docs/research/units/allied/AMCV.md`
+  - `docs/research/units/structures/GACNST.md`
 - INI files checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`

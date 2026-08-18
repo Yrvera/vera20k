@@ -21,7 +21,7 @@ Authoritative deep RE: [NAVY_SEAL_TANYA_C4_GHIDRA_REPORT.md](../../NAVY_SEAL_TAN
 
 ## rulesmd.ini — `[TANY]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4068`:
+Verbatim from `ini/rulesmd.ini:4068`:
 
 ```ini
 [TANY]
@@ -148,7 +148,7 @@ Implicit defaults:
 
 ## artmd.ini — `[TANY]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:402`:
+`ini/artmd.ini:402`:
 
 ```ini
 [TANY] ; Tanya

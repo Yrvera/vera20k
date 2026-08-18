@@ -161,7 +161,7 @@ ReadINI function → if its boundary is missing, record it unless function creat
 explicitly authorized → each `ReadBool/ReadInt/ReadString` call reveals an INI key name
 and its struct offset.
 
-`RTTI_VTable_Labeler.java` at `C:\Users\enok\ghidra_scripts\` is already run.
+`RTTI_VTable_Labeler.java` at `<local>/ghidra_scripts/` is already run.
 
 ## Label drift — the RTTI analyzer / demangler are the source
 

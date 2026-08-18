@@ -284,7 +284,7 @@ BulletTypeClass pointer at this+0xAC):
 
 Corridor: `docs/plans/2026-08-17-ghidra-typing-corridor-program.md` row 7, "Weapon-fire
 corridor". Snapshot before mutations:
-`C:/Users/enok/Documents/ghidra-backups/2026-08-17-pre-tier7` (17 files, 243,359,753 bytes,
+`<local>/Documents/ghidra-backups/2026-08-17-pre-tier7` (17 files, 243,359,753 bytes,
 verified with the program closed).
 
 **A `/BulletClass` struct now exists — 352 bytes (0x160), 24 named fields.** There was none

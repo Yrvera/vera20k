@@ -142,7 +142,7 @@ Rust currently has a shell-level sentinel but no generated-map loader. `Skirmish
 
 ### Stale Docs / Follow-up Docs
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDOM_MAP_BRANCH_AFTER_SELECTED_MAP_LOAD_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_BRANCH_AFTER_SELECTED_MAP_LOAD_GHIDRA_REPORT.md`
 
 Add after the prior OQ-9 replacement:
 

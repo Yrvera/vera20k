@@ -142,11 +142,11 @@ gamemd:
 - Read-only Ghidra MCP `decompile_function 0x0073D450` (`UnitClass::Harvest_Ore_Tick`)
 - Read-only Ghidra MCP `decompile_function 0x00480A80` (`CellClass::Reduce_Tiberium`)
 - Read-only Ghidra MCP `get_function_xrefs 0x0073D450`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HARVEST_ORE_TICK_TIMING_PARTIAL_FULL_EDGE_CASES_ORE_GEMS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REDUCE_TIBERIUM_FULL_REMOVAL_SIDE_EFFECTS_AND_RETURN_VALUE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
+- `docs/research/HARVEST_ORE_TICK_TIMING_PARTIAL_FULL_EDGE_CASES_ORE_GEMS_GHIDRA_REPORT.md`
+- `docs/research/REDUCE_TIBERIUM_FULL_REMOVAL_SIDE_EFFECTS_AND_RETURN_VALUE_GHIDRA_REPORT.md`
+- `docs/research/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
+- `ini/rulesmd.ini`
+- `src/rules/ruleset.rs`
+- `src/sim/miner/mod.rs`
+- `src/sim/miner/miner_system.rs`
+- `src/sim/production/production_queue.rs`

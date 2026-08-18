@@ -29,11 +29,11 @@ pixel output remain unchecked.
 
 ## Sources Checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_MAP_LOAD_AND_BRIDGEHEAD_TRANSITIONS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
+- `docs/research/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_MAP_LOAD_AND_BRIDGEHEAD_TRANSITIONS_GHIDRA_REPORT.md`
+- `docs/research/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
 - Ghidra read-only decompilation of:
   - `WalkLocomotionClass__Head_To_Coord`
   - `WalkLocomotionClass__ProcessMovement`

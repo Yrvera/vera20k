@@ -352,14 +352,14 @@ Current Rust delta: meaningful mismatch for final parity. Rust has per-cell RGB 
   - `0x00483E30` callers: `0x00554D50`, `0x00568CB0`, `0x00545000`, `0x00554AF0`, `0x0047F5C9`, `0x0047F748`, `0x00480384`, `0x004D1BC9`, `0x004D1EC9`, `0x004AE494`, `0x00705F42`, `0x007060F7`, `0x0071C27B`, `0x0071C40A`, `0x00423273`
   - `0x00544E70` callers: `0x00483E30`, `0x00484050`
 - Research docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_AND_LIGHT_POSTS_SYSTEM_MODEL_SYNTHESIS.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_COMPUTE_ZADJUST_FORMULA_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`
+  - `docs/research/MAP_LIGHTING_AND_LIGHT_POSTS_SYSTEM_MODEL_SYNTHESIS.md`
+  - `docs/research/CELL_COMPUTE_ZADJUST_FORMULA_GHIDRA_REPORT.md`
+  - `docs/research/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
+  - `docs/research/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`
 - Rust files scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/render/palette_textures.rs`
+  - `src/map/lighting.rs`
+  - `src/app_init.rs`
+  - `src/render/palette_textures.rs`
 
 ## Result
 

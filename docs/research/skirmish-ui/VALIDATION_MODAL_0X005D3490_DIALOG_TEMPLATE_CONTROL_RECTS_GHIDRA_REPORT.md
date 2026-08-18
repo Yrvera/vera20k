@@ -40,7 +40,7 @@ All three templates are standard `DLGTEMPLATE` resources, not extended templates
 | `0x120` | `.rsrc` RVA `0x800A68`, file offset `0x504A68`, size `186` | `0x40000040` | `x=0 y=0 cx=300 cy=200` | 8pt `MS Sans Serif` | 3 | Conditional |
 | `0x121` | `.rsrc` RVA `0x800B24`, file offset `0x504B24`, size `232` | `0x40000040` | `x=0 y=0 cx=300 cy=200` | 8pt `MS Sans Serif` | 4 | Conditional |
 
-Resource parse source: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, PE resource directory `.rsrc` at RVA `0x77A000`. Active in YR: Yes for the loaded retail binary resources.
+Resource parse source: `<ra2-install>/gamemd.exe`, PE resource directory `.rsrc` at RVA `0x77A000`. Active in YR: Yes for the loaded retail binary resources.
 
 ### Resource `0xCE` - Ordinary Start Validation Variant
 
@@ -140,12 +140,12 @@ Rust therefore matches the functional one-button modal shape but does not yet mo
 
 ## 11. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Modal helper `0x005D3490` writes message/body text to child `0x5B0`, second text to child `0x5AE`, optional button text to controls `2` and `0x5AF` only when non-empty" with "Modal helper `0x005D3490` selects RT_DIALOG `0xCE/0x120/0x121` from optional button-text presence. Ordinary Start validation uses `0xCE`: static `0x5B0` receives body text and ownerdraw button `0x5AE` receives `TXT_OK`; optional button controls `2` and `0x5AF` exist only in `0x120/0x121`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "exact native modal pixels/resource rectangles" deferred wording with "resource/template rectangles are verified in `VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`; final runtime pixel conversion and paint composition remain deferred."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Modal helper `0x005D3490` writes message/body text to child `0x5B0`, second text to child `0x5AE`, optional button text to controls `2` and `0x5AF` only when non-empty" with "Modal helper `0x005D3490` selects RT_DIALOG `0xCE/0x120/0x121` from optional button-text presence. Ordinary Start validation uses `0xCE`: static `0x5B0` receives body text and ownerdraw button `0x5AE` receives `TXT_OK`; optional button controls `2` and `0x5AF` exist only in `0x120/0x121`."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "exact native modal pixels/resource rectangles" deferred wording with "resource/template rectangles are verified in `VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`; final runtime pixel conversion and paint composition remain deferred."
 
 ## Sources
 
 - Ghidra read-only decompile/assembly: `0x005D3490`, `0x00622650`, `0x004A3B40`, `0x005D36A0`, Start call-site assembly around `0x006AD0A7`, `0x006AD126`, `0x006AD274`, `0x006AD2E3`.
-- Retail binary resource parse: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, `.rsrc` RVA `0x77A000`; RT_DIALOG ids `0xCE`, `0x120`, `0x121`.
-- Prior doc: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`.
+- Retail binary resource parse: `<ra2-install>/gamemd.exe`, `.rsrc` RVA `0x77A000`; RT_DIALOG ids `0xCE`, `0x120`, `0x121`.
+- Prior doc: `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`.
 - Rust scanned: `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render/modals.rs`, `src/app.rs`.

@@ -185,6 +185,6 @@ Constructor xrefs prove standard YR activity: `Apply_area_damage`, `TechnoClassF
 
 - Ghidra decompiled: `ParticleClass__Constructor @ 0x0062B5E0`, `ParticleSystemClass__SpawnParticle @ 0x0062E380`, `FUN_0062E4C0`, `ParticleSystemClass__AI_Smoke @ 0x0062ED40`, `ParticleSystemClass__AI_Gas @ 0x0062E6D0`, `ParticleSystemClass__AI_Fire @ 0x0062F9A0`, `FUN_0062BD50`, `FUN_0062C540`, `FUN_0062CB10`, `FUN_0062D2A0`, `FUN_0062D3F0`, `ParticleClass__AI_Dispatch @ 0x0062CE40`, `ParticleSystemClass__AI @ 0x0062FD60`.
 - Ghidra assembly context: `0x0062B842..0x0062B889`, `0x0062BAAC..0x0062BAEE`, `0x0062CB41..0x0062CB51`, `0x0062E590..0x0062E59D`, `0x0062EE4C..0x0062F0D5`, `0x0062BD93..0x0062BDF1`, `0x0062C55E..0x0062C5B1`.
-- Docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/PARTICLESYSTEMCLASS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`.
+- Docs referenced: `docs/research/PARTICLESYSTEMCLASS_GHIDRA_REPORT.md`, `docs/research/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`.
 - Rust scanned: `src/sim/particles/fire.rs`, `smoke.rs`, `gas.rs`, `spawn.rs`.
 - INI scanned: `ini/rulesmd.ini`, `ini/rules.ini`.

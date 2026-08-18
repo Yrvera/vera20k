@@ -72,12 +72,12 @@ PASS: 6 | FAIL: 1 | UNCHECKED: 0 | NOT-IMPLEMENTED: 0
 ## Sources
 
 - Read-only Ghidra spot checks: `AStar_main_loop @ 0x00429A90`, `FootClass::Unlimbo @ 0x004D7170`, `FootClass::PerCellProcess @ 0x004D85D0`, `CellClass::AddContent @ 0x0047E8A0`, `CellClass::RemoveContent @ 0x0047EA90`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_0X122_DYNAMIC_BLOCKER_LIFECYCLE_RUST_MAPPING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_0X122_WRITER_TIMING_FLAT_ASTAR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_MAIN_LOOP_LEVEL0_MARKER_GATE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/bump_crush.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/zone_search.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_path.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_commands.rs`
+- `docs/research/CELL_0X122_DYNAMIC_BLOCKER_LIFECYCLE_RUST_MAPPING_GHIDRA_REPORT.md`
+- `docs/research/CELL_0X122_WRITER_TIMING_FLAT_ASTAR_GHIDRA_REPORT.md`
+- `docs/research/ASTAR_MAIN_LOOP_LEVEL0_MARKER_GATE_GHIDRA_REPORT.md`
+- `src/sim/movement/bump_crush.rs`
+- `src/sim/pathfinding/core.rs`
+- `src/sim/pathfinding/zone_search.rs`
+- `src/sim/movement/movement_path.rs`
+- `src/sim/movement/movement_tick.rs`
+- `src/sim/movement/movement_commands.rs`

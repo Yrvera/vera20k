@@ -43,7 +43,7 @@ oracle.
 All binary checks in this report targeted the active `gamemd.exe` program whose
 read-only `get_current_program_info(program="gamemd.exe")` result identified the
 retail executable at
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, x86
+`<ra2-install>/gamemd.exe`, x86
 little-endian 32-bit, image base `0x00400000`.
 
 Current-Rust conclusions use only clean commit

@@ -141,7 +141,7 @@ Ghidra has no function boundary at `0x0071C4D0`; this report did not create one.
 
 ## 11. Stale Docs / Replacement Wording
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md` should replace any wording that implies a boolean "CanEnter true admits reveal" with:
+`docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md` should replace any wording that implies a boolean "CanEnter true admits reveal" with:
 
 > In normal non-editor mode, `ObjectClass::Reveal @ 0x005F4EC0` calls the object's `vtable+0x1AC` handler as `CanEnter(cell,-1,-1,0,0)` before any object mutation. At this call site, return `0` is the only admitting value; any nonzero value rejects reveal and leaves limbo/coords/occupancy/live registration untouched. Derived handlers are not uniform booleans: Unit/Infantry return movement codes where `1..7` all reject reveal, Building/Terrain return `0/7`, Aircraft returns `0/1`, and Object/Techno/Bullet/Anim inherit an unconditional `0` stub.
 

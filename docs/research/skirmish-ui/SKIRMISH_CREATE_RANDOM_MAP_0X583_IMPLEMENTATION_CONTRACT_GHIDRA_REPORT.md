@@ -29,7 +29,7 @@ Launch later still sees the selected filename `RandMap.Sed`. `ScenarioClass__Rea
 Active in YR: Yes / Conditional on the player clicking the Create Random Map button in dialog `0x6B`.  
 Evidence: assembly at `005e69d3` subtracts `0x583` and jumps to `005e69fd`; `005e6a11` calls `FUN_005e8590`; `005e6a18..005e6a1f` compares the result with `-1` and skips accept work on failure.
 
-Rust-facing implication: [src/app.rs](C:/Users/enok/Documents/ra2-rust-game/src/app.rs) must not leave `ChooseMapModalButton::CreateRandomMap0x583` as a log-only branch.
+Rust-facing implication: [src/app.rs](src/app.rs) must not leave `ChooseMapModalButton::CreateRandomMap0x583` as a log-only branch.
 
 ### 2. Accepted random setup is gated by exact return value `1`
 
@@ -57,7 +57,7 @@ Rust-facing implication: `RandMap.img` is a UI preview product, not gameplay ter
 Active in YR: Yes / Conditional on accepted setup.  
 Evidence: `FUN_005e8590` scans `DAT_00A8B8CC[0..DAT_00A8B8D8)`, calls `FUN_0069adf0`, and updates the existing record when `record+0x58 == "RandMap.Sed"`. `FUN_0069adf0` decompile compares `param_1 + 0x58` with `s_RandMap_Sed_0082bc30`.
 
-Rust-facing implication: [src/skirmish_scenarios.rs](C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs) correctly has an upsert shape; implementation should call it only after accepted setup and must not append duplicates.
+Rust-facing implication: [src/skirmish_scenarios.rs](src/skirmish_scenarios.rs) correctly has an upsert shape; implementation should call it only after accepted setup and must not append duplicates.
 
 ### 6. New sentinel fields are file `RandMap.Sed`, official `1`, min `2`, max `4`
 
@@ -112,17 +112,17 @@ Rust-facing implication: Rust's `mode.random_maps_allowed` gate is the right adm
 
 | Surface | Status | Evidence |
 |---|---|---|
-| Button recognition | Present but still log-only | [src/app.rs](C:/Users/enok/Documents/ra2-rust-game/src/app.rs) logs "random map generation is not implemented yet" in `CreateRandomMap0x583` |
-| Modal helper for sentinel creation | Present but not wired to the app button | [src/ui/skirmish_shell/state.rs](C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs) has `ChooseMapModalState::create_random_map`, but `src/app.rs` does not call it |
-| Sentinel identity | Present | [src/skirmish_scenarios.rs](C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs) defines `RANDMAP_SED = "RandMap.Sed"` |
+| Button recognition | Present but still log-only | [src/app.rs](src/app.rs) logs "random map generation is not implemented yet" in `CreateRandomMap0x583` |
+| Modal helper for sentinel creation | Present but not wired to the app button | [src/ui/skirmish_shell/state.rs](src/ui/skirmish_shell/state.rs) has `ChooseMapModalState::create_random_map`, but `src/app.rs` does not call it |
+| Sentinel identity | Present | [src/skirmish_scenarios.rs](src/skirmish_scenarios.rs) defines `RANDMAP_SED = "RandMap.Sed"` |
 | Sentinel min/max/official | Present | `random_map_sentinel` sets min `2`, max `4`, `official=true` |
 | Upsert one sentinel | Present | `upsert_random_map_sentinel` updates existing `RandomMapSentinel` before append |
 | Mode random flag | Present | `record_matches_mode` admits sentinel only when `mode.random_maps_allowed` |
 | App-level accepted setup | Missing | no random-map setup state/dialog branch; command logs only |
 | Seed/options model and `.SED` writer/reader | Missing | no `[RandomMap]` model found in Rust scan |
-| `RandMap.img` preview source | Partial | [src/app_skirmish_shell_render/preview.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/preview.rs) detects the sentinel and reads runtime `RandMap.img`; no accepted setup lifecycle exists to generate/clear/select it |
-| `RandMap.img` 3-plane direct RGB decode | Present | [src/assets/pcx_file.rs](C:/Users/enok/Documents/ra2-rust-game/src/assets/pcx_file.rs) supports one-plane paletted and three-plane direct RGB PCX data |
-| `.SED` launch generation | Missing | [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs) routes selected map names through normal `load_map_by_name_or_path_with_assets` |
+| `RandMap.img` preview source | Partial | [src/app_skirmish_shell_render/preview.rs](src/app_skirmish_shell_render/preview.rs) detects the sentinel and reads runtime `RandMap.img`; no accepted setup lifecycle exists to generate/clear/select it |
+| `RandMap.img` 3-plane direct RGB decode | Present | [src/assets/pcx_file.rs](src/assets/pcx_file.rs) supports one-plane paletted and three-plane direct RGB PCX data |
+| `.SED` launch generation | Missing | [src/app_init.rs](src/app_init.rs) routes selected map names through normal `load_map_by_name_or_path_with_assets` |
 
 ## Implementation Handoff
 
@@ -219,9 +219,9 @@ Rust-facing implication: Rust's `mode.random_maps_allowed` gate is the right adm
 
 ## Stale Docs / Follow-up Docs
 
-- Path: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CHOOSE_MAP_BUTTON_ACTION_0X102_TO_0X6B_TRACE.md`
+- Path: `docs/research/traces/SKIRMISH_CHOOSE_MAP_BUTTON_ACTION_0X102_TO_0X6B_TRACE.md`
   - Replace broad "Create Random Map is log-only/no-op" Rust status with: "STALE as of 2026-05-23 current Rust. The app branch is still log-only, but the lower-level shell model now has `RandomMapSentinel`, mode-gated filtering, native min/max/official sentinel metadata, `RandMap.img` preview detection, and 1/3-plane PCX decode support. Remaining implementation gap is the accepted setup flow that writes seed/options, invokes the upsert/commit path, clears/reloads preview at the right time, and routes `.SED` launch before normal map loading."
-- Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
+- Path: `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
   - Replace current-Rust statements that the sentinel has no min/max players and that Rust's PCX decoder only supports one-plane paletted PCX with: "STALE as of 2026-05-23 current Rust. `SkirmishScenarioRecord::random_map_sentinel` now sets `RandMap.Sed`, `official=true`, min `2`, max `4`, and `PcxFile` supports both one-plane paletted and three-plane direct RGB PCX data. Rust still lacks `[RandomMap]` seed/options parsing, launch-time generation, generated start waypoints, and the app-level accepted Create Random Map flow."
 
 ## Sources

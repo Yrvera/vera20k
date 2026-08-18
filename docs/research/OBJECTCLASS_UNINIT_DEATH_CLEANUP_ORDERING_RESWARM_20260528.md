@@ -204,7 +204,7 @@ No INI keys directly gate the scoped base `ObjectClass::UnInit` ordering. Stock-
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`: replace any wording that frames Rust death/limbo differences as "different mechanism but not wrong" with: "Rust currently differs from gamemd `ObjectClass::UnInit` ordering unless it proves pre-conceal reference invalidation, conceal/display/cell cleanup before alive clear, and deferred pending-delete semantics produce byte/pixel-identical results for the full input space. Under current parity rules this is DRIFT or UNCHECKED, not an internal-only difference."
+- `docs/research/LIMBO_AND_CELL_OCCUPATION_LIFECYCLE_GHIDRA_REPORT.md`: replace any wording that frames Rust death/limbo differences as "different mechanism but not wrong" with: "Rust currently differs from gamemd `ObjectClass::UnInit` ordering unless it proves pre-conceal reference invalidation, conceal/display/cell cleanup before alive clear, and deferred pending-delete semantics produce byte/pixel-identical results for the full input space. Under current parity rules this is DRIFT or UNCHECKED, not an internal-only difference."
 
 ## Sources
 

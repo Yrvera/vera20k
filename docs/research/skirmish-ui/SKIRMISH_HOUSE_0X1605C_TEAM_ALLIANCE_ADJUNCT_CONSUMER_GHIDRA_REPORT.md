@@ -183,13 +183,13 @@ Proposed Rust test names:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`
   - Replace OQ-6 with: `[RESOLVED] House+0x1605C is consumed by the standard Battle-style selected-mode +0x88 callback at 0x005D74A0, invoked from ScenarioClass__Post_Map_Init. Equal non-sentinel values produce bidirectional HouseClass__MakeAlly calls; -2 and -1 do not auto-ally.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
   - Replace claims that `NodeNameTag+0x63` / `House+0x1605C` is a start location with: `House+0x16058 is the standard Battle explicit-start field; House+0x1605C is the team/alliance adjunct consumed by the selected-mode +0x88 alliance callback.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
+- `docs/research/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
   - Split mixed "Start position / Ally" wording into: `+0x16058 is start preassignment for the verified Battle consumer; +0x1605C is the team/alliance adjunct for same-team mutual alliances.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_HOUSE_0X1605C_TEAM_ADJUNCT_CONSUMER_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_HOUSE_0X1605C_TEAM_ADJUNCT_CONSUMER_GHIDRA_REPORT.md`
   - Rust status is stale: current Rust now has `LaunchTeam` and `launch_alliance_map`; the remaining immediate gap is focused regression coverage and preserving the sentinel/start/team separation.
 
 ## Sources

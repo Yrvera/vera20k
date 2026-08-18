@@ -306,4 +306,4 @@ This status is documentation only; no Rust files were changed in this investigat
 - Ghidra decompiled/read-only: `FUN_004E5B60`, `FUN_004E5CB0`, `FUN_004E5ED0`
 - String xrefs: `ComboDropWin @ 0x008357A0`; arrow format strings `0x008363D0`, `0x008363E0`
 - Prior docs cross-checked: `SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`, `FUN_0060F9A0_OWNERDRAW_SUBCLASS_SETUP_GHIDRA_REPORT.md`, `traces/SKIRMISH_PLAYER_AI_COMBOS_FLAGS_TRACE.md`, `SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
-- Rust status checked: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
+- Rust status checked: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`

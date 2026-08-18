@@ -178,9 +178,9 @@ Stale Docs / Follow-up Docs:
 - Ghidra live decompile: `0x0044D880` war-factory mission slot 26
 - Ghidra live assembly context: `0x00461547..0x0046156A` `Type+0xED4` assignment
 - Ghidra live decompile: `0x0045EC90`, `0x0045ECA0` foundation width/height helpers
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEAREST_VARIANTS_SPIRAL_COMPARISON_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RALLY_POINTS_AND_UNIT_SPAWNING.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `docs/research/FIND_NEAREST_VARIANTS_SPIRAL_COMPARISON_GHIDRA_REPORT.md`
+- `docs/research/RALLY_POINTS_AND_UNIT_SPAWNING.md`
+- `docs/research/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`
+- `docs/research/miner/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`

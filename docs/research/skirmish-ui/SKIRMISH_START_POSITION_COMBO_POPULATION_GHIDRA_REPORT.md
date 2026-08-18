@@ -131,5 +131,5 @@ Evidence: `src/ui/main_menu.rs:109`, `src/ui/main_menu.rs:139`, `src/ui/skirmish
 
 - Ghidra decompiled/rechecked: `FUN_006AE6E0`, `FUN_006ACEE0`, `FUN_006040B0`, `FUN_004E4F30`, `FUN_004E4F50`, `FUN_004E4FC0`, `FUN_004E50C0`, `FUN_004E5260`, `FUN_004E5310`, `FUN_004E5480`, `FUN_004E5700`, `FUN_004E5900`, `FUN_004E5940`, `FUN_004E5AC0`, `FUN_004E5B60`, `FUN_004E5CB0`, `FUN_004E5D60`, `FUN_004E5E20`, `FUN_004E5ED0`, `FUN_004E6030`.
 - String evidence: `GUI:RandomAsSymbols` at `0x00822B7C`, `STT:HostComboStart` at `0x00822B90`, `LETTER_A`-`LETTER_D` at `0x00822BEC`..`0x00822BC8`, `GUI:NoneAsSymbols` at `0x00822BF8`.
-- Prior doc used: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`.
+- Prior doc used: `docs/research/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`.
 - Rust status scan: `src/ui/main_menu.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish.rs`.

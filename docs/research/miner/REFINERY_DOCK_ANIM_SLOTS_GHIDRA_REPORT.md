@@ -452,8 +452,8 @@ Only **one** of the four is selected by this refinery-tier mechanism at a moment
 - **Parent doc:** [BUILDING_ANIM_STATE_MACHINE.md](BUILDING_ANIM_STATE_MACHINE.md) — 21-slot table, damage/power/cloak switching
 - **Related doc:** [BUILDING_DOCK_AND_HEAL_STATE_MACHINES.md](BUILDING_DOCK_AND_HEAL_STATE_MACHINES.md) — *NOTE: Part 2 of that doc is INCORRECT* (confused harvester dock with `SlaveManagerClass::AI_Update`). The slot 7/8/10 claims it makes are accurate; the FSM structure it claims is not.
 - **INI files:**
-  - `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — `[GAREFN]`, `[NAREFN]`, `[YAREFN]` rules-side keys
-  - `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` — `[GAREFN]`, `[GAREFNL1]`–`[GAREFNL4]`, `[GAREFNOR]`, Soviet equivalents
+  - `ini/rulesmd.ini` — `[GAREFN]`, `[NAREFN]`, `[YAREFN]` rules-side keys
+  - `ini/artmd.ini` — `[GAREFN]`, `[GAREFNL1]`–`[GAREFNL4]`, `[GAREFNOR]`, Soviet equivalents
 - **Memory addresses verified:**
   - `0x007E27F8` — IEEE-754 double `900.0` (frame-per-minute constant)
   - `0x008871E0` — global pointer read by the unload body; `+0x1700` is the health-ratio threshold and `+0x1528` is HarvesterDumpRate

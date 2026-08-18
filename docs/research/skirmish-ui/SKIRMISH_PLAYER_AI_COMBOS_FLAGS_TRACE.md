@@ -19,10 +19,10 @@ No Rust, INI, or in-repo docs were modified. Ghidra use was read-only only.
 
 Verified research docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
 
 Read-only Ghidra spot checks:
 

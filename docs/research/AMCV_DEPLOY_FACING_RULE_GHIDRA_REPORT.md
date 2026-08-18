@@ -113,8 +113,8 @@ Existing tests in `src/sim/deploy_tests.rs` cover foundation origin and occupanc
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/AMCV.md`: replace "The unit rotates to match `DeployFacing` from its TechnoType before deploying. AMCV doesn't override `DeployFacing` so it uses the default." with "The unit rotates to match the `DeployFacing` stored on its `DeploysInto` building type. For AMCV, `UnitClass::Deploy` passes `GACNST` to `Deploy_facing_calculator @ 0x00465D70`; stock `GACNST` has no `DeployFacing=`, so the `BuildingTypeClass` constructor default `0x80` (south) is used. `[General] DeployDir=2` and any `[AMCV] DeployFacing` line do not drive AMCV -> GACNST deploy facing."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGTYPECLASS_CTOR_DEFAULTS.md`: optional wording correction: `DeployFacing` default `0x80` is raw byte facing 128 (south in RA2 byte-facing convention), not "North-facing default."
+- `docs/research/units/allied/AMCV.md`: replace "The unit rotates to match `DeployFacing` from its TechnoType before deploying. AMCV doesn't override `DeployFacing` so it uses the default." with "The unit rotates to match the `DeployFacing` stored on its `DeploysInto` building type. For AMCV, `UnitClass::Deploy` passes `GACNST` to `Deploy_facing_calculator @ 0x00465D70`; stock `GACNST` has no `DeployFacing=`, so the `BuildingTypeClass` constructor default `0x80` (south) is used. `[General] DeployDir=2` and any `[AMCV] DeployFacing` line do not drive AMCV -> GACNST deploy facing."
+- `docs/research/BUILDINGTYPECLASS_CTOR_DEFAULTS.md`: optional wording correction: `DeployFacing` default `0x80` is raw byte facing 128 (south in RA2 byte-facing convention), not "North-facing default."
 
 ## Sources
 
@@ -124,5 +124,5 @@ Existing tests in `src/sim/deploy_tests.rs` cover foundation origin and occupanc
 - Ghidra assembly context: `BuildingTypeClass_ReadINI_Water @ 0x00460C6C..0x00460C86`
 - Ghidra decompile: `BuildingTypeClass__Constructor @ 0x0045DD90`, write at `0x0045DEEC`
 - Ghidra decompile: `BuildingClass__Constructor @ 0x0043B740`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs::deploy_mcv`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/deploy_tests.rs`
+- INI checked: `ini/rulesmd.ini`
+- Rust scanned: `src/sim/world/world_spawn.rs::deploy_mcv`, `src/sim/deploy_tests.rs`

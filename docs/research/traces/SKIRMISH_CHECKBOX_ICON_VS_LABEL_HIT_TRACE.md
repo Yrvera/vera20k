@@ -8,7 +8,7 @@
 
 ## Evidence Sources
 
-- Rust input/layout/render: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Rust input/layout/render: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`, `src/app.rs`.
 - Existing verified docs:
   - `SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`: standard offline Skirmish creates dialog `0x102` with proc `0x006AE3F0`; active in YR.
   - `SKIRMISH_RESIZE_SHELL_CHILD_CONTROL_0060C0C0_COMPLETE_0X102_POLICY_GHIDRA_REPORT.md`: late `0x102` fixup moves `0x54E/0x693/0x696/0x69A` left by 1 px.

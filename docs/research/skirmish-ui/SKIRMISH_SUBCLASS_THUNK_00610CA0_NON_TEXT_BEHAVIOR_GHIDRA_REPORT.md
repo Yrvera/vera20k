@@ -121,11 +121,11 @@ No INI keys control this thunk slice. The behavior is shell HWND/message/owner-d
 
 Current Rust has no Win32 subclass emulation and should not add one. The implemented surfaces are direct shell state and direct render passes:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:37` stores Skirmish shell state, including `pressed_owner_draw_button` at line `44`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:563` sets `pressed_owner_draw_button` on mouse down and `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:574` consumes it on mouse up.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:570` draws the three owner-draw buttons from `pressed_owner_draw_button`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:765` caches preview textures by selected map index and rebuilds when the selected map changes.
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:177` currently implements color combos as immediate cycling, not as a dropdown window with native combo state.
+- `src/ui/skirmish_shell/state.rs:37` stores Skirmish shell state, including `pressed_owner_draw_button` at line `44`.
+- `src/app.rs:563` sets `pressed_owner_draw_button` on mouse down and `src/app.rs:574` consumes it on mouse up.
+- `src/app_skirmish_shell_render.rs:570` draws the three owner-draw buttons from `pressed_owner_draw_button`.
+- `src/app_skirmish_shell_render.rs:765` caches preview textures by selected map index and rebuilds when the selected map changes.
+- `src/ui/skirmish_shell/state.rs:177` currently implements color combos as immediate cycling, not as a dropdown window with native combo state.
 
 Missing or unchecked against this report:
 
@@ -189,8 +189,8 @@ Deferred items do not block the claimed slice: the report verifies which thunk/o
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace the final-state `OQ5` wording with: "`[RESOLVED] OQ5 - The common subclass thunk at `0x00610CA0` copies dynamic `0x4B2` text at `0x00611BC1..0x00611C63`; non-text thunk behavior affecting Skirmish layout/paint is covered separately by `SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "Later paints reuse that backing surface unless message `0x47`, `WM_SIZE`, `WM_MOVE`, or destroy cleanup resets it" with: "Later paints reuse that backing surface; `OwnerDraw_Static_006153E0` resets it on `0x47`, `WM_MOVE`, and `WM_SIZE`, while common thunk `0x00610CA0` also frees any remaining record `+0x10` surface during `0x82` cleanup."
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace the final-state `OQ5` wording with: "`[RESOLVED] OQ5 - The common subclass thunk at `0x00610CA0` copies dynamic `0x4B2` text at `0x00611BC1..0x00611C63`; non-text thunk behavior affecting Skirmish layout/paint is covered separately by `SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`.`"
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "Later paints reuse that backing surface unless message `0x47`, `WM_SIZE`, `WM_MOVE`, or destroy cleanup resets it" with: "Later paints reuse that backing surface; `OwnerDraw_Static_006153E0` resets it on `0x47`, `WM_MOVE`, and `WM_SIZE`, while common thunk `0x00610CA0` also frees any remaining record `+0x10` surface during `0x82` cleanup."
 
 ### Remaining Uncertainty
 
@@ -202,6 +202,6 @@ Deferred items do not block the claimed slice: the report verifies which thunk/o
 
 - Ghidra read-only disassembly: `0x00610CA0..0x006124B8`.
 - Ghidra read-only decompile: `FUN_0060F9A0 @ 0x0060F9A0`, `OwnerDraw_Static_006153E0 @ 0x006153E0`, `OwnerDraw_Button_00612B70 @ 0x00612B70`, `OwnerDraw_Checkbox_006163A0 @ 0x006163A0`, `OwnerDraw_ComboBox_00617250 @ 0x00617250`, `FUN_00622B50 @ 0x00622B50`, `FUN_006AE3F0 @ 0x006AE3F0`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/SHELL_SUBCLASS_THUNK_00610CA0_TEXT_UPDATE_PLUMBING_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COMBO_OWNERDRAW_GEOMETRY_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`.
-- Rust surfaces scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`, `docs/research/SHELL_SUBCLASS_THUNK_00610CA0_TEXT_UPDATE_PLUMBING_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_COMBO_OWNERDRAW_GEOMETRY_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`.
+- Rust surfaces scanned: `src/ui/skirmish_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`.
 - INI files checked: none; this slice is shell HWND/message/render-cache behavior, not INI-driven.

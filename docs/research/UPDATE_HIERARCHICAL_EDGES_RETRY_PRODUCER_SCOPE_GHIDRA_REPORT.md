@@ -166,9 +166,9 @@ No INI key is read directly by `0x0042CCD0`, `0x0042CF80`, or the scoped append 
 
 ## 11. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_PRECHECK_RETRY_INTEGRATION_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_PRECHECK_RETRY_INTEGRATION_GHIDRA_REPORT.md`
   - Add: "Exact `UpdateHierarchicalEdges` producer parity can be deferred from the first hierarchy/precheck/marker-handoff implementation if tests use manual per-level edge exclusions and avoid claims about automatic failed-A* retry edge selection."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
   - Add: "For implementation staging, this producer is required for retry parity but not for initial `Zone_precheck` consumer parity. However, the first precheck result should preserve per-level selected path arrays because `InvalidateZoneEdge` later reads them."
 
 ## Sources

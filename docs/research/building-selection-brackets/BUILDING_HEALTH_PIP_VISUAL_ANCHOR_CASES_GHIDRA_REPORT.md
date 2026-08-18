@@ -107,4 +107,4 @@ The familiar formula `pip0 = (sx + 3, sy - 11 - Height*15)` is exact for GACNST'
 - Ghidra decompiled/disassembled: `0x006F64A0`, `0x00464AF0`, `0x00447AC0`, `0x006D1F10`, `0x006D20E0`, `0x005F5C60`, `0x005F5D20`, `0x005F5CD0`.
 - Binary data read: foundation width table `0x008192B8`; foundation height table `0x00819310`.
 - INI data checked: `ini/artmd.ini`, `ini/art.ini`, `ini/rulesmd.ini`, `ini/rules.ini`.
-- Prior related report read for context: `C:/Users/enok/Documents/ra2-rust-game-docs/HEALTH_BAR_POSITIONING.md`.
+- Prior related report read for context: `docs/research/HEALTH_BAR_POSITIONING.md`.

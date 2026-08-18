@@ -140,11 +140,11 @@ The remaining player-visible risk is desync/probability drift if the exact PRNG 
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
+- `docs/research/WEAPON_AOE_BRIDGE_DAMAGE_ENTRY_GHIDRA_REPORT.md`
+- `docs/research/SPECIALFLAGS_DESTROYABLEBRIDGES_DEFAULT_AND_MODES_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `src/sim/combat/mod.rs`
+- `src/sim/world/bridge_orchestrator.rs`
+- `src/sim/bridge_state/mod.rs`
+- `src/rules/ruleset.rs`
 - Read-only Ghidra spot-check: `Apply_area_damage @ 0x00489280`, callers for `Apply_area_damage`

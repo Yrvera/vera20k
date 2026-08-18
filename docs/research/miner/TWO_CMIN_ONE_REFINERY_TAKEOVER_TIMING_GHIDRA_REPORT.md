@@ -129,7 +129,7 @@ Existing tests cover pieces such as `queued_miner_enters_after_contact_and_pad_a
 
 ## Sources
 
-- Starting trace: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/TWO_CHRONO_MINERS_SAME_REFINERY_FULL_CARGO_QUEUE_TAKEOVER_TRACE.md`
+- Starting trace: `docs/research/miner/traces/TWO_CHRONO_MINERS_SAME_REFINERY_FULL_CARGO_QUEUE_TAKEOVER_TRACE.md`
 - Ghidra read-only decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`
 - Ghidra read-only decompile: `FootClass::Mission_Enter @ 0x004D9290`
 - Ghidra read-only decompile: `BuildingClass::Receive_Radio @ 0x0043C2D0`

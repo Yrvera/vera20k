@@ -116,7 +116,7 @@ Replacement:
 
 ## 10. Stale-Doc Replacement Wording
 
-For `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md` Section 9, replace the first handoff row with:
+For `docs/research/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md` Section 9, replace the first handoff row with:
 
 > Stock `0x0E` accepted movement remains `NW+(3,1)`, while stock `GetDockCoord` for 4x3 GAREFN/NAREFN remains `NW+(2,1)`. `UnitClass::PerCellProcess @ 0x00739EC0` has a `GetDockCoord` equality branch that sends `0x15` only when current cell equals `NW+(2,1)`. This branch is not the only possible `0x15` source: later/already-synced `UnitClass::Receive_Radio(0x16)` can send `0x15` from stopped accepted `NW+(3,1)` without `GetDockCoord` equality, and PerCellProcess also has a later `+0x418` adjacent-building branch. Rust must preserve source-aware handoffs instead of forcing all unload starts through a physical `NW+(2,1)` move.
 
@@ -134,7 +134,7 @@ Replace "Gate the unload FSM on the verified pad-arrival event, not on accepted-
 - Ghidra decompile `BuildingClass::GetDockCoord @ 0x00447B20`.
 - Ghidra decompile `DriveLocomotionClass::Process_Drive_Track @ 0x004B0F20`.
 - Ghidra decompile `DriveLocomotionClass::Is_Moving_Now @ 0x004AFC20`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_RECEIVE_RADIO_0X16_SECOND_CALL_TIMING_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_CALLER_TICK_ORDER_GHIDRA_REPORT.md`.
+- `docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
+- `docs/research/UNITCLASS_RECEIVE_RADIO_0X16_SECOND_CALL_TIMING_GHIDRA_REPORT.md`.
+- `docs/research/DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_CALLER_TICK_ORDER_GHIDRA_REPORT.md`.

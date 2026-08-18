@@ -951,7 +951,7 @@ a class hierarchy. Key mappings:
 
 Corridor: `docs/plans/2026-08-17-ghidra-typing-corridor-program.md` row 5, "ObjectClass core
 slots + fields". Snapshot before mutations:
-`C:/Users/enok/Documents/ghidra-backups/2026-08-17-pre-tier5` (17 files, 243,310,601 bytes,
+`<local>/Documents/ghidra-backups/2026-08-17-pre-tier5` (17 files, 243,310,601 bytes,
 byte-count verified against source with the program closed). Live Ghidra is the authority on
 applied-ness; this section records evidence and holes only.
 

@@ -350,8 +350,8 @@ Binary/string evidence:
 
 Existing docs used:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SPAWN_POINT_ASSIGNMENT_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HOUSE_CREATION_COLOR_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SESSIONCLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GADGET_UI_FRAMEWORK_GHIDRA_REPORT.md`
+- `docs/research/SPAWN_POINT_ASSIGNMENT_SYSTEM.md`
+- `docs/research/HOUSE_CREATION_COLOR_SYSTEM.md`
+- `docs/research/SESSIONCLASS_GHIDRA_REPORT.md`
+- `docs/research/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
+- `docs/research/GADGET_UI_FRAMEWORK_GHIDRA_REPORT.md`

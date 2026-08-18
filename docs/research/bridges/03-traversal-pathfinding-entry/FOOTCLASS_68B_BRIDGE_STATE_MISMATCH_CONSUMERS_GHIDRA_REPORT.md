@@ -111,9 +111,9 @@ Because the binary byte has no gameplay reader, Rust does not need a repath/stut
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SHIP_LOCOMOTION_CLASS_GHIDRA_REPORT.md:751` replacement wording: "`techno+0x68B` is set by Ship movement bridge/mismatch branches, but this investigation found no direct renderer or gameplay reader; the only verified direct read is `FootClass__ComputeChecksum @ 0x004DBD0C`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md:420-421` replacement wording: "`0x00515D3A` and `0x005B0BD4` write `FootClass+0x6B7`, not `+0x68B`; the nearby verified `+0x68B` writes are `0x00515513` and `0x005B094F`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md:213` replacement wording: "Purpose now traced: no direct gameplay consumer found; treat `+0x68B` as a sticky checksum/debug/state marker unless a dynamic watchpoint later proves an indirect runtime read."
+- `docs/research/SHIP_LOCOMOTION_CLASS_GHIDRA_REPORT.md:751` replacement wording: "`techno+0x68B` is set by Ship movement bridge/mismatch branches, but this investigation found no direct renderer or gameplay reader; the only verified direct read is `FootClass__ComputeChecksum @ 0x004DBD0C`."
+- `docs/research/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md:420-421` replacement wording: "`0x00515D3A` and `0x005B0BD4` write `FootClass+0x6B7`, not `+0x68B`; the nearby verified `+0x68B` writes are `0x00515513` and `0x005B094F`."
+- `docs/research/BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md:213` replacement wording: "Purpose now traced: no direct gameplay consumer found; treat `+0x68B` as a sticky checksum/debug/state marker unless a dynamic watchpoint later proves an indirect runtime read."
 
 ## Sources
 

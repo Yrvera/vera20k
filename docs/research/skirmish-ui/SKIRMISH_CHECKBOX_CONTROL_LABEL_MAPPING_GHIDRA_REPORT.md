@@ -127,5 +127,5 @@ Important implementation mismatch: current Rust `GameOptions::default()` has `bu
 - Ghidra string/xref evidence: `STT:SkirmishCBoxCrates @ 0x008354D4`, `STT:SkirmishCBoxBuildOffAlly @ 0x008354EC`, `STT:SkirmishCBoxSWAllowed @ 0x0083550C`, `STT:SkirmishCBoxShortGame @ 0x00835528`, `STT:SkirmishCBoxRedeploys @ 0x00835544`.
 - PE resource read: `gamemd.exe` `RT_DIALOG 0x102`, language `0x409`, RVA `0x007FB1E4`, file offset `0x004FF1E4`.
 - Prior reports used as context: `SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`.
 - Rust status scan: `src/sim/game_options.rs`, `src/ui/main_menu.rs`, `src/ui/skirmish_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`.

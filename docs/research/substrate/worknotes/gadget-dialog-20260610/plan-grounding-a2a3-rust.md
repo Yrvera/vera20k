@@ -5,7 +5,7 @@ Lane: Rust-codebase grounding for the A2 (cameo strip click surface) and A3
 already-shipped gadget substrate (`src/ui/gadget/` + `src/app_gadget_input.rs`).
 
 ALL file:line cites verified live this session against the main checkout
-`C:/Users/enok/Documents/ra2-rust-game`, branch `dev`, HEAD `801bc09e`, clean
+`.`, branch `dev`, HEAD `801bc09e`, clean
 `git status`. NO Ghidra (by assignment). Companion docs in same dir:
 `plan-grounding-rust.md` (A0/A1/A4/A5 anchors), `rust-current.md`.
 

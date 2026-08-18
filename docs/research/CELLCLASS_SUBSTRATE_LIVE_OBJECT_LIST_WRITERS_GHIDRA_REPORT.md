@@ -158,9 +158,9 @@ Rust implication: `Simulation::occupancy` is `#[serde(skip)]` (`src/sim/world/mo
 
 ## 9. Stale Docs / Follow-up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CELL_OCCUPANCY_ORDERING_GHIDRA_REPORT.md`: replace the current-Rust statement "OccupancyGrid appends all occupants" with "Current Rust `OccupancyGrid::add` takes `CellListInsertion` and preserves the verified structure-append / non-structure-prepend order within the selected layer; remaining risk is lifecycle/rebuild ownership and consumers that bypass `iter_layer`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`: replace `OQ-7` wording saying Rust "breaks on first missing key" with "Current Rust `parse_numbered_cell_offsets` visits all 1..8 numbered slots independently and stores only valid pairs; this is observable-equivalent to the binary's sentinel-filled eight-slot storage for absent keys."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ACTIVE_VECTOR_REMOVE_HELPER_FUN_0055BAE0_RESWARM_20260528.md`: replace stale Rust-delta wording "no membership byte" / "`unregister_live_object` always edits vector" with "Current Rust has `GameEntity::in_logic_vector` and byte-gated register/unregister; remaining gaps are upstream reveal eligibility gates and callers that bypass `Simulation::uninit`."
+- `docs/research/CELL_OCCUPANCY_ORDERING_GHIDRA_REPORT.md`: replace the current-Rust statement "OccupancyGrid appends all occupants" with "Current Rust `OccupancyGrid::add` takes `CellListInsertion` and preserves the verified structure-append / non-structure-prepend order within the selected layer; remaining risk is lifecycle/rebuild ownership and consumers that bypass `iter_layer`."
+- `docs/research/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`: replace `OQ-7` wording saying Rust "breaks on first missing key" with "Current Rust `parse_numbered_cell_offsets` visits all 1..8 numbered slots independently and stores only valid pairs; this is observable-equivalent to the binary's sentinel-filled eight-slot storage for absent keys."
+- `docs/research/ACTIVE_VECTOR_REMOVE_HELPER_FUN_0055BAE0_RESWARM_20260528.md`: replace stale Rust-delta wording "no membership byte" / "`unregister_live_object` always edits vector" with "Current Rust has `GameEntity::in_logic_vector` and byte-gated register/unregister; remaining gaps are upstream reveal eligibility gates and callers that bypass `Simulation::uninit`."
 
 ## Sources
 

@@ -194,5 +194,5 @@ with:
 - Ghidra read-only assembly context: `0x005CAE10`, `0x005CAEB0`, `0x005CA6D0`, `0x005D7DA0`, `0x005D81F0`, `0x005CA9B2..0x005CAAB5`.
 - Raw `gamemd.exe` PE reads for vtables `0x007EE7E4`, `0x007EE7F4`, `0x007EEEDC`, `0x007EE6FC` and strings `0x0082FFE4`, `0x00830044`, `0x0082FEE8`, `0x0082FEF8`, `0x0082FF0C`, `0x0082FF1C`.
 - Prior reports: `SKIRMISH_MODE_ROLE_UI_NODE_0X6B_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- INI checked: `ini/mpmodesmd.ini`.
 - Rust scan: `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/app.rs`, `src/app_skirmish.rs`.

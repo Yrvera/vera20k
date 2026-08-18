@@ -121,5 +121,5 @@ Rust already has the item-data to PCX filename table in `src/app_skirmish_shell_
 - Dialog/resource evidence: `SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md:112..128`.
 - Asset evidence: `SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md:130..137`, `:182..191`.
 - Prior focused report: `SKIRMISH_FLAG_STATICS_GHIDRA_REPORT.md`.
-- INI cross-check: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:959..971`, `:3225..3332`.
+- INI cross-check: `ini/rulesmd.ini:959..971`, `:3225..3332`.
 - Rust comparison only: `src/app_skirmish_shell_render.rs:350..363`, `:607`, `:617`; `src/render/skirmish_shell_chrome.rs:165..176`.

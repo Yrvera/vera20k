@@ -118,6 +118,6 @@ The SMIN/YAREFN finding is narrower: the binary target is active in stock YR, an
 
 - Ghidra: `UnitClass__Deploy @ 0x007393C0`; `get_assembly_context` around `0x00739450`, `0x00739460`, `0x00739477`, `0x0073948E`, `0x007394B1`, `0x007394D8`.
 - Ghidra: `BuildingTypeClass__GetFoundationWidth @ 0x0045EC90`; `BuildingTypeClass__GetFoundationHeight @ 0x0045ECA0`; `Foundation_direction_table_init @ 0x0049F2F0`.
-- Prior context: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_POSITION_FOUNDATION_ORIGIN_PARITY_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/DAT_0089F6A0_RUNTIME_SOURCE_AND_VALUE_GHIDRA_REPORT.md`.
+- Prior context: `docs/research/BUILDING_POSITION_FOUNDATION_ORIGIN_PARITY_GHIDRA_REPORT.md`; `docs/research/DAT_0089F6A0_RUNTIME_SOURCE_AND_VALUE_GHIDRA_REPORT.md`.
 - INI: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`.
 - Current Rust: `src/sim/world/world_spawn.rs`, `src/sim/world/world_commands.rs`, `src/app_input.rs`, `src/app_context_order.rs`, `src/sim/ai.rs`, `src/sim/slave_miner.rs`.

@@ -415,8 +415,8 @@ the known divergence.
 - `DAT_007ED3D0` — read_memory at `0x007ED3D0`, 48 bytes, counts verified.
 - `DAT_00ABD490` — BSS (zero at static read); content derived from initializer decompilation.
 - Existing docs cross-referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/combat/systems/splash_cellspread.md` §6 — table structure
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md` §10 — open question
+  - `docs/research/combat/systems/splash_cellspread.md` §6 — table structure
+  - `docs/research/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md` §10 — open question
 - Rust source cross-referenced (READ-ONLY):
   - `src/sim/combat/cell_spread.rs` — `CELL_SPREAD_COUNTS`, `compute_spread_offsets`, `cells_in_spread`
   - Rust line 14: `const CELL_SPREAD_COUNTS: [usize; 12] = [1,9,21,37,61,89,121,161,205,253,309,369];`

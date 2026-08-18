@@ -145,7 +145,7 @@ For stock uninterrupted GAREFN/NAREFN cargo-empty unload: **this helper is not t
 - Ghidra decompile: `RadioClass::Transmit_Radio_Impl @ 0x0065A970`.
 - Ghidra decompile: `TechnoClass::Receive_Radio @ 0x006F4AB0`.
 - Ghidra xrefs: `get_function_xrefs 0x004595C0` -> `0x0073D66D` only.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_CLASS_PROTOCOL_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/RADIO_CLASS_PROTOCOL_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`.
 

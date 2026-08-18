@@ -42,8 +42,8 @@ Verdict: PASS for retail data identity and active-path status.
 
 Evidence:
 - gamemd/docs: `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:37`, `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md:8`, `:102..115`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:528`, `:529`; `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:15656..15683`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs:758`, `:1091`; `C:/Users/enok/Documents/ra2-rust-game/src/app_init_helpers.rs:375`
+- INI: `ini/rulesmd.ini:528`, `:529`; `ini/artmd.ini:15656..15683`
+- Rust: `src/rules/ruleset.rs:758`, `:1091`; `src/app_init_helpers.rs:375`
 
 ### Stage 2 - Debris block gate
 
@@ -55,7 +55,7 @@ Verdict: FAIL. The gate source is not numerically equal for modded data, and the
 
 Evidence:
 - gamemd/docs: `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:72`, `:81`, `:137`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1052`, `:1056`
+- Rust: `src/sim/world/bridge_orchestrator.rs:1052`, `:1056`
 
 ### Stage 3 - Outer probability and jitter RNG
 
@@ -67,7 +67,7 @@ Verdict: FAIL. Literal range/order equality fails: gamemd uses three normalized 
 
 Evidence:
 - gamemd/docs: `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:73`, `:74`, `:82`, `:83`, `:138`, `:139`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1062`, `:1068`, `:1069`
+- Rust: `src/sim/world/bridge_orchestrator.rs:1062`, `:1068`, `:1069`
 
 ### Stage 4 - Effect position from jitter
 
@@ -79,7 +79,7 @@ Verdict: FAIL. The player sees centered effects in Rust where gamemd can offset 
 
 Evidence:
 - gamemd/docs: `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md:42..49`, `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:74`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1068`, `:1091`, `:1092`, `:1129`, `:1130`
+- Rust: `src/sim/world/bridge_orchestrator.rs:1068`, `:1091`, `:1092`, `:1129`, `:1130`
 
 ### Stage 5 - MetallicDebris gate and `BridgeVoxelMax`
 
@@ -91,7 +91,7 @@ Verdict: FAIL. The 50 percent RNG range is wrong, and `BridgeVoxelMax` incorrect
 
 Evidence:
 - gamemd/docs: `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:75`, `:76`, `:84`, `:94`, `:128`, `:140`, `:150`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1054`, `:1079`, `:1083`, `:1084`; stale parity test at `:1598`
+- Rust: `src/sim/world/bridge_orchestrator.rs:1054`, `:1079`, `:1083`, `:1084`; stale parity test at `:1598`
 
 ### Stage 6 - BridgeExplosions delay and slot
 
@@ -103,7 +103,7 @@ Verdict: UNCHECKED. The isolated range shape matches, but this trace did not com
 
 Evidence:
 - gamemd/docs: `BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md:77`, `:85`, `:86`, `:107`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1121`, `:1122`, `:1123`, `:1137`; tick behavior at `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:592`
+- Rust: `src/sim/world/bridge_orchestrator.rs:1121`, `:1122`, `:1123`, `:1137`; tick behavior at `src/sim/components.rs:592`
 
 ### Stage 7 - TWLT report sound
 
@@ -115,7 +115,7 @@ Verdict: NOT-IMPLEMENTED.
 
 Evidence:
 - gamemd/docs: `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md:19`, `:21`, `:88..96`, `:108..115`, `:170..172`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:563`, `:585`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:96`, `:175..181`
+- Rust: `src/sim/components.rs:563`, `:585`; `src/sim/world/mod.rs:96`, `:175..181`
 
 ### Stage 8 - Render-state transition timing
 
@@ -127,7 +127,7 @@ Verdict: UNCHECKED. The Rust read surface is plausibly aligned with post-tick st
 
 Evidence:
 - gamemd/docs: `BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md:83`, `:87`, `:155..162`; `BRIDGE_RENDERING_GHIDRA_REPORT.md:15..18`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:919`; `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs:120`, `:236`, `:320`
+- Rust: `src/sim/bridge_state/mod.rs:919`; `src/app_instances/bridges.rs:120`, `:236`, `:320`
 
 ## Adjacent Findings
 
@@ -146,17 +146,17 @@ Evidence:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RENDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs`
+- `docs/research/BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RENDERING_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `ini/soundmd.ini`
+- `src/sim/world/bridge_orchestrator.rs`
+- `src/sim/components.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/bridge_state/mod.rs`
+- `src/app_instances/bridges.rs`
 

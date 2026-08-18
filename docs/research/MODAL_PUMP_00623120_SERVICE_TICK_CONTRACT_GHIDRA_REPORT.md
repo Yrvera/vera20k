@@ -173,16 +173,16 @@ Zero-add pass result: re-reading `FUN_00623120` after resolving the caller/guard
 
 ## 12. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/SHELL_DIALOG_FRAMEWORK_SUBSTRATE_SERVICE.md`: replace C2 wording:
+- `docs/research/SHELL_DIALOG_FRAMEWORK_SUBSTRATE_SERVICE.md`: replace C2 wording:
   - Old: `Pump keeps the world live: the pump tick advances sim + network even while a "modal" dialog is up. The in-game options dialog animates the battlefield behind it; a Rust modal that freezes the world is observably wrong.`
   - New: `Pump keeps shell responsiveness live, but sim advance is mode-gated. FUN_00623120 always calls Process_NetworkMessages; campaign/offline skirmish modes 0 and 5, or the DAT_00A8D60E/DAT_00A8DAB4 blockers, take a Network_ServiceLoop-only branch and do not call Main_Tick. Only non-offline modes, practically LAN 3 and WOL/Internet 4, can call Main_Tick, and only when DAT_00ABCD58/FUN_0055CBF0 says no tick is already active. Offline in-game Options freezes world/frame advancement while the dialog remains message-responsive; network Options can advance through Main_Tick.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/SHELL_DIALOG_FRAMEWORK_SUBSTRATE_SERVICE.md`: replace inventory row for `0x00623120`:
+- `docs/research/SHELL_DIALOG_FRAMEWORK_SUBSTRATE_SERVICE.md`: replace inventory row for `0x00623120`:
   - Old: `Pump tick (body, not loop) - Process_NetworkMessages + Main_Tick`
   - New: `Pump tick (body, not loop) - Process_NetworkMessages first; then Network_ServiceLoop-only for mode 0/5 or blocker globals; otherwise guarded FUN_0055CBF0 -> Main_Tick, returning 1 only when Main_Tick returns nonzero.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-06-01-shell-substrate-slice5b-kickoff.md`: replace sub-step 3 sentence:
+- `docs/plans/2026-06-01-shell-substrate-slice5b-kickoff.md`: replace sub-step 3 sentence:
   - Old: `service_tick: always net + input + repaint; advance via the EXISTING advance_fixed_simulation iff the pure decision is true.`
   - New: `service_tick: always processes input/dialog/repaint messages first; offline/blocker branches run network service without sim advance; non-reentrant LAN/WOL branches advance via the EXISTING advance_fixed_simulation. The reentrant guard path must not explicitly run network service after skipping advance.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ADDRESS_MAP.md`: replace row `0x00A8B238`:
+- `docs/research/ADDRESS_MAP.md`: replace row `0x00A8B238`:
   - Old: `GameMode (0=SP,1=Skirm,2=LAN,3=WOL,4=TCP)`
   - New: `GameMode for active YR pump-relevant paths: 0=campaign/SP, 3=LAN/IPX, 4=WOL/Internet, 5=offline skirmish; modes 1/2 are legacy modem/serial paths and must not be labeled as offline skirmish.`
 

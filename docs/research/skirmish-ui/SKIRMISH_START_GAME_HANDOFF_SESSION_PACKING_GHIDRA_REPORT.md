@@ -207,5 +207,5 @@ Evidence: `src/ui/skirmish_shell/state.rs:70`, `src/app.rs:547`, `src/app_skirmi
 - Ghidra decompiled/read: `0x006ACEE0`, `0x006AE2C0`, `0x006AE3F0`, `0x004E3320`, `0x004E37D0`, `0x004E41D0`, `0x004E4E20`, `0x004E4E60`, `0x004E5900`, `0x004E5940`, `0x004E6030`, `0x0053ECB0`, `0x0069B600`, `0x0069B760`, `0x0069B7E0`, `0x0069B8C0`, `0x007B66C0`, `0x007B6760`, `0x00735120`.
 - Ghidra assembly contexts: `0x006ACF7B..0x006AD8D5`, `0x006AD703..0x006AD889`, `0x006AD8C7..0x006AD8D5`.
 - Prior reports used as context, not as ground truth where Ghidra was checked: `SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`, `SKIRMISH_START_POSITION_COMBO_POPULATION_GHIDRA_REPORT.md`, `SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md`, `SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `MAIN_GAME_STATE_MACHINE_CASES_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[MultiplayerDialogSettings]`.
+- INI checked: `ini/rulesmd.ini` `[MultiplayerDialogSettings]`.
 - Rust status scan: `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish.rs`, `src/sim/game_options.rs`.

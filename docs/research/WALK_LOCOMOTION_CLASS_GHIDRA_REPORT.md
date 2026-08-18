@@ -805,7 +805,7 @@ Walk's FindSubCellDest checks for **5 specific missions** (8, 9, 7, 0xB, 0x19) f
 - `get_xrefs_to 0xB45BE8` → 27 entries (1 WRITE init + 26 READ sites across all Walk methods)
 
 **INI files:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — confirmed `Locomotor={4A582744-...}` for ~64 stock infantry units (sample verified)
+- `ini/rulesmd.ini` — confirmed `Locomotor={4A582744-...}` for ~64 stock infantry units (sample verified)
 
 **Companion docs (cross-referenced):**
 - `BRIDGE_LOCOMOTOR_WALK_DROPPOD_TELEPORT_GHIDRA_REPORT.md` §2 — bridge Z-bump details

@@ -138,5 +138,5 @@ Rust currently has a `ChooseMap0x5aa` control/action identity, but it does not i
 
 - Ghidra decompile: `FUN_006ACEE0`, `FUN_006AE3F0`, `FUN_006AE2C0`, `FUN_005E68A0`, `FUN_005E7160`, `FUN_007759E0`, `FUN_007757E0`, `FUN_00608070`, `FUN_005E2EF0`, `FUN_005E2F60`, `FUN_006ADDF0`, `FUN_006ACD60`.
 - Ghidra assembly context: `0x0052E168`, `0x006AE317..0x006AE328`, `0x006AE432..0x006AE443`, `0x006AD8E7..0x006ADB52`, `0x005E6920..0x005E69EC`, `0x005E6B63..0x005E6B78`, `0x005E7367..0x005E73AD`, `0x005E7D2C..0x005E7D9E`.
-- Existing related report read for duplication/scope separation: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`.
-- Rust status scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Existing related report read for duplication/scope separation: `docs/research/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`.
+- Rust status scan: `src/ui/skirmish_shell/state.rs`, `src/app.rs`.

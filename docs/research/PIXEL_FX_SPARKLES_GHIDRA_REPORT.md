@@ -382,7 +382,7 @@ void CellClass__IsShrouded_AtMapCoord(CellClass *cell)
 
 ## 11. Current Rust implementation status
 
-Mapped against `c:/Users/enok/Documents/ra2-rust-game/src/`:
+Mapped against `src/`:
 
 | System | Rust file | Status |
 |---|---|---|

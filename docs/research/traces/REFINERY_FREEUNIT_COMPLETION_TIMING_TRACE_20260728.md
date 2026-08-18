@@ -5,7 +5,7 @@
 `Command::PlaceReadyBuilding`; trace only the build-up/completion timing through exactly one
 `CMIN` creation.  
 **Rust under test:** clean feature worktree
-`C:/Users/enok/Documents/ra2-rust-game-freeunit-completion-20260728`, commit
+`.-freeunit-completion-20260728`, commit
 `799515ca9867ac189e7c6ea9b03d0d93938d5c6b`.  
 **Verdict:** The scoped relative timing matches: no CMIN is created by placement or while
 build-up remains active; one CMIN is created in the completion transition; ordinary later
@@ -15,7 +15,7 @@ AI/presentation boundary remain `UNCHECKED`.
 ## Scope and evidence
 
 - Active binary: the connected current program is retail
-  `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, x86 image base
+  `<ra2-install>/gamemd.exe`, x86 image base
   `0x00400000`; this is the active YR program, not a dormant TS binary.
 - Stock YR data: `ini/rulesmd.ini:11722-11736` gives `[GAREFN]`,
   `Refinery=yes`, and `FreeUnit=CMIN`; `ini/rulesmd.ini:7351-7371` defines `CMIN` and excludes

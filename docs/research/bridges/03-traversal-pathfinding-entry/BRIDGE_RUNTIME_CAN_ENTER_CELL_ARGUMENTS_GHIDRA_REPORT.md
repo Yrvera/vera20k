@@ -321,13 +321,13 @@ This section is research guidance only.
   - `0x0051BF90` InfantryClass::Can_Enter_Cell
   - `0x004D9C60` CheckBridgeTraversal
 - Existing bridge reports:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_TWO_PASS_CAN_ENTER_CELL_SPLIT_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/PROCESS_DRIVE_TRACK_DECOMPILATION.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_TWO_PASS_CAN_ENTER_CELL_SPLIT_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
+  - `docs/research/PROCESS_DRIVE_TRACK_DECOMPILATION.md`
+  - `docs/research/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md`
 - Rust status scan:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
+  - `src/sim/movement/movement_step.rs`
+  - `src/sim/movement/movement_occupancy.rs`
+  - `src/sim/pathfinding/cell_entry.rs`
+  - `src/sim/pathfinding/core.rs`
 

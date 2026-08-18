@@ -142,11 +142,11 @@ The movement issuing path in `src/sim/movement/movement_commands.rs::issue_move_
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/NAVCOM_LIFECYCLE_GHIDRA_REPORT.md`: replace OQ-6 with:
+- `docs/research/NAVCOM_LIFECYCLE_GHIDRA_REPORT.md`: replace OQ-6 with:
   > `TypeClass+0xD6A` is `BalloonHover=` and gates a null-destination intercept in UnitClass `Set_Destination`. `TypeClass+0xD2C` is the derived `MovementZone == Subterannean` byte and gates subterranean destination queue/passable-cell rewrite branches. The older `+0xD28/+0xD29/+0xD2A` stop-guard wording was a decompiler indexing mistake: the branch reads Unit/Foot instance bytes `+0x6E0/+0x6E1/+0x6E2`, not the TechnoType crush fields `Crusher/OmniCrusher/OmniCrushResistant`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/UNITCLASS_SET_DESTINATION_NORMAL_DRIVE_CELL_GHIDRA_REPORT.md`: replace "Type movement flag set: `Type+0xD28 == 0`..." with:
+- `docs/research/UNITCLASS_SET_DESTINATION_NORMAL_DRIVE_CELL_GHIDRA_REPORT.md`: replace "Type movement flag set: `Type+0xD28 == 0`..." with:
   > Instance movement-state stop guard: `this+0x6E0 == 0` and (`this+0x6E1 != 0` or `this+0x6E2 != 0`) calls `FootClass::Stop_Moving` and returns; if `this+0x6E0 != 0` but `this+0x2B0 == 0`, it also calls `Stop_Moving` and returns. These are not `TechnoTypeClass+0xD28/+0xD29/+0xD2A`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/TECHNOCLASS_SET_DESTINATION_GHIDRA_REPORT.md`: replace "TypeClass[0xD6A] = IsChronoMiner flag (or similar)" with:
+- `docs/research/TECHNOCLASS_SET_DESTINATION_GHIDRA_REPORT.md`: replace "TypeClass[0xD6A] = IsChronoMiner flag (or similar)" with:
   > `TypeClass+0xD6A` is `BalloonHover=`, parsed at `TechnoTypeClass::ReadINI @ 0x00714D95`; the top block is a BalloonHover null-destination intercept, not a chrono-miner type check.
 
 ## Sources

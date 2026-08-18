@@ -14,7 +14,7 @@ PASS: 8 | FAIL: 0 | UNCHECKED: 2 | NOT-IMPLEMENTED: 0
 
 ## Concrete Retail Input
 
-Retail installed map evidence: `C:/Users/enok/Documents/Command and Conquer Red Alert II/CrctBrd.yro`.
+Retail installed map evidence: `<ra2-install>/CrctBrd.yro`.
 
 Relevant data:
 
@@ -162,7 +162,7 @@ None found in this slot for the concrete `CrctBrd.yro` 800x600 layout and marker
 - `docs/research/skirmish-ui/SKIRMISH_START_MARKER_CLIPPING_FOOTPRINT_GHIDRA_REPORT.md`
 - `docs/research/skirmish-ui/SKIRMISH_MAP_PREVIEW_MARKER_ASSET_LAYOUT_GHIDRA_REPORT.md`
 - `docs/research/skirmish-ui/SCENARIO_PREVIEW_BOUNDS_STOCK_MAP_POPULATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/CrctBrd.yro`
+- `<ra2-install>/CrctBrd.yro`
 - `src/app_skirmish_shell_render.rs`
 - `src/app_skirmish_shell_render/preview.rs`
 - `src/app_skirmish_shell_render/text.rs`

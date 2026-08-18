@@ -112,17 +112,17 @@ Open but out of this slice:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_entity.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement_tests.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/art_data.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MISSILE_AND_RADIO_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEAREST_VARIANTS_SPIRAL_COMPARISON_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`
+- `src/sim/components.rs`
+- `src/sim/game_entity.rs`
+- `src/sim/world/world_spawn.rs`
+- `src/sim/production/production_placement.rs`
+- `src/sim/production/production_placement_tests.rs`
+- `src/sim/miner/miner_dock_sequence.rs`
+- `src/rules/art_data.rs`
+- `src/rules/ruleset.rs`
+- `ini/artmd.ini`
+- `ini/rulesmd.ini`
+- `docs/research/BUILDINGCLASS_MISSILE_AND_RADIO_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/FIND_NEAREST_VARIANTS_SPIRAL_COMPARISON_GHIDRA_REPORT.md`
+- `docs/research/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`

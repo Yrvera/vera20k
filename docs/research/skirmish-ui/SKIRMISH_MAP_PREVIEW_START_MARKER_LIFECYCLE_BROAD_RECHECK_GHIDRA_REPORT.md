@@ -208,13 +208,13 @@ No rulesmd/artmd key controls this preview lifecycle. The material sources are m
 
 Scanned Rust surfaces:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/assets/pcx_file.rs`
+- `src/map/preview.rs`
+- `src/app_list_maps.rs`
+- `src/skirmish_scenarios.rs`
+- `src/app.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/assets/pcx_file.rs`
 
 Current matches observed:
 
@@ -323,4 +323,4 @@ No contradiction requiring an immediate patch to existing docs was found. The us
 - Ghidra assembly contexts: function starts for `0x006AE3F0`, `0x006ACEE0`, `0x006067A0`, `0x00640710`, `0x00641140`, `0x006418B0`, `0x00641B00`, `0x00641DB0`, `0x00689D30`, `0x00640A40`.
 - Ghidra string anchors: `PreviewPack @ 0x00836DD0`, `STARTBUT.SHP @ 0x00836DE4`, `mmpb.shp @ 0x00836DF4`, `RandMap.img @ 0x00829ABC`, `RandMap.Sed @ 0x0082BC30`, `NumberStartingPoints @ 0x0083DE48`.
 - Prior docs reconciled: `SKIRMISH_PREVIEW_DAT_00AC1154_LIFECYCLE_GHIDRA_REPORT.md`, `SKIRMISH_RANDMAP_IMG_PREVIEW_LOADER_00641DB0_GHIDRA_REPORT.md`, `GENERATETERRAINPREVIEW_RANDMAP_DIMENSIONS_COLORS_GHIDRA_REPORT.md`, `SKIRMISH_START_MARKER_CLIPPING_FOOTPRINT_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_0X6B_PREVIEW_REFRESH_GHIDRA_REPORT.md`, `SKIRMISH_RETAIL_STOCK_MAP_PREVIEW_CENSUS_GHIDRA_REPORT.md`, `PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_MAP_PREVIEW_MARKER_ASSET_LAYOUT_GHIDRA_REPORT.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/assets/pcx_file.rs`.
+- Rust scanned: `src/map/preview.rs`, `src/app_list_maps.rs`, `src/skirmish_scenarios.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`, `src/assets/pcx_file.rs`.

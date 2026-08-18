@@ -26,7 +26,7 @@ All 72 children in RT_DIALOG `0x102` have `WS_VISIBLE` set in the resource. AI/o
 |---|---|---|---|
 | Offline launcher | Creates dialog id `0x102` with proc `0x006AE3F0` | Yes | `FUN_006AE2C0`; assembly context `0x006AE317..0x006AE328` has `MOV ECX,0x102`, `MOV EDX,0x006AE3F0`, call `0x00622650` |
 | Full-screen parent resize | Parent is moved to `g_ScreenWidth,g_ScreenHeight`, then children enumerate through `0x0060C0C0` | Yes | `FUN_0060C4A0` decompile |
-| Resource inventory | RT_DIALOG id `0x102`, lang `1033`, file offset `0x4FF1E4`, size `3032`, 72 DIALOGEX children, font `MS Sans Serif` 8 | Yes | local binary parse of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`; DIALOGEX header |
+| Resource inventory | RT_DIALOG id `0x102`, lang `1033`, file offset `0x4FF1E4`, size `3032`, 72 DIALOGEX children, font `MS Sans Serif` 8 | Yes | local binary parse of `<ra2-install>/gamemd.exe`; DIALOGEX header |
 | DLU conversion | Positive DLU values use base units `baseX=6`, `baseY=13`; pixel rects are `MulDiv(x,6,4)`, `MulDiv(y,13,8)`, etc. | Yes | RT_DIALOG font/header plus prior `SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md` and `SKIRMISH_COMBO_OWNERDRAW_GEOMETRY_GHIDRA_REPORT.md` |
 | Start/Choose helper | Button metadata `+0x68==0` preempts right-anchor list and calls `FUN_0060B000` | Yes | dispatcher decompile; assembly context `0x0060C1B0..0x0060C1C8` |
 | Back helper | Button metadata plus `FUN_00609730` routes `0x5C0` to `FUN_0060B350` | Yes | dispatcher decompile; assembly context `0x0060C213..0x0060C227` |
@@ -167,8 +167,8 @@ Rust currently has most structural groups represented in `src/ui/skirmish_shell/
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`: replace Section 2 rows for `0x54E`, `0x693`, `0x696`, `0x69A`, and `0x50C` with: "`0x54E` `(71,286,150,16)`, `0x693` `(71,314,150,16)`, `0x696` `(71,341,150,16)`, `0x69A` `(71,371,155,16)`, and `0x50C` `(404,340,128,21)` after `ResizeShellChildControl_0060C0C0` calls `FUN_0060B950`; the RT_DIALOG/DLU resource values are one pixel different for these controls."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`: replace checkbox sub-rect rows for those four checkboxes with icon x `71` and label-left x `97`; leave `0x69D` at icon x `302`, label-left x `328`.
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`: replace Section 2 rows for `0x54E`, `0x693`, `0x696`, `0x69A`, and `0x50C` with: "`0x54E` `(71,286,150,16)`, `0x693` `(71,314,150,16)`, `0x696` `(71,341,150,16)`, `0x69A` `(71,371,155,16)`, and `0x50C` `(404,340,128,21)` after `ResizeShellChildControl_0060C0C0` calls `FUN_0060B950`; the RT_DIALOG/DLU resource values are one pixel different for these controls."
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`: replace checkbox sub-rect rows for those four checkboxes with icon x `71` and label-left x `97`; leave `0x69D` at icon x `302`, label-left x `328`.
 
 ### Negative Facts / Do Not Do
 
@@ -182,6 +182,6 @@ Rust currently has most structural groups represented in `src/ui/skirmish_shell/
 
 - Ghidra read-only decompile / context: `0x006AE2C0`, `0x0060C4A0`, `0x0060C0C0`, `0x00608CD0`, `0x00609730`, `0x00601360`, `0x0060B000`, `0x0060B1D0`, `0x0060B350`, `0x0060B550`, `0x0060B950`.
 - Ghidra assembly context: `0x006AE317..0x006AE328`, `0x0060C1B0..0x0060C1C8`, `0x0060C213..0x0060C227`, `0x0060C2B6..0x0060C2C5`, `0x0060BE0A..0x0060BE66`, `0x0060C065..0x0060C092`.
-- Binary resource extraction: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, RT_DIALOG type `5`, id `0x102`, lang `1033`, file offset `0x4FF1E4`, size `3032`.
+- Binary resource extraction: `<ra2-install>/gamemd.exe`, RT_DIALOG type `5`, id `0x102`, lang `1033`, file offset `0x4FF1E4`, size `3032`.
 - Prior docs cross-checked: `SKIRMISH_RESIZE_SHELL_CHILD_CONTROL_0060C0C0_COMPLETE_0X102_POLICY_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`, `SKIRMISH_COMBO_OWNERDRAW_GEOMETRY_GHIDRA_REPORT.md`, `SKIRMISH_PLAYER_AI_ROW_VISIBILITY_ENABLE_RULES_GHIDRA_REPORT.md`, `SKIRMISH_FLAG_STATICS_GHIDRA_REPORT.md`.
 - Rust scanned read-only: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`.

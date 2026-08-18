@@ -706,7 +706,7 @@ These items were not fully traced in this pass and are marked LOW confidence:
   - `InfantryClass::Mission_Enter` @ `0x005196A0`
   - `WarheadTypeClass::Detonate` @ `0x004690B0`
   - `TechnoTypeClass::ReadINI` disguise block around `0x00714400`-`0x00714470`
-- INI data: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- INI data: `ini/rulesmd.ini`
   (SPY §3973, MGTK §6810, MakeupKit §24140, Snapshot §27473, MirageGun §24164)
 - Prior reports:
   - `CLOAKING_STEALTH_SYSTEM_GHIDRA_REPORT.md` — struct-level overview (§6)

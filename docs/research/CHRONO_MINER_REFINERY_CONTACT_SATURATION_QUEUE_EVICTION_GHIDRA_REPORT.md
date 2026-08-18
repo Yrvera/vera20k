@@ -269,10 +269,10 @@ That split matches the binary distinction. The remaining mismatch risk is exact 
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`: replace any claim that stock `0x0E` returns `NEGATORY` solely because the refinery contact slot is full with: "Receiver HELLO can reject when full, but stock DockUnload `0x0E` can still return `ROGER(1)` after `0x13`/`0x12`; no final `0x18/0x16` enter burst occurs unless `0x12` returns `0x14`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`: refine `0x08` wording to state that `0x17` is conditional for `WeaponsFactory/UnitRepair/Bunker`, not stock GAREFN/NAREFN.
+- `docs/research/miner/traces/MINER_DOCK_QUEUE_TWO_MINERS_ONE_REFINERY_TRACE.md`: replace any claim that stock `0x0E` returns `NEGATORY` solely because the refinery contact slot is full with: "Receiver HELLO can reject when full, but stock DockUnload `0x0E` can still return `ROGER(1)` after `0x13`/`0x12`; no final `0x18/0x16` enter burst occurs unless `0x12` returns `0x14`."
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`: refine `0x08` wording to state that `0x17` is conditional for `WeaponsFactory/UnitRepair/Bunker`, not stock GAREFN/NAREFN.
 - `docs/gap-scans/2026-05-19-disparity-scan-miner.md`: update G10 to distinguish the fixed accepted `CAN_DOCK` target `(rx+3,ry+1)` from valid `QueueingCell=4,1` fallback/staging uses after HELLO non-acceptance or far return.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/structures/GAREFN.md` and `NAREFN.md`: keep `QueueingCell=4,1` as a valid fallback/waiting cell, but remove or qualify any implication that it is the building `0x0E` accepted cell.
+- `docs/research/units/structures/GAREFN.md` and `NAREFN.md`: keep `QueueingCell=4,1` as a valid fallback/waiting cell, but remove or qualify any implication that it is the building `0x0E` accepted cell.
 
 ## 10. Negative Facts / Do Not Do
 
@@ -298,7 +298,7 @@ That split matches the binary distinction. The remaining mismatch risk is exact 
 - Fresh Ghidra decompile: `UnitClass::EnterBuildingOrDock @ 0x0041AA80`
 - Fresh Ghidra decompile: `FUN_00500200 @ 0x00500200`
 - Fresh Ghidra assembly contexts: `0x0065AA2A..0x0065AA36`, `0x0065A8D8..0x0065A8FA`, `0x0043C788..0x0043C7A0`, `0x004D9180..0x004D9193`, `0x00500200..`
-- Prior synthesis: `C:/Users/enok/Documents/ra2-rust-game-docs/CHRONO_MINER_NAVCOM_RADIO_SYSTEM_MODEL_SYNTHESIS.md`
+- Prior synthesis: `docs/research/CHRONO_MINER_NAVCOM_RADIO_SYSTEM_MODEL_SYNTHESIS.md`
 - Prior focused reports: `RADIOCLASS_CORE_PRIMITIVES_VERIFIED_GHIDRA_REPORT.md`, `BUILDING_RECEIVE_RADIO_REFINERY_0X0E_NON_ACCEPTED_PATHS_GHIDRA_REPORT.md`, `BUILDING_RECEIVE_RADIO_DOCK_CLEARANCE_HANDOFF_EXIT_GHIDRA_REPORT.md`
 - INI checked: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`
 - Rust scanned: `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_system.rs`

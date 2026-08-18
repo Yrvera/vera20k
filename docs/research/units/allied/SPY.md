@@ -19,7 +19,7 @@ Authoritative deep RE for the infiltration dispatch:
 
 ## rulesmd.ini — `[SPY]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3973`:
+Verbatim from `ini/rulesmd.ini:3973`:
 
 ```ini
 [SPY]
@@ -125,7 +125,7 @@ StupidHunt=yes ;this guy can't handle a hunt command, so he should just run towa
 
 ## artmd.ini — `[SPY]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:131`:
+`ini/artmd.ini:131`:
 
 ```ini
 [SPY]

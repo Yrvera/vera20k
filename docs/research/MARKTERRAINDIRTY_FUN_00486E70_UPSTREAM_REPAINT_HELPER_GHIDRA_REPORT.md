@@ -151,7 +151,7 @@ Tiny details:
 
 ### Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/MARKTERRAINDIRTY_FULL_CALLER_MATRIX_GHIDRA_REPORT.md`
+`docs/research/MARKTERRAINDIRTY_FULL_CALLER_MATRIX_GHIDRA_REPORT.md`
 
 Replace:
 

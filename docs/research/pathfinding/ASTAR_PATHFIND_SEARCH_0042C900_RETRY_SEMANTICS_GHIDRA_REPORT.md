@@ -6,7 +6,7 @@ Target: `AStar_pathfind_search @ 0x0042C900`, retry loop, same-zone vs cross-zon
 
 Investigation mode: exhaustive-slice.
 
-Evidence note: the Ghidra MCP tools were not exposed in this session. Findings below are from direct Capstone disassembly of the retail `gamemd.exe` at `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, cross-checked against existing Ghidra reports. No Ghidra mutation was possible or performed.
+Evidence note: the Ghidra MCP tools were not exposed in this session. Findings below are from direct Capstone disassembly of the retail `gamemd.exe` at `<ra2-install>/gamemd.exe`, cross-checked against existing Ghidra reports. No Ghidra mutation was possible or performed.
 
 ## Scope Boundaries
 
@@ -167,19 +167,19 @@ Active in YR: Yes. Evidence: `UpdateHierarchicalEdges` is called directly from t
 
 ## Stale-Doc Replacement Wording
 
-### `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
+### `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
 
 Replace the simplified AStar_pathfind_search retry wording with:
 
 > `AStar_pathfind_search @ 0x0042C900` clears the three per-search edge-exclusion vectors once at search entry, then runs at most five total `AStar_main_loop` attempts when the caller passes the default `-1` search limit, or one total attempt otherwise. A failed hierarchical attempt calls `UpdateHierarchicalEdges @ 0x0042CCD0`, appends per-level sorted undirected zone-edge exclusions, calls `PathfinderClass__Reset`, and reruns `Zone_precheck`; the exclusion vectors are not cleared by this retry reset. Same-zone initial `Zone_precheck` failure disables hierarchy and still runs cell A*, but cross-zone mismatch with hierarchy enabled returns 0 before cell A*. Exhausting hierarchical retries returns failure; there is no unconditional final unrestricted A* fallback.
 
-### `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDERCLASS_GHIDRA_REPORT.md`
+### `docs/research/PATHFINDERCLASS_GHIDRA_REPORT.md`
 
 Replace retry mechanism lines that say "max retries: 5" or imply `UpdateHierarchicalEdges` invalidates whole zones with:
 
 > The default retry budget is five total A* attempts, not five retries after the first attempt. Retry state is per-search: the three edge-exclusion vectors at `Pathfinder+0x74/+0x8C/+0xA4` are cleared once at entry and survive `Reset()` between attempts. `UpdateHierarchicalEdges` appends sorted undirected zone-edge pairs, and `Zone_precheck` skips only matching edges via the `+0x78/+0x84` vector data/count for each level.
 
-### `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+### `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
 
 Add to the `Zone_precheck`/AStar interaction section:
 

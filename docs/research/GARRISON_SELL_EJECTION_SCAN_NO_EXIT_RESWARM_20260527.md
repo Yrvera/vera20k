@@ -114,16 +114,16 @@ No-exit behavior is caller-argument dependent. Active in YR: Yes. Player sell pa
 
 ## 10. Stale Docs / Follow-up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_SELL_DESTRUCTION_EJECTION_PATH_GHIDRA_REPORT.md`: replace "Medium-high. Handoff-critical facts are backed by recent Ghidra reports ... no callable Ghidra MCP tool" with "High for the SellBuilding scan/no-exit slice after fresh read-only Ghidra MCP verification on 2026-05-27; see `GARRISON_SELL_EJECTION_SCAN_NO_EXIT_RESWARM_20260527.md` for current primary evidence."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_NO_EXIT_PARACHUTE_FALLBACK_GHIDRA_REPORT.md`: replace "The branch is reached from live YR sell/destruction callers when ... all four exit-edge scans fail" with "The zero-argument `SpawnUnitsWithParachute(0)` branch is reached from live destruction/red-HP and other zero-second-argument callers when all edge scans fail; normal player sell passes a nonzero second argument and uses the inside-foundation fallback instead."
+- `docs/research/GARRISON_SELL_DESTRUCTION_EJECTION_PATH_GHIDRA_REPORT.md`: replace "Medium-high. Handoff-critical facts are backed by recent Ghidra reports ... no callable Ghidra MCP tool" with "High for the SellBuilding scan/no-exit slice after fresh read-only Ghidra MCP verification on 2026-05-27; see `GARRISON_SELL_EJECTION_SCAN_NO_EXIT_RESWARM_20260527.md` for current primary evidence."
+- `docs/research/GARRISON_NO_EXIT_PARACHUTE_FALLBACK_GHIDRA_REPORT.md`: replace "The branch is reached from live YR sell/destruction callers when ... all four exit-edge scans fail" with "The zero-argument `SpawnUnitsWithParachute(0)` branch is reached from live destruction/red-HP and other zero-second-argument callers when all edge scans fail; normal player sell passes a nonzero second argument and uses the inside-foundation fallback instead."
 
 ## Sources
 
 - Fresh read-only Ghidra decompile: `0x00457DE0`, `0x004585C0`.
 - Fresh read-only Ghidra assembly contexts: `0x00457DEB`, `0x00457E35..0x00458060`, `0x00457E77..0x00457E99`, `0x00458140..0x00458184`, caller sites `0x0044A5C4..0x0044A5CA`, `0x00442635..0x0044263B`, `0x00458223..0x00458229`, `0x0044D898..0x0044D89C`, fallback branch `0x004585CD..0x004585FA`, cleanup `0x00458704..0x00458722`.
 - Prior reports read: `GARRISON_SELLBUILDING_EXIT_CELL_SCAN_ORDER_GHIDRA_REPORT.md`, `GARRISON_NO_EXIT_PARACHUTE_FALLBACK_GHIDRA_REPORT.md`, `GARRISON_EJECTED_INFANTRY_SCATTER_ORDERING_GHIDRA_REPORT.md`, `GARRISON_SELL_DESTRUCTION_EJECTION_PATH_GHIDRA_REPORT.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_sell.rs`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
+- Rust scanned: `src/sim/production/production_sell.rs`.
+- INI checked: `ini/rules.ini`, `ini/rulesmd.ini`.
 
 ## Status
 

@@ -142,13 +142,13 @@ Current Rust delta for this slice: if a future generic radio receiver maps `0x0D
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_MSG_0X0D_SENDERS_ANIM_RESET_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_VTABLE_COMPLETE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_UPDATE_ANIMATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+- `docs/research/RADIO_MSG_0X0D_SENDERS_ANIM_RESET_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_VTABLE_COMPLETE.md`
+- `docs/research/BUILDINGCLASS_UPDATE_ANIMATION_GHIDRA_REPORT.md`
+- `docs/research/miner/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
 - Rust scan: `src/sim/game_entity.rs`, `src/sim/production/production_spawn.rs`, `src/app_building_anim.rs`, `src/app_instances/shp.rs`
 
 ## Status

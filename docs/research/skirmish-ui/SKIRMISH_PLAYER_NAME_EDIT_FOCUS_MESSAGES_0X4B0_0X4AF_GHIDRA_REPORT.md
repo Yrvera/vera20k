@@ -101,10 +101,10 @@ No INI keys control these messages. Active in YR: Yes, because the behavior is s
 
 | Rust surface | Current status | Binary mismatch / implication |
 |---|---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs` | `SkirmishShellState` has no player-name text, edit-focus, text-selection, or caret field in the scanned struct. | Missing old-Edit observable state: focused field, typed buffer, selected/caret state, and repaint-stable focus retention. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs` | render path still pushes literal `"Player"` at `layout.player_name`. | Mismatch: binary displays editable player-name text, not a static literal. This report adds the focus-restoration requirement to the prior visual/text gap. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs` | `PlayerName0x6a0` rect matches prior geometry `(58,59,151,23)`. | Geometry basis is usable; focus/caret state must be layered over this rect. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app.rs` | app has keyboard plumbing generally, but no scanned route that directs text input to Skirmish `0x6A0`. | Missing input focus dispatch for typed characters/backspace/selection/caret while Skirmish shell is active. |
+| `src/ui/skirmish_shell/state.rs` | `SkirmishShellState` has no player-name text, edit-focus, text-selection, or caret field in the scanned struct. | Missing old-Edit observable state: focused field, typed buffer, selected/caret state, and repaint-stable focus retention. |
+| `src/app_skirmish_shell_render.rs` | render path still pushes literal `"Player"` at `layout.player_name`. | Mismatch: binary displays editable player-name text, not a static literal. This report adds the focus-restoration requirement to the prior visual/text gap. |
+| `src/ui/skirmish_shell/layout.rs` | `PlayerName0x6a0` rect matches prior geometry `(58,59,151,23)`. | Geometry basis is usable; focus/caret state must be layered over this rect. |
+| `src/app.rs` | app has keyboard plumbing generally, but no scanned route that directs text input to Skirmish `0x6A0`. | Missing input focus dispatch for typed characters/backspace/selection/caret while Skirmish shell is active. |
 
 ## 7. Coverage Ledger
 
@@ -148,8 +148,8 @@ No INI keys control these messages. Active in YR: Yes, because the behavior is s
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`: replace final-state OQ-13 with: "`[RESOLVED by SKIRMISH_PLAYER_NAME_EDIT_FOCUS_MESSAGES_0X4B0_0X4AF_GHIDRA_REPORT.md] Old `Edit` posts `0x4B0` to itself on `WM_SETFOCUS` after `EM_SETSEL(-1,-1)`; delivery of that posted message triggers the edit callback entry guard, which marks focus-restore-needed and moves focus to `g_hWnd`; the common shell subclass path later enumerates child HWNDs and sends `0x4AF`, which old `Edit` consumes by setting restore-in-progress, restoring focus/style, and returning handled. Rust should model repaint-stable player-name edit focus/caret/input state, not literal Win32 custom messages.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`: replace Remaining Uncertainty bullet "`Exact old-Edit custom `0x4B0` / `0x4AF` focus-restoration choreography remains out of scope...`" with: "`Old-Edit `0x4B0` / `0x4AF` focus restoration is covered by `SKIRMISH_PLAYER_NAME_EDIT_FOCUS_MESSAGES_0X4B0_0X4AF_GHIDRA_REPORT.md`; remaining uncertainty is only exact native previous-proc return for delivered `0x4B0` and full shell-global frame scheduling for every `0x4AF` broadcast condition.`"
+- `docs/research/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`: replace final-state OQ-13 with: "`[RESOLVED by SKIRMISH_PLAYER_NAME_EDIT_FOCUS_MESSAGES_0X4B0_0X4AF_GHIDRA_REPORT.md] Old `Edit` posts `0x4B0` to itself on `WM_SETFOCUS` after `EM_SETSEL(-1,-1)`; delivery of that posted message triggers the edit callback entry guard, which marks focus-restore-needed and moves focus to `g_hWnd`; the common shell subclass path later enumerates child HWNDs and sends `0x4AF`, which old `Edit` consumes by setting restore-in-progress, restoring focus/style, and returning handled. Rust should model repaint-stable player-name edit focus/caret/input state, not literal Win32 custom messages.`"
+- `docs/research/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`: replace Remaining Uncertainty bullet "`Exact old-Edit custom `0x4B0` / `0x4AF` focus-restoration choreography remains out of scope...`" with: "`Old-Edit `0x4B0` / `0x4AF` focus restoration is covered by `SKIRMISH_PLAYER_NAME_EDIT_FOCUS_MESSAGES_0X4B0_0X4AF_GHIDRA_REPORT.md`; remaining uncertainty is only exact native previous-proc return for delivered `0x4B0` and full shell-global frame scheduling for every `0x4AF` broadcast condition.`"
 
 ### Negative Facts / Do Not Do
 
@@ -169,7 +169,7 @@ No INI keys control these messages. Active in YR: Yes, because the behavior is s
 
 - Ghidra read-only decompile: `OwnerDraw_Edit_00614190 @ 0x00614190`, `FUN_0060F9A0 @ 0x0060F9A0`, `ScenarioClass__Read_Scenario @ 0x00684620`, `FUN_007757E0 @ 0x007757E0`.
 - Read-only disassembly from retail `gamemd.exe`: `0x00610CA0..0x006128FE`, focused ranges `0x0061275A..0x006127B9`, `0x00622470..0x006225D1`, and false-positive contexts around `0x004C6EA1`, `0x005EF10D`, `0x00694354`, `0x00694D31`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMPLETE_CHILD_RECT_MATRIX_GHIDRA_REPORT.md`.
-- Rust surfaces scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_PLAYER_NAME_EDIT_CONTROL_0X6A0_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_0X102_COMPLETE_CHILD_RECT_MATRIX_GHIDRA_REPORT.md`.
+- Rust surfaces scanned: `src/ui/skirmish_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`, `src/app.rs`.
 - INI files: no relevant INI keys; this behavior is shell HWND/message driven.
 

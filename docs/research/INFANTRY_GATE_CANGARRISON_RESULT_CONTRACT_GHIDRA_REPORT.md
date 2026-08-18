@@ -188,9 +188,9 @@ Zero-add pass: re-read `0x004525F0`, `0x004A51B0`, and branch `0x0051C4EB..0x005
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` replacement wording: "`BuildingType+0x16B7` is the `Gate=` flag used by `InfantryClass::Can_Enter_Cell` and `BuildingClass::CanGarrison`. `BuildingType+0x16BF` is not the gate flag in this branch. Replace 'CanBeGarrisoned/HasActiveAnim_0x16B7' and 'IsGate_0x16BF' with 'Gate_0x16B7' for the scoped infantry gate branch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` replacement wording for helper role: "`BuildingClass::CanGarrison @ 0x004525F0` is gate passability, not civilian garrison entry. For `Gate=yes`, it requires mission `0x18` and helper `0x004A51B0(Building+0x350)` true; failed infantry caller mapping is allied `3`, enemy action `5`, enemy no-action `7`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for stale confidence/warp wording: "`CanGarrison` is now HIGH-confidence gate passability by direct decompile and infantry caller evidence. `CanDock` calls `TechnoClass::IsMindControlled @ 0x007105E0`; do not label that scoped call as an IsBeingWarped/chrono gate without separate evidence."
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` replacement wording: "`BuildingType+0x16B7` is the `Gate=` flag used by `InfantryClass::Can_Enter_Cell` and `BuildingClass::CanGarrison`. `BuildingType+0x16BF` is not the gate flag in this branch. Replace 'CanBeGarrisoned/HasActiveAnim_0x16B7' and 'IsGate_0x16BF' with 'Gate_0x16B7' for the scoped infantry gate branch."
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` replacement wording for helper role: "`BuildingClass::CanGarrison @ 0x004525F0` is gate passability, not civilian garrison entry. For `Gate=yes`, it requires mission `0x18` and helper `0x004A51B0(Building+0x350)` true; failed infantry caller mapping is allied `3`, enemy action `5`, enemy no-action `7`."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for stale confidence/warp wording: "`CanGarrison` is now HIGH-confidence gate passability by direct decompile and infantry caller evidence. `CanDock` calls `TechnoClass::IsMindControlled @ 0x007105E0`; do not label that scoped call as an IsBeingWarped/chrono gate without separate evidence."
 
 ## Sources
 

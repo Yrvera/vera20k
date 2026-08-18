@@ -88,7 +88,7 @@ Bounded inference, not overclaimed: prior report `SKIRMISH_OWNERDRAW_CALLBACKS_F
 
 ## 7. Current Rust Implementation Status
 
-The repo already contains the literal item-data-to-PCX table in `src/app_skirmish_shell_render.rs:350..363` and preloads the PCX list in `src/render/skirmish_shell_chrome.rs:165..176`. The current renderer uses `push_entry_fit` for flags (`src/app_skirmish_shell_render.rs:154`, calls at `:604..617`), which scales to fit; binary behavior is native-size center-if-smaller and crop-if-larger. Country/side combo interaction remains out of this report's implementation scope, but the trace doc at `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_PLAYER_AI_COMBOS_FLAGS_TRACE.md` records it as absent.
+The repo already contains the literal item-data-to-PCX table in `src/app_skirmish_shell_render.rs:350..363` and preloads the PCX list in `src/render/skirmish_shell_chrome.rs:165..176`. The current renderer uses `push_entry_fit` for flags (`src/app_skirmish_shell_render.rs:154`, calls at `:604..617`), which scales to fit; binary behavior is native-size center-if-smaller and crop-if-larger. Country/side combo interaction remains out of this report's implementation scope, but the trace doc at `docs/research/traces/SKIRMISH_PLAYER_AI_COMBOS_FLAGS_TRACE.md` records it as absent.
 
 ## 8. Coverage Ledger
 
@@ -119,5 +119,5 @@ The repo already contains the literal item-data-to-PCX table in `src/app_skirmis
 
 - Ghidra: `FUN_006AE3F0`, `FUN_006AE6E0`, `FUN_006ACEE0`, `FUN_0060F9A0`, `FUN_004E3B90`, `FUN_004E3A00`, `FUN_004E3F70`, `FUN_004E3690`, `FUN_004E3830`, `FUN_004E37D0`, `FUN_004E3560`, `FUN_00603D30`, `OwnerDraw_Static_006153E0`, `FUN_0061F210`, `FUN_006BA140`, `FUN_006BA580`.
 - Ghidra strings: flag PCX strings at `0x00836328..0x008363AC`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[Countries]`, `[Sides]`, and country `Multiplay=yes` / `Side=` sections.
+- INI: `ini/rulesmd.ini` `[Countries]`, `[Sides]`, and country `Multiplay=yes` / `Side=` sections.
 - Cross-check docs: `SKIRMISH_OWNERDRAW_ASSET_MAPPING_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`, `traces/SKIRMISH_PLAYER_AI_COMBOS_FLAGS_TRACE.md`.

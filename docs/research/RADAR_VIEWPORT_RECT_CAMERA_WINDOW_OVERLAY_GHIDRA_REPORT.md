@@ -275,19 +275,19 @@ Asset role matrix:
 
 ## Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_RENDERING.md`
+`docs/research/RADAR_MINIMAP_RENDERING.md`
 
 Replace the `## 10. Viewport Rectangle Drawing (0x00660540)` section heading and first paragraph with:
 
 > `0x00660540` is the RadarEventClass four-edge line helper called from `TickRadarEvent`, not the ordinary in-game camera-window overlay. The camera-window overlay is computed in `RadarClass::Update @ 0x00656EC0` into `RadarClass+0x14DC..+0x14E8`, dirty-erases the previous border through `MarkCellDirty`, then after generated content/radar events/spy-satellite and primary-surface blit, draws the current outline on `g_SidebarSurface` through vtable `+0x58` using the packed active sidebar text/border color at `RadarClass+0x1208`.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_DEEP_DIVE.md`
+`docs/research/RADAR_MINIMAP_DEEP_DIVE.md`
 
 Replace "Viewport Rectangle = Radar Event" with:
 
 > Radar events and the camera-window overlay are separate in the ordinary in-game minimap path. RadarEventClass uses `0x00660540`/`0x00660730` during event ticking. The camera-window overlay is owned by `RadarClass::Update @ 0x00656EC0`, which computes a sidebar-local rect from the tactical viewport center cell, draws it with `g_SidebarSurface+0x58`, and maintains previous/current rect fields for dirty erasure.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
+`docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
 
 Replace "Draws 4 lines forming the diamond shape on the radar surface / Also draws corresponding viewport indicator lines" with:
 
@@ -296,7 +296,7 @@ Replace "Draws 4 lines forming the diamond shape on the radar surface / Also dra
 ## Sources
 
 - Ghidra read-only decompile/assembly: `RadarClass__Update @ 0x00656EC0`, `RadarClass__Init_For_House @ 0x00652E90`, `SetSidebarTextColor @ 0x0072F440`, `FUN_006D6590 @ 0x006D6590`, `TickRadarEvent @ 0x0065FE00`, `DrawViewportRect @ 0x00660540`, DSurface rectangle wrapper `0x007BAD90`, worker `0x007BADC0`.
-- Local retail binary float read from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `0x007F046C = 60.0f`, `0x007F0468 = 30.0f`, `0x007E2AC8 = 1.0f`, `0x007E5168 = 0.5f`.
+- Local retail binary float read from `<ra2-install>/gamemd.exe`: `0x007F046C = 60.0f`, `0x007F0468 = 30.0f`, `0x007E2AC8 = 1.0f`, `0x007E5168 = 0.5f`.
 - Existing docs referenced: `RADAR_EVENT_PING_PIXEL_SHAPES_COLORS_GHIDRA_REPORT.md`, `MINIMAP_GENERATED_PIXEL_COLOR_PIPELINE_GHIDRA_REPORT.md`, `SOVIET_RADAR_MINIMAP_CONTENT_INSET_GHIDRA_REPORT.md`, `TOOLTIP_MANAGER_SIDEBAR_OVERLAP_PIXELS_GHIDRA_REPORT.md`.
 - Rust scan: `src/render/minimap.rs`, `src/render/minimap_helpers.rs`.
 

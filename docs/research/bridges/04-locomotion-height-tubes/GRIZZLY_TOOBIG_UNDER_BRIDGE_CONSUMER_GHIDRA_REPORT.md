@@ -186,7 +186,7 @@ Adversarial corner checks:
 
 ## Stale Docs / Follow-up Docs
 
-Replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md` lines that currently say the Grizzly cannot path under bridges:
+Replacement wording for `docs/research/units/allied/MTNK.md` lines that currently say the Grizzly cannot path under bridges:
 
 > `TooBigToFitUnderBridge=true` is live stock MTNK content and parses to `UnitTypeClass+0xE16`, but verified `gamemd.exe` movement/pathfinding does not gate Grizzly cell entry on this flag. The verified consumers are UnitClass draw methods for bridge-edge sprite/shadow/body Z handling; under-bridge movement legality comes from ordinary terrain, bridge height/bridgehead, MovementZone/SpeedType, tube, overlay, and occupancy logic.
 
@@ -199,6 +199,6 @@ None for the target question. The exact pixel-level draw result of the bridge-fu
 - Ghidra decompiles: `UnitTypeClass__ReadINI @ 0x0074774E`; `UnitClass__Draw_Sprite_With_BridgeFudge @ 0x0073B140`; `UnitClass__Draw_Body_And_Turret @ 0x0073C5F0`; `UnitClass__Can_Enter_Cell @ 0x0073F0A0`; `CheckBridgeTraversal @ 0x004D9C60`.
 - Ghidra assembly contexts: `0x0073B1B0`, `0x0073CE0D`, `0x00429F54`, `0x00747778`.
 - Ghidra xrefs: `0x007F61CC`, `0x007F61C8`, `0x007F5E1C`.
-- Prior report cross-check: `C:/Users/enok/Documents/ra2-rust-game-docs/TOO_BIG_TO_FIT_UNDER_BRIDGE_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
+- Prior report cross-check: `docs/research/TOO_BIG_TO_FIT_UNDER_BRIDGE_GHIDRA_REPORT.md`.
+- INI: `ini/rulesmd.ini`.
 - Rust scanned: `src/sim/movement/movement_path.rs`, `src/sim/pathfinding/cell_entry.rs`, `src/sim/pathfinding/core.rs`.

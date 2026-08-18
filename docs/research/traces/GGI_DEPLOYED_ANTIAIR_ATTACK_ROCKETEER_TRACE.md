@@ -7,12 +7,12 @@ Status: PARTIAL. The current Rust path fails before the expected gamemd firing s
 ## Evidence Used
 
 - Research docs checked first:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/GGI.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/JUMPJET.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/FIRE_AT_PIPELINE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_INRANGE_DISTANCE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETCLASS_TRAJECTORY_AND_HOMING.md`
+  - `docs/research/GGI_GHIDRA_REPORT.md`
+  - `docs/research/units/allied/GGI.md`
+  - `docs/research/units/allied/JUMPJET.md`
+  - `docs/research/FIRE_AT_PIPELINE_GHIDRA_REPORT.md`
+  - `docs/research/TECHNOCLASS_INRANGE_DISTANCE_GHIDRA_REPORT.md`
+  - `docs/research/BULLETCLASS_TRAJECTORY_AND_HOMING.md`
 - INI evidence:
   - `ini/rulesmd.ini:3863` `[GGI]`
   - `ini/rulesmd.ini:3916` `[JUMPJET]`

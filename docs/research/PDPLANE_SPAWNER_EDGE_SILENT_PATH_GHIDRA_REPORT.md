@@ -285,6 +285,6 @@ Stale Docs / Follow-up Docs:
 
 - Ghidra decompiled/read-only: `FUN_0065E660`, `FUN_0050DA80`, `FUN_004AA440`, `FUN_004AAB30`, `CargoClass__AddPassenger`, `SuperClass__Launch`, `FUN_0041CAA0`.
 - Ghidra assembly contexts: `0x0065E691..0x0065E6B2`, `0x0065E6C5..0x0065E6F6`, `0x0065E73F..0x0065E7F5`, `0x004AAB3D..0x004AAB4B`, `0x004733A0..0x0047342C`, `0x006CD3F1..0x006CD421`, `0x006CD463..0x006CD493`, `0x006CD4BB..0x006CD4EB`, `0x006CD625..0x006CD655`.
-- Prior report referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`.
+- Prior report referenced: `docs/research/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`.
 - INI sources checked: `ini/rulesmd.ini` `[General]` paradrop lists, `[PDPLANE]`, `[ParaDropSpecial]`, `[AmericanParaDropSpecial]`; `ini/artmd.ini` `[PDPLANE]`.
 - Rust surfaces scanned: `src/sim/superweapon/paradrop.rs`, `src/sim/world/edge_cell.rs`, `src/sim/passenger.rs`, `src/sim/world/world_spawn.rs`.

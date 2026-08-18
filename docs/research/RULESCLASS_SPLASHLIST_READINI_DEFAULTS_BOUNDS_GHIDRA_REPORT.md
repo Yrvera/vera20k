@@ -206,11 +206,11 @@ This report has no final draw-composition surface. It verifies visual asset refe
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMCLASS_BOUNCER_WATER_SPLASH_BRANCH_GHIDRA_REPORT.md` replacement for its deferred parser note:
+- `docs/research/ANIMCLASS_BOUNCER_WATER_SPLASH_BRANCH_GHIDRA_REPORT.md` replacement for its deferred parser note:
   `RulesClass__ReadCombatDamage @ 0x0066C18A..0x0066C287 reads [CombatDamage] SplashList= into the DynamicVectorClass<AnimTypeClass*> at RulesClass+0xBC0. The buffer pointer is +0xBC4 and active count is +0xBD0. Missing or trim-empty SplashList preserves the existing vector; stock H2O_EXP3,H2O_EXP2,H2O_EXP1 comes from rules.ini/rulesmd.ini, not a hardcoded binary fallback. AnimClass::AI reads first entry for non-meteor water impacts and last entry for meteor water impacts with no empty-list guard.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMATION_SOUNDS_GHIDRA_REPORT.md` line claiming `[General] SplashList=` should be replaced with:
+- `docs/research/ANIMATION_SOUNDS_GHIDRA_REPORT.md` line claiming `[General] SplashList=` should be replaced with:
   `SplashList is a [CombatDamage] rules key, read by RulesClass__ReadCombatDamage into RulesClass+0xBC0; [General] Wake= is the separate wake animation field.`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/VOXELANIMCLASS_GHIDRA_REPORT.md` wording saying "count at some offset" should be replaced with:
+- `docs/research/VOXELANIMCLASS_GHIDRA_REPORT.md` wording saying "count at some offset" should be replaced with:
   `The SplashList DynamicVectorClass begins at RulesClass+0xBC0; +0xBC4 is the AnimTypeClass** buffer pointer, +0xBC8 is capacity, +0xBD0 is active count, and +0xBD4 is grow amount.`
 
 ## Sources
@@ -222,4 +222,4 @@ This report has no final draw-composition surface. It verifies visual asset refe
 - Ghidra read-only decompile: `DynamicVectorClass__Constructor @ 0x00525250`, `DynamicVectorClass__Add @ 0x005253B0`, `DynamicVectorClass__CopyFrom @ 0x00525060`, `VectorClass__Clear @ 0x005251C0`
 - Ghidra read-only decompile/disassembly context: `AnimClass::AI @ 0x00423AC0`, consumer reads `0x00423D29..0x00423D35`, `0x00423DD2..0x00423DD8`
 - INI checked: `ini/rulesmd.ini:902`, `ini/rules.ini:722`, `ini/rulesmd.ini:525`, `ini/rules.ini:519`
-- Prior report referenced: `C:/Users/enok/Documents/ra2-rust-game/docs/research/ANIMCLASS_BOUNCER_WATER_SPLASH_BRANCH_GHIDRA_REPORT.md`
+- Prior report referenced: `docs/research/ANIMCLASS_BOUNCER_WATER_SPLASH_BRANCH_GHIDRA_REPORT.md`

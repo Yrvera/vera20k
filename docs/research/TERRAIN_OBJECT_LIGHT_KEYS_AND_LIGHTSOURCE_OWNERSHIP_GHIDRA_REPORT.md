@@ -234,7 +234,7 @@ None for the scoped standard-YR terrain-object LightSource ownership question.
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TERRAIN_CLASS_GHIDRA_REPORT.md` section 5 currently says: "Light-related keys on TIBTRE (`LightVisibility`, `LightIntensity`, `LightRedTint`, `LightGreenTint`, `LightBlueTint`) are not read by TerrainTypeClass::ReadINI_Full - they are consumed by a separate light-source parser; confirming the exact reader is out of scope for this report but is an obvious next investigation."
+- `docs/research/TERRAIN_CLASS_GHIDRA_REPORT.md` section 5 currently says: "Light-related keys on TIBTRE (`LightVisibility`, `LightIntensity`, `LightRedTint`, `LightGreenTint`, `LightBlueTint`) are not read by TerrainTypeClass::ReadINI_Full - they are consumed by a separate light-source parser; confirming the exact reader is out of scope for this report but is an obvious next investigation."
 - Replacement wording: "Light-related keys on TIBTRE (`LightVisibility`, `LightIntensity`, `LightRedTint`, `LightGreenTint`, `LightBlueTint`) are not read by `TerrainTypeClass::ReadINI_Full` and are not consumed by any terrain light-source parser in standard YR. The five key strings are owned by `BuildingTypeClass_ReadINI_Water`; terrain objects consume existing cell lighting when drawn but do not create `LightSourceClass` data."
 
 ## Sources

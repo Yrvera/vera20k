@@ -182,7 +182,7 @@ Observed delta: stock path direction matches this report. Conditional forced-tra
 ## 8. Open Questions - Final State Of The Investigation Log
 
 - `[RESOLVED] OQ-01 - What mode applies? -> exhaustive-slice for the bounded Force_Track 0x47 exit condition and first-track-point static behavior.` (evidence: scoped target and primary functions)
-- `[RESOLVED] OQ-02 - Does the output report already exist? -> No.` (evidence: `Test-Path C:/Users/enok/Documents/ra2-rust-game-docs/miner/CMIN_FORCE_TRACK_0X47_EXIT_FIRST_VISIBLE_MOVEMENT_AND_FACING_GHIDRA_REPORT.md`)
+- `[RESOLVED] OQ-02 - Does the output report already exist? -> No.` (evidence: `Test-Path docs/research/miner/CMIN_FORCE_TRACK_0X47_EXIT_FIRST_VISIBLE_MOVEMENT_AND_FACING_GHIDRA_REPORT.md`)
 - `[RESOLVED] OQ-03 - Does stock standard cargo-empty completion call Force_Track(0x47)? -> No; stock state 4 is on the zero-+0x2E4 branch and has no vtable +0x70 call or 0x47 push.` (evidence: `0x0073D630`, `0x0073E17F..0x0073E2BE`)
 - `[RESOLVED] OQ-04 - When does ReleaseDockedHarvester call Force_Track? -> Only after nonzero reciprocal link path, docked unit exists, and unit type query returns Drive=1.` (evidence: `0x0073D66D`, `0x004596DD`, `0x00459751..0x00459760`)
 - `[RESOLVED] OQ-05 - Does UndockUnit call Force_Track for interrupts? -> Yes, under nonzero building+0x2E4 and Drive=1; no normal stock caller.` (evidence: `0x004593A0` xrefs and decompile)
@@ -224,9 +224,9 @@ Observed delta: stock path direction matches this report. Conditional forced-tra
 
 ## 11. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_FORCE_TRACK_0X47_REFINERY_EXIT_GHIDRA_REPORT.md`: replace "standard `[CMIN]` reaches the normal exit as a harvester unloading at `[GAREFN]`/`[NAREFN]`" with "standard stock `[CMIN] -> [GAREFN]/[NAREFN]` cargo-empty completion exits through zero-link `UnitClass::Mission_Deploy_Building` state 4 and does not call `Force_Track(0x47)`; `Force_Track(0x47)` is conditional on nonzero reciprocal-link release or interrupt ejection."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`: replace "ILocomotion::Stop (vtable+0x58)" with "ILocomotion::Power_On (vtable+0x58), which sets the powered byte and calls slot `+0x60`; it is not Stop_Moving."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_POST_UNLOAD_EXIT_ANCHOR_GHIDRA_REPORT.md`: replace "the forced-track prelude starts from the docked/pad position" in any stock-normal framing with "the forced-track prelude starts only in conditional reciprocal-link/interrupt contexts; stock zero-link state 4 has no forced-track prelude."
+- `docs/research/miner/CHRONO_MINER_FORCE_TRACK_0X47_REFINERY_EXIT_GHIDRA_REPORT.md`: replace "standard `[CMIN]` reaches the normal exit as a harvester unloading at `[GAREFN]`/`[NAREFN]`" with "standard stock `[CMIN] -> [GAREFN]/[NAREFN]` cargo-empty completion exits through zero-link `UnitClass::Mission_Deploy_Building` state 4 and does not call `Force_Track(0x47)`; `Force_Track(0x47)` is conditional on nonzero reciprocal-link release or interrupt ejection."
+- `docs/research/miner/BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`: replace "ILocomotion::Stop (vtable+0x58)" with "ILocomotion::Power_On (vtable+0x58), which sets the powered byte and calls slot `+0x60`; it is not Stop_Moving."
+- `docs/research/miner/CHRONO_MINER_POST_UNLOAD_EXIT_ANCHOR_GHIDRA_REPORT.md`: replace "the forced-track prelude starts from the docked/pad position" in any stock-normal framing with "the forced-track prelude starts only in conditional reciprocal-link/interrupt contexts; stock zero-link state 4 has no forced-track prelude."
 
 ## Remaining Uncertainty
 
@@ -240,7 +240,7 @@ Observed delta: stock path direction matches this report. Conditional forced-tra
 - Ghidra assembly/read-only: `0x0073D63B`, `0x0073D641`, `0x0073D66D`, `0x0073E1F6`, `0x0073E24F`, `0x0073E275`, `0x004596DD`, `0x00459709`, `0x00459726`, `0x0045972C`, `0x00459751`, `0x00459760`, `0x00459767`, `0x004B0C53`, `0x004B0C56`, `0x004B0D35`, `0x004B0D52`, `0x004B0D59`.
 - Ghidra memory/read-only: `0x007E7E7C` TurnTrack[71], `0x007E7B18` RawTrack[15], `0x007E7968` Track15 points.
 - Prior docs referenced: `STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`, `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`, `HARV_POST_UNLOAD_EXIT_PATH_GHIDRA_REPORT.md`, `BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`, `RELEASEDOCKEDHARVESTER_0x4595C0_GHIDRA_REPORT.md`, `TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_TIMING_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
+- INI checked: `ini/rulesmd.ini`, `ini/artmd.ini`.
 - Rust scanned: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`, `src/sim/movement/drive_track.rs`, `src/sim/components.rs`.
 
 **Status:** PARTIAL for the full visual target because the runtime first rendered pixel/frame after a conditional `Force_Track(0x47)` install remains explicitly deferred. COMPLETE for static branch conditions, track meaning, and Rust acceptance boundaries.

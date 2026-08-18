@@ -30,10 +30,10 @@ Status: COMPLETE for the scoped static/default no-lamp scenario. No Rust, INI, o
   - high clamp is `>1999 -> 2000`; low clamp is `<1 -> 0`.
 - `LIGHTING_DRAW_CONSUMERS_CELL_FIELDS_GHIDRA_REPORT.md` verifies terrain tiles, overlays, terrain objects, Techno SHPs, and some anims consume the cell light bundle/scalars in active standard YR draw paths.
 - Current Rust evidence:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:59` default `ambient=1.0`, `red=1.0`, `green=1.0`, `blue=1.0`, `ground=0.20`, `level=0.032`.
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:326` computes `ambient + level * z - ground`.
-  - `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:348` builds `CellLightGrid` with RGB profile `[red, green, blue]` and `common_scalar = cell_light_scalar(config, z)`.
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:392` also writes a uniform `terrain_tint(config)` into resolved terrain cells before render setup.
+  - `src/map/lighting.rs:59` default `ambient=1.0`, `red=1.0`, `green=1.0`, `blue=1.0`, `ground=0.20`, `level=0.032`.
+  - `src/map/lighting.rs:326` computes `ambient + level * z - ground`.
+  - `src/map/lighting.rs:348` builds `CellLightGrid` with RGB profile `[red, green, blue]` and `common_scalar = cell_light_scalar(config, z)`.
+  - `src/app_init.rs:392` also writes a uniform `terrain_tint(config)` into resolved terrain cells before render setup.
 
 ## Stage Verdicts
 

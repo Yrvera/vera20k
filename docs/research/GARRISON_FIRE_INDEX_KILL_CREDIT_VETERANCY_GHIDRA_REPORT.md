@@ -152,7 +152,7 @@ Current Rust has an empty-garrison fire gate matching `CanBeOccupied && empty ca
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`: replace "Which occupant fires: The mechanism for selecting which occupant fires from the garrison (rotating through them) was not fully traced. `BuildingClass+0x664` may be the current firing index." with "`BuildingClass+0x69C` is the verified ordinary garrison current fire index for the occupant DynamicVector path. `BuildingClass::GetWeapon` reads `Items[+0x69C]` after an `IsOccupied` and bounds check, `TechnoClass::Fire_At` advances `+0x69C = (+0x69C + 1) % GetOccupantCount()` after successful launch, and `TechnoClass::RegisterDestruction` rereads live `Items[+0x69C]` for occupied-building kill credit."
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`: replace "Which occupant fires: The mechanism for selecting which occupant fires from the garrison (rotating through them) was not fully traced. `BuildingClass+0x664` may be the current firing index." with "`BuildingClass+0x69C` is the verified ordinary garrison current fire index for the occupant DynamicVector path. `BuildingClass::GetWeapon` reads `Items[+0x69C]` after an `IsOccupied` and bounds check, `TechnoClass::Fire_At` advances `+0x69C = (+0x69C + 1) % GetOccupantCount()` after successful launch, and `TechnoClass::RegisterDestruction` rereads live `Items[+0x69C]` for occupied-building kill credit."
 
 ## 10. Sources
 

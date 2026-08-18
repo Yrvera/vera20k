@@ -4,7 +4,7 @@
 
 **Scope lock:** One concrete mechanic only: direction-index `8` as a tube-step reference point, plus valid non-8 table stepping used by the same helper. Adjacent pathfinding marker/cost behavior and invalid direction values are recorded only as adjacent findings.
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DIRECTION8_TUBE_STEP_REFERENCE_TRACE.md`
+**Report path:** `docs/research/traces/DIRECTION8_TUBE_STEP_REFERENCE_TRACE.md`
 
 ## Verdict
 
@@ -12,11 +12,11 @@ PASS: 4 | FAIL: 0 | UNCHECKED: 1 | NOT-IMPLEMENTED: 0
 
 ## Evidence Inputs
 
-- Existing verified report: `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
-- Existing verified report: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
-- Rust helper: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:298`
-- Rust tube fact shape: `C:/Users/enok/Documents/ra2-rust-game/src/map/tube_facts.rs:30`
-- Rust low-bridge tube movement consumer: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/tube_movement.rs:57`
+- Existing verified report: `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
+- Existing verified report: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
+- Rust helper: `src/map/resolved_terrain.rs:298`
+- Rust tube fact shape: `src/map/tube_facts.rs:30`
+- Rust low-bridge tube movement consumer: `src/sim/movement/tube_movement.rs:57`
 
 ## Active YR Confirmation
 

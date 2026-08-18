@@ -93,8 +93,8 @@ Active in YR: Yes for the selected-building path; no visible effect because the 
   - `0x007E26EC`, `0x007E4304`, `0x007E90DC`, `0x007EB4A0`, `0x007F4DA8`, `0x007F60B8`
   - adjacent blocks at `+0x440..+0x44C` for the same six vtables
 - Ghidra search_byte_patterns: `c0 60 6f 00`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_VTABLE_COMPLETE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_VTABLE_COMPLETE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_VTABLE_COMPLETE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:755`
+- `docs/research/ADDRESS_MAP.md`
+- `docs/research/TECHNOCLASS_VTABLE_COMPLETE.md`
+- `docs/research/FOOTCLASS_VTABLE_COMPLETE.md`
+- `docs/research/BUILDINGCLASS_VTABLE_COMPLETE.md`
+- `ini/rulesmd.ini:755`

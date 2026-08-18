@@ -210,11 +210,11 @@ Additional status from this follow-up:
 ## Sources
 
 - Ghidra memory/disassembly reads from `gamemd.exe`: `0x0051A360`, `0x006DD680`, `0x006E3FB0`, `0x0051FD80`, `0x006FF050`, `0x0070C610`, `0x0070DDD0`, `0x0070DE00`, `0x00776EB0`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/OBJECTCLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETTYPECLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BULLET_CLASS_AI_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIRE_AT_PIPELINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`
+- `docs/research/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
+- `docs/research/OBJECTCLASS_GHIDRA_REPORT.md`
+- `docs/research/BULLETTYPECLASS_GHIDRA_REPORT.md`
+- `docs/research/BULLET_CLASS_AI_GHIDRA_REPORT.md`
+- `docs/research/FIRE_AT_PIPELINE_GHIDRA_REPORT.md`
+- `docs/research/ADDRESS_MAP.md`
 - `ini/rulesmd.ini`, `ini/rules.ini` grep for `Inviso=yes`, infantry-enter and transport/garrison keys.
 - Rust audit files: `src/sim/occupancy.rs`, `src/sim/game_entity.rs`, `src/sim/movement/movement_bridge.rs`, `src/sim/movement/movement_tick.rs`, `src/sim/movement/movement_step.rs`, `src/sim/world/bridge_orchestrator.rs`, `src/sim/world/world_spawn.rs`.

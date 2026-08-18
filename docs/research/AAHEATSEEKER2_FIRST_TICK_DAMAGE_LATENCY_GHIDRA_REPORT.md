@@ -117,5 +117,5 @@ Important boundary: the true aircraft arm override makes same-frame detector det
   - `AAHEATSEEKER2_TARGET_TYPE_HOMING_GROUND_ROCKETEER_AIRCRAFT_GHIDRA_REPORT.md`
   - `BULLETTYPECLASS_GHIDRA_REPORT.md`
 - INI/art:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+  - `ini/rulesmd.ini`
+  - `ini/artmd.ini`

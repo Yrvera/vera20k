@@ -180,8 +180,8 @@ This is a clean-Rust equivalent surface, but the binary slice requires three obs
 - Ghidra `decompile_function 00739EC0` plus assembly contexts at `0x0073A558`, `0x0073A5C3`, `0x0073A936`.
 - Ghidra `decompile_function 00741970` plus assembly contexts at `0x00741B4A`, `0x00741B97`.
 - Ghidra `decompile_function 0073D630` plus assembly context at `0x0073E1F6`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_RECEIVE_RADIO_DOCK_CASES_NAVCOM_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_00739EC0_NAVCOM_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_DOCK_ARRIVAL_LINK_TIMING_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_PAD_ARRIVAL_FIELD_WRITES_GHIDRA_REPORT.md`.
+- `docs/research/TECHNOCLASS_RECEIVE_RADIO_DOCK_CASES_NAVCOM_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_00739EC0_NAVCOM_GHIDRA_REPORT.md`.
+- `docs/research/miner/CHRONO_MINER_DOCK_ARRIVAL_LINK_TIMING_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_PAD_ARRIVAL_FIELD_WRITES_GHIDRA_REPORT.md`.
 - `ini/rulesmd.ini`, `ini/artmd.ini`.

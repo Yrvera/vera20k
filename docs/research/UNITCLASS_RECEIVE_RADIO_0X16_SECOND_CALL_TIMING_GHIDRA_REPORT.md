@@ -197,7 +197,7 @@ with:
 - Ghidra `decompile_function 0x004B0EF0` - `DriveLocomotionClass::Do_Turn`.
 - Ghidra `decompile_function 0x004C9220` - `RateTimer::Set`.
 - Ghidra `decompile_function 0x004C93D0` - `RateTimer::Current`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_0x16_RECEIVER_UNITCLASS_CASE_16_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REFINERY_DOCK_0X16_BRIDGE_VERIFICATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_0X12_MOVE_TO_CELL_PAYLOAD_AND_TIMESTAMPS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
+- `docs/research/RADIO_0x16_RECEIVER_UNITCLASS_CASE_16_GHIDRA_REPORT.md`
+- `docs/research/REFINERY_DOCK_0X16_BRIDGE_VERIFICATION_GHIDRA_REPORT.md`
+- `docs/research/RADIO_0X12_MOVE_TO_CELL_PAYLOAD_AND_TIMESTAMPS_GHIDRA_REPORT.md`
+- `src/sim/miner/miner_dock_sequence.rs`

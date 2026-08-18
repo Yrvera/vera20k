@@ -158,7 +158,7 @@ Read-only scan only; no Rust files were changed.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_CAN_ENTER_CELL_ARGUMENTS_GHIDRA_REPORT.md` section 10 should replace:
+- `docs/research/BRIDGE_RUNTIME_CAN_ENTER_CELL_ARGUMENTS_GHIDRA_REPORT.md` section 10 should replace:
   - "`DriveLocomotionClass::Process_Movement` also has `Can_Enter_Cell` sites outside `Process_Drive_Track`; those were not part of this target and should get a separate argument audit.`"
   - with: "`DriveLocomotionClass::Process_Movement` outside `Process_Drive_Track` has four audited runtime sites (`0x004B2B17`, `0x004B2FF9`, `0x004B34C0`, `0x004B4120`); each passes `(target, direction, current_effective_height, parent/current=0, arg5=1)`."
 - Same section should replace:
@@ -170,16 +170,16 @@ Read-only scan only; no Rust files were changed.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_CAN_ENTER_CELL_CALLSITE_MATRIX_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_CAN_ENTER_CELL_ARGUMENTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CHECK_TRAVERSAL_PARENT_FALLBACK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_HOVER_HEIGHT_MINUS_ONE_RUNTIME_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_JUMPJET_HEIGHT_MINUS_ONE_RUNTIME_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_BRIDGE_TUNNEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/tube_movement.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- `docs/research/BRIDGE_RUNTIME_CAN_ENTER_CELL_CALLSITE_MATRIX_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RUNTIME_CAN_ENTER_CELL_ARGUMENTS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_CHECK_TRAVERSAL_PARENT_FALLBACK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_HOVER_HEIGHT_MINUS_ONE_RUNTIME_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_JUMPJET_HEIGHT_MINUS_ONE_RUNTIME_GHIDRA_REPORT.md`
+- `docs/research/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
+- `docs/research/UNIT_CAN_ENTER_CELL_BRIDGE_TUNNEL_GHIDRA_REPORT.md`
+- `src/sim/movement/movement_occupancy.rs`
+- `src/sim/movement/movement_step.rs`
+- `src/sim/pathfinding/core.rs`
+- `src/sim/pathfinding/cell_entry.rs`
+- `src/sim/movement/tube_movement.rs`
+- `ini/rulesmd.ini`

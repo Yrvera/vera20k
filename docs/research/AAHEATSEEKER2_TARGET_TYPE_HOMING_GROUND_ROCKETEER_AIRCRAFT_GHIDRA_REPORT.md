@@ -126,7 +126,7 @@ For `AAHeatSeeker2`, both `AA=yes` and `AG=yes` are set, so the legality result 
   - `AircraftClass::WhatAmI @ 0x0041C180` assembly context
   - `TechnoTypeClass::ReadINI` parse site for `ConsideredAircraft` at `0x00714FE9..0x00715003`
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+  - `ini/rulesmd.ini`
 - Prior reports:
   - `GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
   - `WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md`

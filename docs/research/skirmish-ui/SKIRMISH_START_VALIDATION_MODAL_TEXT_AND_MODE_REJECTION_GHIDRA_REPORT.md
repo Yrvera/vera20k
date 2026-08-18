@@ -22,7 +22,7 @@ For standard local YR Skirmish data, no selectable retail `MPModes +0x14` method
 
 ## 2. String ID To Visible Text
 
-Decoded text source: direct read of retail `C:/Users/enok/Documents/Command and Conquer Red Alert II/langmd.mix` CSF label entries. Labels are stored as plain ASCII in the CSF body; values were decoded by bitwise-NOT UTF-16LE, matching `src/assets/csf_file.rs`. `language.mix` corroborates `TXT_SCENARIO_TOO_SMALL`, `TXT_NEED_AT_LEAST_TWO_PLAYERS`, and `TXT_OK`; `TXT_CANNOT_ALLY` is YR-only in `langmd.mix`.
+Decoded text source: direct read of retail `<ra2-install>/langmd.mix` CSF label entries. Labels are stored as plain ASCII in the CSF body; values were decoded by bitwise-NOT UTF-16LE, matching `src/assets/csf_file.rs`. `language.mix` corroborates `TXT_SCENARIO_TOO_SMALL`, `TXT_NEED_AT_LEAST_TWO_PLAYERS`, and `TXT_OK`; `TXT_CANNOT_ALLY` is YR-only in `langmd.mix`.
 
 | ID | Load-site key evidence | CSF key | Retail English visible text | Modal role | Active in YR |
 |---:|---|---|---|---|---|
@@ -100,15 +100,15 @@ Rust now has data-level capacity, no-opponent, and same-explicit-team validation
 
 ## Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace "Exact localized text for numeric string IDs `0x437/0x438/0x43F/0x440/0x457/0x458/0x469` was not decoded; IDs and call sites are verified." with "The Start validation IDs resolve through CSF keys, not directly to unique message strings: `0x437 -> TXT_SCENARIO_TOO_SMALL` (`This map has a %d player max. The max includes human and computer players.`), `0x43F -> TXT_NEED_AT_LEAST_TWO_PLAYERS` (`You need at least two players to start the game!`), `0x457 -> TXT_CANNOT_ALLY` (`Must have more than one team to start a game!`), and `0x438/0x440/0x458/0x469 -> TXT_OK` (`OK`). The generic mode rejection message body comes from the mode output object; `0x469` is the OK/control text."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace "Whether any retail/custom selected mode `+0x14` method writes output dword exactly `0x617` remains open" with "No stock/local retail selectable MPModes `+0x14` method writes output dword exactly `0x617`: Battle/ManBattle accept, FreeForAll/Cooperative accept after side effects, Unholy false leaves output zero, and Siege is not in stock `MPModesMD.ini` while its binary false paths write allocated string pointers via `FUN_007B6880`, not literal `0x617`. Modded/custom mode objects remain out of scope."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace "Exact localized text for numeric string IDs `0x437/0x438/0x43F/0x440/0x457/0x458/0x469` was not decoded; IDs and call sites are verified." with "The Start validation IDs resolve through CSF keys, not directly to unique message strings: `0x437 -> TXT_SCENARIO_TOO_SMALL` (`This map has a %d player max. The max includes human and computer players.`), `0x43F -> TXT_NEED_AT_LEAST_TWO_PLAYERS` (`You need at least two players to start the game!`), `0x457 -> TXT_CANNOT_ALLY` (`Must have more than one team to start a game!`), and `0x438/0x440/0x458/0x469 -> TXT_OK` (`OK`). The generic mode rejection message body comes from the mode output object; `0x469` is the OK/control text."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace "Whether any retail/custom selected mode `+0x14` method writes output dword exactly `0x617` remains open" with "No stock/local retail selectable MPModes `+0x14` method writes output dword exactly `0x617`: Battle/ManBattle accept, FreeForAll/Cooperative accept after side effects, Unholy false leaves output zero, and Siege is not in stock `MPModesMD.ini` while its binary false paths write allocated string pointers via `FUN_007B6880`, not literal `0x617`. Modded/custom mode objects remain out of scope."
 
 ## Sources
 
 - Ghidra read-only decompile/assembly: `0x006ACEE0`, `0x00734E60`, `0x005D6310`, `0x005CA6D0`, `0x005CB400`, `0x005C5D40`, `0x005C1D80`, `0x007B66C0`, `0x007B6760`, `0x007B6880`, `0x007B7100`.
 - Ghidra assembly contexts: `0x006AD073..0x006AD316`, `0x005CA701..0x005CA7BF`, `0x006AD2BA..0x006AD346`.
 - Binary PE string reads from local retail `gamemd.exe`: `0x0082C9FC`, `0x0083FC68`, `0x00831450`, `0x00825FB0`, `0x0083FC4C`, Siege keys at `0x0082FEE8..0x0082FF2C`.
-- Asset text decoded from local retail `C:/Users/enok/Documents/Command and Conquer Red Alert II/langmd.mix`; method: locate CSF label entry by ASCII key, decode value as bitwise-NOT UTF-16LE.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- Asset text decoded from local retail `<ra2-install>/langmd.mix`; method: locate CSF label entry by ASCII key, decode value as bitwise-NOT UTF-16LE.
+- INI checked: `ini/mpmodesmd.ini`.
 - Prior reports referenced: `SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`.
 - Rust scanned: `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/app.rs`.

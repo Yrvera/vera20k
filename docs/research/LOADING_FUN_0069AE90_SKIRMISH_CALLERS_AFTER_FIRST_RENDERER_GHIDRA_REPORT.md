@@ -159,7 +159,7 @@ Proposed tests:
 
 ## 12. Stale Docs / Follow-up Docs
 
-Replace the milestone table in `C:/Users/enok/Documents/ra2-rust-game-docs/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md` where it summarizes "Side/basic setup" as only `50`, `58` with:
+Replace the milestone table in `docs/research/LOADING_PROGRESS_CALLBACK_VISIBLE_UI_GHIDRA_REPORT.md` where it summarizes "Side/basic setup" as only `50`, `58` with:
 
 > Side/basic setup emits `50` in `ScenarioClass__Full_Init`, then `ScenarioClass__Read_INI_Basic` emits `55`, `58`, and `60` before returning. The following outer `FUN_0069AE90(58)` and later outer `FUN_0069AE90(60)` are real call sites but non-advancing visible no-ops on normal selected-map Skirmish because the current progress has already reached `60`.
 

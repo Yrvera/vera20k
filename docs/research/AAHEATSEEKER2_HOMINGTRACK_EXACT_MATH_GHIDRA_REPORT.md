@@ -186,8 +186,8 @@ Active in YR: Yes for velocity and position writes. Conditional/deferred for exa
   - `0x007E2818 = -32768/pi`
   - `0x007E2820 = pi/2`
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Prior reports:
   - `GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
   - `AAHEATSEEKER2_SPEED_LAUNCH_VECTOR_ACCELERATION_GHIDRA_REPORT.md`

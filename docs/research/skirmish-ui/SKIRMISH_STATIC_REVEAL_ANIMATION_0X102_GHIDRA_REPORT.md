@@ -125,10 +125,10 @@ No INI keys drive this slice. Timing and reveal count/range are hardcoded shell-
 
 Rust currently renders these labels in steady state only:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs` has `push_static_label_draw`, which sends the full label to `push_text_draw` and then `shell_text::draw_in_rect`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/shell_text.rs::draw_in_rect` supports rect clipping and alignment, but has no reveal count/range parameter.
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs::SkirmishShellState` has no static reveal state, timer state, transition event, or per-label reveal count.
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs` already matches the settled right-panel text rects; this report does not ask for geometry changes.
+- `src/app_skirmish_shell_render.rs` has `push_static_label_draw`, which sends the full label to `push_text_draw` and then `shell_text::draw_in_rect`.
+- `src/render/shell_text.rs::draw_in_rect` supports rect clipping and alignment, but has no reveal count/range parameter.
+- `src/ui/skirmish_shell/state.rs::SkirmishShellState` has no static reveal state, timer state, transition event, or per-label reveal count.
+- `src/ui/skirmish_shell/layout.rs` already matches the settled right-panel text rects; this report does not ask for geometry changes.
 
 Current Rust delta: missing transition-triggered reveal state. However, Rust should not hide these labels on first paint unless it also models the shell transition/start event that sends `0x4EC -> 0x4EE`; otherwise the UI would regress to blank right-panel text.
 
@@ -192,13 +192,13 @@ Current Rust delta: missing transition-triggered reveal state. However, Rust sho
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the handoff phrase "add reveal timing only if implementing first-paint animation" with "add reveal timing only as a `0x4EC -> 0x4EE` transition/text-update animation; standard common first paint and `0x4ED` do not start reveal."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "This is active when the shell posts/sends `0x4EC`; `FUN_006071E0` contains a confirmed `SendMessageA(parent, 0x4EC, 0, 0)` after shell transition playback." with "`FUN_006071E0` sends `0x4EC` only in the nonzero-`DL` transition path; the common `WM_PAINT` deferred caller passes `DL=0` and sends `0x4ED`, which does not start reveal for standard `0x102`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`: append to the restart wording: "Because the completed reveal leaves running byte nonzero, a later `0x4B2` text change can restart the reveal even after the timer was killed at completion."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the handoff phrase "add reveal timing only if implementing first-paint animation" with "add reveal timing only as a `0x4EC -> 0x4EE` transition/text-update animation; standard common first paint and `0x4ED` do not start reveal."
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "This is active when the shell posts/sends `0x4EC`; `FUN_006071E0` contains a confirmed `SendMessageA(parent, 0x4EC, 0, 0)` after shell transition playback." with "`FUN_006071E0` sends `0x4EC` only in the nonzero-`DL` transition path; the common `WM_PAINT` deferred caller passes `DL=0` and sends `0x4ED`, which does not start reveal for standard `0x102`."
+- `docs/research/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`: append to the restart wording: "Because the completed reveal leaves running byte nonzero, a later `0x4B2` text change can restart the reveal even after the timer was killed at completion."
 
 ## Sources
 
 - Ghidra read-only decompile/assembly: `OwnerDraw_Static_006153E0 @ 0x006153E0`, `FUN_0060A5B0 @ 0x0060A5B0`, `FUN_00602490 @ 0x00602490`, `FUN_00600CA0 @ 0x00600CA0`, `FUN_006015E0 @ 0x006015E0`, `FUN_00601D20 @ 0x00601D20`, `FUN_00622B50 @ 0x00622B50`, `FUN_0060AA60 @ 0x0060AA60`, `FUN_006071E0 @ 0x006071E0`, `FUN_00608260 @ 0x00608260`, `FUN_006AE3F0 @ 0x006AE3F0`, `FUN_005E2EF0 @ 0x005E2EF0`, `FUN_005E2F60 @ 0x005E2F60`.
 - Assembly contexts: `0x00615FDB..0x00616026`, `0x00615AE8`, `0x00615B11..0x00615B49`, `0x0060AA79..0x0060AA83`, `0x00622CA6..0x00622CAA`, `0x0060833F..0x00608343`, `0x00611C72..0x00611CAF`.
 - Prior docs: `SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`, `SKIRMISH_FUN_006071E0_SHELL_TRANSITION_REDRAW_PATH_GHIDRA_REPORT.md`, `SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`, `SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`.
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/shell_text.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
+- Rust read-only scan: `src/app_skirmish_shell_render.rs`, `src/render/shell_text.rs`, `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`.

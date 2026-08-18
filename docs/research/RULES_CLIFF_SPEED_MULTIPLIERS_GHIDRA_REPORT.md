@@ -173,7 +173,7 @@ multiply in Process_Movement. No clamping needed on read (none in original).
 - `search_byte_patterns` DD 9E 68/70/78/80 07 00 00 → sole-write confirmation (1 match each)
 
 **INI file:**
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` lines 401–404 ([General])
+- `ini/rulesmd.ini` lines 401–404 ([General])
 
 **Companion docs:**
 - `CLIFF_RAMP_TRAVERSAL_GHIDRA_REPORT.md` — consumer logic §7.3, Open Q #2 (now resolved)

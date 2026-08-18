@@ -238,9 +238,9 @@ with:
   - `TechnoClass::Receive_Radio @ 0x006F4AB0`
   - `ObjectClass::GetOccupiedCell @ 0x005F6960`
 - Prior docs:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_0X12_MOVE_TO_CELL_PAYLOAD_AND_TIMESTAMPS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_GETDOCKCOORD_STOCK_REFINERY_BRANCH_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
+  - `docs/research/RADIO_0X12_MOVE_TO_CELL_PAYLOAD_AND_TIMESTAMPS_GHIDRA_REPORT.md`
+  - `docs/research/BUILDINGCLASS_GETDOCKCOORD_STOCK_REFINERY_BRANCH_GHIDRA_REPORT.md`
+  - `docs/research/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
 - Rust scanned:
   - `src/sim/components.rs`
   - `src/sim/movement/movement_tick.rs`

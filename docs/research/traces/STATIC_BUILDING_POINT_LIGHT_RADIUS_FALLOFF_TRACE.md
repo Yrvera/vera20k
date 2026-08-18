@@ -161,15 +161,15 @@ PASS: 3 | FAIL: 2 | UNCHECKED: 1 | NOT-IMPLEMENTED: 1
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGTYPE_LIGHT_KEYS_READINI_CONSTANTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTSOURCE_DIRTY_SCHEDULING_00554AF0_00554D50_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGTYPE_LIGHT_KEYS_READINI_CONSTANTS_GHIDRA_REPORT.md`
+- `docs/research/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
+- `docs/research/MAP_LIGHTING_CELL_COMPUTE_00484180_GHIDRA_REPORT.md`
+- `docs/research/LIGHTSOURCE_DIRTY_SCHEDULING_00554AF0_00554D50_GHIDRA_REPORT.md`
 - Read-only Ghidra spot checks: `0x00484180`, `0x005558E0`, `0x00554AF0`, `0x00440580`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:17233`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`
+- `ini/rulesmd.ini:17233`
+- `src/map/lighting.rs`
+- `src/rules/object_type.rs`
+- `src/app_init.rs`
 
 ## Status
 

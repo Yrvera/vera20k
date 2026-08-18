@@ -116,7 +116,7 @@ When it does draw, it projects each `[Header] Waypoint%d` pair by subtracting `+
 
 The local loose retail file exists at:
 
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`
+`<ra2-install>/Dustbowl.map`
 
 Relevant data found with `rg -a`:
 
@@ -178,7 +178,7 @@ Implementation implication: for stock loose maps like Dustbowl, rendering the de
 
 [RESOLVED] OQ-3 - Does `[Map] LocalSize` backfill preview source bounds/count? No verified active write exists in the traced paths. In full init, `LocalSize` is read after `FUN_00689D30` and before `Read_INI_Basic`, but the traced consumer is radar/map bounds, not `ScenarioClass+0x112C..0x113C`. Evidence: `0x00687502..0x00687528` and prior LocalSize reports.
 
-[RESOLVED] OQ-4 - Does loose retail `Dustbowl.map` contain `[Header] NumberStartingPoints` or `[Header] Waypoint%d` overlay metadata? No. The loose file has `[Preview]`, `[PreviewPack]`, `[Map]`, and `[Waypoints]`, but no `[Header]` or `NumberStartingPoints=` line. Evidence: `rg -a` on `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
+[RESOLVED] OQ-4 - Does loose retail `Dustbowl.map` contain `[Header] NumberStartingPoints` or `[Header] Waypoint%d` overlay metadata? No. The loose file has `[Preview]`, `[PreviewPack]`, `[Map]`, and `[Waypoints]`, but no `[Header]` or `NumberStartingPoints=` line. Evidence: `rg -a` on `<ra2-install>/Dustbowl.map`.
 
 [RESOLVED] OQ-5 - Should loose Dustbowl show `STARTBUT.SHP` overlays in the offline Skirmish preview? No for the verified loose-map path. The preview can contain baked red pixels, but live `STARTBUT.SHP` overlays require `0 < ScenarioClass+0x113C < 9`, and the missing-header path leaves `+0x113C = -1`. Evidence: `FUN_00689D30`, `DrawStartPositions @ 0x00640710`, and Dustbowl data.
 
@@ -188,7 +188,7 @@ Implementation implication: for stock loose maps like Dustbowl, rendering the de
 
 - Ghidra decompilation/assembly: `0x00689D30`, `0x00689E90`, `0x00641EE0`, `0x00640710`, `0x006874F8`, `0x00687853`.
 - Ghidra memory strings: `Header @ 0x0083DE68`, `StartX @ 0x0083DE70`, `StartY @ 0x0083DE60`, `NumberStartingPoints @ 0x0083DE48`.
-- Retail data: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
+- Retail data: `<ra2-install>/Dustbowl.map`.
 - Prior docs reconciled:
   - `SKIRMISH_PREVIEW_SCENARIO_BOUNDS_STOCK_MAP_POPULATION_GHIDRA_REPORT.md`
   - `SCENARIO_PREVIEW_BOUNDS_STOCK_MAP_POPULATION_GHIDRA_REPORT.md`

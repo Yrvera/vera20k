@@ -401,7 +401,7 @@ This replacement does not invalidate that document's Ready override bodies; it s
 
 ## Sources
 
-- Active retail `gamemd.exe` loaded in Ghidra from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`; read-only decompile, assembly context, instruction search, xrefs, memory, and COL/TypeDescriptor walks performed 2026-07-22.
+- Active retail `gamemd.exe` loaded in Ghidra from `<ra2-install>/gamemd.exe`; read-only decompile, assembly context, instruction search, xrefs, memory, and COL/TypeDescriptor walks performed 2026-07-22.
 - `docs/research/MISSIONCLASS_VERB_API_GUARDS_OVERRIDE_RESTORE_SEMANTICS_GHIDRA_REPORT.md` for the previously settled base verb mutation contract; this investigation cold-read only the portions needed to classify caller order.
 - `docs/research/READYTOCOMMENCE_VTABLE_0X200_SUBCLASS_OVERRIDES_GHIDRA_REPORT.md` and the newer bounded Ready lifecycle reports for preflight/navigation; caller claims were independently re-censused here.
 - Current Rust files named in Section 8, read directly from the working tree on 2026-07-22.

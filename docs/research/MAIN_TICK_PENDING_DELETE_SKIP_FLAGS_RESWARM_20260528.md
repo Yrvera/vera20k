@@ -148,10 +148,10 @@ Rust does not currently expose a native-equivalent session-end gate around a lat
 
 | Rust surface | Current behavior | Delta |
 |---|---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:675` `Simulation::despawn_entity` | immediate entity removal, occupancy removal, radio clear, live unregister | no pending-delete queue and no session-end drain suppression |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1187` `Simulation::advance_tick` | advances `binary_frame` at tick start from elapsed milliseconds | does not model late native frame increment, and has no branch that suppresses frame increment plus pending-delete drain on victory/defeat/quit/disconnect |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:804` death handling | marks animated entities `dying=true`, removes non-animated entities immediately | does not preserve native `UnInit -> queue -> late gated drain` ordering |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs:292` app animation/despawn | ticks death animations after `Simulation::advance_tick`, then despawns completed death animations | not equivalent to native late drain; no session-end skip |
+| `src/sim/world/mod.rs:675` `Simulation::despawn_entity` | immediate entity removal, occupancy removal, radio clear, live unregister | no pending-delete queue and no session-end drain suppression |
+| `src/sim/world/mod.rs:1187` `Simulation::advance_tick` | advances `binary_frame` at tick start from elapsed milliseconds | does not model late native frame increment, and has no branch that suppresses frame increment plus pending-delete drain on victory/defeat/quit/disconnect |
+| `src/sim/combat/mod.rs:804` death handling | marks animated entities `dying=true`, removes non-animated entities immediately | does not preserve native `UnInit -> queue -> late gated drain` ordering |
+| `src/app_sim_tick.rs:292` app animation/despawn | ticks death animations after `Simulation::advance_tick`, then despawns completed death animations | not equivalent to native late drain; no session-end skip |
 
 ## 7. Coverage Ledger
 
@@ -201,8 +201,8 @@ Rust does not currently expose a native-equivalent session-end gate around a lat
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/PENDING_DELETE_DRAIN_DESTRUCTOR_TIMING_RESWARM_20260528.md`: replace the deferred sentence about `0x00A83D49`, `0x00A8ECD0`, `0x008B41C0`, and `0x00A83D48` with: "Resolved by `MAIN_TICK_PENDING_DELETE_SKIP_FLAGS_RESWARM_20260528.md`: these are session-end flags for local/session victory, local/session defeat, user-confirmed quit-to-main, and graceful disconnect/EXIT event. `Main_Tick` skips frame increment, `FUN_0055E160`, `FUN_00725C70`, and `FUN_00637270` when any is nonzero; ordinary pause/modal state does not by itself set them."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/timing/logic-vs-render-loop.md`: its "four session-end flags" framing is consistent with this report; add the extra pending-delete detail that the same branch also suppresses `FUN_00725C70`.
+- `docs/research/PENDING_DELETE_DRAIN_DESTRUCTOR_TIMING_RESWARM_20260528.md`: replace the deferred sentence about `0x00A83D49`, `0x00A8ECD0`, `0x008B41C0`, and `0x00A83D48` with: "Resolved by `MAIN_TICK_PENDING_DELETE_SKIP_FLAGS_RESWARM_20260528.md`: these are session-end flags for local/session victory, local/session defeat, user-confirmed quit-to-main, and graceful disconnect/EXIT event. `Main_Tick` skips frame increment, `FUN_0055E160`, `FUN_00725C70`, and `FUN_00637270` when any is nonzero; ordinary pause/modal state does not by itself set them."
+- `docs/research/timing/logic-vs-render-loop.md`: its "four session-end flags" framing is consistent with this report; add the extra pending-delete detail that the same branch also suppresses `FUN_00725C70`.
 
 ## Sources
 
@@ -210,4 +210,4 @@ Rust does not currently expose a native-equivalent session-end gate around a lat
 - Ghidra xrefs/read-only: `get_bulk_xrefs` for `0x00A83D49`, `0x00A8ECD0`, `0x008B41C0`, `0x00A83D48`, `0x00725C70`; `get_function_xrefs/get_function_callers` for `FUN_0055CFD0`.
 - Ghidra assembly contexts/read-only: `0x0055DE4F`, `0x0055DE58`, `0x0055DE61`, `0x0055DE6A`, `0x0055DE9F`, `0x004F867C`, `0x004F8692`, `0x004F86EE`, `0x004F86F7`, `0x004F879C`, `0x004F87B2`, `0x004F87BB`, `0x0048CB2E`, `0x004C7917`, `0x0052DA78..0x0052DA8D`, handler clear groups in `0x0055CFD0`.
 - Prior docs referenced: `PENDING_DELETE_DRAIN_DESTRUCTOR_TIMING_RESWARM_20260528.md`, `docs/research/timing/logic-vs-render-loop.md`, `GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`.
-- Rust files scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs`.
+- Rust files scanned: `src/sim/world/mod.rs`, `src/sim/combat/mod.rs`, `src/app_sim_tick.rs`, `src/app_types.rs`.

@@ -19,7 +19,7 @@ Authoritative deep RE: [ENGINEER_CAPTURE_GHIDRA_REPORT.md](../../ENGINEER_CAPTUR
 
 ## rulesmd.ini — `[ENGINEER]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3817`:
+Verbatim from `ini/rulesmd.ini:3817`:
 
 ```ini
 [ENGINEER]
@@ -125,7 +125,7 @@ Implicit defaults (not set in this section but worth noting):
 
 ## artmd.ini — `[ENGINEER]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:429`:
+`ini/artmd.ini:429`:
 
 ```ini
 [ENGINEER] ; Allied/Soviet Engineer

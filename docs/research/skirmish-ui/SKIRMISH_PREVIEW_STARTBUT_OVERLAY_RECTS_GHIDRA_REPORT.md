@@ -149,10 +149,10 @@ No rules/art INI key controls `STARTBUT.SHP` overlay geometry, label placement, 
 
 Current Rust surfaces scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`: `compute_layout`, `right_anchor`, `map_preview`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`: `preview_source_bounds_from_verified_source`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`: `aspect_fit_rect`, `project_preview_start_positions`, `build_start_marker_instances`, `push_start_marker_labels`, `build_start_marker_label_instances`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`: `PreviewSourceBounds`, `PreviewStartPoint`.
+- `src/ui/skirmish_shell/layout.rs`: `compute_layout`, `right_anchor`, `map_preview`.
+- `src/app_list_maps.rs`: `preview_source_bounds_from_verified_source`.
+- `src/app_skirmish_shell_render.rs`: `aspect_fit_rect`, `project_preview_start_positions`, `build_start_marker_instances`, `push_start_marker_labels`, `build_start_marker_label_instances`.
+- `src/map/preview.rs`: `PreviewSourceBounds`, `PreviewStartPoint`.
 
 Matches observed:
 
@@ -224,8 +224,8 @@ Mismatches observed:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "aspect-fits the preview surface using integer `*1000` scale math" with "aspect-fits the preview surface using integer per-mille truncation: `scale=min(child_w*1000/src_w, child_h*1000/src_h)`, fitted size truncates `src*scale/1000`, and centering subtracts truncated `src*scale/2000` half extents."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_RENDERER_CALLER_PIXEL_CONTRACT_GHIDRA_REPORT.md`: replace "label at projected anchor `(-2,-6)`, destination-surface clipping" with "label at projected anchor plus `(-2,-6)`, using the `"Yellow"` color scheme and `FUN_004A61C0`; the caller supplies destination-surface clipping, not a fitted-preview rect."
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`: replace "aspect-fits the preview surface using integer `*1000` scale math" with "aspect-fits the preview surface using integer per-mille truncation: `scale=min(child_w*1000/src_w, child_h*1000/src_h)`, fitted size truncates `src*scale/1000`, and centering subtracts truncated `src*scale/2000` half extents."
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_RENDERER_CALLER_PIXEL_CONTRACT_GHIDRA_REPORT.md`: replace "label at projected anchor `(-2,-6)`, destination-surface clipping" with "label at projected anchor plus `(-2,-6)`, using the `"Yellow"` color scheme and `FUN_004A61C0`; the caller supplies destination-surface clipping, not a fitted-preview rect."
 
 ## Sources
 
@@ -233,4 +233,4 @@ Mismatches observed:
 - Ghidra assembly contexts: `0x0064072C`, `0x00640745`, `0x00640799..0x0064085D`, `0x0064088A..0x006408EF`, `0x006408F5..0x006409D2`, `0x006409D7..0x00640A15`.
 - Ghidra strings/data: `STARTBUT.SHP @ 0x00836DE4`, `Yellow @ 0x00820524`, `DAT_0081B3D0` label format pointer.
 - Prior reports referenced: `SCENARIO_PREVIEW_HEADER_DEFAULTS_AND_DUSTBOWL_SOURCE_PATH_GHIDRA_REPORT.md`, `SCENARIO_PREVIEW_BOUNDS_STOCK_MAP_POPULATION_GHIDRA_REPORT.md`, `SKIRMISH_TEXT_RENDERER_CALLER_PIXEL_CONTRACT_GHIDRA_REPORT.md`, `SKIRMISH_0X102_FIRST_PAINT_COMPOSITION_VS_RUST_DRAW_ORDER_GHIDRA_REPORT.md`, `PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`.
+- Rust scanned: `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`, `src/app_list_maps.rs`, `src/map/preview.rs`.

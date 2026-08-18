@@ -157,9 +157,9 @@ Rust `production_sell.rs` has a captured-civilian sell branch using `garrison_or
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_CHANGE_OWNER_GHIDRA_REPORT.md` replacement wording for "1-tick delay": "Ownership transfer is deferred until the building's next `BuildingClass::Update` reconciliation pass after the occupant vector changes. It is not in `AddGarrisonOccupant`; same-frame vs next-frame timing depends on the live `LogicClass` object-vector order."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md` replacement wording for `CheckAutoSellOrCivilian`: "Empty + non-civilian owner -> pre-revert sound/radar/EVA, anim refresh, then `ChangeOwner(CivilianHouse, 0)`. Occupied + Civilian owner -> anim refresh, then `ChangeOwner(first_occupant->Owner, 0)`. Red HP -> `SellBuilding` ejection first, no destruction by that helper."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-04-unified-garrison-eject-plan.md` replacement wording: "`SellBuilding @ 0x00457DE0` proves only occupant ejection and vector clearing. It does not itself prove captured civilian player-sell preserves the building; `BuildingClass::Sell @ 0x00449C30` must be considered for the actual sell transaction outcome."
+- `docs/research/BUILDING_CHANGE_OWNER_GHIDRA_REPORT.md` replacement wording for "1-tick delay": "Ownership transfer is deferred until the building's next `BuildingClass::Update` reconciliation pass after the occupant vector changes. It is not in `AddGarrisonOccupant`; same-frame vs next-frame timing depends on the live `LogicClass` object-vector order."
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md` replacement wording for `CheckAutoSellOrCivilian`: "Empty + non-civilian owner -> pre-revert sound/radar/EVA, anim refresh, then `ChangeOwner(CivilianHouse, 0)`. Occupied + Civilian owner -> anim refresh, then `ChangeOwner(first_occupant->Owner, 0)`. Red HP -> `SellBuilding` ejection first, no destruction by that helper."
+- `docs/plans/2026-05-04-unified-garrison-eject-plan.md` replacement wording: "`SellBuilding @ 0x00457DE0` proves only occupant ejection and vector clearing. It does not itself prove captured civilian player-sell preserves the building; `BuildingClass::Sell @ 0x00449C30` must be considered for the actual sell transaction outcome."
 
 ## 10. Remaining Uncertainty
 

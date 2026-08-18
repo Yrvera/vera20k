@@ -188,9 +188,9 @@ Rust already matches the channel-order finding in the focused decode surface:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md` section 5 is stale where it says channel order is not fully proven / Low confidence. Replacement wording:
+- `docs/research/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md` section 5 is stale where it says channel order is not fully proven / Low confidence. Replacement wording:
   - `Channel order is verified from the active selected-map loader: after a 3-byte decompressed read in 0x00641B00, byte 0 is packed through DirectDraw red loss/shift, byte 1 through green loss/shift, and byte 2 through blue loss/shift. The serialized decompressed PreviewPack stream is row-major RGB, not BGR. Evidence: 0x00641C77..0x00641CEF; writer corroboration 0x006419D4..0x00641A2F.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md` section 7 row `RGB vs BGR serialized byte order` should change from `deferred` to `verified`, with evidence `0x00641C77..0x00641CEF` and `0x006419D4..0x00641A2F`.
+- `docs/research/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md` section 7 row `RGB vs BGR serialized byte order` should change from `deferred` to `verified`, with evidence `0x00641C77..0x00641CEF` and `0x006419D4..0x00641A2F`.
 
 ## Negative Facts / Do Not Do
 
@@ -205,5 +205,5 @@ Rust already matches the channel-order finding in the focused decode surface:
 - Fresh Ghidra decompile: `0x006AE2C0`, `0x006AE3F0`, `0x006ACEE0`, `0x006AE6E0`, `0x005E74E0`, `0x00641EE0`, `0x00641B00`, `0x006418B0`, `0x006406E0`, `0x006406F0`.
 - Fresh Ghidra assembly context: `0x005E78B7..0x005E78CB`, `0x00642079..0x006420A9`, `0x00641BCB`, `0x00641C77..0x00641CEF`, `0x006419D4..0x00641A2F`.
 - Fresh Ghidra string reports: `PreviewPack @ 0x00836DD0`, `Preview @ 0x00836DDC`; `Preview` anchor report distinguishing offline map preview from network preview strings.
-- Existing docs referenced for comparison: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PREVIEW_OBJECT_LIFECYCLE_DAT_00AC1154_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RETAIL_STOCK_MAP_PREVIEW_CENSUS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
+- Existing docs referenced for comparison: `docs/research/skirmish-ui/SKIRMISH_PREVIEWPACK_DECODE_FORMAT_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_PREVIEW_OBJECT_LIFECYCLE_DAT_00AC1154_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_RETAIL_STOCK_MAP_PREVIEW_CENSUS_GHIDRA_REPORT.md`, `docs/research/ADDRESS_MAP.md`.
+- Rust scan: `src/map/preview.rs`, `src/app_skirmish_shell_render.rs`, `src/ui/skirmish_shell/state.rs`.

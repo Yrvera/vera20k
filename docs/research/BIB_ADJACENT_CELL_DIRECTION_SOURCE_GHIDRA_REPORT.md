@@ -100,5 +100,5 @@ This does not add bib cells to placement, ownership, or footprint production. It
 - Ghidra `decompile_function 0073F0A0` and assembly context around `0x0073F7D3..0x0073F80F` - HasBib consumer branch.
 - Ghidra `decompile_function 0047C520` - cell building lookup helper.
 - Local read-only PE scan of `gamemd.exe` for direct references to `0x0089F690/0x0089F692`.
-- Existing doc `C:/Users/enok/Documents/ra2-rust-game-docs/DAT_0089F6A0_RUNTIME_SOURCE_AND_VALUE_GHIDRA_REPORT.md`.
+- Existing doc `docs/research/DAT_0089F6A0_RUNTIME_SOURCE_AND_VALUE_GHIDRA_REPORT.md`.
 - INI context: `ini/rulesmd.ini:11730`, `ini/rulesmd.ini:12523`, `ini/artmd.ini:1766`, `ini/artmd.ini:1793..1795`.

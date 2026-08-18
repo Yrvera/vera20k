@@ -256,7 +256,7 @@ Retain the binary behavior wording:
 
 - Ghidra live decompile / context: `UnitClass::Mission_Harvest @ 0x0073E5E0`, `UnitClass::Mission_Deploy_Building @ 0x0073D630`, `FootClass::Find_Docking_Bay @ 0x004DF040`, `Look_up_building_in_cell @ 0x0047C520`, `BuildingClass::UndockUnit @ 0x004593A0`, `BuildingClass::Sell @ 0x00449C30`.
 - Prior docs read: `miner/traces/MINER_REFINERY_UNAVAILABLE_MID_CYCLE_TRACE.md`, `HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`, `MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`, `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`, `BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`, `STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
+- INI checked: `ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
 - Rust scanned: `src/sim/miner/miner_system.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`.
 
 **Status:** COMPLETE

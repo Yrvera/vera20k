@@ -1169,8 +1169,8 @@ INI string verification:
 - `get_xrefs_to "Locomotor" string at 0x84444C` → 2 DATA (TechnoTypeClass::ReadINI @ `0x7123FA`, WarheadTypeClass::ReadINI @ `0x75D88F`)
 
 **INI files cross-referenced:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` (lines 752-753 ConditionYellow/Red, lines 7114/7166/7236/7290/7987/8037/8095/8161 ship Locomotor= entries)
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rules.ini` (base RA2 ship entries for cross-version comparison)
+- `ini/rulesmd.ini` (lines 752-753 ConditionYellow/Red, lines 7114/7166/7236/7290/7987/8037/8095/8161 ship Locomotor= entries)
+- `ini/rules.ini` (base RA2 ship entries for cross-version comparison)
 
 **Companion docs:**
 - `SHIP_VS_DRIVE_LOCOMOTION_COMPARISON.md` (corrections at §11.2 and §11.8 of this report)

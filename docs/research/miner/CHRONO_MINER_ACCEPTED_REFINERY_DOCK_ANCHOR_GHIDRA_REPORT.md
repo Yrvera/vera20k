@@ -163,10 +163,10 @@ No Rust files were modified by this investigation.
 - Ghidra `decompile_function 0x004D8FB0` - `FootClass__Receive_Radio`.
 - Ghidra `decompile_function 0x00447B20` - `BuildingClass__GetDockCoord`.
 - Ghidra `decompile_function 0x00739EC0` - `UnitClass__PerCellProcess`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_CHRONO_MINER_DOCK_ARRIVAL_00739EC0_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/chrono_miner_return_state_anchor_reserved_refinery_TRACE.md`.
+- `docs/research/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`.
+- `docs/research/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`.
+- `docs/research/REFINERY_DOCK_CELL_AND_ANIM_HELPERS_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_CHRONO_MINER_DOCK_ARRIVAL_00739EC0_GHIDRA_REPORT.md`.
+- `docs/research/traces/chrono_miner_return_state_anchor_reserved_refinery_TRACE.md`.
 - `ini/rulesmd.ini:7361`, `7364`, `7396`, `8225`, `8228`, `11726-11729`, `12519-12521`.
 - `ini/artmd.ini:1716`, `1725`, `1760`, `1773`, `1795`.

@@ -47,7 +47,7 @@ Stock YR does use slope interpolation for drive locomotors. The prior "interpola
 
 ## Stale-Doc Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VXL_INTERPOLATED_FACING_AND_SLOPE_TRANSITION_GHIDRA_REPORT.md`: replace claims equivalent to "No runtime writer sets locomotor+0x2C to non-zero; interpolation branch is unreachable in a normal YR game" with "DriveLocomotionClass::Process writes the slope transition total to 3 at `0x004B053E..0x004B0557` when the current occupied cell's `CellClass+0x11C` slope differs from the cached current slope; the `Draw_Matrix` interpolation branch is live for standard YR vehicles during the 3-frame slope transition."
+- `docs/research/VXL_INTERPOLATED_FACING_AND_SLOPE_TRANSITION_GHIDRA_REPORT.md`: replace claims equivalent to "No runtime writer sets locomotor+0x2C to non-zero; interpolation branch is unreachable in a normal YR game" with "DriveLocomotionClass::Process writes the slope transition total to 3 at `0x004B053E..0x004B0557` when the current occupied cell's `CellClass+0x11C` slope differs from the cached current slope; the `Draw_Matrix` interpolation branch is live for standard YR vehicles during the 3-frame slope transition."
 
 ## Remaining Uncertainty
 

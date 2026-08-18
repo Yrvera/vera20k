@@ -918,7 +918,7 @@ borrowed time before the game truly ends.
 
 The raw Ghidra decompilation for the three fully-available functions (MPlayer_Defeated,
 Flag_To_Win, Flag_To_Lose) can be found in:
-`C:/Users/enok/Documents/gidra/gidra c files/048_004f9700_004ff233.c`
+`<local>/Documents/gidra/gidra c files/048_004f9700_004ff233.c`
 - MPlayer_Defeated (FUN_004fc0b0): line 2055
 - Flag_To_Win (FUN_004fc9e0): line 2570
 - Flag_To_Lose (FUN_004fcbd0): line 2701

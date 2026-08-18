@@ -160,16 +160,16 @@ No existing verified report needs replacement from this Rust delta scan. Suggest
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_ACTIVATION_RECHECK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/VALIDATION_MODAL_0X005D3490_PAINT_COMPOSITION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/MNBTTN_MAINBTTN_MODAL_BUTTON_ART_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/modals.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/text.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/draw_order.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_ACTIVATION_RECHECK_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/VALIDATION_MODAL_0X005D3490_PAINT_COMPOSITION_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/MNBTTN_MAINBTTN_MODAL_BUTTON_ART_GHIDRA_REPORT.md`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/app_skirmish_shell_render/modals.rs`
+- `src/app_skirmish_shell_render/chrome.rs`
+- `src/app_skirmish_shell_render/text.rs`
+- `src/app_skirmish_shell_render/draw_order.rs`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/app.rs`
 
 **Status:** COMPLETE for current Rust/doc delta scan; native pixel proof remains deferred to screenshot/runtime work.

@@ -398,22 +398,22 @@ Fresh Ghidra decompilation in this pass:
 
 Existing verified reports checked:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_OCCUPATION_MARKING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/OBJECTCLASS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_SYSTEM.md`
+- `docs/research/BRIDGE_OBJECT_ONBRIDGE_FIELD_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RUNTIME_DEEP_DIVE_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
+- `docs/research/CELL_OCCUPATION_MARKING_GHIDRA_REPORT.md`
+- `docs/research/OBJECTCLASS_GHIDRA_REPORT.md`
 
 Rust files compared:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/occupancy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_bridge.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
+- `src/sim/occupancy.rs`
+- `src/sim/movement/movement_occupancy.rs`
+- `src/sim/movement/movement_bridge.rs`
+- `src/sim/movement/movement_step.rs`
+- `src/sim/movement/movement_tick.rs`
+- `src/sim/pathfinding/core.rs`
+- `src/sim/world/bridge_orchestrator.rs`
 
 INI/data checked:
 

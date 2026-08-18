@@ -243,16 +243,16 @@ Important nuance: the current Rust filter also rejects `PathGrid::is_walkable ==
   - `UnitClass::Can_Enter_Cell` @ `0x0073F0A0`
   - `FootClass::LocomotorPassabilityCheck` @ `0x004D9C10`
 - Prior docs consulted:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_STUCK_MULTI_MINER_CELL_CONTENTION_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_STUCK_SCAN_PICKS_BLOCKED_ORE_CELL_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
+  - `docs/research/miner/traces/MINER_STUCK_MULTI_MINER_CELL_CONTENTION_TRACE.md`
+  - `docs/research/miner/traces/MINER_STUCK_SCAN_PICKS_BLOCKED_ORE_CELL_TRACE.md`
+  - `docs/research/miner/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`
+  - `docs/research/miner/HARVESTER_MISSION_HARVEST_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Rust inspected only, not edited:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`
+  - `src/sim/miner/miner_system.rs`
+  - `src/sim/pathfinding/cell_entry.rs`
+  - `src/sim/miner/miner_tests.rs`
 
 **Status:** COMPLETE for HARV occupied-vehicle ore-scan candidate filtering.

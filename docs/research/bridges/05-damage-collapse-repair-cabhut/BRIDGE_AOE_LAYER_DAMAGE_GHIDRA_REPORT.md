@@ -301,10 +301,10 @@ These are research conclusions, not a code plan:
   - `0x0048A147-0x0048A1C6` low bridge tile damage and retry path
   - `0x0048A214-0x0048A2C4` low/high bridge overlay direct damage paths
 - Docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/combat/systems/splash_cellspread.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/DAMAGE_MATH_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-05-15-disparity-scan-bridges-overview.md`
+  - `docs/research/BRIDGE_SYSTEM.md`
+  - `docs/research/combat/systems/splash_cellspread.md`
+  - `docs/research/DAMAGE_MATH_GHIDRA_REPORT.md`
+  - `docs/gap-scans/2026-05-15-disparity-scan-bridges-overview.md`
 - INI checked:
   - `ini/rulesmd.ini`
   - `ini/rules.ini`

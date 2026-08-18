@@ -160,7 +160,7 @@ Rust deltas:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_REINVESTIGATION_GHIDRA_REPORT.md` replacement for section 4.2 row about `src/render/skirmish_shell_chrome.rs:57`:
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_REINVESTIGATION_GHIDRA_REPORT.md` replacement for section 4.2 row about `src/render/skirmish_shell_chrome.rs:57`:
   - Replace: "`src/render/skirmish_shell_chrome.rs:57` uses `sidebar.pal` before `SHELL.PAL`/`DIALOG.PAL` for SHP rendering."
   - With: "`src/render/skirmish_shell_chrome.rs:73..178` now separates SHP palette paths from PCX loading; the remaining scoped PCX mismatch is that `render_pcx_entry(..., Some(0))` keys transparency by index 0, while gamemd's flag static path keys by converted RGB magenta. Owner-draw PCX controls should continue using embedded PCX palettes and must not be decoded through `SHELL.PAL`/`SIDEBAR.PAL`."
 

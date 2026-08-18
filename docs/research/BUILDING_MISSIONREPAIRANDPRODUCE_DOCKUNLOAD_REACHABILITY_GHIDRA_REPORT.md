@@ -95,6 +95,6 @@ The exact stock handoff after pad-arrival radio `0x15` is:
 - Ghidra MCP read-only decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`.
 - Ghidra MCP xref: `BuildingClass::MissionRepairAndProduce` referenced from data `0x007E4108`.
 - Ghidra MCP read-only decompile: `MissionClass::Queue_Mission @ 0x005B35E0`; `MissionClass::GetCurrentMission @ 0x005B3040`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_RECEIVE_RADIO_0X15_DOCKUNLOAD_HANDOFF_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_0X57C_DOCK_DEPART_GUARD_NAVCOM_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/miner/BUILDING_RECEIVE_RADIO_0X15_DOCKUNLOAD_HANDOFF_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/BUILDINGCLASS_0X57C_DOCK_DEPART_GUARD_NAVCOM_GHIDRA_REPORT.md`.
 - INI: `ini/rulesmd.ini:11721..11740`, `ini/rulesmd.ini:12514..12531`, `ini/artmd.ini:1706..1750`, `ini/artmd.ini:1763..1789`.

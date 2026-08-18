@@ -26,7 +26,7 @@ The rest of those reports is outside this correction's scope.
 **VERIFIED.** After reconnecting the existing `testProsjekt-12.1.2-test`
 project, `GET /list_open_programs` reported current program `gamemd.exe`, image
 base `00400000`, and executable path
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`.
+`<ra2-install>/gamemd.exe`.
 
 The findings below rely on instruction bodies and raw bytes, not Ghidra labels.
 

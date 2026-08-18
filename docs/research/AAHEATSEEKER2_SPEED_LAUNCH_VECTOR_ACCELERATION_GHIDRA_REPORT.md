@@ -178,8 +178,8 @@ No Rust files were modified by this investigation.
   - `BulletTypeClass::Constructor @ 0x0046BBC0`
   - `BulletTypeClass::ReadINI @ 0x0046BEE0`
 - INI data:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
 - Prior reports checked:
   - `GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
   - `BULLETCLASS_INIT_AND_FIRE_GHIDRA_REPORT.md`

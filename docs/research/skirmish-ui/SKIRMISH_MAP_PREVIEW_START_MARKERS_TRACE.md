@@ -2,7 +2,7 @@
 
 Scenario: open offline Skirmish dialog `0x102` on a normal skirmish map with
 start waypoints. Concrete map instance used for local values:
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
+`<ra2-install>/Dustbowl.map`.
 
 Correction 2026-05-21: this trace originally treated loose `Dustbowl.map` as a
 live `STARTBUT.SHP` overlay case. Newer Ghidra reports show that is stale.

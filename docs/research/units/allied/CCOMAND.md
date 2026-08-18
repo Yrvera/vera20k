@@ -31,7 +31,7 @@ Authoritative deep RE on the teleport mechanism: the four chrono docs in
 
 ## rulesmd.ini — `[CCOMAND]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4174`:
+Verbatim from `ini/rulesmd.ini:4174`:
 
 ```ini
 [CCOMAND] ;anybody gets into an allied tech center
@@ -152,7 +152,7 @@ IFVMode=4
 
 ## artmd.ini — `[CCOMAND]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:420`:
+`ini/artmd.ini:420`:
 
 ```ini
 [CCOMAND] ; Chrono Commando
@@ -327,7 +327,7 @@ inviso projectile with low priority. No visible sprite.
 
 ## Voices and sounds
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`:
+`ini/soundmd.ini`:
 
 | INI key on CCOMAND | soundmd block | Resolved samples |
 |--------------------|---------------|------------------|

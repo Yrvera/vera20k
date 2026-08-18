@@ -152,5 +152,5 @@ Evidence: `src/ui/skirmish_shell/state.rs` has `StartGame0x617`, `SkirmishShellA
 - Ghidra decompiled/read: `0x006ACEE0`, `0x005D6130`, `0x005E7160`, `0x005D6310`, `0x007B66C0`, `0x007B6760`, `0x007B6880`.
 - Ghidra memory/assembly decoded read-only: factories at `0x005D8170`, `0x005D81B0`, `0x005D81F0`, `0x005D8230`, `0x005D8270`, `0x005D82B0`; constructors at `0x005C0DD0`, `0x005C6150`, `0x005CA630`, `0x005CB3A0`, `0x005C5CE0`, `0x005C1470`; vtables at `0x007EE184`, `0x007EE50C`, `0x007EE6FC`, `0x007EE814`, `0x007EE424`, `0x007EE27C`.
 - String evidence: `0x00830A18` `MPModesMD.ini`; `0x00830BCC` `Cooperative`; `0x00830BD8` `FreeForAll`; `0x00830BE4` `Unholy`; `0x00830BEC` `Siege`; `0x00830BF4` `ManBattle`; `0x00830C00` `Battle`; Siege messages at `0x0082FEE8`, `0x0082FEF8`, `0x0082FF0C`, `0x0082FF1C`, file string `0x0082FF2C`.
-- Prior context report: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`.
+- Prior context report: `docs/research/skirmish-ui/SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`.
 - Rust scan: `src/ui/skirmish_shell/state.rs`, `src/app.rs`.

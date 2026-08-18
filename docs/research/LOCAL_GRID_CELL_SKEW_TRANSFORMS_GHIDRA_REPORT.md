@@ -142,15 +142,15 @@ Current related Rust behavior:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: replace `Active in YR: Yes - these transforms run on every tick, frame, click, and cursor move.` with `Active in YR: Mixed by transform family. Tactical world/screen/cell transforms run in render/input paths; `0x005654A0`, `0x00565520`, and `0x00565660` are active local-grid/cell helpers used by edge/search/fly-locomotion contexts, not every tick/frame/click/cursor path.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: replace `they are an internal helper for edge iteration` with `they are internal LocalSize/local-grid helpers for edge/search contexts; `0x00565660` also has a `FlyLocomotionClass::Process` caller and must not be described as edge-only.`
+- `docs/research/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: replace `Active in YR: Yes - these transforms run on every tick, frame, click, and cursor move.` with `Active in YR: Mixed by transform family. Tactical world/screen/cell transforms run in render/input paths; `0x005654A0`, `0x00565520`, and `0x00565660` are active local-grid/cell helpers used by edge/search/fly-locomotion contexts, not every tick/frame/click/cursor path.`
+- `docs/research/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: replace `they are an internal helper for edge iteration` with `they are internal LocalSize/local-grid helpers for edge/search contexts; `0x00565660` also has a `FlyLocomotionClass::Process` caller and must not be described as edge-only.`
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/map_file.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/edge_cell.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/superweapon/paradrop.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/aircraft/paradrop_mission.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/house_state.rs`
+- `docs/research/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`
+- `docs/research/PARADROP_SUPERWEAPON_GHIDRA_REPORT.md`
+- `src/map/map_file.rs`
+- `src/sim/world/edge_cell.rs`
+- `src/sim/superweapon/paradrop.rs`
+- `src/sim/aircraft/paradrop_mission.rs`
+- `src/sim/house_state.rs`

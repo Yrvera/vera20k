@@ -210,4 +210,4 @@ with:
 - Byte evidence: `0x00714836..0x00714850`, `0x007093DF..0x007093F0`, `0x00709488..0x007094AD`, `0x006FA699..0x006FA6C1`, `0x004D6EC8..0x004D6EEF`.
 - INI checked: `ini/rulesmd.ini` `[MTNK]`, `[105mm]`; `ini/rules.ini` base fallback.
 - Rust scanned: `src/rules/object_type.rs`, `src/rules/ruleset.rs`, `src/sim/world/world_orders.rs`, `src/sim/combat/combat_targeting.rs`, `src/sim/combat/mod.rs`, `src/sim/components.rs`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md`, `UNIT_CLASS_SCATTER_GHIDRA_REPORT.md`, `AUDIT_LOG.md`.
+- Prior docs referenced: `docs/research/units/allied/MTNK.md`, `UNIT_CLASS_SCATTER_GHIDRA_REPORT.md`, `AUDIT_LOG.md`.

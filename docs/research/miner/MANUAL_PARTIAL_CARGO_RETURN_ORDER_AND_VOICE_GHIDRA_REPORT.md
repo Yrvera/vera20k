@@ -203,4 +203,4 @@ Current Rust still appears voice-mismatched:
 - Ghidra read-only decompile: `BuildingClass__Receive_Radio @ 0x0043C2D0`.
 - Ghidra read-only decompile: `FUN_00709020`, `FUN_00708FC0`, `FUN_00709060`, `FUN_00708DC0`, `FUN_00708E00`, `FUN_007090A0`.
 - `ini/rulesmd.ini` sections `[CMIN]`, `[GAREFN]`, `[NAREFN]`.
-- Starting trace: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_MANUAL_ORDER_PARTIAL_CARGO_TO_REFINERY_TRACE.md`.
+- Starting trace: `docs/research/miner/traces/MINER_MANUAL_ORDER_PARTIAL_CARGO_TO_REFINERY_TRACE.md`.

@@ -25,7 +25,7 @@ Active in YR: Conditional. Evidence: retail map data; fallback scan; live pathin
 
 | Fact | Evidence | Confidence | Active in YR |
 |---|---|---:|---|
-| `Carville.mmx` exists as a retail loose map. | `C:/Users/enok/Documents/Command and Conquer Red Alert II/Carville.mmx` | High | Yes |
+| `Carville.mmx` exists as a retail loose map. | `<ra2-install>/Carville.mmx` | High | Yes |
 | Carville uses `Theater=SNOW`, `Size=0,0,80,86`, `LocalSize=2,6,76,68`. | `rg -a` over `Carville.mmx` lines `599..601` | High | Yes |
 | Carville has `DestroyableBridges=yes`. | `Carville.mmx` `[SpecialFlags]`, line `22`; defaults also in `rules.ini` and `rulesmd.ini` | High | Yes |
 | Waypoint `1` decodes to `(79,50)` and waypoint `0` to `(49,87)`. | `Carville.mmx` lines `604..605`: `0=87049`, `1=50079` | High | Conditional: map data is live; choosing this route is harness-defined |
@@ -159,7 +159,7 @@ No Rust files were modified.
 
 No stale doc was found that positively claims the exact Carville detour direction is known. Existing docs already say the exact stock route is runtime-trace blocked.
 
-Optional reinforcement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DUAL_LAYER_ASTAR_SYSTEM_MODEL_SYNTHESIS.md`:
+Optional reinforcement wording for `docs/research/BRIDGE_DUAL_LAYER_ASTAR_SYSTEM_MODEL_SYNTHESIS.md`:
 
 > Carville waypoint `1=(79,50)` to `0=(49,87)` after CABHUT `(57,49)` / starter `(60,52):0x11380` is fixture-ready for runtime tracing only. It must not become an exact route acceptance assertion until gamemd logs the post-collapse rebuilt zone IDs, `Zone_precheck` chain, retry exclusions, and final path cells.
 
@@ -182,6 +182,6 @@ Optional reinforcement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/B
 
 - Fresh Ghidra decompiled: `0x0042C900`, `0x0042C290`, `0x00429A90`, `0x0057BCF0`, `0x0057C2B0`, `0x00484AB0`, `0x00484F20`, `0x0056C510`.
 - Docs referenced: `STOCK_LOW_BRIDGE_COLLAPSE_ROUTE_TRACE_GHIDRA_REPORT.md`, `BRIDGE_DUAL_LAYER_ASTAR_SYSTEM_MODEL_SYNTHESIS.md`, `BRIDGE_PATH_TIE_ORDER_AFTER_LOW_COLLAPSE_GHIDRA_REPORT.md`, `LOW_BRIDGE_ZONE_PRECHECK_LANDTYPE10_CONNECTIVITY_GHIDRA_REPORT.md`, `BRIDGE_PARITY_GAP_SYSTEM_MODEL_SYNTHESIS.md`.
-- Map/data checked: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Carville.mmx`; `%TEMP%/bridge_hut_stock_scan_output_named.txt`.
+- Map/data checked: `<ra2-install>/Carville.mmx`; `%TEMP%/bridge_hut_stock_scan_output_named.txt`.
 - INI checked: `ini/rules.ini`, `ini/rulesmd.ini`.
 - Rust surfaces scanned: `src/sim/pathfinding/zone_search.rs`, `src/sim/pathfinding/zone_build.rs`, `src/sim/pathfinding/zone_search_tests.rs`, `src/sim/pathfinding/zone_map_tests.rs`, `src/sim/bridge_state/walker.rs`, `src/sim/world/bridge_orchestrator.rs`.

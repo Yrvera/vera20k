@@ -227,7 +227,7 @@ No Rust files were modified. Current Rust surfaces found through Codegraph and s
 - Ghidra decompile: `FootClass__Receive_Radio @ 0x004D8FB0`.
 - Ghidra decompile: `FootClass__Set_Destination_Internal @ 0x004D94B0`.
 - Ghidra decompile: `RadioClass__Transmit_Radio_Impl @ 0x0065A970`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
+- `ini/rulesmd.ini`.
+- `ini/artmd.ini`.
 - Codegraph context and source reads for `src/sim/miner/miner_dock_sequence.rs` and `src/sim/miner/miner_system.rs`.
 

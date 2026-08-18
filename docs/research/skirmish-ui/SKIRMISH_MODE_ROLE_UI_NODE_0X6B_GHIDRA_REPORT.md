@@ -112,4 +112,4 @@ Active in YR: the binary support is present; stock exposed local roster does not
 - Ghidra decompiled/read-only: `0x006ACEE0`, `0x005D8CB0`, `0x005D8C90`, `0x004E6030`, `0x005D6130`.
 - Ghidra memory/assembly read-only: `0x005CAE10`, `0x005CAE70`, `0x005CAEB0`, vtables `0x007EE7E4`, `0x007EE7F4`, strings around `0x0082FFE4`, `0x00830018`.
 - Prior reports: `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_START_TEAM_CONTROL_DESTINATION_NAMING_GHIDRA_REPORT.md`, `SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- INI: `ini/mpmodesmd.ini`.

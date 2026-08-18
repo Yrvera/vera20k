@@ -136,8 +136,8 @@ This differs from the verified binary on the failure branch: gamemd pays `vtable
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md` lines 208-210 should be replaced with: `If the new AMCV's Unlimbo call fails, the refund is the integer returned by the source building's vtable+0x2BC refund getter, saved at stack slot [ESP+0x30] immediately after ObjectClass::GetHealthRatio saved its double at [ESP+0x24]. It is not the high dword of the HealthRatio double. The branch adds that refund to Owner credits, skips successful AMCV health/field transfer, then removes/uninitializes the source building; no visible AMCV is placed.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md` follow-up #4 should be replaced with: `Resolved by GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md: the ambiguous uStack_b4._4_4_ is a decompiler stack-overlap artifact for the separate [ESP+0x30] refund integer, not a HealthRatio fragment.`
+- `docs/research/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md` lines 208-210 should be replaced with: `If the new AMCV's Unlimbo call fails, the refund is the integer returned by the source building's vtable+0x2BC refund getter, saved at stack slot [ESP+0x30] immediately after ObjectClass::GetHealthRatio saved its double at [ESP+0x24]. It is not the high dword of the HealthRatio double. The branch adds that refund to Owner credits, skips successful AMCV health/field transfer, then removes/uninitializes the source building; no visible AMCV is placed.`
+- `docs/research/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md` follow-up #4 should be replaced with: `Resolved by GACNST_UNDEPLOY_UNLIMBO_FAIL_REFUND_GHIDRA_REPORT.md: the ambiguous uStack_b4._4_4_ is a decompiler stack-overlap artifact for the separate [ESP+0x30] refund integer, not a HealthRatio fragment.`
 
 ## 10. Negative Facts / Do Not Do
 
@@ -155,6 +155,6 @@ This differs from the verified binary on the failure branch: gamemd pays `vtable
 
 - Ghidra decompiled/read: `0x00449C30`, `0x00449BC0`, `0x005F5C60`, `0x0070ADA0`, `0x004F9950`, `0x00465D70`, `UnitClass__Constructor`, `UnitClass__Unlimbo`, `FootClass__Unlimbo`, `TechnoClass__Unlimbo`.
 - Disassembly contexts read: `0x00449C41`, `0x00449C6E`, `0x00449E00`, `0x00449F12`, `0x0044A020`, `0x0044A19E`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/GACNST_FREE_UNIT_AFTER_AMCV_DEPLOY_GHIDRA_REPORT.md`.
+- Prior docs referenced: `docs/research/BUILDINGCLASS_SELL_AND_REPAIR_GHIDRA_REPORT.md`, `docs/research/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `docs/research/GACNST_FREE_UNIT_AFTER_AMCV_DEPLOY_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini` `[MultiplayerDialogSettings]`, `[GACNST]`, `[AMCV]`; `ini/rules.ini` fallback sections.
 - Rust checked: `src/sim/world/world_spawn.rs::undeploy_building`, `src/sim/world/mod.rs::tick_building_down`, `src/sim/production/production_sell.rs` refund helper.

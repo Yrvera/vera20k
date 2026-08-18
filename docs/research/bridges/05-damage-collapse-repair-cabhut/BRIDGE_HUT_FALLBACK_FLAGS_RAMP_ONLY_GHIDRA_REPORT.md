@@ -209,9 +209,9 @@ Existing tests include `c4_on_cabhut_bridgehead_fallback_collapses_bridge`, whic
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`: replace the pure bridgehead row wording "else step 2 more cells in the same dir to land on anchor" with "else step two cells in the opposite direction from the first non-0x400 cell: clear 0x800 walks E then offsets W; set 0x800 walks S then offsets N."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`: replace "Global side effects (always, on the slow path): UpdateAdjacentBridges_High, Tactical+0xD7C, UpdateBridgeZonesHelper" with "On the slow path, `UpdateBridgeZonesHelper` runs after the ramp walk setup even when no ramp is found; `UpdateAdjacentBridges_High` and `g_Tactical+0xD7C=1` run only after a ramp was found or the post-ramp reverse walk exits through the adjacent-update label."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_HUT_DESTRUCTION_ENTRY_DECODE_GHIDRA_REPORT.md`: replace the pure bridgehead pseudocode line `anchor = coord + 2 more steps in (dir2 - 2) & 7` with the explicit E->W / S->N wording above.
+- `docs/research/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`: replace the pure bridgehead row wording "else step 2 more cells in the same dir to land on anchor" with "else step two cells in the opposite direction from the first non-0x400 cell: clear 0x800 walks E then offsets W; set 0x800 walks S then offsets N."
+- `docs/research/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`: replace "Global side effects (always, on the slow path): UpdateAdjacentBridges_High, Tactical+0xD7C, UpdateBridgeZonesHelper" with "On the slow path, `UpdateBridgeZonesHelper` runs after the ramp walk setup even when no ramp is found; `UpdateAdjacentBridges_High` and `g_Tactical+0xD7C=1` run only after a ramp was found or the post-ramp reverse walk exits through the adjacent-update label."
+- `docs/research/BRIDGE_HUT_DESTRUCTION_ENTRY_DECODE_GHIDRA_REPORT.md`: replace the pure bridgehead pseudocode line `anchor = coord + 2 more steps in (dir2 - 2) & 7` with the explicit E->W / S->N wording above.
 
 ## Sources
 
@@ -223,8 +223,8 @@ Existing tests include `c4_on_cabhut_bridgehead_fallback_collapses_bridge`, whic
 - Ghidra decompile: `0x0043FB20` `BuildingClass__Update`
 - Ghidra decompile: `0x00438720` `BombClass__Detonate`
 - Ghidra disassembly refresh: `0x00574000..0x0057463F`
-- Prior direction table: `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md` section 11.7
-- Prior body report: `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`
-- Prior hut entry report: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_HUT_DESTRUCTION_ENTRY_DECODE_GHIDRA_REPORT.md`
-- Current Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- Current tests: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders_bridge_repair_tests.rs`
+- Prior direction table: `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md` section 11.7
+- Prior body report: `docs/research/DESTROYBRIDGE_MAPINIT_BODIES_GHIDRA_REPORT.md`
+- Prior hut entry report: `docs/research/BRIDGE_HUT_DESTRUCTION_ENTRY_DECODE_GHIDRA_REPORT.md`
+- Current Rust: `src/sim/world/bridge_orchestrator.rs`
+- Current tests: `src/sim/world/world_orders_bridge_repair_tests.rs`

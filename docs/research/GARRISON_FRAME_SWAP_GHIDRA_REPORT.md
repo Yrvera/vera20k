@@ -357,8 +357,8 @@ buildings (TechLevel=-1).
 - `GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md` (occupant count at +0x694)
 
 **INI files checked:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — 95 `CanBeOccupied=yes` entries; ConditionYellow=50%, ConditionRed=25% in `[AudioVisual]`
-- `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` — civilian garrison entries (CABHUT, CALA10, CAMOV02, etc.) verified to lack ActiveAnim/IdleAnim keys
+- `ini/rulesmd.ini` — 95 `CanBeOccupied=yes` entries; ConditionYellow=50%, ConditionRed=25% in `[AudioVisual]`
+- `ini/artmd.ini` — civilian garrison entries (CABHUT, CALA10, CAMOV02, etc.) verified to lack ActiveAnim/IdleAnim keys
 
 **Rust files referenced:**
 - `src/app_instances/shp.rs:138-139` — current building frame selection stub

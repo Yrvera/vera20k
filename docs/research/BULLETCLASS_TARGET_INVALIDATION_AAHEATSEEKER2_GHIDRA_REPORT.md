@@ -124,7 +124,7 @@ Active in YR: Yes. The parent report verified `InfantryClass::Fire_At_Target -> 
   - `MapClass::Get_CellClass @ 0x005657A0`
   - `get_xrefs_to 0x004684E0` -> data xref `0x007E470C`
   - `get_function_xrefs 0x00468430` -> `0x007193EE`
-- Parent report: `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
+- Parent report: `docs/research/GGI_MISSILELAUNCHER_AAHEATSEEKER2_PROJECTILE_LIFECYCLE_GHIDRA_REPORT.md`
 - INI evidence:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini [GGI]`, `[MissileLauncher]`, `[AAHeatSeeker2]`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini [DRAGON]`
+  - `ini/rulesmd.ini [GGI]`, `[MissileLauncher]`, `[AAHeatSeeker2]`
+  - `ini/artmd.ini [DRAGON]`

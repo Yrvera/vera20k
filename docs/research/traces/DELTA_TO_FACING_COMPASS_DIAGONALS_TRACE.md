@@ -4,7 +4,7 @@ Scenario: verify conversion from adjacent cell deltas to 8-bit facing bytes for 
 
 Scope lock: one mechanic only, adjacent cell-delta to facing-byte mapping. Direction-id tables and movement consumers are used only as evidence for this mapping. Direction `8`, invalid directions, drive-track curve timing, projectile frame mapping, and VXL draw buckets are adjacent/out of scope.
 
-Report path: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DELTA_TO_FACING_COMPASS_DIAGONALS_TRACE.md`
+Report path: `docs/research/traces/DELTA_TO_FACING_COMPASS_DIAGONALS_TRACE.md`
 
 ## Verdict Tally
 
@@ -169,14 +169,14 @@ None found for the scoped helper conversion.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:280`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:330`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/mod.rs:181`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_commands.rs:338`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs:70`
+- `docs/research/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
+- `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`
+- `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
+- `src/util/fixed_math.rs:280`
+- `src/util/fixed_math.rs:330`
+- `src/sim/movement/mod.rs:181`
+- `src/sim/movement/movement_commands.rs:338`
+- `src/sim/movement/movement_step.rs:70`
 
 ## Top Player-Visible FAIL / NOT-IMPLEMENTED Findings
 

@@ -32,11 +32,11 @@ The fallback is especially common on high-bridge CABHUT layouts where the hut is
 
 ## 3. Stock Map Scan Method
 
-Scanner was a temporary Rust crate outside the repo at `%TEMP%/bridge_hut_stock_scan`, linking to `C:/Users/enok/Documents/ra2-rust-game` read-only.
+Scanner was a temporary Rust crate outside the repo at `%TEMP%/bridge_hut_stock_scan`, linking to `.` read-only.
 
 Inputs:
 
-- Loose retail map files under `C:/Users/enok/Documents/Command and Conquer Red Alert II/`: `.mmx`, `.yro`, `.map`, `.mpr`, `.yrm`.
+- Loose retail map files under `<ra2-install>/`: `.mmx`, `.yro`, `.map`, `.mpr`, `.yrm`.
 - Packed retail archives: `MAPS01.MIX`, `MAPS02.MIX`, `mapsmd03.mix`, `MULTI.MIX`, `multimd.mix`, `expandmd01.mix`.
 - XCC global mix database for packed entry name lookup.
 - Repo-extracted INI data: `ini/rules.ini`, `ini/rulesmd.ini`, `ini/art.ini`, `ini/artmd.ini`.
@@ -229,8 +229,8 @@ Rust-facing risk is now less "fallback missing entirely" and more "needs stock-m
 - Ghidra read-only decompile: `0x00574C20` `MapClass__DestroyBridge_Low_OnHutDeath`
 - Ghidra read-only decompile: `0x0043FB20` `BuildingClass__Update`
 - Ghidra read-only decompile: `0x00438720` `BombClass__Detonate`
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_HUT_FALLBACK_FLAGS_RAMP_ONLY_GHIDRA_REPORT.md`
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_NEXT_FIX_PRIORITY_VERIFICATION_GHIDRA_REPORT.md`
-- Retail assets/maps: `C:/Users/enok/Documents/Command and Conquer Red Alert II/`
+- Prior report: `docs/research/BRIDGE_HUT_FALLBACK_FLAGS_RAMP_ONLY_GHIDRA_REPORT.md`
+- Prior report: `docs/research/BRIDGE_NEXT_FIX_PRIORITY_VERIFICATION_GHIDRA_REPORT.md`
+- Retail assets/maps: `<ra2-install>/`
 - Static scan output: `%TEMP%/bridge_hut_stock_scan_output_named.txt`
 - Current Rust scan: `src/sim/world/bridge_orchestrator.rs`, `src/sim/world/world_orders_bridge_repair_tests.rs`

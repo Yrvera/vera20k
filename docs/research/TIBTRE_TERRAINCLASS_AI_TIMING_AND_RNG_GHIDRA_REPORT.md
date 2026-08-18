@@ -147,5 +147,5 @@ Type/source wording conflicts in older terrain docs belong to the placement/type
 - Ghidra decompile: `Random::Next @ 0x0065C780`, `RandomRanged @ 0x0065C7E0`
 - Ghidra decompile/read-memory: `TerrainTypeClass::ReadINI_Full @ 0x0071DEA0`, constructor `0x0071DA80`, instance constructor `0x0071BB90`
 - Ghidra read-memory: `0x007EF918` double constant `1.0e-6`; `0x0041CFA0` image pointer getter
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[TIBTRE01]`, `[TIBTRE02]`, `[TIBTRE03]`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/terrain_spawn.rs`
+- INI: `ini/rulesmd.ini` `[TIBTRE01]`, `[TIBTRE02]`, `[TIBTRE03]`
+- Rust: `src/sim/terrain_spawn.rs`

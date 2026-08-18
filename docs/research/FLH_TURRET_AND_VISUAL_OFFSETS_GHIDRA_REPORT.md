@@ -171,8 +171,8 @@ The exact `ActiveAnimYSort` arithmetic in the final tactical animation sort pass
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/timing/weapon-charge-and-muzzle.md`: replace "PrimaryFirePixelOffset: add screen-space pixel delta to the FLH at draw time" with "PrimaryFirePixelOffset/SecondaryFirePixelOffset are stored as isometric pixel pairs; `BuildingClass::GetFLH` converts them through `IsometricPixelToWorld` and adds the resulting world X/Y delta to either building `GetRenderCoords` or the generic FLH source depending on the building branch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`: replace "Matrix3x4_Translate(flhZ + offsetZ, ySign * (flhY + offsetY), /*unaff_ESI*/ 0)" commentary with "The decompiler shows the third argument as an unrecovered register; the verified output contract is the transformed world source. Future audits should verify the third-axis source from assembly before claiming it is zero."
+- `docs/research/timing/weapon-charge-and-muzzle.md`: replace "PrimaryFirePixelOffset: add screen-space pixel delta to the FLH at draw time" with "PrimaryFirePixelOffset/SecondaryFirePixelOffset are stored as isometric pixel pairs; `BuildingClass::GetFLH` converts them through `IsometricPixelToWorld` and adds the resulting world X/Y delta to either building `GetRenderCoords` or the generic FLH source depending on the building branch."
+- `docs/research/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md`: replace "Matrix3x4_Translate(flhZ + offsetZ, ySign * (flhY + offsetY), /*unaff_ESI*/ 0)" commentary with "The decompiler shows the third argument as an unrecovered register; the verified output contract is the transformed world source. Future audits should verify the third-axis source from assembly before claiming it is zero."
 
 ## Sources
 

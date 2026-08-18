@@ -169,11 +169,11 @@ No direct INI key controls `0x40000` marker geometry or multiplier in this slice
 
 | Rust area | Current status vs verified behavior | Evidence |
 |---|---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs` | Has `AStarOptions`, entity soft-block costs, bridge/layer logic, direction tiebreaks, and separate tube edge branch; no search-scoped `0x40000` marker overlay found | `rg`; `AStarOptions`, normal edge cost, `TUBE_DIR_TIEBREAK` |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/bump_crush.rs` | Builds `LayeredEntityBlockMap` from entity positions and next movement target cell; not a 24-entry peer path replay overlay | `rg`; `build_entity_block_set` |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_path.rs` and callers | Pass entity block maps into zoned pathfinding; no marker overlay input found | `rg` |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/zone_search.rs` | Retry/corridor pathfinding exists, but this report's marker overlay is lower-level A* cost input, not a zone-grid feature | `rg` |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs` / bridge state | Persistent grid rebuild surfaces should not store the marker | prior reports plus Rust scan |
+| `src/sim/pathfinding/core.rs` | Has `AStarOptions`, entity soft-block costs, bridge/layer logic, direction tiebreaks, and separate tube edge branch; no search-scoped `0x40000` marker overlay found | `rg`; `AStarOptions`, normal edge cost, `TUBE_DIR_TIEBREAK` |
+| `src/sim/movement/bump_crush.rs` | Builds `LayeredEntityBlockMap` from entity positions and next movement target cell; not a 24-entry peer path replay overlay | `rg`; `build_entity_block_set` |
+| `src/sim/movement/movement_path.rs` and callers | Pass entity block maps into zoned pathfinding; no marker overlay input found | `rg` |
+| `src/sim/pathfinding/zone_search.rs` | Retry/corridor pathfinding exists, but this report's marker overlay is lower-level A* cost input, not a zone-grid feature | `rg` |
+| `src/app_sim_tick.rs` / bridge state | Persistent grid rebuild surfaces should not store the marker | prior reports plus Rust scan |
 
 ## 7. Coverage Ledger
 
@@ -217,16 +217,16 @@ No direct INI key controls `0x40000` marker geometry or multiplier in this slice
 | Peer replay caps at 24 entries and XOR-toggles destination cells, so duplicates cancel | `0x0042AEF6..0x0042AFB5`, `0x0042AF69..0x0042AFAE` | missing | overlay storage should support parity/count cancellation | Use parity semantics for repeated marks and cap replay at 24 | `astar_bridge_peer_marker_replay_caps_at_24_and_xors_duplicates` | Do not model as hard occupancy or monotonic set unless duplicates are known impossible |
 | Direction `8` in peer replay uses tube exit or `(0,0)` fallback | `0x0042AF01..0x0042AF3F` | unchecked/missing | tube path metadata exposure if bridge/tube paths can appear in Rust peer queues | Treat direction `8` specially in overlay replay | `astar_bridge_peer_marker_direction8_uses_tube_exit_or_origin` | Do not mask direction `8` with `& 7` |
 | 5x5 marker fallback is probe-centered, occupation-gated, skips own current cell, and toggles center afterward | `0x0042AEB1..0x0042B063` | missing | overlay builder plus occupation query surface | Add the verified 5x5 fallback in the same no-peer/urgency conditions | `astar_bridge_marker_5x5_probe_center_and_own_cell_rules` | Do not mark all 25 cells unconditionally |
-| Marker multiplies current normal-edge accumulator by `4.0` after code-2 handling and before bridge flank multiplier | `0x00429845..0x00429A79` | missing | `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs` normal compass edge cost | Apply marker multiplier at the verified point in Rust integer cost scale | `astar_edge_cost_marker_stacks_after_code2_before_bridge_flank` | Do not implement as terrain/cliff height cost or passability rejection |
+| Marker multiplies current normal-edge accumulator by `4.0` after code-2 handling and before bridge flank multiplier | `0x00429845..0x00429A79` | missing | `src/sim/pathfinding/core.rs` normal compass edge cost | Apply marker multiplier at the verified point in Rust integer cost scale | `astar_edge_cost_marker_stacks_after_code2_before_bridge_flank` | Do not implement as terrain/cliff height cost or passability rejection |
 | Direction tiebreak/epsilon is added after helper return and is not multiplied by marker | `0x00429F8A..0x00429F9D` | must preserve when marker is added | `core.rs` final `DIR_TIEBREAK` addition | Keep marker inside step-cost multiplier path, with tiebreak still final additive term | `astar_marker_cost_does_not_scale_direction_tiebreak` | Do not fold `DIR_TIEBREAK` into a value later multiplied by marker |
 | Direction-8 tube edge bypasses marker cost helper | `0x00429F6B..0x00429FA3` | current Rust tube branch separate; future marker must preserve this | `core.rs` tube edge branch | Restrict marker multiplier to normal compass edges | `astar_marker_overlay_does_not_apply_to_direction8_tube_edge` | Do not globally post-process all destination costs |
 | Normal pre/post A* calls cancel marker writes | `0x00429C10..0x00429C1A`, `0x0042A423..0x0042A45A` | Rust should avoid persistent mutation entirely | `core.rs` and pathfinding call surfaces | Model as a per-search overlay value dropped after search | `astar_bridge_marker_overlay_is_search_scoped_and_does_not_mutate_pathgrid` | Do not store marker in `PathGrid`, bridge state, zone grid, or save state |
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UPDATEBRIDGEPASSABILITY_PROBE_RNG_0042AD35_GHIDRA_REPORT.md`: strict-tool caveat is now resolved for the implementation-critical facts by this fresh Ghidra MCP verification. Keep any broader caveats that were outside this slice.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UPDATEBRIDGEPASSABILITY_PEER_PATH_PROPAGATION_0042AEF6_GHIDRA_REPORT.md`: strict-tool caveat is now resolved for start/prerequisite/cap/direction-8/destination-XOR facts by this report.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`, `PATHFINDING_ASTAR_GHIDRA_REPORT.md`, and `ADDRESS_MAP.md`: replace any `0x40000` cliff-ramp wording with: "`0x40000` is the temporary A* marker multiplier; destination marked cells multiply the current normal-edge accumulator by `4.0` after code-2 handling and before bridge flank multipliers."
+- `docs/research/UPDATEBRIDGEPASSABILITY_PROBE_RNG_0042AD35_GHIDRA_REPORT.md`: strict-tool caveat is now resolved for the implementation-critical facts by this fresh Ghidra MCP verification. Keep any broader caveats that were outside this slice.
+- `docs/research/UPDATEBRIDGEPASSABILITY_PEER_PATH_PROPAGATION_0042AEF6_GHIDRA_REPORT.md`: strict-tool caveat is now resolved for start/prerequisite/cap/direction-8/destination-XOR facts by this report.
+- `docs/research/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`, `PATHFINDING_ASTAR_GHIDRA_REPORT.md`, and `ADDRESS_MAP.md`: replace any `0x40000` cliff-ramp wording with: "`0x40000` is the temporary A* marker multiplier; destination marked cells multiply the current normal-edge accumulator by `4.0` after code-2 handling and before bridge flank multipliers."
 
 ## Sources
 
@@ -237,4 +237,4 @@ No direct INI key controls `0x40000` marker geometry or multiplier in this slice
 - Ghidra MCP decompile: `AStar_pathfind_search`
 - Ghidra MCP disassembly: `ram:0042ACF0`, `ram:00429830`, `ram:00429A90`
 - Prior docs: `PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`, `ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`, `ASTAR_COMPUTE_EDGE_COST_00429830_MARKER_STACKING_GHIDRA_REPORT.md`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`, `src/sim/movement/bump_crush.rs`, `src/sim/movement/movement_path.rs`, `src/sim/pathfinding/zone_search.rs`
+- Rust scan: `src/sim/pathfinding/core.rs`, `src/sim/movement/bump_crush.rs`, `src/sim/movement/movement_path.rs`, `src/sim/pathfinding/zone_search.rs`

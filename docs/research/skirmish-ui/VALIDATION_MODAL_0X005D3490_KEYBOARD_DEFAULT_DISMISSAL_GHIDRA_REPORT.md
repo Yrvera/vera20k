@@ -125,12 +125,12 @@ Active in YR comparison: current Rust delta only. Evidence: `rg validation_modal
 
 ## 10. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Native keyboard behavior for validation modal Enter/Escape/default buttons is not fully proven by this slot." with "Native validation-modal keyboard dismissal is now verified: `0x005D3490` creates/registers the modal through `0x00622650`/`0x005D4E70`; `Process_NetworkMessages @ 0x005D4D50` calls `IsDialogMessageA` for registered shell dialogs; the modal proc `0x005D36A0` handles translated `IDOK (1)` and `IDCANCEL (2)` `WM_COMMAND`s by setting modal result `1`. Rust should dismiss the validation modal on Enter and Escape while keeping the parent shell open."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_GHIDRA_REPORT.md`: replace "native Enter/Escape/default-button behavior not proven" with the same wording above.
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`: replace "Native keyboard behavior for validation modal Enter/Escape/default buttons is not fully proven by this slot." with "Native validation-modal keyboard dismissal is now verified: `0x005D3490` creates/registers the modal through `0x00622650`/`0x005D4E70`; `Process_NetworkMessages @ 0x005D4D50` calls `IsDialogMessageA` for registered shell dialogs; the modal proc `0x005D36A0` handles translated `IDOK (1)` and `IDCANCEL (2)` `WM_COMMAND`s by setting modal result `1`. Rust should dismiss the validation modal on Enter and Escape while keeping the parent shell open."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_GHIDRA_REPORT.md`: replace "native Enter/Escape/default-button behavior not proven" with the same wording above.
 
 ## Sources
 
 - Ghidra read-only decompile/assembly: `0x005D3490`, `0x005D36A0`, `0x005D4D50`, `0x005D4E70`, `0x00622650`, `0x00622B50`, `0x00623120`.
-- Retail resource parse from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `RT_DIALOG` IDs `0xCE`, `0x120`, `0x121`.
+- Retail resource parse from `<ra2-install>/gamemd.exe`: `RT_DIALOG` IDs `0xCE`, `0x120`, `0x121`.
 - Prior reports referenced for active Start-validation call shape only: `SKIRMISH_START_VALIDATION_MODAL_CURRENT_CONTRACT_RECHECK_GHIDRA_REPORT.md`, `SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`.
+- Rust scanned: `src/app.rs`, `src/ui/skirmish_shell/layout.rs`.

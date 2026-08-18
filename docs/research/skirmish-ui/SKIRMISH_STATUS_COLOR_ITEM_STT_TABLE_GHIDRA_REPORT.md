@@ -158,12 +158,12 @@ This is a status text source slice, not a paint/composition slice. No SHP, palet
 
 ## 13. Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`: replace the broad sentence "For other scoped combo/list families, `FUN_006AE3F0` attempts item-specific text through combo/list helper functions (`FUN_004E3830`, `FUN_004E4230`, `FUN_004E4EC0`, and related getters). This report did not expand those helper families..." with "For color combo controls, the item-specific status table is now verified in `SKIRMISH_STATUS_COLOR_ITEM_STT_TABLE_GHIDRA_REPORT.md`: `-2 -> STT:PlayerColorRandom`, `0..7 -> Gold/Red/Blue/Green/Orange/SkyBlue/Purple/Pink`, and `8 -> STT:PlayerColorObserver`; standard offline Skirmish normal population inserts `-2` and `0..7`, not Observer."
+- `docs/research/skirmish-ui/SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`: replace the broad sentence "For other scoped combo/list families, `FUN_006AE3F0` attempts item-specific text through combo/list helper functions (`FUN_004E3830`, `FUN_004E4230`, `FUN_004E4EC0`, and related getters). This report did not expand those helper families..." with "For color combo controls, the item-specific status table is now verified in `SKIRMISH_STATUS_COLOR_ITEM_STT_TABLE_GHIDRA_REPORT.md`: `-2 -> STT:PlayerColorRandom`, `0..7 -> Gold/Red/Blue/Green/Orange/SkyBlue/Purple/Pink`, and `8 -> STT:PlayerColorObserver`; standard offline Skirmish normal population inserts `-2` and `0..7`, not Observer."
 
 ## Sources
 
 - Ghidra decompile: `FUN_006AE3F0`, `FUN_004E4230`, `FUN_004E4E20`, `FUN_004E42A0`.
 - Ghidra assembly contexts: `0x006AE531..0x006AE598`, `0x004E4230..0x004E4248`, `0x004E4E2D..0x004E4E4D`, `0x004E42A0..0x004E43B9`.
-- PE string reads from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `0x00822AC4`, `0x00822AB0`, `0x00822A9C`, `0x00822A88`, `0x00822A70`, `0x00822A58`, `0x00822A40`, `0x00822A28`, `0x00822A14`, `0x008229FC`.
+- PE string reads from `<ra2-install>/gamemd.exe`: `0x00822AC4`, `0x00822AB0`, `0x00822A9C`, `0x00822A88`, `0x00822A70`, `0x00822A58`, `0x00822A40`, `0x00822A28`, `0x00822A14`, `0x008229FC`.
 - Prior docs: `SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`, `SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`.
-- Rust scan only: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/hit_test.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/combos.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/tests.rs`.
+- Rust scan only: `src/ui/skirmish_shell/state/hit_test.rs`, `src/ui/skirmish_shell/state/combos.rs`, `src/ui/skirmish_shell/state/tests.rs`.

@@ -13,17 +13,17 @@
   - `FUN_006AE3F0 @ 0x006AE3F0`: Skirmish dialog proc delegates common shell handling, handles `WM_COMMAND`, and is the active dialog proc for this shell path.
   - `OwnerDraw_Checkbox_006163A0 @ 0x006163A0`: owner-draw checkbox click/paint callback; no mutating Ghidra tools were used.
 - Verified research:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_CLICK_SOUND_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMPLETE_CHILD_RECT_MATRIX_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_CLICK_SOUND_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_0X102_COMPLETE_CHILD_RECT_MATRIX_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
 - Current Rust source:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_options.rs`
+  - `src/ui/skirmish_shell/layout.rs`
+  - `src/ui/skirmish_shell/state.rs`
+  - `src/app.rs`
+  - `src/app_skirmish_shell_render.rs`
+  - `src/rules/ruleset.rs`
+  - `src/sim/game_options.rs`
 - INI evidence:
   - `ini/rulesmd.ini:652` / `ini/rules.ini:498`: `GUICheckboxSound=MenuClick`
   - `ini/soundmd.ini:2926..2927` / `ini/sound.ini:3166..3167`: `[MenuClick] Sounds=umenucl1`

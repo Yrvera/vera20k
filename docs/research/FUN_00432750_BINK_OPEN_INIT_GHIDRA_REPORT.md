@@ -173,7 +173,7 @@ Asset role matrix:
 
 ## Sources
 
-- Local read-only PE disassembly of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` using Capstone; image base `0x00400000`.
+- Local read-only PE disassembly of `<ra2-install>/gamemd.exe` using Capstone; image base `0x00400000`.
 - Local disassembly ranges: `0x00432690-0x004326F1`, `0x00432750-0x00432A50`, `0x005C0858-0x005C08B4`, `0x005CC7CE-0x005CC80B`.
 - Local PE constant/string reads: `0x007E3A70` = float `32768.0`; `0x00818B2C` = `Bink Error: %s\n`.
 - `docs/research/RA2TS_BINK_AUDIO_ENABLE_GHIDRA_REPORT.md`

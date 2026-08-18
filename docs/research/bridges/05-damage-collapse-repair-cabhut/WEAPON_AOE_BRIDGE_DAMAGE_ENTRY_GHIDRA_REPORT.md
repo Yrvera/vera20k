@@ -198,7 +198,7 @@ Deferred pile is small and does not affect the entry-gate/Rust handoff conclusio
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`: replace "Retail rules have `DestroyableBridges=yes`, but this pass verified the flag use, not the INI writer that maps the key to the flag." with "The consumer flag is SpecialFlags bit `0x8000`; later verification shows the binary reads `DestroyableBridges` from scenario/map `[SpecialFlags]`, not rules `[CombatDamage]`. The stock `[CombatDamage] DestroyableBridges=yes` line is not the rules parser source."
+- `docs/research/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`: replace "Retail rules have `DestroyableBridges=yes`, but this pass verified the flag use, not the INI writer that maps the key to the flag." with "The consumer flag is SpecialFlags bit `0x8000`; later verification shows the binary reads `DestroyableBridges` from scenario/map `[SpecialFlags]`, not rules `[CombatDamage]`. The stock `[CombatDamage] DestroyableBridges=yes` line is not the rules parser source."
 - `src/rules/ruleset.rs:2518` is code, not a research doc, but its test comment is stale relative to binary evidence: replace the premise "gamemd reads DestroyableBridges from [CombatDamage]" with the SpecialFlags-source fact when implementing.
 
 ## Sources
@@ -221,10 +221,10 @@ Deferred pile is small and does not affect the entry-gate/Rust handoff conclusio
   - `0x006B8E00..0x006B8E40`
   - `0x00689EA0..0x00689EB5`
 - Docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SUPERWEAPON_BRIDGE_AOE_IMPACT_Z_THREADING_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
+  - `docs/research/DESTROYABLEBRIDGES_INI_GATE_GHIDRA_REPORT.md`
+  - `docs/research/SUPERWEAPON_BRIDGE_AOE_IMPACT_Z_THREADING_GHIDRA_REPORT.md`
+  - `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
 - INI checked:
   - `ini/rulesmd.ini:804`, `ini/rulesmd.ini:816`, `ini/rulesmd.ini:874`
   - `ini/rules.ini:664`, `ini/rules.ini:676`, `ini/rules.ini:695`

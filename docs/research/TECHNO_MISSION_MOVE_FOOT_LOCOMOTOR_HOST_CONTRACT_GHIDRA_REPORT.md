@@ -72,7 +72,7 @@ A Checkpoint A PASS means this bounded host mechanism is evidence-complete enoug
 
 ## 3. Program and class identity
 
-The active Ghidra program was the retail executable at `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`. The open program reported x86 PE, little-endian, 32-bit, image base `0x00400000`.
+The active Ghidra program was the retail executable at `<ra2-install>/gamemd.exe`. The open program reported x86 PE, little-endian, 32-bit, image base `0x00400000`.
 
 Load-bearing virtual identities were recovered from complete-object-locator and TypeDescriptor bytes, not local labels:
 

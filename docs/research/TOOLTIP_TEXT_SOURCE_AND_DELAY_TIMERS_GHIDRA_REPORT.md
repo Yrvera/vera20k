@@ -146,7 +146,7 @@ Conditional active behavior:
 
 ## Stale-Doc Replacement Wording
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/SIDEBAR_TIMING_AND_TOOLTIPS_GHIDRA_REPORT.md` should replace the `+0x228` / `+0x22C` table rows and the `Highlight -> tooltip interaction` wording.
+`docs/research/SIDEBAR_TIMING_AND_TOOLTIPS_GHIDRA_REPORT.md` should replace the `+0x228` / `+0x22C` table rows and the `Highlight -> tooltip interaction` wording.
 
 Replace wording like:
 

@@ -97,6 +97,6 @@ Bolt/cloud/sound animation picks are RED for call-order parity. Gamemd uses raw 
 
 - Ghidra decompile: `LightningStorm__Process @ 0x0053A6C0`, `LightningStorm__CreateCloudBolt @ 0x0053A140`, `LightningStorm__GroundStrike @ 0x0053A300`, `LightningStorm__Start @ 0x00539EB0`.
 - Assembly from `gamemd.exe`: `0x0053A1F5`, `0x0053A345`, `0x0053A47A`, `0x0053A5D0`, `0x0053A62C`, `0x0053A665`, `0x0053A95E`, `0x0053A9AB`, `0x0053A9C3`, `0x0053AA92`, `0x00539EF9`, `0x00539F14`.
-- Current Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/superweapon/lightning_storm.rs`.
+- Current Rust: `src/sim/superweapon/lightning_storm.rs`.
 - INI: `ini/rulesmd.ini:130-138`, `ini/rulesmd.ini:533`, `ini/rulesmd.ini:710`, `ini/rulesmd.ini:30898-30908`.
 - Existing docs: `LIGHTNING_STORM_SUPERWEAPON_GHIDRA_REPORT.md`, `SUPERWEAPON_SYSTEM_CONSOLIDATED_REPORT.md`, `RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`.

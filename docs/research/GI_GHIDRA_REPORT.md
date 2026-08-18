@@ -992,10 +992,10 @@ fields: `+0xEBD=Crawls`, `+0xEBC=Fearless`, `+0xEC8=Deployer`, and
 - `TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md` (TechnoType `+0x680..0x6CF` slice)
 
 **INI files checked:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` — `[E1]` lines
+- `ini/rulesmd.ini` — `[E1]` lines
   3713–3759, weapons `[M60]`/`[Para]`/`[UCPara]`/`[UCElitePara]`/`[M60E]`/
   `[ParaE]`/`[CRM60]`, warheads `[SA]`/`[SSA]`/`[SSAB]`.
-- `c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini` — `[GI]` lines
+- `ini/artmd.ini` — `[GI]` lines
   281–290, `[GISequence]` lines 14140–14164.
 
 ---

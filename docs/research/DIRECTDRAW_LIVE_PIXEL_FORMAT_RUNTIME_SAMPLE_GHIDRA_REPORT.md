@@ -19,7 +19,7 @@ Stop conditions: stop after local runtime identity plus pixel-format consumers a
 
 ## 1. Overview
 
-The local installed DirectDraw runtime is not an unknown RGB555/RGB565 coin flip anymore. The literal current log, `DDrawCompat-gamemd.log`, from `C:/Users/enok/Documents/Command and Conquer Red Alert II/` records the `gamemd.exe` process and the wrapper selecting `D3DDDIFMT_R5G6B5` for primary and plain resources under a directory config that forces 16-bit supported depth. Gamemd's own binary does not hardcode this; it requests 16 bpp, asks the primary DirectDraw surface for its descriptor, derives `g_DD_R/G/BShift` and `_g_DD_R/G/BLoss` from the returned masks, then minimap/sidebar/text/alpha consumers read those globals. This is wrapper-log evidence for the recorded run, not a direct in-process sample of those globals.
+The local installed DirectDraw runtime is not an unknown RGB555/RGB565 coin flip anymore. The literal current log, `DDrawCompat-gamemd.log`, from `<ra2-install>/` records the `gamemd.exe` process and the wrapper selecting `D3DDDIFMT_R5G6B5` for primary and plain resources under a directory config that forces 16-bit supported depth. Gamemd's own binary does not hardcode this; it requests 16 bpp, asks the primary DirectDraw surface for its descriptor, derives `g_DD_R/G/BShift` and `_g_DD_R/G/BLoss` from the returned masks, then minimap/sidebar/text/alpha consumers read those globals. This is wrapper-log evidence for the recorded run, not a direct in-process sample of those globals.
 
 Therefore, for this local DDrawCompat-backed runtime, the minimap/sidebar native packed-pixel contract is RGB565:
 
@@ -33,7 +33,7 @@ Therefore, for this local DDrawCompat-backed runtime, the minimap/sidebar native
 
 | Runtime source | Finding | Active in YR | Evidence |
 |---|---|---|---|
-| Local wrapper file | The installed RA2/YR directory contains `ddraw.dll` plus `DDrawCompat.ini`; the wrapper is the DirectDraw implementation gamemd uses from this directory. | Conditional: active for local launches loading this directory DLL. | `C:/Users/enok/Documents/Command and Conquer Red Alert II/ddraw.dll`; `DDrawCompat-gamemd.log:1-2` identifies `gamemd.exe` and says DDrawCompat loaded statically from that path. |
+| Local wrapper file | The installed RA2/YR directory contains `ddraw.dll` plus `DDrawCompat.ini`; the wrapper is the DirectDraw implementation gamemd uses from this directory. | Conditional: active for local launches loading this directory DLL. | `<ra2-install>/ddraw.dll`; `DDrawCompat-gamemd.log:1-2` identifies `gamemd.exe` and says DDrawCompat loaded statically from that path. |
 | Directory config | Supported depth is restricted/configured to 16-bit style output; render depth remains `app`. | Yes for this local config. | `DDrawCompat.ini:6-8`: `RenderColorDepth = app`, `SupportedDepthFormats = 16`, `DesktopColorDepth = 16`; log final config lines `28`, `43`, `58` confirm `DesktopColorDepth=16`, `RenderColorDepth=app`, `SupportedDepthFormats=D16`. |
 | Runtime format selection | DDrawCompat selected RGB565, not RGB555, for the primary and plain resources in the logged run. | Yes for the logged local run; conditional on same wrapper/config path. | `DDrawCompat-gamemd.log:166-168`: `Using resource format: D3DDDIFMT_R5G6B5, plain, anymem -> vidmem`; `D3DDDIFMT_R5G6B5, primary, anymem -> vidmem`; `D3DDDIFMT_R5G6B5, plain, sysmem`. |
 | Supported alternatives | The runtime supports both X1R5G5B5 and R5G6B5, but selection chose R5G6B5. | Yes for the logged local run. | `DDrawCompat-gamemd.log:91` lists `D3DDDIFMT_X1R5G5B5`; `DDrawCompat-gamemd.log:94` lists `D3DDDIFMT_R5G6B5`; lines `166-168` choose R5G6B5. |
@@ -188,7 +188,7 @@ Asset role matrix: not applicable; no new asset roles were investigated.
 - Ghidra read-only decompile: `RadarClass__RenderCellPixel @ 0x00655C50`
 - Ghidra read-only decompile: `RadarClass__RebuildRadarSurfaces @ 0x00654650`
 - Ghidra read-only decompile: `FUN_0060F9A0`; `AlphaBlendRect @ 0x00621B80`
-- Runtime/config files: `C:/Users/enok/Documents/Command and Conquer Red Alert II/DDrawCompat.ini`; `C:/Users/enok/Documents/Command and Conquer Red Alert II/DDrawCompat-gamemd.log`
+- Runtime/config files: `<ra2-install>/DDrawCompat.ini`; `<ra2-install>/DDrawCompat-gamemd.log`
 - Prior docs: `docs/research/DIRECTDRAW_RUNTIME_PIXEL_FORMAT_MASKS_GHIDRA_REPORT.md`; `docs/research/ALPHABLENDRECT_0xAF_DARK_STRIP_PIXEL_MATH_GHIDRA_REPORT.md`; `docs/research/FUN_00621040_RGB_BYTE_PERMUTATION_GHIDRA_REPORT.md`; `docs/research/MINIMAP_GENERATED_PIXEL_COLOR_PIPELINE_GHIDRA_REPORT.md`
 
 ## Status

@@ -617,13 +617,13 @@ Binary/memory evidence:
 
 Prior reports referenced:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_DIALOG_0XE2_OWNERDRAW_VISUAL_FOLLOWUP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BITFONT_SHELL_TEXT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_RIGHT_PANEL_BACKGROUND_PALETTE_FOLLOWUP_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_DIALOG_0XE2_OWNERDRAW_VISUAL_FOLLOWUP_GHIDRA_REPORT.md`
+- `docs/research/BITFONT_SHELL_TEXT_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_RIGHT_PANEL_BACKGROUND_PALETTE_FOLLOWUP_GHIDRA_REPORT.md`
 
 ## Related reports (added 2026-05-18 main-menu --area swarm)
 

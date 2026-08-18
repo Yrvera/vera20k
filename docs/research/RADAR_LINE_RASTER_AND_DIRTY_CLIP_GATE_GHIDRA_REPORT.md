@@ -228,6 +228,6 @@ PARTIAL only for live runtime values/names of `DAT_00880C98/94`, live DD mask id
 - Ghidra read-only decompile/disassembly: `DrawViewportRect @ 0x00660540`
 - Ghidra read-only decompile: `FUN_004BE9D0 @ 0x004BE9D0`
 - Ghidra read-only decompile/disassembly: `DrawOneSpySatellite @ 0x00430650` for sibling dirty-rect union style
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_EVENT_PING_PIXEL_SHAPES_COLORS_GHIDRA_REPORT.md`
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game/docs/research/DIRECTDRAW_RUNTIME_PIXEL_FORMAT_MASKS_GHIDRA_REPORT.md`
+- Prior report: `docs/research/RADAR_EVENT_PING_PIXEL_SHAPES_COLORS_GHIDRA_REPORT.md`
+- Prior report: `docs/research/DIRECTDRAW_RUNTIME_PIXEL_FORMAT_MASKS_GHIDRA_REPORT.md`
 - Rust scan only: `src/render/minimap.rs`, `src/render/minimap_helpers.rs`, `src/sim/radar.rs`, `src/app_render/build_instances.rs`, `src/app_render/draw_passes.rs`

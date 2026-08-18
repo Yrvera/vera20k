@@ -167,7 +167,7 @@ This report does not claim dropdown row internal paint geometry. Standard combo 
 - Ghidra read-only decompile: `FUN_0060F9A0 @ 0x0060F9A0`.
 - Ghidra read-only decompile: `FUN_006AE6E0 @ 0x006AE6E0`.
 - Ghidra read-only decompile: `FUN_004E45A0`, `FUN_004E50C0`, `FUN_004E5B60`, `FUN_004E5260`, `FUN_004E5CB0`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_COMBOBOX_00617250_GHIDRA_REPORT.md`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_COMBOBOX_00617250_GHIDRA_REPORT.md`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.

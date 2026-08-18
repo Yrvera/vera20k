@@ -2,7 +2,7 @@
 
 **Scenario:** Verify `gamemd.exe` behavior for direction byte `8` as a tube-step sentinel, distinguish it from normal compass direction ids, and compare known/unknown invalid non-8 byte behavior against Rust `ResolvedTerrainGrid::step_coord_by_direction` / `direction_offset`.
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DIRECTION_8_SENTINEL_INVALID_BYTES_TRACE.md`
+**Report path:** `docs/research/traces/DIRECTION_8_SENTINEL_INVALID_BYTES_TRACE.md`
 
 ## Verdict
 
@@ -22,13 +22,13 @@ Adjacent path smoothing, full A* edge costs, full TubeClass producer validity, b
 - Read-only Ghidra decompile: `MapCoord_Step_By_Direction @ ram:0042D490`.
 - Read-only Ghidra decompile: `Path_walk_directions_to_cell @ ram:00429780`.
 - Read-only Ghidra decompile: `PathfinderClass__UpdateBridgePassability @ ram:0042ACF0`.
-- Existing research: `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
-- Existing research: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
-- Existing trace: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DIRECTION8_TUBE_STEP_REFERENCE_TRACE.md`.
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:298`.
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:1153`.
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/map/bridge_facts.rs:260`.
-- Rust code: `C:/Users/enok/Documents/ra2-rust-game/src/map/tubes.rs:68`.
+- Existing research: `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
+- Existing research: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
+- Existing trace: `docs/research/traces/DIRECTION8_TUBE_STEP_REFERENCE_TRACE.md`.
+- Rust code: `src/map/resolved_terrain.rs:298`.
+- Rust code: `src/map/resolved_terrain.rs:1153`.
+- Rust code: `src/map/bridge_facts.rs:260`.
+- Rust code: `src/map/tubes.rs:68`.
 
 ## Active YR Confirmation
 

@@ -92,9 +92,9 @@ Rust currently has a simpler selected-map index path:
 
 | Area | Current Rust status | Evidence |
 |---|---|---|
-| setup state | stores only `SkirmishShellState.selected_map_idx` | `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:36` |
-| Choose Map action | cycles `selected_map_idx` in-place, no modal accept/cancel restore | `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:165` |
-| Start launch | reads `skirmish_settings.selected_map_idx`, gets `available_maps[index].file_name`, then enters `GameScreen::Loading { map_name }` | `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:411` |
+| setup state | stores only `SkirmishShellState.selected_map_idx` | `src/ui/skirmish_shell/state.rs:36` |
+| Choose Map action | cycles `selected_map_idx` in-place, no modal accept/cancel restore | `src/ui/skirmish_shell/state.rs:165` |
+| Start launch | reads `skirmish_settings.selected_map_idx`, gets `available_maps[index].file_name`, then enters `GameScreen::Loading { map_name }` | `src/app.rs:411` |
 
 Rust does choose a map filename by index, which matches the high-level outcome when the index is valid. It does not yet model the retail record loader contract: live token/index, launch mirrors, selected record path copy into a scenario filename buffer, loader-failure restore, or setup-init fallback to mode default map.
 
@@ -142,5 +142,5 @@ Rust does choose a map filename by index, which matches the high-level outcome w
 
 - Ghidra read-only decompile / assembly context: `0x006ACEE0`, `0x006AE6E0`, `0x005E7160`, `0x005E7BF0`, `0x005E7460`, `0x00683AB0`, `0x00684620`, `0x00686730`, `0x00686B20`, `0x0069AC30`, `0x0069ACC0`.
 - Ghidra xrefs: `DAT_00A8B3C4`, `DAT_00A8B3C8`, `DAT_00A8B250`, `DAT_00A8B254`, `DAT_00A8B8E0`; function xrefs to `ScenarioClass__Start_Scenario`, `ScenarioClass__Read_Scenario`, and `0x005E7BF0`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_RECORD_DECODE_FIELDS_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_MODAL_FLOW_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
+- Prior docs referenced: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_RECORD_DECODE_FIELDS_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_MODAL_FLOW_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`.
+- Rust scan: `src/app.rs`, `src/ui/skirmish_shell/state.rs`.

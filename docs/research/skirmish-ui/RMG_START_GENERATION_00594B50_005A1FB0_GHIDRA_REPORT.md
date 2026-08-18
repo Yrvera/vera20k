@@ -177,7 +177,7 @@ Rust currently has no random-map generator and no generated-start metadata model
 
 ### Stale Docs / Follow-up Docs
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_GENERATOR_00598960_GHIDRA_REPORT.md`
 
 Replace:
 
@@ -187,7 +187,7 @@ with:
 
 > `0x00598960` has a retry-shaped start stage that calls `0x00594B50`, retries if its `AL` is zero, then calls `0x005A1FB0(MapSeed)` and retries if that `AL` is zero. In the scoped callee bodies observed by `RMG_START_GENERATION_00594B50_005A1FB0_GHIDRA_REPORT.md`, both functions return `AL=1` on normal exits, so static evidence does not prove a robust retry-until-valid-starts loop. `0x00594B50`/`0x00594870` generate scenario waypoint slots using `DAT_00ABE028` as the quota; `0x005A1FB0` then loops `i < MapSeed+0x50` (`[RandomMap] NumPlayers`) and flood-fills scratch ownership around already-written waypoint slots read via `0x0068BCC0`.
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDMAP_SED_WRITER_00597730_LAYOUT_GHIDRA_REPORT.md`
+Path: `docs/research/skirmish-ui/SKIRMISH_RANDMAP_SED_WRITER_00597730_LAYOUT_GHIDRA_REPORT.md`
 
 Add:
 

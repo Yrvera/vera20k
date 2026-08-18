@@ -127,12 +127,12 @@ Evidence: assembly `0x006849C3 MOV DL,0x1`, `0x006849C5 LEA ECX,[ESP+0x40]`, `0x
 
 | Area | Current Rust status | Evidence |
 |---|---|---|
-| scenario record model | `SkirmishScenarioRecord::random_map_sentinel` now uses `file_name = "RandMap.Sed"`, `kind = RandomMapSentinel`, `min_players = Some(2)`, `max_players = Some(4)`, `official = true` | `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs` |
-| launch session | `SkirmishLaunchSession.selected_map_file` carries the selected record filename; shell launch stores `selected_map.file_name.clone()` | `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/launch.rs` |
-| loading request | native selected Skirmish loading passes `selected_map_file` into `load_map_initial_with_assets` | `C:/Users/enok/Documents/ra2-rust-game/src/app_loading.rs` |
-| map loader | `load_map_initial_with_assets` and `load_map_by_name_or_path_with_assets` try concrete map files and asset candidates; candidates omit `.sed` and no random generation path exists | `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs` |
+| scenario record model | `SkirmishScenarioRecord::random_map_sentinel` now uses `file_name = "RandMap.Sed"`, `kind = RandomMapSentinel`, `min_players = Some(2)`, `max_players = Some(4)`, `official = true` | `src/skirmish_scenarios.rs` |
+| launch session | `SkirmishLaunchSession.selected_map_file` carries the selected record filename; shell launch stores `selected_map.file_name.clone()` | `src/skirmish_launch.rs`; `src/ui/skirmish_shell/state/launch.rs` |
+| loading request | native selected Skirmish loading passes `selected_map_file` into `load_map_initial_with_assets` | `src/app_loading.rs` |
+| map loader | `load_map_initial_with_assets` and `load_map_by_name_or_path_with_assets` try concrete map files and asset candidates; candidates omit `.sed` and no random generation path exists | `src/app_init.rs`; `src/app_list_maps.rs` |
 | generated map state | no Rust random-map generator, no `.SED` parser/seed model, no generated waypoint/map metadata handoff exists | focused `rg`; codegraph context |
-| downstream spawn | `seed_skirmish_opening_if_needed` and launch apply logic consume `MapFile.waypoints`; no generated random-map waypoints can reach spawn setup yet | `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs` |
+| downstream spawn | `seed_skirmish_opening_if_needed` and launch apply logic consume `MapFile.waypoints`; no generated random-map waypoints can reach spawn setup yet | `src/app_skirmish.rs` |
 
 ## 7. Coverage Ledger
 
@@ -209,5 +209,5 @@ No contradiction found with the current high-confidence docs. If a summary says 
 - Ghidra read-only decompile/assembly: `0x00683AB0`, `0x00684620`, `0x0068465C..0x006846BE`, `0x00684961..0x006849C9`, `0x00597A10`, `0x00597A30` disassembly, `0x00598960`, `0x00596300`, `0x00686730`, `0x00686890`, `0x007C8D20`.
 - Ghidra data: string `.SED` at `0x0083DA88`; vtable bytes at `0x007ED8E4`.
 - Prior research: `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_BRANCH_AFTER_SELECTED_MAP_LOAD_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_RANDMAP_SED_WRITER_00597730_LAYOUT_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/RMG_START_GENERATION_00594B50_005A1FB0_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_IMPLEMENTATION_CONTRACT_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/launch.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_loading.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs`.
+- INI: `ini/mpmodesmd.ini`.
+- Rust scan: `src/skirmish_scenarios.rs`; `src/skirmish_launch.rs`; `src/ui/skirmish_shell/state/launch.rs`; `src/app_loading.rs`; `src/app_init.rs`; `src/app_list_maps.rs`; `src/app_skirmish.rs`.

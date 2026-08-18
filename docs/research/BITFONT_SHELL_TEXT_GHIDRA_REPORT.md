@@ -680,9 +680,9 @@ All shell text rendering is on the WM_PAINT path of dialog windows (not the simu
 
 **Prior docs cross-referenced:**
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SIDEBAR_READY_TEXT_RENDERING.md` — partially supplanted by this report. The doc's "Font: GAME.FNT" section had wrong claims about FNT field 0x08 (= bytes_per_row, not "Inter-character spacing") and wrong claims about BitFont struct +0x18/+0x1C (those positions in the **inner** struct hold pointers, not values — though the **outer** struct does have `bytes_per_row` and `cell_height` at those offsets, copied from inner +0x04 and inner +0x0C by the constructor). The doc's "Ready" call-site analysis and side color table are still correct.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md` §1.2 — named `FUN_00621040`/`FUN_006211D0`/`FUN_00623880` correctly; this report extends with full algorithm and signature.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` §0x00621040 — documented flag 0x04 (vertical center) and the color-conversion shape correctly. This report adds the full body and the missing flag bits.
+- `docs/research/SIDEBAR_READY_TEXT_RENDERING.md` — partially supplanted by this report. The doc's "Font: GAME.FNT" section had wrong claims about FNT field 0x08 (= bytes_per_row, not "Inter-character spacing") and wrong claims about BitFont struct +0x18/+0x1C (those positions in the **inner** struct hold pointers, not values — though the **outer** struct does have `bytes_per_row` and `cell_height` at those offsets, copied from inner +0x04 and inner +0x0C by the constructor). The doc's "Ready" call-site analysis and side color table are still correct.
+- `docs/research/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md` §1.2 — named `FUN_00621040`/`FUN_006211D0`/`FUN_00623880` correctly; this report extends with full algorithm and signature.
+- `docs/research/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` §0x00621040 — documented flag 0x04 (vertical center) and the color-conversion shape correctly. This report adds the full body and the missing flag bits.
 - `docs/plans/2026-05-17-bitfont-shell-text-investigation-plan.md` — the scoping plan executed by this report. All 19 inventory items addressed (plus the 4 review refinements).
 
 **INI files checked:** none — no INI surface exists.

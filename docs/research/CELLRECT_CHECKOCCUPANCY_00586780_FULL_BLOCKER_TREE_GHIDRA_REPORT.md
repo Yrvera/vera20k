@@ -103,10 +103,10 @@ Bridge/layer interaction:
 
 | Rust area | Current shape | Delta against verified behavior |
 |---|---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/occupancy.rs` | `OccupancyGrid` stores dynamic entity occupants by `MovementLayer`, with ground/bridge filtering and object-list-like ordering. | Does not model `CellClass+0xDC` reservations, `+0x44/+0x4C/+0x11C` blocker fields, dummy-cell scan behavior, or final four-corner playfield semantics as a `CellRect::CheckOccupancy` surface. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs` | Has `CanEnterLayerContext` separating terrain, object-list, and occupancy-bit layers. | Useful for `Can_Enter_Cell`; it is not the same as `CheckOccupancy`, which does not read bridge occupation bitfields and scans only the verified helper object list. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement.rs` | Has placement checks for terrain/static blockers/bridges and structure overlap. | This is a separate building-placement predicate family; it does not yet represent `CheckOccupancy(rect, house_index)` with `+0xDC` reservation filtering. |
-| `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs` and `production_spawn.rs` | Spawn logic uses current path/occupancy surfaces and bridge spawn layer state. | Nearby-cell final occupancy parity needs a distinct `CheckOccupancy(rect, -1)` equivalent that skips reservations but rejects the other cell/object blockers. |
+| `src/sim/occupancy.rs` | `OccupancyGrid` stores dynamic entity occupants by `MovementLayer`, with ground/bridge filtering and object-list-like ordering. | Does not model `CellClass+0xDC` reservations, `+0x44/+0x4C/+0x11C` blocker fields, dummy-cell scan behavior, or final four-corner playfield semantics as a `CellRect::CheckOccupancy` surface. |
+| `src/sim/pathfinding/cell_entry.rs` | Has `CanEnterLayerContext` separating terrain, object-list, and occupancy-bit layers. | Useful for `Can_Enter_Cell`; it is not the same as `CheckOccupancy`, which does not read bridge occupation bitfields and scans only the verified helper object list. |
+| `src/sim/production/production_placement.rs` | Has placement checks for terrain/static blockers/bridges and structure overlap. | This is a separate building-placement predicate family; it does not yet represent `CheckOccupancy(rect, house_index)` with `+0xDC` reservation filtering. |
+| `src/sim/world/world_spawn.rs` and `production_spawn.rs` | Spawn logic uses current path/occupancy surfaces and bridge spawn layer state. | Nearby-cell final occupancy parity needs a distinct `CheckOccupancy(rect, -1)` equivalent that skips reservations but rejects the other cell/object blockers. |
 
 ## 7. Coverage Ledger
 
@@ -176,11 +176,11 @@ Bridge/layer interaction:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_0XDC_RESERVATION_LIFECYCLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_CALLER_PARAMETER_MATRIX_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_OCCUPANCY_ORDERING_FOLLOWUP_GHIDRA_REPORT.md`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/occupancy.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_spawn.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`
+- `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_0XDC_RESERVATION_LIFECYCLE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_OCCUPANCY_OBJECT_LISTS_GHIDRA_REPORT.md`
+- `docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_CALLER_PARAMETER_MATRIX_GHIDRA_REPORT.md`
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
+- `docs/research/CELL_OCCUPANCY_ORDERING_FOLLOWUP_GHIDRA_REPORT.md`
+- Rust scan: `src/sim/occupancy.rs`, `src/sim/pathfinding/cell_entry.rs`, `src/sim/production/production_placement.rs`, `src/sim/production/production_spawn.rs`, `src/sim/world/world_spawn.rs`

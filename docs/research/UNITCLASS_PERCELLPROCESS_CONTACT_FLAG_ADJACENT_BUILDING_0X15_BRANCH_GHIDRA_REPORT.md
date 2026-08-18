@@ -218,9 +218,9 @@ Concrete Rust test names:
 
 Known stale or too-narrow wording:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_system.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`
+- `docs/research/UNITCLASS_PERCELLPROCESS_DOCK_ARRIVAL_GETDOCKCOORD_GHIDRA_REPORT.md`
+- `docs/research/coord-cell-conversions/_system.md`
+- `docs/research/coord-cell-conversions/_parity.md`
 
 Replacement wording:
 
@@ -238,8 +238,8 @@ Replacement wording:
 - Ghidra decompile `TechnoClass::Receive_Radio @ 0x006F4AB0`.
 - Ghidra decompile `Look_up_building_in_cell @ 0x0047C520`.
 - Ghidra decompile `MapClass::Get_CellClass @ 0x005657A0`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_GETDOCKCOORD_VS_0X16_RECONCILIATION_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_GETDOCKCOORD_VS_0X16_RECONCILIATION_GHIDRA_REPORT.md`.
+- `docs/research/DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`.
+- `ini/rulesmd.ini`.
+- Current Rust scan: `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_dock_sequence.rs`.

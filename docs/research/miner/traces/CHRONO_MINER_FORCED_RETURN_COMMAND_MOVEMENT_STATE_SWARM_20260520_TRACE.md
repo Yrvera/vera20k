@@ -7,9 +7,9 @@
 
 ## Sources
 
-- Current Rust source under `C:/Users/enok/Documents/ra2-rust-game/src/`.
+- Current Rust source under `src/`.
 - Retail INI data in `ini/rulesmd.ini`, `ini/artmd.ini`, with base files as fallback.
-- Prior context trace: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/chrono_miner_forced_return_unload_command_TRACE.md`.
+- Prior context trace: `docs/research/traces/chrono_miner_forced_return_unload_command_TRACE.md`.
 - Read-only Ghidra MCP decompile of active standard-YR functions:
   - `UnitClass__Mission_Harvest @ 0x0073E5E0`.
   - `TechnoClass__Set_Destination @ 0x00741970`.

@@ -25,7 +25,7 @@ Master Mind. Initiate's "psychic" naming is purely thematic.
 
 ## rulesmd.ini — `[INIT]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4870`:
+Verbatim from `ini/rulesmd.ini:4870`:
 
 ```ini
 [INIT]
@@ -134,7 +134,7 @@ UseOwnName=true
 
 ## artmd.ini — `[INIT]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:156`:
+`ini/artmd.ini:156`:
 
 ```ini
 [INIT] ; Initiate

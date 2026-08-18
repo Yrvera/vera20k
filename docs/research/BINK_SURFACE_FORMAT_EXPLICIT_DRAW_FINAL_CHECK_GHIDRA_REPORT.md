@@ -140,7 +140,7 @@ Current Rust in `src/render/bink_movie.rs` decodes Bink frames into RGBA bytes, 
 
 ## Sources
 
-- Live Ghidra MCP `gamemd.exe` program info: image base `0x00400000`, executable `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`.
+- Live Ghidra MCP `gamemd.exe` program info: image base `0x00400000`, executable `<ra2-install>/gamemd.exe`.
 - Live MCP `read_memory(0x007EE154, 64)`: Bink wrapper vtable, including `+0x28 = 0x005C05F0`.
 - Live MCP `decompile_function` / `disassemble_function`: `0x005C05F0`, `0x00432750`, `0x00433060`, `0x00433270`, `0x00433330`.
 - Live MCP `list_external_locations`: `_BinkDDSurfaceType@4`, `_BinkCopyToBuffer@28`, `_BinkOpen@8`, and related Bink imports in `BINKW32.DLL`.

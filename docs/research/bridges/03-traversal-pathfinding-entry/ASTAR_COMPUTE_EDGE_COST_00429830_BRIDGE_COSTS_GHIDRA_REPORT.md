@@ -245,4 +245,4 @@ No remaining uncertainty for the claimed helper formula/order. Deferred items ar
 - Assembly contexts: `0x00429845`, `0x0042985C`, `0x004299AA`, `0x004299D2`, `0x00429A41`, `0x00429A52`, `0x00429A6F`, `0x00429F6B`, `0x00429F8A`, `0x00429F96`
 - Memory reads: `0x0081870C`, `0x0081872C`, `0x007E3710`, `0x007E37B4`, `0x007E37B8`, `0x007E37BC`, `0x007E37C0`, `0x007E2AC8`
 - Existing reports: `BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`, `BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`, `PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`, `ASTAR_COMPUTE_EDGE_COST_00429830_MARKER_STACKING_GHIDRA_REPORT.md`, `BRIDGE_PATH_TIE_ORDER_AFTER_LOW_COLLAPSE_GHIDRA_REPORT.md`, `PATHFINDERCLASS_FIELD_3C_GHIDRA_REPORT.md`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core_tests.rs`
+- Rust scan: `src/sim/pathfinding/core.rs`, `src/sim/pathfinding/core_tests.rs`

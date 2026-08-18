@@ -109,6 +109,6 @@ The Rust rules model parses building `UnitRepair=yes` and uses it for command va
 - Ghidra `decompile_function 004df040`
 - Ghidra `decompile_function 0073e5e0`
 - Ghidra `decompile_function 00665650`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md` OQ-9
+- `docs/research/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md` OQ-9
 - `ini/rulesmd.ini:389`
 - `ini/rules.ini:299`

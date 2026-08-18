@@ -369,7 +369,7 @@ notes: |
       Verify each Rules offset by re-decompiling InitiateWarp (0x00719400)
       and matching the loads. Stock rulesmd.ini values (lines 221/224):
       ChronoDelay=60, ChronoTrigger=yes. Verify via grep on
-      C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini.
+      ini/rulesmd.ini.
 
   # ============= ENUM DECODE =============
 

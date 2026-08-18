@@ -234,7 +234,7 @@ a live standard YR UI draw path.
 
 ## Stale-doc Wording
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/SIDEBAR_RADAR_POSITIONING.md`
+`docs/research/SIDEBAR_RADAR_POSITIONING.md`
 left-panel table should replace the rows that claim `DAT_00b0fa68` is
 `BKGDLG.SHP` / `BKGDLGY.SHP` with:
 

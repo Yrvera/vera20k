@@ -129,6 +129,6 @@ No stale-doc replacement needed. `SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURREN
 ## Sources
 
 - Read-only Ghidra spot-checks: `0x004E3A00`, `0x004E4170`, `0x004E38A0`, `0x004E45A0`, `0x004E4E20`, `0x004E42A0`.
-- Existing reports: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.
-- Rust source: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/combos.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/hit_test.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`.
-- INI source: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:959..987`.
+- Existing reports: `docs/research/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.
+- Rust source: `src/ui/skirmish_shell/state.rs`; `src/ui/skirmish_shell/state/combos.rs`; `src/ui/skirmish_shell/state/hit_test.rs`; `src/ui/main_menu.rs`; `src/skirmish_launch.rs`.
+- INI source: `ini/rulesmd.ini:959..987`.

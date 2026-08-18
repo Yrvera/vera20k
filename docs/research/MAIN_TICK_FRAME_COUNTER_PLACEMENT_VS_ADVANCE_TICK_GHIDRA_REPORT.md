@@ -187,11 +187,11 @@ The source line reference `src/sim/world/mod.rs:1196..1200` (cited in earlier ve
 - Ghidra assembly context: service/increment/wait sequence `0x0055DE4A..0x0055DE9A`
 - Ghidra decompile: `LogicClass::PerTickUpdate @ 0x0055AFB0`
 - Ghidra decompile: `FUN_0055E160 @ 0x0055E160`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/timing/logic-vs-render-loop.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/timing/game-speed-master-clock.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs`
+- `docs/research/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
+- `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- `docs/research/timing/logic-vs-render-loop.md`
+- `docs/research/timing/game-speed-master-clock.md`
+- `src/sim/world/mod.rs`
+- `src/app_sim_tick.rs`
+- `src/app_types.rs`
+- `src/util/fixed_math.rs`

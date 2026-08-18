@@ -189,13 +189,13 @@ No Rust files were modified.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace: "`FootClass.+0x21C` is passed to `Zone_Estimate_Slope_Cost` — likely the locomotor speed type or a slope-modifier index. Needs follow-up."
   - With: "`FootClass+0x21C` is the slope-cost context pointer consumed by `Zone_Estimate_Slope_Cost`; level 1 reads `ctx+0x57E4` by neighbor representative, level 2 reads the 130-wide `ctx+0x59F0` grid by direction-specific corner samples. The mover scalar/gate is separate: `Foot+0x530`, copied from `TechnoTypeClass+0x2F0` (`ThreatAvoidanceCoefficient`)."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace: "Slope cost estimation in precheck | partial | `Zone_Estimate_Slope_Cost` not separately ported; Rust uses inline slope multipliers."
   - With: "Slope cost estimation in precheck | verified-missing in Rust | `Zone_precheck` adds `ftol(Zone_Estimate_Slope_Cost(ctx, level, cur, next) * Foot+0x530_or_exempt_1_0)` only when the factor is `> ~1e-5`; Rust has runtime terrain slope speed but no zone-level slope estimate."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
+- `docs/research/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
   - Replace: "Full `Zone_Estimate_Slope_Cost` internals were not re-documented here; only the call/added-cost contract was verified."
   - With: "Full helper internals are documented in `ZONE_ESTIMATE_SLOPE_COST_PARITY_GHIDRA_REPORT.md`: level 0 returns zero; level 1 uses the neighbor representative and `ctx+0x57E4`; level 2 uses level-2 representatives, a 130-wide `ctx+0x59F0` grid, direction-specific two-corner mins, and arithmetic half-sum before caller `ftol(result * factor)`."
 

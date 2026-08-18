@@ -221,6 +221,6 @@ None for standard offline Skirmish dialog `0x102`. Non-standard lobbies/shells m
 
 - Ghidra decompile/read-only: `OwnerDraw_Checkbox_006163A0`, `FUN_006AE6E0`, `FUN_0060F9A0`, `FUN_00658330`.
 - Ghidra assembly contexts: `0x00616833..0x00616854`, `0x006168A6..0x006168C7`, `0x006100F2..0x00610190`, `0x0061032B..0x00610339`, `0x006AEDC9..0x006AEE1F`, `0x00603DB9`, `0x00603DD9`, `0x0052EC5F..0x0052EC9F`, `0x00657EFF`, `0x00657F45`, `0x00658520`.
-- Binary scan: local retail `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` direct immediate search for `PUSH 0x4E5`, `PUSH 0x4E6`, and common compare forms.
+- Binary scan: local retail `<ra2-install>/gamemd.exe` direct immediate search for `PUSH 0x4E5`, `PUSH 0x4E6`, and common compare forms.
 - Prior research checked: `SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`.
 - Rust surfaces checked: `src/ui/skirmish_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`.

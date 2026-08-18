@@ -194,13 +194,13 @@ No Rust files were modified.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace any wording equivalent to: "`edge+4` is a bridge-edge flag" or "`0.001` is a bridge-edge penalty."
   - With: "`byte(edge+4) != 0` is a hierarchy graph build-boundary/tiebreak flag consumed by `Zone_precheck`; verified bridge/tube and repaired-bridge edge writers set this byte to zero."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_HELPERS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_HELPERS_GHIDRA_REPORT.md`
   - Replace open wording that says the bridge-edge low-byte semantic still needs a second writer.
   - With: "Resolved by `BRIDGE_ZONE_EDGE_FLAG_WRITER_SEMANTICS_GHIDRA_REPORT.md`: nonzero comes from `ZoneMap__FloodFillScanline` hierarchy-boundary temp entries; bridge/tube helpers and repaired-bridge direct adds write zero."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_EDGE_FLAGS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_EDGE_FLAGS_GHIDRA_REPORT.md`
   - Keep the correction, but prefer "verified nonzero writer for this slice" and "hierarchy-boundary/tiebreak flag" over "bridge-edge flag."
 
 ## Negative Facts / Do Not Do

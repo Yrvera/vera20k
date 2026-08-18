@@ -148,8 +148,8 @@ Repo-status update 2026-05-25: the prior "2-cell chrono inbound warp threshold" 
 - Ghidra: `FootClass__Find_Docking_Bay @ 0x004DF040`
 - Ghidra: `BuildingClass__CanDock @ 0x00457CE0`
 - Ghidra: `BuildingTypeClass_ReadINI_Water @ 0x0045FE50`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_DOCKING_BAY_FALLBACK_ARG3_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/NUMBEROFDOCKS_VS_DOCKOFFSET_RECONCILE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CHRONO_MINER_TELEPORT_INBOUND_VISUAL_CHAIN_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CHRONO_MINER_TELEPORT_GHIDRA_REPORT.md`
+- `docs/research/FIND_DOCKING_BAY_FALLBACK_ARG3_GHIDRA_REPORT.md`
+- `docs/research/NUMBEROFDOCKS_VS_DOCKOFFSET_RECONCILE_GHIDRA_REPORT.md`
+- `docs/research/traces/CHRONO_MINER_TELEPORT_INBOUND_VISUAL_CHAIN_TRACE.md`
+- `docs/research/CHRONO_MINER_TELEPORT_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini`, `ini/artmd.ini`, `ini/rules.ini`, `ini/art.ini`

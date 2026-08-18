@@ -278,7 +278,7 @@ No Rust files, INI files, or existing docs were modified.
 ## 8. Open Questions - Final State Of The Investigation Log
 
 - [RESOLVED] OQ-01 - What mode is this investigation? -> exhaustive-slice for the bounded `UnitClass::Mission_Deploy_Building` stock zero-link PathType/state-4 branch. (evidence: user scope and primary function boundary)
-- [RESOLVED] OQ-02 - Does the expected report already exist? -> No; output path did not exist before writing. (evidence: `Test-Path C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`)
+- [RESOLVED] OQ-02 - Does the expected report already exist? -> No; output path did not exist before writing. (evidence: `Test-Path docs/research/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`)
 - [RESOLVED] OQ-03 - Is the stock path `unit+0x2E4 == 0` or nonzero? -> Zero enters the normal FSM; nonzero calls release. (evidence: `0x0073D63B`, `0x0073D641`)
 - [RESOLVED] OQ-04 - Is `SizeLimit>=1` required for stock HARV/CMIN? -> No; default zero/absent SizeLimit goes through the JLE path and then the `Harvester=yes` gate. (evidence: `0x0073D6EC`, `0x0073D672`, `rulesmd.ini:[CMIN]/[HARV]`)
 - [RESOLVED] OQ-05 - What does `PathType::Has_Valid_Steps` return? -> True when any path array entry is nonzero, false for empty/all-zero steps. (evidence: decompile `0x0065AE30`)
@@ -329,18 +329,18 @@ No Rust files, INI files, or existing docs were modified.
 - Ghidra disassembled: `0x0073D630`.
 - Ghidra assembly context checked: `0x0073DEE0`, `0x0073E17F`, `0x0073E24D`, `0x0073DFB0`, `0x0073E5B1`, `0x0073E289`, `0x0073D63B`, `0x0073D6E6`, `0x0073E51C`.
 - Prior docs read/reconciled:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AUDIT_LOG.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_DOCK_ANIM_SLOTS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDINGCLASS_0X57C_DOCK_DEPART_GUARD_GHIDRA_REPORT.md`
+  - `docs/research/AUDIT_LOG.md`
+  - `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`
+  - `docs/research/miner/MISSION_DEPLOY_BUILDING_DOCKED_VS_UNDOCKED_BRANCH_GHIDRA_REPORT.md`
+  - `docs/research/miner/MISSION_DEPLOY_BUILDING_DAT_0089F6A0_REFINERY_LOOKUP_GHIDRA_REPORT.md`
+  - `docs/research/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
+  - `docs/research/miner/REFINERY_DOCK_ANIM_SLOTS_GHIDRA_REPORT.md`
+  - `docs/research/miner/BUILDINGCLASS_0X57C_DOCK_DEPART_GUARD_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
+  - `ini/artmd.ini`
 - Rust scan:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
+  - `src/sim/miner/mod.rs`
+  - `src/sim/miner/miner_dock.rs`
+  - `src/sim/miner/miner_dock_sequence.rs`

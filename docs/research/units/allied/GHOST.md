@@ -24,7 +24,7 @@ Authoritative deep RE: [NAVY_SEAL_TANYA_C4_GHIDRA_REPORT.md](../../NAVY_SEAL_TAN
 
 ## rulesmd.ini — `[GHOST]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4014`:
+Verbatim from `ini/rulesmd.ini:4014`:
 
 ```ini
 [GHOST]
@@ -150,7 +150,7 @@ Implicit defaults:
 
 ## artmd.ini — `[SEAL]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:384`:
+`ini/artmd.ini:384`:
 
 ```ini
 [SEAL] ; Regular SEAL

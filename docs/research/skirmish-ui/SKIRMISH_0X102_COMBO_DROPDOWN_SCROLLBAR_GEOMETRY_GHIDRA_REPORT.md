@@ -116,8 +116,8 @@ Observed deltas against verified retail behavior:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_VISUAL_PARITY_GHIDRA_REPORT.md`: replace "Side combo with more than 7 country rows scrolls one row on arrow, one page on track click" with "Side combo with more than 7 country rows scrolls one row on arrow, but a scrollbar track click jumps to the top index implied by centering the native thumb on the click."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_WINDOW_GEOMETRY_GHIDRA_REPORT.md`: superseded by the follow-up correction now in that file: `ComboDropWin` owns standard combo popup row paint/hit testing; `OwnerDraw_ListBox_00618D40` owns real owner-drawn `LISTBOX` controls such as Choose Map `0x6EB`/`0x553`.
+- `docs/research/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_VISUAL_PARITY_GHIDRA_REPORT.md`: replace "Side combo with more than 7 country rows scrolls one row on arrow, one page on track click" with "Side combo with more than 7 country rows scrolls one row on arrow, but a scrollbar track click jumps to the top index implied by centering the native thumb on the click."
+- `docs/research/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_WINDOW_GEOMETRY_GHIDRA_REPORT.md`: superseded by the follow-up correction now in that file: `ComboDropWin` owns standard combo popup row paint/hit testing; `OwnerDraw_ListBox_00618D40` owns real owner-drawn `LISTBOX` controls such as Choose Map `0x6EB`/`0x553`.
 
 ## Sources
 

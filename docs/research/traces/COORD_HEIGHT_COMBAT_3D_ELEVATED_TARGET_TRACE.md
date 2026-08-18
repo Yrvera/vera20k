@@ -21,14 +21,14 @@ Overall status: PARTIAL. The trace reached the active YR range and fire paths, b
 
 ## Sources Checked
 
-- Research: `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_INRANGE_DISTANCE_GHIDRA_REPORT.md`
-- Research: `C:/Users/enok/Documents/ra2-rust-game-docs/WEAPONTYPECLASS_RUST_VS_FIRE_AT_TRACE.md`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/in_range.rs`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/app_fire_effects.rs`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/util/lepton.rs`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
+- Research: `docs/research/TECHNOCLASS_INRANGE_DISTANCE_GHIDRA_REPORT.md`
+- Research: `docs/research/WEAPONTYPECLASS_RUST_VS_FIRE_AT_TRACE.md`
+- INI: `ini/rulesmd.ini`
+- Rust: `src/sim/combat/mod.rs`
+- Rust: `src/sim/combat/in_range.rs`
+- Rust: `src/app_fire_effects.rs`
+- Rust: `src/util/lepton.rs`
+- Rust: `src/sim/components.rs`
 - Ghidra read-only decompilation:
   - `0x006F7220`, `TechnoClass__InRange`
   - `0x006FDD50`, `TechnoClassFireAtSpawnsBullet`

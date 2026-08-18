@@ -156,8 +156,8 @@ No INI key directly controls the coordinate inverse itself. Bridge existence and
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: patched 2026-05-22 for viewport-offset sign, effective 180 attempts, strict `>15` bridge edge tests, and stale Rust guidance. Note: comparison literal is `0xB3` not `0xB4` (corrected 2026-05-28).
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/COORD_HEIGHT_SCREEN_PICK_HIGH_BRIDGE_MOVE_TRACE.md`: replace the Stage 9 current-Rust failure wording with: "Older Rust projected target-line cell destinations with ground height only. Current Rust `project_cell_destination` can derive high-bridge deck height from `Simulation.resolved_terrain` even when no explicit bridge map is passed; keep a regression test for high-bridge move/rally target-line endpoints."
+- `docs/research/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`: patched 2026-05-22 for viewport-offset sign, effective 180 attempts, strict `>15` bridge edge tests, and stale Rust guidance. Note: comparison literal is `0xB3` not `0xB4` (corrected 2026-05-28).
+- `docs/research/traces/COORD_HEIGHT_SCREEN_PICK_HIGH_BRIDGE_MOVE_TRACE.md`: replace the Stage 9 current-Rust failure wording with: "Older Rust projected target-line cell destinations with ground height only. Current Rust `project_cell_destination` can derive high-bridge deck height from `Simulation.resolved_terrain` even when no explicit bridge map is passed; keep a regression test for high-bridge move/rally target-line endpoints."
 
 ## 10. Remaining Uncertainty
 
@@ -167,11 +167,11 @@ No INI key directly controls the coordinate inverse itself. Bridge existence and
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WHAT_ACTION_BRIDGE_CELLS_CURSOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/COORD_HEIGHT_SCREEN_PICK_HIGH_BRIDGE_MOVE_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/terrain.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_target_lines.rs`
+- `docs/research/COORD_TRANSFORM_AUDIT_GHIDRA_REPORT.md`
+- `docs/research/COORDINATE_ELEVATION_LAYER_MODEL_GHIDRA_REPORT.md`
+- `docs/research/WHAT_ACTION_BRIDGE_CELLS_CURSOR_GHIDRA_REPORT.md`
+- `docs/research/traces/COORD_HEIGHT_SCREEN_PICK_HIGH_BRIDGE_MOVE_TRACE.md`
+- `src/map/terrain.rs`
+- `src/app_sim_tick.rs`
+- `src/app_commands.rs`
+- `src/app_target_lines.rs`

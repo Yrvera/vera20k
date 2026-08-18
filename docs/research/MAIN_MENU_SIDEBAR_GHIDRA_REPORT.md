@@ -360,7 +360,7 @@ Local data checked:
 - `src/ui/main_menu.rs`
 - `src/app.rs`
 - `src/app_skirmish_shell_render.rs`
-- prior reports in `C:/Users/enok/Documents/ra2-rust-game-docs/`, especially
+- prior reports in `docs/research/`, especially
   global/sound and shell owner-draw research
 
 ## Related reports (added 2026-05-18 main-menu --area swarm)

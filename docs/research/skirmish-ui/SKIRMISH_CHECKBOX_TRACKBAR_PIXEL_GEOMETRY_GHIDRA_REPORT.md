@@ -153,5 +153,5 @@ Active in YR: Not applicable to Rust. Evidence: source scan of `src/` for the sc
 - Ghidra decompile: `FUN_00621040 @ 0x00621040`
 - Ghidra string memory: `cue_i.pcx @ 0x00835974`, `cce_ir.pcx @ 0x00835980`, `cce_il.pcx @ 0x0083598C`, `cce_i.pcx @ 0x00835998`, `trakgrip.pcx @ 0x00835A00`, `trofr.pcx @ 0x00835A10`, `trofl.pcx @ 0x00835A1C`, `trofm.pcx @ 0x00835A28`
 - Prior docs: `SKIRMISH_CHECKBOXES_AND_TRACKBARS_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`, `SKIRMISH_BTN_MINS_PLUS_USE_SITE_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`, `SKIRMISH_HIGH_RES_SHELL_HOSTING_ORIGIN_GHIDRA_REPORT.md`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- Rust scan: `rg` over `C:/Users/enok/Documents/ra2-rust-game/src`
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`
+- Rust scan: `rg` over `src`

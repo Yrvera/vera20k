@@ -10,19 +10,19 @@
 
 - Read-only Ghidra spot-check: `OwnerDraw_Trackbar_0061D950 @ 0x0061D950`.
 - Verified gamemd reports:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TRACKBAR_CHANGED_VALUE_SOUND_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SHELL_UI_SOUND_PLAYBACK_PLUMBING_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_OWNERDRAW_PAINT_GEOMETRY_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_TRACKBAR_CHANGED_VALUE_SOUND_GHIDRA_REPORT.md`
+  - `docs/research/SHELL_UI_SOUND_PLAYBACK_PLUMBING_GHIDRA_REPORT.md`
 - Rust source:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
+  - `src/ui/skirmish_shell/layout.rs`
+  - `src/ui/skirmish_shell/state.rs`
+  - `src/app.rs`
+  - `src/app_skirmish_shell_render.rs`
+  - `src/rules/ruleset.rs`
 - INI source:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`
+  - `ini/rulesmd.ini`
+  - `ini/soundmd.ini`
 
 ## Active YR Confirmation
 
@@ -57,7 +57,7 @@ Mouse down on Credits rail -> native Y gate -> outside-thumb remap -> changed-va
 
 **Stage:** Rail click capture state  
 **Player-visible difference:** Usually low. A rail click that changes the value and is then released produces the same value and sound, but gamemd still holds native capture until release while Rust leaves no rail-click drag/capture state.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:414`  
+**Rust:** `src/ui/skirmish_shell/state.rs:414`  
 **gamemd evidence:** `OwnerDraw_Trackbar_0061D950` `WM_LBUTTONDOWN` branch sets capture/active state before outside-thumb remap; verified by read-only Ghidra and owner-draw report.
 
 ## Not Implemented
@@ -66,7 +66,7 @@ Mouse down on Credits rail -> native Y gate -> outside-thumb remap -> changed-va
 
 **Stage:** Parent notification boundary  
 **Player-visible difference:** Low in this concrete shell because Rust stores the value directly and plays the sound, but the native event ordering boundary is missing. If parent-side Skirmish logic later depends on per-change notifications, Rust will not match that message cadence.  
-**Rust:** `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:416`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:766`  
+**Rust:** `src/ui/skirmish_shell/state.rs:416`, `src/app.rs:766`  
 **gamemd evidence:** `OwnerDraw_Trackbar_0061D950` final branch sends `WM_HSCROLL 0x114`, low word `5`, high word current absolute value, then calls the `GenericClick` sound path.
 
 ## Timing And Ordering

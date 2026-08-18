@@ -113,9 +113,9 @@ Active in YR: Yes, conditional by entry point.
 
 Rust currently has only the steady-state renderer for Skirmish shell composition:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:461` isolates `right_panel_frame10_overlay_active`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:467` defines the semantic steady-state draw order.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:488` emits repeated `SDBTNANM` frame-10 overlay when the helper returns true.
+- `src/app_skirmish_shell_render.rs:461` isolates `right_panel_frame10_overlay_active`.
+- `src/app_skirmish_shell_render.rs:467` defines the semantic steady-state draw order.
+- `src/app_skirmish_shell_render.rs:488` emits repeated `SDBTNANM` frame-10 overlay when the helper returns true.
 
 Rust does not appear to model `FUN_006071E0` transition playback, its `DL=0/1` broadcast split, or the `0x4EC -> 0x4EE` text reveal start as a separate later shell transition. This is acceptable for first static paint only if Rust does not use the transition helper as an excuse to draw frame-10 overlay or start text reveal immediately.
 
@@ -171,12 +171,12 @@ Rust does not appear to model `FUN_006071E0` transition playback, its `DL=0/1` b
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md` replacement wording for Section 5 sentence: "`FUN_006071E0` sends `0x4EC` only when called with nonzero `DL` after transition playback; the standard common-paint deferred caller passes `DL=0` and sends `0x4ED`, which does not start the `0x4EC -> 0x4EE` text reveal path for dialog `0x102`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` replacement wording for Open Question 2: "`0x006071E0` is now covered by `SKIRMISH_FUN_006071E0_SHELL_TRANSITION_REDRAW_PATH_GHIDRA_REPORT.md`: it is a conditional transition playback helper, not first-paint steady-state composition; common paint calls it with `DL=0` and sends `0x4ED`, while `DL=1` sends `0x4EC` to start text reveal."
+- `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md` replacement wording for Section 5 sentence: "`FUN_006071E0` sends `0x4EC` only when called with nonzero `DL` after transition playback; the standard common-paint deferred caller passes `DL=0` and sends `0x4ED`, which does not start the `0x4EC -> 0x4EE` text reveal path for dialog `0x102`."
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` replacement wording for Open Question 2: "`0x006071E0` is now covered by `SKIRMISH_FUN_006071E0_SHELL_TRANSITION_REDRAW_PATH_GHIDRA_REPORT.md`: it is a conditional transition playback helper, not first-paint steady-state composition; common paint calls it with `DL=0` and sends `0x4ED`, while `DL=1` sends `0x4EC` to start text reveal."
 
 ## Sources
 
 - Ghidra decompiled / assembly checked: `0x006071E0`, `0x00622B50`, `0x00608070`, `0x00608260`, `0x0060A180`, `0x0060A250`, `0x00608CD0`, `0x00609730`, `0x0060AA60`, `0x006AE3F0`, `0x00625070`, `0x00624760`, `0x0072A9C0`, `0x0072E280`, `0x0072E2C0`, `0x0072D450`.
 - Ghidra xrefs: `get_function_xrefs 0x006071E0`; bulk xrefs for `0x0060AA60`, `0x00607FD0`, `0x00608260`.
 - Prior docs referenced: `SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md`, `SKIRMISH_SDBTNANM_FRAME10_FIRST_PAINT_FLAG_GHIDRA_REPORT.md`.
-- Rust source checked: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`.
+- Rust source checked: `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`.

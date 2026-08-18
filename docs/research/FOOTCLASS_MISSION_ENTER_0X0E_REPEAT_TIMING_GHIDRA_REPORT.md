@@ -172,7 +172,7 @@ The likely remaining Rust delta for this slot is timing: `phase_awaiting_accepte
 
 ## 12. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_ENTER_CANDOCK_RETRY_SAME_FRAME_ORDER_GHIDRA_REPORT.md`: replace "whatever the mission timer entry produces plus a random `0..2` jitter" with "stock `[Enter] Rate=.016` makes `FootClass::Mission_Enter` return `ftol(.016 * 900.0) + RandomRanged(0,2) = 14..16` frames."
+- `docs/research/miner/MISSION_ENTER_CANDOCK_RETRY_SAME_FRAME_ORDER_GHIDRA_REPORT.md`: replace "whatever the mission timer entry produces plus a random `0..2` jitter" with "stock `[Enter] Rate=.016` makes `FootClass::Mission_Enter` return `ftol(.016 * 900.0) + RandomRanged(0,2) = 14..16` frames."
 - Any refinery-dock doc or test comment implying "accepted-cell arrival rechecks CAN_DOCK on the next tick" should be narrowed to: "accepted-cell arrival must re-enter `CAN_DOCK` on a later Mission Enter dispatch; stock `Mission_Enter` returns a `14..16` frame delay unless another separately verified path bypasses the mission timer."
 
 ## Sources
@@ -183,8 +183,8 @@ The likely remaining Rust delta for this slot is timing: `phase_awaiting_accepte
 - Ghidra read-only decompile/assembly: `BuildingClass__Receive_Radio @ 0x0043C2D0`, especially `0x0043CAB4..0x0043CADB`.
 - Ghidra read-only decompile: `MissionClass__Read_INI @ 0x005B3760`, `MissionClass__GetMissionTimerEntry @ 0x005B3A00`, `Random__RandomRanged @ 0x0065C7E0`.
 - Existing docs read: `RADIO_0X12_MOVE_TO_CELL_PAYLOAD_AND_TIMESTAMPS_GHIDRA_REPORT.md`, `UNIT_MISSION_ENTER_REFINERY_RETRY_QUEUE_LOOP_GHIDRA_REPORT.md`, `miner/WAITING_MINER_MISSION_TIMER_AFTER_BUSY_CANDOCK_GHIDRA_REPORT.md`, `REFINERY_DOCK_0X16_BRIDGE_VERIFICATION_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `rules.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `miner_tests.rs`.
+- INI checked: `ini/rulesmd.ini`, `rules.ini`.
+- Rust scanned: `src/sim/miner/miner_dock_sequence.rs`, `miner_tests.rs`.
 
 ## Status
 

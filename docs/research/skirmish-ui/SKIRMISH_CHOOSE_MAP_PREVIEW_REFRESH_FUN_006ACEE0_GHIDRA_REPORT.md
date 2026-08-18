@@ -170,5 +170,5 @@ Rust currently models `Choose Map` as an in-place map-index increment, not as a 
 
 - Ghidra decompile: `0x006ACEE0`, `0x006AE3F0`, `0x006AE2C0`, `0x005E68A0`, `0x007759E0`, `0x007757E0`, `0x00608070`, `0x00608260`, `0x005E7160`, `0x005E74E0`, `0x005E7BF0`, `0x006ADDF0`, `0x006ACD60`, `0x006406E0`, `0x006406F0`, `0x00641DB0`, `0x0069ADF0`, `0x0069AE70`, `0x005D5F30`, `0x005E2EF0`, `0x005E2F60`
 - Ghidra assembly context: `0x006AE3F0`, `0x006AD8E7`, `0x005E6920`, `0x005E69FD`, `0x005E6B63`, `0x005E6B78`
-- Existing trace: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CHOOSE_MAP_ACTION_TRACE.md`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`
+- Existing trace: `docs/research/traces/SKIRMISH_CHOOSE_MAP_ACTION_TRACE.md`
+- Rust scan: `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`, `src/map/preview.rs`, `src/app_list_maps.rs`

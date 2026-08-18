@@ -154,8 +154,8 @@ Active in YR: Not applicable to Rust; this is implementation status, not binary 
 - Ghidra decompile: `SessionClass__ReadSkirmishSettings @ 0x00697F10`
 - Ghidra decompile: `RulesClass__ReadMultiplayerDialogSettings @ 0x00671EA0`
 - Ghidra decompile: `RulesClass::Constructor @ 0x00665650`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DEFAULT_SKIRMISH_FRAME_PACE_EXTENSION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+- `docs/research/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/DEFAULT_SKIRMISH_FRAME_PACE_EXTENSION_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/rules.ini`

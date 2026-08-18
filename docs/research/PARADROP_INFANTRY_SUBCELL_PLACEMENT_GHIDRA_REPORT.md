@@ -284,13 +284,13 @@ The deferred items do not undermine the main placement fix: gamemd does not land
   - `read_memory 0x0081CC84 len 64`
   - initializer writes at `0x0048E480`-`0x0048E4F3` (corrected 2026-07-18: was `0x0048E4ED` here; the Coverage Ledger entry above was already fixed 2026-05-28 but this Sources line was not updated in that pass; RET confirmed at `0x0048E4F3` via `get_function_by_address 0x0048E480` and `read_memory 0x0048E4E0 len 20` (byte 19 = `0xC3`) — GHIDRA_ADDRESS_SHIFT)
 - Prior trace:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/traces/PARADROP_PAYLOAD_RELEASE_PATTERN_TRACE.md`
+  - `docs/research/traces/PARADROP_PAYLOAD_RELEASE_PATTERN_TRACE.md`
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
+  - `ini/artmd.ini`
+  - `ini/art.ini`
 - Rust surfaces scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/aircraft/drop_payload.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/bump_crush.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/util/lepton.rs`
+  - `src/sim/aircraft/drop_payload.rs`
+  - `src/sim/movement/bump_crush.rs`
+  - `src/util/lepton.rs`

@@ -10,7 +10,7 @@ Ghidra use was read-only. Live spot-check decompiled `OwnerDraw_Button_00612B70`
 
 ## Evidence Base
 
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Rust read-only scan: `src/ui/skirmish_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`, `src/app.rs`.
 - Verified docs: `SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md`, `SKIRMISH_OWNERDRAW_BUTTON_PIXEL_LAYOUT_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_VIEWPORT_ORIGIN_FOLLOWUP_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`, `SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`.
 - Geometry cross-check: `SHELL_PCX_BUTTON_TILE_AND_CAP_GEOMETRY_GHIDRA_REPORT.md`; its main-menu active-YR header is stale, but the PCX-branch geometry is confirmed for Skirmish by the Skirmish button pixel-layout report.
 - INI: `ini/rulesmd.ini:643` has `GUIMainButtonSound=MenuClick`; `ini/rulesmd.ini:703` has `GenericClick=MenuClick`.

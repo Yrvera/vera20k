@@ -151,8 +151,8 @@ Proposed test names:
 
 ## 14. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ALLIED_SIDEBAR_PALETTE_SELECTOR_GHIDRA_REPORT.md`: replace any wording implying the DIALOG-family palettes are merely "loaded at game startup" without order/lifetime details with: "`FUN_0072AA40` loads `DIALOG.PAL`, `DIALOGY.PAL`, `DIALOGN.PAL`, and `MAINBTTN.PAL` in that execution order during normal startup at caller `0x0052BBBC`; each PAL component is converted by `<< 2` to max 252; missing files leave the corresponding raw/convert globals unchanged/null and do not abort later palette loads; teardown is `FUN_0072B230` via `FUN_0072AC40`."
-- `C:/Users/enok/Documents/ra2-rust-game/src/assets/pal_file.rs` docs/tests are stale relative to this binary path if used for gamemd UI/loading parity: replace "scale to 8-bit 0..255" wording with a split model, or a gamemd-parity note: "native gamemd PAL conversion shifts 6-bit components left by 2, producing 0..252."
+- `docs/research/ALLIED_SIDEBAR_PALETTE_SELECTOR_GHIDRA_REPORT.md`: replace any wording implying the DIALOG-family palettes are merely "loaded at game startup" without order/lifetime details with: "`FUN_0072AA40` loads `DIALOG.PAL`, `DIALOGY.PAL`, `DIALOGN.PAL`, and `MAINBTTN.PAL` in that execution order during normal startup at caller `0x0052BBBC`; each PAL component is converted by `<< 2` to max 252; missing files leave the corresponding raw/convert globals unchanged/null and do not abort later palette loads; teardown is `FUN_0072B230` via `FUN_0072AC40`."
+- `src/assets/pal_file.rs` docs/tests are stale relative to this binary path if used for gamemd UI/loading parity: replace "scale to 8-bit 0..255" wording with a split model, or a gamemd-parity note: "native gamemd PAL conversion shifts 6-bit components left by 2, producing 0..252."
 
 ## Sources
 

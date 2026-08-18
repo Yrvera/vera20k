@@ -248,15 +248,15 @@ No Rust files were modified.
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_PRECHECK_HIERARCHY_WRITER_ORDER_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_PRECHECK_HIERARCHY_WRITER_ORDER_GHIDRA_REPORT.md`
   - Add after the existing temp-bucket finding: "The exact temp bucket key is `((packed >> 16) & 0xF) << 4 | (packed & 0xF)`. Duplicate suppression compares only temp entry dword 0, the full directed packed pair. Reversed endpoints are distinct; first inserted duplicate keeps position and flag."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`
+- `docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`
   - Replace Task 2's "If the exact temp-bucket key cannot be derived..." gate with: "Use the verified key `((high & 0xF) << 4) | (low & 0xF)` for packed pair `(high << 16) | low`; exact duplicate suppression is packed-pair dword 0 only, preserving the first entry and flag."
 
 ## Sources
 
 - Ghidra decompiled: `FUN_00567110 @ 0x00567110`, `ZoneMap__BuildZoneLevel @ 0x00581F90`, `ZoneMap__FloodFillScanline @ 0x005824A0`, `FUN_00582D70 @ 0x00582D70`, `FUN_0058AF80 @ 0x0058AF80`.
 - Ghidra assembly contexts: `0x00582604..0x00582631`, `0x00582635..0x00582643`, `0x00582687..0x0058268C`, `0x0058236E..0x0058248A`, `0x00582395..0x0058245B`.
-- Existing docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_PRECHECK_HIERARCHY_WRITER_ORDER_GHIDRA_REPORT.md`.
-- Plan referenced: `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`.
+- Existing docs referenced: `docs/research/BRIDGE_ZONE_PRECHECK_HIERARCHY_WRITER_ORDER_GHIDRA_REPORT.md`.
+- Plan referenced: `docs/plans/2026-05-24-production-flat-bridge-zone-hierarchy-activation-plan.md`.
 - Rust scanned: `src/sim/pathfinding/zone_hierarchy.rs`, `src/sim/pathfinding/zone_build.rs`, `src/sim/pathfinding/zone_map.rs`.

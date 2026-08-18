@@ -1,6 +1,6 @@
 # VXL Slope Rust Handoff Report
 
-Report path: `C:/Users/enok/Documents/ra2-rust-game-docs/VXL_SLOPE_RUST_HANDOFF_REPORT.md`
+Report path: `docs/research/VXL_SLOPE_RUST_HANDOFF_REPORT.md`
 
 Scope: read-only Rust scan for Chrono Miner / voxel vehicle uphill-looking tilt on slopes. No Ghidra used. No Rust edited.
 

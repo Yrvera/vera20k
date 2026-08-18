@@ -148,6 +148,6 @@ No stale replacement is required. Row 35 already uses correct active-YR wording:
 - Fresh read-only Ghidra decompile: `UnitClass::PerCellProcess @ 0x00739EC0`.
 - Fresh read-only Ghidra decompile: `UnitClass::Receive_Radio @ 0x00737430`.
 - Fresh read-only Ghidra decompile: `FootClass::Mission_Enter @ 0x004D9290`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`: `[CMIN]`, `[HARV]`, `[GAREFN]`, `[NAREFN]`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`: `[GAREFN]`, `[NAREFN]` `QueueingCell` and `RemoveOccupy` lines.
+- `docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
+- `ini/rulesmd.ini`: `[CMIN]`, `[HARV]`, `[GAREFN]`, `[NAREFN]`.
+- `ini/artmd.ini`: `[GAREFN]`, `[NAREFN]` `QueueingCell` and `RemoveOccupy` lines.

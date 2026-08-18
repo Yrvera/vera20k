@@ -78,10 +78,10 @@ Observed extraction:
 
 Generated local previews:
 
-- `C:/Users/enok/Documents/ra2-rust-game/target/validation-modal-assets/mnbttn_mainbttn_frame0.png`
-- `C:/Users/enok/Documents/ra2-rust-game/target/validation-modal-assets/mnbttn_mainbttn_frame1.png`
-- `C:/Users/enok/Documents/ra2-rust-game/target/validation-modal-assets/mnbttn_mainbttn_frame2.png`
-- `C:/Users/enok/Documents/ra2-rust-game/target/validation-modal-assets/validation_modal_assets_contact_sheet.png`
+- `target/validation-modal-assets/mnbttn_mainbttn_frame0.png`
+- `target/validation-modal-assets/mnbttn_mainbttn_frame1.png`
+- `target/validation-modal-assets/mnbttn_mainbttn_frame2.png`
+- `target/validation-modal-assets/validation_modal_assets_contact_sheet.png`
 
 These previews are convenience artifacts only; the behavior source of truth remains the binary routing and retail assets.
 

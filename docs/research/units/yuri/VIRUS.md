@@ -29,7 +29,7 @@ documented as part of the generic infantry-death system.
 
 ## rulesmd.ini — `[VIRUS]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:5155`:
+Verbatim from `ini/rulesmd.ini:5155`:
 
 ```ini
 [VIRUS]
@@ -142,7 +142,7 @@ UseOwnName=true
 
 ## artmd.ini — `[VIRUS]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:310`:
+`ini/artmd.ini:310`:
 
 ```ini
 [VIRUS] ; Virus

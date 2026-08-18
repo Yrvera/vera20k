@@ -21,7 +21,7 @@ and
 
 ## rulesmd.ini — `[JUMPJET]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3916`:
+Verbatim from `ini/rulesmd.ini:3916`:
 
 ```ini
 [JUMPJET]
@@ -160,7 +160,7 @@ ElitePrimary=20mmE
 
 ## artmd.ini — `[ROCK]` section (via `Image=ROCK` redirect)
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:112`:
+`ini/artmd.ini:112`:
 
 ```ini
 [ROCK] ; Rocketeer

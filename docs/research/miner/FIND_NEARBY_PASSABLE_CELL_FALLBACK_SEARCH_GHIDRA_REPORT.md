@@ -224,9 +224,9 @@ No Rust files were edited.
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`this` (implicit) = FootClass*; search radius is derived from `this->Speed + this->SightRange`" with "`the helper reads receiver `+0xF4 + +0xF8`, capped at 32; caller identity matters. In the Chrono Miner far-return fallback, ECX is the MapClass singleton `0x0087F7E8`, so the effective radius comes from MapClass Size width+height, not the miner's speed/sight.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "expanding diamond/ring pattern" with "expanding square/Chebyshev perimeter in cell coordinates: top row west-to-east, bottom row west-to-east, left column north-to-south excluding corners, right column north-to-south excluding corners."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`: replace "`Find_Nearby_Passable_Cell(seed, size=2, zone=-1, flags...)`" with "`Find_Nearby_Passable_Cell(seed, speed_type=2, zone=-1, width=1, height=1, target={0,0}, skip_first=0, check_occupancy_rect=0)`."
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`this` (implicit) = FootClass*; search radius is derived from `this->Speed + this->SightRange`" with "`the helper reads receiver `+0xF4 + +0xF8`, capped at 32; caller identity matters. In the Chrono Miner far-return fallback, ECX is the MapClass singleton `0x0087F7E8`, so the effective radius comes from MapClass Size width+height, not the miner's speed/sight.`"
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "expanding diamond/ring pattern" with "expanding square/Chebyshev perimeter in cell coordinates: top row west-to-east, bottom row west-to-east, left column north-to-south excluding corners, right column north-to-south excluding corners."
+- `docs/research/miner/CHRONO_MINER_FAR_RETURN_FALLBACK_DESTINATION_GHIDRA_REPORT.md`: replace "`Find_Nearby_Passable_Cell(seed, size=2, zone=-1, flags...)`" with "`Find_Nearby_Passable_Cell(seed, speed_type=2, zone=-1, width=1, height=1, target={0,0}, skip_first=0, check_occupancy_rect=0)`."
 - Any in-repo fidelity note saying "radius=2 around QueueingCell" should become "QueueingCell seed; helper searches up to the helper radius cap, normally 32 rings on standard maps; literal `2` is SpeedType."
 
 ## Sources

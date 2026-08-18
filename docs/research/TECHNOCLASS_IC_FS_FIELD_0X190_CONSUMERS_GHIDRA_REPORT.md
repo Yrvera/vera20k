@@ -167,7 +167,7 @@ Rust status for this slice: current semantic IC/FS state matches the verified co
 
 - Ghidra read-only decompile/assembly: `0x0070E2B0`, `0x0041BF40`, `0x004B4D70`, `0x0070E780`, `0x00457C90`, `0x004DEB9D`, `0x00522600`, `0x006F2B40`, draw contexts `0x0043D442`, `0x0043DCE1`.
 - Ghidra xrefs: `0x004B4D70` callers include `0x0070E78F`, `0x0070E7D5`; `0x0070E2B0` callers include `0x00457CD3`, `0x004DEB9D`; vtable data refs for `0x0041BF40`.
-- Local read-only binary sweep: Capstone direct memory-displacement scan over `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` `.text` for `0x18C/0x190/0x194/0x1A4/0x1C4`, followed by Ghidra spot-checks of Techno-relevant hits.
+- Local read-only binary sweep: Capstone direct memory-displacement scan over `<ra2-install>/gamemd.exe` `.text` for `0x18C/0x190/0x194/0x1A4/0x1C4`, followed by Ghidra spot-checks of Techno-relevant hits.
 - INI: `ini/rulesmd.ini` `ForceShieldRadius=4`, `ForceShieldDuration=500`, `ForceShieldBlackoutDuration=1000`, `ForceShieldPlayFadeSoundTime=75`, `IronCurtainDuration=750`, `[IronCurtainSpecial]`, `[ForceShieldSpecial]`.
 - Prior docs: `docs/research/TECHNOCLASS_SAVE_LOAD_ACCUMULATOR_INVULNERABILITY_FIELDS_RESWARM_20260528.md`, `docs/research/IRONCURTAIN_FORCESHIELD_GHIDRA_REPORT.md`, `docs/research/TECHNOCLASS_SYSTEMS_GHIDRA_REPORT.md`, `docs/contracts/2026-05-28-technoclass-shared-state-implementation-contract.md`.
 - Rust source scanned: `src/sim/superweapon/invulnerability.rs`, `src/sim/game_entity.rs`, `src/sim/world/world_hash.rs`, `src/sim/superweapon/iron_curtain.rs`, `src/sim/superweapon/force_shield.rs`, `src/sim/combat/mod.rs`.

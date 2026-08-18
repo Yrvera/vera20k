@@ -1,6 +1,6 @@
 # Locomotion Math & Constants — Ghidra Decompilation Report
 
-Source: Ghidra MCP (gamemd.exe) + decompiled C files at `C:\Users\enok\Documents\gidra\`
+Source: Ghidra MCP (gamemd.exe) + decompiled C files at `<local>/Documents/gidra/`
 
 ---
 

@@ -18,7 +18,7 @@ Authoritative deep RE: [GGI_GHIDRA_REPORT.md](../../GGI_GHIDRA_REPORT.md)
 
 ## rulesmd.ini — `[GGI]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3863`:
+Verbatim from `ini/rulesmd.ini:3863`:
 
 ```ini
 [GGI]
@@ -128,7 +128,7 @@ PixelSelectionBracketDelta=-6;gs higher number draws lower.  Pixel difference fr
 
 ## artmd.ini — `[GGI]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:291`:
+`ini/artmd.ini:291`:
 
 ```ini
 [GGI] ; Guardian GI

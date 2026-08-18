@@ -337,7 +337,7 @@ emits per-tick `PsychGas` warhead hits for units lingering in the cloud.
 
 ## 4. INI Keys
 
-All values extracted from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` and
+All values extracted from `ini/rulesmd.ini` and
 `ini/artmd.ini` (YR-only; `rules.ini`/`art.ini` have no Chaos Drone entries).
 
 ### 4.1 Unit `[CAOS]` (Chaos Drone) — lines 8761–8823

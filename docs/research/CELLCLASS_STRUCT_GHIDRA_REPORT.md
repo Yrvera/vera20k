@@ -480,7 +480,7 @@ These existing reports contain verified CellClass field information:
 
 Applied to the live /RA2/CellClass struct (328 B, size unchanged) after per-field
 re-verification against live decompiles this session. Snapshot before mutations:
-C:/Users/enok/Documents/ghidra-backups/2026-08-17-tier2 (17 files, 243,261,449 bytes, verified).
+<local>/Documents/ghidra-backups/2026-08-17-tier2 (17 files, 243,261,449 bytes, verified).
 
 Fields added (tool auto-prefixes names; offsets/types per this doc's table):
 nZoneType 0x4C (RecalcZoneType writes 0-7); dwVisibleToHouses 0x78 (IsVisibleToHouse

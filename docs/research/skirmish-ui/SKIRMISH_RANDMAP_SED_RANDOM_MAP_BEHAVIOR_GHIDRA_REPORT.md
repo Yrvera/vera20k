@@ -163,6 +163,6 @@ Rust has no random-map sentinel model.
 
 - Ghidra read-only decompile / assembly: `0x005E68A0`, `LAB_005E6920` / `0x005E69C2..0x005E6A18`, `0x005E8590`, `0x00595BC0`, `0x00597730`, `0x00596300`, `0x00598960`, `0x005D63E0`, `0x005D6350`, `0x005D5B60`, `0x005D7590`, `0x0069ADF0`, `0x0069AE70`, `0x0069A980`, `0x0069ACD0`, `0x0069AD80`, `0x005E7160`, `0x005E7BF0`, `0x00684620`, `0x00597A10`.
 - String/data evidence: `0x0082BC30` `RandMap.Sed`, `0x0082BB44` `RandMap.Map`, `0x00829ABC` `RandMap.img`, `0x0083DA88` `.SED`.
-- Local data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- Local data checked: `ini/mpmodesmd.ini`.
 - Prior docs referenced: `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_PREVIEW_INVALIDATION_GHIDRA_REPORT.md`, `SKIRMISH_PREVIEW_OBJECT_LIFECYCLE_DAT_00AC1154_GHIDRA_REPORT.md`.
 - Rust scan: `src/app_init.rs`, `src/app_list_maps.rs`, `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`.

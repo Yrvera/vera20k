@@ -483,4 +483,4 @@ require rendering integration testing not available in static analysis.
 
 ## Report File
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/traces/CHRONO_MINER_TELEPORT_DOCK_APPROACH_TRACE.md`
+`docs/research/traces/CHRONO_MINER_TELEPORT_DOCK_APPROACH_TRACE.md`

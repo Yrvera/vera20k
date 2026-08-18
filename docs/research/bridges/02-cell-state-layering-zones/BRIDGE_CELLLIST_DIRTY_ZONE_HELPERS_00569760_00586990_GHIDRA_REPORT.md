@@ -156,15 +156,15 @@ Remaining uncertainty: the main unresolved condition is the exact breadth of `FU
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_PAVEMENT_WALKER_AND_CELLLIST_DISPATCH_GHIDRA_REPORT.md` - primary prior Ghidra body decode for `0x00569760` and `0x00586990`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_LIFECYCLE_GHIDRA_REPORT.md` - bridge zone lifecycle, `ValidateBridgeZones`, `UpdateBridgeZonesHelper`, and full-zone rebuild context.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FULL_PASSABILITY_RECALC_0047D2B0_GHIDRA_REPORT.md` - current swarm finding that `0x0047D2B0` is single-cell `RecalcAttributes`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LAT_RETRIGGER_AND_BRIDGE_DAMAGE_VARIANT_GHIDRA_REPORT.md` and `AUDIT_LOG.md` - dirty-rect correction and damaged-variant context.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/walker.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/zone_incremental.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs`
+- `docs/research/BRIDGE_PAVEMENT_WALKER_AND_CELLLIST_DISPATCH_GHIDRA_REPORT.md` - primary prior Ghidra body decode for `0x00569760` and `0x00586990`.
+- `docs/research/BRIDGE_ZONE_LIFECYCLE_GHIDRA_REPORT.md` - bridge zone lifecycle, `ValidateBridgeZones`, `UpdateBridgeZonesHelper`, and full-zone rebuild context.
+- `docs/research/FULL_PASSABILITY_RECALC_0047D2B0_GHIDRA_REPORT.md` - current swarm finding that `0x0047D2B0` is single-cell `RecalcAttributes`.
+- `docs/research/LAT_RETRIGGER_AND_BRIDGE_DAMAGE_VARIANT_GHIDRA_REPORT.md` and `AUDIT_LOG.md` - dirty-rect correction and damaged-variant context.
+- `src/sim/bridge_state/mod.rs`
+- `src/sim/bridge_state/walker.rs`
+- `src/sim/world/bridge_orchestrator.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/pathfinding/zone_incremental.rs`
+- `src/sim/overlay_grid.rs`
+- `src/app_sim_tick.rs`
 - INI search over `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`.

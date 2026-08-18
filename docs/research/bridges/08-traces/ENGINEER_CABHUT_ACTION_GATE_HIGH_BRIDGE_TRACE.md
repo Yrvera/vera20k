@@ -141,12 +141,12 @@ Verdict: PASS for seeded state. Once a bridge-hut target reaches the tick layer,
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECH_CABHUT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ENGINEER_CAPTURE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_cursor.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_context_order.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
+- `docs/research/TECH_CABHUT_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+- `docs/research/ENGINEER_CAPTURE_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `src/app_cursor.rs`
+- `src/app_context_order.rs`
+- `src/sim/world/world_commands.rs`
+- `src/sim/world/world_orders.rs`
+- `src/sim/world/mod.rs`

@@ -282,13 +282,13 @@ Player-visible failures:
 
 Primary docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DLU_TO_PIXEL_FOR_SHELL_DIALOGS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RESIZE_SHELL_CHILD_CONTROL_0060C0C0_COMPLETE_0X102_POLICY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`
+- `docs/research/DLU_TO_PIXEL_FOR_SHELL_DIALOGS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_RESIZE_SHELL_CHILD_CONTROL_0060C0C0_COMPLETE_0X102_POLICY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_PIXEL_GEOMETRY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`
 
 Ghidra spot-checks in this pass:
 
@@ -301,11 +301,11 @@ Ghidra spot-checks in this pass:
 
 Rust surfaces read-only:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/ui/skirmish_shell/state.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/app.rs`
 
 Verification:
 

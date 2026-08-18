@@ -90,9 +90,9 @@ Rust has a generic `SpriteInstance` with `alpha` and `fx_flags`, and `sprite_vox
 
 ## 9. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/CLOAKING_VISUAL_PIPELINE.md`: replace any blanket wording like "`flags & 6 == 0x04` with `0x800` selects the SHP/VXL 50% path" with: "`flags & 6 == 0x04` is only the low translucency family. In `TechnoClass_DrawSHP`, warp ORs this low bit for ordinary SHP technos, but the final selector depends on higher bits: with `0x2000` present, SHP warp selects the same `+0xA4/+0x144` mask-family as VXL warp; without `0x2000`, it selects the no-mask SHP `+0x78/+0x130` family."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md`: replace any wording that generalizes VXL `0x2804` to all techno warp bodies with: "The proved VXL body path enters with `0x2804`; SHP bodies build their own flags in `TechnoClass_DrawSHP` and can enter as `0x2E04` or `0x0E04` after `|0x600|0x800`, so SHP warp needs a separate material key."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/ZBUFFER_DEPTH_SYSTEM.md`: refine any claim that all SHP 50% paths are one Z behavior with: "SHP 50% selector behavior is branch-specific. The no-mask extended `+0x130` leaf decompiled at `0x00497CF0` performs a post-remap 50% blend and does not access `g_ZBuffer`; the `0x2000` mask-family `+0xA4/+0x144` branch should be cited separately."
+- `docs/research/CLOAKING_VISUAL_PIPELINE.md`: replace any blanket wording like "`flags & 6 == 0x04` with `0x800` selects the SHP/VXL 50% path" with: "`flags & 6 == 0x04` is only the low translucency family. In `TechnoClass_DrawSHP`, warp ORs this low bit for ordinary SHP technos, but the final selector depends on higher bits: with `0x2000` present, SHP warp selects the same `+0xA4/+0x144` mask-family as VXL warp; without `0x2000`, it selects the no-mask SHP `+0x78/+0x130` family."
+- `docs/research/VXL_RASTERIZER_DISPATCH_GHIDRA_REPORT.md`: replace any wording that generalizes VXL `0x2804` to all techno warp bodies with: "The proved VXL body path enters with `0x2804`; SHP bodies build their own flags in `TechnoClass_DrawSHP` and can enter as `0x2E04` or `0x0E04` after `|0x600|0x800`, so SHP warp needs a separate material key."
+- `docs/research/ZBUFFER_DEPTH_SYSTEM.md`: refine any claim that all SHP 50% paths are one Z behavior with: "SHP 50% selector behavior is branch-specific. The no-mask extended `+0x130` leaf decompiled at `0x00497CF0` performs a post-remap 50% blend and does not access `g_ZBuffer`; the `0x2000` mask-family `+0xA4/+0x144` branch should be cited separately."
 
 ## Sources
 
@@ -103,6 +103,6 @@ Rust has a generic `SpriteInstance` with `alpha` and `fx_flags`, and `sprite_vox
 - Ghidra read-only decompile/disassembly: `Blitter_selector_extended @ 0x00490E50`, `0x00490E50..0x004910AF`.
 - Ghidra read-only decompile: `Blitter_ZWriteOnly_RLE_Remap_NoZWrite @ 0x00497CF0`.
 - Ghidra read-only decompile: `FootClass::GetVisualState @ 0x004DA4E0`, `TechnoClass_GetVisualState @ 0x00703860`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:[CLEG]`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:[CLEG]`, `[DLPH]`, `[DRON]`, `[SQD]`.
-- Prior context: `C:/Users/enok/Documents/ra2-rust-game/docs/research/WARP_TRANSLUCENCY_BLITTER_PIXEL_MATH_GHIDRA_REPORT.md`.
+- `ini/rulesmd.ini:[CLEG]`.
+- `ini/artmd.ini:[CLEG]`, `[DLPH]`, `[DRON]`, `[SQD]`.
+- Prior context: `docs/research/WARP_TRANSLUCENCY_BLITTER_PIXEL_MATH_GHIDRA_REPORT.md`.

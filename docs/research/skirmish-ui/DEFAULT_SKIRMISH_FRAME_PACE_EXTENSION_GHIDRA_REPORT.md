@@ -63,7 +63,7 @@ param_1[2] =
     CCINIClass__ReadInt(section, "GameSpeed", *(g_RulesClass_Instance + 0x14A0))
 ```
 
-The local retail config at `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2MD.INI` currently contains:
+The local retail config at `<ra2-install>/RA2MD.INI` currently contains:
 
 ```ini
 [Options]
@@ -229,14 +229,14 @@ The following consumers were re-checked or spot-checked because they affect visi
 
 This pass did not modify Rust. Current status relevant to timing:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_types.rs:30-45` now uses `DEFAULT_YR_SKIRMISH_GAME_SPEED = 1` and maps speed to approximate TPS via 16 ms buckets.
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:51` still sets `SIM_TICK_HZ = 45`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_sim_tick.rs:226-235` scales elapsed time by `sim_speed_tps / SIM_TICK_HZ`, so speed changes alter how many 22 ms sim steps run per wall-clock second.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1014-1015` derives `binary_frame` at the start of `advance_tick`, whereas GameMD increments `g_CurrentFrameCounter` late.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:1407` ticks particle systems once per Rust sim tick.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/system_ai.rs:56` uses `pt.state_ai_advance` rather than the per-particle rewritten `p.state_ai_advance`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs:72-76` has a development 3x speed multiplier for deployable units.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/parachute_descent.rs:99-132` integrates descent once per sim tick and only uses `tick_ms` as a pause guard.
+- `src/app_types.rs:30-45` now uses `DEFAULT_YR_SKIRMISH_GAME_SPEED = 1` and maps speed to approximate TPS via 16 ms buckets.
+- `src/util/fixed_math.rs:51` still sets `SIM_TICK_HZ = 45`.
+- `src/app_sim_tick.rs:226-235` scales elapsed time by `sim_speed_tps / SIM_TICK_HZ`, so speed changes alter how many 22 ms sim steps run per wall-clock second.
+- `src/sim/world/mod.rs:1014-1015` derives `binary_frame` at the start of `advance_tick`, whereas GameMD increments `g_CurrentFrameCounter` late.
+- `src/sim/world/mod.rs:1407` ticks particle systems once per Rust sim tick.
+- `src/sim/particles/system_ai.rs:56` uses `pt.state_ai_advance` rather than the per-particle rewritten `p.state_ai_advance`.
+- `src/sim/world/world_commands.rs:72-76` has a development 3x speed multiplier for deployable units.
+- `src/sim/movement/parachute_descent.rs:99-132` integrates descent once per sim tick and only uses `tick_ms` as a pause guard.
 
 ## 7. Open Questions
 
@@ -273,11 +273,11 @@ This pass did not modify Rust. Current status relevant to timing:
 - Function lookup: `ParticleSystemClass__AI_Gas @ 0x0062E6D0`
 - Function lookup: `ParticleSystemClass__AI_Spark @ 0x0062E840`
 - Function lookup: `ParticleSystemClass__AI_Railgun @ 0x0062F230`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SPEED_AND_PARTICLE_NORMALIZED_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-- Local config: `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2MD.INI`
+- Existing report: `docs/research/VISIBLE_PACE_AUDIT_GHIDRA_REPORT.md`
+- Existing report: `docs/research/SKIRMISH_SPEED_AND_PARTICLE_NORMALIZED_GHIDRA_REPORT.md`
+- Existing report: `docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md`
+- Existing report: `docs/research/TICK_ANIMATION_FRAME_TIMING_EXTENSION_GHIDRA_REPORT.md`
+- Existing report: `docs/research/PARTICLE_TIMING_SPARK_RAILGUN_NORMALIZED_GHIDRA_REPORT.md`
+- INI: `ini/rulesmd.ini`
+- INI: `ini/rules.ini`
+- Local config: `<ra2-install>/RA2MD.INI`

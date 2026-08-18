@@ -402,7 +402,7 @@ None statically. All 25 xrefs to `CreateRadarEvent` (`0x0065FA70`) load a non-ze
 
 ## Sources
 
-**Existing Ghidra reports referenced (all in `C:/Users/enok/Documents/ra2-rust-game-docs/`):**
+**Existing Ghidra reports referenced (all in `docs/research/`):**
 - `RADAR_MINIMAP_DEEP_DIVE.md` — event struct layout, per-tick lifecycle, DrawViewportRect coupling
 - `RADAR_MINIMAP_RENDERING.md` — type-config table values, color switch, event creation flow, full address map
 - `RADAR_SYSTEM_COMPREHENSIVE.md` — event globals, field offsets

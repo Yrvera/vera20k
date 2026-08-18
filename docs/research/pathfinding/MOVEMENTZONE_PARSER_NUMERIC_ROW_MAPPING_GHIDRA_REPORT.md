@@ -135,9 +135,9 @@ Fly is not absent from the binary row/zone-array model: row 9 is in the parser t
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PASSABILITY_VERIFIED.md`: replace any wording that says `MovementZone=Subterranean` is the binary parser string with: "`CCINIClass__ReadMovementZone` accepts the Westwood table spelling `Subterannean` for row 6; `TechnoTypeClass__ReadINI` stores row 6 to `+0x5B4` and sets the derived subterranean bool by `value == 6`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PASSABILITY_VERIFIED.md`: replace row-9 wording "Fly passes everything except rock/OoB sentinel" with: "Fly is parser/matrix row 9. Prior matrix-reader evidence shows row 9 participates in the 13-row matrix and row-array rebuild; exact runtime use by stock aircraft/jumpjet locomotors is conditional and requires a separate locomotor trace."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: if MovementZone parser behavior is summarized, add: "`AStar_pathfind_search` consumes the stored numeric `MovementZone` row; parser defaults and invalid-string behavior are owned by `CCINIClass__ReadMovementZone @ 0x00474E40`, not by A*."
+- `docs/research/ZONE_PASSABILITY_VERIFIED.md`: replace any wording that says `MovementZone=Subterranean` is the binary parser string with: "`CCINIClass__ReadMovementZone` accepts the Westwood table spelling `Subterannean` for row 6; `TechnoTypeClass__ReadINI` stores row 6 to `+0x5B4` and sets the derived subterranean bool by `value == 6`."
+- `docs/research/ZONE_PASSABILITY_VERIFIED.md`: replace row-9 wording "Fly passes everything except rock/OoB sentinel" with: "Fly is parser/matrix row 9. Prior matrix-reader evidence shows row 9 participates in the 13-row matrix and row-array rebuild; exact runtime use by stock aircraft/jumpjet locomotors is conditional and requires a separate locomotor trace."
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: if MovementZone parser behavior is summarized, add: "`AStar_pathfind_search` consumes the stored numeric `MovementZone` row; parser defaults and invalid-string behavior are owned by `CCINIClass__ReadMovementZone @ 0x00474E40`, not by A*."
 
 ## Negative Facts / Do Not Do
 
@@ -155,6 +155,6 @@ Fly is not absent from the binary row/zone-array model: row 9 is in the parser t
 ## Sources
 
 - Ghidra: `CCINIClass__ReadMovementZone @ 0x00474E40`; `FUN_007C8D20 @ 0x007C8D20`; `TechnoTypeClass__ReadINI @ 0x00716065..0x0071608A`; `TechnoTypeClass__Constructor`; `Zone_precheck @ 0x0042C290`; `MapClass__UpdateBridgeZonesHelper @ 0x0056C510`.
-- Binary image bytes: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, table `0x0081BA88..0x0081BABC`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `ini/rules.ini`.
+- Binary image bytes: `<ra2-install>/gamemd.exe`, table `0x0081BA88..0x0081BABC`.
+- INI: `ini/rulesmd.ini`, `ini/rules.ini`.
 - Prior reports: `ZONE_PASSABILITY_MATRIX_READERS_GHIDRA_REPORT.md`, `ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`, `ASTAR_PATHFIND_SEARCH_0042C900_RETRY_SEMANTICS_GHIDRA_REPORT.md`.

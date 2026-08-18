@@ -245,8 +245,8 @@ No material uncertainty remains for the scoped spark mechanism. Runtime presenta
 
 ## Sources
 
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game/docs/research/PARTICLE_SPARK_LIGHTSIZE_ONEFRAMELIGHT_LIFECYCLE_GHIDRA_REPORT.md`
+- Prior report: `docs/research/PARTICLE_SPARK_LIGHTSIZE_ONEFRAMELIGHT_LIFECYCLE_GHIDRA_REPORT.md`
 - Ghidra read-only decompile/assembly context: `0x0062E280`, `0x0062E840`, `0x0062FD60`, `0x005FF250`, `0x005FF390`, `0x005FF850`, `0x005FFFA0`, `0x0055AFB0`, `0x005F4CF0`, `0x005F65D0`, `0x006D3B60`, `0x007C5F00`, `0x007CBF49`, `0x007CC01C`, `0x007C5EE4`, startup caller `0x006BBFC1..0x006BBFC9`.
 - Binary-reader constants from retail `gamemd.exe`: `0x007E2AC8 == float 1.0`, `0x007E3550 == double 0.4`.
-- INI files checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
-- Rust files scanned: `C:/Users/enok/Documents/ra2-rust-game/src/rules/particle_system_type.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/spawn.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/particles/system_ai.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`.
+- INI files checked: `ini/rulesmd.ini`, `ini/rules.ini`.
+- Rust files scanned: `src/rules/particle_system_type.rs`, `src/sim/particles/spawn.rs`, `src/sim/particles/system_ai.rs`, `src/sim/world/mod.rs`, `src/map/lighting.rs`, `src/app_init.rs`.

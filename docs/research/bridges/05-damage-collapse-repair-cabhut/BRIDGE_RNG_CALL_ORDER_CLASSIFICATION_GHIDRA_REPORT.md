@@ -159,9 +159,9 @@ Debris RNG is reached from `CellClass::BlowUpBridge` after occupant handling and
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md`: replace `if Rules->BridgeVoxelMax > 0:` with `if Rules->BridgeExplosions.ActiveCount > 0:` and replace the offset row `| +0x168 | BridgeVoxelMax | 3 |` with `| +0x168 | BridgeExplosions.ActiveCount | 4 in stock YR |`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM_VERIFY_DOC_AMENDMENTS.md`: replace wording that says `+0x168` is `BridgeVoxelMax` with `+0x168 is BridgeExplosions.ActiveCount; BridgeVoxelMax is parsed separately and is dormant/TS-only for standard YR debris`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`: current stale Rust status lines still describe old xorshift/modulo; replace with `Rust SimRng has since been rewritten to the 250-word gamemd-style state, but bridge debris call sites still need range/order auditing; see BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md.`
+- `docs/research/BRIDGE_SYSTEM.md`: replace `if Rules->BridgeVoxelMax > 0:` with `if Rules->BridgeExplosions.ActiveCount > 0:` and replace the offset row `| +0x168 | BridgeVoxelMax | 3 |` with `| +0x168 | BridgeExplosions.ActiveCount | 4 in stock YR |`.
+- `docs/research/BRIDGE_SYSTEM_VERIFY_DOC_AMENDMENTS.md`: replace wording that says `+0x168` is `BridgeVoxelMax` with `+0x168 is BridgeExplosions.ActiveCount; BridgeVoxelMax is parsed separately and is dormant/TS-only for standard YR debris`.
+- `docs/research/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`: current stale Rust status lines still describe old xorshift/modulo; replace with `Rust SimRng has since been rewritten to the 250-word gamemd-style state, but bridge debris call sites still need range/order auditing; see BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md.`
 
 ## Sources
 

@@ -31,7 +31,7 @@ This report remains **PARTIAL** only because the semantic role and downstream ef
 
 - The research-index brief for system `damage`, query `Building ReceiveDamage destruction lifecycle`, and anchors `0x00442230` / `0x004415F0` validated successfully before binary work.
 - The output path did not exist at preflight. No same-file conflict was present.
-- Static read-only Ghidra was connected to project `testProsjekt-12.1.2-test`, program `/gamemd.exe`, retail path `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, image base `0x00400000`, x86 little-endian 32-bit.
+- Static read-only Ghidra was connected to project `testProsjekt-12.1.2-test`, program `/gamemd.exe`, retail path `<ra2-install>/gamemd.exe`, image base `0x00400000`, x86 little-endian 32-bit.
 - No debugger, screen/UI automation, Ghidra rename/comment/save operation, Cargo command, Rust edit, or external mod source was used.
 - Local Ghidra labels were treated as hints only. Load-bearing identities below come from RTTI bytes, vtable bytes, function bodies, and call/argument flow.
 

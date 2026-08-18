@@ -29,7 +29,7 @@ overload damage, persist-on-controller-death, etc.
 
 ## rulesmd.ini — `[YURI]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:5197`:
+Verbatim from `ini/rulesmd.ini:5197`:
 
 ```ini
 [YURI] ;Bender of spoons!
@@ -155,7 +155,7 @@ IFVMode=8
 
 ## artmd.ini — `[YURI]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:319`:
+`ini/artmd.ini:319`:
 
 ```ini
 [YURI] ; Yuri

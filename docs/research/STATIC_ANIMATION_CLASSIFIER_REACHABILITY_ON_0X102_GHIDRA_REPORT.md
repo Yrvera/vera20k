@@ -178,5 +178,5 @@ Not scanned in this slot. The user scope prohibited modifying repo files, and th
 - Ghidra xrefs: `FUN_0060A5B0` referenced from `FUN_00622820 @ 0x00622B33`, `FUN_00622B50 @ 0x0062307B`
 - Byte search: `C7 46 70 04 00 00 00` -> `0x0060A928`, `0x0060A949`, `0x0060A96A`, `0x0060A987`; no `C7 40/47/45 70 04 00 00 00` variants found
 - Byte search: `68 D3 04 00 00` -> seven `0x4D3` send sites; visible contexts target non-Skirmish animation controls
-- PE resource parse: retail `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, `RT_DIALOG 0x102`, language `0x409`
+- PE resource parse: retail `<ra2-install>/gamemd.exe`, `RT_DIALOG 0x102`, language `0x409`
 - Prior docs cross-checked: `STATIC_0X71C_RUNTIME_VISIBILITY_GHIDRA_REPORT.md`, `STATIC_0x71C_VISIBILITY_TRACE_GHIDRA_REPORT.md`, `OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`

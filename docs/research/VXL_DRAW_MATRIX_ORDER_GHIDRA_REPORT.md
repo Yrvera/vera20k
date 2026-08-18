@@ -65,7 +65,7 @@ tilts in local/model space before body facing. That is the reversed slope-vs-fac
 
 ## Stale Doc Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/VXL_DRAW_MATRIX_GHIDRA_REPORT.md`: replace the uncertain Section 15/16 composition wording with: "For the simple no-body-rock path, `DriveLocomotionClass::Draw_Matrix` returns `slope_matrix * facing_rotation`; slope 0 uses identity for `slope_matrix`. `TechnoClass::Render` later applies `camera_view * draw_matrix * section_or_hva_matrix` before `VXL_Submit_BoundingBox`. Therefore slope is left of body/sub-facing and right of camera/view."
+- `docs/research/VXL_DRAW_MATRIX_GHIDRA_REPORT.md`: replace the uncertain Section 15/16 composition wording with: "For the simple no-body-rock path, `DriveLocomotionClass::Draw_Matrix` returns `slope_matrix * facing_rotation`; slope 0 uses identity for `slope_matrix`. `TechnoClass::Render` later applies `camera_view * draw_matrix * section_or_hva_matrix` before `VXL_Submit_BoundingBox`. Therefore slope is left of body/sub-facing and right of camera/view."
 
 ## Status
 

@@ -130,7 +130,7 @@ This slice has no visual-composition claim beyond resource/control identity. Ful
 
 ## 12. Stale Docs / Follow-Up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_KEYBOARD_DEFAULT_DISMISSAL_CURRENT_RUST_RECHECK_GHIDRA_REPORT.md`: keep as an earlier recheck, but canonical wording is now in this report.
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_KEYBOARD_DEFAULT_DISMISSAL_CURRENT_RUST_RECHECK_GHIDRA_REPORT.md`: keep as an earlier recheck, but canonical wording is now in this report.
 - Replacement wording for stale handoff in the previous version of this file: replace "current global Escape can close native shell while modal is open" with "current Rust consumes global Escape while `choose_map_modal` or `validation_modal` owns input (`src/app.rs:1481..1490`); preserve this guard with a regression test."
 - Older Choose Map no-op/no-render traces should not be used for keyboard/dismissal decisions. Replacement wording: "Current Rust has a modal state and primitive render/input path; remaining keyboard/dismissal parity is specifically Enter/Escape/default/list-double-click command behavior, not absence of a modal."
 
@@ -138,6 +138,6 @@ This slice has no visual-composition claim beyond resource/control identity. Ful
 
 - Fresh Ghidra read-only decompile: `0x005E68A0`, `0x005E7160`, `0x00612B70`, `0x00775700`, `0x007759E0`.
 - Fresh read-only Ghidra disassembly coverage: callback bytes `0x005E6920..0x005E7041`, command range `0x005E69B7..0x005E6B96`.
-- Prior resource extraction: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`.
-- Prior side-effect/return reports: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_ACCEPT_CANCEL_SIDE_EFFECTS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_IMPLEMENTATION_CONTRACT_GHIDRA_REPORT.md`.
+- Prior resource extraction: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`.
+- Prior side-effect/return reports: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_ACCEPT_CANCEL_SIDE_EFFECTS_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_CREATE_RANDOM_MAP_0X583_IMPLEMENTATION_CONTRACT_GHIDRA_REPORT.md`.
 - Current Rust scanned read-only: `src/app.rs`, `src/ui/skirmish_shell/state.rs`.

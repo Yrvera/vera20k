@@ -213,5 +213,5 @@ Stale Docs / Follow-up Docs:
 - Ghidra decompiled/read-only: `CellClass::CanPlaceTiberium @ 0x004838E0`.
 - Ghidra assembly contexts: `0x00483948`, `0x00483952`, `0x00714A97`, `0x00714AAB`, `0x00460DF2`, `0x00460E01`, `0x00460E09`, `0x00460E10`, `0x007113D8`, `0x0045E206`.
 - Ghidra strings: `Invisible @ 0x00843944`, `InvisibleInGame @ 0x0081A8CC`, `RadarVisible @ 0x00843934`.
-- INI files checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- Rust files checked: `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/terrain_spawn.rs`.
+- INI files checked: `ini/rules.ini`, `ini/rulesmd.ini`.
+- Rust files checked: `src/rules/object_type.rs`, `src/sim/terrain_spawn.rs`.

@@ -119,7 +119,7 @@ Verified mapping:
 
 ## 8. Stale-Doc Replacement Wording
 
-**Doc:** `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`
+**Doc:** `docs/research/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`
 
 Replace the Rust implication equivalent to "minor pathfinding speed differences only; no change in final path correctness" with:
 

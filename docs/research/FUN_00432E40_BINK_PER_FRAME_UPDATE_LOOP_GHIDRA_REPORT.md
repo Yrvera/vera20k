@@ -174,28 +174,28 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
+- `docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
   - Replace: "Catch-up cap | Bink internal (loops while `BinkWait==0`) | max 4 frames per `step` call"
   - With: "Catch-up behavior | gamemd `FUN_00432E40` loops with no hard counter cap while post-`_BinkNextFrame` `_BinkWait(handle)==0`; current Rust caps `frames_due(..., 4)`, which is a Rust safety policy and a mechanism drift."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
+- `docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
   - Replace: "Under CPU pressure, our accumulator can advance 2-3 frames in one step call where gamemd would advance 1 per `BinkWait` poll."
   - With: "Under CPU pressure, current Rust advances according to elapsed wall-clock with a fixed max-4 cap. gamemd advances according to repeated `_BinkWait` results inside each timer poll, so the number of frames per poll is Bink-SDK-gated rather than elapsed-accumulator-gated."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
+- `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
   - Replace: "`FUN_00432e40` also calls `_BinkWait_4` and loops `while (_BinkWait_4 == 0)`"
   - With: "`FUN_00432E40` first returns `0` when initial `_BinkWait(handle) != 0` and force flag `+0x2D` is clear; after a decode/next-frame pass it loops back while the post-`_BinkNextFrame` `_BinkWait(handle) == 0`, then returns `1`."
 
 ## Sources
 
 - Direct binary evidence generated in this slot:
-  - PE import table parse of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`
+  - PE import table parse of `<ra2-install>/gamemd.exe`
   - Direct disassembly of `0x00432E40..0x0043301C`, `0x00433020..0x00433051`, `0x00432C50`, `0x00432BD0`, `0x00432C70`, `0x005C0580`, and Bink vtable `0x007EE154`
 - Prior Ghidra-backed reports referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/RA2TS_BINK_AUDIO_ENABLE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_LOOP_END_VTABLE_0X14_0X1C_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/SHELL_PARENT_BSURFACE_COMPOSITION_AND_FLIP_GHIDRA_REPORT.md`
+  - `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
+  - `docs/research/RA2TS_BINK_AUDIO_ENABLE_GHIDRA_REPORT.md`
+  - `docs/research/BINK_LOOP_END_VTABLE_0X14_0X1C_GHIDRA_REPORT.md`
+  - `docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
+  - `docs/research/SHELL_PARENT_BSURFACE_COMPOSITION_AND_FLIP_GHIDRA_REPORT.md`
 - Rust source inspected:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/render/bink_movie.rs`
+  - `src/render/bink_movie.rs`
 - Tooling note:
   - Ghidra MCP `list_instances` returned no running instances; no mutating Ghidra tools were called.

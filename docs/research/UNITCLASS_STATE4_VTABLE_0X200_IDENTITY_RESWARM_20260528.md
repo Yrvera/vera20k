@@ -200,7 +200,7 @@ Current Rust broadly matches the healthy stock outcome because it always perform
 
 - Ghidra read-only decompile: `UnitClass::Mission_Deploy_Building @ 0x0073D630`; `UnitClass::ShouldIdle @ 0x00744270`; `MissionClass::Queue_Mission @ 0x005B35E0`; `MissionClass::Commence @ 0x005B3570`; `UnitClass::AI @ 0x007360C0`; `FUN_004A51D0`; `FUN_0065AD40`; `PathType__Has_Valid_Steps @ 0x0065AE30`; base stub `0x004E0140`; Infantry override `0x00521B60`.
 - Ghidra assembly contexts: `0x0073E23D..0x0073E289`; `0x005B3629..0x005B3641`; `0x00744270..0x0074446A`; `0x00736461..0x00736473`; `0x0065AE30..0x0065AE54`.
-- Retail binary PE read: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, vtable dwords at `0x007F5E58`, `0x007F5E5C`, `0x007F5E70`, `0x007F5EAC`.
+- Retail binary PE read: `<ra2-install>/gamemd.exe`, vtable dwords at `0x007F5E58`, `0x007F5E5C`, `0x007F5E70`, `0x007F5EAC`.
 - Existing docs: `ADDRESS_MAP.md`; `HARV_POST_UNLOAD_RADIO_0X08_FRAME_ORDER_RESWARM_20260528.md`; `miner/CMIN_STATE2_CLOSE_FAR_RETURN_TO_MISSION_ENTER_DISPATCH_GHIDRA_REPORT.md`; `BIB_SYSTEM_GHIDRA_REPORT.md`; `UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini`.
 - Rust scanned: `src/sim/miner/mod.rs`; `src/sim/miner/miner_dock_sequence.rs`; `src/sim/miner/miner_dock.rs`.

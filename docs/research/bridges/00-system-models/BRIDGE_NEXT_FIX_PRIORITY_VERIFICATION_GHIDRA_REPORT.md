@@ -101,9 +101,9 @@ Event `0x1F` is reached through bridge endpoint/span collapse paths, but only pr
 ## Sources
 
 - Ghidra cold decompile: `0x00574000`, `0x00574C20`, `0x0047DD70`, `0x00575EE0`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_HUT_FALLBACK_FLAGS_RAMP_ONLY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DESTROYED_TRIGGER_EVENT_0X1F_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+- `docs/research/BRIDGE_HUT_FALLBACK_FLAGS_RAMP_ONLY_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_DESTROYED_TRIGGER_EVENT_0X1F_GHIDRA_REPORT.md`
+- `src/sim/world/bridge_orchestrator.rs`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`

@@ -158,9 +158,9 @@ The Rust code was scanned only for context; no Rust files were modified. Codegra
 - Ghidra decompiled `RateTimer__Set @ 0x004C9220`
 - Ghidra decompiled `RateTimer__Current @ 0x004C93D0`
 - Ghidra decompiled and byte-read `UnitClass::Mission_Deploy_Building @ 0x0073D630`, especially `0x0073DF43..0x0073DFAC`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_0x16_SENDER_BUILDINGCLASS_CASE_0x0E_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_EXPANDED_STRUCT_LAYOUT.md`
+- `docs/research/RADIO_0x16_SENDER_BUILDINGCLASS_CASE_0x0E_GHIDRA_REPORT.md`
+- `docs/research/UNITCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/TECHNOCLASS_EXPANDED_STRUCT_LAYOUT.md`
 - `ini/rulesmd.ini`
 
 ## Status

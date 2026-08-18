@@ -325,20 +325,20 @@ The cell-entry path uses several independent prerequisites:
 
 ### Existing reports consulted and verified against
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md`
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`
+- `docs/research/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
+- `docs/research/UNIT_COLLISION_AND_REPATH_TRIGGERS_GHIDRA_REPORT.md`
 
 ### INI and Rust files checked
 
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` low bridge overlay sections (`LOBRDG*`, `LOBRDGE*`, `LOBRDB*`, `LOBRDGB*`) and general movement keys.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_bridge.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/tunnel_movement.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`
+- `ini/rulesmd.ini` low bridge overlay sections (`LOBRDG*`, `LOBRDGE*`, `LOBRDB*`, `LOBRDGB*`) and general movement keys.
+- `src/sim/pathfinding/core.rs`
+- `src/sim/pathfinding/cell_entry.rs`
+- `src/sim/movement/movement_occupancy.rs`
+- `src/sim/movement/movement_bridge.rs`
+- `src/sim/movement/tunnel_movement.rs`
+- `src/map/resolved_terrain.rs`
+- `src/sim/bridge_state/mod.rs`

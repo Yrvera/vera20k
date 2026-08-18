@@ -35,7 +35,7 @@ canvas <width>x<height>, <frame_count> frames
 ```
 
 Command run: `cargo run --bin inspect-pcx-palette` from
-`C:/Users/enok/Documents/ra2-rust-game/` (build completed, all six SHP files found).
+`` (build completed, all six SHP files found).
 
 The `ShpFile` struct reads the 8-byte file header:
 - bytes 0–1: `u16 = 0` (format marker)
@@ -230,7 +230,7 @@ confusion, but there is no live parity bug.
 - `src/assets/shp_file.rs` — SHP file format documentation (header layout).
 - `src/assets/mix_archive.rs` + `src/assets/mix_crypto.rs` — confirms decryption path.
 - `src/ui/main_menu_shell/layout.rs` — Rust constants cross-checked.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RIGHTPANEL_DRAW_AND_LAYOUT_GHIDRA_REPORT.md`
+- `docs/research/RIGHTPANEL_DRAW_AND_LAYOUT_GHIDRA_REPORT.md`
   — layout formulae source.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`
   — ra2ts_l/s.bik dimensions already verified (Section 5).

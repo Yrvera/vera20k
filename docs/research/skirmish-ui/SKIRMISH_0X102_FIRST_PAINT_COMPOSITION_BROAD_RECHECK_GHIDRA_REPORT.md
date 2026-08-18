@@ -136,10 +136,10 @@ YR `rulesmd.ini` takes priority over base RA2 for this list.
 
 Scanned surfaces:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/app.rs`
 
 Current Rust now matches these broad composition points:
 
@@ -233,5 +233,5 @@ Current Rust still misses or leaves risky:
 - Ghidra read-only decompile: `FUN_006AE2C0`, `FUN_006AE3F0`, `FUN_00622B50`, `WM_PAINT_Handler @ 0x00621E90`, `RightPanel__Draw @ 0x0072E450`, `Background_Overlay @ 0x0072E730`, `DrawStartPositions @ 0x00640710`, `FUN_006040B0`, `FUN_0060B550`, `OwnerDraw_Static_006153E0`, `FUN_004E3560`, `CC_Draw_Shape @ 0x004AED70`, `FUN_0072CF40`, `FUN_0072CF90`, `FUN_0060CF00`, `FUN_0060F9A0`, `FUN_0060A5B0`, `FUN_00602490`.
 - Ghidra assembly contexts: `0x006AE40A`, `0x006AE47B`, `0x00622C4F`, `0x00621FFE`, `0x0062211B`, `0x006223B3`, `0x0072E7AD`, `0x0072E815`, `0x004AED84`, `0x00622CCB`, `0x00622E83`, `0x006409D2`, `0x00640A15`.
 - Prior docs referenced: `SKIRMISH_0X102_FIRST_PAINT_COMPOSITION_VS_RUST_DRAW_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `SKIRMISH_HIGH_RES_RIGHT_PANEL_BACKGROUND_FALLBACK_GT800_GHIDRA_REPORT.md`, `SKIRMISH_STATUS_CHILD_0X695_TEXT_SOURCE_GHIDRA_REPORT.md`, `SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`, `SKIRMISH_FLAG_STATIC_RENDERING_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_INVALIDATION_GLOBALS_DAT_00AC1CC8_00AC1DD0_GHIDRA_REPORT.md`, `SCENARIO_PREVIEW_HEADER_DEFAULTS_AND_DUSTBOWL_SOURCE_PATH_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:959..971`.
-- Rust source scanned: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- INI checked: `ini/rulesmd.ini:959..971`.
+- Rust source scanned: `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app.rs`.

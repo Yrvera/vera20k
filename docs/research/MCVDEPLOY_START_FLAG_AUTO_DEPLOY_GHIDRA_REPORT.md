@@ -63,13 +63,13 @@ Player-visible implication: the player starts with an MCV already in its deploy 
 
 ## 6. Current Rust Implementation Status
 
-Rust currently seeds skirmish MCVs in `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs::seed_skirmish_opening_if_needed`. It spawns MCVs at multiplayer start waypoints and sets credits/base center, but it has no `MCVDeploy` setting, no `[SpecialFlags] MCVDeploy` parser field, and no startup call that queues or applies deploy.
+Rust currently seeds skirmish MCVs in `src/app_skirmish.rs::seed_skirmish_opening_if_needed`. It spawns MCVs at multiplayer start waypoints and sets credits/base center, but it has no `MCVDeploy` setting, no `[SpecialFlags] MCVDeploy` parser field, and no startup call that queues or applies deploy.
 
-Rust player/AI deploy uses `Command::DeployMcv`, handled in `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`, which immediately calls `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs::deploy_mcv`. That function despawns the MCV and spawns the construction yard immediately after current placement checks. It does not model a queued `MISSION_DEPLOY` layer for MCVs.
+Rust player/AI deploy uses `Command::DeployMcv`, handled in `src/sim/world/world_commands.rs`, which immediately calls `src/sim/world/world_spawn.rs::deploy_mcv`. That function despawns the MCV and spawns the construction yard immediately after current placement checks. It does not model a queued `MISSION_DEPLOY` layer for MCVs.
 
-Rust AI has `C:/Users/enok/Documents/ra2-rust-game/src/sim/ai.rs::try_deploy_mcv`, which issues `Command::DeployMcv` when an AI has an undeployed `DeploysInto=` unit and no deployed MCV flag. That is AI logic after match start, not the binary's `MCVDeploy` start flag.
+Rust AI has `src/sim/ai.rs::try_deploy_mcv`, which issues `Command::DeployMcv` when an AI has an undeployed `DeploysInto=` unit and no deployed MCV flag. That is AI logic after match start, not the binary's `MCVDeploy` start flag.
 
-`C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs::SpecialFlagsSection` currently parses only `TiberiumGrows`, `TiberiumSpreads`, and `DestroyableBridges`.
+`src/map/basic.rs::SpecialFlagsSection` currently parses only `TiberiumGrows`, `TiberiumSpreads`, and `DestroyableBridges`.
 
 ## 7. Coverage Ledger
 
@@ -112,20 +112,20 @@ Rust AI has `C:/Users/enok/Documents/ra2-rust-game/src/sim/ai.rs::try_deploy_mcv
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`, section 7: replace the table row `| 4 | 0x10 | MCVDeploy | Yes -- forces MCV auto-deploy at game start |` with `| 8 | 0x0100 | MCVDeploy | Yes -- when set in the active SpecialFlags word, starting MCVs queue the standard Deploy mission after successful placement |`.
+- `docs/research/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`, section 7: replace the table row `| 4 | 0x10 | MCVDeploy | Yes -- forces MCV auto-deploy at game start |` with `| 8 | 0x0100 | MCVDeploy | Yes -- when set in the active SpecialFlags word, starting MCVs queue the standard Deploy mission after successful placement |`.
 - Same section: replace the note beginning `the runtime bitfield accessed by Generate_Random_Units, the check is & 0x10` with `Earlier notes confused the bit-4/session flag path with `[SpecialFlags] MCVDeploy`. Current cross-doc evidence treats MCVDeploy as SpecialFlags bit 8 / 0x0100; re-check `0x006886B0` in live Ghidra before editing lower-level mask prose beyond this correction.`
 - Same report confidence table: replace `MCVDeploy bit position (0x10 vs >>8) | MEDIUM | Discrepancy between runtime and serialization` with `MCVDeploy bit position | MEDIUM pending fresh live re-check of `0x006886B0`; archived SpecialFlags and startup reports agree on bit 8 / 0x0100, while this report's older bit-4 prose is stale.`
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SPECIAL_FLAGS_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_DEPLOY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GAME_START_INITIALIZATION.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/ai.rs`
+- `docs/research/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`
+- `docs/research/SPECIAL_FLAGS_SYSTEM.md`
+- `docs/research/MCV_DEPLOY_GHIDRA_REPORT.md`
+- `docs/research/GAME_START_INITIALIZATION.md`
+- `docs/research/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `src/app_skirmish.rs`
+- `src/map/basic.rs`
+- `src/sim/world/world_commands.rs`
+- `src/sim/world/world_spawn.rs`
+- `src/sim/ai.rs`

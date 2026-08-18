@@ -151,7 +151,7 @@ No INI key is read by `AStar_compute_edge_cost`.
 
 ## 6. Current Rust Implementation Status
 
-Current Rust path cost is in `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`.
+Current Rust path cost is in `src/sim/pathfinding/core.rs`.
 
 Observed surfaces:
 
@@ -206,7 +206,7 @@ Adversarial checks answered:
 
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
-| Temporary `0x40000` marker multiplies the current edge accumulator by `4.0` after Can_Enter/code-2 adjustment and before bridge flank multiplier. | `0x00429845..0x004299C2`; `BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md` section 3.4 | missing | `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs` normal compass edge cost | Add a per-search marker overlay/input whose destination-cell hit multiplies the edge after entity/code cost and before bridge flank cost, using the Rust integer scale. | A marked destination occupied by a moving-friendly code-2 jam on a bridge flank route costs code2 jam x marker x bridge flank, while an unmarked equivalent lacks only the marker factor; proposed test name: `astar_edge_cost_marker_stacks_after_code2_before_bridge_flank`. | Do not store this in persistent `PathGrid` or make it a terrain-height/cliff rule. |
+| Temporary `0x40000` marker multiplies the current edge accumulator by `4.0` after Can_Enter/code-2 adjustment and before bridge flank multiplier. | `0x00429845..0x004299C2`; `BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md` section 3.4 | missing | `src/sim/pathfinding/core.rs` normal compass edge cost | Add a per-search marker overlay/input whose destination-cell hit multiplies the edge after entity/code cost and before bridge flank cost, using the Rust integer scale. | A marked destination occupied by a moving-friendly code-2 jam on a bridge flank route costs code2 jam x marker x bridge flank, while an unmarked equivalent lacks only the marker factor; proposed test name: `astar_edge_cost_marker_stacks_after_code2_before_bridge_flank`. | Do not store this in persistent `PathGrid` or make it a terrain-height/cliff rule. |
 | Direction epsilon is added after helper return and `Pathfinder+0x04`; it is not multiplied by marker, entity, or bridge multipliers. | caller `0x00429F8A..0x00429F9D`; byte read `0x0081872C` | mostly matched for existing integer tiebreaker, but marker path must preserve placement | `core.rs` cost addition around direction tiebreak | Keep `DIR_TIEBREAK` as a final additive term outside all multiplicative marker/entity/bridge costs. | Two equal routes differing only by direction order preserve N/E/S/W lower epsilon even when one candidate is marker-adjusted; proposed test name: `astar_marker_cost_does_not_scale_direction_tiebreak`. | Do not fold epsilon into `step_cost` before multiplying marker/bridge cost. |
 | Direction 8 bypasses `AStar_compute_edge_cost`; no marker, bridge flank, `+0x04`, or normal epsilon applies on that branch. | caller branch `0x00429F6B..0x00429FA3`; prior cell-entry report section 1.5 | current Rust tube edge is separate; marker future work must not affect it | `core.rs` explicit tube edge branch | Keep future marker overlay restricted to normal compass neighbor expansion unless a separate binary finding proves tube-edge marker behavior elsewhere. | A marked cell reached by explicit tube edge keeps tube cost unchanged while a normal compass edge into the same marked cell gets marker cost; proposed test name: `astar_marker_overlay_does_not_apply_to_direction8_tube_edge`. | Do not globally post-process every destination cell cost with marker. |
 
@@ -220,9 +220,9 @@ Adversarial checks answered:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`: replace heading/text "`Cliff Ramp Multiplier` / `If cell+0x140 has bit 0x40000 set`" with "`Temporary marker multiplier` / `If destination CellClass+0x140 has bit 0x40000 set, the current edge accumulator is multiplied by 4.0 after Can_Enter/code-2 adjustment and before bridge flank multipliers.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`Cliff ramp penalty: If cell flags contain 0x40000 (cliff ramp)`" with "`Temporary marker penalty: If the destination cell flags contain search-scoped bit 0x40000, multiply the current edge accumulator by 4.0; this is not a generic cliff/height transition rule.`"
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ADDRESS_MAP.md`: replace "`0x007E37BC | CliffRampMultiplier | 4.0f (cell_flags & 0x40000)`" with "`0x007E37BC | AStar marker cost multiplier | 4.0f applied when destination CellClass+0x140 & 0x40000`."
+- `docs/research/PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`: replace heading/text "`Cliff Ramp Multiplier` / `If cell+0x140 has bit 0x40000 set`" with "`Temporary marker multiplier` / `If destination CellClass+0x140 has bit 0x40000 set, the current edge accumulator is multiplied by 4.0 after Can_Enter/code-2 adjustment and before bridge flank multipliers.`"
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace "`Cliff ramp penalty: If cell flags contain 0x40000 (cliff ramp)`" with "`Temporary marker penalty: If the destination cell flags contain search-scoped bit 0x40000, multiply the current edge accumulator by 4.0; this is not a generic cliff/height transition rule.`"
+- `docs/research/ADDRESS_MAP.md`: replace "`0x007E37BC | CliffRampMultiplier | 4.0f (cell_flags & 0x40000)`" with "`0x007E37BC | AStar marker cost multiplier | 4.0f applied when destination CellClass+0x140 & 0x40000`."
 
 ## 10. Remaining Uncertainty
 
@@ -230,15 +230,15 @@ None for the claimed stacking/order slice. Marker writer geometry remains intent
 
 ## Sources
 
-- Direct read-only disassembly/byte reads from local `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`:
+- Direct read-only disassembly/byte reads from local `<ra2-install>/gamemd.exe`:
   - `0x00429830..0x00429A90` - full helper branch order.
   - `0x00429F60..0x00429FB0` - caller call/multiply/epsilon and direction-8 bypass.
   - `0x0042A6D0..0x0042A700` - `Pathfinder+0x04 = 1.0f` constructor write.
   - `0x0042C900..0x0042C940` - `Pathfinder+0x3C` setter.
   - `0x0081870C`, `0x0081872C`, `0x007E37B4`, `0x007E37B8`, `0x007E37BC`, `0x007E2AC8`, `0x007E3710`, `0x007E3730`, `0x007E3750` - constant/table bytes.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDERCLASS_FIELD_3C_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDERCLASS_COST_MULTIPLIER_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDERCLASS_FIELD_3C_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDERCLASS_COST_MULTIPLIER_GHIDRA_REPORT.md`
+- `docs/research/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`
+- `src/sim/pathfinding/core.rs`

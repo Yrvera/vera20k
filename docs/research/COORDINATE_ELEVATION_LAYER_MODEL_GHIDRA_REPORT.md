@@ -432,7 +432,7 @@ The most important nuance: gamemd does have true 3-int object/world coordinates 
   - `CELLCLASS_STRUCT_GHIDRA_REPORT.md`
   - `PATHFINDING_ASTAR_GHIDRA_REPORT.md`
   - `PATHFINDING_CELL_ENTRY_VERIFICATION_REPORT.md`
-  - bridge-specific reports in `C:/Users/enok/Documents/ra2-rust-game-docs/`
+  - bridge-specific reports in `docs/research/`
 - Rust files checked:
   - `src/map/terrain.rs`
   - `src/util/lepton.rs`

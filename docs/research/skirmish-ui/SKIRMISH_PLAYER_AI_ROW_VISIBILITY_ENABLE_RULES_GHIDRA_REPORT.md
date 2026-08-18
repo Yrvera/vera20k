@@ -161,5 +161,5 @@ Not investigated in this slot beyond existing trace context. The current request
 ## Sources
 
 - Ghidra decompiled/read-only: `FUN_006AE2C0`, `FUN_006AE3F0`, `FUN_006AE6E0`, `FUN_006ACEE0`, `FUN_006ACD60`, `FUN_006ADC20`, `FUN_006ADDF0`, `FUN_006ADF00`, `FUN_006AE080`, `FUN_005E6520`, `FUN_004E3320`, `FUN_004E37D0`, `FUN_004E41D0`, `FUN_004E4E60`, `FUN_004E5940`, `FUN_004E3F70`, `FUN_004E49A0`, `FUN_004E5480`, `FUN_004E5ED0`, `SessionClass__ReadSkirmishSettings @ 0x00697F10`, `SessionClass__WriteSkirmishSettings @ 0x00698F90`, `FUN_00477440`, `RulesClass__ReadMultiplayerDialogSettings @ 0x00671EA0`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini` `[MultiplayerDialogSettings] AIDifficulty=0`, `AIPlayers=0`; selected maps' `[Waypoints]` and `[RandomMap] NumPlayers` are read by `FUN_005E6520`.
+- INI: `ini/rulesmd.ini` `[MultiplayerDialogSettings] AIDifficulty=0`, `AIPlayers=0`; selected maps' `[Waypoints]` and `[RandomMap] NumPlayers` are read by `FUN_005E6520`.
 - Prior reports cross-checked: `SKIRMISH_START_POSITION_COMBO_POPULATION_GHIDRA_REPORT.md`, `SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_FLAG_STATICS_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`, `traces/SKIRMISH_PLAYER_AI_COMBOS_FLAGS_TRACE.md`, `SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`.

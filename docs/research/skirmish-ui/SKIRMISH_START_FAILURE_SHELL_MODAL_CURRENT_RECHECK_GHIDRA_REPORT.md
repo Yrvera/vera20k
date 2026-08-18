@@ -143,9 +143,9 @@ Current Rust data validation is partially caught up:
 
 ## Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace the Current Rust table wording "logs `LaunchValidationError` and leaves the shell visible; missing native shell modal; no structured visible error state" with "Current Rust now has `LaunchValidationError::MapCapacityExceeded`, `NoEnabledOpponent`, and `SameExplicitTeam`, maps failures to `SkirmishValidationModalState` in `src/app.rs`, and consumes OK clicks, but the current render path does not draw validation modal instances/text; capacity text formatting also does not exactly match native `%d` substitution."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_TEXT_AND_MODE_REJECTION_GHIDRA_REPORT.md`: replace "validation exists, modal text surface missing" with "validation exists and app-level modal state is partially wired, but validation modal rendering is still missing from `src/app_skirmish_shell_render.rs`; keep this as a visible-modal/render parity gap, not a data-validation gap."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/.swarm-claims.md`: append this report's claim line that current Rust is partial: data checks and modal state exist, visible validation modal render is still missing.
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_FAILURE_UI_GHIDRA_REPORT.md`: replace the Current Rust table wording "logs `LaunchValidationError` and leaves the shell visible; missing native shell modal; no structured visible error state" with "Current Rust now has `LaunchValidationError::MapCapacityExceeded`, `NoEnabledOpponent`, and `SameExplicitTeam`, maps failures to `SkirmishValidationModalState` in `src/app.rs`, and consumes OK clicks, but the current render path does not draw validation modal instances/text; capacity text formatting also does not exactly match native `%d` substitution."
+- `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_TEXT_AND_MODE_REJECTION_GHIDRA_REPORT.md`: replace "validation exists, modal text surface missing" with "validation exists and app-level modal state is partially wired, but validation modal rendering is still missing from `src/app_skirmish_shell_render.rs`; keep this as a visible-modal/render parity gap, not a data-validation gap."
+- `docs/research/.swarm-claims.md`: append this report's claim line that current Rust is partial: data checks and modal state exist, visible validation modal render is still missing.
 
 ## Sources
 

@@ -229,6 +229,6 @@ Replace the old partial-audit wording "exact stock override-file values need arc
 
 - Ghidra decompiled/read-only: `0x005D7590`, `0x005D7CE0`, `0x005D5B60`, `0x005D6130`, `0x005E7160`, `0x004E4170`, `0x005D6310`, `0x006ACCA0`, constructors `0x005C0DD0`, `0x005C6150`, `0x005CA630`, `0x005CB3A0`, `0x005C5CE0`, `0x005C1470`.
 - Ghidra memory/assembly read-only: vtables `0x007EE184`, `0x007EE50C`, `0x007EE6FC`, `0x007EE814`, `0x007EE424`, `0x007EE27C`; bytes `0x005D5DB0..0x005D5E08`; factory registration `0x005D7D3C..0x005D7E36`; selection commit `0x005E71E5..0x005E7382`.
-- INI/data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`; retail text scan of `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2md.mix`; `ini/rulesmd.ini` base `[MultiplayerDialogSettings]`.
+- INI/data checked: `ini/mpmodesmd.ini`; retail text scan of `<ra2-install>/ra2md.mix`; `ini/rulesmd.ini` base `[MultiplayerDialogSettings]`.
 - Prior docs used for context: `skirmish-ui/SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`, `skirmish-ui/SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `skirmish-ui/SKIRMISH_MODE_ROLE_UI_NODE_0X6B_GHIDRA_REPORT.md`, `skirmish-ui/SKIRMISH_SIEGE_ATTACKER_ROLE_CONSTRUCTOR_GHIDRA_REPORT.md`.
 - Rust scan: `src/skirmish_launch.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish.rs`.

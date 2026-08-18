@@ -159,7 +159,7 @@ Representation gaps remain: Rust does not model a literal `UnitClass+0x6D1` byte
 - Ghidra decompile: `BuildingClass::SetAnimSlotImage @ 0x00451750`
 - Ghidra decompile: `BuildingClass::ClearAnimSlot @ 0x00451E40`
 - Ghidra disassembly ranges inspected read-only: `0x0073E330..0x0073E545`, `0x0073E0D0..0x0073E2A4`, `0x0073DFBD..0x0073E09A`, `0x0073E3B0..0x0073E53A`
-- Prior report used as baseline: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_STATE3_STATE4_TIMING_GHIDRA_REPORT.md`
+- Prior report used as baseline: `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_STATE3_STATE4_TIMING_GHIDRA_REPORT.md`
 - INI/art: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`
 - Rust scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`, `src/rules/ruleset.rs`, `src/sim/game_entity.rs`
 

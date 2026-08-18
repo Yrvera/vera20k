@@ -246,15 +246,15 @@ Read-only scan only. No Rust files were modified.
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md` replacement wording for section 5.1 probe source:
+- `docs/research/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md` replacement wording for section 5.1 probe source:
   "`UpdateBridgePassability` does not draw from the game RNG for its initial probe. It calls `RateTimer__Current` on `Foot+0x388`, computes `dir = ((value >> 12) + 1) >> 1 & 7`, and probes `current_cell + g_DirectionOffsets[dir]`. The layer list is selected from the probe cell: non-bridge uses `Cell+0xE4`; bridge uses `Cell+0xE8` only when `abs(current.Level - probe.Level) > 3` or `Foot+0x8C != 0`, otherwise `Cell+0xE4`."
 
 ## Sources
 
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/RATETIMER_CURRENT_FRAME_COUNTER_HELPERS_GHIDRA_REPORT.md`
-- Existing Ghidra report: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`
-- Fresh local `gamemd.exe` PE disassembly with Capstone from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `0x0042ACF0..0x0042ADD4`, `0x0042ADD4..0x0042AE10`, `0x0042AEAD..0x0042AED5`, `0x0042AFCB..0x0042B063`, `0x00429C10..0x00429C1A`, `0x0042A423..0x0042A42D`, `0x0042A442..0x0042A44C`
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/zone_search.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_path.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_blocked.rs`
+- Existing Ghidra report: `docs/research/PATHFINDER_UPDATE_BRIDGE_PASSABILITY_0042ACF0_GHIDRA_REPORT.md`
+- Existing Ghidra report: `docs/research/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`
+- Existing Ghidra report: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
+- Existing Ghidra report: `docs/research/RATETIMER_CURRENT_FRAME_COUNTER_HELPERS_GHIDRA_REPORT.md`
+- Existing Ghidra report: `docs/research/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`
+- Fresh local `gamemd.exe` PE disassembly with Capstone from `<ra2-install>/gamemd.exe`: `0x0042ACF0..0x0042ADD4`, `0x0042ADD4..0x0042AE10`, `0x0042AEAD..0x0042AED5`, `0x0042AFCB..0x0042B063`, `0x00429C10..0x00429C1A`, `0x0042A423..0x0042A42D`, `0x0042A442..0x0042A44C`
+- Rust scan: `src/sim/pathfinding/core.rs`, `src/sim/pathfinding/zone_search.rs`, `src/sim/movement/movement_path.rs`, `src/sim/movement/movement_blocked.rs`

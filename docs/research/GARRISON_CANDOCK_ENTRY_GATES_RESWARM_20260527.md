@@ -135,8 +135,8 @@ Observed deltas / risks:
 
 ## 10. Stale Docs / Follow-up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for `0x007105E0` summary: "`0x007105E0` is used here as `TechnoClass::IsMindControlled`; it reads `Techno+0x2C0` and byte `+0x2C4`. Do not describe the `CanDock` rejection as a being-warped/chrono gate without separate evidence."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for entry summary: "`BuildingClass::CanDock @ 0x00457CE0` requires `CanBeOccupied`, mission not `0x12/0x13`, in-playfield coordinates, vtable `+0x1D4` false, then either the normal `Occupier` branch or the separate `Assaulter` branch. Normal `Occupier` entry uses same owner or owner-country `MultiplayPassive`, capacity equality (`count != MaxNumberOccupants`), not red HP, and not mind-controlled."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for `0x007105E0` summary: "`0x007105E0` is used here as `TechnoClass::IsMindControlled`; it reads `Techno+0x2C0` and byte `+0x2C4`. Do not describe the `CanDock` rejection as a being-warped/chrono gate without separate evidence."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` replacement wording for entry summary: "`BuildingClass::CanDock @ 0x00457CE0` requires `CanBeOccupied`, mission not `0x12/0x13`, in-playfield coordinates, vtable `+0x1D4` false, then either the normal `Occupier` branch or the separate `Assaulter` branch. Normal `Occupier` entry uses same owner or owner-country `MultiplayPassive`, capacity equality (`count != MaxNumberOccupants`), not red HP, and not mind-controlled."
 
 ## 11. Remaining Uncertainty
 

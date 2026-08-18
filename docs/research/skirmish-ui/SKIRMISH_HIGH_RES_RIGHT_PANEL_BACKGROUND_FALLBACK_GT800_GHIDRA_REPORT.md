@@ -166,8 +166,8 @@ No Rust delta is required for this exact `>800` parent-background decision.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md` Q9 replacement wording: "For a fresh normal `>800` Skirmish entry, `DAT_00B0FA18` is zero because `FUN_0072CF40` only loads the alternate background SHP at exact width 800 and `FUN_0072CF90` clears it during standard cleanup. `Background_Overlay` still selects parent `+0xE4` for non-640 widths, but `CC_Draw_Shape` receives a null SHP pointer and returns without drawing. Remaining 1024x768 work is full-composition screenshot parity or abnormal stale-pointer watchpointing, not deciding whether to reuse/stretch the 800 parent background."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md` coverage ledger replacement for `Background_Overlay @ 0x0072E730`: "`>800` fresh null behavior verified by `SKIRMISH_HIGH_RES_RIGHT_PANEL_BACKGROUND_FALLBACK_GT800_GHIDRA_REPORT.md`; abnormal stale non-null runtime history deferred to watchpoint only."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md` Q9 replacement wording: "For a fresh normal `>800` Skirmish entry, `DAT_00B0FA18` is zero because `FUN_0072CF40` only loads the alternate background SHP at exact width 800 and `FUN_0072CF90` clears it during standard cleanup. `Background_Overlay` still selects parent `+0xE4` for non-640 widths, but `CC_Draw_Shape` receives a null SHP pointer and returns without drawing. Remaining 1024x768 work is full-composition screenshot parity or abnormal stale-pointer watchpointing, not deciding whether to reuse/stretch the 800 parent background."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md` coverage ledger replacement for `Background_Overlay @ 0x0072E730`: "`>800` fresh null behavior verified by `SKIRMISH_HIGH_RES_RIGHT_PANEL_BACKGROUND_FALLBACK_GT800_GHIDRA_REPORT.md`; abnormal stale non-null runtime history deferred to watchpoint only."
 
 ## Sources
 

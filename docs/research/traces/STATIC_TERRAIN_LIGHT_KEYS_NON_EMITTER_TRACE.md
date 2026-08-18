@@ -140,9 +140,9 @@ The player-visible parity requirement is negative: ore trees and lamp-looking `L
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TERRAIN_OBJECT_LIGHT_KEYS_AND_LIGHTSOURCE_OWNERSHIP_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TERRAIN_CLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
+- `docs/research/TERRAIN_OBJECT_LIGHT_KEYS_AND_LIGHTSOURCE_OWNERSHIP_GHIDRA_REPORT.md`
+- `docs/research/TERRAIN_CLASS_GHIDRA_REPORT.md`
+- `docs/research/LIGHTSOURCE_LIFECYCLE_POWER_DAMAGE_SAVELOAD_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini`
 - `ini/artmd.ini`
 - `src/rules/terrain_object_type.rs`

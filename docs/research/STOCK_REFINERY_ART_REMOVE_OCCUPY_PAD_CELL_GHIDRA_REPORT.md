@@ -38,10 +38,10 @@ Stock YR Allied and Soviet refineries both use a `4x3` base foundation. The stoc
 
 | Object | Stock values | Evidence | Active in YR |
 |---|---|---|---|
-| `GAREFN` rules | `DockUnload=yes`, `Refinery=yes`, `NumberOfDocks=1`, `Bib=yes`, `NumberImpassableRows=3` | `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:11722`, `11726`, `11727`, `11729`, `11730`, `11764` | Yes |
-| `NAREFN` rules | `DockUnload=yes`, `Refinery=yes`, `NumberOfDocks=1`, `Bib=yes`, `NumberImpassableRows=3` | `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:12515`, `12519`, `12520`, `12521`, `12523`, `12524` | Yes |
-| `GAREFN` art | `Foundation=4x3`, `QueueingCell=4,1`, `CanHideThings=True`, `OccupyHeight=2`, `AddOccupy1=-1,0`, `AddOccupy2=-1,-1`, `RemoveOccupy1=3,1` | `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:1763`, `1766`, `1773`, `1790`, `1792`, `1793`, `1794`, `1795` | Yes |
-| `NAREFN` art | `Foundation=4x3`, `QueueingCell=4,1`, `CanHideThings=true`, `OccupyHeight=4`, `RemoveOccupy1..8`, including `RemoveOccupy8=3,1` | `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:1706`, `1709`, `1716`, `1750`, `1752`, `1753..1760` | Yes |
+| `GAREFN` rules | `DockUnload=yes`, `Refinery=yes`, `NumberOfDocks=1`, `Bib=yes`, `NumberImpassableRows=3` | `ini/rulesmd.ini:11722`, `11726`, `11727`, `11729`, `11730`, `11764` | Yes |
+| `NAREFN` rules | `DockUnload=yes`, `Refinery=yes`, `NumberOfDocks=1`, `Bib=yes`, `NumberImpassableRows=3` | `ini/rulesmd.ini:12515`, `12519`, `12520`, `12521`, `12523`, `12524` | Yes |
+| `GAREFN` art | `Foundation=4x3`, `QueueingCell=4,1`, `CanHideThings=True`, `OccupyHeight=2`, `AddOccupy1=-1,0`, `AddOccupy2=-1,-1`, `RemoveOccupy1=3,1` | `ini/artmd.ini:1763`, `1766`, `1773`, `1790`, `1792`, `1793`, `1794`, `1795` | Yes |
+| `NAREFN` art | `Foundation=4x3`, `QueueingCell=4,1`, `CanHideThings=true`, `OccupyHeight=4`, `RemoveOccupy1..8`, including `RemoveOccupy8=3,1` | `ini/artmd.ini:1706`, `1709`, `1716`, `1750`, `1752`, `1753..1760` | Yes |
 
 Material finding: both stock refineries name `RemoveOccupy` offset `(3,1)`. Neither stock refinery has an art/rules key that opens or identifies `NW+(2,1)` as the harvester pad. Active in YR: Yes, because these are active `rulesmd.ini`/`artmd.ini` stock definitions and the parser paths above read these keys.
 
@@ -150,9 +150,9 @@ Conclusion for this slice: the stock visible/passable pad aligns with `NW+(3,1)`
 
 ## 11. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with: "Branch 1 is gated by `BuildingTypeClass+0x16BC`, which `BuildingTypeClass_ReadINI_Water @ 0x0045FE50` maps to `Weeder`, not stock `Refinery`. Stock `GAREFN`/`NAREFN` set `DockUnload=yes` (`+0x16B3`) and `Refinery=yes` (`+0x16BB`) and do not take the `+0x16BC` `NW+(2,1)` branch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "refinery pad branch" with "`+0x16BC` Weeder/GetDockCoord branch" unless a later Weeder-specific report proves a narrower live YR name.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`: replace row `BuildingClass__GetDockCoord refinery branch FIXED` wording with: "Stale/incorrect for stock refineries: `+0x16BC` is Weeder, not stock `GAREFN`/`NAREFN`; stock art/passability pad is `NW+(3,1)`, while `NW+(2,1)` remains blocked. Reclassify the row as DRIFT or split into `GetDockCoord +0x16BC` and `stock refinery dock/pad` rows."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with: "Branch 1 is gated by `BuildingTypeClass+0x16BC`, which `BuildingTypeClass_ReadINI_Water @ 0x0045FE50` maps to `Weeder`, not stock `Refinery`. Stock `GAREFN`/`NAREFN` set `DockUnload=yes` (`+0x16B3`) and `Refinery=yes` (`+0x16BB`) and do not take the `+0x16BC` `NW+(2,1)` branch."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "refinery pad branch" with "`+0x16BC` Weeder/GetDockCoord branch" unless a later Weeder-specific report proves a narrower live YR name.
+- `docs/research/coord-cell-conversions/_parity.md`: replace row `BuildingClass__GetDockCoord refinery branch FIXED` wording with: "Stale/incorrect for stock refineries: `+0x16BC` is Weeder, not stock `GAREFN`/`NAREFN`; stock art/passability pad is `NW+(3,1)`, while `NW+(2,1)` remains blocked. Reclassify the row as DRIFT or split into `GetDockCoord +0x16BC` and `stock refinery dock/pad` rows."
 
 ## 12. Remaining Uncertainty
 
@@ -164,6 +164,6 @@ Conclusion for this slice: the stock visible/passable pad aligns with `NW+(3,1)`
 
 - Ghidra read-only: `BuildingTypeClass_ReadINI_Water @ 0x0045FE50`, `BuildingClass::Place_OccupyMap @ 0x00441F60`, `TechnoClass__EnterCell_AddToMultiCells @ 0x005683C0`, `UnitClass::Can_Enter_Cell @ 0x0073F0A0`, `FUN_00458A00 @ 0x00458A00`, `BuildingClass__GetDockCoord @ 0x00447B20`.
 - Ghidra strings: `QueueingCell @ 0x0081A614`, `RemoveOccupy%d @ 0x0081A624`, `AddOccupy%d @ 0x0081A634`, `CanHideThings @ 0x0081A640`, `Refinery @ 0x0081AA5C`, `DockUnload @ 0x0081AA94`, `NumberImpassableRows @ 0x0081AD6C`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
-- Existing binary-backed docs: `C:/Users/enok/Documents/ra2-rust-game-docs/REFINERY_DOCK_PAD_CAN_ENTER_CELL_STACK_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
+- INI: `ini/rulesmd.ini`, `ini/artmd.ini`.
+- Existing binary-backed docs: `docs/research/REFINERY_DOCK_PAD_CAN_ENTER_CELL_STACK_GHIDRA_REPORT.md`, `docs/research/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`, `docs/research/miner/CHRONO_MINER_ACCEPTED_REFINERY_DOCK_ANCHOR_GHIDRA_REPORT.md`.
 - Rust scan: `src/sim/production/production_tech.rs`, `src/sim/pathfinding/core.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/rules/art_data.rs`, `src/rules/object_type.rs`.

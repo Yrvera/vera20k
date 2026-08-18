@@ -138,7 +138,7 @@ This function is the missing link between gameplay waypoints/playfield bounds an
 Retail install sample:
 
 ```text
-C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map
+<ra2-install>/Dustbowl.map
 [Preview]
 Size=0,0,138,75
 [PreviewPack]

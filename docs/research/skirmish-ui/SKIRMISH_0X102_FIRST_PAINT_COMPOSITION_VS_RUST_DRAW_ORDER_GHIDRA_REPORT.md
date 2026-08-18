@@ -93,10 +93,10 @@ Current Rust comparison: Rust draws the preview texture after shell chrome, whic
 
 Affected files scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/render/skirmish_shell_chrome.rs`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/app.rs`
 
 The current worktree is ahead of older trace docs:
 
@@ -128,12 +128,12 @@ The current worktree is ahead of older trace docs:
 
 ## Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_CHROME_800X600_TRACE.md` lines describing current Rust parent-first ordering are stale. Replacement wording: "Current Rust emits right-panel stack and lower strip before parent background in `build_skirmish_shell_instances`, and `skirmish_shell_semantic_draw_order` records the same order; this now matches the verified gamemd common parent paint order for the top-level chrome."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` and `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_BACKGROUND_TEXT_PREVIEW_GHIDRA_REPORT.md` have stale `MNSCRNL.SHP`-as-640-parent wording. Replacement wording: "For standard offline Skirmish dialog `0x102`, parent `+0xE0` receives `DAT_00B0FB50`, and the corrected loader-table mapping is `DAT_00B0FB50 = MNSCRNS.SHP`; `MNSCRNL.SHP` is `DAT_00B0FA04` and is not the 640 parent background for this dialog."
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_CHROME_800X600_TRACE.md` lines describing current Rust parent-first ordering are stale. Replacement wording: "Current Rust emits right-panel stack and lower strip before parent background in `build_skirmish_shell_instances`, and `skirmish_shell_semantic_draw_order` records the same order; this now matches the verified gamemd common parent paint order for the top-level chrome."
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md` and `docs/research/skirmish-ui/SKIRMISH_SHELL_BACKGROUND_TEXT_PREVIEW_GHIDRA_REPORT.md` have stale `MNSCRNL.SHP`-as-640-parent wording. Replacement wording: "For standard offline Skirmish dialog `0x102`, parent `+0xE0` receives `DAT_00B0FB50`, and the corrected loader-table mapping is `DAT_00B0FB50 = MNSCRNS.SHP`; `MNSCRNL.SHP` is `DAT_00B0FA04` and is not the 640 parent background for this dialog."
 
 ## Sources
 
 - Live Ghidra decompile / assembly context: `FUN_006ae2c0`, `FUN_006ae3f0`, `FUN_00622b50`, `WM_PAINT_Handler`, `RightPanel__Draw`, `Background_Overlay`, `DrawStartPositions`, `CC_Draw_Shape`, `FUN_0072cf40`, `FUN_0072cf90`.
 - Assembly contexts checked: `0x006AE40A`, `0x006AE47B`, `0x00621FFE`, `0x0062211B`, `0x006223B3`, `0x0072E547`, `0x0072E594`, `0x0072E60D`, `0x0072E68C`, `0x0072E6CD`, `0x0072E6F7`, `0x0072E71F`, `0x0072E7AD`, `0x0072E7DF`, `0x0072E815`, `0x006409A7`, `0x006409D2`, `0x004AED84`, `0x0072CF49`, `0x0072CF65`, `0x0072CFCB`.
 - Prior reports cross-checked: `SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `SKIRMISH_GT800_BACKGROUND_POINTER_LIFECYCLE_GHIDRA_REPORT.md`, `SKIRMISH_SHELL_RIGHT_PANEL_BACKGROUND_PALETTE_FOLLOWUP_GHIDRA_REPORT.md`, `SKIRMISH_PREVIEW_SURFACE_VTABLE_AND_CLIPPING_GHIDRA_REPORT.md`, `SKIRMISH_SDBTM_BOTTOM_CAP_SOURCE_CLIP_GHIDRA_REPORT.md`, and `SKIRMISH_SHELL_CHROME_800X600_TRACE.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/skirmish_shell_chrome.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Rust scan: `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app.rs`.

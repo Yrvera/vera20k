@@ -153,7 +153,7 @@ Rust timing is **not implemented** for this mechanic. No current Rust stage comp
 
 ## Return Contract Summary
 
-Report file: `C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/BOUNCER_BOUNCE_EXPIRE_SPLIT_RUNTIME_SURFACE_TRACE_20260528.md`
+Report file: `docs/research/traces/BOUNCER_BOUNCE_EXPIRE_SPLIT_RUNTIME_SURFACE_TRACE_20260528.md`
 
 Verdict tally: **PASS: 0 | FAIL: 0 | UNCHECKED: 2 | NOT-IMPLEMENTED: 5**
 

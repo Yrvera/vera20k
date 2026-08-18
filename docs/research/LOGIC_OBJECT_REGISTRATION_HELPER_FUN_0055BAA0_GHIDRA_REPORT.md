@@ -253,15 +253,15 @@ Remaining uncertainty is limited to caller-context reconstruction outside the he
   - `ObjectClass::Conceal @ 0x005F4D30`, call site `0x005F4DA6..0x005F4DD3`
   - Object destructor/uninit path `0x005F3D65..0x005F3D7A`
 - Prior research docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_FIRST_TICK_DAMAGE_LATENCY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/timing/logic-vs-render-loop.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/OBJECTCLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETTYPECLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`
+  - `docs/research/AAHEATSEEKER2_FIRST_TICK_DAMAGE_LATENCY_GHIDRA_REPORT.md`
+  - `docs/research/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
+  - `docs/research/timing/logic-vs-render-loop.md`
+  - `docs/research/OBJECTCLASS_GHIDRA_REPORT.md`
+  - `docs/research/BULLETTYPECLASS_GHIDRA_REPORT.md`
+  - `docs/research/BULLET_CLASS_LAYOUT_GHIDRA_REPORT.md`
 - Rust surfaces scanned (re-audited 2026-05-29):
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/logic_vector.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs` (register/unregister `:680-711`, `for_each_live_object` `:763-770`, `rebuild_logic_membership` `:981-987`, `advance_tick` `:1508`)
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/game_entity.rs` (`in_logic_vector` `:172`, init `:447`)
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs` (register call sites `:1163`, `:1188`)
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/entity_store.rs`
+  - `src/sim/world/logic_vector.rs`
+  - `src/sim/world/mod.rs` (register/unregister `:680-711`, `for_each_live_object` `:763-770`, `rebuild_logic_membership` `:981-987`, `advance_tick` `:1508`)
+  - `src/sim/game_entity.rs` (`in_logic_vector` `:172`, init `:447`)
+  - `src/sim/passenger.rs` (register call sites `:1163`, `:1188`)
+  - `src/sim/entity_store.rs`

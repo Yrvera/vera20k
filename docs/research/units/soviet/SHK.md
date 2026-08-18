@@ -24,7 +24,7 @@ originates the Ghidra trace of `IsElectricBolt`/`IsAlternateColor`/
 
 ## rulesmd.ini — `[SHK]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4507`:
+Verbatim from `ini/rulesmd.ini:4507`:
 
 ```ini
 [SHK]
@@ -132,7 +132,7 @@ IFVMode=6
 
 ## artmd.ini — `[SHK]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:193`:
+`ini/artmd.ini:193`:
 
 ```ini
 [SHK] ; Shock Trooper

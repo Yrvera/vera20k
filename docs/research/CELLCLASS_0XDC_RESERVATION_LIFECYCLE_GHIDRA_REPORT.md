@@ -8,7 +8,7 @@ Investigation mode: `/re-investigate` exhaustive slice, scoped to `CellClass+0xD
 
 Out of scope: dynamic entity occupancy, full CellRect validator taxonomy, broad CellClass field naming, and non-placement uses except where needed to disambiguate `+0xDC` from GapGen/shroud state.
 
-Primary seed: `C:/Users/enok/Documents/ra2-rust-game-docs/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md` OQ-16.
+Primary seed: `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md` OQ-16.
 
 ## Executive Summary
 
@@ -155,8 +155,8 @@ Active in YR: Yes.
 
 Evidence:
 
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3132` has `AIBaseSpacing=1`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini:2602` has `AIBaseSpacing=1`.
+- `ini/rulesmd.ini:3132` has `AIBaseSpacing=1`.
+- `ini/rules.ini:2602` has `AIBaseSpacing=1`.
 - `FUN_0050B760` and `FUN_005060B0` read `RulesClass+0x1460`, matching the prior `AIBaseSpacing` identification.
 
 Behavior:
@@ -167,9 +167,9 @@ Behavior:
 
 Observed current shape:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/occupancy.rs` models dynamic entity occupancy.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_reservation.rs` models movement destination commitment.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_placement.rs` exists, but AI/base placement surfaces are incomplete/future.
+- `src/sim/occupancy.rs` models dynamic entity occupancy.
+- `src/sim/movement/movement_reservation.rs` models movement destination commitment.
+- `src/sim/production/production_placement.rs` exists, but AI/base placement surfaces are incomplete/future.
 
 Interpretation:
 
@@ -201,25 +201,25 @@ Interpretation:
 
 ## Stale Docs / Replacement Wording
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
+`docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`
 
 Replace wording that labels `Cell+0xDC` as `GapGenBitmask` with:
 
 > `CellClass+0xDC` is a per-house reservation/base-placement bitmask consulted by AI/base placement readers when a non-`-1` layer/house index is passed. It is not the verified Gap Generator visibility bitmask; checked GapGen code writes `CellClass+0x78`, and sensor counts use `CellClass+0x7C`.
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
+`docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md`
 
 Replace any `0xDC = GapGenBitmask` field label with:
 
 > `0xDC = per-house AI/base placement reservation bitmask (read by CellRect__CheckOccupancy, FUN_005060B0, FUN_0050B760, FUN_00486D90; setter lifecycle still unverified). Gap/shroud visibility uses 0x78, not 0xDC.`
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_SYSTEMS_GHIDRA_REPORT.md`
+`docs/research/BUILDING_SYSTEMS_GHIDRA_REPORT.md`
 
 Replace wording that says Gap generator updates `cell+0xDC` with:
 
 > `BuildingClass__UpdateGapGenerator_Tick` updates per-house visibility through helpers at `0x00487110/0x00487130`, which write `CellClass+0x78`; sensor-array counts use `CellClass+0x7C`. It is not evidence for `CellClass+0xDC` reservation writes.
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`
+`docs/research/BUILDINGCLASS_MASTER_GHIDRA_REPORT_V3.md`
 
 Replace wording that says `BuildingClass__Unlimbo` writes `cell+0xDC |= (1 << owner_idx)` with:
 
@@ -227,7 +227,7 @@ Replace wording that says `BuildingClass__Unlimbo` writes `cell+0xDC |= (1 << ow
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
+- `docs/research/CELLRECT_PASSABILITY_OCCUPANCY_VALIDATORS_GHIDRA_REPORT.md`
 - Ghidra decompilation: `CellClass__Constructor @ 0x0047BC50`
 - Ghidra decompilation: `CellRect__CheckOccupancy @ 0x00586780` from prior verified report
 - Ghidra decompilation: `FUN_005060B0 @ 0x005060B0`

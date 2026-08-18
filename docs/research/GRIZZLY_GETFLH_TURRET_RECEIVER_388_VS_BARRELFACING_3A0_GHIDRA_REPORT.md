@@ -79,11 +79,11 @@ Current Rust has only body-facing data in fire events:
 
 ## Stale Doc Replacement Wording
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/GRIZZLY_FLH_BARRELFACING_PROJECTILE_ORIGIN_GHIDRA_REPORT.md` should replace its deferred receiver wording with:
+`docs/research/GRIZZLY_FLH_BARRELFACING_PROJECTILE_ORIGIN_GHIDRA_REPORT.md` should replace its deferred receiver wording with:
 
 > `TechnoClass::GetFLH @ 0x006F3AD0` has now been rechecked. In the live locomotor branch, the `RateTimer::Current` receiver is `this+0x388`, proven by assembly `0x006F3BCA..0x006F3BD3`. The source rotation is derived as the quantized virtual `+0x2A8` facing minus the quantized current value of `this+0x388`. Stock Grizzly `Fire_At_Target` still uses `BarrelFacing +0x3A0` for the turret fire gate, but `GetFLH` does not read `+0x3A0` directly. Rust fire-origin code therefore needs an explicit source-facing/turret-facing snapshot equivalent to binary `+0x388`, not just body facing and not an unproven direct reuse of `barrel_facing`.
 
-`C:/Users/enok/Documents/ra2-rust-game-docs/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md` should clarify the pseudocode line `short turretFacing = RateTimer::Current();` as:
+`docs/research/ANIMCLASS_SPAWN_PATHS_GHIDRA_REPORT.md` should clarify the pseudocode line `short turretFacing = RateTimer::Current();` as:
 
 > `short sourceTurretFacing = RateTimer::Current(this+0x388);` The adjacent Grizzly fire gate uses `+0x3A0`, but this `GetFLH` branch samples `+0x388`.
 

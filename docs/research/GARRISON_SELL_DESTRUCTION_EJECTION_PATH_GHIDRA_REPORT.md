@@ -147,22 +147,22 @@ Acceptance test-name proposals:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_sell.rs:380..399` comment should be replaced with: "Destroyed `CanBeOccupied` garrisons use the same gamemd `SellBuilding @ 0x00457DE0` occupant-eject contract as sell: deterministic foundation-edge exit search, reverse occupant order, `Unlimbo(exit, 0)`, failed `Unlimbo` destroys that occupant, no immediate raw scatter-direction RNG; if no exit coord exists, gamemd calls `SpawnUnitsWithParachute(0)`."
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:600..606` comment should be replaced with: "A `CanBeOccupied` building destroyed in combat with live occupants; gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the same occupant-eject helper used by sell, rather than random foundation-footprint placement."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_SYSTEM_GHIDRA_REPORT.md` Section 16 row for `0x00457DE0` should say: "Occupant ejection only -- does NOT destroy the building; called by player-sell state and `CanBeOccupied` destruction paths."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md` `BuildingClass__CheckAutoSellOrCivilian` bullet should say: "Empty + non-civilian owner -> revert to civilian house. Red-HP -> eject occupants via `SellBuilding` without destroying the building."
+- `src/sim/production/production_sell.rs:380..399` comment should be replaced with: "Destroyed `CanBeOccupied` garrisons use the same gamemd `SellBuilding @ 0x00457DE0` occupant-eject contract as sell: deterministic foundation-edge exit search, reverse occupant order, `Unlimbo(exit, 0)`, failed `Unlimbo` destroys that occupant, no immediate raw scatter-direction RNG; if no exit coord exists, gamemd calls `SpawnUnitsWithParachute(0)`."
+- `src/sim/combat/mod.rs:600..606` comment should be replaced with: "A `CanBeOccupied` building destroyed in combat with live occupants; gamemd routes this through `BuildingClass::SellBuilding @ 0x00457DE0`, the same occupant-eject helper used by sell, rather than random foundation-footprint placement."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md` Section 16 row for `0x00457DE0` should say: "Occupant ejection only -- does NOT destroy the building; called by player-sell state and `CanBeOccupied` destruction paths."
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md` `BuildingClass__CheckAutoSellOrCivilian` bullet should say: "Empty + non-civilian owner -> revert to civilian house. Red-HP -> eject occupants via `SellBuilding` without destroying the building."
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PASSENGER_GARRISON_EJECTION_RNG_CLASSIFICATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-05-04b-disparity-scan-garrison.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_sell.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- `docs/research/PASSENGER_GARRISON_EJECTION_RNG_CLASSIFICATION_GHIDRA_REPORT.md`
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`
+- `docs/gap-scans/2026-05-04b-disparity-scan-garrison.md`
+- `src/sim/production/production_sell.rs`
+- `src/sim/combat/mod.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/passenger.rs`
+- `ini/rulesmd.ini`
 
 ## Status
 

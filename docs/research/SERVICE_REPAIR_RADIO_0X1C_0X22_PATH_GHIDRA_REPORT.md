@@ -172,8 +172,8 @@ No Rust path was found for legacy `Hospital=` / `Armory=` walk-in service. That 
 
 ## 12. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_MISSION_REPAIR_AND_PRODUCE.md` section "Repair tick tuning" should replace "threshold = Rules+0x16E8 x 1.0" with "threshold = Rules+0x16E8 x 900.0 (`DAT_007E27F8`), verified at `0x0044BD38..0x0044BD44`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MISSION_REPAIR_AND_PRODUCE_GHIDRA_REPORT.md` should avoid saying `Rules+0x16F8` is `RepairPercent`; replacement wording: "`Rules+0x16F8` is the service completion health-ratio threshold read by `0x1C` and `0x22`; `RepairPercent=` is parsed to `Rules+0x16D0` and is not directly read at the scoped `TechnoClass::Receive_Radio 0x1C` site."
+- `docs/research/BUILDINGCLASS_MISSION_REPAIR_AND_PRODUCE.md` section "Repair tick tuning" should replace "threshold = Rules+0x16E8 x 1.0" with "threshold = Rules+0x16E8 x 900.0 (`DAT_007E27F8`), verified at `0x0044BD38..0x0044BD44`."
+- `docs/research/MISSION_REPAIR_AND_PRODUCE_GHIDRA_REPORT.md` should avoid saying `Rules+0x16F8` is `RepairPercent`; replacement wording: "`Rules+0x16F8` is the service completion health-ratio threshold read by `0x1C` and `0x22`; `RepairPercent=` is parsed to `Rules+0x16D0` and is not directly read at the scoped `TechnoClass::Receive_Radio 0x1C` site."
 
 ## Sources
 
@@ -191,10 +191,10 @@ No Rust path was found for legacy `Hospital=` / `Armory=` walk-in service. That 
 - Ghidra `get_assembly_context 005F532C,005F5339,005F5358,005F537A`
 - Ghidra string/xref checks for `UnitRepair`, `Hospital`, `Armory`, `URepairRate`, `IRepairRate`, `RepairStep`, `RepairPercent`, `RepairBay`
 - `ini/rulesmd.ini`, `ini/rules.ini`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIOCLASS_CORE_PRIMITIVES_VERIFIED_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECH_CAHOSP_VS_CATHOSP_GHIDRA_REPORT.md`
+- `docs/research/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/RADIOCLASS_CORE_PRIMITIVES_VERIFIED_GHIDRA_REPORT.md`
+- `docs/research/TECH_CAHOSP_VS_CATHOSP_GHIDRA_REPORT.md`
 - Rust scan: `src/sim/docking/building_dock.rs`, `src/rules/ruleset.rs`, `src/rules/object_type.rs`
 
 ## Status

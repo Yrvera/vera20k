@@ -358,6 +358,6 @@ More concretely:
 
 ### Prior reports checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASSET_PARSING_BRIDGES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RENDERING_REMAINING_CASES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZBUFFER_DEPTH_SYSTEM.md`
+- `docs/research/ASSET_PARSING_BRIDGES_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RENDERING_REMAINING_CASES_GHIDRA_REPORT.md`
+- `docs/research/ZBUFFER_DEPTH_SYSTEM.md`

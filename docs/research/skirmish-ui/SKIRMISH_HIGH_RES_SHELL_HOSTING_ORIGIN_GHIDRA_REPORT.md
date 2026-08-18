@@ -177,9 +177,9 @@ Active in YR: Conditional for high-res modes; the layout code is active, while a
 
 - Ghidra decompiled this slot: `FUN_006AE2C0`, `FUN_00622650`, `FUN_00622B50`, `FUN_0060C540`, `FUN_0060C4A0`, `ResizeShellChildControl_0060C0C0`, `FUN_00608CD0`, `FUN_00609730`, `FUN_0060B1D0`, `FUN_0060B350`, `RightPanel__ComputeLayoutRects @ 0x0072EC70`, `RightPanel__Draw @ 0x0072E450`, `Background_Overlay @ 0x0072E730`, `CC_Draw_Shape @ 0x004AED70`.
 - Prior docs checked:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_CHROME_800X600_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_FOLLOWUP_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_SHELL_CHROME_800X600_TRACE.md`
+  - `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_FOLLOWUP_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_FOLLOWUP_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_HIGH_RES_SHELL_HOSTING_AND_GT800_BACKGROUND_GHIDRA_REPORT.md`

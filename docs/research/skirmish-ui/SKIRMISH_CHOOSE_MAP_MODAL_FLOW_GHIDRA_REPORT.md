@@ -151,10 +151,10 @@ This is a contrast-only implementation note, not binary evidence.
 
 Current Rust has the control identity but not the modal contract:
 
-- `OwnerDrawButton::ChooseMap0x5aa` maps to `SkirmishShellAction::ChooseMap` (`C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:100`).
-- `ChooseMap` increments `selected_map_idx = (selected_map_idx + 1) % maps.len()` in-place (`C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:165`).
-- app routing swallows `ChooseMap` without a modal screen transition (`C:/Users/enok/Documents/ra2-rust-game/src/app.rs:557`).
-- preview texture handling is keyed to `selected_map_idx` and rebuilt lazily (`C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:736`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:765`), but it is not driven by a retail accept/cancel modal flow, selected-record loader failure semantics, or `RandMap.img` branch.
+- `OwnerDrawButton::ChooseMap0x5aa` maps to `SkirmishShellAction::ChooseMap` (`src/ui/skirmish_shell/state.rs:100`).
+- `ChooseMap` increments `selected_map_idx = (selected_map_idx + 1) % maps.len()` in-place (`src/ui/skirmish_shell/state.rs:165`).
+- app routing swallows `ChooseMap` without a modal screen transition (`src/app.rs:557`).
+- preview texture handling is keyed to `selected_map_idx` and rebuilt lazily (`src/app_skirmish_shell_render.rs:736`, `src/app_skirmish_shell_render.rs:765`), but it is not driven by a retail accept/cancel modal flow, selected-record loader failure semantics, or `RandMap.img` branch.
 
 Implementation gaps implied by this report:
 
@@ -193,4 +193,4 @@ Implementation gaps implied by this report:
 - Fresh read-only Ghidra decompiles: `0x006ACEE0`, `0x005E68A0`, `0x005E7160`, `0x005E74E0`, `0x005E7BF0`, `0x006AE3F0`, `0x00640710`, `0x007757E0`, `0x007759E0`.
 - Fresh read-only Ghidra assembly context: `0x006AD8E7`, `0x006AD931`, `0x006AD93C`, `0x006AD947`, `0x006AD94C`, `0x006AD95B`, `0x006ADA21`, `0x006ADA72`, `0x006ADA7D`, `0x006ADB19`, `0x006ADB31`, `0x006AE432`, `0x006AE441`, `0x006AE454`, `0x006AE472`, `0x005E68BE`, `0x005E68C4`, `0x005E68E3`, `0x005E68F5`, `0x005E6909`, `0x005E69D3`, `0x005E6B63`, `0x005E7367`, `0x005E73A4`, `0x005E78FA`, `0x005E7D2C`, `0x005E7D87`.
 - Prior reports read: `SKIRMISH_CHOOSE_MAP_ACTION_TRACE.md`, `SKIRMISH_CHOOSE_MAP_MODAL_RETURN_CONTRACT_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_PREVIEW_REFRESH_FUN_006ACEE0_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_PREVIEW_INVALIDATION_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_RECORD_DECODE_FIELDS_GHIDRA_REPORT.md`.
-- Rust contrast scan: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- Rust contrast scan: `src/ui/skirmish_shell/state.rs`, `src/app.rs`, `src/app_skirmish_shell_render.rs`.

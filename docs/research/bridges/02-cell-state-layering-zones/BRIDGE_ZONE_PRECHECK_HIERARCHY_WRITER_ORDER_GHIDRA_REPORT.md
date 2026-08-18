@@ -187,10 +187,10 @@ No Rust files were modified.
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace: "`+4` edge flags (low byte = `1 if bridge-edge`)".
   - With: "`+4` edge flag dword; `Zone_precheck` adds `0.001` when `byte(edge+4) != 0`. Verified bridge-specific writers set this low byte to zero; nonzero is a zone-edge tiebreak/hierarchy-boundary flag, not proven bridge-edge semantics."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_GRAPH_ADJACENCY_EMISSION_ORDER_GHIDRA_REPORT.md`
+- `docs/research/ZONE_GRAPH_ADJACENCY_EMISSION_ORDER_GHIDRA_REPORT.md`
   - Replace old Rust-status wording that says `zone_search.rs` equal-cost ties fall through to `ZoneId`.
   - With: "Current Rust `find_zone_corridor` uses stable sequence tie handling, so the older ZoneId-tie delta is stale; remaining deltas are single-level hierarchy, centroid/Manhattan cost, missing parent-gate fields, missing edge flag metadata, and non-binary temp-bucket writer order."
 

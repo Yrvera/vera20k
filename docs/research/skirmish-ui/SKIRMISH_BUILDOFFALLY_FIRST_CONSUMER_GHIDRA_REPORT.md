@@ -134,8 +134,8 @@ enabled, disabled, ineligible-provider, and own-provider cases.
 
 Stale Docs / Follow-up Docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`: replace the BuildOffAlly deferred row with: "`BuildOffAlly` first verified gameplay consumer is `FUN_004A8EB0 @ 0x004A8EB0`, read at `0x004A8FFA`. It gates allied buildings as build-area providers during tactical building placement preview/final click, after `HouseClass__IsAlliedWith` and provider BuildingType `EligibileForAllyBuilding` (`+0x1550`) pass. Self-owned providers use `BaseNormal` (`+0x154F`) and do not depend on this option."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_BUILD_OFF_ALLY_FIRST_READER_GHIDRA_REPORT.md`: replace "Exact semantic names and INI sources for BuildingType bytes `+0x154F` and `+0x1550` were not traced in this slot" with: "`+0x154F` is `BaseNormal`, default true; `+0x1550` is typo-preserved `EligibileForAllyBuilding`, default false. Both are parsed in `BuildingTypeClass_ReadINI_Water @ 0x004601F0..0x00460217` and consumed by `FUN_004A8EB0`."
+- `docs/research/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`: replace the BuildOffAlly deferred row with: "`BuildOffAlly` first verified gameplay consumer is `FUN_004A8EB0 @ 0x004A8EB0`, read at `0x004A8FFA`. It gates allied buildings as build-area providers during tactical building placement preview/final click, after `HouseClass__IsAlliedWith` and provider BuildingType `EligibileForAllyBuilding` (`+0x1550`) pass. Self-owned providers use `BaseNormal` (`+0x154F`) and do not depend on this option."
+- `docs/research/skirmish-ui/SKIRMISH_BUILD_OFF_ALLY_FIRST_READER_GHIDRA_REPORT.md`: replace "Exact semantic names and INI sources for BuildingType bytes `+0x154F` and `+0x1550` were not traced in this slot" with: "`+0x154F` is `BaseNormal`, default true; `+0x1550` is typo-preserved `EligibileForAllyBuilding`, default false. Both are parsed in `BuildingTypeClass_ReadINI_Water @ 0x004601F0..0x00460217` and consumed by `FUN_004A8EB0`."
 
 ## Sources
 

@@ -22,11 +22,11 @@ Scope boundaries: this trace stops at the beginning of return/dock approach. It 
   - `MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`
   - `CHRONO_MINER_TELEPORT_GHIDRA_REPORT.md`
 - Rust source:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`
+  - `src/sim/miner/mod.rs`
+  - `src/sim/miner/miner_system.rs`
+  - `src/sim/miner/miner_dock.rs`
+  - `src/sim/miner/miner_dock_sequence.rs`
+  - `src/sim/world/world_spawn.rs`
 - INI data:
   - `ini/rulesmd.ini`
   - `ini/artmd.ini`

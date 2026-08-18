@@ -207,7 +207,7 @@ CCINIClass__ReadString(PTR_s_Movies_007f0ce4, uVar3, &DAT_00817474, local_20, 0x
 `inspect_memory_content`.
 
 **artmd.ini `[Movies]` entry count:** 59 entries (verified by reading
-`C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`). First entry: `A00_F00e`.
+`ini/artmd.ini`). First entry: `A00_F00e`.
 Last entry: `S08_F01e`. These are all YR campaign cutscene base names.
 
 **TS-filter:** The base `art.ini` `[Movies]` section contains older entries

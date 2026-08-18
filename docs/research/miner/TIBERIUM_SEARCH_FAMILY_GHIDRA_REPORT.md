@@ -345,4 +345,4 @@ No `[OPEN]` entries remain.
   Mission_Harvest's own state machine, NavCom identity, and INI key bindings; not re-derived here).
 - Rust: `src/sim/miner/miner_system.rs` (search_local_ore ~1453-1530; handle_search_ore ~462-551;
   is_cell_path_clear_for_scan ~442-460), read at
-  `C:\Users\enok\Documents\ra2-rust-game\.claude\worktrees\quirky-brattain-fe0387\src\sim\miner\miner_system.rs`.
+  `.claude/worktrees/quirky-brattain-fe0387/src/sim/miner/miner_system.rs`.

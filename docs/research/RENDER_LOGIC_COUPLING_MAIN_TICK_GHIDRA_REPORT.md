@@ -256,5 +256,5 @@ Neither prior doc claims interpolation is present or absent; the interpolation-a
 - `get_assembly_context 0x0055D8F2` — normal gameplay call site
 - `get_assembly_context 0x0055DBC3` — context confirming replay-branch call at `0x0055DBBE`
 - `get_function_callers 0x004F4480` — full caller list
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/MAIN_TICK_FRAME_COUNTER_PLACEMENT_VS_ADVANCE_TICK_GHIDRA_REPORT.md`
+- `docs/research/GLOBAL_TIMING_MODEL_GHIDRA_REPORT.md`
+- `docs/research/MAIN_TICK_FRAME_COUNTER_PLACEMENT_VS_ADVANCE_TICK_GHIDRA_REPORT.md`

@@ -207,19 +207,19 @@ Asset role matrix:
 
 ## Stale Docs / Follow-up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_RENDERING.md`
+`docs/research/RADAR_MINIMAP_RENDERING.md`
 
 Replace the `## 10. Viewport Rectangle Drawing (0x00660540)` section heading and the claim that the viewport rectangle shares radar-event infrastructure with:
 
 > The ordinary in-game camera-window rectangle is not `0x00660540` and does not use the radar-event gradient line path. `RadarClass::Update @ 0x00656EC0` draws the current viewport rectangle and the minimap content boundary on `g_SidebarSurface` through vtable `+0x58`, which resolves to `0x007BAD90 -> 0x007BADC0 -> +0x2C/0x007BA610` for XSurface/BSurface. The rectangle worker converts `{x,y,w,h}` to inclusive `right=x+w-1` and `bottom=y+h-1`, draws four one-pixel axis lines with inclusive clipped endpoints, and writes the packed active sidebar text/border color from `RadarClass+0x1208` directly to the 16-bit surface.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_DEEP_DIVE.md`
+`docs/research/RADAR_MINIMAP_DEEP_DIVE.md`
 
 Replace `## 4. Viewport Rectangle = Radar Event` with:
 
 > RadarEventClass outline drawing and the ordinary camera-window rectangle are separate active paths. Radar events use `TickRadarEvent`/`DrawRadarEvent` helpers. The camera-window rectangle is owned by `RadarClass::Update`, stored at `RadarClass+0x14DC..+0x14E8`, and drawn after the primary radar blit through the plain sidebar-surface rectangle primitive.
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
+`docs/research/RADAR_SYSTEM_COMPREHENSIVE.md`
 
 Replace "Also draws corresponding viewport indicator lines" under `DrawRadarEvent` with:
 

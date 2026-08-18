@@ -131,8 +131,8 @@ Risk remains around representation: Rust bakes movement blockers into `PathGrid`
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BIB_SYSTEM_GHIDRA_REPORT.md`: replace the `DAT_0089F690` uncertainty wording with: "`0x0089F690` is initialized by `Foundation_direction_table_init @ 0x0049F2F0` through the CRT constructor table to signed cell offset `(dx=+1, dy=0)`, so the `HasBib` branch relaxes the east edge of the actual building object-list footprint."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`: replace "`BuildingTypeClass+0x1664` stores AddOccupy and further on RemoveOccupy" with: "`BuildingTypeClass+0x1624..0x1660` stores `AddOccupy1..8`; `BuildingTypeClass+0x1664..0x16A0` stores `RemoveOccupy1..8`; both are hidden-occupancy modifiers, not normal foundation occupancy."
+- `docs/research/BIB_SYSTEM_GHIDRA_REPORT.md`: replace the `DAT_0089F690` uncertainty wording with: "`0x0089F690` is initialized by `Foundation_direction_table_init @ 0x0049F2F0` through the CRT constructor table to signed cell offset `(dx=+1, dy=0)`, so the `HasBib` branch relaxes the east edge of the actual building object-list footprint."
+- `docs/research/GARRISON_OCCUPANT_SYSTEM_GHIDRA_REPORT.md`: replace "`BuildingTypeClass+0x1664` stores AddOccupy and further on RemoveOccupy" with: "`BuildingTypeClass+0x1624..0x1660` stores `AddOccupy1..8`; `BuildingTypeClass+0x1664..0x16A0` stores `RemoveOccupy1..8`; both are hidden-occupancy modifiers, not normal foundation occupancy."
 
 ### Remaining Uncertainty
 
@@ -144,5 +144,5 @@ Risk remains around representation: Rust bakes movement blockers into `PathGrid`
 - Ghidra read-only decompiled: `UnitClass::Can_Enter_Cell @ 0x0073F0A0`, `FUN_00458A00 @ 0x00458A00`, `Look_up_building_in_cell @ 0x0047C520`, `BuildingClass::Place_OccupyMap @ 0x00441F60`, `BuildingTypeClass_ReadINI_Water @ 0x0045FE50`, `TechnoClass__Set_Destination @ 0x00741970`.
 - Ghidra assembly context: `0x00461425..0x004614E8`, `0x0073F57C..0x0073F5A9`, `0x0073F7D3..0x0073F80F`.
 - Prior reports: `BIB_ADJACENT_CELL_DIRECTION_SOURCE_GHIDRA_REPORT.md`, `NUMBER_IMPASSABLE_ROWS_CALLSITE_MATRIX_GHIDRA_REPORT.md`, `NUMBER_IMPASSABLE_ROWS_RADIO_CONTACT_VECTOR_GHIDRA_REPORT.md`, `BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`, `CELLCLASS_0X100_HIDDEN_OCCUPANCY_READERS_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
+- INI: `ini/rulesmd.ini`, `ini/artmd.ini`.
 - Rust scan: `src/sim/production/production_tech.rs`, `src/sim/pathfinding/core.rs`, `src/app_init.rs`, `src/app_sim_tick.rs`.

@@ -174,8 +174,8 @@ Relevant implementation references:
 - Ghidra `decompile_function 0x004D9290` - `FootClass::Mission_Enter`
 - Ghidra `decompile_function 0x00741970` - `TechnoClass::Set_Destination` / UnitClass vtable+0x480 path
 - `docs/plans/2026-05-20-radio-link-refinery-dock-investigation-plan.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/BUILDINGCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`
+- `docs/research/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini`
 - `src/sim/miner/miner_dock.rs`
 - `src/sim/miner/miner_dock_sequence.rs`

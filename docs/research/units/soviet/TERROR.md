@@ -22,7 +22,7 @@ Ghidra trace of `Suicide=yes` and `DeathWeapon=` flag paths.
 
 ## rulesmd.ini — `[TERROR]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4768`:
+Verbatim from `ini/rulesmd.ini:4768`:
 
 ```ini
 [TERROR]
@@ -143,7 +143,7 @@ IFVMode=11
 
 ## artmd.ini — `[TRST]` section (via `Image=TRST` redirect)
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:176`:
+`ini/artmd.ini:176`:
 
 ```ini
 [TRST] ; Terrorist

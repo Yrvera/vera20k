@@ -143,9 +143,9 @@ Relevant Rust surfaces scanned:
 
 | Rust surface | Current state |
 |---|---|
-| `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs` | `CHOOSE_MAP_LIST_ROW_H` is `16`; `choose_map_modal_list_row_at` divides by this fixed value and does not account for owner-draw `font_height + 2`, top index, or scrollbar width |
-| `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs` | has modal selection/top-index state, but row rendering/input parity is incomplete |
-| `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs` | no verified renderer for `0x6B` listbox frame, full-row selected fill, `+2` text inset, or native listbox scrollbar behavior |
+| `src/ui/skirmish_shell/layout.rs` | `CHOOSE_MAP_LIST_ROW_H` is `16`; `choose_map_modal_list_row_at` divides by this fixed value and does not account for owner-draw `font_height + 2`, top index, or scrollbar width |
+| `src/ui/skirmish_shell/state.rs` | has modal selection/top-index state, but row rendering/input parity is incomplete |
+| `src/app_skirmish_shell_render.rs` | no verified renderer for `0x6B` listbox frame, full-row selected fill, `+2` text inset, or native listbox scrollbar behavior |
 
 No Rust files were modified by this investigation.
 
@@ -206,5 +206,5 @@ No Rust files were modified by this investigation.
 - Ghidra read-only decompile: `OwnerDraw_ScrollBar_0061C690 @ 0x0061C690`.
 - Ghidra/read-only local disassembly from `gamemd.exe`: `OwnerDraw_ListBox_00618D40` ranges `0x00618E38..0x00618FB0`, `0x006191BD..0x0061920A`, `0x00619230..0x00619B58`, `0x0061BB47..0x0061BBD9`, `0x0061BBF8..0x0061BE42`.
 - Prior docs referenced: `SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_MODE_CATEGORY_0X6EB_GHIDRA_REPORT.md`, `SKIRMISH_DROPDOWN_ROW_INTERNAL_PAINT_GHIDRA_REPORT.md`, `SKIRMISH_PRIMITIVE_BEVEL_FRAME_COLORS_GHIDRA_REPORT.md`, `SKIRMISH_COMBO_DROPDOWN_WINDOW_GEOMETRY_GHIDRA_REPORT.md`.
-- INI files checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `rulesmd.ini`, `art.ini`, `artmd.ini`, `mpmodesmd.ini`.
-- Rust surfaces scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- INI files checked: `ini/rules.ini`, `rulesmd.ini`, `art.ini`, `artmd.ini`, `mpmodesmd.ini`.
+- Rust surfaces scanned: `src/ui/skirmish_shell/layout.rs`, `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`.

@@ -114,6 +114,6 @@ The native `0x6B` modal does not provide a custom global Enter, Escape, or defau
 
 - Ghidra decompile: `0x005E68A0`, `0x005E7160`, `0x00612B70`, `0x00775700`, `0x007759E0`.
 - Ghidra assembly context: `0x005E6920`, `0x005E6930`, `0x005E69B7`, `0x005E69E3`, `0x005E6B63`, `0x005E6B90`, `0x005E7038`.
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_KEYBOARD_DEFAULT_DISMISSAL_GHIDRA_REPORT.md`.
-- Prior resource extraction: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`.
+- Prior report: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_0X6B_KEYBOARD_DEFAULT_DISMISSAL_GHIDRA_REPORT.md`.
+- Prior resource extraction: `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`.
 - Rust scanned read-only: `src/app.rs`, `src/ui/skirmish_shell/state.rs`.

@@ -172,11 +172,11 @@ No new stale-doc replacement wording was found beyond the already listed replace
 
 ## Sources
 
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/MAPCLASS_ZONES_RAMPS_HUT_REGISTRY_GHIDRA_REPORT.md`
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PASSABILITY_MATRIX_READERS_GHIDRA_REPORT.md`
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_MAP_BUILD_LEVEL_GHIDRA_REPORT.md`
-- Prior Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+- Prior Ghidra reports: `docs/research/MAPCLASS_ZONES_RAMPS_HUT_REGISTRY_GHIDRA_REPORT.md`
+- Prior Ghidra reports: `docs/research/ZONE_PASSABILITY_MATRIX_READERS_GHIDRA_REPORT.md`
+- Prior Ghidra reports: `docs/research/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
+- Prior Ghidra reports: `docs/research/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
+- Prior Ghidra reports: `docs/research/ZONE_MAP_BUILD_LEVEL_GHIDRA_REPORT.md`
+- Prior Ghidra reports: `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`
 - Rust scanned with Codegraph and line reads: `src/sim/pathfinding/zone_search.rs`, `src/sim/pathfinding/zone_map.rs`, `src/sim/pathfinding/zone_build.rs`, `src/sim/pathfinding/zone_incremental.rs`, `src/sim/world/mod.rs`, `src/app_sim_tick.rs`, `src/rules/locomotor_type.rs`

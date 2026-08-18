@@ -257,7 +257,7 @@ No Rust files were modified.
 ## 11. Stale Docs / Follow-up Docs
 
 - `docs/contracts/2026-05-23-chrono-miner-reduce-tiberium-implementation-contract.md`: replace "density mapping, 11-vs-12 bale behavior" with "full-removal harvest amount is the pre-removal `OverlayData` byte; for `OverlayData=11`, `Reduce_Tiberium(20)` returns 11, not 12. Do not globally reinterpret the visual overlay frame until the queue/overlay architecture is designed."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`: no contradiction found. This report narrows and strengthens the harvester-active evidence and Rust handoff wording.
+- `docs/research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`: no contradiction found. This report narrows and strengthens the harvester-active evidence and Rust handoff wording.
 
 ## Sources
 
@@ -266,10 +266,10 @@ No Rust files were modified.
 - Ghidra MCP `get_function_callers 0x00480A80`
 - Ghidra MCP `get_function_callees 0x00480A80`
 - Ghidra MCP `decompile_function 0x0073D450`, `0x00722AB0`, `0x00722AF0`, `0x007235A0`, `0x005FDD20`, `0x006551C0`, `0x0047D2B0`, `0x00483620`, `0x00483690`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/overlay_grid.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/ore_growth.rs`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`
+- `ini/rulesmd.ini`
+- `src/sim/miner/miner_system.rs`
+- `src/sim/production/production_queue.rs`
+- `src/sim/overlay_grid.rs`
+- `src/sim/ore_growth.rs`
+- `docs/research/CELLCLASS_REDUCE_TIBERIUM_FUN_00480A80_GHIDRA_REPORT.md`
+- `docs/research/traces/CMIN_HARVEST_DENSITY_CARGO_REDUCE_TIBERIUM_TRACE.md`

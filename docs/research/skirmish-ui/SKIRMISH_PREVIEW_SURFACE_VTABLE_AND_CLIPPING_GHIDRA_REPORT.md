@@ -128,4 +128,4 @@ The dormant marker helpers in `src/app_skirmish_shell_render.rs` currently gate 
 - Ghidra decompiled/read-only: `0x00640710`, `0x00641B00`, `0x006418B0`, `0x00641DB0`, `0x004BA5A0`, `0x004BA770`, `0x004BAD80`, `0x004BAF40`, `0x007BAEB0`, `0x007BAE60`, `0x00411510`, `0x00411540`, `0x00411550`, `0x004BB080`, `0x004BB0D0` assembly context, `0x007BBE20`, `0x004AED70`, `0x004A61C0`, `0x004A5EB0`.
 - Ghidra raw bytes: `read_memory 0x007E85D4` for `vtable__DSurface`; `read_memory 0x007E2198` for base `Surface` comparison.
 - Prior docs read: `SKIRMISH_MAP_PREVIEW_MARKER_ASSET_LAYOUT_GHIDRA_REPORT.md`, `SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`, `PREVIEWPACK_DECODE_CHANNEL_ORDER_GHIDRA_REPORT.md`, `SKIRMISH_PREVIEW_OBJECT_LIFECYCLE_DAT_00AC1154_GHIDRA_REPORT.md`, `SKIRMISH_MAP_PREVIEW_START_MARKERS_TRACE.md`.
-- Rust status scan only: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- Rust status scan only: `src/map/preview.rs`, `src/app_skirmish_shell_render.rs`.

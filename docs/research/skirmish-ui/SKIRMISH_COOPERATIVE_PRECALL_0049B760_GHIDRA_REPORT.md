@@ -113,5 +113,5 @@ The Rust Skirmish shell currently has no selected `MPModesMD.ini` game-mode obje
 
 - Ghidra decompiled/read: `0x0049B760`, `0x007350C0`, `0x0049B610`, `0x0049B720`, `0x0049C0D0`, `0x0049CAF0`.
 - Ghidra assembly/read: `0x005C1D80..0x005C1DB2`, `0x005C1DC0..0x005C1F0E`, `0x006AD2BA..0x006AD34B`, `0x006AD647..0x006AD6F9`.
-- Prior report: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
+- Prior report: `docs/research/skirmish-ui/SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`.
+- INI: `ini/mpmodesmd.ini`.

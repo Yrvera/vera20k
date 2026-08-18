@@ -91,8 +91,8 @@ No INI key drives this slice. Active in YR: Yes/Conditional as binary shell infr
 
 Current Rust redraws the Skirmish shell in a direct render pass and stores control state explicitly:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs` has direct checkbox, trackbar, combo dropdown, and button state.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs` renders Skirmish shell content every frame and lazily caches only the selected map preview texture.
+- `src/ui/skirmish_shell/state.rs` has direct checkbox, trackbar, combo dropdown, and button state.
+- `src/app_skirmish_shell_render.rs` renders Skirmish shell content every frame and lazily caches only the selected map preview texture.
 - No Rust surface models a Win32 invalidation aggregation list, a transient `DAT_00AC1CC8` saved surface, or a `DAT_00AC1DD0` restored flag.
 
 That is acceptable for this slice. A future implementation should only add a UI/render dirty-resource marker for real Rust caches, such as preview textures or layout-dependent GPU resources, not for these shell globals.
@@ -143,7 +143,7 @@ That is acceptable for this slice. A future implementation should only add a UI/
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`: replace OQ14 with: "`[RESOLVED] OQ14 - `DAT_00AC1CC8`, `DAT_00AC1DCC`, and `DAT_00AC1DD0` are a conditional shell-global transient saved-surface/status-overlay state: `DAT_00AC1CC8` is the saved surface pointer, `DAT_00AC1DCC` is the overlay-active flag, and `DAT_00AC1DD0` is the saved-region-restored flag. The active common thunk can restore/redraw this overlay around child redraw, but standard offline Skirmish `0x102` has no static evidence that the activation writer `0x00610810` is called. Rust should not add a Win32 invalidation aggregation model for these globals; direct redraw is sufficient unless a future shell overlay feature is implemented. See `SKIRMISH_SHELL_INVALIDATION_GLOBALS_DAT_00AC1CC8_00AC1DD0_GHIDRA_REPORT.md`.`"
+- `docs/research/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`: replace OQ14 with: "`[RESOLVED] OQ14 - `DAT_00AC1CC8`, `DAT_00AC1DCC`, and `DAT_00AC1DD0` are a conditional shell-global transient saved-surface/status-overlay state: `DAT_00AC1CC8` is the saved surface pointer, `DAT_00AC1DCC` is the overlay-active flag, and `DAT_00AC1DD0` is the saved-region-restored flag. The active common thunk can restore/redraw this overlay around child redraw, but standard offline Skirmish `0x102` has no static evidence that the activation writer `0x00610810` is called. Rust should not add a Win32 invalidation aggregation model for these globals; direct redraw is sufficient unless a future shell overlay feature is implemented. See `SKIRMISH_SHELL_INVALIDATION_GLOBALS_DAT_00AC1CC8_00AC1DD0_GHIDRA_REPORT.md`.`"
 - Same doc: replace the Section 3.7 sentence "The thunk maintains a temporary HWND list around message `0x4A9` and selected paint/input messages, invalidates intersecting descendants..." with: "The thunk maintains a temporary HWND list for descendant/control processing separately from `DAT_00AC1CC8..DAT_00AC1DD0`; those three globals are not the list, but a conditional transient saved-surface overlay restored before intersecting child redraw and redrawn afterward if active."
 
 ### Remaining Uncertainty
@@ -157,5 +157,5 @@ That is acceptable for this slice. A future implementation should only add a UI/
 - Ghidra decompile/spot checks: `FUN_0060F9A0 @ 0x0060F9A0`; prior common thunk setup reports for `0x00622B50` and `0x006AE3F0`.
 - Ghidra xrefs: `get_function_xrefs 0x00610950` returned calls from `0x00610933` and `0x006128CF`; no Ghidra function boundary exists for `0x00610810`, `0x00610B50`, or `0x00610BF0`.
 - Retail `gamemd.exe` byte sweeps: direct `CALL rel32` scan found no calls to `0x00610810`, `0x00610B50`, or `0x00610BF0`; little-endian immediate pointer scan found no pointer to `0x00610810` and one pointer-table hit for reset `0x006107A0`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_FUN_006071E0_SHELL_TRANSITION_REDRAW_PATH_GHIDRA_REPORT.md`.
-- Rust source scanned: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_SUBCLASS_THUNK_00610CA0_NON_TEXT_BEHAVIOR_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_STATIC_TEXT_SUBCLASS_THUNK_00610CA0_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_0X102_COMMON_PARENT_PAINT_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_FUN_006071E0_SHELL_TRANSITION_REDRAW_PATH_GHIDRA_REPORT.md`.
+- Rust source scanned: `src/ui/skirmish_shell/state.rs`, `src/app_skirmish_shell_render.rs`, `src/app.rs`.

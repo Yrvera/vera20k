@@ -432,7 +432,7 @@ These are corrections to prior prose, not changes to active binary evidence.
 ## 14. Sources
 
 - Live read-only Ghidra MCP session on `/gamemd.exe`: `decompile_function`, `disassemble_function`, `get_xrefs_to`, and `read_memory` at the addresses enumerated in §11.
-- Retail executable bytes: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, used to cold-reread PE constants, lookup-table entries, and exact matrix initialization arithmetic after the live bridge became unstable.
+- Retail executable bytes: `<ra2-install>/gamemd.exe`, used to cold-reread PE constants, lookup-table entries, and exact matrix initialization arithmetic after the live bridge became unstable.
 - Stock INIs: `ini/rules.ini`, `ini/rulesmd.ini`.
 - Existing research read before and cross-checked during this pass:
   - `PARTICLE_SPARK_COLLISION_AND_PIXEL_COMPOSITOR_GHIDRA_REPORT.md`

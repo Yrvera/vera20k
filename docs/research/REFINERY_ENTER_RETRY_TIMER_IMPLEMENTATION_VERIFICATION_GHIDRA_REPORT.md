@@ -215,7 +215,7 @@ Zero-add pass result: Re-reading `0x004D9290`, `0x005B3060`, and current Rust ti
 - Fresh read-only Ghidra assembly context: `RulesClass::ReadTypeData @ 0x00679C94..0x00679CAD`.
 - Fresh read-only Ghidra decompile: `Random__RandomRanged @ 0x0065C7E0`.
 - Fresh read-only Ghidra decompile/assembly context: `Math__ftol @ 0x007C5F00`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
-- Current Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/rng.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`.
-- Prior corroborating report: `C:/Users/enok/Documents/ra2-rust-game-docs/MISSIONENTER_RETRY_TIMER_STORAGE_AND_DISPATCH_GHIDRA_REPORT.md`.
-- Prior `Math__ftol` control-word report: `C:/Users/enok/Documents/ra2-rust-game-docs/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`.
+- Current Rust scanned: `src/sim/miner/mod.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/rng.rs`, `src/sim/miner/miner_tests.rs`.
+- Prior corroborating report: `docs/research/MISSIONENTER_RETRY_TIMER_STORAGE_AND_DISPATCH_GHIDRA_REPORT.md`.
+- Prior `Math__ftol` control-word report: `docs/research/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`.

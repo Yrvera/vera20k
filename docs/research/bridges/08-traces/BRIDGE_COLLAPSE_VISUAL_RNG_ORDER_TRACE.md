@@ -47,7 +47,7 @@ Rust: `run_hut_collapse_bounded` calls `call_destroy_per_family` directly inside
 
 Verdict: FAIL. Player-visible explosion timing/order differs, and lockstep RNG order diverges before the first bridge overlay mutation in each iteration.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:703`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:708`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:299`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:703`, `src/sim/world/bridge_orchestrator.rs:708`, `src/sim/world/bridge_orchestrator.rs:299`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x00575870` and `0x00575BA0`; existing `BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md` section 3.3.
 
@@ -59,7 +59,7 @@ Rust: current hut walker consumes zero visual RNG draws before `call_destroy_per
 
 Verdict: FAIL. The exact gamemd draw count is 4 per walker anim; Rust count is 0 at this point.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:703`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:703`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x00575870` and `0x00575BA0`.
 
@@ -71,7 +71,7 @@ Rust: `apply_hut_bridge_execution` aggregates all `destroyed_set` cells across a
 
 Verdict: FAIL. Visual timing and RNG order are grouped after all collapse outcomes instead of occurring per `BlowUpBridge` cell.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:258`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:270`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:296`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:299`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:258`, `src/sim/world/bridge_orchestrator.rs:270`, `src/sim/world/bridge_orchestrator.rs:296`, `src/sim/world/bridge_orchestrator.rs:299`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x0047DD70`; existing `BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md` sections 3.1 and 3.5.
 
@@ -83,7 +83,7 @@ Rust: `spawn_bridge_debris` approximates the outer gate with `next_range_u32(20)
 
 Verdict: FAIL. Probability may be close, but literal RNG range, threshold behavior, and visible sub-cell positions are not equal.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1062`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1068`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1091`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1113`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:1062`, `src/sim/world/bridge_orchestrator.rs:1068`, `src/sim/world/bridge_orchestrator.rs:1091`, `src/sim/world/bridge_orchestrator.rs:1113`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x0047DD70`; existing `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md` sections 3.1 to 3.3.
 
@@ -95,7 +95,7 @@ Rust: `spawn_bridge_debris` implements a 50 percent gate, checks `voxel_max > 0`
 
 Verdict: FAIL because position and ordering are not equal, despite the broad shape being present.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1078`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1083`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1087`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:1078`, `src/sim/world/bridge_orchestrator.rs:1083`, `src/sim/world/bridge_orchestrator.rs:1087`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x0047DD70`.
 
@@ -107,7 +107,7 @@ Rust: `spawn_bridge_debris` creates one delayed bridge explosion `WorldEffect` w
 
 Verdict: UNCHECKED. The high-level range matches, but this trace did not prove Rust's milliseconds-to-frame scheduling is literally equal to gamemd's frame countdown, and the effect is still ordered after aggregation rather than per `BlowUpBridge`.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1103`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs:1121`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:592`.
+Rust evidence: `src/sim/world/bridge_orchestrator.rs:1103`, `src/sim/world/bridge_orchestrator.rs:1121`, `src/sim/components.rs:592`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x0047DD70` and `0x00421EA0`.
 
@@ -119,7 +119,7 @@ Rust: `WorldEffect` has no sound field, and `SimSoundEvent` has no bridge-collap
 
 Verdict: NOT-IMPLEMENTED.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:563`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:96`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs:181`.
+Rust evidence: `src/sim/components.rs:563`, `src/sim/world/mod.rs:96`, `src/sim/world/mod.rs:181`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x00421EA0` and `0x00424CE0`; `BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md` sections 3.4 and 4.
 
@@ -131,7 +131,7 @@ Rust: `WorldEffect::tick` returns early while `delay_ms > 0`; when delay reaches
 
 Verdict: UNCHECKED. This trace did not compute a literal frame-by-frame equality table between gamemd anim countdown and Rust `delay_ms` / `elapsed_ms` behavior.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs:592`.
+Rust evidence: `src/sim/components.rs:592`.
 
 gamemd evidence: fresh read-only Ghidra decompile of `0x00421EA0`.
 
@@ -161,12 +161,12 @@ Required visual/RNG parity direction:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_CHAIN_MECHANISM_GHIDRA_REPORT.md`
 - Fresh read-only Ghidra decompile: `gamemd.exe` `0x00575870`, `0x00575BA0`, `0x0047DD70`, `0x00421EA0`, `0x00424CE0`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/bridge_orchestrator.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
+- `src/sim/world/bridge_orchestrator.rs`
+- `src/sim/components.rs`
+- `src/sim/world/mod.rs`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`

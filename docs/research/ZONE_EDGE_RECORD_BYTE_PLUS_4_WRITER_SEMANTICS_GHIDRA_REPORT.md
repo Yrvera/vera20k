@@ -134,15 +134,15 @@ No Rust files were modified by this investigation.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace: "`edge.flags_low_byte = 1 if bridge-edge`", "`bridge edge penalty`", or equivalent wording that equates `edge+4 != 0` with bridge edges.
   - With: "`byte(edge+4) != 0` is a zone graph build-boundary tiebreak flag that adds `0.001` in `Zone_precheck`; verified bridge/tube and repaired-bridge edge writers set this byte to zero."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
   - Replace any wording that maps `0x007E3818` at this site to diagonal or bridge geometry directly.
   - With: "At the `Zone_precheck` site, `0x007E3818` is selected by `byte(edge+4) != 0`; the verified nonzero writer is the zone scanline build-boundary path, not direct diagonal or bridge geometry."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_HELPERS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_HELPERS_GHIDRA_REPORT.md`
   - Replace open item "Bridge-edge flag low-byte semantic ... likely requires identifying a second writer" with: "Resolved by `ZONE_EDGE_RECORD_BYTE_PLUS_4_WRITER_SEMANTICS_GHIDRA_REPORT.md`: nonzero comes from `ZoneMap__FloodFillScanline` block-boundary temp entries; bridge/tube helpers write zero."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ZONE_EDGE_FLAGS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ZONE_EDGE_FLAGS_GHIDRA_REPORT.md`
   - Keep its correction but strengthen wording from "known nonzero writer" to "verified nonzero writer for this slice."
 
 ## Negative Facts / Do Not Do

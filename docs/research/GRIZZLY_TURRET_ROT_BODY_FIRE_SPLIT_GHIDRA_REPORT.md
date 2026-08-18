@@ -127,7 +127,7 @@ Replacement wording for `units/allied/MTNK.md` lines 583-585:
 
 - Ghidra decompiled/read-only: `UnitClass::Constructor @ 0x007353C0`; `UnitClass::AI @ 0x007360C0`; `UnitClass::Fire_At_Target @ 0x00736DF0`; `UnitClass::Facing_Update @ 0x00736990`; `RateTimer__Set @ 0x004C9220`; `RateTimer__Current @ 0x004C93D0`; `CDTimerClass__Remaining @ 0x004C9480`; `FUN_004C9680`; `FUN_005F3DB0`; `TechnoClass::AI_Update @ 0x006F9E50`.
 - Assembly spot checks: `0x00735570..0x0073558D`, `0x007365E1..0x007365E8`, `0x00736F78..0x00736FAC`, `0x00736F61..0x00736F6D`, `0x00736BE2..0x00736C03`, `0x004C9680..0x004C9692`.
-- Existing report cross-check: `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
+- Existing report cross-check: `docs/research/UNITCLASS_TURRET_TRACKING_AND_FIRE_TIMING_GHIDRA_REPORT.md`.
+- INI: `ini/rulesmd.ini`; `ini/artmd.ini`.
 
 **Status:** COMPLETE for the scoped Grizzly turret/body/fire split.

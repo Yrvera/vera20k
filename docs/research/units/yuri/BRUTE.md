@@ -28,7 +28,7 @@ Ghidra trace of `CloseRange`/`GuardRange` flag paths.
 
 ## rulesmd.ini — `[BRUTE]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:5104`:
+Verbatim from `ini/rulesmd.ini:5104`:
 
 ```ini
 [BRUTE]
@@ -150,7 +150,7 @@ PixelSelectionBracketDelta=-8 ;gs higher number draws lower.  Pixel difference f
 
 ## artmd.ini — `[BRUTE]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:203`:
+`ini/artmd.ini:203`:
 
 ```ini
 [BRUTE] ; Brute

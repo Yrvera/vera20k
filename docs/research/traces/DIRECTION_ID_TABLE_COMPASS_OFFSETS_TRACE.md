@@ -3,7 +3,7 @@
 **Scenario:** Verify `gamemd.exe` canonical direction ids `0..7` map to compass names and cell deltas:
 `0=N (0,-1)`, `1=NE (1,-1)`, `2=E (1,0)`, `3=SE (1,1)`, `4=S (0,1)`, `5=SW (-1,1)`, `6=W (-1,0)`, `7=NW (-1,-1)`.
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/DIRECTION_ID_TABLE_COMPASS_OFFSETS_TRACE.md`
+**Report path:** `docs/research/traces/DIRECTION_ID_TABLE_COMPASS_OFFSETS_TRACE.md`
 
 ## Verdict
 
@@ -55,24 +55,24 @@ The `gamemd.exe` evidence is active in standard YR:
 
 ### Stage 3 - Rust `resolved_terrain::direction_offset`
 
-- Rust site: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:1153`.
+- Rust site: `src/map/resolved_terrain.rs:1153`.
 - Rust output for valid `0..7`: `(0,-1)`, `(1,-1)`, `(1,0)`, `(1,1)`, `(0,1)`, `(-1,1)`, `(-1,0)`, `(-1,-1)`.
 - gamemd output: Stage 1 table values.
 - Verdict: PASS for valid ids `0..7`. Literal pairs match.
 
 ### Stage 4 - Rust `bridge_facts::direction_offset`
 
-- Rust site: `C:/Users/enok/Documents/ra2-rust-game/src/map/bridge_facts.rs:274`.
+- Rust site: `src/map/bridge_facts.rs:274`.
 - Rust output for valid `0..7`: `(0,-1)`, `(1,-1)`, `(1,0)`, `(1,1)`, `(0,1)`, `(-1,1)`, `(-1,0)`, `(-1,-1)`.
 - gamemd output: Stage 1 table values.
 - Verdict: PASS for valid ids `0..7`. Literal pairs match.
 
 ### Stage 5 - Rust Named Direction Enum and Path-Smooth Deltas
 
-- Rust named enum site: `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:199`.
+- Rust named enum site: `src/sim/bridge_state/mod.rs:199`.
 - Rust enum discriminants: `N=0`, `NE=1`, `E=2`, `SE=3`, `S=4`, `SW=5`, `W=6`, `NW=7`.
-- Rust enum offsets: `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:212` returns the same eight `(dx,dy)` pairs.
-- Rust path-smooth table: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/path_smooth.rs:31` uses the same eight pairs, and `direction_between` returns the matching index for each adjacent delta at lines 44-52.
+- Rust enum offsets: `src/sim/bridge_state/mod.rs:212` returns the same eight `(dx,dy)` pairs.
+- Rust path-smooth table: `src/sim/pathfinding/path_smooth.rs:31` uses the same eight pairs, and `direction_between` returns the matching index for each adjacent delta at lines 44-52.
 - gamemd output: Stage 1 table values.
 - Verdict: PASS. Rust named ids and path-smoothing ids match the active YR table exactly.
 
@@ -102,12 +102,12 @@ None.
 
 - Read-only Ghidra decompile: `Foundation_direction_table_init`.
 - Read-only Ghidra decompile: `MapCoord_Step_By_Direction`.
-- Existing verified report: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
-- Existing verified report: `C:/Users/enok/Documents/ra2-rust-game-docs/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/map/bridge_facts.rs`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/path_smooth.rs`.
+- Existing verified report: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`.
+- Existing verified report: `docs/research/CANONICAL_DIRECTION_ENCODING_GHIDRA_REPORT.md`.
+- Rust scan: `src/map/resolved_terrain.rs`.
+- Rust scan: `src/map/bridge_facts.rs`.
+- Rust scan: `src/sim/bridge_state/mod.rs`.
+- Rust scan: `src/sim/pathfinding/path_smooth.rs`.
 
 ## Status
 

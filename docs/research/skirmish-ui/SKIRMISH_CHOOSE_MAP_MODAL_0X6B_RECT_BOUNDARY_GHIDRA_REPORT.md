@@ -121,9 +121,9 @@ Current Rust surface scan:
 
 ## Stale Docs / Replacement Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`: replace wording that presents resource control rects as final pixel rects with: "Resource `0x6B` control coordinates are dialog units. At the verified shell base units (`6/13`), listboxes `0x6EB` and `0x553` start from `(116,127,195,343)` and `(338,127,195,343)` before helper routing; right-panel controls then move through `ResizeShellChildControl_0060C0C0` helpers."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_0X6B_VISUAL_INTEGRATION_GHIDRA_REPORT.md`: replace "Center modal controls inside the shell coordinate system after fullscreen parent move" with: "After the fullscreen parent move, ordinary `0x6B` children preserve their DLU-derived base positions; only helper-routed right/bottom controls receive the common shell center offsets."
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs` tests are not docs, but the current expected modal rects are stale relative to this binary evidence.
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`: replace wording that presents resource control rects as final pixel rects with: "Resource `0x6B` control coordinates are dialog units. At the verified shell base units (`6/13`), listboxes `0x6EB` and `0x553` start from `(116,127,195,343)` and `(338,127,195,343)` before helper routing; right-panel controls then move through `ResizeShellChildControl_0060C0C0` helpers."
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_0X6B_VISUAL_INTEGRATION_GHIDRA_REPORT.md`: replace "Center modal controls inside the shell coordinate system after fullscreen parent move" with: "After the fullscreen parent move, ordinary `0x6B` children preserve their DLU-derived base positions; only helper-routed right/bottom controls receive the common shell center offsets."
+- `src/ui/skirmish_shell/layout.rs` tests are not docs, but the current expected modal rects are stale relative to this binary evidence.
 
 ## Sources
 

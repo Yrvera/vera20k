@@ -203,18 +203,18 @@ Read-only scan only; no Rust files were modified.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`: replace "How does `InfantryClass::Can_Enter_Cell` differ from `UnitClass::Can_Enter_Cell`? (Infantry may have different occupancy semantics via sub-cells.)" with "Infantry binds vtable `+0x1AC` to `0x0051BF90`, shares `CheckBridgeTraversal @ 0x004D9C60`, adds `path_height - cell.Level > 4 -> code 0`, uses layer-separated subcell bits, and omits UnitClass vehicle-only building row/contact/HasBib exceptions; exact terminal subcell-full ladder still needs live-decompile confirmation."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`: any wording that implies code 4 or UnitClass vehicle building exceptions are shared by Infantry should be replaced with "InfantryClass has a separate `0x0051BF90` object/building policy; do not infer infantry return-code production from UnitClass without Infantry decompile evidence."
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs` comments already warn that vehicle row/contact branches are not infantry rules; keep that boundary when adding any future classifier split.
+- `docs/research/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`: replace "How does `InfantryClass::Can_Enter_Cell` differ from `UnitClass::Can_Enter_Cell`? (Infantry may have different occupancy semantics via sub-cells.)" with "Infantry binds vtable `+0x1AC` to `0x0051BF90`, shares `CheckBridgeTraversal @ 0x004D9C60`, adds `path_height - cell.Level > 4 -> code 0`, uses layer-separated subcell bits, and omits UnitClass vehicle-only building row/contact/HasBib exceptions; exact terminal subcell-full ladder still needs live-decompile confirmation."
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md`: any wording that implies code 4 or UnitClass vehicle building exceptions are shared by Infantry should be replaced with "InfantryClass has a separate `0x0051BF90` object/building policy; do not infer infantry return-code production from UnitClass without Infantry decompile evidence."
+- `src/sim/pathfinding/cell_entry.rs` comments already warn that vehicle row/contact branches are not infantry rules; keep that boundary when adding any future classifier split.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/INFANTRY_BUILDING_OCCUPANT_PATHING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/INFANTRY_SUBCELL_POSITIONING.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RUNTIME_CAN_ENTER_CELL_NONCOVERED_CALLSITES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_BRIDGE_TUNNEL_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
+- `docs/research/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
+- `docs/research/INFANTRY_BUILDING_OCCUPANT_PATHING_GHIDRA_REPORT.md`
+- `docs/research/INFANTRY_SUBCELL_POSITIONING.md`
+- `docs/research/LOW_BRIDGE_TUBECLASS_GHIDRA_REPORT.md`
+- `docs/research/RUNTIME_CAN_ENTER_CELL_NONCOVERED_CALLSITES_GHIDRA_REPORT.md`
+- `docs/research/UNIT_CAN_ENTER_CELL_BRIDGE_TUNNEL_GHIDRA_REPORT.md`
+- `docs/research/ASTAR_ENTITY_COST_INTEGRATION_GHIDRA_REPORT.md`
+- Rust read-only scan: `src/sim/pathfinding/cell_entry.rs`, `src/sim/pathfinding/core.rs`, `src/sim/movement/movement_occupancy.rs`

@@ -191,7 +191,7 @@ Rust already has a bridge-layer-aware AoE primitive, but implemented SW launcher
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SUPERWEAPON_IMPACT_Z_BRIDGE_AOE_GHIDRA_REPORT.md` Section 7.2 should replace "When `Rules+0x17c8 == 0` (which is the default ...)" with: "Retail YR `rulesmd.ini` sets `MutateExplosion=yes`, so the standard default path is the `Apply_area_damage` branch. The manual 3x3 `CellClass+0xE4/+0xE8` branch is conditional on `MutateExplosion=no` and should not be treated as stock default behavior."
+- `docs/research/SUPERWEAPON_IMPACT_Z_BRIDGE_AOE_GHIDRA_REPORT.md` Section 7.2 should replace "When `Rules+0x17c8 == 0` (which is the default ...)" with: "Retail YR `rulesmd.ini` sets `MutateExplosion=yes`, so the standard default path is the `Apply_area_damage` branch. The manual 3x3 `CellClass+0xE4/+0xE8` branch is conditional on `MutateExplosion=no` and should not be treated as stock default behavior."
 - The same report's Section 8 should replace the broad "Coord-0 Pattern - Shared Global Impact Coord" conclusion with: "Several fastcall call sites are decompiler-ambiguous and display a zero first argument even though `Apply_area_damage` dereferences its coord argument. Use the caller's immediately constructed local coordinate and live call site as evidence for impact-Z; do not infer a global impact-coordinate system from the displayed zero argument alone."
 
 ## Sources
@@ -211,8 +211,8 @@ Rust already has a bridge-layer-aware AoE primitive, but implemented SW launcher
   - `0x006E0490` trigger multi-point helper
   - `0x00663030`, `0x006620F0`, `0x006622C0` touched only to exclude DiskLaser from this scoped standard SW handoff
 - Docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/SUPERWEAPON_IMPACT_Z_BRIDGE_AOE_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_AOE_LAYER_DAMAGE_GHIDRA_REPORT.md`
+  - `docs/research/SUPERWEAPON_IMPACT_Z_BRIDGE_AOE_GHIDRA_REPORT.md`
 - INI checked:
   - `ini/rulesmd.ini`
   - `ini/rules.ini`

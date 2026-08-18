@@ -204,10 +204,10 @@ Active in YR: Yes; `0x0042C852..0x0042C8F5`.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_COSTS_AND_ZONE_PRECHECK_GHIDRA_REPORT.md`
   - Replace: "`edge.flags_low_byte != 0` / bridge_edge / `1 if bridge-edge`"
   - With: "`byte(edge+4) != 0` is a zone-edge tiebreak flag that adds `0.001`; it is not proven to mean bridge edge, and repaired bridge-added edges are verified to write zero."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`
   - Replace any `Zone_precheck` wording that says edge cost is based on LandType or centroid/manhattan distance with: "edge cost is accumulated `ZoneBaseCost[neighbor reduced zone type] + optional slope + optional edge-flag 0.001`; the same reduced zone type indexes `ZonePassabilityMatrix`."
 
 ## Sources

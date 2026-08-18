@@ -965,6 +965,6 @@ directly. To match original cadence, the flow should be:
 `STT:SkirmishButtonBack/ChooseMap`.
 
 **Prior doc reports referenced:** none (no existing report on gadget framework
-in `docs/` or `C:\Users\enok\Documents\ra2-rust-game-docs\`). Adjacent reports:
+in `docs/` or `docs/research/`). Adjacent reports:
 `SIDEBAR_SYSTEM_GHIDRA_REPORT.md`, `SIDEBAR_STRIPS_TABS_CAMEOS_GHIDRA.md`,
 `MouseClass_research.md`.

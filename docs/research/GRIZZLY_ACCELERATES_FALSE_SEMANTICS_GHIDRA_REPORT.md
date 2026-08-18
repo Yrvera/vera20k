@@ -194,7 +194,7 @@ Current Rust implication: stock Grizzly is at risk of starting too slowly in Rus
 
 ## 16. Stale Docs / Follow-up Docs
 
-Replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md` open follow-up:
+Replacement wording for `docs/research/units/allied/MTNK.md` open follow-up:
 
 > `Accelerates=false` semantics are now binary-verified. `TechnoTypeClass::ReadINI @ 0x00715402` stores the bool at `TechnoType+0xDBD`; `TechnoTypeClass::Constructor @ 0x00710AF0` defaults it to true. `DriveLocomotionClass::Process_Drive_Track @ 0x004B0F20` reads `+0xDBD`: false calls `SetSpeedFraction(loco+0x50)` directly, skipping the ramp; true runs the acceleration/deceleration branch before `SetSpeedFraction`. For stock MTNK this means immediate current target speed fraction on the first drive tick, while preserving normal `Speed=7`, terrain/slope modifiers, and drive-track stepping.
 
@@ -207,8 +207,8 @@ Replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied
 - Ghidra: `DriveLocomotionClass::Process_Movement @ 0x004B2630`
 - Ghidra: `TechnoClass::SetSpeedFraction @ 0x004D3710`
 - Ghidra: `TechnoClass::GetTypeSpeed @ 0x0070EFE0`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/components.rs`
+- `ini/rulesmd.ini`
+- `src/rules/object_type.rs`
+- `src/sim/world/world_commands.rs`
+- `src/sim/movement/movement_tick.rs`
+- `src/sim/components.rs`

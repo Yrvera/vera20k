@@ -100,8 +100,8 @@ The modal visual blocker in Rust is not lack of state: Rust already has `ChooseM
 
 ## 9. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`: replace the Section 8 caution sentence beginning "`MnScrnLCustomizeBattle.shp/.PAL` sounds relevant by name..." with: "`MnScrnLCustomizeBattle.shp/.PAL` is not a base offline Skirmish setup `0x102` background, but it is verified for the Choose Map modal dialog `0x6B`: `0x0072D120` loads the SHP at exactly 800-wide screens and loads the PAL/convert state, and `0x0060CF00` binds `DAT_00B0FAB8`/`FUN_0072D210()` for dialog id `0x6B`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`: no replacement needed; this report agrees with its modal asset/control boundary and narrows only the Rust-facing integration delta.
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`: replace the Section 8 caution sentence beginning "`MnScrnLCustomizeBattle.shp/.PAL` sounds relevant by name..." with: "`MnScrnLCustomizeBattle.shp/.PAL` is not a base offline Skirmish setup `0x102` background, but it is verified for the Choose Map modal dialog `0x6B`: `0x0072D120` loads the SHP at exactly 800-wide screens and loads the PAL/convert state, and `0x0060CF00` binds `DAT_00B0FAB8`/`FUN_0072D210()` for dialog id `0x6B`."
+- `docs/research/skirmish-ui/SKIRMISH_CHOOSE_MAP_MODAL_VISUAL_CONTROL_LAYOUT_GHIDRA_REPORT.md`: no replacement needed; this report agrees with its modal asset/control boundary and narrows only the Rust-facing integration delta.
 
 ## Sources
 

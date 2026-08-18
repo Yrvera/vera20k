@@ -20,7 +20,7 @@ Verdict tally: PASS: 2 | FAIL: 0 | UNCHECKED: 3 | NOT-IMPLEMENTED: 0
 ## Sources Checked
 
 - `ini/rulesmd.ini:7351-7400`: stock `[CMIN]` has `Harvester=yes`, `Teleporter=yes`, `Speed=4`, `ROT=5`, `Locomotor={4A582747-9839-11d1-B709-00A024DDAFD1}`, and `MovementZone=Crusher`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`: state 0 is active in standard YR for both HARV and CMIN; it uses `TiberiumLongScan=48`, calls `FootClass::Search_For_Tiberium_And_Move @ 0x4DCFE0`, and has no separate chrono scan function.
+- `docs/research/MISSION_HARVEST_STATE0_SEEK_TIBERIUMSHORTSCAN_GHIDRA_REPORT.md`: state 0 is active in standard YR for both HARV and CMIN; it uses `TiberiumLongScan=48`, calls `FootClass::Search_For_Tiberium_And_Move @ 0x4DCFE0`, and has no separate chrono scan function.
 - Ghidra read-only spot checks:
   - `FootClass::Search_For_Tiberium_And_Move @ 0x004DCFE0`
   - `FootClass::Scan_For_Tiberium @ 0x004DD0A0`

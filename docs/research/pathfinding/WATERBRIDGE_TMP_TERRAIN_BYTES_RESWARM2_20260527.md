@@ -46,7 +46,7 @@ Interpretation:
 
 Method:
 
-- Read retail archives from `C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+- Read retail archives from `<ra2-install>/`.
 - Parsed MIX indexes read-only with an inline script following the repo's `src/assets/mix_archive.rs` format notes.
 - Parsed TMP headers using the repo's documented layout: `src/assets/tmp_decode.rs` reads `terrain_type` from per-tile header offset `+41`.
 

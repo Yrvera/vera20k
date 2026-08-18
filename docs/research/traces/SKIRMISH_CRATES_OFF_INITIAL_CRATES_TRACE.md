@@ -91,9 +91,9 @@ No direct FAIL was found for the exact Crates-off initial-random-crate first fra
 ## Sources
 
 - Read-only Ghidra decompile: `ScenarioClass__Post_Map_Init @ 0x00686890`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CRATE_SYSTEM_GHIDRA_REPORT.md`.
+- `docs/research/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`.
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_CONTROL_LABEL_MAPPING_GHIDRA_REPORT.md`.
+- `docs/research/CRATE_SYSTEM_GHIDRA_REPORT.md`.
 - Rust surfaces: `src/ui/skirmish_shell/state/launch.rs`, `src/skirmish_launch.rs`, `src/app_skirmish.rs`, `src/sim/game_options.rs`, `src/map/overlay_types.rs`.
 
 ## Verdict Tally

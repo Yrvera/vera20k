@@ -697,11 +697,11 @@ If the binary blocks but Rust passes (or vice versa): divergence is observable.
 - "Cliff", "Impass", "HighBridge", "LowBridge"
 
 **Docs referenced:**
-- C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md
-- C:/Users/enok/Documents/ra2-rust-game-docs/AUDIT_LOG.md (2026-05-11 entries)
-- C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md
-- C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_STRUCT_GHIDRA_REPORT.md
-- C:/Users/enok/Documents/ra2-rust-game-docs/LAT_GROUPS_AND_SLOPE_FIXUP_GHIDRA_REPORT.md
+- docs/research/BRIDGE_SYSTEM.md
+- docs/research/AUDIT_LOG.md (2026-05-11 entries)
+- docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md
+- docs/research/CELLCLASS_STRUCT_GHIDRA_REPORT.md
+- docs/research/LAT_GROUPS_AND_SLOPE_FIXUP_GHIDRA_REPORT.md
 - docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md (parent plan)
 - docs/gap-scans/2026-05-11-disparity-scan-bridge-pathfinding.md (origin of G3/G4/G6)
 - docs/plans/2026-05-12-bridge-mechanics-deferred-investigation-plan.md (this investigation's scope)

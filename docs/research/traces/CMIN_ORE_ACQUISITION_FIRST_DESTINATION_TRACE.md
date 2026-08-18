@@ -16,9 +16,9 @@ The branch-level observable result therefore matches for the warp-vs-drive quest
 
 ## Sources Checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/CHRONO_MINER_SYSTEM_OVERVIEW.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/CHRONO_MINER_ORE_ACQUISITION_WARP_VS_DRIVE_SWARM_20260520_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
+- `docs/research/miner/CHRONO_MINER_SYSTEM_OVERVIEW.md`
+- `docs/research/miner/traces/CHRONO_MINER_ORE_ACQUISITION_WARP_VS_DRIVE_SWARM_20260520_TRACE.md`
+- `docs/research/ORE_OVERLAY_SYSTEM_GHIDRA_REPORT.md`
 - `ini/rulesmd.ini:7351-7400`
 - `src/sim/miner/miner_system.rs:327-505`
 - `src/sim/movement/movement_commands.rs:63-150`

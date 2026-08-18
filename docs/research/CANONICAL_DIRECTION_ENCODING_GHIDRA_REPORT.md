@@ -250,6 +250,6 @@ Tick-cycle placement was not exhaustively traced because this slice is a shared 
 - Ghidra: `BuildingClass__ExtendWallInDirection @ 0x00452DC0`
 - Ghidra: `BuildingClass__RecalculateWallConnections @ 0x004533A0`
 - Ghidra: `CellClass__PostDestructionWallCleanup @ 0x00480630`
-- Existing report: `C:/Users/enok/Documents/ra2-rust-game-docs/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
+- Existing report: `docs/research/GDIRECTIONOFFSETS_0089F688_BRIDGE_MARKER_PATH_GHIDRA_REPORT.md`
 - Rust scan: `src/sim/bridge_state/mod.rs`, `src/sim/bridge_specs.rs`, `src/sim/pathfinding/core.rs`, `src/sim/pathfinding/path_smooth.rs`, `src/map/resolved_terrain.rs`, `src/map/tubes.rs`, `src/app_commands.rs`, `src/sim/ore_growth.rs`
 - INI scan: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`

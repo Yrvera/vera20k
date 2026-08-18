@@ -159,7 +159,7 @@ No Rust files were modified in this investigation.
 
 ## Sources
 
-- Primary prior Ghidra report read: `C:/Users/enok/Documents/ra2-rust-game-docs/CELLCLASS_RECALCZONE_TYPE_00483C80_GHIDRA_REPORT.md`.
+- Primary prior Ghidra report read: `docs/research/CELLCLASS_RECALCZONE_TYPE_00483C80_GHIDRA_REPORT.md`.
 - Adjacent binary-backed reports read: `FULL_PASSABILITY_RECALC_0047D2B0_GHIDRA_REPORT.md`, `ZONE_PASSABILITY_MATRIX_READERS_GHIDRA_REPORT.md`, `SPEEDTYPE_LANDTYPE_TABLE_GHIDRA_REPORT.md`, `MOVEMENT_CLASSIFIERS_REFERENCE.md`, `CELLCLASS_ZONES_SPEED_BRIDGES.md`.
 - Ghidra addresses cited from those reports: `0x00483C80`, `0x0047D2B0`, `0x0056C510`, `0x005840C0`, `0x0042C290`, `0x005F940A`, `0x005FE7A4`, `0x005FE7D4`, `0x005FE9DE`, `0x005FE9FC`, `0x0071DFCA`, `0x0071DFD4`.
 - INI files searched: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`.

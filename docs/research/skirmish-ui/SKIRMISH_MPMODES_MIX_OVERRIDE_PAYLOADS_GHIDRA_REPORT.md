@@ -95,7 +95,7 @@ Selection commit `0x005E7160` reads mode control `0x6EB` item data, temporarily 
 | Unholy Alliance | 4 | `Unholy` | `MPUnholyMD.ini` | `standard` | false | Yes |
 | Cooperative | 3 | `Cooperative` | `MPCoopMD.ini` | `cooperative` | false | Yes |
 
-Evidence: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`; binary row reader `0x005D7590`. `ManBattle` modes also exist in stock data, but this report only uses them as context and does not claim their gameplay-specific payload behavior. `Siege` is registered by the binary but has no stock offline row. Active in YR: No for stock offline Siege selection.
+Evidence: `ini/mpmodesmd.ini`; binary row reader `0x005D7590`. `ManBattle` modes also exist in stock data, but this report only uses them as context and does not claim their gameplay-specific payload behavior. `Siege` is registered by the binary but has no stock offline row. Active in YR: No for stock offline Siege selection.
 
 ### 4.2 Common-object fields read from `MP*.ini`
 
@@ -239,6 +239,6 @@ Adversarial corner cases answered:
 
 - Ghidra read-only decompile/recheck: `0x005D5B60`, `0x005D7590`, `0x005D7CE0`, `0x005D6130`, `0x005E7160`, `0x00671EA0`, `0x0069AE10`, `0x004E4170`, `0x005D6310`.
 - Ghidra assembly/xrefs: defaults and reads `0x005D5BEA..0x005D5D11`; team helpers `0x005D5DC0..0x005D5E08`; file load path `0x005D5C2D..0x005D5C57`; category registration `0x005D7D3C..0x005D7E36`; selected-mode commit `0x005E71E5..0x005E7382`; string xrefs `MustAlly` `0x008308A0`, `AlliesAllowed` `0x008308AC`, `WonlineClanTournamentAllowed` `0x008308BC`, `WonlineTournamentAllowed` `0x008308DC`, `AllyChangeAllowed` `0x0083CFB4`.
-- Retail/INI data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`; text scan of `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2md.mix` lines around `110946..111641`.
+- Retail/INI data checked: `ini/mpmodesmd.ini`; `ini/rulesmd.ini`; `ini/rules.ini`; text scan of `<ra2-install>/ra2md.mix` lines around `110946..111641`.
 - Prior reports used for gap targeting: `SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_OVERRIDE_PAYLOAD_VALUES_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_SESSION_PACKING_BROAD_RECHECK_GHIDRA_REPORT.md`.
-- Current Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_modes.rs`, `src/skirmish_scenarios.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/assets/asset_manager.rs`.
+- Current Rust scan: `src/skirmish_modes.rs`, `src/skirmish_scenarios.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`, `src/assets/asset_manager.rs`.

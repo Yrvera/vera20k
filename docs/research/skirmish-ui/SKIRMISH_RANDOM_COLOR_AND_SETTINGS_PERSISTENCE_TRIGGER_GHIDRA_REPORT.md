@@ -355,7 +355,7 @@ Slot02=1,-2,-2
 Slot07=1,-2,-2
 ```
 
-Evidence: `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2MD.INI:36`.
+Evidence: `<ra2-install>/RA2MD.INI:36`.
 
 ## 8. Adversarial and Edge-Case Ledger
 
@@ -521,5 +521,5 @@ The following older claims must not be used as implementation authority without 
 - `src/app_skirmish.rs`
 - `src/app.rs`
 - `src/util/ini_writer.rs`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2MD.INI`
-- `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2md.mix` (`CoopCampMD.ini` plaintext payload)
+- `<ra2-install>/RA2MD.INI`
+- `<ra2-install>/ra2md.mix` (`CoopCampMD.ini` plaintext payload)

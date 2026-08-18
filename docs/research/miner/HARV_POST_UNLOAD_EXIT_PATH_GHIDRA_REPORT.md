@@ -192,7 +192,7 @@ Observed delta: current Rust broadly matches the verified stock zero-link handof
 ## 8. Open Questions - Final State Of The Investigation Log
 
 - `[RESOLVED] OQ-01 - What mode applies? -> exhaustive-slice for stock healthy HARV state-3-empty through state-4 exit; runtime object scheduler questions are explicitly outside the claimed slice.` (evidence: user scope; primary function boundary `0x0073D630`)
-- `[RESOLVED] OQ-02 - Does the output report already exist? -> No.` (evidence: `Test-Path C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_POST_UNLOAD_EXIT_PATH_GHIDRA_REPORT.md`)
+- `[RESOLVED] OQ-02 - Does the output report already exist? -> No.` (evidence: `Test-Path docs/research/miner/HARV_POST_UNLOAD_EXIT_PATH_GHIDRA_REPORT.md`)
 - `[RESOLVED] OQ-03 - Is the normal stock path zero-link? -> Yes; `unit+0x2E4 == 0` enters the stock FSM, nonzero calls release.` (evidence: `0x0073D63B`, `0x0073D641`, `0x0073D66D`)
 - `[RESOLVED] OQ-04 - Is `ReleaseDockedHarvester` normal stock cargo-empty exit? -> No; only the nonzero `+0x2E4` branch calls it.` (evidence: `0x0073D66D`; `0x004595C0` xrefs)
 - `[RESOLVED] OQ-05 - Is `UndockUnit` normal healthy exit? -> No; callers are damage, sell, and temporal update.` (evidence: callers of `0x004593A0`)
@@ -265,7 +265,7 @@ Observed delta: current Rust broadly matches the verified stock zero-link handof
 - Ghidra decompiled/read-only: `UnitClass__Mission_Deploy_Building @ 0x0073D630`, `BuildingClass__ReleaseDockedHarvester @ 0x004595C0`, `BuildingClass__UndockUnit @ 0x004593A0`, `PathType__Has_Valid_Steps @ 0x0065AE30`, `RadioClass__Transmit_Radio_ToFirst @ 0x0065ACB0`, `RadioClass__Transmit_Radio_Impl @ 0x0065A970`, `RadioClass__Receive_Radio @ 0x0065A820`, `TechnoClass__Receive_Radio @ 0x006F4AB0`, `BuildingClass__Receive_Radio @ 0x0043C2D0`, `UnitClass__Mission_Harvest @ 0x0073E5E0`, `MissionClass__GetMissionTimerEntry @ 0x005B3A00`.
 - Ghidra caller/callee/xref checks: `BuildingClass__ReleaseDockedHarvester` caller only from `UnitClass__Mission_Deploy_Building`; `BuildingClass__UndockUnit` callers from `BuildingClass__ReceiveDamage`, `BuildingClass__Sell`, `TemporalClass__Update`; `UnitClass__Mission_Deploy_Building` callees include release helper, storage, radio contact helper, and timer functions.
 - Prior reports read: `STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`, `TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_TIMING_GHIDRA_REPORT.md`, `RELEASEDOCKEDHARVESTER_0x4595C0_GHIDRA_REPORT.md`, `BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
+- INI checked: `ini/rulesmd.ini`, `rules.ini`, `artmd.ini`, `art.ini`.
 - Rust scanned: `src/sim/miner/mod.rs`, `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/miner_tests.rs`.
 
 **Status:** COMPLETE for the bounded healthy stock HARV post-unload exit path; runtime same-frame multi-miner ordering remains a separate debugger-trace question.

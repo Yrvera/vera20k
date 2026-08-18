@@ -220,7 +220,7 @@ Existing Rust `NavigationState.nav_queue` and `MovementTarget` must not be treat
 
 - Ghidra read-only decompile: `FUN_007639A0`, `FUN_00763980`, `FUN_00763A50`, `FUN_00763BA0`, `FUN_00763BE0`, `FUN_00502290`, `FUN_005023B0`, `FUN_00502460`, `FUN_005090F0`, `FUN_00637E00`, `FUN_00638120`, `FUN_00633FA0`, `FUN_00639A50`, `FUN_006DAD60`.
 - Ghidra read-only disassembly requested: `0x00502160..0x00502285`, `0x007639A0..0x00763A4E`.
-- Local retail binary static scan: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, CALL-rel32 targets `0x00502160`, `0x007639A0`, `0x00763A50`, `0x00763980`, `0x00763BA0`, `0x005023B0`, `0x00502460`, `0x00638120`, `0x00633FA0`, `0x00639A50`.
+- Local retail binary static scan: `<ra2-install>/gamemd.exe`, CALL-rel32 targets `0x00502160`, `0x007639A0`, `0x00763A50`, `0x00763980`, `0x00763BA0`, `0x005023B0`, `0x00502460`, `0x00638120`, `0x00633FA0`, `0x00639A50`.
 - Existing docs: `docs/research/TRUE_PLANNING_MODE_POINT_ADD_WRITERS_RESWARM_20260528.md`, `docs/research/PLANNING_QUEUED_WAYPOINT_LINES_AND_FLAGS_GHIDRA_REPORT.md`, `docs/research/DRIVE_QUEUED_CLICK_EVENT_PLANNING_MODE_OUTCOME_RESWARM_20260528.md`, `docs/research/PLACEMENT_RALLY_WAYPOINT_VISUALS_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini:424`, `:630`, `:631`, `:632`, `:670`; base `ini/rules.ini:336`, `:476`, `:477`, `:478`, `:514`.
 - Rust scan: `src/app_context_order.rs`, `src/app_target_lines.rs`, `src/sim/components.rs`, `src/sim/movement/movement_commands.rs`, `src/sim/movement/movement_tick.rs`, `src/sim/movement/navcom.rs`.

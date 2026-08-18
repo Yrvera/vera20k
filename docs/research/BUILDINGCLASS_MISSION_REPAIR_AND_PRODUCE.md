@@ -538,7 +538,7 @@ single `gate_state` field holding these 5 values.
 
 ## 12. Current Rust Implementation Status
 
-From memory ([project_garrison_system.md](../../../../.claude/projects/c--Users-enok-Documents-ra2-rust-game/memory/project_garrison_system.md)): garrison RE was done but combat
+From memory (local Claude memory: project_garrison_system.md): garrison RE was done but combat
 not implemented; similar pattern likely applies here — fields may be parsed
 but state machines not wired.
 

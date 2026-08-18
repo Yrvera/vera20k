@@ -96,9 +96,9 @@ No INI key controls the text color source for these button labels in this slice.
 
 Current Rust is mismatched for button label color:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:67` defines `SHELL_BUTTON_TEXT_RGB_00000C05 = [5,12,0]/255`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/text.rs:151` currently uses that dark constant in `push_button_label_draw`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1326` has a test asserting button labels should not use generic yellow; this assertion conflicts with the binary evidence for PCX Skirmish buttons.
+- `src/app_skirmish_shell_render.rs:67` defines `SHELL_BUTTON_TEXT_RGB_00000C05 = [5,12,0]/255`.
+- `src/app_skirmish_shell_render/text.rs:151` currently uses that dark constant in `push_button_label_draw`.
+- `src/app_skirmish_shell_render.rs:1326` has a test asserting button labels should not use generic yellow; this assertion conflicts with the binary evidence for PCX Skirmish buttons.
 
 Rust should use the yellow shell source color for enabled/pressed PCX button labels. Disabled PCX button rendering should model the binary as released art + yellow text followed by a whole-button dim/blend, not as a separate dark text color argument.
 
@@ -154,9 +154,9 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the button-current-status wording that says button labels use `SHELL_BUTTON_TEXT_RGB_00000C05` with: "For standard Skirmish PCX owner-draw buttons (`Start`, `Choose/Customize`, `Back`), enabled and pressed labels use the normal shell text source `DAT_00AC18A4 = 0x0000FFFF` / yellow. The dark `0x00000C05` source belongs to other control/value paths, not these enabled PCX button labels."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_RECT_COLOR_RECHECK_GHIDRA_REPORT.md`: replace "button and trackbar value text" with: "`0x00000C05` is verified for trackbar value text and other dark value paths; do not generalize it to standard Skirmish PCX button labels."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md`: replace "Button text in `0x00612B70` passes color `0x00000C05`" with: "The standard PCX Skirmish button text call in `OwnerDraw_Button_00612B70` passes `DAT_00AC18A4 = 0x0000FFFF`; a separate non-PCX/other-control dark-color path must not be conflated with it."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the button-current-status wording that says button labels use `SHELL_BUTTON_TEXT_RGB_00000C05` with: "For standard Skirmish PCX owner-draw buttons (`Start`, `Choose/Customize`, `Back`), enabled and pressed labels use the normal shell text source `DAT_00AC18A4 = 0x0000FFFF` / yellow. The dark `0x00000C05` source belongs to other control/value paths, not these enabled PCX button labels."
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_RECT_COLOR_RECHECK_GHIDRA_REPORT.md`: replace "button and trackbar value text" with: "`0x00000C05` is verified for trackbar value text and other dark value paths; do not generalize it to standard Skirmish PCX button labels."
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_LIVE_GHIDRA_REPORT.md`: replace "Button text in `0x00612B70` passes color `0x00000C05`" with: "The standard PCX Skirmish button text call in `OwnerDraw_Button_00612B70` passes `DAT_00AC18A4 = 0x0000FFFF`; a separate non-PCX/other-control dark-color path must not be conflated with it."
 
 ## Sources
 

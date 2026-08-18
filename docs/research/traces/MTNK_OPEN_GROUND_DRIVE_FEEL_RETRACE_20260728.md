@@ -24,7 +24,7 @@ literal arrival frame, and mission-byte timeline remain UNCHECKED.
   `DRIVE_RAWTRACK_METADATA_INITIALIZER_RECONCILIATION_GHIDRA_REPORT.md`, and the
   2026-07-20 AMCV/MTNK retraces.
 - The active Ghidra program is the retail 32-bit PE
-  `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, SHA-256
+  `<ra2-install>/gamemd.exe`, SHA-256
   `1CDD1180E49024FBDA8AD568CAAC2E86E856063FF67AB38F62B7D2C7BB84298C`
   (verified via `get_current_program_info(program="gamemd.exe")` and local
   `Get-FileHash`).

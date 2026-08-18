@@ -121,7 +121,7 @@ Current Rust still contains a drift against the audited `0x16` semantics: `Refin
 
 ## Stale Docs / Follow-up Docs
 
-Exact replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DOCK_ARRIVAL_PIVOT_SEQUENCE_GHIDRA_REPORT.md`:
+Exact replacement wording for `docs/research/miner/DOCK_ARRIVAL_PIVOT_SEQUENCE_GHIDRA_REPORT.md`:
 
 > This report is superseded for stock `CMIN/HARV -> GAREFN/NAREFN` dock admission and unload completion by `STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md` and `DOCK_ARRIVAL_PIVOT_SEQUENCE_DOC_CONFLICT_AUDIT_GHIDRA_REPORT.md`. `0x00739EC0` is `UnitClass__PerCellProcess` / a cell-entry hook, not the mission-7 dispatch handler; mission 7 dispatch is `FootClass__Mission_Enter @ 0x004D9290`. Unit radio `0x16` has no `GetDockCoord`, no `Set_Destination`, and no location write; first ordinary `0x16` may only sync `+0x388`/locomotor `+0x4C(0x4000)` and return, while a later/already-synced call may send `0x15` under stopped-building-destination/contact-entered/mission-7 gates. Normal stock unload completion is zero-link `Mission_Deploy_Building` state 4 and does not call `ReleaseDockedHarvester` or `Force_Track(0x47)`; those helpers remain conditional reciprocal-link/interrupt paths only.
 
@@ -134,8 +134,8 @@ Exact replacement wording for `C:/Users/enok/Documents/ra2-rust-game-docs/miner/
 - `UnitClass__Mission_Deploy_Building @ 0x0073D630`, assembly ranges `0x0073D630..0x0073D690`, `0x0073DEE0..0x0073E28F`.
 - `BuildingClass__ReleaseDockedHarvester @ 0x004595C0`, body `0x004595C0..0x00459839`.
 - `BuildingClass__Receive_Radio @ 0x0043C2D0`, body `0x0043C2D0..0x0043CE5E`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/DOCK_ARRIVAL_PIVOT_SEQUENCE_GHIDRA_REPORT.md`.
+- `docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
+- `docs/research/miner/DOCK_ARRIVAL_PIVOT_SEQUENCE_GHIDRA_REPORT.md`.
 - `ini/rulesmd.ini`, `ini/artmd.ini`.
 
 **Status:** COMPLETE

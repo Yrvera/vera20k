@@ -102,17 +102,17 @@ PASS: 6 | FAIL: 0 | UNCHECKED: 3 | NOT-IMPLEMENTED: 0
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:432`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:626`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:1045`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs:124`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs:4677`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs:4707`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs:4740`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/miner/HARV_FULL_CARGO_MISSING_REFINERY_FALLBACK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/miner/HARV_DESTROYED_REFINERY_UNLOAD_ABORT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/miner/MISSING_DESTROYED_REFINERY_MID_UNLOAD_ORDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:7351`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:8215`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:11722`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:12515`
+- `src/sim/miner/miner_dock_sequence.rs:432`
+- `src/sim/miner/miner_dock_sequence.rs:626`
+- `src/sim/miner/miner_dock_sequence.rs:1045`
+- `src/sim/miner/miner_dock.rs:124`
+- `src/sim/miner/miner_tests.rs:4677`
+- `src/sim/miner/miner_tests.rs:4707`
+- `src/sim/miner/miner_tests.rs:4740`
+- `docs/research/miner/HARV_FULL_CARGO_MISSING_REFINERY_FALLBACK_GHIDRA_REPORT.md`
+- `docs/research/miner/HARV_DESTROYED_REFINERY_UNLOAD_ABORT_GHIDRA_REPORT.md`
+- `docs/research/miner/MISSING_DESTROYED_REFINERY_MID_UNLOAD_ORDERING_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini:7351`
+- `ini/rulesmd.ini:8215`
+- `ini/rulesmd.ini:11722`
+- `ini/rulesmd.ini:12515`

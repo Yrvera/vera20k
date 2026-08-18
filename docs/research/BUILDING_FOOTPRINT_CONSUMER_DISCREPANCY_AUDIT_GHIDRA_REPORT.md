@@ -79,7 +79,7 @@ The broad foundation-dimension surface is larger, but most of it is not contamin
 
 ## Sources
 
-- Prior context: `C:/Users/enok/Documents/ra2-rust-game-docs/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`
+- Prior context: `docs/research/BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`
 - Ghidra decompiled: `0x00441F60`, `0x005683C0`, `0x005687F0`, `0x00519630`, `0x00456580`, `0x006565A0`
 - Related docs: `RADAR_MINIMAP_RENDERING.md`, `RADAR_SYSTEM_COMPREHENSIVE.md`, `c4-on-bridge-repair-hut.md`
 - INI checked: `ini/art.ini`, `ini/artmd.ini`, including `[GAREFN]`, `[NAREFN]`, `CanHideThings`, `AddOccupy`, `RemoveOccupy`

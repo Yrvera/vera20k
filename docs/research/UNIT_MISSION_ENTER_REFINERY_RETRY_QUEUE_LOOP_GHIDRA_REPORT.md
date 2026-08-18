@@ -122,13 +122,13 @@ Rust abort paths at `src/sim/miner/miner_dock_sequence.rs:471-497` clear `reserv
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`: replace the stale sentence "Mission_Enter itself does not return a Random-jitter delay" with "The old `0x00739EC0` per-cell choreography function does not return the Mission Enter delay; the actual `FootClass__Mission_Enter @ 0x004D9290` epilogue returns `ftol(MissionTimerEntry[mission]+0x10 * 900.0) + RandomRanged(0,2)`."
+- `docs/research/miner/MISSION_ENTER_REFINERY_DOCK_GHIDRA_REPORT.md`: replace the stale sentence "Mission_Enter itself does not return a Random-jitter delay" with "The old `0x00739EC0` per-cell choreography function does not return the Mission Enter delay; the actual `FootClass__Mission_Enter @ 0x004D9290` epilogue returns `ftol(MissionTimerEntry[mission]+0x10 * 900.0) + RandomRanged(0,2)`."
 - Any doc saying queued refinery behavior belongs to `TechnoClass::Set_Destination` should be narrowed to: "`Set_Destination_Internal @ 0x004D94B0` installs NavCom and resets movement retry after radio `0x12`; it is not the owner of refinery contact admission or `CAN_DOCK` retry."
 
 ## Sources
 
 - Ghidra read-only decompile/assembly: `FootClass__Mission_Enter @ 0x004D9290`.
 - Ghidra read-only decompile: `FootClass__Receive_Radio @ 0x004D8FB0`; `FootClass__Set_Destination_Internal @ 0x004D94B0`; `BuildingClass::Receive_Radio @ 0x0043C2D0`; `RadioClass contact accessor @ 0x0065AD30`; `Filter_AbstractType_InMap @ 0x0040DD70`; `MissionClass::Mission_Dispatch @ 0x005B3060`; `MissionClass::GetMissionTimerEntry @ 0x005B3A00`; helper `0x0070D8F0`; IPiggyback QI helper `0x0045AF20`.
-- Existing docs: `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_RECEIVE_RADIO_0X12_MOVE_FIELDS_NAVCOM_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_RADIO_DOCKING_ACCEPTANCE_QUEUE_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`.
+- Existing docs: `docs/research/miner/RECEIVE_RADIO_CASE_0x0E_CAN_DOCK_GHIDRA_REPORT.md`; `docs/research/FOOTCLASS_RECEIVE_RADIO_0X12_MOVE_FIELDS_NAVCOM_GHIDRA_REPORT.md`; `docs/research/FOOTCLASS_RECEIVE_RADIO_FULL_SWITCH_GHIDRA_REPORT.md`; `docs/research/miner/REFINERY_RADIO_DOCKING_ACCEPTANCE_QUEUE_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini`; `ini/artmd.ini`.
+- Rust scan: `src/sim/miner/miner_dock.rs`; `src/sim/miner/miner_dock_sequence.rs`; `src/sim/miner/mod.rs`; `src/sim/miner/miner_tests.rs`.

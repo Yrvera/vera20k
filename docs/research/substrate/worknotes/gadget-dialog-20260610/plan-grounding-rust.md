@@ -2,7 +2,7 @@
 
 Lane: grounding for the A0/A1/A4/A5 + D-B3 + R1 implementation plan.
 ALL claims below verified **live this session** against the WORKTREE checkout
-`C:/Users/enok/Documents/ra2-uigadget-worktree` (branch `ui-gadget-substrate`,
+`<local>/Documents/ra2-uigadget-worktree` (branch `ui-gadget-substrate`,
 HEAD `7b79a186`, clean `git status`). File:line cites are worktree lines.
 No Ghidra used (by assignment). Companion doc: `rust-current.md` (same dir).
 

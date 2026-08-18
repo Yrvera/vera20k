@@ -381,10 +381,10 @@ Concrete Rust test-name proposals:
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_HARVEST_STATE2_TOOFAR_PATHFIND_BRANCH_GHIDRA_REPORT.md`: replace "Find_Nearby_Passable_Cell search radius = 2 cells" with "the state-2 fallback passes `speed_type=2`; effective search limit comes from the `MapClass` receiver `+0xF4 + +0xF8`, capped at 32 rings. The seed is still `refinery_anchor + QueueingCell`."
+- `docs/research/miner/MISSION_HARVEST_STATE2_TOOFAR_PATHFIND_BRANCH_GHIDRA_REPORT.md`: replace "Find_Nearby_Passable_Cell search radius = 2 cells" with "the state-2 fallback passes `speed_type=2`; effective search limit comes from the `MapClass` receiver `+0xF4 + +0xF8`, capped at 32 rings. The seed is still `refinery_anchor + QueueingCell`."
 - Same file: replace "`param_1 (this) = harvester unit instance`" for the fallback helper call with "`ECX/receiver = MapClass singleton `0x0087F7E8`; the harvester is not the helper receiver in this callsite.`"
 - Same file: replace "require occupancy-clear" for the scoped fallback call with "the final occupancy-rect check argument is `0`; this call does not invoke `CellRect__CheckOccupancy`, though `CheckPassability` still filters passability."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/WAR_MINER_LOCOMOTION_INTEGRATION_GHIDRA_REPORT.md`: replace "Find_Nearby_Passable_Cell(target_cell, ...)" if interpreted as a small local radius with "fallback seeds `refinery_anchor + QueueingCell`, calls MapClass receiver `Find_Nearby_Passable_Cell` with `speed_type=2`, width/height `1`, target `{0,0}`, and binary helper cap (normally 32 rings)."
+- `docs/research/miner/WAR_MINER_LOCOMOTION_INTEGRATION_GHIDRA_REPORT.md`: replace "Find_Nearby_Passable_Cell(target_cell, ...)" if interpreted as a small local radius with "fallback seeds `refinery_anchor + QueueingCell`, calls MapClass receiver `Find_Nearby_Passable_Cell` with `speed_type=2`, width/height `1`, target `{0,0}`, and binary helper cap (normally 32 rings)."
 - Any in-repo fidelity note saying "radius=2 around QueueingCell" should become "QueueingCell seed; literal `2` is SpeedType/passability, not radius."
 
 ## Sources

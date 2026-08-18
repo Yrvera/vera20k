@@ -6,7 +6,7 @@ Slot: 2
 
 Target: exact active-YR `gamemd.exe` A* neighbor expansion legality for water/pier cells and how `MovementZone`, reduced `ZoneType`, `SpeedType`, and cost tables participate.
 
-Required output path: `C:/Users/enok/Documents/ra2-rust-game/docs/research/pathfinding/ASTAR_WATER_PIER_NEIGHBOR_LEGALITY_RESWARM_20260527.md`
+Required output path: `docs/research/pathfinding/ASTAR_WATER_PIER_NEIGHBOR_LEGALITY_RESWARM_20260527.md`
 
 ## Scope And Evidence Status
 

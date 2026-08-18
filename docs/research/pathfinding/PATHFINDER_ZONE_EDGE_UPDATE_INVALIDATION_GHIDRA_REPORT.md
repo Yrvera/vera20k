@@ -145,10 +145,10 @@ Current Rust has a full `ZoneGrid` and a batch-oriented `zone_incremental::try_i
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
+- `docs/research/TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`
   - Replace: "`PathfinderClass::UpdateHierarchicalEdges` -- `0x0042ccd0`: Called after zone recomputation"
   - With: "`PathfinderClass::UpdateHierarchicalEdges` -- `0x0042ccd0`: Called by `AStar_pathfind_search` after a hierarchical-assisted cell A* failure; appends PathfinderClass-local per-level edge exclusions for retry. It is not a MapClass zone recomputation hook."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`
   - Replace: "the retry loop calls `UpdateHierarchicalEdges` and rebuilds the zone graph between attempts"
   - With: "the retry loop calls `UpdateHierarchicalEdges`, which appends per-search zone-edge exclusions and then resets PathfinderClass search state; it does not rebuild the global zone graph."
 
@@ -156,6 +156,6 @@ Current Rust has a full `ZoneGrid` and a batch-oriented `zone_incremental::try_i
 
 - Ghidra decompile: `0x0042CCD0`, `0x0042CF80`, `0x0042C900`, `0x0042C290`, `0x005840C0`, `0x0056D3F0`, `0x005657A0`, `0x0042D830`, `0x0042DD60`.
 - Ghidra assembly contexts: `0x0042CC79`, `0x0042CCD0`, `0x0042CD80`, `0x0042CDAC`, `0x0042CF8D`, `0x0042D05D`, `0x0042D13C`.
-- Local PE direct-call scan of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `0x0042CCD0` direct caller `0x0042CC79`; `0x0042CF80` direct caller `0x0042CDAC`.
+- Local PE direct-call scan of `<ra2-install>/gamemd.exe`: `0x0042CCD0` direct caller `0x0042CC79`; `0x0042CF80` direct caller `0x0042CDAC`.
 - Prior docs: `ZONE_INCREMENTAL_DIVERGENCE_GHIDRA_REPORT.md`, `TIMER_CLASSES_AND_ZONE_MAP_GHIDRA_REPORT.md`, `PATHFINDING_ASTAR_GHIDRA_REPORT.md`, `BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`.
 - Rust read-only scan: `src/sim/pathfinding/zone_incremental.rs`, `src/sim/pathfinding/zone_map.rs`, `src/sim/pathfinding/zone_search.rs`, `src/app_sim_tick.rs`.

@@ -135,10 +135,10 @@ Current Rust scan found:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Refinery pad branch (`BuildingTypeClass+0x16bc != 0`)" with "Weeder branch (`BuildingTypeClass+0x16BC != 0`, parsed from `Weeder=`): returns building NW `+(2,1)`; stock `GAREFN/NAREFN` do not set this flag."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "For standard YR `GAREFN/NAREFN`, branch 1 is not active; a `GetDockCoord` query reaches the `Refinery=yes` `+0x16BB` branch. The stock accepted miner `CAN_DOCK` cell is computed separately in `BuildingClass::Receive_Radio(0x0E)` as NW `+(3,1)`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_parity.md`: replace row 35's "FIXED" claim with "DRIFT / STALE EVIDENCE: the `NW+(2,1)` change matches the `Weeder=yes` GetDockCoord branch, not standard stock refinery docking. Stock `GAREFN/NAREFN` accepted miner target remains NW `+(3,1)`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/coord-cell-conversions/_system.md`: remove "Refinery dock pad - NW+3 -> NW+2 (every miner deposit)" from the fix list; replace with "Reconcile stale `GetDockCoord` row: `NW+(2,1)` is Weeder-only; preserve stock miner accepted cell NW `+(3,1)`."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Refinery pad branch (`BuildingTypeClass+0x16bc != 0`)" with "Weeder branch (`BuildingTypeClass+0x16BC != 0`, parsed from `Weeder=`): returns building NW `+(2,1)`; stock `GAREFN/NAREFN` do not set this flag."
+- `docs/research/coord-cell-conversions/fn-building-getdockcoord.md`: replace "Only branch 1 is active for refineries in standard YR" with "For standard YR `GAREFN/NAREFN`, branch 1 is not active; a `GetDockCoord` query reaches the `Refinery=yes` `+0x16BB` branch. The stock accepted miner `CAN_DOCK` cell is computed separately in `BuildingClass::Receive_Radio(0x0E)` as NW `+(3,1)`."
+- `docs/research/coord-cell-conversions/_parity.md`: replace row 35's "FIXED" claim with "DRIFT / STALE EVIDENCE: the `NW+(2,1)` change matches the `Weeder=yes` GetDockCoord branch, not standard stock refinery docking. Stock `GAREFN/NAREFN` accepted miner target remains NW `+(3,1)`."
+- `docs/research/coord-cell-conversions/_system.md`: remove "Refinery dock pad - NW+3 -> NW+2 (every miner deposit)" from the fix list; replace with "Reconcile stale `GetDockCoord` row: `NW+(2,1)` is Weeder-only; preserve stock miner accepted cell NW `+(3,1)`."
 
 ## Sources
 

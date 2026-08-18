@@ -171,25 +171,25 @@ No INI key directly controls the scheduler loop, the count reload, or the add/re
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_GHIDRA_REPORT.md:318` currently says: `LogicClass::AI() tick loop -> iterates all entities -> calls AI on each.` Replace with: `LogicClass::PerTickUpdate @ 0x0055AFB0 contains the per-object active-vector loop; it iterates the LogicClass-owned object vector forward and calls vtable+0x5C, re-reading count after each call. LogicClass::AI is the input/event dispatcher, not this object-AI loop.`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/INFANTRYCLASS_GHIDRA_REPORT.md:335` has the same stale wording. Use the same replacement text.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/timing/logic-vs-render-loop.md` contains both the corrected PerTickUpdate loop and an overview sentence saying pause freezes the unit-AI loop. If revised, replace that overview sentence with: `Pause skips the gameplay/input/render block, but the late LogicClass::PerTickUpdate path still runs; any unit/object AI reached through that late vtable+0x5C loop advances unless the class-specific AI body gates itself.`
+- `docs/research/UNITCLASS_GHIDRA_REPORT.md:318` currently says: `LogicClass::AI() tick loop -> iterates all entities -> calls AI on each.` Replace with: `LogicClass::PerTickUpdate @ 0x0055AFB0 contains the per-object active-vector loop; it iterates the LogicClass-owned object vector forward and calls vtable+0x5C, re-reading count after each call. LogicClass::AI is the input/event dispatcher, not this object-AI loop.`
+- `docs/research/INFANTRYCLASS_GHIDRA_REPORT.md:335` has the same stale wording. Use the same replacement text.
+- `docs/research/timing/logic-vs-render-loop.md` contains both the corrected PerTickUpdate loop and an overview sentence saying pause freezes the unit-AI loop. If revised, replace that overview sentence with: `Pause skips the gameplay/input/render block, but the late LogicClass::PerTickUpdate path still runs; any unit/object AI reached through that late vtable+0x5C loop advances unless the class-specific AI body gates itself.`
 
 ## Sources
 
-- Direct read-only binary disassembly from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`:
+- Direct read-only binary disassembly from `<ra2-install>/gamemd.exe`:
   - `LogicClass::PerTickUpdate @ 0x0055AFB0`
   - Main object loop `0x0055B5FB..0x0055B619`
   - Other loop contrast ranges `0x0055B502..0x0055B6B1`
   - `Main_Tick` call site `0x0055DC99..0x0055DC9E`
   - `FUN_0055BAA0`, `0x0055BAE0`, `DynamicVector__Insert @ 0x005519B0`
 - Prior reports referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOGIC_OBJECT_REGISTRATION_HELPER_FUN_0055BAA0_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_FIRST_TICK_DAMAGE_LATENCY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/timing/logic-vs-render-loop.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BULLETTYPECLASS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
+  - `docs/research/LOGIC_OBJECT_REGISTRATION_HELPER_FUN_0055BAA0_GHIDRA_REPORT.md`
+  - `docs/research/AAHEATSEEKER2_FIRST_TICK_DAMAGE_LATENCY_GHIDRA_REPORT.md`
+  - `docs/research/timing/logic-vs-render-loop.md`
+  - `docs/research/BULLETTYPECLASS_GHIDRA_REPORT.md`
+  - `docs/research/LOGICCLASS_VS_MAPCLASS_GHIDRA_REPORT.md`
 - Rust surfaces scanned read-only:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/entity_store.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/homing_movement.rs`
+  - `src/sim/world/mod.rs`
+  - `src/sim/entity_store.rs`
+  - `src/sim/movement/homing_movement.rs`

@@ -354,7 +354,7 @@ directly affect FootClass fields/logic:
 
 Created /FootClass in the live DTM: 1728 bytes (0x6C0, the three-subclass-constructor
 boundary proof above), 41 fields. Snapshot before mutations:
-C:/Users/enok/Documents/ghidra-backups/2026-08-17-pre-tier4 (19 files, verified).
+<local>/Documents/ghidra-backups/2026-08-17-pre-tier4 (19 files, verified).
 
 Applied: this doc's HIGH rows only (MED/LOW stay holes) — NavCom trio 0x5A0-0x5A8,
 TarCom block 0x5C4-0x5D1, Team pair 0x5D4/0x5D8, path queue 0x5E0/0x5E4, both DVec

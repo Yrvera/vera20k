@@ -484,12 +484,12 @@ Refined:
   - `CheckBridgeTraversal`: data xrefs `0x007E2454`, `0x007E8E44`, `0x007EB208`, `0x007F5E20`
   - `AStar_main_loop`: caller `AStar_pathfind_search @ 0x0042C900`
 - Existing reports:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/G6_TWO_PASS_DIVERGENCE_SUPPLEMENT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DEFERRED_MECHANICS_GHIDRA_REPORT.md`
+  - `docs/research/G6_TWO_PASS_DIVERGENCE_SUPPLEMENT.md`
+  - `docs/research/BRIDGE_CAN_ENTER_CELL_HIERARCHY_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_CHECK_TRAVERSAL_AND_CELL_OFFSETS_GHIDRA_REPORT.md`
+  - `docs/research/BRIDGE_DEFERRED_MECHANICS_GHIDRA_REPORT.md`
 - Rust status scan:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/core.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/pathfinding/cell_entry.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_occupancy.rs`
+  - `src/sim/pathfinding/core.rs`
+  - `src/sim/pathfinding/cell_entry.rs`
+  - `src/sim/movement/movement_occupancy.rs`
 

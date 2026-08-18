@@ -805,7 +805,7 @@ research-only rule):
   - `BulletClass::Fire` @ `0x00468670` (sub-bullet launch).
   - `ObjectClass::GetOccupiedCell` @ `0x005F6960` (impact-cell target).
   - `Pathfinding_update_continued` @ `0x00481810` (neighbor-cell resolution).
-- **Existing research docs** (in `C:/Users/enok/Documents/ra2-rust-game-docs/`):
+- **Existing research docs** (in `docs/research/`):
   - `BULLET_CLASS_AI_GHIDRA_REPORT.md` — BulletClass::AI flow, detonation triggers.
   - `BULLETCLASS_TRAJECTORY_AND_HOMING.md` §5 — prior (partial/inaccurate) airburst
     description; corrected here.
@@ -813,7 +813,7 @@ research-only rule):
   - `WARHEAD_DETONATE_GHIDRA_REPORT.md` — warhead dispatch.
   - `BURST_WEAPON_FIRING_GHIDRA_REPORT.md` — Burst= is a separate mechanism.
   - `WEAPONTYPECLASS_FULL_STRUCT_LAYOUT.md` — WeaponType field offsets.
-- **In-repo INI** (`C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`):
+- **In-repo INI** (`ini/rulesmd.ini`):
   `[V3]`, `[V3ROCKET]`, `[V3Launcher]`, `[V3Airburst]`, `[V3AirburstP]`,
   `[V3Cluster]`, `[ClusterBits]`, `[FlakWeapon]`, `[FlakProj]`.
 - **Math verification** for the `sin/cos(3π/2)` constants and the

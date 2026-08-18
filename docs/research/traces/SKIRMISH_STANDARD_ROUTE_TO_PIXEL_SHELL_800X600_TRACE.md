@@ -36,7 +36,7 @@ Current Rust standard path:
 
 Player-visible difference: using the normal menu path does not land on the retail-shaped Skirmish setup shell. The player sees the non-retail egui setup surface instead of dialog `0x102`.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu_shell/state.rs:44` maps `SinglePlayer0x683` to `MainMenuShellAction::SinglePlayer`; `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:945` handles that action; `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:955` sets `state.main_menu_show_skirmish_setup = true`.
+Rust evidence: `src/ui/main_menu_shell/state.rs:44` maps `SinglePlayer0x683` to `MainMenuShellAction::SinglePlayer`; `src/app.rs:945` handles that action; `src/app.rs:955` sets `state.main_menu_show_skirmish_setup = true`.
 
 Gamemd evidence: read-only Ghidra decompile of `FUN_006AE2C0 @ 0x006AE2C0` shows the standard offline Skirmish launcher calls `FUN_0072CF40`, creates a dialog via `FUN_00622650`, stores the HWND in `DAT_00B0B59C`, calls `FUN_00622800`, pumps until result `0x617` or `0x5C0`, then returns `local_4 == 0x617`. `SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md` records the call-site bytes selecting dialog proc `0x006AE3F0`, resource id `0x102`, and `FUN_00622650`. This is active standard YR offline Skirmish, not TS legacy.
 
@@ -44,15 +44,15 @@ Gamemd evidence: read-only Ghidra decompile of `FUN_006AE2C0 @ 0x006AE2C0` shows
 
 Player-visible difference: even though Rust has a pixel-shell renderer, it is not the standard route. Normal `GameScreen::MainMenu` rendering uses the pixel shell only behind the dev flag; otherwise the setup branch falls through to egui.
 
-Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:151` documents `dev_skirmish_shell_enabled` as opt-in; `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:416` reads the environment flag; `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:1537` calls `render_skirmish_shell` only when the flag is true; `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:1568` calls `render_egui_main_menu_fallback` otherwise; `C:/Users/enok/Documents/ra2-rust-game/src/ui/main_menu.rs:1` describes the egui skirmish setup screen.
+Rust evidence: `src/app.rs:151` documents `dev_skirmish_shell_enabled` as opt-in; `src/app.rs:416` reads the environment flag; `src/app.rs:1537` calls `render_skirmish_shell` only when the flag is true; `src/app.rs:1568` calls `render_egui_main_menu_fallback` otherwise; `src/ui/main_menu.rs:1` describes the egui skirmish setup screen.
 
 Gamemd evidence: read-only Ghidra decompile of `FUN_00622800 @ 0x00622800` shows `ShowWindow(hwnd,1)` and `SetForegroundWindow(hwnd)`. Read-only Ghidra decompile of `FUN_0060C4A0 @ 0x0060C4A0` shows `MoveWindow(hwnd,0,0,g_ScreenWidth,g_ScreenHeight,0)` followed by child enumeration. `SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md` verifies dialog `0x102` is in the fullscreen shell-host allowlist and therefore covers the shell client/backbuffer. This path is active standard YR offline Skirmish.
 
 ## Checked Passes
 
-Stage 3 passes only for the forced pixel shell path, not for standard reachability. Current layout tests and code produce the checked native `800x600` rects: Start `(644,241,156,42)`, Choose Map `(644,283,156,42)`, Preview `(644,37,144,112)`, and Back `(644,535,156,42)`. Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:378` and assertions at `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs:567`.
+Stage 3 passes only for the forced pixel shell path, not for standard reachability. Current layout tests and code produce the checked native `800x600` rects: Start `(644,241,156,42)`, Choose Map `(644,283,156,42)`, Preview `(644,37,144,112)`, and Back `(644,535,156,42)`. Rust evidence: `src/ui/skirmish_shell/layout.rs:378` and assertions at `src/ui/skirmish_shell/layout.rs:567`.
 
-Stage 4 passes for the checked first-paint chrome slice when the dev shell is forced on. Rust evidence: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1130`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1211`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1261`, and `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:1299`. Gamemd evidence is the prior current trace `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`.
+Stage 4 passes for the checked first-paint chrome slice when the dev shell is forced on. Rust evidence: `src/app_skirmish_shell_render.rs:1130`, `src/app_skirmish_shell_render.rs:1211`, `src/app_skirmish_shell_render.rs:1261`, and `src/app_skirmish_shell_render.rs:1299`. Gamemd evidence is the prior current trace `docs/research/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`.
 
 ## Unchecked
 
@@ -65,8 +65,8 @@ Main menu nomenclature and whether Rust's current `SinglePlayer` action is the f
 ## Sources
 
 - Read-only Ghidra: `FUN_006AE2C0`, `FUN_0060C4A0`, `FUN_00622800`, `FUN_0072CF40`, `FUN_0060C540`, `FUN_00608CD0`, `FUN_00609730`, `FUN_0060B1D0`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_REINVESTIGATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_UI_SYSTEM_MODEL_SYNTHESIS.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_VIEWPORT_ORIGIN_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SHELL_ACTIVE_RENDER_PATH_REINVESTIGATION_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_UI_SYSTEM_MODEL_SYNTHESIS.md`
+- `docs/research/traces/SKIRMISH_SHELL_CHROME_FIRST_PAINT_800X600_VISUAL_TRACE.md`
 - Rust files checked: `src/app.rs`, `src/ui/main_menu.rs`, `src/ui/main_menu_shell/state.rs`, `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render.rs`, `src/render/skirmish_shell_chrome.rs`.

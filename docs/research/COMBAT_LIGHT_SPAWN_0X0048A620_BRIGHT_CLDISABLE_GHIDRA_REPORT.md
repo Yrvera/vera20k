@@ -183,8 +183,8 @@ Proposed Rust tests:
 
 Stale Docs / Follow-up Docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WARHEAD_DETONATE_GHIDRA_REPORT.md` replacement wording for lines that call `0x0048A620` a smudge/terrain deformation: "Combat-light helper `0x0048A620` allocates a 24-byte transient screen-space light object through `0x005FF250`, stores draw flags at `+0x14`, draws it from the tactical transient-light vector via `0x005FF850`, and ages/removes it in `0x005FF390`. It is not a `SmudgeClass`, not terrain deformation, and not an `AnimClass`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WARHEAD_DETONATE_GHIDRA_REPORT.md` replacement wording for Bright gate: "The normal Warhead detonation branch checks `BulletClass+0xE0 Bright`; normal `TechnoClass::Fire_At` passes `WeaponType+0x12F Bright` into `BulletClass::Init`. `WarheadType+0x150 Bright` is parsed and can gate helper callers that pass force=false, but the checked Warhead detonation combat-light call passes force=true after the bullet Bright branch."
+- `docs/research/WARHEAD_DETONATE_GHIDRA_REPORT.md` replacement wording for lines that call `0x0048A620` a smudge/terrain deformation: "Combat-light helper `0x0048A620` allocates a 24-byte transient screen-space light object through `0x005FF250`, stores draw flags at `+0x14`, draws it from the tactical transient-light vector via `0x005FF850`, and ages/removes it in `0x005FF390`. It is not a `SmudgeClass`, not terrain deformation, and not an `AnimClass`."
+- `docs/research/WARHEAD_DETONATE_GHIDRA_REPORT.md` replacement wording for Bright gate: "The normal Warhead detonation branch checks `BulletClass+0xE0 Bright`; normal `TechnoClass::Fire_At` passes `WeaponType+0x12F Bright` into `BulletClass::Init`. `WarheadType+0x150 Bright` is parsed and can gate helper callers that pass force=false, but the checked Warhead detonation combat-light call passes force=true after the bullet Bright branch."
 
 ## Sources
 

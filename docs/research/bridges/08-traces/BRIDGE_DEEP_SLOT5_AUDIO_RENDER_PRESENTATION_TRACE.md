@@ -19,20 +19,20 @@ Overall status: PARTIAL. The trace found concrete presentation mismatches, but e
 
 ## Evidence Used
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DEFERRED_MECHANICS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RENDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADAR_EVENT_CLASS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ANIMATION_SOUNDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/BRIDGE_REPAIR_SOUND_EVA_ORDERING_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/evamd.ini`
-- Current Rust source under `C:/Users/enok/Documents/ra2-rust-game/src/`
+- `docs/research/BRIDGE_COLLAPSE_SOUND_SOURCE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RNG_CALL_ORDER_CLASSIFICATION_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_COLLAPSE_FALLOUT_ORDERING_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_DEFERRED_MECHANICS_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RENDERING_GHIDRA_REPORT.md`
+- `docs/research/RADAR_EVENT_CLASS_GHIDRA_REPORT.md`
+- `docs/research/ANIMATION_SOUNDS_GHIDRA_REPORT.md`
+- `docs/research/traces/BRIDGE_REPAIR_SOUND_EVA_ORDERING_TRACE.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `ini/soundmd.ini`
+- `ini/evamd.ini`
+- Current Rust source under `src/`
 
 ## Active Standard YR Confirmation
 

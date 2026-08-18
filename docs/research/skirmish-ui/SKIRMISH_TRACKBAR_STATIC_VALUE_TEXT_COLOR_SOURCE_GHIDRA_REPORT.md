@@ -198,8 +198,8 @@ Asset role matrix:
 
 Stale Docs / Follow-up Docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the implementation-status phrase "`trackbar_value_text_rect` and trackbar value draw matches rightmost `49px` rect and `h-center|v-center`; relies on current final control rects for the `0x50C y-1` fixup" with: "`trackbar_value_text_rect` matches the rightmost `49px` rect and `h-center|v-center`, but current Rust trackbar numeric values use `SHELL_BUTTON_TEXT_RGB_00000C05`; enabled retail uses normal `DAT_00AC18A4 = 0x0000FFFF` source RGB `(255,255,0)`, so the Rust value color is a current mismatch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_RECT_COLOR_RECHECK_GHIDRA_REPORT.md`: replace the statement "`0x00000C05` is source RGB `(5,12,0)` for button and trackbar value text" with: "`0x00000C05` decodes to RGB `(5,12,0)`, but the standard Skirmish trackbar value text path does not use it while enabled; `OwnerDraw_Trackbar_0061D950` selects `DAT_00AC18A4 = 0x0000FFFF` for enabled values and `DAT_00AC1CB4 = 0x9F` only for disabled-style trackbars."
+- `docs/research/skirmish-ui/SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`: replace the implementation-status phrase "`trackbar_value_text_rect` and trackbar value draw matches rightmost `49px` rect and `h-center|v-center`; relies on current final control rects for the `0x50C y-1` fixup" with: "`trackbar_value_text_rect` matches the rightmost `49px` rect and `h-center|v-center`, but current Rust trackbar numeric values use `SHELL_BUTTON_TEXT_RGB_00000C05`; enabled retail uses normal `DAT_00AC18A4 = 0x0000FFFF` source RGB `(255,255,0)`, so the Rust value color is a current mismatch."
+- `docs/research/skirmish-ui/SKIRMISH_CHECKBOX_TRACKBAR_RECT_COLOR_RECHECK_GHIDRA_REPORT.md`: replace the statement "`0x00000C05` is source RGB `(5,12,0)` for button and trackbar value text" with: "`0x00000C05` decodes to RGB `(5,12,0)`, but the standard Skirmish trackbar value text path does not use it while enabled; `OwnerDraw_Trackbar_0061D950` selects `DAT_00AC18A4 = 0x0000FFFF` for enabled values and `DAT_00AC1CB4 = 0x9F` only for disabled-style trackbars."
 
 ## Negative Facts / Do Not Do
 
@@ -214,4 +214,4 @@ Stale Docs / Follow-up Docs:
 - Ghidra read-only decompile: `OwnerDraw_Trackbar_0061D950 @ 0x0061D950`, `FUN_00621040 @ 0x00621040`, `FUN_0060F9A0 @ 0x0060F9A0`, `FUN_006AE6E0 @ 0x006AE6E0`, `OwnerDraw_Static_006153E0 @ 0x006153E0`.
 - Ghidra assembly context: `0x0061E296..0x0061E30A`, `0x00621054..0x006210B1`, `0x0060FA0D..0x0060FA49`, `0x0060FC76..0x0060FCB1`, `0x006AECB3..0x006AEDA0`.
 - Prior docs: `SKIRMISH_0X102_STATIC_TEXT_RECTS_COLORS_GHIDRA_REPORT.md`, `SKIRMISH_CHECKBOX_TRACKBAR_RECT_COLOR_RECHECK_GHIDRA_REPORT.md`, `SKIRMISH_TRACKBAR_DISABLED_RUNTIME_ENABLE_FLOW_GHIDRA_REPORT.md`, `SKIRMISH_TRACKBAR_CHANGED_VALUE_SOUND_GHIDRA_REPORT.md`, `SKIRMISH_BTN_MINS_PLUS_USE_SITE_GHIDRA_REPORT.md`.
-- Rust read-only scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render/text.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`.
+- Rust read-only scan: `src/app_skirmish_shell_render/text.rs`, `src/app_skirmish_shell_render.rs`.

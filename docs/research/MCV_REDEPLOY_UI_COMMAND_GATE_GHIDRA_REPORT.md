@@ -124,7 +124,7 @@ Execution validates ownership and special-cases slave miner, then calls `undeplo
 
 ## Sources
 
-- Prior read-only Ghidra reports: `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_DEPLOY_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/AMCV_CANDEPLOY_PREDICATE_GHIDRA_REPORT.md`.
+- Prior read-only Ghidra reports: `docs/research/MCV_DEPLOY_GHIDRA_REPORT.md`, `docs/research/YAREFN_UNDEPLOY_TO_SMIN_SLAVEMANAGER_PATH_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_PACKED_OPTION_GLOBAL_CONSUMERS_GHIDRA_REPORT.md`, `docs/research/AMCV_CANDEPLOY_PREDICATE_GHIDRA_REPORT.md`.
 - INI checked: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/artmd.ini`, `ini/art.ini`.
 - Rust scanned: `src/app_context_order.rs`, `src/sim/world/world_commands.rs`, `src/sim/world/world_spawn.rs`, `src/sim/game_options.rs`.
 - Tool limitation: no callable Ghidra MCP or local Ghidra runner was available in this subagent session; no Ghidra mutations were made.

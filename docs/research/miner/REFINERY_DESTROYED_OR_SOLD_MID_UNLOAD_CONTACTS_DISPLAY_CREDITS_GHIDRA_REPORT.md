@@ -140,10 +140,10 @@ Asset role matrix:
 
 Stale Docs / Follow-up Docs:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_DESTROYED_REFINERY_UNLOAD_ABORT_GHIDRA_REPORT.md`: replace "unload visual must end on abort" with "Static binary evidence shows the zero-link state-3 null-refinery branch does not clear `unit+0x6D1`; radio `0x17` clears it when delivered, and Rust's immediate `display_type_override` clear requires runtime visual confirmation as a deliberate parity choice."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSING_DESTROYED_REFINERY_MID_UNLOAD_ORDERING_GHIDRA_REPORT.md`: keep the cargo/no-credit/order claims, but replace any acceptance wording that assumes immediate visual restoration with "exact stale `HORV`/`CMON` rendered frame count remains runtime-only; static code proves no clear in the state-3 null branch."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_FULL_CARGO_MISSING_REFINERY_FALLBACK_GHIDRA_REPORT.md`: replace broad "lost refinery immediately picks another refinery" wording with "after loss, full cargo enters Harvest state 0 full-check and then return/refinery selection; partial cargo can resume ore-search logic first."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/HARV_UNLOADING_CLASS_DISPLAY_TIMING_GHIDRA_REPORT.md`: no replacement needed; this report confirms its static `+0x6D1` null-branch caveat.
+- `docs/research/miner/HARV_DESTROYED_REFINERY_UNLOAD_ABORT_GHIDRA_REPORT.md`: replace "unload visual must end on abort" with "Static binary evidence shows the zero-link state-3 null-refinery branch does not clear `unit+0x6D1`; radio `0x17` clears it when delivered, and Rust's immediate `display_type_override` clear requires runtime visual confirmation as a deliberate parity choice."
+- `docs/research/miner/MISSING_DESTROYED_REFINERY_MID_UNLOAD_ORDERING_GHIDRA_REPORT.md`: keep the cargo/no-credit/order claims, but replace any acceptance wording that assumes immediate visual restoration with "exact stale `HORV`/`CMON` rendered frame count remains runtime-only; static code proves no clear in the state-3 null branch."
+- `docs/research/miner/HARV_FULL_CARGO_MISSING_REFINERY_FALLBACK_GHIDRA_REPORT.md`: replace broad "lost refinery immediately picks another refinery" wording with "after loss, full cargo enters Harvest state 0 full-check and then return/refinery selection; partial cargo can resume ore-search logic first."
+- `docs/research/miner/HARV_UNLOADING_CLASS_DISPLAY_TIMING_GHIDRA_REPORT.md`: no replacement needed; this report confirms its static `+0x6D1` null-branch caveat.
 
 ## Negative Facts / Do Not Do
 

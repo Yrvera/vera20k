@@ -489,7 +489,7 @@ checks `iVar5 != -1`, so this fallthrough does NOT bail out — it proceeds with
 
 - `list_open_programs` and `list_instances` — sole connected program is the
   retail `gamemd.exe` at
-  `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`,
+  `<ra2-install>/gamemd.exe`,
   `x86:LE:32:default`, image base `0x00400000`
 - `search_instructions` with operand `89f688` — initializer write at
   `0x0049F305` and reducer reads at `0x00480BFD`/`0x00480C14`

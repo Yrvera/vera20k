@@ -111,11 +111,11 @@ Rust currently has a concrete Bink surface rather than a virtual movie-handle ta
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`: replace section 3 rows for `+0x14/+0x1C` with:
+- `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`: replace section 3 rows for `+0x14/+0x1C` with:
 
   > Fresh Ghidra MCP read of BinkMovieHandle vtable `0x007EE154` resolves `+0x14` to `0x005C0570 -> 0x00432C50` (finished/end-or-wrap predicate) and `+0x1C` to `0x005C05D0 -> 0x00432BD0` (`_BinkGoto(handle, frame, 1)` wrapper). The earlier `+0x14 = 0x005C0550` and `+0x1C = 0x005C0570` rows were stale; `0x005C0550` is actually vtable `+0x10`.
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`: no replacement needed for the requested rows; its `+0x14/+0x18/+0x1C/+0x28` table matches the fresh MCP read.
+- `docs/research/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`: no replacement needed for the requested rows; its `+0x14/+0x18/+0x1C/+0x28` table matches the fresh MCP read.
 
 ## 10. Negative Facts / Do Not Do
 

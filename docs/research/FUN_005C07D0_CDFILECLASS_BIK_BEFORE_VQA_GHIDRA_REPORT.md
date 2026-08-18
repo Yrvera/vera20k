@@ -168,7 +168,7 @@ No prior report was found to be wrong on the core order. The older plan wording 
 
 ## Sources
 
-- Raw local retail binary disassembly: `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`, image base `0x00400000`; Capstone VA-to-file pass for `0x005C0640`, `0x005C07D0`, `0x00531CC0`, `0x006153E0`.
+- Raw local retail binary disassembly: `<ra2-install>/gamemd.exe`, image base `0x00400000`; Capstone VA-to-file pass for `0x005C0640`, `0x005C07D0`, `0x00531CC0`, `0x006153E0`.
 - Prior Ghidra-backed docs: `docs/research/MAIN_MENU_VISUAL_ASSETS_GHIDRA_REPORT.md`, `docs/research/OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`, `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`, `docs/research/MOVIES_AND_CREDITS_DIALOG_CASE4_GHIDRA_REPORT.md`.
 - Prior file-layer docs: `docs/research/bridges/01-assets-map-load-overlay/ASSET_PARSING_BRIDGES_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_SELECTED_MAP_FILE_OPEN_PRIORITY_LOOSE_SHADOWING_GHIDRA_REPORT.md`.
 - Rust scan: `src/ui/main_menu_shell/layout.rs`, `src/app_main_menu_shell_render.rs`, `src/assets/asset_manager.rs`, `src/render/bink_movie.rs`.

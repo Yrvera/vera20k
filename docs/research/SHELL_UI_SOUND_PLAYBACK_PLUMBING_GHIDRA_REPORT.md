@@ -182,6 +182,6 @@ The stale Rust implementation wording in this report was updated after the verif
 ## Sources
 
 - Ghidra: `VocClass__PlayAtPos @ 0x00750920`; `VocClass__FindByName @ 0x007514D0`; `RulesClass__ReadAudioVisual @ 0x00669300`; `OwnerDraw_Button_00612B70 @ 0x00612B70`; `OwnerDraw_Checkbox_006163A0 @ 0x006163A0`; `OwnerDraw_Trackbar_0061D950 @ 0x0061D950`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CHECKBOX_ICON_VS_LABEL_HIT_TRACE.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/GLOBAL_SOUNDS_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/RULESCLASS_FIELDS.csv`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/sound.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/audio/sfx.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_transitions.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md`; `docs/research/traces/SKIRMISH_CHECKBOX_ICON_VS_LABEL_HIT_TRACE.md`; `docs/research/traces/SKIRMISH_CREDITS_TRACKBAR_CLICK_DRAG_TRACE.md`; `docs/research/GLOBAL_SOUNDS_GHIDRA_REPORT.md`; `docs/research/RULESCLASS_FIELDS.csv`.
+- INI: `ini/rulesmd.ini`; `ini/rules.ini`; `ini/soundmd.ini`; `ini/sound.ini`.
+- Rust scan: `src/app.rs`; `src/audio/sfx.rs`; `src/app_transitions.rs`; `src/rules/ruleset.rs`; `src/ui/skirmish_shell/state.rs`.

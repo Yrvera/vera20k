@@ -1,6 +1,6 @@
 # Building Bracket A-buffer/Z-test/Depth Semantics - Ghidra Report
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`  
+**Report path:** `docs/research/building-selection-brackets/BUILDING_BRACKET_ABUFFER_ZTEST_DEPTH_SEMANTICS_GHIDRA_REPORT.md`  
 **Target:** selected building bracket `Tactical::DrawLine3D -> Surface::Draw_Line` depth, A-buffer, Z-test, and Z-write behavior  
 **Investigation mode:** exhaustive-slice, read-only Ghidra/live decompilation  
 **Status:** COMPLETE  
@@ -162,4 +162,4 @@ Active in YR: Yes.
 - Ghidra decompiled/read-only: `0x006DBB60`, `0x004BFD30`, `0x006F5EF0`, `0x006F60D0`, `0x006F5190`, `0x006D20E0`, `0x004801F0`, `0x0047EFE0`, `0x0047F250`, `0x006D3660`, `0x00411330`
 - Ghidra assembly context: `0x006DBC62..0x006DBCC7`, `0x004C024F`, `0x004C043A`, `0x004C062B`, `0x006D382F..0x006D3835`
 - Prior docs used as seeds/cross-checks: `DRAWBRACKETCORNER_DRAWLINE3D_STUB_RASTER_GHIDRA_REPORT.md`, `SURFACE_DRAW_LINE_BRACKET_RASTER_GHIDRA_REPORT.md`, `SHROUD_FOG_RENDERING_PIPELINE.md`, `OBJECT_FOG_VISIBILITY_GHIDRA_REPORT.md`
-- INI checked read-only: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- INI checked read-only: `ini/rulesmd.ini`

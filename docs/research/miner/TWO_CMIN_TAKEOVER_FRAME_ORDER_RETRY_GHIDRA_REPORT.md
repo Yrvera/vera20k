@@ -139,7 +139,7 @@ Rust appears aligned for this static ordering slice. The caveat is representatio
 
 ## 10. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_FRAME_ORDER_GHIDRA_REPORT.md`: replace partial same-frame wording with: "Static binary evidence proves same-frame admission is conditional on live-object order plus B mission timer eligibility; only concrete replay timer/vector values and first rendered displacement remain runtime-only."
+- `docs/research/miner/TWO_MINER_ONE_REFINERY_ZERO_LINK_HANDOFF_FRAME_ORDER_GHIDRA_REPORT.md`: replace partial same-frame wording with: "Static binary evidence proves same-frame admission is conditional on live-object order plus B mission timer eligibility; only concrete replay timer/vector values and first rendered displacement remain runtime-only."
 - Any wording that says "the refinery promotes a queued miner" should be replaced with: "A's release frees the contact slot via `BREAK(3)`; the waiting miner is admitted only during that miner's own later `Mission_Enter` / `CAN_DOCK(0x0E)` retry, which may occur in the same frame if object order and mission timer permit."
 
 ## Sources

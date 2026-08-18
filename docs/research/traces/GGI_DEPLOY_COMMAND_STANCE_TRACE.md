@@ -6,21 +6,21 @@ Scope: player cursor/action, accepted deploy command, deploy sound, deploy seque
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/GGI.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GGI_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/GI_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_cursor.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_context_order.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_input.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/deploy.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/animation.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/infantry_sequence.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_instances/shp.rs`
+- `docs/research/units/allied/GGI.md`
+- `docs/research/GGI_GHIDRA_REPORT.md`
+- `docs/research/GI_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`
+- `ini/artmd.ini`
+- `ini/soundmd.ini`
+- `src/app_cursor.rs`
+- `src/app_context_order.rs`
+- `src/app_input.rs`
+- `src/sim/deploy.rs`
+- `src/sim/world/world_commands.rs`
+- `src/sim/world/mod.rs`
+- `src/sim/animation.rs`
+- `src/rules/infantry_sequence.rs`
+- `src/app_instances/shp.rs`
 
 No live Ghidra mutation was performed. Existing research reports already contain the needed binary references for this concrete scenario.
 

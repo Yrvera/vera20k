@@ -101,11 +101,11 @@ gamemd has an active preview object path for offline Skirmish `0x102`: after cho
 
 ## Source Pointers
 
-- Rust action mapping: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:97`
-- Rust map cycling: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs:165`
-- Rust action swallowing: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:531`
-- Rust mouse release path: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs:570`
-- Rust preview disabled: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs:458`
-- gamemd docs: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md:80`, `:122`
-- gamemd active path docs: `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_GAME_STATE_MACHINE_CASES_GHIDRA_REPORT.md:366`
+- Rust action mapping: `src/ui/skirmish_shell/state.rs:97`
+- Rust map cycling: `src/ui/skirmish_shell/state.rs:165`
+- Rust action swallowing: `src/app.rs:531`
+- Rust mouse release path: `src/app.rs:570`
+- Rust preview disabled: `src/app_skirmish_shell_render.rs:458`
+- gamemd docs: `docs/research/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md:80`, `:122`
+- gamemd active path docs: `docs/research/MAIN_GAME_STATE_MACHINE_CASES_GHIDRA_REPORT.md:366`
 - Fresh read-only Ghidra functions: `FUN_006AE2C0`, `FUN_006AE3F0`, `FUN_006ACEE0`

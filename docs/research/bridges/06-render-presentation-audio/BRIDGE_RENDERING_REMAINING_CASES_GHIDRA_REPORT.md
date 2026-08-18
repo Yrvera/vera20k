@@ -363,20 +363,20 @@ The predicate does not read overlay ID directly.
 
 ### Already aligned or mostly aligned
 
-- [bridges.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs:34) now has the verified body Y offsets: `0..=8 => -16`, `9..=17 => -31`.
-- [bridges.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs:65) implements body frame selection with Latin-square jitter only for the base healthy state.
-- [bridge_state/mod.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:85) encodes `Axis::NS` into `0..=8` and `Axis::EW` into `9..=17`, matching the report's state-byte-based offset rule.
-- [bridge_state/mod.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:468) now has a `BridgeRecordKind` high/low discriminator, which matches the later low-bridge zone-record research direction.
+- [bridges.rs](src/app_instances/bridges.rs:34) now has the verified body Y offsets: `0..=8 => -16`, `9..=17 => -31`.
+- [bridges.rs](src/app_instances/bridges.rs:65) implements body frame selection with Latin-square jitter only for the base healthy state.
+- [bridge_state/mod.rs](src/sim/bridge_state/mod.rs:85) encodes `Axis::NS` into `0..=8` and `Axis::EW` into `9..=17`, matching the report's state-byte-based offset rule.
+- [bridge_state/mod.rs](src/sim/bridge_state/mod.rs:468) now has a `BridgeRecordKind` high/low discriminator, which matches the later low-bridge zone-record research direction.
 
 ### Confirmed differences
 
-- [bridge_railing_atlas.rs](C:/Users/enok/Documents/ra2-rust-game/src/render/bridge_railing_atlas.rs:64) and [bridge_railing_atlas.rs](C:/Users/enok/Documents/ra2-rust-game/src/render/bridge_railing_atlas.rs:79) still use all-zero concrete/wood railing tables. Binary skips frame zero, so current Rust emits no real railings.
-- [draw_passes.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_render/draw_passes.rs:69) still disables bridge body shadows. Binary draws shadows every bridge shadow pass through `0x0047F510`.
-- [bridges.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs:211) builds shadow instances, but [draw_passes.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_render/draw_passes.rs:69) does not submit them.
-- [bridges.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_instances/bridges.rs:258) shifts shadow by `axis == Axis::EW`; the binary shifts by state byte `9..=17`. This is equivalent only if Rust axis encoding remains `Axis::EW -> 9..=17`; future axis refactors must preserve state-byte semantics.
-- [draw_passes.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_render/draw_passes.rs:174) draws railings after unit/ground merge and cliff redraw. Binary emits railings in the terrain bundle before object rendering.
-- [resolved_terrain.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:1092) treats low bridge deck level as ground level and [resolved_terrain.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/resolved_terrain.rs:1095) marks low bridge overlays as `is_low_bridge`, but binary low-bridge identity also requires a valid tube index and land type `10`.
-- [bridge_state/mod.rs](C:/Users/enok/Documents/ra2-rust-game/src/sim/bridge_state/mod.rs:8) still states low-bridge overlay damage progression is not fully wired into mutable overlay state.
+- [bridge_railing_atlas.rs](src/render/bridge_railing_atlas.rs:64) and [bridge_railing_atlas.rs](src/render/bridge_railing_atlas.rs:79) still use all-zero concrete/wood railing tables. Binary skips frame zero, so current Rust emits no real railings.
+- [draw_passes.rs](src/app_render/draw_passes.rs:69) still disables bridge body shadows. Binary draws shadows every bridge shadow pass through `0x0047F510`.
+- [bridges.rs](src/app_instances/bridges.rs:211) builds shadow instances, but [draw_passes.rs](src/app_render/draw_passes.rs:69) does not submit them.
+- [bridges.rs](src/app_instances/bridges.rs:258) shifts shadow by `axis == Axis::EW`; the binary shifts by state byte `9..=17`. This is equivalent only if Rust axis encoding remains `Axis::EW -> 9..=17`; future axis refactors must preserve state-byte semantics.
+- [draw_passes.rs](src/app_render/draw_passes.rs:174) draws railings after unit/ground merge and cliff redraw. Binary emits railings in the terrain bundle before object rendering.
+- [resolved_terrain.rs](src/map/resolved_terrain.rs:1092) treats low bridge deck level as ground level and [resolved_terrain.rs](src/map/resolved_terrain.rs:1095) marks low bridge overlays as `is_low_bridge`, but binary low-bridge identity also requires a valid tube index and land type `10`.
+- [bridge_state/mod.rs](src/sim/bridge_state/mod.rs:8) still states low-bridge overlay damage progression is not fully wired into mutable overlay state.
 
 ## Confirmed renderer parity gaps
 
@@ -444,13 +444,13 @@ The predicate does not read overlay ID directly.
 
 ### Existing reports cross-checked
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_BODY_Y_OFFSET_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_RENDERING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_SYSTEM.md`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-05-15-disparity-scan-bridges-end-to-end.md`
+- `docs/research/BRIDGE_BODY_Y_OFFSET_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_RENDERING_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_DISPLAY_TABLE_GHIDRA_REPORT.md`
+- `docs/research/HIGH_BRIDGE_DAMAGE_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_LOW_AND_ZONE_RECORDS_GHIDRA_SUPPLEMENT.md`
+- `docs/research/BRIDGE_SYSTEM.md`
+- `docs/gap-scans/2026-05-15-disparity-scan-bridges-end-to-end.md`
 
 ### INI and Rust files checked
 

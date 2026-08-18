@@ -3,8 +3,8 @@ title: Tick And Animation Frame Timing - Extension Investigation
 date: 2026-05-16
 scope: Targeted Ghidra-backed extension of tick/animation disparity scan gaps
 parent_reports:
-  - C:/Users/enok/Documents/ra2-rust-game-docs/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md
-  - C:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-05-16-disparity-scan-tick-animation-speed.md
+  - docs/research/TICK_AND_ANIMATION_SPEED_GHIDRA_REPORT.md
+  - docs/gap-scans/2026-05-16-disparity-scan-tick-animation-speed.md
 confidence: High for frame source/order, AnimType rate conversion, AnimClass cadence, building slot ownership, infantry action timers, SHP vehicle WalkRate/IdleRate, temporal/gap visual timers; Medium for VoxelAnimType.Normalized draw-time effect.
 ---
 

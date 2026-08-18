@@ -419,7 +419,7 @@ corrected accordingly.
   `0x0084395C` ("Naval"), `0x00843E60` ("Teleporter"), `0x00843714` ("Organic").
 - Byte-pattern search: `88 85 97 0d 00 00` (write to `+0xD97`) and
   `88 85 d4 0c 00 00` (write to `+0xCD4`) — each returned exactly one match.
-- Cross-doc grep across `C:/Users/enok/Documents/ra2-rust-game-docs/`.
+- Cross-doc grep across `docs/research/`.
 
 ---
 

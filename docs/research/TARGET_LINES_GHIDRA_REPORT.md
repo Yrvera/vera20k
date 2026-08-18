@@ -525,10 +525,10 @@ Planning mode active (`DAT_00b0fe58 != 0`) OR Shift AND Q both held.
 - Timer xrefs: 4 callers confirmed (3 in BandBox_LeftUp, 1 in group recall)
 
 ### Prior Reports Referenced
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_LINES_GHIDRA_REPORT.md` (existing, updated)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_ACQUISITION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_TARGET_FIELDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`
+- `docs/research/TARGET_LINES_GHIDRA_REPORT.md` (existing, updated)
+- `docs/research/TARGET_ACQUISITION_GHIDRA_REPORT.md`
+- `docs/research/TECHNOCLASS_TARGET_FIELDS_GHIDRA_REPORT.md`
+- `docs/research/TACTICAL_RENDER_PIPELINE_GHIDRA_REPORT.md`
 
 ### Corrections to Prior Report
 1. **DrawActionLines call site:** Prior report attributed it to `Tactical::DrawUnitActionVisuals`.

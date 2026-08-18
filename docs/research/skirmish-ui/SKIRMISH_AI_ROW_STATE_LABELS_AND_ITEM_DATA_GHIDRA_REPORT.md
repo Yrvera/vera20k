@@ -92,6 +92,6 @@ House creation later consumes `DAT_00A8B27C` as the AI difficulty index. `Scenar
 - Ghidra decompiled/read-only: `FUN_006AE3F0`, `FUN_006AE6E0`, `FUN_006ACEE0`, `FUN_006ADC20`, `FUN_006AE080`, `SessionClass__ReadSkirmishSettings @ 0x00697F10`, `SessionClass__WriteSkirmishSettings @ 0x00698F90`, `FUN_00477440`, `RulesClass__ReadMultiplayerDialogSettings @ 0x00671EA0`, `ScenarioClass__Create_Houses @ 0x00687F10`, `HouseClass__SetDifficulty @ 0x004F6EC0`.
 - Ghidra assembly/read-only: `FUN_006AE6E0`, `FUN_006AE3F0`, `FUN_005E87A0`, `FUN_005EB060`.
 - Ghidra strings: `GUI:None @ 0x0083FC88`, `GUI:AIEasy @ 0x00831C68`, `GUI:AINormal @ 0x00831C58`, `GUI:AIHard @ 0x00831C4C`, `GUI:Closed @ 0x00831C74`, `STT:PlayerNone @ 0x0083FC3C`, `STT:PlayerDumbAI @ 0x00831D0C`, `STT:PlayerSmartAI @ 0x00831CF8`, `STT:PlayerGeniusAI @ 0x00831CE4`, `STT:SkirmishComboAIPlayer @ 0x008353E4`.
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3027..3028`; `rules.ini:2507..2508`.
+- INI: `ini/rulesmd.ini:3027..3028`; `rules.ini:2507..2508`.
 - Prior reports: `SKIRMISH_PLAYER_AI_ROW_VISIBILITY_ENABLE_RULES_GHIDRA_REPORT.md`, `SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`, `SKIRMISH_START_TEAM_CONTROL_DESTINATION_NAMING_GHIDRA_REPORT.md`.
 - Rust scan: `src/ui/skirmish_shell/state.rs`, `src/sim/game_options.rs`.

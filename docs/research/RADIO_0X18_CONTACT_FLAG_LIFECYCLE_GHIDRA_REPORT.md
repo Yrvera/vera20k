@@ -282,4 +282,4 @@ with:
 - Fresh Ghidra xrefs: `0x007F5E04 -> UnitClass::Receive_Radio`, `0x007F5DFC -> UnitClass::PerCellProcess`, TechnoClass receiver xrefs from BuildingClass and FootClass.
 - Fresh Ghidra disassembly spot-check ranges: `0x006F4AB0..0x006F4CDF`, `0x0043C2D0..0x0043CE5F`, `0x0073A430..0x0073A5D3`, `0x0073A780..0x0073AA63`.
 - Prior address-confirming reports: `TECHNOCLASS_RECEIVE_RADIO_DOCK_CASES_NAVCOM_GHIDRA_REPORT.md`, `UNITCLASS_0X418_DOCK_FLAG_LIFECYCLE_AND_CONSUMERS_GHIDRA_REPORT.md`, `UNITCLASS_PERCELLPROCESS_CALLER_TICK_ORDER_GHIDRA_REPORT.md`, `DRIVELOCOMOTOR_ACCEPTED_CELL_ARRIVAL_VISIBILITY_GHIDRA_REPORT.md`.
-- Stock INI evidence: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
+- Stock INI evidence: `ini/rulesmd.ini`.

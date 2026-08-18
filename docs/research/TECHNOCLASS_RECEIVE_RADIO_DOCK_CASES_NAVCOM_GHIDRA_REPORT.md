@@ -136,8 +136,8 @@ Not inspected or modified in this slot. The relevant parity requirement from thi
 - Ghidra `read_memory 0x006F4E5C`, `0x006F4E88`, `0x007F4AF4`, `0x007F5E04`, `0x007E8E28`
 - Ghidra `get_assembly_context` for `0x006F4B72`, `0x006F4BAD`, `0x006F4E3F`, `0x006F4E4C`
 - Ghidra `decompile_function 0x0065A820`, `0x005F5320`, `0x0043C2D0`, `0x00737430`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOCLASS_SET_DESTINATION_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RADIO_0x10_RESERVE_DOCK_SENDER_TRACE_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+- `docs/research/TECHNOCLASS_SET_DESTINATION_GHIDRA_REPORT.md`
+- `docs/research/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
+- `docs/research/miner/STANDARD_REFINERY_0X2E4_WRITER_INVENTORY_GHIDRA_REPORT.md`
+- `docs/research/miner/RADIO_0x10_RESERVE_DOCK_SENDER_TRACE_GHIDRA_REPORT.md`
+- `ini/rulesmd.ini`

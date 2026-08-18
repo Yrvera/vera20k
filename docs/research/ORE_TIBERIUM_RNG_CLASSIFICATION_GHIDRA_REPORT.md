@@ -253,7 +253,7 @@ AnimClass bouncer path:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIBTRE_ORE_SPAWNING_GHIDRA_REPORT.md` says `PlaceTiberium` "increases density by 3 if ore already exists" under `SpreadTiberium`. Replacement wording: `CellClass::PlaceTiberium has an additive branch for existing matching ore, but the verified TIBTRE SpreadTiberium caller prefilters candidates through CanPlaceTiberium, which requires an empty flat overlay cell; TIBTRE spread therefore does not intentionally choose existing ore cells in the verified path.`
+- `docs/research/TIBTRE_ORE_SPAWNING_GHIDRA_REPORT.md` says `PlaceTiberium` "increases density by 3 if ore already exists" under `SpreadTiberium`. Replacement wording: `CellClass::PlaceTiberium has an additive branch for existing matching ore, but the verified TIBTRE SpreadTiberium caller prefilters candidates through CanPlaceTiberium, which requires an empty flat overlay cell; TIBTRE spread therefore does not intentionally choose existing ore cells in the verified path.`
 - `src/sim/terrain_spawn.rs` comments say the two-phase model is collapsed because spawn-rate average is identical. Replacement wording for future Rust patch: `Do not collapse the two-phase TIBTRE animation model for parity; gamemd consumes the probability draw on animation start and the direction/placement draws only at animation midpoint, so collapse changes RNG order and cadence.`
 
 ## Sources
@@ -268,9 +268,9 @@ AnimClass bouncer path:
 - Ghidra decompilation: `TerrainTypeClass::ReadINI @ 0x0071DEA0`
 - Ghidra decompilation: `AnimTypeClass::ReadINI @ 0x00427D00`
 - Assembly contexts: `0x0071C755..0x0071C781`, `0x00483823..0x00483839`, `0x00483896..0x004838C5`, `0x0048725C..0x00487266`, `0x00424102..0x00424155`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIBTRE_ORE_SPAWNING_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TIBTRE_ANIMCLASS_ORE_SPAWN_TICK_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/terrain_spawn.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/ore_growth.rs`
+- `docs/research/TIBTRE_ORE_SPAWNING_GHIDRA_REPORT.md`
+- `docs/research/TIBTRE_ANIMCLASS_ORE_SPAWN_TICK_GHIDRA_REPORT.md`
+- `src/sim/terrain_spawn.rs`
+- `src/sim/ore_growth.rs`
 - `ini/rulesmd.ini`
 - `ini/artmd.ini`

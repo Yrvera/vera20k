@@ -150,5 +150,5 @@ Sources:
 
 - Ghidra MCP read-only decompile: `SidebarClass::Constructor @ 0x006A4EC0`, `SidebarClass::Draw @ 0x006A6C30`, `SidebarClass::BlitToScreen @ 0x006A70E0`.
 - Ghidra MCP byte-pattern search: `A8 53 00 00`, returning 27 operand occurrences in `.text`.
-- Local read-only Capstone disassembly of `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` `.text`, filtering real memory operands with displacement `0x53A8`.
+- Local read-only Capstone disassembly of `<ra2-install>/gamemd.exe` `.text`, filtering real memory operands with displacement `0x53A8`.
 - Prior related reports: `SIDEBAR_BLIT_TO_SCREEN_DIRTY_RECTS_GHIDRA_REPORT.md`, `SIDEBAR_DIRTY_RECTS_REDRAW_FLICKER_PIXEL_CADENCE_GHIDRA_REPORT.md`, `SIDEBAR_INIT_LAYOUT_GLOBALS_EXACT_RECHECK_GHIDRA_REPORT.md`.

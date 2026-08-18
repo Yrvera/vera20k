@@ -23,7 +23,7 @@ The missing static piece in older reports was centering. This report verifies th
 
 ## 2. Static Resource Geometry
 
-Resource parse was rechecked directly from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` at file offset `0x4F9A3C`.
+Resource parse was rechecked directly from `<ra2-install>/gamemd.exe` at file offset `0x4F9A3C`.
 
 | Item | Value | Evidence | Active in YR |
 |---|---:|---|---|
@@ -193,9 +193,9 @@ Current Rust delta:
 
 - Ghidra read-only decompile: `0x005D3490`, `0x00622650`, `0x00622B50`, `0x00622800`, `0x0060C7D0`, `0x00777060`, `0x00777080`.
 - Ghidra read-only disassembly ranges checked: `0x00622650..0x0062270F`, `0x00622F80..0x0062309F`, `0x0060C7D0..0x0060C8EF`, `0x00777060..0x0077714F`.
-- Resource bytes parsed directly from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` at file offset `0x4F9A3C`.
+- Resource bytes parsed directly from `<ra2-install>/gamemd.exe` at file offset `0x4F9A3C`.
 - Prior docs read:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/VALIDATION_MODAL_0X005D3490_PAINT_COMPOSITION_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_ACTIVATION_RECHECK_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/VALIDATION_MODAL_0X005D3490_DIALOG_TEMPLATE_CONTROL_RECTS_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/VALIDATION_MODAL_0X005D3490_PAINT_COMPOSITION_GHIDRA_REPORT.md`
+  - `docs/research/skirmish-ui/SKIRMISH_START_VALIDATION_MODAL_ACTIVATION_RECHECK_GHIDRA_REPORT.md`
 - Current Rust surfaces scanned: `src/ui/skirmish_shell/layout.rs`, `src/app_skirmish_shell_render/modals.rs`, `src/app_skirmish_shell_render/chrome.rs`, `src/app_skirmish_shell_render/text.rs`, `src/render/skirmish_shell_chrome.rs`, `src/app.rs`.

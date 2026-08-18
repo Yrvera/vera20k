@@ -87,12 +87,12 @@ All four passed. The test runs emitted unrelated existing warnings.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_SCROLLBAR_SOUNDS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_COMBO_DROPDOWN_SCROLLBAR_GEOMETRY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_VISUAL_PARITY_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_SIDE_COMBO_DROPDOWN_OPEN_SELECT_SCROLL_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- `docs/research/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_SCROLLBAR_SOUNDS_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_0X102_COMBO_DROPDOWN_SCROLLBAR_GEOMETRY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_COMBO_DROPDOWN_VISUAL_PARITY_GHIDRA_REPORT.md`
+- `docs/research/skirmish-ui/SKIRMISH_SIDE_COUNTRY_TEAM_FINAL_WRITES_GHIDRA_REPORT.md`
+- `docs/research/traces/SKIRMISH_SIDE_COMBO_DROPDOWN_OPEN_SELECT_SCROLL_TRACE.md`
+- `ini/rulesmd.ini`
+- `src/ui/skirmish_shell/state.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/app.rs`

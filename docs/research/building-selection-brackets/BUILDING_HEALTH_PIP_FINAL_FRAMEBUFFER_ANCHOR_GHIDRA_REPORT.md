@@ -47,7 +47,7 @@ final_y = draw_y - floor(canvas_height / 2) + frame_y
 
 Retail `PIPS.SHP` metadata from the existing retail asset load log:
 
-Source: `C:/Users/enok/Documents/ra2-engine-research/logs/bridge_stderr.txt`, lines around the `Pip atlas source` block.
+Source: `<local>/Documents/ra2-engine-research/logs/bridge_stderr.txt`, lines around the `Pip atlas source` block.
 
 ```text
 Pip atlas source: pips.shp (16x16, 21 frames)
@@ -134,5 +134,5 @@ Inference:
 - Ghidra decompile: `TechnoClass::DrawHealthBar @ 0x006F64A0`.
 - Ghidra decompile: `CC_Draw_Shape @ 0x004AED70`.
 - Ghidra decompile: `SHP_frame_rect_getter @ 0x0069E7E0`, `SHP_frame_data_getter @ 0x0069E740`, `SHP_frame_flag_check @ 0x0069E900`.
-- Retail asset metadata log: `C:/Users/enok/Documents/ra2-engine-research/logs/bridge_stderr.txt` (`Pip atlas source: pips.shp (16x16, 21 frames)` and frame rows).
+- Retail asset metadata log: `<local>/Documents/ra2-engine-research/logs/bridge_stderr.txt` (`Pip atlas source: pips.shp (16x16, 21 frames)` and frame rows).
 - Prior scoped reports: `TECHNO_DRAWHEALTHBAR_BUILDING_BRANCH_GHIDRA_REPORT.md`, `BUILDING_HEALTH_PIP_VISUAL_ANCHOR_CASES_GHIDRA_REPORT.md`.

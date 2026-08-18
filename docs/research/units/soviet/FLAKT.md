@@ -27,7 +27,7 @@ the projectile-level AA/AG routing pattern.
 
 ## rulesmd.ini — `[FLAKT]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4420`:
+Verbatim from `ini/rulesmd.ini:4420`:
 
 ```ini
 [FLAKT]
@@ -138,7 +138,7 @@ IFVMode=3
 
 ## artmd.ini — `[FLAKT]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:165`:
+`ini/artmd.ini:165`:
 
 ```ini
 [FLAKT] ; Flak Trooper

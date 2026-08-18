@@ -99,7 +99,7 @@ Active in YR: Conditional. Evidence: `0x006418B0` null-surface branch calls `Gen
 
 ## 4. Stock PreviewPack Check
 
-Retail sample `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map` contains `[Preview] Size=0,0,138,75`, `[PreviewPack]`, and `[Waypoints] 0=116070`, `1=34079`. Decoding the stock `[PreviewPack]` as base64-over-LZO chunks produced `31,050` bytes, exactly `138 * 75 * 3`.
+Retail sample `<ra2-install>/Dustbowl.map` contains `[Preview] Size=0,0,138,75`, `[PreviewPack]`, and `[Waypoints] 0=116070`, `1=34079`. Decoding the stock `[PreviewPack]` as base64-over-LZO chunks produced `31,050` bytes, exactly `138 * 75 * 3`.
 
 The decoded RGB payload contains exactly two solid `4x4` red components with bytes `(240,0,0)`: one at preview pixels `x=113..116, y=20..23`, and one at `x=23..26, y=56..59`. No BGR-interpreted red components were found for this sample.
 
@@ -136,5 +136,5 @@ Active in YR: Yes for this stock map data. Evidence: retail file `Dustbowl.map` 
 ## Sources
 
 - Ghidra decompile/assembly context: `0x00641140`, `0x00641770..0x0064188E`, `0x0068BD80`, `0x0068BCC0`, `0x0068BDC0`, `0x006D62E0`, `0x006418B0`, `0x00687CE0`, `0x00596300`, `0x00598960`.
-- Prior related report checked for duplication/context: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_GENERATE_TERRAIN_PREVIEW_BAKED_START_MARKERS_GHIDRA_REPORT.md`.
-- Retail sample: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
+- Prior related report checked for duplication/context: `docs/research/SKIRMISH_GENERATE_TERRAIN_PREVIEW_BAKED_START_MARKERS_GHIDRA_REPORT.md`.
+- Retail sample: `<ra2-install>/Dustbowl.map`.

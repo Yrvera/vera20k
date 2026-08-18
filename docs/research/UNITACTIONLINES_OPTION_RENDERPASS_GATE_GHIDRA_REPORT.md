@@ -204,6 +204,6 @@ This status is descriptive only; no Rust files were modified.
 - Ghidra decompiled: `0x005FA350`, `0x005FA620`, `0x005FAD10`, `0x004E1DE0`, `0x0055FAA0`, `0x0070D180`, `0x006D3D10`, `0x006DBE20`, `0x00472160`, `0x00472640`, `0x00637AA0`.
 - Ghidra assembly/disassembly: full `TacticalClass_Draw @ 0x006D3D10`; focused contexts at `0x005FACFD`, `0x004E1F3B`, `0x0055FB25`, `0x005602B4`, `0x004E2195`, `0x006D473F`, `0x006D478E`, `0x006D47BF`, `0x006D48F1`, caller sites `0x004F44DF`, `0x004F44F4`, `0x004F4515`.
 - Ghidra xrefs: `0x008331C8`, `0x00843108`, `0x00A8EB7E`, `0x0070D180`, `0x006D3D10`, `0x004DC340`.
-- Starting docs checked but not trusted as ground truth: `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_LINES_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/OPTIONS_DIALOG_CASE5_AND_FIELD_MAP_GHIDRA_REPORT.md`.
-- Retail/user INI checked: `C:/Users/enok/Documents/Command and Conquer Red Alert II/RA2.INI:12`.
+- Starting docs checked but not trusted as ground truth: `docs/research/TARGET_LINES_GHIDRA_REPORT.md`, `docs/research/OPTIONS_DIALOG_CASE5_AND_FIELD_MAP_GHIDRA_REPORT.md`.
+- Retail/user INI checked: `<ra2-install>/RA2.INI:12`.
 - Rust scan/context: `src/app_target_lines.rs`, `src/app_context_order.rs`, `src/app_render/build_instances.rs`, `src/app_render/draw_passes.rs`.

@@ -155,13 +155,13 @@ The selected and null-mode paths are mutually exclusive at the `DAT_00A8B23C` br
 
 ## 6. Current Rust Implementation Status
 
-Rust launch-session seeding is in `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs::apply_skirmish_launch_session`. It creates launch houses, applies alliance state, assigns waypoints, spawns MCVs, and sets base center. It does not parse or apply `[SpecialFlags] MCVDeploy` to selected-mode startup.
+Rust launch-session seeding is in `src/app_skirmish.rs::apply_skirmish_launch_session`. It creates launch houses, applies alliance state, assigns waypoints, spawns MCVs, and sets base center. It does not parse or apply `[SpecialFlags] MCVDeploy` to selected-mode startup.
 
-`C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs` has `mcv_redeploy`, which corresponds to the lobby redeploy option family, not selected-mode MCV auto-deploy.
+`src/skirmish_launch.rs` has `mcv_redeploy`, which corresponds to the lobby redeploy option family, not selected-mode MCV auto-deploy.
 
-`C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs::SpecialFlagsSection` parses `TiberiumGrows`, `TiberiumSpreads`, and `DestroyableBridges` only. It does not currently parse `MCVDeploy`.
+`src/map/basic.rs::SpecialFlagsSection` parses `TiberiumGrows`, `TiberiumSpreads`, and `DestroyableBridges` only. It does not currently parse `MCVDeploy`.
 
-`C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs` handles `Command::DeployMcv`, and `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs::deploy_mcv` immediately performs the current Rust deploy conversion after checks. This is player/AI deploy behavior, not selected-mode startup auto-deploy.
+`src/sim/world/world_commands.rs` handles `Command::DeployMcv`, and `src/sim/world/world_spawn.rs::deploy_mcv` immediately performs the current Rust deploy conversion after checks. This is player/AI deploy behavior, not selected-mode startup auto-deploy.
 
 Rust implication: do not add selected Battle/TeamGame/FreeForAll/Cooperative startup auto-deploy based on null-mode evidence. If a future implementation supports null-mode generator behavior, keep it separate from selected-mode Skirmish launch.
 
@@ -211,10 +211,10 @@ Rust implication: do not add selected Battle/TeamGame/FreeForAll/Cooperative sta
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCVDEPLOY_START_FLAG_AUTO_DEPLOY_GHIDRA_REPORT.md`: replace the top-level Active-in-YR claim with: `Active in YR: Conditional for the null-mode ScenarioClass__Generate_Random_Units path; No for verified selected-mode Skirmish callbacks. Standard selected Battle/TeamGame/ManBattle/FreeForAll/Coop use 0x005D7030, which has no MCVDeploy check or Force_MCV_Deploy call.`
+- `docs/research/MCVDEPLOY_START_FLAG_AUTO_DEPLOY_GHIDRA_REPORT.md`: replace the top-level Active-in-YR claim with: `Active in YR: Conditional for the null-mode ScenarioClass__Generate_Random_Units path; No for verified selected-mode Skirmish callbacks. Standard selected Battle/TeamGame/ManBattle/FreeForAll/Coop use 0x005D7030, which has no MCVDeploy check or Force_MCV_Deploy call.`
 - Same report, Overview: replace "standard skirmish/multiplayer startup" with "null-mode startup generation when `DAT_00A8B23C == null`; ordinary selected MPModes route through selected callbacks instead."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`: replace "In offline/skirmish mode, Generate_Random_Units is called directly" with: "`Generate_Random_Units` is called by `Post_Map_Init` only when no selected MPModes object is installed. Ordinary selected Skirmish routes through selected mode `+0x84` and `FUN_005D6D80`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md`: retain the caveat that MCVDeploy belongs to null-mode evidence; this report now closes the selected-mode question as "No for verified stock selected callbacks."
+- `docs/research/MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`: replace "In offline/skirmish mode, Generate_Random_Units is called directly" with: "`Generate_Random_Units` is called by `Post_Map_Init` only when no selected MPModes object is installed. Ordinary selected Skirmish routes through selected mode `+0x84` and `FUN_005D6D80`."
+- `docs/research/skirmish-ui/SKIRMISH_START_TO_FULL_INIT_SPAWN_TRACE.md`: retain the caveat that MCVDeploy belongs to null-mode evidence; this report now closes the selected-mode question as "No for verified stock selected callbacks."
 
 ## Negative Facts / Do Not Do
 
@@ -233,5 +233,5 @@ Rust implication: do not add selected Battle/TeamGame/FreeForAll/Cooperative sta
 - Ghidra decompiled/read-only: `0x00686990`, `0x005D6D80`, `0x005D7030`, `0x006886B0`, `0x004FC060`, `0x00740DF0`.
 - Raw retail `gamemd.exe` disassembly/read-only: `0x005D7030..0x005D70E2`, `0x005CAAC0..0x005CABC1`, `0x005CB440..0x005CB52F`, `0x00688BF2..0x00688C02`, `0x004FC060..0x004FC0AB`; direct callsite scan for `0x004FC060`, `0x00740DF0`, `0x005D7030`; vtable entries at `0x007EE184`, `0x007EE50C`, `0x007EE6FC`, `0x007EE814`, `0x007EE424`, `0x007EE27C`.
 - Prior docs referenced: `skirmish-ui/SKIRMISH_SPAWN_PLACEMENT_AFTER_ASSIGNED_START_GHIDRA_REPORT.md`, `skirmish-ui/SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SPECIAL_FLAGS_SYSTEM.md`, `MCVDEPLOY_START_FLAG_AUTO_DEPLOY_GHIDRA_REPORT.md`, `MCV_CREATION_STARTING_UNITS_DEEP_DIVE.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/basic.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_spawn.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/ai.rs`.
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`, `ini/mpmodesmd.ini`.
+- Rust scanned: `src/app_skirmish.rs`, `src/skirmish_launch.rs`, `src/map/basic.rs`, `src/sim/world/world_commands.rs`, `src/sim/world/world_spawn.rs`, `src/sim/ai.rs`.

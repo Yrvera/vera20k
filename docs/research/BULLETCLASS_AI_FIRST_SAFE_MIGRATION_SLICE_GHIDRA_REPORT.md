@@ -137,8 +137,8 @@ Required scope:
 
 Found stale wording relevant to future BulletClass math contracts:
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BULLET_CLASS_AI_GHIDRA_REPORT.md`: replace Key Constants row `RulesClass+0x5A0 | FlightLevel | Max altitude for lost-target detonation` with `RulesClass+0x5A0 | MissileSafetyAltitude | lost-target homing detonation threshold; FlightLevel is a separate Rules field used by aircraft flight AI`.
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`: replace "RulesClass+0x5A0 = FlightLevel" and "target coordinate is sentinel and bullet height is at least Rules.FlightLevel" with "RulesClass+0x5A0 = MissileSafetyAltitude; sentinel/lost-target homing detonation compares GetHeight() against MissileSafetyAltitude."
+- `docs/research/BULLET_CLASS_AI_GHIDRA_REPORT.md`: replace Key Constants row `RulesClass+0x5A0 | FlightLevel | Max altitude for lost-target detonation` with `RulesClass+0x5A0 | MissileSafetyAltitude | lost-target homing detonation threshold; FlightLevel is a separate Rules field used by aircraft flight AI`.
+- `docs/research/BULLETCLASS_TARGET_INVALIDATION_AAHEATSEEKER2_GHIDRA_REPORT.md`: replace "RulesClass+0x5A0 = FlightLevel" and "target coordinate is sentinel and bullet height is at least Rules.FlightLevel" with "RulesClass+0x5A0 = MissileSafetyAltitude; sentinel/lost-target homing detonation compares GetHeight() against MissileSafetyAltitude."
 
 No stale-doc file was modified in this slot.
 

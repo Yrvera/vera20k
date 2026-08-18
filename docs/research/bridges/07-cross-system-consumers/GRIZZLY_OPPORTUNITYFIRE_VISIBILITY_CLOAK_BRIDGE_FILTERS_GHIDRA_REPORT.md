@@ -110,7 +110,7 @@ Rust implication: do not make bridge mismatch a generic Z or deck-level filter f
 
 ## Stale-Doc Replacement Wording
 
-Suggested replacement for `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_ACQUISITION_GHIDRA_REPORT.md` lines around the old bullet 8:
+Suggested replacement for `docs/research/TARGET_ACQUISITION_GHIDRA_REPORT.md` lines around the old bullet 8:
 
 > `Evaluate_Candidate @ 0x006F7CA0` rejects candidates with target byte `+0x3D5 == 0`, and then applies a mission-timer / `vtable+0x1C8` gate before continuing. This scoped evidence does not prove the old "underground probabilistic detection" wording. Treat the exact lifecycle/name of `+0x3D5` as unresolved here; do not implement it as an underground random detection rule without a dedicated verification.
 

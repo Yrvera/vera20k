@@ -20,7 +20,7 @@ PASS: 5 | FAIL: 0 | UNCHECKED: 1 | NOT-IMPLEMENTED: 0
 
 ## Stage 1 - gamemd Startup Direction Table
 
-Rust surface for comparison: `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:330`
+Rust surface for comparison: `src/util/fixed_math.rs:330`
 
 gamemd evidence:
 
@@ -53,7 +53,7 @@ Verdict: PASS.
 
 ## Stage 2 - gamemd Facing Byte Table
 
-Rust surface for comparison: `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:280`
+Rust surface for comparison: `src/util/fixed_math.rs:280`
 
 gamemd evidence:
 
@@ -80,7 +80,7 @@ Verdict: PASS.
 
 ## Stage 3 - Rust `facing_from_delta_int`
 
-Rust surface: `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:280`
+Rust surface: `src/util/fixed_math.rs:280`
 
 Formula:
 
@@ -109,8 +109,8 @@ Verdict: PASS.
 
 Rust surfaces:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:330`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track.rs:3547`
+- `src/util/fixed_math.rs:330`
+- `src/sim/movement/drive_track.rs:3547`
 
 Rust formulas:
 
@@ -138,11 +138,11 @@ Verdict: PASS.
 
 Rust consumers:
 
-- Movement command setup calls `facing_from_delta`: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_commands.rs:118`, `:344`
-- Movement step/tick recomputes path-step facing: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_step.rs:87`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/movement_tick.rs:328`, `:816`
-- Combat target-facing writes call the same helper: `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:477`, `:543`
+- Movement command setup calls `facing_from_delta`: `src/sim/movement/movement_commands.rs:118`, `:344`
+- Movement step/tick recomputes path-step facing: `src/sim/movement/movement_step.rs:87`, `src/sim/movement/movement_tick.rs:328`, `:816`
+- Combat target-facing writes call the same helper: `src/sim/combat/mod.rs:477`, `:543`
 - Air, rocket, tube, tunnel movement use the same helper path.
-- Turret body-facing expansion uses `body << 8`: `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/turret.rs:69`
+- Turret body-facing expansion uses `body << 8`: `src/sim/movement/turret.rs:69`
 
 Computed output:
 
@@ -156,10 +156,10 @@ Verdict: PASS for the byte table values consumed by these paths.
 
 Rust test surfaces:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:485`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:499`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:819`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track_tests.rs:211`
+- `src/util/fixed_math.rs:485`
+- `src/util/fixed_math.rs:499`
+- `src/util/fixed_math.rs:819`
+- `src/sim/movement/drive_track_tests.rs:211`
 
 Findings:
 
@@ -184,7 +184,7 @@ None for the scoped compass-name facing byte table.
 
 ## Adjacent Findings
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs:284` still has stale explanatory comments saying `(dx=1,dy=0)` is NE and `(dx=1,dy=1)` is E. The code and tests produce `E=64` and `SE=96`, matching gamemd. This is documentation drift, not a player-visible mismatch.
+- `src/util/fixed_math.rs:284` still has stale explanatory comments saying `(dx=1,dy=0)` is NE and `(dx=1,dy=1)` is E. The code and tests produce `E=64` and `SE=96`, matching gamemd. This is documentation drift, not a player-visible mismatch.
 - Rounding-boundary behavior around values such as `15/16` and invalid direction bytes is intentionally outside this slot.
 - Direction id `8` tube sentinel and invalid `9..255` direction-index behavior are outside this slot.
 
@@ -196,11 +196,11 @@ None.
 
 - Direct read-only Ghidra decompile: `Foundation_direction_table_init @ 0x0049F2F0`
 - Direct read-only Ghidra data-xref count: `g_DirectionOffsets @ 0x0089F688`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/DRIVE_TRACK_TABLES_DEEP_DECODE.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CLASS_SCATTER_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game/src/util/fixed_math.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/movement/drive_track_tests.rs`
+- `docs/research/FACING_BYTE_VS_DIRECTION_INDEX_GHIDRA_REPORT.md`
+- `docs/research/DRIVE_TRACK_TABLES_DEEP_DECODE.md`
+- `docs/research/UNIT_CLASS_SCATTER_GHIDRA_REPORT.md`
+- `src/util/fixed_math.rs`
+- `src/sim/movement/drive_track.rs`
+- `src/sim/movement/drive_track_tests.rs`
 
 Status: COMPLETE

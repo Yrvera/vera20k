@@ -163,9 +163,9 @@ Mismatch/risk: `src/sim/movement/movement_tick.rs` still applies acceleration/de
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`: replace the field-table wording for `TechnoTypeClass+0x678` from `Crushability(?)` with: "`Speed=` parsed/scaled value; `ReadINI @ 0x0071464C..0x00714699` reads default `-1`, skips write on `-1`, clamps raw to `0..100`, scales by `*256/100`, clamps to `0..255`, and stores at `+0x678`. Read by `TechnoClass::GetTypeSpeed @ 0x0070EFE0` and `FootClass::GetCurrentSpeed @ 0x004DB1A0`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/DRIVE_LOCOMOTION_CLASS.md`: replace any generic `decel_steps` label for `TechnoTypeClass+0x678` in Drive speed prose with: "`+0x678` is the parsed/scaled `Speed=` field; Drive's true-branch deceleration multiplies this type speed by `DeaccelerationFactor`, while final movement budget comes from `FootClass::GetCurrentSpeed`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/timing/movement-speed-turn-rate.md`: replace "Accelerates=false jumps straight to max_speed" with: "`Accelerates=false` in normal Drive assigns the already computed `DriveLocomotion+0x50` target speed fraction to `TechnoClass+0x578`; this target may already include terrain, slope, and health modifiers, so it is not necessarily `1.0`."
+- `docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`: replace the field-table wording for `TechnoTypeClass+0x678` from `Crushability(?)` with: "`Speed=` parsed/scaled value; `ReadINI @ 0x0071464C..0x00714699` reads default `-1`, skips write on `-1`, clamps raw to `0..100`, scales by `*256/100`, clamps to `0..255`, and stores at `+0x678`. Read by `TechnoClass::GetTypeSpeed @ 0x0070EFE0` and `FootClass::GetCurrentSpeed @ 0x004DB1A0`."
+- `docs/research/DRIVE_LOCOMOTION_CLASS.md`: replace any generic `decel_steps` label for `TechnoTypeClass+0x678` in Drive speed prose with: "`+0x678` is the parsed/scaled `Speed=` field; Drive's true-branch deceleration multiplies this type speed by `DeaccelerationFactor`, while final movement budget comes from `FootClass::GetCurrentSpeed`."
+- `docs/research/timing/movement-speed-turn-rate.md`: replace "Accelerates=false jumps straight to max_speed" with: "`Accelerates=false` in normal Drive assigns the already computed `DriveLocomotion+0x50` target speed fraction to `TechnoClass+0x578`; this target may already include terrain, slope, and health modifiers, so it is not necessarily `1.0`."
 
 ## Sources
 

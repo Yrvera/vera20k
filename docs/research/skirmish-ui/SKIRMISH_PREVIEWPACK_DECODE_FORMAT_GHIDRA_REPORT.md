@@ -170,6 +170,6 @@ Current Rust only records metadata:
 - Ghidra: `0x0042DDB0`, `0x0042FD30`, `0x0042FE50` INI binary text codec.
 - Ghidra: `LZOPipe__Constructor`, `0x0055C350`, `0x0055BB90`, `0x0055C0E0`, `0x00631CC0`, `0x00631D10` pipe and LZO chunk behavior.
 - Ghidra string reports: `PreviewPack` at `0x00836DD0`, `Preview` at `0x00836DDC`.
-- Retail data: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map`.
-- Parent report: `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`.
-- Rust status: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`.
+- Retail data: `<ra2-install>/Dustbowl.map`.
+- Parent report: `docs/research/SKIRMISH_MAP_PREVIEW_SOURCE_BOUNDS_AND_PREVIEWPACK_GHIDRA_REPORT.md`.
+- Rust status: `src/map/preview.rs`.

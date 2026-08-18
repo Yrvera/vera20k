@@ -116,14 +116,14 @@ Because `SetInOpenTransport` calls `FUN_0055BAA0` after hiding/resetting the pas
 
 Rust already parses much of the data needed:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:568` parses/stores `open_topped`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs:581` stores `open_transport_weapon`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/weapon_type.rs:80` parses `OpenToppedAnim`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/rules/weapon_type.rs:138` parses `FireInTransport`.
+- `src/rules/object_type.rs:568` parses/stores `open_topped`.
+- `src/rules/object_type.rs:581` stores `open_transport_weapon`.
+- `src/rules/weapon_type.rs:80` parses `OpenToppedAnim`.
+- `src/rules/weapon_type.rs:138` parses `FireInTransport`.
 
-Rust boarding currently hides the passenger by changing `PassengerRole::Inside`, clears radio contacts, and clears movement/attack/order state at `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:478` and `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:729`. It also stores an OpenTransport weapon override on the transport at `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:490` and `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:745`.
+Rust boarding currently hides the passenger by changing `PassengerRole::Inside`, clears radio contacts, and clears movement/attack/order state at `src/sim/passenger.rs:478` and `src/sim/passenger.rs:729`. It also stores an OpenTransport weapon override on the transport at `src/sim/passenger.rs:490` and `src/sim/passenger.rs:745`.
 
-The key mismatch is in combat ticking: `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs:1370` skips all entities whose `PassengerRole` is inside a transport, with the OpenTopped case explicitly deferred. That contradicts the verified active-vector registration in gamemd. Rust also appears to put the OpenTransport weapon override on the transport, whereas gamemd's stock OpenTopped architecture keeps passengers active and lets their own weapon-selection path observe `Techno+0x82`.
+The key mismatch is in combat ticking: `src/sim/combat/mod.rs:1370` skips all entities whose `PassengerRole` is inside a transport, with the OpenTopped case explicitly deferred. That contradicts the verified active-vector registration in gamemd. Rust also appears to put the OpenTransport weapon override on the transport, whereas gamemd's stock OpenTopped architecture keeps passengers active and lets their own weapon-selection path observe `Techno+0x82`.
 
 ## 7. Coverage Ledger
 
@@ -157,10 +157,10 @@ The key mismatch is in combat ticking: `C:/Users/enok/Documents/ra2-rust-game/sr
 
 | Verified behavior | Evidence | Current Rust delta | Affected Rust surface | Required implementation effect | Acceptance scenario | Risk / do-not-do |
 |---|---|---|---|---|---|---|
-| OpenTopped boarding sets passenger contained flag, clears destination/target/ghost state through `+0x3D0`, then registers the passenger in LogicClass active order. | `0x00710470` decompile/bytes; `0x0070F850` decompile/bytes; vtable reads | partial/mismatch: Rust hides passenger and clears some state, but active combat tick is skipped | `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs` | Represent OpenTopped-contained passengers as hidden/contained but still live-active; clear movement target, attack/archive target, ghost/rally pointer equivalent, and mission/order to guard-id-equivalent before active tick continues | BFRT with one GI passenger boards; next combat tick still considers the passenger from active order while body remains absent from cell occupancy | Do not model OpenTopped as transport-owned weapon fire only; gamemd keeps passengers active |
-| The `+0x3D0` wrapper does not call `ObjectClass::Conceal` and does not set `Object+0x81` InLimbo. | `0x0070F850` body lacks Conceal call and `+0x81` write; compare `ObjectClass::Conceal @ 0x005F4D30` | unchecked/likely mismatch if Rust equates all `PassengerRole::Inside` with limbo/despawn semantics | `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`; occupancy/render filtering surfaces | Keep separate state for contained-open-transport vs true limbo/despawn; hidden body should not imply removal from active-order or death cleanup | Save/load or tick snapshot with BFRT passenger preserves entity and active-order membership while occupancy excludes passenger body | Do not unregister live object when entering an OpenTopped transport |
-| Clear helpers only reset `+0x82`; they do not undo destination/mission state by themselves. | `0x007104A0` and `0x007104C0` decompile/bytes | unchecked: Rust unload restores `PassengerRole::None` and occupancy, but exact clear ordering vs mission/destination is not proven | `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs:1002` and unload/death paths | Unload/death clear of OpenTopped contained flag should be explicit and not assumed to restore all order fields unless separately verified | BFRT unload clears contained flag and occupancy is restored; active-order position is preserved or changed only by a verified native path | Do not use `ClearInOpenTransport` as a full unhide/unlimbo operation |
-| Weapon selection for OpenTopped should be passenger-owned while `+0x82` is set, using passenger `OpenTransportWeapon`; the `SetInOpenTransport` path prepares the passenger for that by keeping it active. | `0x00710470`; prior IFV/OpenTopped report; Rust scan shows transport override | mismatch risk: Rust stores `WeaponOverride::OpenTransport` on the transport, not necessarily on/passenger-through the passenger | `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/combat_weapon.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs` | Combat should let eligible contained passengers select/fire their own OpenTransport weapon from active order, subject to later verified range/ROF rules | BFRT with two different passenger weapon slots fires per-passenger ROF/weapon selection, not a single transport override | Do not collapse multiple passengers into one transport weapon override |
+| OpenTopped boarding sets passenger contained flag, clears destination/target/ghost state through `+0x3D0`, then registers the passenger in LogicClass active order. | `0x00710470` decompile/bytes; `0x0070F850` decompile/bytes; vtable reads | partial/mismatch: Rust hides passenger and clears some state, but active combat tick is skipped | `src/sim/passenger.rs`; `src/sim/world/mod.rs`; `src/sim/combat/mod.rs` | Represent OpenTopped-contained passengers as hidden/contained but still live-active; clear movement target, attack/archive target, ghost/rally pointer equivalent, and mission/order to guard-id-equivalent before active tick continues | BFRT with one GI passenger boards; next combat tick still considers the passenger from active order while body remains absent from cell occupancy | Do not model OpenTopped as transport-owned weapon fire only; gamemd keeps passengers active |
+| The `+0x3D0` wrapper does not call `ObjectClass::Conceal` and does not set `Object+0x81` InLimbo. | `0x0070F850` body lacks Conceal call and `+0x81` write; compare `ObjectClass::Conceal @ 0x005F4D30` | unchecked/likely mismatch if Rust equates all `PassengerRole::Inside` with limbo/despawn semantics | `src/sim/passenger.rs`; occupancy/render filtering surfaces | Keep separate state for contained-open-transport vs true limbo/despawn; hidden body should not imply removal from active-order or death cleanup | Save/load or tick snapshot with BFRT passenger preserves entity and active-order membership while occupancy excludes passenger body | Do not unregister live object when entering an OpenTopped transport |
+| Clear helpers only reset `+0x82`; they do not undo destination/mission state by themselves. | `0x007104A0` and `0x007104C0` decompile/bytes | unchecked: Rust unload restores `PassengerRole::None` and occupancy, but exact clear ordering vs mission/destination is not proven | `src/sim/passenger.rs:1002` and unload/death paths | Unload/death clear of OpenTopped contained flag should be explicit and not assumed to restore all order fields unless separately verified | BFRT unload clears contained flag and occupancy is restored; active-order position is preserved or changed only by a verified native path | Do not use `ClearInOpenTransport` as a full unhide/unlimbo operation |
+| Weapon selection for OpenTopped should be passenger-owned while `+0x82` is set, using passenger `OpenTransportWeapon`; the `SetInOpenTransport` path prepares the passenger for that by keeping it active. | `0x00710470`; prior IFV/OpenTopped report; Rust scan shows transport override | mismatch risk: Rust stores `WeaponOverride::OpenTransport` on the transport, not necessarily on/passenger-through the passenger | `src/sim/combat/combat_weapon.rs`; `src/sim/combat/mod.rs` | Combat should let eligible contained passengers select/fire their own OpenTransport weapon from active order, subject to later verified range/ROF rules | BFRT with two different passenger weapon slots fires per-passenger ROF/weapon selection, not a single transport override | Do not collapse multiple passengers into one transport weapon override |
 
 Proposed test names:
 
@@ -179,8 +179,8 @@ Proposed test names:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`: replace "`unit.vtable[0x3D0](unit) // some virtual notification`" with "`unit.vtable[0x3D0]()` resolves to shared `0x0070F850`; it calls `+0x480(0,1)`, `+0x3C8(0)`, clears `Techno+0x218`, and calls `+0x1F0(5)` before `SetInOpenTransport` registers the passenger in LogicClass."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BULLETCLASS_LIFECYCLE_AND_TIER1_VERIFICATIONS_GHIDRA_REPORT.md`: replace "`vtable+0x3D0 (Hide / RemoveFromMap-ish)`" with "`vtable+0x3D0 -> 0x0070F850, a hide/prep helper that clears destination/target/ghost state and assigns mission id 5; it is not `ObjectClass::Conceal` and does not itself remove LogicClass membership."
+- `docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`: replace "`unit.vtable[0x3D0](unit) // some virtual notification`" with "`unit.vtable[0x3D0]()` resolves to shared `0x0070F850`; it calls `+0x480(0,1)`, `+0x3C8(0)`, clears `Techno+0x218`, and calls `+0x1F0(5)` before `SetInOpenTransport` registers the passenger in LogicClass."
+- `docs/research/BULLETCLASS_LIFECYCLE_AND_TIER1_VERIFICATIONS_GHIDRA_REPORT.md`: replace "`vtable+0x3D0 (Hide / RemoveFromMap-ish)`" with "`vtable+0x3D0 -> 0x0070F850, a hide/prep helper that clears destination/target/ghost state and assigns mission id 5; it is not `ObjectClass::Conceal` and does not itself remove LogicClass membership."
 
 ## Sources
 
@@ -197,14 +197,14 @@ Proposed test names:
   - `0x007EB428`, `0x007F6040`, `0x007E9064`, `0x007E428C`, `0x007E2674`, `0x007F4D30`
   - `0x007EB4D8`, `0x007F60F0`, `0x007EB420`, `0x007F6038`, `0x007EB248`, `0x007F5E60`
 - Research docs referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/BULLETCLASS_LIFECYCLE_AND_TIER1_VERIFICATIONS_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/LOGIC_OBJECT_REGISTRATION_HELPER_FUN_0055BAA0_GHIDRA_REPORT.md`
+  - `docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
+  - `docs/research/BULLETCLASS_LIFECYCLE_AND_TIER1_VERIFICATIONS_GHIDRA_REPORT.md`
+  - `docs/research/LOGIC_OBJECT_REGISTRATION_HELPER_FUN_0055BAA0_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
+  - `ini/rulesmd.ini`
 - Rust scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/passenger.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/object_type.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/weapon_type.rs`
+  - `src/sim/passenger.rs`
+  - `src/sim/combat/mod.rs`
+  - `src/sim/world/mod.rs`
+  - `src/rules/object_type.rs`
+  - `src/rules/weapon_type.rs`

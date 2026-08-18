@@ -84,5 +84,5 @@ One wording trap remains in older static-paint docs: `OwnerDraw_Static_006153E0`
 
 - Ghidra read-only assembly context: `0x00610CA0`, `0x00611B3B`, `0x00611BC1`, `0x00611C63`, `0x00611C72`, `0x00611C8A`, `0x00611C99`, `0x00611CA8`, `0x00611CAF`, `0x00612318`, `0x00612344`, `0x0061234B`, `0x0060FF05`, `0x00610333`.
 - Ghidra read-only decompile: `0x006153E0`, `0x0060F9A0`, `0x00623560`, `0x00602490`, `0x0060A5B0`, `0x005E2EF0`, `0x005E2F60`, `0x006AE6E0`, `0x006ACEE0`.
-- Prior docs checked: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/SHELL_SUBCLASS_THUNK_00610CA0_TEXT_UPDATE_PLUMBING_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`.
+- Prior docs checked: `docs/research/skirmish-ui/SKIRMISH_TEXT_PREVIEW_STATIC_CONTROLS_GHIDRA_REPORT.md`, `docs/research/SHELL_SUBCLASS_THUNK_00610CA0_TEXT_UPDATE_PLUMBING_GHIDRA_REPORT.md`, `docs/research/OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_OWNERDRAW_CALLBACKS_GHIDRA_REPORT.md`.
 - INI files checked: none; this is shell HWND/message/CSF/runtime-buffer behavior, not INI-driven.

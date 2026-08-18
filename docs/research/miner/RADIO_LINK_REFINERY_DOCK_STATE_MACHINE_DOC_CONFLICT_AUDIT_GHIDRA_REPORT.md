@@ -1,8 +1,8 @@
 # Radio Link Refinery Dock State Machine - Doc Conflict Audit
 
 **Date:** 2026-05-24
-**Target document:** `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
-**Canonical comparison:** `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`
+**Target document:** `docs/research/miner/RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPORT.md`
+**Canonical comparison:** `docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`
 **Investigation mode:** exhaustive-slice for the requested stale-doc conflict anchors only.
 **Active in YR:** Yes for all stock `CMIN/HARV -> GAREFN/NAREFN` findings below.
 
@@ -119,5 +119,5 @@ Apply these replacements to `RADIO_LINK_REFINERY_DOCK_STATE_MACHINE_GHIDRA_REPOR
 
 - Ghidra decompile/read-only spot-checks: `004D9290`, `0043C2D0`, `00737430`, `00739EC0`, `0073E277`, `006F4AB0`, `004595C0`.
 - Assembly ranges checked: `004D9290-004D9497`, `0043C2D0-0043CDBF`, `00737430-00737B37`, `00739EC0-0073B30F`, `0073D5B0-0073E617`, `006F4AB0-006F4E33`, `004595C0-00459975`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
+- `docs/research/miner/STOCK_REFINERY_DOCK_UNLOAD_STATE_MACHINE_CURRENT_SYSTEM_MODEL_SYNTHESIS.md`.
 - Rust scan: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/mod.rs`, `src/sim/miner/miner_tests.rs`.

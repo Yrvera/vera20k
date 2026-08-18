@@ -171,14 +171,14 @@ Potential delta: if Rust intentionally supports the nonstandard JumpJet-infantry
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`: replace "locomotor-kind 0xF + `vtable+0x4C` (Drive-class hook)" wording with "`AStar_pathfind_search` calls object `WhatAmI` via vtable `+0x2C`; value `0xF` is InfantryClass, not a locomotor kind. If that Infantry object's type has `JumpJet=yes` (`TechnoType+0xD94`), the function coerces the local movement-zone row to `7` (`Infantry`) and then performs a non-routing `IID_IPersist::GetClassID` query on the locomotor."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FLY_JUMPJET_ROW9_PATH_ENTRY_AUDIT_GHIDRA_REPORT.md`: narrow "Would A* consume Fly row 9 if entered with row 9?" to "A* consumes the supplied/derived row normally, except JumpJet infantry: `0x0042CA4F..0x0042CA69` rewrites the local row to `7` before `Zone_precheck`/A*."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MINER_DOCK_GAPS_RESEARCH.md`: replace "`TypeClass+0xD94` (Teleporter=yes)" with "`TypeClass+0xD94` is `JumpJet=yes`; Teleporter is a different field and must not be inferred from this offset."
+- `docs/research/BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`: replace "locomotor-kind 0xF + `vtable+0x4C` (Drive-class hook)" wording with "`AStar_pathfind_search` calls object `WhatAmI` via vtable `+0x2C`; value `0xF` is InfantryClass, not a locomotor kind. If that Infantry object's type has `JumpJet=yes` (`TechnoType+0xD94`), the function coerces the local movement-zone row to `7` (`Infantry`) and then performs a non-routing `IID_IPersist::GetClassID` query on the locomotor."
+- `docs/research/FLY_JUMPJET_ROW9_PATH_ENTRY_AUDIT_GHIDRA_REPORT.md`: narrow "Would A* consume Fly row 9 if entered with row 9?" to "A* consumes the supplied/derived row normally, except JumpJet infantry: `0x0042CA4F..0x0042CA69` rewrites the local row to `7` before `Zone_precheck`/A*."
+- `docs/research/miner/MINER_DOCK_GAPS_RESEARCH.md`: replace "`TypeClass+0xD94` (Teleporter=yes)" with "`TypeClass+0xD94` is `JumpJet=yes`; Teleporter is a different field and must not be inferred from this offset."
 
 ## Sources
 
-- Raw assembly read from retail `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`: `0x0042C900..0x0042CCCC`, target `0x0042CA4F..0x0042CABC`; `0x004CBBA0..0x004CBC3B`; `0x00523340`.
+- Raw assembly read from retail `<ra2-install>/gamemd.exe`: `0x0042C900..0x0042CCCC`, target `0x0042CA4F..0x0042CABC`; `0x004CBBA0..0x004CBC3B`; `0x00523340`.
 - Data bytes read from retail binary: GUID at `0x00818858`; strings at `0x008187F0`, `0x00818820`.
 - Existing reports referenced: `ASTAR_PATHFIND_SEARCH_0042C900_RETRY_SEMANTICS_GHIDRA_REPORT.md`, `BRIDGE_ASTAR_DUAL_CLOSED_LIST_GHIDRA_REPORT.md`, `TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`, `units/allied/JUMPJET.md`, `FLY_JUMPJET_ROW9_PATH_ENTRY_AUDIT_GHIDRA_REPORT.md`, `ABSTRACTCLASS_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
+- INI checked: `ini/rulesmd.ini`, `ini/rules.ini`.
 - Rust scanned read-only: `src/rules/locomotor_type.rs`, `src/rules/object_type.rs`, `src/sim/world/world_commands.rs`, `src/sim/movement/jumpjet_movement.rs`, `src/sim/pathfinding/zone_search.rs`.

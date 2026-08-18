@@ -26,7 +26,7 @@ This is a quick-reference doc; cross-reference the canonical
 
 ## rulesmd.ini — `[SENGINEER]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:4461`:
+Verbatim from `ini/rulesmd.ini:4461`:
 
 ```ini
 [SENGINEER]
@@ -167,7 +167,7 @@ INI blocks.
 
 ## Voices and sounds
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini`:
+`ini/soundmd.ini`:
 
 | INI key on SENGINEER | soundmd block | Resolved samples |
 |---------------------|---------------|------------------|

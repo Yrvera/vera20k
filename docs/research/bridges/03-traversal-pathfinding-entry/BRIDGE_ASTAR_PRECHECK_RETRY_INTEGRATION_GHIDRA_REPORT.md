@@ -178,13 +178,13 @@ No INI key is read directly by the scoped retry functions.
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
+- `docs/research/ZONE_PRECHECK_0042C290_HIERARCHY_EXCLUSIONS_GHIDRA_REPORT.md`
   - Replace: "Current code excludes whole zones (`BTreeSet<ZoneId>`) after corridor failure"
   - With: "Current Rust now stores canonical `ZoneEdge` exclusions and excludes corridor edges after failed corridor A*. It remains non-parity because it derives exclusions from the failed Rust corridor, not from gamemd's `UpdateHierarchicalEdges` / `FloodFillReachableZones` / stored-zone-path invalidation contract."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ZONE_REBUILD_ASTAR_RETRY_HELPERS_0056C510_0042C290_GHIDRA_REPORT.md`
+- `docs/research/ZONE_REBUILD_ASTAR_RETRY_HELPERS_0056C510_0042C290_GHIDRA_REPORT.md`
   - Replace: "`zone_search.rs` stores `BTreeSet<ZoneId>` and extends it with every corridor zone after failure."
   - With: "`zone_search.rs` now stores `BTreeSet<ZoneEdge>` and excludes corridor edges, but still lacks the binary producer semantics that choose which edge(s) to append after failed hierarchical A*."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
+- `docs/research/PATHFINDER_ZONE_EDGE_UPDATE_INVALIDATION_GHIDRA_REPORT.md`
   - Replace the integration table line: "1 attempt when `param_6 == -1`, 5 when `param_6 != -1`."
   - With: "5 total attempts when `param_6 == -1`, 1 total attempt when `param_6 != -1`."
 

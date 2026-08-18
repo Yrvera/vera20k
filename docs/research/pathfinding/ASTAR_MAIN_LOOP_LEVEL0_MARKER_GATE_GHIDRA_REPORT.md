@@ -168,6 +168,6 @@ Foundation First is safe to continue only with this refinement: replace `expand_
 - Ghidra decompile/read-only assembly: `AStar_main_loop @ 0x00429A90`
 - Ghidra decompile/read-only assembly: `Zone_precheck @ 0x0042C290`
 - Ghidra decompile/read-only assembly: `AStar_pathfind_search @ 0x0042C900`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_ASTAR_PRECHECK_RETRY_INTEGRATION_GHIDRA_REPORT.md`
+- `docs/research/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_ASTAR_PRECHECK_RETRY_INTEGRATION_GHIDRA_REPORT.md`
 - Rust scan: `src/sim/pathfinding/zone_search.rs`, `src/sim/pathfinding/core.rs`

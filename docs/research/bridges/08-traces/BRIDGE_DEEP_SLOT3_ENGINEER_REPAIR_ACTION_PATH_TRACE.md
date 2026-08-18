@@ -78,13 +78,13 @@ Current Rust facts:
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TECH_CABHUT_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/traces/ENGINEER_CABHUT_ACTION_GATE_HIGH_BRIDGE_TRACE.md`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_cursor.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_context_order.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/cursor_atlas.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_commands.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
+- `docs/research/TECH_CABHUT_GHIDRA_REPORT.md`
+- `docs/research/BRIDGE_REPAIR_AND_HUT_DEATH_GHIDRA_REPORT.md`
+- `docs/research/traces/ENGINEER_CABHUT_ACTION_GATE_HIGH_BRIDGE_TRACE.md`
+- `ini/rulesmd.ini`
+- `src/app_cursor.rs`
+- `src/app_context_order.rs`
+- `src/render/cursor_atlas.rs`
+- `src/sim/world/world_commands.rs`
+- `src/sim/world/world_orders.rs`
 

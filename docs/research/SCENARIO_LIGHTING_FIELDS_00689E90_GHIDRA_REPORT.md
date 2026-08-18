@@ -169,7 +169,7 @@ Active in YR: Conditional. These are active only during their superweapon visual
 | `[Lighting]` | `DominatorAmbient`, `DominatorRed`, `DominatorGreen`, `DominatorBlue` | Yes | `ftol(value * 100 + 0.01)` | reset `150/85/20/30`; template has Dominator keys | Conditional |
 | `[Lighting]` | `DominatorGround`, `DominatorLevel`, `DominatorAmbientChangeRate` | Yes | `ftol(value * 250 + 0.01)` | reset `0/0/1`; template has Dominator keys | Conditional |
 
-Template evidence: `C:/Users/enok/Documents/Command and Conquer Red Alert II/FinalAlert2/StdMapRA2.ini:34-53`.
+Template evidence: `<ra2-install>/FinalAlert2/StdMapRA2.ini:34-53`.
 
 ## 5. Integration Points
 
@@ -185,7 +185,7 @@ Template evidence: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Fin
 
 ## 6. Current Rust Implementation Status
 
-Rust parses ordinary `[Lighting]` in [src/map/lighting.rs](C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs:65) and builds the grid from [src/app_init.rs](C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs:339).
+Rust parses ordinary `[Lighting]` in [src/map/lighting.rs](src/map/lighting.rs:65) and builds the grid from [src/app_init.rs](src/app_init.rs:339).
 
 Observed deltas:
 
@@ -261,5 +261,5 @@ Stale Docs / Follow-up Docs:
 - Ghidra decompiled/read-only: `0x00689E90`, `0x00686B20`, `0x006832C0`, `0x00683610`, `0x00484180`, `0x00483E30`, `0x00484050`, `0x00484680`, `0x004AE450`, `0x004AE4C0`, `0x005558E0`, `0x00568C90`, `0x00545000`, `0x00554AF0`, `0x00554D50`, `0x0053A100`, `0x0053B400`, `0x0053A110`, `0x0053AD00`.
 - Assembly contexts: `0x0068A817..0x0068AC9A`, `0x005558E0..0x00555A9E`.
 - Existing docs referenced: `CELL_COMPUTE_ZADJUST_FORMULA_GHIDRA_REPORT.md`, `MAP_LIGHTING_AND_LIGHT_POSTS_SYSTEM_MODEL_SYNTHESIS.md`, `FUN_00483E30_BRIDGE_Z_AT_MAP_LOAD_GHIDRA_REPORT.md`.
-- INI/template checked: `C:/Users/enok/Documents/Command and Conquer Red Alert II/FinalAlert2/StdMapRA2.ini`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/map/lighting.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`.
+- INI/template checked: `<ra2-install>/FinalAlert2/StdMapRA2.ini`.
+- Rust scanned: `src/map/lighting.rs`, `src/app_init.rs`.

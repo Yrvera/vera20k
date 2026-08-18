@@ -70,7 +70,7 @@ Out-of-range color item data returns `0` from `0x004E42A0`. Active in YR: Yes, a
 
 ## 4. Current Rust Implementation Status
 
-Current Rust status help in `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state/hit_test.rs` returns generic combo help for side/color controls: `STT:SkirmishComboCountry` and `STT:SkirmishComboColor` at lines `196..203`. It has AI-row item-specific keys at lines `206..212`, but no side/country or color item-data-specific status key table yet. Active in YR: mismatch for open side/color dropdown item help when native item-specific helpers apply.
+Current Rust status help in `src/ui/skirmish_shell/state/hit_test.rs` returns generic combo help for side/color controls: `STT:SkirmishComboCountry` and `STT:SkirmishComboColor` at lines `196..203`. It has AI-row item-specific keys at lines `206..212`, but no side/country or color item-data-specific status key table yet. Active in YR: mismatch for open side/color dropdown item help when native item-specific helpers apply.
 
 ## 5. Coverage Ledger
 
@@ -111,8 +111,8 @@ Current Rust status help in `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmi
 
 ## 9. Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/units/structures/YACNST.md`: no replacement needed for the existing `STT:PlayerSideYuriCountry` wording; this report confirms that exact key spelling.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`: no replacement needed for the listed color key spelling/order as a key-availability claim; this report confirms the exact stock keys including `STT:PlayerColorObserver`.
+- `docs/research/units/structures/YACNST.md`: no replacement needed for the existing `STT:PlayerSideYuriCountry` wording; this report confirms that exact key spelling.
+- `docs/research/LOBBY_SESSION_HOUSE_CREATION_GHIDRA_REPORT.md`: no replacement needed for the listed color key spelling/order as a key-availability claim; this report confirms the exact stock keys including `STT:PlayerColorObserver`.
 
 ## 10. Remaining Uncertainty
 
@@ -123,6 +123,6 @@ None for stock YR key availability and spelling. Row insertion and resolver prec
 - Ghidra decompile/assembly contexts: `0x004E38A0`, `0x004E42A0`.
 - Ghidra activation path spot-check: `FUN_006AE3F0`, `FUN_004E3830`, `FUN_004E4230`, `FUN_004E4170`, `FUN_004E4E20`.
 - Ghidra string search: `STT:PlayerSide*` at `0x008228AC..0x008229A8`; `STT:PlayerColor*` at `0x008229FC..0x00822AC4`.
-- Stock YR resource search: `C:/Users/enok/Documents/Command and Conquer Red Alert II/langmd.mix`, exact offsets listed above.
+- Stock YR resource search: `<ra2-install>/langmd.mix`, exact offsets listed above.
 - CSF label marker verification: each listed `langmd.mix` offset is preceded by ` LBL`, pair count `1`, and exact label length.
-- Prior reports referenced narrowly: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.
+- Prior reports referenced narrowly: `docs/research/skirmish-ui/SKIRMISH_0X102_STATUS_HELP_FULL_MAPPING_CURRENT_RUST_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_COLOR_COMBO_POPULATION_AND_SWATCH_ORDER_GHIDRA_REPORT.md`.

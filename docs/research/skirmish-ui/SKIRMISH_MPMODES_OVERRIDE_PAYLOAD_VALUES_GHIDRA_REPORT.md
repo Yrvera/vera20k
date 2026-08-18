@@ -169,7 +169,7 @@ Rust delta: roster/filter/random-map behavior is partially implemented; MIX-back
 
 ## Stale Docs / Follow-up Docs
 
-Replace in `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md` the wording:
+Replace in `docs/research/skirmish-ui/SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md` the wording:
 
 > Medium for exact stock override-file values because the local repo and plain retail install expose `mpmodesmd.ini` but not `MPBattleMD.ini`, `MPTeamMD.ini`, etc.
 
@@ -181,6 +181,6 @@ with:
 
 - Ghidra read-only decompile/xrefs: `0x005D5B60`, `0x005D7590`, `0x005D7CE0`, `0x005D6130`, `0x005E7160`, `0x0069AE10`, `0x00671EA0`, `0x004E4170`.
 - Ghidra xrefs: `MustAlly` at `0x005D5CF7`; `AlliesAllowed` at `0x005D5CDF` and `0x00672148`; `WonlineClanTournamentAllowed` at `0x005D5CC4`; `WonlineTournamentAllowed` at `0x005D5CA7`; `MPModesMD.ini` at `0x005D759E`.
-- INI/data checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`; `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`; retail text scan of `C:/Users/enok/Documents/Command and Conquer Red Alert II/ra2md.mix`.
+- INI/data checked: `ini/mpmodesmd.ini`; `ini/rulesmd.ini`; retail text scan of `<ra2-install>/ra2md.mix`.
 - Prior reports used for context: `SKIRMISH_MPMODES_OBJECT_CONSTRUCTION_DEFAULTS_GHIDRA_REPORT.md`, `SKIRMISH_MPMODES_RETAIL_VALUES_AUDIT_GHIDRA_REPORT.md`, `SKIRMISH_START_GAME_HANDOFF_SESSION_PACKING_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`.
 - Rust scan: `src/skirmish_modes.rs`, `src/skirmish_scenarios.rs`, `src/ui/skirmish_shell/state.rs`, `src/skirmish_launch.rs`.

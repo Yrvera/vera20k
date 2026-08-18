@@ -22,15 +22,15 @@ Concrete coordinate frame used for literal equality:
 ## Sources Checked
 
 - Rust:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs:580`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs:613`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs:638`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs:643`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs:1046`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:84`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:95`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:310`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:441`
+  - `src/sim/miner/miner_system.rs:580`
+  - `src/sim/miner/miner_system.rs:613`
+  - `src/sim/miner/miner_system.rs:638`
+  - `src/sim/miner/miner_system.rs:643`
+  - `src/sim/miner/miner_system.rs:1046`
+  - `src/sim/miner/miner_dock_sequence.rs:84`
+  - `src/sim/miner/miner_dock_sequence.rs:95`
+  - `src/sim/miner/miner_dock_sequence.rs:310`
+  - `src/sim/miner/miner_dock_sequence.rs:441`
 - INI:
   - `ini/rulesmd.ini`: `[CMIN] Harvester=yes`, `Dock=NAREFN,GAREFN`, `Storage=20`, `UnloadingClass=CMON`.
   - `ini/rulesmd.ini`: `[GAREFN] DockUnload=yes`, `Refinery=yes`, `NumberOfDocks=1`, `FreeUnit=CMIN`.

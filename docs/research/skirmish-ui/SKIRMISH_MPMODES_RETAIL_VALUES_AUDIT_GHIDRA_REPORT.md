@@ -109,6 +109,6 @@ Active in YR: This is a Rust implementation status note, not binary behavior.
 
 - Ghidra read-only string search: `0x008308A0` `MustAlly`, `0x008308AC` `AlliesAllowed`, `0x00830A18` `MPModesMD.ini`, category strings `0x00830BCC..0x00830C00`.
 - Ghidra assembly context: `0x005D7590`, `0x005D7CE0`, `0x005D7D3C`, `0x005D7DA0`, `0x005D7DF0`, `0x005D7E18`, `0x005D6130`, `0x005D5DC0`, `0x005D5DD0`, `0x005D5DE0`, `0x005D6419`, `0x0069AE10`.
-- INI files checked: `C:/Users/enok/Documents/ra2-rust-game/ini/mpmodesmd.ini`, `rules.ini`, `rulesmd.ini`.
-- Retail root checked for plain override INIs: `C:/Users/enok/Documents/Command and Conquer Red Alert II/` had no top-level `MP*.ini` files.
+- INI files checked: `ini/mpmodesmd.ini`, `rules.ini`, `rulesmd.ini`.
+- Retail root checked for plain override INIs: `<ra2-install>/` had no top-level `MP*.ini` files.
 - Prior reports: `SKIRMISH_TEAM_NONE_INSERTION_VTABLE_0X2C_GHIDRA_REPORT.md`, `SKIRMISH_START_SESSION_VTABLE_0X14_ACCEPTANCE_GHIDRA_REPORT.md`, `SKIRMISH_CHOOSE_MAP_LIST_POPULATION_ORDER_GHIDRA_REPORT.md`.

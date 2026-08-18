@@ -9,7 +9,7 @@ cells mutate.
 `BridgeRepairHut=yes` building. Bridge-cell repair walker correctness is cited only
 as the mutation boundary.
 
-**Report path:** `C:/Users/enok/Documents/ra2-rust-game-docs/traces/BRIDGE_REPAIR_SOUND_EVA_ORDERING_TRACE.md`
+**Report path:** `docs/research/traces/BRIDGE_REPAIR_SOUND_EVA_ORDERING_TRACE.md`
 
 ## Summary
 

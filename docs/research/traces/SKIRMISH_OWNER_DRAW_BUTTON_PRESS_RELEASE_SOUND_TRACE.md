@@ -9,11 +9,11 @@ Ghidra use: none in this run. Binary facts are taken from existing verified read
 ## Evidence Base
 
 - Current Rust read-only scan:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`
+  - `src/ui/skirmish_shell/layout.rs`
+  - `src/ui/skirmish_shell/state.rs`
+  - `src/app.rs`
+  - `src/app_skirmish_shell_render.rs`
+  - `src/rules/ruleset.rs`
 - Verified research reports:
   - `skirmish-ui/SKIRMISH_0X102_COMPLETE_CHILD_RECT_MATRIX_GHIDRA_REPORT.md`
   - `skirmish-ui/SKIRMISH_BUTTON_CLICK_SOUND_PARITY_GHIDRA_REPORT.md`

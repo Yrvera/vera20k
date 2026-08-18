@@ -413,7 +413,7 @@ The address `0x00a8b1e0` does not appear in any xref to the MaxAhead format stri
 (verified via `get_xrefs_to 0x00a8b550`). The doc's pseudocode snippet is correct in
 substance (the clamp logic matches `FUN_006475f0`), but the stated address is incorrect.
 
-**Path:** `C:/Users/enok/Documents/ra2-rust-game/docs/research/timing/multiplayer-frame-step.md`
+**Path:** `docs/research/timing/multiplayer-frame-step.md`
 **Stale claim:** Address `0x00a8b1e0` as g_NetworkFrameBudget.
 **Correct value:** `0x00a8b550` (confirmed via `list_globals`, assembly context, and all xrefs).
 

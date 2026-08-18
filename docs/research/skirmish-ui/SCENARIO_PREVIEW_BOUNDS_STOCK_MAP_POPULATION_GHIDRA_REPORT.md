@@ -115,7 +115,7 @@ Verified finding: reader/logging or UI-status use only; no scoped-field populati
 
 ## Retail Data Check
 
-Active in YR: Yes as local installed retail data evidence. Evidence: read-only `rg -a` over `C:/Users/enok/Documents/Command and Conquer Red Alert II/` found stock map files and embedded map data containing `[Header]`, `StartX=`, and `NumberStartingPoints=`.
+Active in YR: Yes as local installed retail data evidence. Evidence: read-only `rg -a` over `<ra2-install>/` found stock map files and embedded map data containing `[Header]`, `StartX=`, and `NumberStartingPoints=`.
 
 Finding: sampled shipped maps such as local `.yro` files and embedded `multimd.mix` map data carry `[Header]` preview metadata. This supports the binary finding that stock-map preview population normally comes from `[Header]`, not a missing-`[Header]` fallback.
 

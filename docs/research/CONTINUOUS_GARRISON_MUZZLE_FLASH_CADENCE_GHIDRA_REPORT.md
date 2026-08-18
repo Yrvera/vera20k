@@ -228,9 +228,9 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md`: replace the section beginning `### Muzzle Flash -- spawned in BuildingClass::Update` through the end of `14f. Muzzle Flash Spawning in BuildingClass::Update` with: "The `BuildingClass::Update @ 0x0043FB20` branch at `0x004403D4..0x0044055D` is not a continuous occupied-garrison muzzle-flash path. It is gated by `TechnoClass::IsWarpingOut` / `IsBeingWarped` (`+0x270/+0x271`) and spawns `[General] ChronoSparkle1` from `RulesClass+0x344`. When `BuildingType+0x1580 > 0`, it uses `MuzzleFlashN` offsets as chrono sparkle anchor points with `(g_CurrentFrameCounter + port) % 24 == 0`; otherwise it may spawn at the building location every 24 frames. Actual occupied-garrison shot flashes are produced by `TechnoClass::Fire_At` using `WeaponType+0x110` (`OccupantAnim`)."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_IMPLEMENTATION_PLAN.md`: replace "The original spawns muzzle flash AnimClass at each fire port every 24 frames" and the following "NOT driven by individual Fire_At events" claim with: "Do not implement a normal occupied-garrison ambient muzzle flash from `BuildingClass::Update`. Fresh Ghidra verification shows that 24-frame branch is chrono/temporal sparkle rendering using `[General] ChronoSparkle1`, not garrison combat. For garrison combat, keep `Fire_At`/`SimFireEvent` shot-triggered `WeaponType+0x110` (`OccupantAnim`) flashes."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BUILDINGCLASS_UPDATE_AI_TICK_GHIDRA_REPORT.md`: minor wording replacement only: replace "`RulesClass+0x344` (AnimTypeClass*) -- `WarpOut` anim type" with "`RulesClass+0x344` (AnimTypeClass*) -- `[General] ChronoSparkle1` (`CHRONOSK` in stock YR); not `WarpOut`, which is `RulesClass+0x33C`."
+- `docs/research/GARRISON_SYSTEM_GHIDRA_REPORT.md`: replace the section beginning `### Muzzle Flash -- spawned in BuildingClass::Update` through the end of `14f. Muzzle Flash Spawning in BuildingClass::Update` with: "The `BuildingClass::Update @ 0x0043FB20` branch at `0x004403D4..0x0044055D` is not a continuous occupied-garrison muzzle-flash path. It is gated by `TechnoClass::IsWarpingOut` / `IsBeingWarped` (`+0x270/+0x271`) and spawns `[General] ChronoSparkle1` from `RulesClass+0x344`. When `BuildingType+0x1580 > 0`, it uses `MuzzleFlashN` offsets as chrono sparkle anchor points with `(g_CurrentFrameCounter + port) % 24 == 0`; otherwise it may spawn at the building location every 24 frames. Actual occupied-garrison shot flashes are produced by `TechnoClass::Fire_At` using `WeaponType+0x110` (`OccupantAnim`)."
+- `docs/research/GARRISON_IMPLEMENTATION_PLAN.md`: replace "The original spawns muzzle flash AnimClass at each fire port every 24 frames" and the following "NOT driven by individual Fire_At events" claim with: "Do not implement a normal occupied-garrison ambient muzzle flash from `BuildingClass::Update`. Fresh Ghidra verification shows that 24-frame branch is chrono/temporal sparkle rendering using `[General] ChronoSparkle1`, not garrison combat. For garrison combat, keep `Fire_At`/`SimFireEvent` shot-triggered `WeaponType+0x110` (`OccupantAnim`) flashes."
+- `docs/research/BUILDINGCLASS_UPDATE_AI_TICK_GHIDRA_REPORT.md`: minor wording replacement only: replace "`RulesClass+0x344` (AnimTypeClass*) -- `WarpOut` anim type" with "`RulesClass+0x344` (AnimTypeClass*) -- `[General] ChronoSparkle1` (`CHRONOSK` in stock YR); not `WarpOut`, which is `RulesClass+0x33C`."
 
 ## Negative Facts / Do Not Do
 
@@ -250,7 +250,7 @@ Asset role matrix:
 - Ghidra decompile: `BuildingClass::Update @ 0x0043FB20`
 - Local disassembly from retail `gamemd.exe`: `0x004403D4..0x0044055D`, `0x0043FD08..0x0043FD26`, `0x006FF320..0x006FF41D`, `0x00458DD0..0x00458DFE`
 - Ghidra decompile: `TechnoClass::IsWarpingOut @ 0x0070C5B0`, `TechnoClass::IsBeingWarped @ 0x0070C5C0`, `BuildingClass::GetRenderCoords @ 0x00459EF0`, `BuildingClass::IsOccupied @ 0x00458DD0`, `BuildingClass::GetOccupantCount @ 0x004581F0`
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/RULESCLASS_FIELDS.csv`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
+- `docs/research/RULESCLASS_FIELDS.csv`
+- `ini/rulesmd.ini`
+- `ini/rules.ini`
 - Current Rust scan: `src/sim/world/mod.rs`, `src/sim/combat/mod.rs`, `src/app_building_anim.rs`, `src/app_fire_effects.rs`, `src/app_instances/overlays.rs`

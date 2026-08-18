@@ -87,7 +87,7 @@ The actual on-screen unit movement, timing, path smoothing, and render result re
 
 - Read-only Ghidra decompile/disassembly: `AStar_main_loop @ 0x00429A90`.
 - Read-only Ghidra decompile: `AStar_pathfind_search @ 0x0042C900`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_MAIN_LOOP_LEVEL0_MARKER_GATE_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`.
+- `docs/research/ASTAR_MAIN_LOOP_LEVEL0_MARKER_GATE_GHIDRA_REPORT.md`.
+- `docs/research/CELL_0x122_CAN_ENTER_CELL_SEMANTIC_GHIDRA_REPORT.md`.
+- `docs/research/ASTAR_0X40000_CLEANUP_TAILS_GHIDRA_REPORT.md`.
 - Rust read-only scan of `src/sim/pathfinding/core.rs`, `src/sim/pathfinding/core_tests.rs`, `src/sim/pathfinding/zone_search.rs`, `src/sim/movement/bump_crush.rs`, and `src/sim/movement/movement_tick.rs`.

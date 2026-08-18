@@ -131,7 +131,7 @@ For ejected infantry directional Scatter the bounds are exactly `0` and `4`, and
 
 ## 7. Current Rust Implementation Status
 
-`C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_sell.rs:313..335` currently documents the path as an approximation and uses `sim.rng.next_u32() as usize % 8` followed by `movement::issue_direct_move(...)`. This is RED for exact ordering:
+`src/sim/production/production_sell.rs:313..335` currently documents the path as an approximation and uses `sim.rng.next_u32() as usize % 8` followed by `movement::issue_direct_move(...)`. This is RED for exact ordering:
 
 - It consumes raw modulo RNG during the ejection helper instead of calling a Scatter-equivalent operation with `RandomRanged(0,4)` after Scatter pre-RNG gates.
 - It collapses Scatter's mission `2` queue plus destination write into an immediate movement helper.
@@ -193,8 +193,8 @@ For ejected infantry directional Scatter the bounds are exactly `0` and `4`, and
 
 ## 13. Stale Docs / Follow-Up Wording
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/PASSENGER_GARRISON_EJECTION_RNG_CLASSIFICATION_GHIDRA_REPORT.md`: replace "then queues each successful occupant into Scatter mission `0xF`" with "then directly calls the occupant scatter virtual; for infantry this can consume `RandomRanged(0,4)` and queue mission `2` before `SellBuilding` later queues mission `0xF`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/GARRISON_SELL_DESTRUCTION_EJECTION_PATH_GHIDRA_REPORT.md`: replace "Successful ejection queues Guard and then queues Scatter mission `0xF`" with "Successful ejection clears archive target via occupant vtable `+0x3C8(0)`, calls the occupant scatter virtual `+0x174` with the building-center coordinate and true flags, optionally runs `FUN_006EA870` parent-passenger cleanup if `occupant+0x5D4` is non-null, then queues mission `0xF`; for infantry, direct Scatter may consume `RandomRanged(0,4)`, queue mission `2`, and set a destination first."
+- `docs/research/PASSENGER_GARRISON_EJECTION_RNG_CLASSIFICATION_GHIDRA_REPORT.md`: replace "then queues each successful occupant into Scatter mission `0xF`" with "then directly calls the occupant scatter virtual; for infantry this can consume `RandomRanged(0,4)` and queue mission `2` before `SellBuilding` later queues mission `0xF`."
+- `docs/research/GARRISON_SELL_DESTRUCTION_EJECTION_PATH_GHIDRA_REPORT.md`: replace "Successful ejection queues Guard and then queues Scatter mission `0xF`" with "Successful ejection clears archive target via occupant vtable `+0x3C8(0)`, calls the occupant scatter virtual `+0x174` with the building-center coordinate and true flags, optionally runs `FUN_006EA870` parent-passenger cleanup if `occupant+0x5D4` is non-null, then queues mission `0xF`; for infantry, direct Scatter may consume `RandomRanged(0,4)`, queue mission `2`, and set a destination first."
 
 ## Sources
 

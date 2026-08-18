@@ -111,7 +111,7 @@ Important implication:
 ## 4. Resolved Retail Asset Locations and Dimensions
 
 Source: temporary archive probe using the repo `AssetManager` against
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/`, with
+`<ra2-install>/`, with
 `load_all_disk_mixes()`. No repo source was modified.
 
 ### 4.1 SHP Assets
@@ -299,6 +299,6 @@ Retail archive probe:
 
 Existing research:
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_RETAIL_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_SHELL_LAYOUT_ASSETS_GHIDRA_REPORT.md`
+- `docs/research/SKIRMISH_START_POSITION_UX_GHIDRA_REPORT.md`

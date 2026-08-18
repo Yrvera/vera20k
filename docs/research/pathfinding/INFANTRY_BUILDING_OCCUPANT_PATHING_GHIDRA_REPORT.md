@@ -114,7 +114,7 @@ Rust currently has no verified infantry-specific suppression of vehicle building
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` contains stale offset names around its building branch. Replacement wording: "`BuildingType+0x16B7` is the gate/garrison-style flag used by `InfantryClass::Can_Enter_Cell` and drawing docs; `BuildingType+0x16BF` is `LaserFence=`, and `BuildingType+0x16C0` is `FirestormWall=` / TS-era data-inert in stock YR. Do not describe `+0x16BF` as `IsGate` or `+0x16C0` as `IsLaserFence` without reconciling against current field docs."
+- `docs/research/UNIT_CAN_ENTER_CELL_GHIDRA_REPORT.md` contains stale offset names around its building branch. Replacement wording: "`BuildingType+0x16B7` is the gate/garrison-style flag used by `InfantryClass::Can_Enter_Cell` and drawing docs; `BuildingType+0x16BF` is `LaserFence=`, and `BuildingType+0x16C0` is `FirestormWall=` / TS-era data-inert in stock YR. Do not describe `+0x16BF` as `IsGate` or `+0x16C0` as `IsLaserFence` without reconciling against current field docs."
 
 ## Negative Facts / Do Not Do
 

@@ -137,20 +137,20 @@ Active in YR: Conditional yes. The branch is active; the bypass of a later retry
 
 Current Rust now has the corrected broad split:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs:107` defines `FaceSync` as contact/facing sync with no unload, sound, pad snap, or on-pad side effects.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs:111` defines `MissionQueued` as radio `0x15` having queued mission `0x10` only.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:645` gates `phase_mission_enter` on `enter_retry_due`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:699..707` marks contact and enters `FaceSync` only when stopped at the accepted cell and the Mission_Enter-like pass is due.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:741..768` keeps `FaceSync` waiting for the Enter retry and facing acceptance before moving to `MissionQueued`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:772..773` advances `MissionQueued` to `Pivoting`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:805..830` starts unload-active Rust effects only in `start_unload_deploy`, reached through `phase_pivoting`, not in `MissionQueued`.
+- `src/sim/miner/mod.rs:107` defines `FaceSync` as contact/facing sync with no unload, sound, pad snap, or on-pad side effects.
+- `src/sim/miner/mod.rs:111` defines `MissionQueued` as radio `0x15` having queued mission `0x10` only.
+- `src/sim/miner/miner_dock_sequence.rs:645` gates `phase_mission_enter` on `enter_retry_due`.
+- `src/sim/miner/miner_dock_sequence.rs:699..707` marks contact and enters `FaceSync` only when stopped at the accepted cell and the Mission_Enter-like pass is due.
+- `src/sim/miner/miner_dock_sequence.rs:741..768` keeps `FaceSync` waiting for the Enter retry and facing acceptance before moving to `MissionQueued`.
+- `src/sim/miner/miner_dock_sequence.rs:772..773` advances `MissionQueued` to `Pivoting`.
+- `src/sim/miner/miner_dock_sequence.rs:805..830` starts unload-active Rust effects only in `start_unload_deploy`, reached through `phase_pivoting`, not in `MissionQueued`.
 
 Current Rust does not explicitly implement the PerCellProcess alternate `(current_x,current_y-1)` branch as a separate source. For the normal stopped accepted-cell HARV/CMIN path, this is probably acceptable relative to the verified primary path: Rust waits for the later Enter retry and then queues `MissionQueued` from `FaceSync`. For exact parity, it remains a gap for cases where a real per-cell callback occurs after `+0x418` but before the next Mission_Enter retry.
 
 Two stale comments remain in current files:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs:1..6` still describes the sequence as "link onto the pad".
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs:3878` and `:4481` still mention older `Linked`/`phase_linked` wording in comments.
+- `src/sim/miner/miner_dock_sequence.rs:1..6` still describes the sequence as "link onto the pad".
+- `src/sim/miner/miner_tests.rs:3878` and `:4481` still mention older `Linked`/`phase_linked` wording in comments.
 
 ## 7. Coverage Ledger
 
@@ -212,9 +212,9 @@ Two stale comments remain in current files:
 - Ghidra read-only decompile/assembly: `MissionClass::Mission_Dispatch @ 0x005B3060`, `0x005B307A..0x005B3126`.
 - Ghidra read-only decompile/assembly: `FootClass::Mission_Enter @ 0x004D9290`, `0x004D92B2..0x004D92BF`, `0x004D946C..0x004D9497`.
 - Ghidra read-only decompile/assembly: `UnitClass::Receive_Radio @ 0x00737430`, `0x007376BF..0x00737780`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_CONTACT_FLAG_ADJACENT_BUILDING_0X15_BRANCH_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/UNITCLASS_PERCELLPROCESS_CALLER_TICK_ORDER_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MISSIONENTER_RETRY_TIMER_STORAGE_AND_DISPATCH_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RADIO_0X15_START_UNLOAD_SIDE_EFFECTS_GHIDRA_REPORT.md`.
-- INI checked: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
-- Current Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/mod.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_CONTACT_FLAG_ADJACENT_BUILDING_0X15_BRANCH_GHIDRA_REPORT.md`.
+- `docs/research/UNITCLASS_PERCELLPROCESS_CALLER_TICK_ORDER_GHIDRA_REPORT.md`.
+- `docs/research/MISSIONENTER_RETRY_TIMER_STORAGE_AND_DISPATCH_GHIDRA_REPORT.md`.
+- `docs/research/RADIO_0X15_START_UNLOAD_SIDE_EFFECTS_GHIDRA_REPORT.md`.
+- INI checked: `ini/rulesmd.ini`.
+- Current Rust scanned: `src/sim/miner/miner_dock_sequence.rs`, `src/sim/miner/mod.rs`, `src/sim/miner/miner_dock.rs`, `src/sim/miner/miner_tests.rs`.

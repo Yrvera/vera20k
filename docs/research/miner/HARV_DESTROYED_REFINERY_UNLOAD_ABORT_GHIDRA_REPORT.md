@@ -328,22 +328,22 @@ deposit targets in Rust with:
 - Ghidra decompiled: `0x004593A0`, `0x00442230`, `0x00449C30`,
   `0x0073D630`, `0x0073E5E0`, `0x0047C520`, `0x00451E40`.
 - Required docs read:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/traces/MINER_REFINERY_UNAVAILABLE_MID_CYCLE_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/REFINERY_DOCK_EXIT_CHAIN_VERIFIED_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/RELEASEDOCKEDHARVESTER_0x4595C0_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`
+  - `docs/research/miner/traces/MINER_REFINERY_UNAVAILABLE_MID_CYCLE_TRACE.md`
+  - `docs/research/miner/BUILDING_UNDOCKUNIT_0x4593A0_CHRONO_MINER_GHIDRA_REPORT.md`
+  - `docs/research/miner/MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_GHIDRA_REPORT.md`
+  - `docs/research/miner/REFINERY_DOCK_EXIT_CHAIN_VERIFIED_GHIDRA_REPORT.md`
+  - `docs/research/miner/RELEASEDOCKEDHARVESTER_0x4595C0_GHIDRA_REPORT.md`
+  - `docs/research/miner/STOCK_MISSION_DEPLOY_BUILDING_REFINERY_UNLOAD_PATHTYPE_STATE4_GHIDRA_REPORT.md`
 - INI checked:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/art.ini`
+  - `ini/rulesmd.ini`
+  - `ini/rules.ini`
+  - `ini/artmd.ini`
+  - `ini/art.ini`
 - Rust scanned:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock_sequence.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_system.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_dock.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/miner/miner_tests.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_sell.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/world/world_orders.rs`
+  - `src/sim/miner/miner_dock_sequence.rs`
+  - `src/sim/miner/miner_system.rs`
+  - `src/sim/miner/miner_dock.rs`
+  - `src/sim/miner/miner_tests.rs`
+  - `src/sim/production/production_sell.rs`
+  - `src/sim/combat/mod.rs`
+  - `src/sim/world/world_orders.rs`

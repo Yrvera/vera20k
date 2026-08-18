@@ -135,17 +135,17 @@ Observed Rust surface: `src/sim/passenger.rs::tick_unloading`.
 
 ## 9. Stale-Doc Replacement Wording Found
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/MISSION_UNLOAD_GHIDRA_REPORT.md`
+Path: `docs/research/MISSION_UNLOAD_GHIDRA_REPORT.md`
 
 Replacement wording:
 `UnitClass::Mission_Unload @ 0x00740EF0 is a RepairBay/docking mission wrapper that calls FootClass::Find_Docking_Bay via vtable +0x528 using RulesClass+0x850 ([General] RepairBay=). Generic vehicle passenger disgorge is in UnitClass::Mission_Deploy_Building @ 0x0073D630 when UnitTypeClass+0x5E0 (Passengers) is greater than zero.`
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`
+Path: `docs/research/UNIT_MISSION_DEPLOY_BUILDING_GHIDRA_REPORT.md`
 
 Replacement wording:
 `UnitTypeClass+0x5E0 is Passengers, not Storage. In UnitClass::Mission_Deploy_Building @ 0x0073D630, the Passengers > 0 branch includes generic vehicle transport passenger unload. State 3 pops one passenger from CargoClass and performs generic placement/destination handoff; it is not only a harvester/refinery approach state.`
 
-Path: `C:/Users/enok/Documents/ra2-rust-game-docs/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
+Path: `docs/research/IFV_AND_OPEN_TOPPED_TRANSPORT_GHIDRA_REPORT.md`
 
 Replacement wording:
 `Successful generic passenger unload from UnitClass::Mission_Deploy_Building @ 0x0073D630 calls TechnoClass::ClearInOpenTransport @ 0x007104A0 for OpenTopped transports at 0x0073DB85..0x0073DB98. Any earlier no-clear statement should be scoped away from the generic passenger disgorge body.`

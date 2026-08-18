@@ -15,7 +15,7 @@ Scope: ordinary in-game sidebar surface dirty flag writers, partial-copy timing,
 
 - Ghidra MCP read-only: `decompile_function 0x006A6C30`, `0x006A70E0`, `0x004F44F0`, `0x0063FB20`, `0x00653100`, `0x006A65F0`, `0x006A7A80`, `0x006A9540`, `0x006AB990`, `0x006D0E60`, `0x006A5ED0`, `0x006A60A0`, `0x006A7D20`, `0x006A76C0`.
 - Ghidra MCP read-only: byte-pattern searches for globals `DAT_00B0B518`, `DAT_00B0B519`, `DAT_008809F4`, `DAT_00B07DC8`, and sidebar offsets `0x53A6..0x53A8`.
-- Local read-only Capstone disassembly of retail `gamemd.exe` from `C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe` for exact instruction ranges. This was used because the Ghidra disassembly endpoint returned success metadata without instruction text.
+- Local read-only Capstone disassembly of retail `gamemd.exe` from `<ra2-install>/gamemd.exe` for exact instruction ranges. This was used because the Ghidra disassembly endpoint returned success metadata without instruction text.
 - Sibling baseline consulted: `SIDEBAR_BLIT_TO_SCREEN_DIRTY_RECTS_GHIDRA_REPORT.md`, `SIDEBAR_DRAW_COMPOSITION_ORDER_AND_SURFACE_ORIGIN_GHIDRA_REPORT.md`, `SOVIET_RADAR_MINIMAP_CONTENT_INSET_GHIDRA_REPORT.md`.
 
 ## Verified Findings

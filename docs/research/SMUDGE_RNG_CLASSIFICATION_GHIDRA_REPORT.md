@@ -186,9 +186,9 @@ Current Rust delta: `random_offset_at_radius` consumes exactly one `next_u32()` 
 - Ghidra `decompile_function 6B59A0` - `SpawnDebris`.
 - Ghidra `decompile_function 6B5C90` - `Debris_Smoke`.
 - Ghidra assembly context: `0x0042507A..0x004250A6`, `0x004417E4..0x004418E7`, `0x0044329B..0x004433EF`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game-docs/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/smudge_dispatch.rs`.
-- `C:/Users/enok/Documents/ra2-rust-game/src/sim/combat/mod.rs`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`.
-- `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`.
+- `docs/research/SMUDGE_SPAWN_TRIGGERS_GHIDRA_REPORT.md`.
+- `docs/research/RANDOM_RANDOMRANGED_0065C7E0_GHIDRA_REPORT.md`.
+- `src/sim/combat/smudge_dispatch.rs`.
+- `src/sim/combat/mod.rs`.
+- `ini/artmd.ini`.
+- `ini/rulesmd.ini`.

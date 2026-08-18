@@ -180,11 +180,11 @@ Rust currently does not model the selected-record token re-resolution against an
 
 ## Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SCENARIO_SOURCE_POPULATION_ORDER_GHIDRA_REPORT.md`: replace the OQ-11 deferral with:
+- `docs/research/skirmish-ui/SKIRMISH_SCENARIO_SOURCE_POPULATION_ORDER_GHIDRA_REPORT.md`: replace the OQ-11 deferral with:
 
   > [RESOLVED by `SKIRMISH_SELECTED_MAP_FILE_OPEN_PRIORITY_LOOSE_SHADOWING_GHIDRA_REPORT.md`] Later selected-file loading does let a loose filesystem map shadow an archive map with the same selected record `+0x58` token for ordinary non-`.SED` Skirmish maps. `0x005E7BF0` uses a temporary `CCFileClass` availability check but stores only the original token into `DAT_00A8B8E0` / `ScenarioClass+0x125C`. The later scenario INI path constructs a fresh `CCFileClass`; its actual read/open routine `0x00473D10` probes/opens raw filesystem files before falling back to `FUN_005B4430` MIX lookup. Archive-vs-archive duplicate order remains a separate MIX registration question.
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`: add after the first-file-open discussion:
+- `docs/research/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`: add after the first-file-open discussion:
 
   > The selected-loader open is only an availability gate and does not pin the source. For ordinary non-`.SED` maps, the scenario INI bytes are resolved later by a fresh `CCFileClass`/`SHAPipe` path; raw loose files with the same token are preferred before MIX fallback.
 
@@ -192,5 +192,5 @@ Rust currently does not model the selected-record token re-resolution against an
 
 - Ghidra read-only decompile / assembly: `0x005E7BF0`, `0x00683AB0`, `0x00684620`, `0x00686730`, `0x004739F0`, `0x0047AE10`, `0x00473C50`, `0x00473D10`, `0x005B4430`, `0x00431F10`, `0x0065CBF0`, `0x0065CB50`, `0x004741F0`.
 - Ghidra assembly context: `0x005E7C2B..0x005E7C73`, `0x00683C4E..0x00683C67`, `0x00686797..0x006867BE`, `0x00473C50..0x00473CB5`, `0x00473D1D..0x00473E40`.
-- Prior docs: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SCENARIO_SOURCE_POPULATION_ORDER_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`; `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_RANDOM_MAP_BRANCH_AFTER_SELECTED_MAP_LOAD_GHIDRA_REPORT.md`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/app_init.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_scenarios.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs`; `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`.
+- Prior docs: `docs/research/skirmish-ui/SKIRMISH_SCENARIO_SOURCE_POPULATION_ORDER_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_SELECTED_MAP_TOKEN_LOAD_CONSUMER_GHIDRA_REPORT.md`; `docs/research/skirmish-ui/SKIRMISH_RANDOM_MAP_BRANCH_AFTER_SELECTED_MAP_LOAD_GHIDRA_REPORT.md`.
+- Rust scan: `src/app_list_maps.rs`; `src/app_init.rs`; `src/skirmish_scenarios.rs`; `src/skirmish_launch.rs`; `src/ui/skirmish_shell/state.rs`.

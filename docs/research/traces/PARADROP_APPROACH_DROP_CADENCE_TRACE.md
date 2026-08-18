@@ -61,5 +61,5 @@ PASS: 5 | FAIL: 3 | UNCHECKED: 2 | NOT-IMPLEMENTED: 0
 - Ghidra read-only decompile: `AircraftClass::Mission_Rescue @ 0x00415960`; in-range branch calls `Drop_Payload` and returns `5`; no `LandingState` gate before the call.
 - Ghidra read-only decompile: `AircraftClass::Drop_Payload @ 0x00415C60`; successful drop writes `+0x6D3=5`, frame stamp, last drop cell, and plays sound.
 - Ghidra read-only decompile: `AircraftClass::Fire_At @ 0x00415EE0`; cargo gate exists but is not the standard SW mission path.
-- Research docs: `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_DROP_CADENCE_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/PARADROP_MISSION_TRANSITIONS_GHIDRA_REPORT.md`.
+- Research docs: `docs/research/PARADROP_DROP_CADENCE_GHIDRA_REPORT.md`, `docs/research/PARADROP_MISSION_TRANSITIONS_GHIDRA_REPORT.md`.
 - Rust surfaces read-only: `src/sim/superweapon/paradrop.rs`, `src/sim/aircraft/paradrop_mission.rs`, `src/sim/aircraft/mod.rs`, `src/sim/aircraft/drop_payload.rs`, `src/sim/world/mod.rs`, `src/app_types.rs`.

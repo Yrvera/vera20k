@@ -143,7 +143,7 @@ Load-bearing bridge categories:
 
 ## 9. Stale Docs / Follow-Up Docs
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/ADDRESS_MAP.md`
+`docs/research/ADDRESS_MAP.md`
 
 Replace:
 
@@ -153,7 +153,7 @@ With:
 
 `| 0x006551C0 | RadarClass::MarkTerrainDirty (72 direct call sites across 38 caller functions in current Ghidra; see MARKTERRAINDIRTY_FULL_CALLER_MATRIX_GHIDRA_REPORT.md) | 32 lines | RADAR_MINIMAP |`
 
-`C:/Users/enok/Documents/ra2-rust-game/docs/research/RADAR_MINIMAP_RENDERING.md`
+`docs/research/RADAR_MINIMAP_RENDERING.md`
 
 Replace the broad "37 callers - every game system" wording around `MarkTerrainDirty` with:
 

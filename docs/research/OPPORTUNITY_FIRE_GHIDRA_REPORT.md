@@ -227,14 +227,14 @@ This is a **much smaller** implementation task than the INI comment suggests. It
 - `0x00843C14` (`"CanRecalcApproachTarget"`), `0x00843C2C` (`"CanApproachTarget"`)
 
 **Docs referenced:**
-- `C:/Users/enok/Documents/ra2-rust-game-docs/TARGET_ACQUISITION_GHIDRA_REPORT.md` — two mislabels (§2)
-- `c:/Users/enok/Documents/ra2-rust-game/docs/GREATEST_THREAT_SCAN_GHIDRA_REPORT.md` — inherits same mislabels (§2)
-- `C:/Users/enok/Documents/ra2-rust-game-docs/WAR_MINER_REFERENCE.md` — player-facing flavor ("fire while harvesting")
-- `c:/Users/enok/Documents/ra2-rust-game/docs/gap-scans/2026-04-23-gap-scan-xref.md` — notes OpportunityFire as unparsed in `ObjectType`
+- `docs/research/TARGET_ACQUISITION_GHIDRA_REPORT.md` — two mislabels (§2)
+- `docs/GREATEST_THREAT_SCAN_GHIDRA_REPORT.md` — inherits same mislabels (§2)
+- `docs/research/WAR_MINER_REFERENCE.md` — player-facing flavor ("fire while harvesting")
+- `docs/gap-scans/2026-04-23-gap-scan-xref.md` — notes OpportunityFire as unparsed in `ObjectType`
 
 **INI:**
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`: `OpportunityFire=` on 14 units (§5), `CanApproachTarget=no` on `[SPY]` (line 6836)
-- `c:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`: identical mapping; no `OpportunityFire=` on any RA2 base unit
+- `ini/rulesmd.ini`: `OpportunityFire=` on 14 units (§5), `CanApproachTarget=no` on `[SPY]` (line 6836)
+- `ini/rules.ini`: identical mapping; no `OpportunityFire=` on any RA2 base unit
 
 **Rust source:**
 - [src/sim/combat/combat_targeting.rs](../src/sim/combat/combat_targeting.rs)

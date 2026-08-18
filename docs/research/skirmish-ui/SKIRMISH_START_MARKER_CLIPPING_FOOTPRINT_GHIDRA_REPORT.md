@@ -120,11 +120,11 @@ No rules/art INI key controls the clipping footprint. `STARTBUT.SHP` is a binary
 
 Current Rust surfaces scanned:
 
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`
-- `C:/Users/enok/Documents/ra2-rust-game/src/render/batch.rs`
+- `src/app_skirmish_shell_render.rs`
+- `src/app_list_maps.rs`
+- `src/map/preview.rs`
+- `src/ui/skirmish_shell/layout.rs`
+- `src/render/batch.rs`
 
 Observed matches:
 
@@ -211,5 +211,5 @@ Deferred share is limited to naming/type recovery and explicit non-scope. No mat
 - Ghidra read-only decompiled: `DrawStartPositions @ 0x00640710`, `FUN_006AE3F0 @ 0x006AE3F0`, `FUN_00689D30 @ 0x00689D30`, `CC_Draw_Shape @ 0x004AED70`, `AlphaShapeClass__ClipRect @ 0x00421B60`, `FUN_004A61C0 @ 0x004A61C0`, `Blitter_ClipAndSetup @ 0x007BC040`, `ClipRectPair @ 0x007BBE20`.
 - Ghidra assembly contexts: `0x006408D4..0x006408EF`, `0x006408F5..0x0064097A`, `0x0064098B..0x006409D2`, `0x006409D7..0x00640A15`, `0x004AEE1A..0x004AEE46`, `0x00437461`.
 - Ghidra strings/xrefs: `STARTBUT.SHP @ 0x00836DE4`; `DrawStartPositions` xrefs including `FUN_006AE3F0 @ 0x006AE47B`.
-- Prior docs referenced: `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_PREVIEW_STARTBUT_OVERLAY_RECTS_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_MAP_PREVIEW_START_MARKERS_TRACE.md`.
-- Rust scanned: `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish_shell_render.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/app_list_maps.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/layout.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/render/batch.rs`.
+- Prior docs referenced: `docs/research/skirmish-ui/SKIRMISH_PREVIEW_STARTBUT_OVERLAY_RECTS_GHIDRA_REPORT.md`, `docs/research/skirmish-ui/SKIRMISH_MAP_PREVIEW_START_MARKERS_TRACE.md`.
+- Rust scanned: `src/app_skirmish_shell_render.rs`, `src/app_list_maps.rs`, `src/map/preview.rs`, `src/ui/skirmish_shell/layout.rs`, `src/render/batch.rs`.

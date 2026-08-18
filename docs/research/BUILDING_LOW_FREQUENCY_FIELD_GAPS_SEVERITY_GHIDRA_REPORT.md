@@ -80,5 +80,5 @@ The map audit is a coarse loose-file scan, not an archive extraction of every MI
 
 - Ghidra decompilation/assembly: `0x0044F820`, `0x0045FE50`, `0x0046140F..0x00461541`, `0x004C9C70`, `0x0045E880`, `0x0043B740`, `0x00442C40`, `0x006F2B40`, `0x005F3900`, `0x005F5C60`, `0x004FB0E0`, `0x00440580`, `0x00449A50`, `0x00447780`, `0x00445F80`.
 - Parent reports: `BUILDING_OWNER_HOUSE_BINDING_PARITY_GHIDRA_REPORT.md`, `BUILDING_STRENGTH_ARMOR_SIGHT_INIT_PARITY_GHIDRA_REPORT.md`, `BUILDING_FOUNDATION_OCCUPY_MODIFIERS_PARITY_GHIDRA_REPORT.md`.
-- INI files: `C:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini`, `ini/art.ini`, `ini/rulesmd.ini`, `ini/rules.ini`.
+- INI files: `ini/artmd.ini`, `ini/art.ini`, `ini/rulesmd.ini`, `ini/rules.ini`.
 - Rust files read-only: `src/map/entities.rs`, `src/map/houses.rs`, `src/rules/art_data.rs`, `src/sim/world/world_spawn.rs`, `src/sim/world/mod.rs`, `src/sim/production/production_queue.rs`, `src/sim/production/production_placement.rs`.

@@ -17,25 +17,25 @@ Player-visible result: pressing the Rust starter-base helper as a named Soviet o
 ## Evidence Sources
 
 - Rust:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_commands.rs:418` `place_starter_base_for_local_owner`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_commands.rs:671` `pick_building_for_owner`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/app_skirmish.rs:298` `populate_launch_houses`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs:56` `LaunchCountry::country_name`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs:71` `LaunchCountry::side_index`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/skirmish_launch.rs:79` `LaunchCountry::opening_mcv_candidates`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_tech.rs:155` `owner_matches_build_identity`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs:296` visible build option filter
+  - `src/app_commands.rs:418` `place_starter_base_for_local_owner`
+  - `src/app_commands.rs:671` `pick_building_for_owner`
+  - `src/app_skirmish.rs:298` `populate_launch_houses`
+  - `src/skirmish_launch.rs:56` `LaunchCountry::country_name`
+  - `src/skirmish_launch.rs:71` `LaunchCountry::side_index`
+  - `src/skirmish_launch.rs:79` `LaunchCountry::opening_mcv_candidates`
+  - `src/sim/production/production_tech.rs:155` `owner_matches_build_identity`
+  - `src/sim/production/production_queue.rs:296` visible build option filter
 - INI:
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:12418` `[NACNST]`, `Owner=Russians,Confederation,Africans,Arabs`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:13091` `[YACNST]`, `Owner=YuriCountry`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:12450` `[NAPOWR]`, `Prerequisite=NACNST`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:13125` `[YAPOWR]`, `Prerequisite=YACNST`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:7838` `[SMCV]`, `Owner=Russians,Confederation,Africans,Arabs`
-  - `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:8826` `[PCV]`, `Owner=YuriCountry`
+  - `ini/rulesmd.ini:12418` `[NACNST]`, `Owner=Russians,Confederation,Africans,Arabs`
+  - `ini/rulesmd.ini:13091` `[YACNST]`, `Owner=YuriCountry`
+  - `ini/rulesmd.ini:12450` `[NAPOWR]`, `Prerequisite=NACNST`
+  - `ini/rulesmd.ini:13125` `[YAPOWR]`, `Prerequisite=YACNST`
+  - `ini/rulesmd.ini:7838` `[SMCV]`, `Owner=Russians,Confederation,Africans,Arabs`
+  - `ini/rulesmd.ini:8826` `[PCV]`, `Owner=YuriCountry`
 - Existing verified docs:
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`: active standard-YR Start Game/session/Create_Houses path and node country consumer.
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/skirmish-ui/SKIRMISH_TEAM_ADJUNCT_HOUSE_ALLIANCE_HANDOFF_GHIDRA_REPORT.md`: active standard-YR Start packing and Create_Houses field copies.
-  - `C:/Users/enok/Documents/ra2-rust-game-docs/units/soviet/SMCV.md`: SMCV deploys into NACNST and the mechanism is the standard MCV deploy path.
+  - `docs/research/skirmish-ui/SKIRMISH_START_GAME_TO_SPAWN_CONSUMERS_GHIDRA_REPORT.md`: active standard-YR Start Game/session/Create_Houses path and node country consumer.
+  - `docs/research/skirmish-ui/SKIRMISH_TEAM_ADJUNCT_HOUSE_ALLIANCE_HANDOFF_GHIDRA_REPORT.md`: active standard-YR Start packing and Create_Houses field copies.
+  - `docs/research/units/soviet/SMCV.md`: SMCV deploys into NACNST and the mechanism is the standard MCV deploy path.
 
 ## Pipeline
 

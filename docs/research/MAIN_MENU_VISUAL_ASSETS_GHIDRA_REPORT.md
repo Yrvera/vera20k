@@ -2,7 +2,7 @@
 
 Date: 2026-05-17
 
-Parent report: `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
+Parent report: `docs/research/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
 
 Scope: targeted follow-up on the standard Yuri's Revenge initial main menu
 visual assets: the `Ra2ts_s/l` left movie panel, Bink vs VQA selection, shell
@@ -126,7 +126,7 @@ to drive periodic invalidation/update checks around the movie object.
 ## 5. Retail Movie Asset Inventory
 
 Asset probing was performed against the configured retail install at
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/`.
+`<ra2-install>/`.
 
 `cargo run --bin bik-survey -- ra2ts` succeeded:
 
@@ -280,7 +280,7 @@ No Rust code was changed by this investigation.
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
+- `docs/research/MAIN_MENU_SIDEBAR_GHIDRA_REPORT.md`
 - Ghidra/live binary findings:
   - `FUN_00531CC0` main menu creation and `Ra2ts_s/l` selection
   - `FUN_0052B9B0` movie panel refresh/reposition helper

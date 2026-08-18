@@ -29,7 +29,7 @@ the Ghidra trace of the bite/leap mechanism.
 
 ## rulesmd.ini — `[ADOG]` section
 
-Verbatim from `c:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:3767`:
+Verbatim from `ini/rulesmd.ini:3767`:
 
 ```ini
 [ADOG]
@@ -136,7 +136,7 @@ Natural=yes
 
 ## artmd.ini — `[ADOG]` section
 
-`c:/Users/enok/Documents/ra2-rust-game/ini/artmd.ini:375`:
+`ini/artmd.ini:375`:
 
 ```ini
 [ADOG] ; Allied Attack Dog

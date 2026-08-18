@@ -90,9 +90,9 @@ PASS: 5 | FAIL: 1 | UNCHECKED: 1 | NOT-IMPLEMENTED: 1
 
 ## Sources
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/CELL_REFERENCE_POINTS_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
-- `C:/Users/enok/Documents/ra2-rust-game-docs/AAHEATSEEKER2_GUARDWH_DETONATION_PARAMETERS_GHIDRA_REPORT.md`
+- `docs/research/CELL_REFERENCE_POINTS_GHIDRA_REPORT.md`
+- `docs/research/AAHEATSEEKER2_CELLCLASS_RETARGET_AI_BEHAVIOR_GHIDRA_REPORT.md`
+- `docs/research/AAHEATSEEKER2_GUARDWH_DETONATION_PARAMETERS_GHIDRA_REPORT.md`
 - Ghidra read-only spot checks: `CellClass__Get_Center_Coords @ 0x00480A30`, `CellClass__GetGroundHeight @ 0x00578080`, `CellClass__Get_Cell_At @ 0x00565730`, `BulletClassAiHomingDetonationPath @ 0x004666E0`, `BulletClassBulletDetonationImpactDamage @ 0x00468D80`, `Apply_area_damage @ 0x00489280`.
 
 Status: COMPLETE

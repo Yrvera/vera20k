@@ -33,7 +33,7 @@ What is the exact `RT_DIALOG` geometry for child `0x72B` under radar dialogs `0x
 
 I dumped `RT_DIALOG` resources directly from:
 
-`C:/Users/enok/Documents/Command and Conquer Red Alert II/gamemd.exe`
+`<ra2-install>/gamemd.exe`
 
 The parser walks the PE resource tree, selects `RT_DIALOG` type `5`, parses both `DLGTEMPLATE` and `DLGTEMPLATEEX`, and reports child controls. This is static retail resource evidence, not Rust or YRpp metadata.
 

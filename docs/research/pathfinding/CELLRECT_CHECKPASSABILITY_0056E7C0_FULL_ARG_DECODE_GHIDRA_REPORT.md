@@ -185,9 +185,9 @@ No INI key is read directly by `0x0056E7C0` or `0x004834A0`; all inputs arrive t
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`param_6` Locomotor type" with "`param_6` MovementZone / zone-row selector used by `CellRect::CheckPassability` and zone lookups; SpeedType is `param_4`."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`param_13` Reject bridge cells" with "`param_13` allow-bridge-cells polarity: nonzero allows structural bridge cells; zero rejects cells with `CellClass+0x140 & 0x100` after passability checks."
-- `C:/Users/enok/Documents/ra2-rust-game-docs/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any `g_PassabilityMatrix[speed_type * 8 + ...]` wording with `g_PassabilityMatrix[movementZone * 8 + reducedZoneType]`; `SpeedType` belongs to the speed/land table, not the zone matrix row.
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`param_6` Locomotor type" with "`param_6` MovementZone / zone-row selector used by `CellRect::CheckPassability` and zone lookups; SpeedType is `param_4`."
+- `docs/research/FIND_NEARBY_PASSABLE_CELL_GHIDRA_REPORT.md`: replace "`param_13` Reject bridge cells" with "`param_13` allow-bridge-cells polarity: nonzero allows structural bridge cells; zero rejects cells with `CellClass+0x140 & 0x100` after passability checks."
+- `docs/research/PATHFINDING_ASTAR_GHIDRA_REPORT.md`: replace any `g_PassabilityMatrix[speed_type * 8 + ...]` wording with `g_PassabilityMatrix[movementZone * 8 + reducedZoneType]`; `SpeedType` belongs to the speed/land table, not the zone matrix row.
 
 ## Sources
 

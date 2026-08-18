@@ -148,8 +148,8 @@ Rust now matches the researched checkbox sound slice for the native/dev Skirmish
 - Ghidra: `FUN_0060f9a0 @ 0x0060F9A0`, subclass selection `0x0060FE58..0x0060FE97`
 - Ghidra: `RulesClass__ReadAudioVisual @ 0x006691E0`, `GUICheckboxSound` block `0x006695C2..0x006695EF`
 - Ghidra: `VocClass__PlayAtPos @ 0x00750920`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini:652`
-- INI: `C:/Users/enok/Documents/ra2-rust-game/ini/soundmd.ini:2926..2927`
-- Prior trace: `C:/Users/enok/Documents/ra2-rust-game-docs/traces/SKIRMISH_CHECKBOX_ICON_VS_LABEL_HIT_TRACE.md`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/ui/skirmish_shell/state.rs`
-- Rust: `C:/Users/enok/Documents/ra2-rust-game/src/app.rs`
+- INI: `ini/rulesmd.ini:652`
+- INI: `ini/soundmd.ini:2926..2927`
+- Prior trace: `docs/research/traces/SKIRMISH_CHECKBOX_ICON_VS_LABEL_HIT_TRACE.md`
+- Rust: `src/ui/skirmish_shell/state.rs`
+- Rust: `src/app.rs`

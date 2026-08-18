@@ -112,5 +112,5 @@ Current Rust is already structured around the now-verified RGB model: `src/map/p
 
 - Ghidra: `0x00641B00`, `0x006418B0`, `0x005E74E0`, `0x00641EE0`, `0x00526FB0`, `0x0042FD30`, `0x0042FE50`, `0x0055C7C0`, `0x0055C350`.
 - Ghidra string anchors: `PreviewPack @ 0x00836DD0`, `Preview @ 0x00836DDC`.
-- Retail sample: `C:/Users/enok/Documents/Command and Conquer Red Alert II/Dustbowl.map:251-254`.
-- Rust status: `C:/Users/enok/Documents/ra2-rust-game/src/map/preview.rs:76`, `:82`, `:143`, `:155`.
+- Retail sample: `<ra2-install>/Dustbowl.map:251-254`.
+- Rust status: `src/map/preview.rs:76`, `:82`, `:143`, `:155`.

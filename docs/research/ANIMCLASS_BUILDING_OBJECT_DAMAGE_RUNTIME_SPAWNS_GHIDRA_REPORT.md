@@ -169,9 +169,9 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/DAMAGE_FIRE_ANIMS_GHIDRA.md`: replace "The function `0x43c0d0` is called through the rendering pipeline - specifically from the building draw path" with "In the current live Ghidra pass, `BuildingClass::Update @ 0x0043FB20` calls `BuildingClass::CreateDamageFireAnims @ 0x0043C0D0` when the cached damage-fire state at `BuildingClass+0x5E8` changes false->true; the false transition removes the 8 fire anim slots with vtable `+0xF8`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BUILDING_DAMAGE_DESTRUCTION_GHIDRA_REPORT.md`: replace "Called when a building transitions to ConditionYellow/Red" with "Called from `BuildingClass::Update @ 0x0043FB20` when the cached damage-fire state flips true; the threshold is `ConditionYellow` when `BuildingType+0x157B == 0` and `ConditionRed` when `BuildingType+0x157B != 0`."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BUILDINGCLASS_UPDATE_AI_TICK_GHIDRA_REPORT.md`: replace "`Type+0x157B` (bool) - `CanBeOccupied`" with "`Type+0x157B` (bool) - threshold selector for damage-fire state; exact INI label conflicts with destruction docs and should not be called `CanBeOccupied` without a parser audit."
+- `docs/research/DAMAGE_FIRE_ANIMS_GHIDRA.md`: replace "The function `0x43c0d0` is called through the rendering pipeline - specifically from the building draw path" with "In the current live Ghidra pass, `BuildingClass::Update @ 0x0043FB20` calls `BuildingClass::CreateDamageFireAnims @ 0x0043C0D0` when the cached damage-fire state at `BuildingClass+0x5E8` changes false->true; the false transition removes the 8 fire anim slots with vtable `+0xF8`."
+- `docs/research/BUILDING_DAMAGE_DESTRUCTION_GHIDRA_REPORT.md`: replace "Called when a building transitions to ConditionYellow/Red" with "Called from `BuildingClass::Update @ 0x0043FB20` when the cached damage-fire state flips true; the threshold is `ConditionYellow` when `BuildingType+0x157B == 0` and `ConditionRed` when `BuildingType+0x157B != 0`."
+- `docs/research/BUILDINGCLASS_UPDATE_AI_TICK_GHIDRA_REPORT.md`: replace "`Type+0x157B` (bool) - `CanBeOccupied`" with "`Type+0x157B` (bool) - threshold selector for damage-fire state; exact INI label conflicts with destruction docs and should not be called `CanBeOccupied` without a parser audit."
 
 ## Sources
 

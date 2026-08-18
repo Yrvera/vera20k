@@ -197,6 +197,6 @@ None for the requested stock Grizzly `BuildTimeMultiplier` formula and numeric v
 ## Sources
 
 - Ghidra decompile/disassembly: `0x006F47A0`, `0x00711EE0`, `0x004C9EA0`, `0x004C9FB0`, `0x0050C0A0`, `0x004FCE30`, `0x00500910`, `0x007C5F00`.
-- INI files: `C:/Users/enok/Documents/ra2-rust-game/ini/rulesmd.ini`, `C:/Users/enok/Documents/ra2-rust-game/ini/rules.ini`.
-- Rust scan: `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_tech.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/sim/production/production_queue.rs`, `C:/Users/enok/Documents/ra2-rust-game/src/rules/ruleset.rs`.
-- Prior docs cross-checked: `C:/Users/enok/Documents/ra2-rust-game-docs/units/allied/MTNK.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/POWER_SYSTEM_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/FACTORY_CLASS_BUILD_SPEED_GHIDRA_REPORT.md`, `C:/Users/enok/Documents/ra2-rust-game-docs/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`.
+- INI files: `ini/rulesmd.ini`, `ini/rules.ini`.
+- Rust scan: `src/sim/production/production_tech.rs`, `src/sim/production/production_queue.rs`, `src/rules/ruleset.rs`.
+- Prior docs cross-checked: `docs/research/units/allied/MTNK.md`, `docs/research/TECHNOTYPECLASS_BASE_GHIDRA_REPORT.md`, `docs/research/POWER_SYSTEM_GHIDRA_REPORT.md`, `docs/research/FACTORY_CLASS_BUILD_SPEED_GHIDRA_REPORT.md`, `docs/research/ADD_TIBERIUM_CREDITS_PURIFIER_VIRTUAL_PURIFIERS_GHIDRA_REPORT.md`.

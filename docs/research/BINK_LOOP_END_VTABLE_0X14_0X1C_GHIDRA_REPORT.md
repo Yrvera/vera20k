@@ -169,13 +169,13 @@ Asset role matrix:
 
 ### Stale Docs / Follow-up Docs
 
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-17-initial-main-menu-dialog-0xe2-plan.md`
+- `docs/plans/2026-05-17-initial-main-menu-dialog-0xe2-plan.md`
   - Replace: "`BinkGoto(1)` is treated as Rust decoder index `0`; a loop unit test verifies this intended mapping in the Rust abstraction."
   - With: "gamemd loops with `_BinkGoto(handle, frame=1, wait=1)` and clears the Bink last-frame marker. Rust currently decodes parser packet index `0` on restart, but the equivalence between Bink's external frame `1` and Rust's zero-based packet `0` remains unverified and needs a targeted loop-frame fixture or runtime capture."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/plans/2026-05-17-initial-main-menu-dialog-0xe2-design.md`
+- `docs/plans/2026-05-17-initial-main-menu-dialog-0xe2-design.md`
   - Replace: "`BinkGoto(1)` in gamemd maps to Rust decoder frame index `0`; this should be verified with a targeted playback test during implementation."
   - With: "gamemd loops with `_BinkGoto(handle, frame=1, wait=1)`. Treat mapping to Rust decoder packet index `0` as an open parity question until a targeted playback test or runtime capture proves it for RA2TS BIK files."
-- `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
+- `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
   - Replace section 3 rows for `+0x14/+0x1C` with: "`+0x14` and `+0x1C` were later re-mapped by `MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md` as `+0x14 = 0x005C0570 -> 0x00432C50` and `+0x1C = 0x005C05D0 -> 0x00432BD0`; re-read `0x007EE154` before using this older slot table."
 
 ## Sources
@@ -183,13 +183,13 @@ Asset role matrix:
 - Ghidra availability check in this slot:
   - `list_instances` returned no running instances, so no fresh decompile/read-memory calls could be made.
 - Prior verified Ghidra reports referenced:
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
-  - `C:/Users/enok/Documents/ra2-rust-game/docs/research/RA2TS_BINK_AUDIO_ENABLE_GHIDRA_REPORT.md`
+  - `docs/research/MAIN_MENU_RA2TS_PLAYBACK_ARCHIVE_PRIORITY_GHIDRA_REPORT.md`
+  - `docs/research/OWNERDRAW_STATIC_006153E0_FULL_PAINT_GHIDRA_REPORT.md`
+  - `docs/research/BINK_0x4F0_PAINT_CADENCE_0x71A_GHIDRA_REPORT.md`
+  - `docs/research/traces/MAIN_MENU_RA2TS_BACKGROUND_MOVIE_TRACE.md`
+  - `docs/research/RA2TS_BINK_AUDIO_ENABLE_GHIDRA_REPORT.md`
 - Rust source inspected:
-  - `C:/Users/enok/Documents/ra2-rust-game/src/render/bink_movie.rs`
-  - `C:/Users/enok/Documents/ra2-rust-game/src/assets/bink_file.rs`
+  - `src/render/bink_movie.rs`
+  - `src/assets/bink_file.rs`
 - Research index:
   - `python tools/research_index/brief.py "Bink loop end vtable 0x14 0x1C BinkGoto" --limit 8`
