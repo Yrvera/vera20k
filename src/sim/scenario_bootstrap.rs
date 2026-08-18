@@ -16,6 +16,7 @@ use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
@@ -35,21 +36,33 @@ pub(crate) struct NativeStartBounds {
 }
 
 impl NativeStartBounds {
+    /// gamemd-derived: active YR start placement is bounded by the MapClass
+    /// CELL-ARRAY rect, never by `LocalSize=`. `MapClass::Resize @ 0x00565C10` writes
+    /// `MapClass+0x124..0x130` as `(1, 1, SizeW+SizeH-1, SizeW+SizeH-1)`, and
+    /// both `ScenarioClass__Gather_Start_Positions @ 0x00688380` (deficient
+    /// seed block `0x00688528..0x0068857C`) and
+    /// `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0` (fallback probe clamp)
+    /// read exactly those four fields. Playable-area
+    /// acceptance is the separate isometric-diamond predicate
+    /// (`cell_rect::cell_is_in_playfield`); `LocalSize=` feeds that test's
+    /// band constants only, never an axis-aligned bound. Treating LocalSize
+    /// as a cell rectangle here previously rejected most authored starts and
+    /// clamped every displaced MCV onto the false edge.
     pub(crate) fn from_session(sim: &Simulation, terrain: &ResolvedTerrainGrid) -> Self {
-        if sim.session.local_width != 0 && sim.session.local_height != 0 {
-            Self {
-                min_rx: sim.session.local_left,
-                min_ry: sim.session.local_top,
-                width: sim.session.local_width,
-                height: sim.session.local_height,
-            }
+        // `session.map_width/height` hold the canonical cell-array extent
+        // (~SizeW+SizeH), so the native rect side is that extent minus one.
+        // Sessions without header data (headless fixtures) fall back to the
+        // terrain grid extent — VERA-internal, same shape.
+        let (extent_x, extent_y) = if sim.session.map_width != 0 && sim.session.map_height != 0 {
+            (sim.session.map_width, sim.session.map_height)
         } else {
-            Self {
-                min_rx: 0,
-                min_ry: 0,
-                width: terrain.width(),
-                height: terrain.height(),
-            }
+            (terrain.width(), terrain.height())
+        };
+        Self {
+            min_rx: 1,
+            min_ry: 1,
+            width: extent_x.saturating_sub(1),
+            height: extent_y.saturating_sub(1),
         }
     }
 
@@ -67,10 +80,6 @@ impl NativeStartBounds {
             ry.clamp(i32::from(self.min_ry), i32::from(self.max_ry())) as u16,
         )
     }
-
-    pub(crate) fn contains(self, rx: u16, ry: u16) -> bool {
-        rx >= self.min_rx && rx <= self.max_rx() && ry >= self.min_ry && ry <= self.max_ry()
-    }
 }
 
 /// Build the native multiplayer-start vector before assigning houses.
@@ -85,6 +94,7 @@ pub(crate) fn native_gather_start_positions(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
     bounds: NativeStartBounds,
+    playfield_bounds: Option<PlayfieldBounds>,
     rng: &mut SimRng,
 ) -> Vec<Waypoint> {
     let authored_prefix = (0..8u32)
@@ -100,18 +110,32 @@ pub(crate) fn native_gather_start_positions(
     }
 
     while starts.len() < target_count {
-        let x_span = u32::from(bounds.width.saturating_sub(10));
-        let y_high = u32::from(bounds.height.saturating_sub(10));
-        let seed_rx = rng
-            .next_range_u32_inclusive(0, x_span)
-            .wrapping_add(u32::from(bounds.min_rx))
-            .wrapping_add(10) as u16;
+        // gamemd-derived: active YR `ScenarioClass__Gather_Start_Positions
+        // @ 0x00688380`, seed block `0x00688528..0x0068857C`: the first draw
+        // `RandomRanged(0, rect.h - 10)` lands on the Y axis
+        // (`+ 10 + rect.y`), the second `RandomRanged(10, rect.w - 10)` on the
+        // X axis (`+ rect.x`). The rect is the MapClass cell-array rect (see
+        // `NativeStartBounds::from_session`), which is square, so a transposed
+        // mapping is RNG-neutral — but the seeded POINT mirrors across the
+        // diagonal, so the axes are kept exactly as native writes them.
+        let y_span = u32::from(bounds.height.saturating_sub(10));
+        let x_high = u32::from(bounds.width.saturating_sub(10));
         let seed_ry = rng
-            .next_range_u32_inclusive(10, y_high)
+            .next_range_u32_inclusive(0, y_span)
+            .wrapping_add(10)
             .wrapping_add(u32::from(bounds.min_ry)) as u16;
+        let seed_rx = rng
+            .next_range_u32_inclusive(10, x_high)
+            .wrapping_add(u32::from(bounds.min_rx)) as u16;
 
-        let Some((rx, ry)) = find_nearby_start_rect(terrain, occupancy, bounds, seed_rx, seed_ry)
-        else {
+        let Some((rx, ry)) = find_nearby_start_rect(
+            terrain,
+            occupancy,
+            bounds,
+            playfield_bounds,
+            seed_rx,
+            seed_ry,
+        ) else {
             continue;
         };
         starts.push(Waypoint {
@@ -128,10 +152,11 @@ pub(crate) fn native_gather_start_positions(
 /// start gathering: scan square rings from the seed, finish the first ring
 /// containing an 8x8 passable candidate, and select its first candidate at
 /// frame zero.
-fn find_nearby_start_rect(
+pub(crate) fn find_nearby_start_rect(
     terrain: &ResolvedTerrainGrid,
     occupancy: &crate::sim::occupancy::OccupancyGrid,
     bounds: NativeStartBounds,
+    playfield_bounds: Option<PlayfieldBounds>,
     seed_rx: u16,
     seed_ry: u16,
 ) -> Option<(u16, u16)> {
@@ -158,6 +183,20 @@ fn find_nearby_start_rect(
                 || rx + i32::from(DEFICIENT_START_RECT_W) - 1 > i32::from(bounds.max_rx())
                 || ry + i32::from(DEFICIENT_START_RECT_H) - 1 > i32::from(bounds.max_ry())
             {
+                continue;
+            }
+            // gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
+            // @ 0x0056DC20` applies `MapClass__Is_Cell_In_Playfield_CellClass
+            // @ 0x00578540` to the candidate anchor before
+            // `CellRect__CheckPassability @ 0x0056E7C0` scans its 8x8 rect.
+            // Only the anchor is diamond-gated; requiring all 64 cells to lie in
+            // the diamond would be stricter than retail.
+            if !cell_is_in_playfield(
+                (rx, ry),
+                playfield_bounds,
+                Some(terrain),
+                Some((terrain.width(), terrain.height())),
+            ) {
                 continue;
             }
             let (rx, ry) = (rx as u16, ry as u16);
@@ -1198,7 +1237,7 @@ fn place_starting_object_near_base(
     resolved_terrain: &ResolvedTerrainGrid,
 ) -> Option<u64> {
     let category = rules.object(type_id)?.category;
-    if starting_object_cell_placeable(sim, resolved_terrain, bounds, base_rx, base_ry, category) {
+    if starting_object_cell_placeable(sim, resolved_terrain, base_rx, base_ry, category) {
         return sim.spawn_object(type_id, owner, base_rx, base_ry, facing, rules, height_map);
     }
 
@@ -1227,14 +1266,7 @@ fn place_starting_object_near_base(
                 }
 
                 if (rx, ry) == (base_rx, base_ry)
-                    || !starting_object_cell_placeable(
-                        sim,
-                        resolved_terrain,
-                        bounds,
-                        rx,
-                        ry,
-                        category,
-                    )
+                    || !starting_object_cell_placeable(sim, resolved_terrain, rx, ry, category)
                 {
                     continue;
                 }
@@ -1491,12 +1523,22 @@ fn starting_unit_infantry_allowed(
 fn starting_object_cell_placeable(
     sim: &Simulation,
     resolved_terrain: &ResolvedTerrainGrid,
-    bounds: NativeStartBounds,
     rx: u16,
     ry: u16,
     category: crate::rules::object_type::ObjectCategory,
 ) -> bool {
-    if !bounds.contains(rx, ry) {
+    // Acceptance is the retail isometric-diamond predicate: the mode's
+    // starting-unit creator (vtable `+0xC8` @ `0x005D7030`) unlimbos at the
+    // start coord, and its scan-place fallback @ `0x00688ED0` gates the seed
+    // cell and every ring candidate with `MapClass::Is_Cell_In_Playfield(cell,
+    // 1)`. The cell-array rect only clamps probe coordinates — it is never an
+    // acceptance test.
+    if !crate::sim::cell_rect::cell_is_in_playfield(
+        (i32::from(rx), i32::from(ry)),
+        sim.playfield_bounds,
+        Some(resolved_terrain),
+        Some((resolved_terrain.width(), resolved_terrain.height())),
+    ) {
         return false;
     }
     if let Some(occupancy) = sim.occupancy().get(rx, ry) {
@@ -1676,6 +1718,7 @@ impl Simulation {
             terrain,
             &self.substrate.occupancy,
             bounds,
+            self.playfield_bounds,
             &mut self.scenario_rng,
         )
     }
@@ -1809,6 +1852,38 @@ mod tests {
     }
 
     #[test]
+    fn nearoref_native_start_bounds_use_inclusive_full_cell_array_endpoints() {
+        let mut sim = Simulation::new();
+        sim.session.map_width = 138;
+        sim.session.map_height = 138;
+        sim.session.local_left = 2;
+        sim.session.local_top = 4;
+        sim.session.local_width = 76;
+        sim.session.local_height = 48;
+        let terrain = ResolvedTerrainGrid::from_cells(138, 138, Vec::new());
+
+        let bounds = NativeStartBounds::from_session(&sim, &terrain);
+
+        assert_eq!(
+            (
+                bounds.min_rx,
+                bounds.min_ry,
+                bounds.width,
+                bounds.height,
+                bounds.max_rx(),
+                bounds.max_ry(),
+            ),
+            (1, 1, 137, 137, 137, 137)
+        );
+        assert_eq!(bounds.clamp(0, 0), (1, 1));
+        assert_eq!(bounds.clamp(1, 1), (1, 1));
+        assert_eq!(bounds.clamp(100, 75), (100, 75));
+        assert_eq!(bounds.clamp(137, 137), (137, 137));
+        assert_eq!(bounds.clamp(138, 138), (137, 137));
+        assert_eq!(bounds.clamp(i32::MIN, i32::MAX), (1, 137));
+    }
+
+    #[test]
     fn untouched_bootstrap_cursors_match_fresh_descriptor_construction() {
         let seed = 0x51C0_1001;
         let expected = Simulation::from_descriptor(&descriptor(seed)).rng_state();
@@ -1872,9 +1947,7 @@ mod tests {
             usize::try_from(generated.index_a).expect("test MapGen cursor A is non-negative"),
             usize::try_from(generated.index_b).expect("test MapGen cursor B is non-negative"),
         ));
-        let actual = owner
-            .into_simulation(&descriptor(match_seed))
-            .rng_state();
+        let actual = owner.into_simulation(&descriptor(match_seed)).rng_state();
 
         assert_eq!(
             actual.scenario,
