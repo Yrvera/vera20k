@@ -716,16 +716,18 @@ pub(crate) fn build_overlay_instances(
             continue;
         }
 
+        // Exactly the frame the cell names, or nothing. Overlay draw:
+        // `CellClass__DrawOverlay_Body @ 0x0047F6A0` blits `Cell+0x11E` with no
+        // substitution, so a cell whose frame is empty art draws nothing — the
+        // authored state for a low bridge's flanking columns (overlay data 0 and
+        // 2, art only in frame 1). Collapsing to frame 0 here resurrected them
+        // as phantom deck slabs. Frame selection lives in
+        // `render::overlay_atlas::resolve_body_frame`.
         let key = OverlaySpriteKey {
             name: name.clone(),
             frame: render_frame,
         };
-        let key_fallback = OverlaySpriteKey {
-            name: name.clone(),
-            frame: 0,
-        };
-        let spr = atlas.get(&key).or_else(|| atlas.get(&key_fallback));
-        let Some(spr) = spr else { continue };
+        let Some(spr) = atlas.get(&key) else { continue };
         let depth_z: u8 = z;
         let depth: f32 = compute_sprite_depth_params(origin_y, world_height, screen_y, depth_z);
         let tint: [f32; 3] = state

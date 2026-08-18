@@ -83,6 +83,40 @@ fn body_frame_count(flags: &OverlayTypeFlags, total_frames: usize) -> usize {
     }
 }
 
+/// SHP frame an overlay cell draws, or `None` when the cell draws nothing.
+///
+/// The cell's overlay-data byte IS the shape frame. Overlay draw:
+/// `CellClass__DrawOverlay_Body @ 0x0047F6A0` reads `Cell+0x11E` and hands it to
+/// the shape blitter unchanged on every non-Tiberium branch — no clamp, no
+/// search for a populated frame. Nothing upstream normalises that byte either:
+/// map load `ReadMapOverlayPacks @ 0x005FD2E0` pass 2 writes the decoded
+/// `[OverlayDataPack]` value straight into `Cell+0x11E` for every in-bounds
+/// cell, after pass 1's overlay construction. A zero-size frame therefore blits
+/// nothing, and that silence is load-bearing:
+/// low-bridge SHPs carry art only in frame 1, and a low bridge's flanking cells
+/// (overlay data 0 and 2) are authored to draw nothing while the middle cell's
+/// single wide sprite covers the row. Substituting the nearest populated frame
+/// here painted a full deck onto all three columns.
+///
+/// The out-of-range arm is VERA-internal with the gamemd equivalent UNCHECKED:
+/// it pairs with `body_frame_count`'s shadow-half cap, and collapsing to frame 0
+/// keeps a wall visible when modded art declares fewer body frames than
+/// `DamageLevels` can reach.
+fn resolve_body_frame(
+    requested: u8,
+    max_normal_frame: usize,
+    frame_sizes: &[(u16, u16)],
+) -> Option<usize> {
+    let requested_idx: usize = requested as usize;
+    let frame_idx: usize = if requested_idx < max_normal_frame {
+        requested_idx
+    } else {
+        0
+    };
+    let (width, height) = frame_sizes.get(frame_idx).copied()?;
+    (width > 0 && height > 0).then_some(frame_idx)
+}
+
 /// Namespace prefix for smudge atlas keys.
 ///
 /// Smudges share the OverlayAtlas (single texture, single bind group) but are
@@ -615,35 +649,12 @@ fn render_overlay_sprite(
     // (bridge.tem / bridgb.tem). The OverlayDataPack frame value already
     // encodes the direction: frames 0-8 = EW, frames 9-17 = NS.
     // No additional offset is needed — the map data handles it.
-    // 1) requested frame if in range and non-empty
-    // 2) frame 0 if non-empty
-    // 3) first non-empty frame
-    let requested_idx: usize = key.frame as usize;
-    let mut frame_idx: usize = if requested_idx < max_normal_frame {
-        requested_idx
-    } else {
-        0
-    };
-    let is_non_empty = |idx: usize| -> bool {
-        shp.frames
-            .get(idx)
-            .map(|fr| fr.frame_width > 0 && fr.frame_height > 0)
-            .unwrap_or(false)
-    };
-    if !is_non_empty(frame_idx) {
-        if is_non_empty(0) {
-            frame_idx = 0;
-        } else if let Some((idx, _)) = shp
-            .frames
-            .iter()
-            .enumerate()
-            .find(|(_, fr)| fr.frame_width > 0 && fr.frame_height > 0)
-        {
-            frame_idx = idx;
-        } else {
-            return None;
-        }
-    }
+    let frame_sizes: Vec<(u16, u16)> = shp
+        .frames
+        .iter()
+        .map(|fr| (fr.frame_width, fr.frame_height))
+        .collect();
+    let frame_idx: usize = resolve_body_frame(key.frame, max_normal_frame, &frame_sizes)?;
 
     let frame = &shp.frames[frame_idx];
 
@@ -983,7 +994,7 @@ fn render_smudge_sprite(
 mod tests {
     use super::{
         MAX_OVERLAY_FRAME_COUNT, OverlaySpriteKey, OverlayTypeFlags, body_frame_count,
-        decrement_numeric_suffix, runtime_flat_tiberium_sprite_keys,
+        decrement_numeric_suffix, resolve_body_frame, runtime_flat_tiberium_sprite_keys,
         runtime_low_bridge_sprite_keys, wall_body_frame_count,
     };
     use crate::map::overlay::OverlayEntry;
@@ -999,6 +1010,64 @@ mod tests {
         );
         assert_eq!(decrement_numeric_suffix("FENCE00"), None);
         assert_eq!(decrement_numeric_suffix("BRIDGE"), None);
+    }
+
+    /// Frame table of a stock low-bridge SHP: 6 frames, art only in frame 1.
+    ///
+    /// Machine-derived from `LOBRDB10.des`, `LOBRDB13.des`, `LOBRDB23.des`,
+    /// `LOBRDB25.des`, `LOBRDG10.des`, `LOBRDG23.tem` and `LOBRDB10.tem` — every
+    /// low-bridge piece sampled across the desert and temperate theaters has the
+    /// same shape.
+    const LOW_BRIDGE_FRAME_SIZES: [(u16, u16); 6] =
+        [(0, 0), (120, 70), (0, 0), (0, 0), (0, 0), (0, 0)];
+
+    #[test]
+    fn low_bridge_flank_columns_draw_nothing() {
+        // A low bridge is three cells wide and the map pack stores the column
+        // index in the cell's overlay-data byte: 0 = left flank, 1 = middle,
+        // 2 = right flank (verified on `xlostlake.map`, 155 low-bridge cells
+        // splitting 53/50/52 with the value tracking `x` across each row). Only
+        // the middle column carries art; its single 120px-wide sprite covers the
+        // whole row. Resolving the flanks to the populated frame drew the deck
+        // three times, offset by a cell each way.
+        let max_normal_frame: usize = LOW_BRIDGE_FRAME_SIZES.len() / 2;
+        assert_eq!(
+            resolve_body_frame(0, max_normal_frame, &LOW_BRIDGE_FRAME_SIZES),
+            None,
+            "left flank must draw nothing"
+        );
+        assert_eq!(
+            resolve_body_frame(1, max_normal_frame, &LOW_BRIDGE_FRAME_SIZES),
+            Some(1),
+            "middle column carries the deck sprite"
+        );
+        assert_eq!(
+            resolve_body_frame(2, max_normal_frame, &LOW_BRIDGE_FRAME_SIZES),
+            None,
+            "right flank must draw nothing"
+        );
+    }
+
+    #[test]
+    fn populated_frames_resolve_to_themselves() {
+        // Ore density frames (TIB01: 12 populated body frames) must keep
+        // indexing straight through — the cell's data byte is the frame.
+        let ore: Vec<(u16, u16)> = (0..12).map(|i| (20 + i, 10 + i)).collect();
+        for requested in 0u8..12 {
+            assert_eq!(
+                resolve_body_frame(requested, ore.len(), &ore),
+                Some(requested as usize)
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_frames_still_collapse_to_zero() {
+        // VERA-internal guard (gamemd equivalent UNCHECKED): a wall whose art
+        // declares fewer body frames than DamageLevels can reach stays visible
+        // as a pristine post rather than vanishing.
+        let wall: Vec<(u16, u16)> = vec![(30, 30); 16];
+        assert_eq!(resolve_body_frame(0x2F, wall.len(), &wall), Some(0));
     }
 
     #[test]
