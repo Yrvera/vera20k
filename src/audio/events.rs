@@ -280,6 +280,27 @@ impl GameSoundEvent {
 ///
 /// Drained by the app layer each frame after sim ticking.
 #[derive(Debug, Default)]
+/// RESIDUAL (GSI-15.05/15.08) — routing is by event variant, not by the INI
+/// classification, and several authored families have no emission site at all.
+/// Nothing emits ambient sound: `WorkingSound=` (9 stock), `AuxSound1=` (8),
+/// `AuxSound2=` (5), `TurretRotateSound=` (2) and the water enter/leave pair
+/// have no producer, and `MoveSound=` is parsed with per-entity countdown state
+/// already present but no event carries it. Weapon routing ignores
+/// `DownReport=` and the eight-facing report selection. On the voice side
+/// `VoiceFeedback=` (133 stock) and `VoiceCapture=` (3) have no consumers,
+/// `VoiceCrashing=` (7) is not parsed, taunts reach an empty match arm in the
+/// input dispatcher, and the voice slot has no acknowledgement repeat guard, so
+/// re-selecting a unit restarts its line immediately.
+/// - Trigger: moving a unit, a building running, a helicopter crashing, or
+///   spamming selection — all ordinary actions.
+/// - Player effect: the soundscape is thin. Units move silently, bases have no
+///   working hum, and unit chatter repeats without the native guard.
+/// - Frequency: continuous.
+/// - Downstream risk: ambient cues need the looping handles recorded on
+///   `audio/sfx.rs`, so they are blocked behind the same device-free arbiter;
+///   the voice repeat guard is pure state and could land ahead of it.
+///   Selection variance is also split — the app picks with a plain counter
+///   while death pools draw from `SimRng`, so the two are unrelated mechanisms.
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,
 }

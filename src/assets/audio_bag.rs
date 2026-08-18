@@ -283,6 +283,20 @@ pub fn decode_bag_audio(entry: &AudioBagEntry, data: &[u8]) -> Option<BagAudio> 
 /// Followed by nibble data for the remaining block bytes.
 ///
 /// If `block_size` is 0 (v1 IDX or unknown), treats the entire data as one block.
+/// RESIDUAL (GSI-02.15) — the multi-block preamble is unexercised. Every test
+/// in this module builds a v1 index by hand, so the 36-byte v2 stride and the
+/// `chunk_size`-driven loop below are never entered; only the
+/// `block_size == data.len()` single-block fallback is covered. Which version
+/// the retail `audio(md).idx` actually is was not determined here — the file is
+/// nested inside `ra2md.mix` and its name table is not plaintext-scannable.
+/// - Trigger: loading a v2 index, if retail ships one.
+/// - Player effect: if v2 is the retail format and the stride or preamble is
+///   wrong, sounds decode as noise or fail to resolve at all.
+/// - Frequency: unknown, and that is the point — this is either every sound or
+///   none, with no evidence in between.
+/// - Downstream risk: bounded to decode; nothing downstream reads the index
+///   shape. Settling it needs the `asset` CLI against a retail archive, which
+///   is a tooling step rather than a code change.
 fn decode_ima_adpcm_blocks(data: &[u8], channels: u16, block_size: u32) -> Vec<i16> {
     use super::aud_file::ImaAdpcmState;
 

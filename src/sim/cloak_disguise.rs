@@ -10,6 +10,21 @@ pub struct OpaqueCloakTuple {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// RESIDUAL (GSI-12.05) — this whole module is write-dead. No production code
+/// ever sets `GameEntity::cloak` or `::disguise`; `apply_transition`,
+/// `evaluate_fire_cloak_gates`, `can_open_still_disguise_gate` and
+/// `choose_default_mirage_disguise` have only test callers. `Cloakable=` and
+/// `CloakingSpeed=` are not parsed anywhere either, despite four stock entries
+/// each, so even the inputs are missing.
+/// - Trigger: any cloaking or disguising unit — Yuri's stealth armour, the
+///   Mirage Tank, a Spy.
+/// - Player effect: nothing ever cloaks or disguises. Those units fight as
+///   ordinary visible ones, which removes the entire stealth layer of the game.
+/// - Frequency: continuous in any match involving those factions or units.
+/// - Downstream risk: cloak state gates drawing, targeting legality and the
+///   sensor plane recorded as write-dead in `sim/vision/mod.rs`; landing it
+///   means landing both together, and it changes what every scan can see, so it
+///   moves the pinned replay hash.
 pub struct CloakRuntime {
     /// Native state id. States 0..3 deliberately remain opaque.
     pub state: i32,

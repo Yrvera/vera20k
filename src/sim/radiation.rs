@@ -270,6 +270,18 @@ impl RadiationState {
     /// on a fresh center, or merge into the existing site (current effective
     /// level + added level, lifetime reset, field re-spread with the new
     /// level after the old outstanding contribution is removed).
+    /// RESIDUAL (GSI-04.21) — radiation is the only environmental hazard here.
+    /// There is no burning-cell producer at all: no `Flammability` consumer, no
+    /// cell fire state, and nothing for the `Sparky=` warhead flag recorded on
+    /// `rules/warhead_type.rs` to set alight.
+    /// - Trigger: any flame weapon hit, and any warhead that should ignite the
+    ///   ground.
+    /// - Player effect: fire weapons leave no burning ground, so their damage
+    ///   ends the moment the shot lands instead of persisting on the cell.
+    /// - Frequency: every flame engagement — a standard Allied and Yuri tactic.
+    /// - Downstream risk: burning cells are per-cell timed damage sources, so
+    ///   they need the same per-tick receiver ordering this module already
+    ///   establishes for rad sites; building it here would reuse that walk.
     pub fn apply_detonation(
         &mut self,
         det: RadDetonation,

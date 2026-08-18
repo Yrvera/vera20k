@@ -208,6 +208,26 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // `FootClass::Mission_Hunt`: the observed Capture/Sabotage/Move routes
         // need an authoritative selector. Until one exists, retain its cadence
         // and do not manufacture a target or queued mission.
+        // RESIDUAL (GSI-07.20) — Hunt has a cadence and no body. Native
+        // `FootClass::Mission_Hunt @ 0x004D5350` selects among Sabotage,
+        // Capture and a Move return-to-base; the two arms here only re-arm the
+        // dispatch timer, so an object on Hunt is assigned and then does
+        // nothing. Trigger: anything queued onto Hunt — the crate and trigger
+        // paths assign it today. Player effect: hunting units stand still.
+        // Frequency: low in stock skirmish, because the main assigner would be
+        // an AI opponent, which this project has not built yet. Downstream
+        // risk: the selector needs the Capture/Sabotage target scan, so it
+        // lands with the engineer and terrorist mission work, not before.
+        //
+        // RESIDUAL (GSI-07.09) — Mission 4 Retreat has no handler at all. It is
+        // absent from the stub set as well, so a Retreat-committed object falls
+        // out of the dispatcher with its timer untouched; native
+        // `FootClass::Mission_Retreat @ 0x004DA2C0` oscillates between two
+        // states. Trigger: any assigner queuing Retreat. Player effect: the
+        // object freezes instead of withdrawing. Frequency: zero today for the
+        // same reason as Hunt. Downstream risk: the missing timer touch means
+        // the object also never re-enters the dispatch cadence, so a future
+        // assigner would strand it rather than merely mis-handle it.
         (EntityCategory::Infantry, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
             jittered_mission_cadence(sim, rules, MissionType::Hunt),
         ),
