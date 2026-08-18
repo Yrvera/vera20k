@@ -289,14 +289,14 @@ const SOUND_PRIORITY_TABLE: [(&str, u8); 5] = [
 ];
 
 /// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors ten
-/// more. `Control=` (588 stock entries) selects RANDOM, INTERRUPT, PREDELAY,
+/// more. `Control=` (594 stock entries) selects RANDOM, INTERRUPT, PREDELAY,
 /// LOOP, ALL and AMBIENT behaviour and is not parsed, so variant choice is a
 /// plain counter and none of the other modes exist; `Type=` (89) classifies
 /// GLOBAL/LOCAL/SHROUD and is not parsed, which is what leaves the `MinVolume=`
 /// floor unconditional in `audio/sfx.rs`; `Limit=` (77, plus `[Defaults]
 /// Limit=5`) caps concurrent instances and is not parsed, so nothing bounds a
-/// repeated sound; `Attack=`/`Decay=` (12/9), `Delay=` (63), `Loop=` (1) and
-/// `FShift=` (218) likewise have no fields.
+/// repeated sound; `Attack=`/`Decay=` (12/9), `Delay=` (64), `Loop=` (1) and
+/// `FShift=` (215) likewise have no fields.
 /// - Trigger: playing any sound whose entry authors one of them, which is most
 ///   of the registry.
 /// - Player effect: sounds do not interrupt or loop as authored, ambient beds
