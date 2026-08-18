@@ -155,8 +155,13 @@ fn bridge_traversal_explicit_parent_unknown_height_requires_candidate_transition
     assert_eq!(result.path_height, 4);
 }
 
+/// Despite the old name, the diff here is **4**, not 0: the parent carries no
+/// structural bridge, so `parent_selected` is the path height (4) and the
+/// candidate is at level 0. `0x004D9D8F-0x004D9D94` allows that case — the
+/// parent's own level is neither `candidate ± 4`, so `JNZ 0x004D9E5E` takes
+/// the `XOR EAX,EAX` exit. The assertion below used to demand a block.
 #[test]
-fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
+fn bridge_traversal_allows_a_diff_four_edge_with_no_matching_parent_level() {
     let parent = bridge_test_cell(0, false, false, 0);
     let candidate = bridge_test_cell(0, false, false, 0);
     let grid = PathGrid::from_cells(vec![parent, candidate], 2, 1);
@@ -172,7 +177,8 @@ fn bridge_traversal_diff_zero_blocks_when_path_height_disagrees() {
         },
     );
 
-    assert!(!result.allowed);
+    assert!(result.allowed);
+    assert!(!result.force_bridge_list);
 }
 
 #[test]

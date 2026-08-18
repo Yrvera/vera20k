@@ -442,7 +442,22 @@ const CAME_FROM_BRIDGE: usize = 1 << 20;
 
 /// Determine whether a node at `path_height` should use the bridge closed list
 /// for a given neighbor cell. Uses the CURRENT node's height (not computed
-/// neighbor height). Matches binary inline check at 0x00429e54.
+/// neighbor height). Matches the binary inline check at `0x00429E54`.
+///
+/// **Recorded mismatch, not closed:** the native test is `TEST AH,0x1` on
+/// `Cell+0x140` (`0x00429E5A`) — the `0x100` structural-bridge bit, which VERA
+/// calls `has_structural_bridge()`. This reads `bridge_walkable`, and the two
+/// deliberately differ: the producer marks ramp and bridgehead cells walkable
+/// *without* marking them structural. `check_bridge_traversal` in the same
+/// expansion reads `has_structural_bridge()` for that same bit, so the two
+/// halves of one step disagree about what `0x100` means. Trigger: any ramp or
+/// bridgehead cell. Player effect: the closed-list selection and the carried
+/// height take the deck branch where gamemd takes ground, so a bridge approach
+/// can be planned on the wrong plane. Frequency: every bridge approach on every
+/// bridge map. Downstream risk: high — swapping the flag here moves every
+/// bridge-adjacent expansion at once, so it needs its own slice with a fixture,
+/// not a one-word edit. Native also has a `height == -1` arm this omits;
+/// `movement_occupancy`'s runtime twin carries it.
 fn is_at_bridge_level(path_height: u8, cell: &PathCell) -> bool {
     cell.bridge_walkable && path_height.abs_diff(cell.ground_level) >= BRIDGE_HEIGHT_THRESHOLD
 }
@@ -472,10 +487,17 @@ fn compute_neighbor_height(
     }
 
     // Case 3: Parent is NOT bridge, neighbor IS bridge.
-    // Ground→Bridge entry requires height-diff EXACTLY 4 AND the bridgehead flag
-    // (transition). Diffs 2/3/5+ are always blocked; diff 0/1 fall to other cases.
-    let diff = parent_height as i16 - neighbor_cell.ground_level as i16;
-    if diff == 4 && neighbor_cell.transition {
+    //
+    // `AStar_create_node` @ `0x0042A460` tests
+    // `abs((neighbor.Level - parent_height) + 3) <= 1`, i.e. a drop of **2, 3 or
+    // 4**, and reads no bridgehead or transition flag anywhere in the function.
+    // Requiring exactly 4 plus `transition` refused two of the three native
+    // drops outright and refused the third on every deck cell that is not a
+    // flagged bridgehead — in each case carrying `ground_level` instead, which
+    // then feeds the closed-list split and `check_bridge_traversal`, so the
+    // route planned *under* the bridge or failed.
+    let drop = parent_height as i16 - neighbor_cell.ground_level as i16;
+    if (2..=4).contains(&drop) {
         neighbor_cell.bridge_deck_level
     } else {
         neighbor_cell.ground_level
@@ -486,11 +508,27 @@ fn is_structural_bridge_deck_height(path_height: u8, cell: &PathCell) -> bool {
     cell.has_structural_bridge() && path_height as i16 == cell.signed_level() + 4
 }
 
-/// Whether an edge needs the bridge-traversal legality check at all. The A*
-/// neighbor expansion skips `check_bridge_traversal` for structural→structural
-/// bridge edges with no bridgehead involved (plain deck driving: ramp→body,
-/// body→body); the runtime crossing gate must mirror this or it rejects edges
-/// the plan legally produced.
+/// Whether an edge needs the bridge-traversal legality check at all.
+///
+/// **VERA-internal, gamemd has no equivalent.** `AStar_main_loop` calls the
+/// `+0x1AC` slot unconditionally at `0x00429F54`, and `UnitClass::Can_Enter_Cell`
+/// @ `0x0073F0A0` calls `+0x1B0` (`CheckBridgeTraversal` @ `0x004D9C60`)
+/// unconditionally in turn. There is no skip predicate in the binary. This one
+/// skips structural→structural edges with no bridgehead — plain deck driving —
+/// and the caller substitutes a local `|diff| ∈ {0, 1}` rule instead.
+///
+/// The substitute is **looser**, not stricter: native's diff-0 arm can still
+/// return 7 when the path height disagrees with the candidate's level and the
+/// three-flag escape fails, while the substitute always allows diff 0. It also
+/// reads `cur_cell.slope_type` for a positive diff where native reads the lower
+/// cell's `+0x11C`, and it can never set `force_bridge_list`.
+///
+/// Trigger: every tick a unit drives along a bridge span. Player effect: VERA
+/// admits deck-to-deck steps retail refuses. Frequency: continuous while any
+/// unit is on a bridge. Downstream risk: the runtime crossing gate in
+/// `movement_occupancy` mirrors this predicate deliberately, so removing it
+/// must move both sites together or the runtime starts rejecting edges the
+/// plan legally produced.
 pub(crate) fn needs_bridge_traversal_for_edge(
     current_height: u8,
     current_cell: &PathCell,
@@ -566,8 +604,11 @@ pub(crate) fn check_bridge_traversal(
         input.direction,
         input.parent,
     ) else {
+        // `0x004D9CC5`: `TEST ESI,ESI; JZ 0x004D9E5E` — a null parent is
+        // **allowed** (`XOR EAX,EAX`), not refused. Reached on the outer map
+        // ring, where the predecessor cell resolves off-map.
         return BridgeTraversalResult {
-            allowed: false,
+            allowed: true,
             path_height,
             force_bridge_list: false,
         };
@@ -619,7 +660,12 @@ pub(crate) fn check_bridge_traversal(
                     false
                 }
             } else {
-                false
+                // `0x004D9D8F-0x004D9D94`: `ADD EAX,-0x4; CMP EBX,EAX; JNZ
+                // 0x004D9E5E` — when the parent's own level is neither
+                // `candidate ± 4`, the step is **allowed** with no deck flag.
+                // Reached when the parent carries no structural bridge, so
+                // `parent_selected` is the path height rather than the level.
+                true
             }
         }
         _ => false,

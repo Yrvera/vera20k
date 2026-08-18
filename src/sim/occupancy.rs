@@ -225,8 +225,17 @@ impl RawCellOccupationGrid {
             .and_then(|cell| cell.ground_infantry_owner)
     }
 
-    /// Native: `InfantryClass::Mark` writes the selected owner index after
-    /// setting the quadrant bit.
+    /// Native: `InfantryClass::MarkCellOccupancy` @ `0x005217C0` (Infantry
+    /// vtable `+0xF0`, `0x007EB148`) writes the owner **house index** — from
+    /// vtable `+0x38` — after setting the quadrant bit.
+    ///
+    /// **VERA-internal, gamemd equivalent UNCHECKED:** the value stored is an
+    /// entity id, not a house index. `UnitClass::Can_Enter_Cell` @ `0x0073F0A0`
+    /// consumes the native field through `HouseClass::Is_Ally_ByIndex` in its
+    /// infantry-present-but-no-object-found fallback. Trigger: none today —
+    /// VERA serializes and hashes the field and never runs an ally test on it.
+    /// Player effect: none. Frequency: zero. Downstream risk: a port of that
+    /// fallback would read an entity id as a house index.
     pub(crate) fn mark_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8, owner: u64) {
         if mask == 0 {
             return;
@@ -236,8 +245,10 @@ impl RawCellOccupationGrid {
         cell.ground_infantry_owner = Some(owner);
     }
 
-    /// Native: `InfantryClass::Unmark` resets the selected owner only after
-    /// functional subcells 2..4 are all clear. Bits 0/1 do not retain it.
+    /// Native: `InfantryClass::UnmarkCellOccupancy` @ `0x00521850` (vtable
+    /// `+0xF4`, `0x007EB14C`) resets the selected owner to `0xFFFFFFFF` only
+    /// once `byte & 0x1C == 0`, i.e. after functional sub-cells 2..4 are all
+    /// clear. Bits 0/1 do not retain it.
     pub(crate) fn clear_ground_infantry(&mut self, rx: u16, ry: u16, mask: u8) {
         self.update_and_prune(rx, ry, |cell| {
             cell.ground &= !mask;
@@ -1152,8 +1163,10 @@ impl CellOccupancy {
     }
 
     /// Snapshot one selected native Cell object list before callbacks mutate it.
-    /// Native: `CellClass::ScatterContent` saves head-to-tail pointers first,
-    /// then dispatches that saved order.
+    /// Native: `CellClass::Scatter_Objects` @ `0x00481670` re-reads `+0xE4`/`+0xE8`,
+    /// collects up to ten objects into an array, then dispatches `+0x174` over
+    /// that saved order. There is no `CellClass::ScatterContent` in this
+    /// program — the name this comment used to carry was invented.
     pub fn snapshot_layer(&self, layer: MovementLayer) -> Vec<u64> {
         self.iter_layer(layer)
             .map(|occupant| occupant.entity_id)
@@ -1397,7 +1410,9 @@ impl OccupancyGrid {
 
     /// First BuildingClass identity on a selected native list, preserving
     /// literal list order. Projectile collision supplies `Ground` because
-    /// `CellClass::GetBuilding` never selects `AltObject`.
+    /// `Look_up_building_in_cell` @ `0x0047C520` walks `+0xE4` only and returns
+    /// the first `What_Am_I() == 6`, so it never selects the deck list. (There
+    /// is no `CellClass::GetBuilding` in this program.)
     pub fn first_building_on_layer(&self, rx: u16, ry: u16, layer: MovementLayer) -> Option<u64> {
         self.get(rx, ry)?
             .iter_layer(layer)

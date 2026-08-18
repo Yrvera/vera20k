@@ -385,8 +385,10 @@ impl Simulation {
                 let (ground_level, ground_z, live_structural_bridge) =
                     self.raw_occupation_cell_facts(position);
                 let mask = infantry_raw_occupation_mask(position.sub_x, position.sub_y);
-                // Native: InfantryClass::Mark (+0x743FC0) selects the deck only
-                // at/above the bridge plane and only while CellClass Flags&0x100 holds.
+                // Native: `InfantryClass::MarkCellOccupancy` @ `0x005217C0`
+                // selects the deck only at/above the bridge plane and only
+                // while `CellClass+0x140 & 0x100` holds. (`0x00743FC0` is
+                // inside `UnitClass`, not `InfantryClass`.)
                 if Self::raw_occupation_reaches_deck(
                     position,
                     exact_z_leptons,

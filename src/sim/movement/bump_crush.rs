@@ -927,7 +927,8 @@ pub fn classify_drive_crush_phase(
             }
         }
     }
-    // Native `CellClass::ScatterContent` dispatches its selected-list snapshot
+    // Native `CellClass::Scatter_Objects` @ `0x00481670` dispatches its
+    // selected-list snapshot
     // forward. Sorting by stable id here would erase Cell list authority.
     match (phase, selected.is_empty()) {
         (_, true) => DriveCrushOutcome::None,
