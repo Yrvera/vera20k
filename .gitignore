@@ -24,11 +24,15 @@ Thumbs.db
 /infodocs/
 
 /docs/*
-/docs/research/
 !/docs/_config.yml
 !/docs/index.md
 !/docs/system-map/
 !/docs/system-map/**
+# research corpus and plans are tracked so forks and worktrees get them
+!/docs/research/
+!/docs/research/**
+!/docs/plans/
+!/docs/plans/**
 
 .mcp.json
 /.claude/*
@@ -43,7 +47,8 @@ Thumbs.db
 /replays/
 
 tools/vendor-eval/
-tools/research_index/
+# research-index code is tracked so it works in worktrees; the built index is not
+tools/research_index/.cache/
 
 /*.md
 !/README.md

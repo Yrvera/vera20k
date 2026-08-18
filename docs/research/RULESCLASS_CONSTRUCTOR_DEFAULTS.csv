@@ -1,0 +1,1088 @@
+offset,size,type,value,form
+0x0,4,int/u32,0xf,D
+0x4,4,int/u32,0x14,A
+0x8,4,int/u32,5,A
+0xC,4,int/u32,100,A
+0x10,4,int/u32,0,A
+0x14,4,int/u32,0,A
+0x18,4,int/u32,5,A
+0x20,4,int/u32,0,A
+0x24,4,int/u32,0x3ff00000 (~1.0),A
+0x28,4,int/u32,0x11111111,A
+0x2C,4,int/u32,0x3f911111 (~1.133f),A
+0x30,4,int/u32,1000,A
+0x34,4,int/u32,1,A
+0x38,4,int/u32,1000,A
+0x3C,4,int/u32,1,A
+0x40,1,undefined1,0,B
+0x41,1,undefined1,0,C
+0x44,4,int/u32,0,A
+0x48,4,int/u32,0,A
+0x4C,4,int/u32,0,A
+0x50,4,int/u32,0xc,A
+0x54,4,int/u32,0,A
+0x58,4,int/u32,&PTR_FUN_007f0d3c,A
+0x68,4,int/u32,0,A
+0x6C,4,int/u32,10,A
+0x74,4,int/u32,0,A
+0x78,4,int/u32,0x3d4ccccd (~0.05f),A
+0x7C,4,int/u32,5,A
+0x80,4,int/u32,0x3f800000 (~1.0f),A
+0x84,4,int/u32,0x3dcccccd (~0.1f),A
+0x88,4,int/u32,7,A
+0x8C,4,int/u32,0x15,A
+0x90,4,int/u32,0xf,A
+0x94,4,int/u32,0,A
+0x98,4,int/u32,0,A
+0x9C,4,int/u32,0,A
+0xA0,4,int/u32,0,A
+0xA4,4,int/u32,0,A
+0xA8,4,int/u32,0,A
+0xAC,4,int/u32,0,A
+0xB0,4,int/u32,0,A
+0xB4,4,int/u32,0,A
+0xB8,4,int/u32,0,A
+0xC0,4,int/u32,0,A
+0xC4,4,int/u32,0x3ff00000 (~1.0),A
+0xC8,4,int/u32,0,A
+0xCC,4,int/u32,0xbff00000,A
+0xD0,4,int/u32,0,A
+0xD4,4,int/u32,0x3ff00000 (~1.0),A
+0xD8,4,int/u32,10000,A
+0xDC,4,int/u32,1000,A
+0xE0,4,int/u32,100,A
+0xE4,4,int/u32,100,A
+0xE8,4,int/u32,0,A
+0xEC,4,int/u32,2,A
+0xF0,4,int/u32,5,A
+0xF4,4,int/u32,6,A
+0xF8,4,int/u32,0,A
+0xFC,4,int/u32,0,A
+0x100,4,int/u32,0,A
+0x104,4,int/u32,&PTR_FUN_007eb6d4,A
+0x114,4,int/u32,0,A
+0x118,4,int/u32,10,A
+0x120,4,int/u32,&PTR_FUN_007eb6d4,A
+0x130,4,int/u32,0,A
+0x134,4,int/u32,10,A
+0x13C,4,int/u32,&PTR_FUN_007eb6d4,A
+0x14C,4,int/u32,0,A
+0x150,4,int/u32,10,A
+0x158,4,int/u32,&PTR_FUN_007eb6d4,A
+0x168,4,int/u32,0,A
+0x16C,4,int/u32,10,A
+0x174,4,int/u32,-1 (ffffffff),A
+0x178,4,int/u32,-1 (ffffffff),A
+0x17C,4,int/u32,-1 (ffffffff),A
+0x180,4,int/u32,-1 (ffffffff),A
+0x184,4,int/u32,-1 (ffffffff),A
+0x188,4,int/u32,-1 (ffffffff),A
+0x18C,4,int/u32,-1 (ffffffff),A
+0x190,4,int/u32,-1 (ffffffff),A
+0x194,4,int/u32,-1 (ffffffff),A
+0x198,4,int/u32,-1 (ffffffff),A
+0x19C,4,int/u32,-1 (ffffffff),A
+0x1A0,4,int/u32,-1 (ffffffff),A
+0x1A4,4,int/u32,-1 (ffffffff),A
+0x1A8,4,int/u32,-1 (ffffffff),A
+0x1AC,4,int/u32,-1 (ffffffff),A
+0x1B0,4,int/u32,-1 (ffffffff),A
+0x1B4,4,int/u32,-1 (ffffffff),A
+0x1B8,4,int/u32,-1 (ffffffff),A
+0x1BC,4,int/u32,-1 (ffffffff),A
+0x1C0,4,int/u32,-1 (ffffffff),A
+0x1C4,4,int/u32,-1 (ffffffff),A
+0x1C8,4,int/u32,-1 (ffffffff),A
+0x1CC,4,int/u32,-1 (ffffffff),A
+0x1D0,4,int/u32,-1 (ffffffff),A
+0x1D4,4,int/u32,-1 (ffffffff),A
+0x1D8,4,int/u32,-1 (ffffffff),A
+0x1DC,4,int/u32,-1 (ffffffff),A
+0x1E0,4,int/u32,-1 (ffffffff),A
+0x1E4,4,int/u32,-1 (ffffffff),A
+0x1E8,4,int/u32,-1 (ffffffff),A
+0x1EC,4,int/u32,-1 (ffffffff),A
+0x1F0,4,int/u32,-1 (ffffffff),A
+0x1F4,4,int/u32,-1 (ffffffff),A
+0x1F8,4,int/u32,-1 (ffffffff),A
+0x1FC,4,int/u32,-1 (ffffffff),A
+0x200,4,int/u32,-1 (ffffffff),A
+0x204,4,int/u32,-1 (ffffffff),A
+0x208,4,int/u32,-1 (ffffffff),A
+0x20C,4,int/u32,-1 (ffffffff),A
+0x210,4,int/u32,-1 (ffffffff),A
+0x218,4,int/u32,-1 (ffffffff),A
+0x21C,4,int/u32,-1 (ffffffff),A
+0x220,4,int/u32,-1 (ffffffff),A
+0x224,4,int/u32,-1 (ffffffff),A
+0x228,4,int/u32,-1 (ffffffff),A
+0x22C,4,int/u32,-1 (ffffffff),A
+0x230,4,int/u32,-1 (ffffffff),A
+0x234,4,int/u32,-1 (ffffffff),A
+0x238,4,int/u32,-1 (ffffffff),A
+0x23C,4,int/u32,-1 (ffffffff),A
+0x240,4,int/u32,-1 (ffffffff),A
+0x244,4,int/u32,-1 (ffffffff),A
+0x248,4,int/u32,-1 (ffffffff),A
+0x24C,4,int/u32,-1 (ffffffff),A
+0x250,4,int/u32,-1 (ffffffff),A
+0x254,4,int/u32,-1 (ffffffff),A
+0x258,4,int/u32,-1 (ffffffff),A
+0x25C,4,int/u32,-1 (ffffffff),A
+0x260,4,int/u32,-1 (ffffffff),A
+0x264,4,int/u32,-1 (ffffffff),A
+0x268,4,int/u32,-1 (ffffffff),A
+0x26C,4,int/u32,-1 (ffffffff),A
+0x270,4,int/u32,-1 (ffffffff),A
+0x274,4,int/u32,-1 (ffffffff),A
+0x278,4,int/u32,-1 (ffffffff),A
+0x27C,4,int/u32,-1 (ffffffff),A
+0x280,4,int/u32,-1 (ffffffff),A
+0x284,4,int/u32,-1 (ffffffff),A
+0x288,4,int/u32,-1 (ffffffff),A
+0x28C,4,int/u32,-1 (ffffffff),A
+0x290,4,int/u32,0x10,A
+0x294,4,int/u32,0,A
+0x298,4,int/u32,0,A
+0x29C,4,int/u32,0,A
+0x2A0,4,int/u32,&PTR_FUN_007eb6d4,A
+0x2B0,4,int/u32,0,A
+0x2B4,4,int/u32,10,A
+0x2BC,4,int/u32,&PTR_FUN_007eb6d4,A
+0x2CC,4,int/u32,0,A
+0x2D0,4,int/u32,10,A
+0x2D8,4,int/u32,&PTR_FUN_007eb6d4,A
+0x2E8,4,int/u32,0,A
+0x2EC,4,int/u32,10,A
+0x2F4,4,int/u32,0,A
+0x2F8,4,int/u32,0,A
+0x2FC,4,int/u32,0,A
+0x300,4,int/u32,0,A
+0x304,4,int/u32,0x32,A
+0x308,4,int/u32,2,A
+0x30C,4,int/u32,0x32,A
+0x310,4,int/u32,0xf,A
+0x314,4,int/u32,100,A
+0x318,4,int/u32,0,A
+0x31C,4,int/u32,0,A
+0x320,4,int/u32,0,A
+0x324,4,int/u32,0,A
+0x328,4,int/u32,0,A
+0x32C,4,int/u32,0,A
+0x330,4,int/u32,0,A
+0x334,4,int/u32,0,A
+0x338,4,int/u32,0,A
+0x33C,4,int/u32,0,A
+0x340,4,int/u32,0,A
+0x344,4,int/u32,0,A
+0x348,4,int/u32,0,A
+0x34C,4,int/u32,0,A
+0x350,4,int/u32,0,A
+0x354,4,int/u32,0,A
+0x358,4,int/u32,&PTR_FUN_007e4dd8,A
+0x368,4,int/u32,0,A
+0x36C,4,int/u32,10,A
+0x374,4,int/u32,&PTR_FUN_007e4dd8,A
+0x384,4,int/u32,0,A
+0x388,4,int/u32,10,A
+0x390,4,int/u32,&PTR_FUN_007e4dd8,A
+0x3A0,4,int/u32,0,A
+0x3A4,4,int/u32,10,A
+0x3AC,4,int/u32,&PTR_FUN_007e4dd8,A
+0x3BC,4,int/u32,0,A
+0x3C0,4,int/u32,10,A
+0x3C8,4,int/u32,&PTR_FUN_007e4dd8,A
+0x3D8,4,int/u32,0,A
+0x3DC,4,int/u32,10,A
+0x3E4,4,int/u32,&PTR_FUN_007e4dd8,A
+0x3F4,4,int/u32,0,A
+0x3F8,4,int/u32,10,A
+0x400,4,int/u32,0,A
+0x404,4,int/u32,-1 (ffffffff),A
+0x408,4,int/u32,-1 (ffffffff),A
+0x40C,4,int/u32,3,A
+0x410,4,int/u32,0x1e,A
+0x418,4,int/u32,0,A
+0x41C,4,int/u32,0x40140000 (~5.0),A
+0x420,4,int/u32,400,A
+0x428,4,int/u32,0,A
+0x42C,4,int/u32,0x3fd00000 (~0.25),A
+0x430,4,int/u32,0,A
+0x434,4,int/u32,0x3fd00000 (~0.25),A
+0x438,4,int/u32,0x28,A
+0x43C,4,int/u32,&PTR_FUN_007e4dd8,A
+0x44C,4,int/u32,0,A
+0x450,4,int/u32,10,A
+0x458,4,int/u32,&PTR_FUN_007e4dd8,A
+0x468,4,int/u32,0,A
+0x46C,4,int/u32,10,A
+0x474,4,int/u32,&PTR_FUN_007e4dd8,A
+0x484,4,int/u32,0,A
+0x488,4,int/u32,10,A
+0x490,4,int/u32,700,A
+0x494,4,int/u32,0x80,A
+0x498,4,int/u32,0,A
+0x49C,4,int/u32,100,A
+0x4A0,4,int/u32,8,A
+0x4A4,4,int/u32,100,A
+0x4A8,4,int/u32,0xf,A
+0x4AC,4,int/u32,300,A
+0x4B0,4,int/u32,0,A
+0x4B4,4,int/u32,0x3c,A
+0x4B8,4,int/u32,0,A
+0x4BC,4,int/u32,0x3f800000 (~1.0f),A
+0x4C0,4,int/u32,0x3d4ccccd (~0.05f),A
+0x4C4,4,int/u32,1,A
+0x4C8,4,int/u32,0x3ecccccd (~0.4f),A
+0x4CC,4,int/u32,0x300,A
+0x4D0,4,int/u32,1000,A
+0x4D4,4,int/u32,1000,A
+0x4D8,4,int/u32,0x100,A
+0x4DC,1,undefined1,1,B
+0x4E0,4,int/u32,0,A
+0x4E4,4,int/u32,10,A
+0x4E8,4,int/u32,0x3c,A
+0x4EC,4,int/u32,0,A
+0x4F0,4,int/u32,0x3f800000 (~1.0f),A
+0x4F4,4,int/u32,0x3d4ccccd (~0.05f),A
+0x4F8,4,int/u32,1,A
+0x4FC,4,int/u32,0x3ecccccd (~0.4f),A
+0x500,4,int/u32,0x300,A
+0x504,4,int/u32,1000,A
+0x508,4,int/u32,1000,A
+0x50C,4,int/u32,0x80,A
+0x510,1,undefined1,0,B
+0x514,4,int/u32,0,A
+0x518,4,int/u32,10,A
+0x51C,4,int/u32,0x1e,A
+0x520,4,int/u32,0x3f800000 (~1.0f),A
+0x524,4,int/u32,0x3f800000 (~1.0f),A
+0x528,4,int/u32,0x3f800000 (~1.0f),A
+0x52C,4,int/u32,1,A
+0x530,4,int/u32,0x3f19999a (~0.6f),A
+0x534,4,int/u32,0x300,A
+0x538,4,int/u32,500,A
+0x53C,4,int/u32,500,A
+0x540,4,int/u32,0x80,A
+0x544,1,undefined1,0,B
+0x548,4,int/u32,0,A
+0x54C,4,int/u32,0x400,A
+0x550,4,int/u32,0,A
+0x554,4,int/u32,0x40000000 (~2.0),A
+0x558,4,int/u32,0x47ae147b,A
+0x55C,4,int/u32,0x3f947ae1 (~1.16f),A
+0x560,4,int/u32,0x47ae147b,A
+0x564,4,int/u32,0x3f847ae1 (~1.035f),A
+0x568,4,int/u32,100,A
+0x56C,4,int/u32,10,A
+0x570,4,int/u32,0x3f000000 (~0.5f),A
+0x574,4,int/u32,0x3f666666 (~0.9f),A
+0x578,4,int/u32,0x3f800000 (~1.0f),A
+0x57C,4,int/u32,0x3f800000 (~1.0f),A
+0x580,4,int/u32,1,A
+0x588,4,int/u32,0x9999999a,A
+0x58C,4,int/u32,0x3fb99999 (~1.45f),A
+0x590,4,int/u32,0,A
+0x594,4,int/u32,0x3fd00000 (~0.25),A
+0x598,4,int/u32,0,A
+0x59C,4,int/u32,0x3fd00000 (~0.25),A
+0x5A0,4,int/u32,500,A
+0x5A4,4,int/u32,0,A
+0x5A8,4,int/u32,0x5dc,A
+0x5AC,4,int/u32,0x28,A
+0x5B0,4,int/u32,0x54442d18,A
+0x5B4,4,int/u32,0x3ff921fb (~pi/2 hi),A
+0x5B8,4,int/u32,0,A
+0x5BC,4,int/u32,0x3ff00000 (~1.0),A
+0x5C0,4,int/u32,0,A
+0x5C4,4,int/u32,0x3fe00000 (~0.5),A
+0x5C8,4,int/u32,400,A
+0x5CC,4,int/u32,0x78,A
+0x5D0,4,int/u32,0,A
+0x5D4,4,int/u32,0x403e0000 (~2.969f),A
+0x5D8,4,int/u32,0xcccccccd,A
+0x5DC,4,int/u32,0x3ff4cccc (~1.912f),A
+0x5E0,4,int/u32,0xeb851eb8,A
+0x5E4,4,int/u32,0x3f9eb851 (~1.24f),A
+0x5E8,4,int/u32,0xeb851eb8,A
+0x5EC,4,int/u32,0x3f9eb851 (~1.24f),A
+0x5F0,4,int/u32,0x9999999a,A
+0x5F4,4,int/u32,0x3fe99999 (~1.825f),A
+0x5F8,4,int/u32,0x9999999a,A
+0x5FC,4,int/u32,0x3fa99999 (~1.325f),A
+0x600,4,int/u32,&PTR_FUN_007f0d3c,A
+0x610,4,int/u32,0,A
+0x614,4,int/u32,10,A
+0x61C,4,int/u32,0,A
+0x620,4,int/u32,0,A
+0x624,4,int/u32,3,A
+0x628,4,int/u32,9,A
+0x62C,4,int/u32,5,A
+0x630,4,int/u32,0,A
+0x634,4,int/u32,0x40080000 (~3.0),A
+0x638,4,int/u32,0,A
+0x63C,4,int/u32,0x40000000 (~2.0),A
+0x640,4,int/u32,0,A
+0x644,4,int/u32,0x40100000 (~4.0),A
+0x648,4,int/u32,&PTR_FUN_007e4dd8,A
+0x658,4,int/u32,0,A
+0x65C,4,int/u32,10,A
+0x664,1,undefined1,0,B
+0x668,4,int/u32,0,A
+0x66C,4,int/u32,0x40240000 (~10.0),A
+0x670,4,int/u32,0,A
+0x674,4,int/u32,0x3ff00000 (~1.0),A
+0x678,4,int/u32,0,A
+0x67C,4,int/u32,0x3ff00000 (~1.0),A
+0x680,4,int/u32,0,A
+0x684,4,int/u32,0x3ff00000 (~1.0),A
+0x688,4,int/u32,0,A
+0x68C,4,int/u32,0x3ff00000 (~1.0),A
+0x690,4,int/u32,0,A
+0x694,4,int/u32,0x3ff00000 (~1.0),A
+0x698,4,int/u32,0,A
+0x69C,4,int/u32,0x3ff00000 (~1.0),A
+0x6A0,4,int/u32,-1 (ffffffff),A
+0x6A4,4,int/u32,-1 (ffffffff),A
+0x6A8,4,int/u32,-1 (ffffffff),A
+0x6AC,4,int/u32,-1 (ffffffff),A
+0x6B0,4,int/u32,-1 (ffffffff),A
+0x6B4,4,int/u32,-1 (ffffffff),A
+0x6B8,4,int/u32,-1 (ffffffff),A
+0x6BC,4,int/u32,-1 (ffffffff),A
+0x6C0,4,int/u32,-1 (ffffffff),A
+0x6C4,4,int/u32,-1 (ffffffff),A
+0x6C8,4,int/u32,-1 (ffffffff),A
+0x6CC,4,int/u32,&PTR_FUN_007e4dd8,A
+0x6DC,4,int/u32,0,A
+0x6E0,4,int/u32,10,A
+0x6E8,4,int/u32,-1 (ffffffff),A
+0x6EC,4,int/u32,-1 (ffffffff),A
+0x6F0,4,int/u32,-1 (ffffffff),A
+0x6F4,4,int/u32,-1 (ffffffff),A
+0x6F8,4,int/u32,-1 (ffffffff),A
+0x6FC,4,int/u32,-1 (ffffffff),A
+0x700,4,int/u32,-1 (ffffffff),A
+0x704,4,int/u32,-1 (ffffffff),A
+0x708,4,int/u32,-1 (ffffffff),A
+0x70C,4,int/u32,-1 (ffffffff),A
+0x710,4,int/u32,-1 (ffffffff),A
+0x714,4,int/u32,-1 (ffffffff),A
+0x718,4,int/u32,-1 (ffffffff),A
+0x71C,4,int/u32,-1 (ffffffff),A
+0x720,4,int/u32,-1 (ffffffff),A
+0x724,4,int/u32,-1 (ffffffff),A
+0x728,4,int/u32,-1 (ffffffff),A
+0x72C,4,int/u32,-1 (ffffffff),A
+0x730,4,int/u32,-1 (ffffffff),A
+0x734,4,int/u32,&PTR_FUN_007e4dd8,A
+0x744,4,int/u32,0,A
+0x748,4,int/u32,10,A
+0x750,4,int/u32,-1 (ffffffff),A
+0x758,4,int/u32,0,A
+0x75C,4,int/u32,0x3fe00000 (~0.5),A
+0x760,4,int/u32,0,A
+0x764,4,int/u32,0x40080000 (~3.0),A
+0x768,4,int/u32,0,A
+0x76C,4,int/u32,0x3ff00000 (~1.0),A
+0x770,4,int/u32,0,A
+0x774,4,int/u32,0x3ff00000 (~1.0),A
+0x778,4,int/u32,0,A
+0x77C,4,int/u32,0x3ff00000 (~1.0),A
+0x780,4,int/u32,0,A
+0x784,4,int/u32,0x3ff00000 (~1.0),A
+0x788,4,int/u32,2000,A
+0x78C,4,int/u32,1000,A
+0x790,4,int/u32,0x9999999a,A
+0x794,4,int/u32,0x3fa99999 (~1.325f),A
+0x798,4,int/u32,0x47ae147b,A
+0x79C,4,int/u32,0x3f747ae1 (~0.955f),A
+0x7A0,4,int/u32,0,A
+0x7A4,4,int/u32,0x40340000 (~20.0),A
+0x7A8,4,int/u32,0xaf,A
+0x7AC,4,int/u32,-1 (ffffffff),A
+0x7B0,4,int/u32,0x900,A
+0x7B4,4,int/u32,500,A
+0x7B8,4,int/u32,0xfffffffd,A
+0x7BC,4,int/u32,0xffffff9c,A
+0x7C0,4,int/u32,-1 (ffffffff),A
+0x7C4,4,int/u32,&PTR_FUN_007f0d1c,A
+0x7D4,4,int/u32,0,A
+0x7D8,4,int/u32,10,A
+0x7E0,4,int/u32,&PTR_FUN_007f0d1c,A
+0x7F0,4,int/u32,0,A
+0x7F4,4,int/u32,10,A
+0x7FC,4,int/u32,&PTR_FUN_007f0d1c,A
+0x80C,4,int/u32,0,A
+0x810,4,int/u32,10,A
+0x818,4,int/u32,&PTR_FUN_007f0d1c,A
+0x828,4,int/u32,0,A
+0x82C,4,int/u32,10,A
+0x834,4,int/u32,&PTR_FUN_007f0d1c,A
+0x844,4,int/u32,0,A
+0x848,4,int/u32,10,A
+0x850,4,int/u32,&PTR_FUN_007ed90c,A
+0x860,4,int/u32,0,A
+0x864,4,int/u32,10,A
+0x86C,4,int/u32,0,A
+0x870,4,int/u32,0,A
+0x874,4,int/u32,0,A
+0x878,4,int/u32,0,A
+0x87C,4,int/u32,0,A
+0x880,4,int/u32,&PTR_FUN_007ed90c,A
+0x890,4,int/u32,0,A
+0x894,4,int/u32,10,A
+0x89C,4,int/u32,0,A
+0x8A0,4,int/u32,0,A
+0x8A4,4,int/u32,0,A
+0x8A8,4,int/u32,0,A
+0x8AC,4,int/u32,&PTR_FUN_007ed90c,A
+0x8BC,4,int/u32,0,A
+0x8C0,4,int/u32,10,A
+0x8C8,4,int/u32,&PTR_FUN_007ed90c,A
+0x8D8,4,int/u32,0,A
+0x8DC,4,int/u32,10,A
+0x8E4,4,int/u32,&PTR_FUN_007ed90c,A
+0x8F4,4,int/u32,0,A
+0x8F8,4,int/u32,10,A
+0x900,4,int/u32,&PTR_FUN_007ed90c,A
+0x910,4,int/u32,0,A
+0x914,4,int/u32,10,A
+0x91C,4,int/u32,&PTR_FUN_007ed90c,A
+0x92C,4,int/u32,0,A
+0x930,4,int/u32,10,A
+0x938,4,int/u32,&PTR_FUN_007ed90c,A
+0x948,4,int/u32,0,A
+0x94C,4,int/u32,10,A
+0x954,4,int/u32,&PTR_FUN_007ed90c,A
+0x964,4,int/u32,0,A
+0x968,4,int/u32,10,A
+0x970,4,int/u32,&PTR_FUN_007ed90c,A
+0x980,4,int/u32,0,A
+0x984,4,int/u32,10,A
+0x98C,4,int/u32,&PTR_FUN_007ed90c,A
+0x99C,4,int/u32,0,A
+0x9A0,4,int/u32,10,A
+0x9A8,4,int/u32,&PTR_FUN_007e4dd8,A
+0x9B8,4,int/u32,0,A
+0x9BC,4,int/u32,10,A
+0x9C4,4,int/u32,&PTR_FUN_007ed90c,A
+0x9D4,4,int/u32,0,A
+0x9D8,4,int/u32,10,A
+0x9E0,4,int/u32,&PTR_FUN_007ed90c,A
+0x9F0,4,int/u32,0,A
+0x9F4,4,int/u32,10,A
+0x9FC,4,int/u32,&PTR_FUN_007ed90c,A
+0xA0C,4,int/u32,0,A
+0xA10,4,int/u32,10,A
+0xA18,4,int/u32,&PTR_FUN_007ed90c,A
+0xA28,4,int/u32,0,A
+0xA2C,4,int/u32,10,A
+0xA34,4,int/u32,&PTR_FUN_007ed90c,A
+0xA44,4,int/u32,0,A
+0xA48,4,int/u32,10,A
+0xA50,4,int/u32,&PTR_FUN_007ed90c,A
+0xA60,4,int/u32,0,A
+0xA64,4,int/u32,10,A
+0xA6C,4,int/u32,&PTR_FUN_007ed90c,A
+0xA7C,4,int/u32,0,A
+0xA80,4,int/u32,10,A
+0xA88,4,int/u32,&PTR_FUN_007ed90c,A
+0xA98,4,int/u32,0,A
+0xA9C,4,int/u32,10,A
+0xAA4,4,int/u32,&PTR_FUN_007ed90c,A
+0xAB4,4,int/u32,0,A
+0xAB8,4,int/u32,10,A
+0xAC0,4,int/u32,&PTR_FUN_007ed90c,A
+0xAD0,4,int/u32,0,A
+0xAD4,4,int/u32,10,A
+0xADC,4,int/u32,&PTR_FUN_007ed90c,A
+0xAEC,4,int/u32,0,A
+0xAF0,4,int/u32,10,A
+0xAF8,4,int/u32,0,A
+0xAFC,4,int/u32,0x40180000 (~6.0),A
+0xB00,4,int/u32,0,A
+0xB04,4,int/u32,0x40080000 (~3.0),A
+0xB08,4,int/u32,0,A
+0xB0C,4,int/u32,0x3ff00000 (~1.0),A
+0xB10,4,int/u32,0,A
+0xB14,4,int/u32,0x3ff00000 (~1.0),A
+0xB18,4,int/u32,3,A
+0xB1C,4,int/u32,0x3c,A
+0xB20,4,int/u32,&PTR_FUN_007eabe8,A
+0xB30,4,int/u32,0,A
+0xB34,4,int/u32,10,A
+0xB3C,4,int/u32,&PTR_FUN_007eabe8,A
+0xB4C,4,int/u32,0,A
+0xB50,4,int/u32,10,A
+0xB58,4,int/u32,&PTR_FUN_007eabc8,A
+0xB68,4,int/u32,0,A
+0xB6C,4,int/u32,10,A
+0xB74,4,int/u32,&PTR_FUN_007eb6d4,A
+0xB84,4,int/u32,0,A
+0xB88,4,int/u32,10,A
+0xB90,4,int/u32,&PTR_FUN_007eb6d4,A
+0xBA0,4,int/u32,0,A
+0xBA4,4,int/u32,10,A
+0xBAC,4,int/u32,0,A
+0xBB0,4,int/u32,0,A
+0xBB4,4,int/u32,0,A
+0xBB8,4,int/u32,0,A
+0xBBC,4,int/u32,0,A
+0xBC0,4,int/u32,&PTR_FUN_007eb6d4,A
+0xBD0,4,int/u32,0,A
+0xBD4,4,int/u32,10,A
+0xBDC,4,int/u32,0,A
+0xBE0,4,int/u32,0,A
+0xBE4,4,int/u32,0,A
+0xBE8,4,int/u32,100,A
+0xBEC,4,int/u32,0x3c,A
+0xBF0,4,int/u32,0x3c,A
+0xBF4,4,int/u32,0x20,A
+0xBF8,1,undefined1,1,B
+0xBFC,4,int/u32,0,A
+0xC00,4,int/u32,0,A
+0xC04,4,int/u32,&PTR_FUN_007eac08,A
+0xC14,4,int/u32,0,A
+0xC18,4,int/u32,10,A
+0xC20,4,int/u32,&PTR_FUN_007e4dd8,A
+0xC30,4,int/u32,0,A
+0xC34,4,int/u32,10,A
+0xC3C,4,int/u32,&PTR_FUN_007eac08,A
+0xC4C,4,int/u32,0,A
+0xC50,4,int/u32,10,A
+0xC58,4,int/u32,&PTR_FUN_007e4dd8,A
+0xC68,4,int/u32,0,A
+0xC6C,4,int/u32,10,A
+0xC74,4,int/u32,&PTR_FUN_007eac08,A
+0xC84,4,int/u32,0,A
+0xC88,4,int/u32,10,A
+0xC90,4,int/u32,&PTR_FUN_007e4dd8,A
+0xCA0,4,int/u32,0,A
+0xCA4,4,int/u32,10,A
+0xCAC,4,int/u32,&PTR_FUN_007eac08,A
+0xCBC,4,int/u32,0,A
+0xCC0,4,int/u32,10,A
+0xCC8,4,int/u32,&PTR_FUN_007e4dd8,A
+0xCD8,4,int/u32,0,A
+0xCDC,4,int/u32,10,A
+0xCE4,4,int/u32,&PTR_FUN_007eac08,A
+0xCF4,4,int/u32,0,A
+0xCF8,4,int/u32,10,A
+0xD00,4,int/u32,&PTR_FUN_007eac08,A
+0xD10,4,int/u32,0,A
+0xD14,4,int/u32,10,A
+0xD1C,4,int/u32,&PTR_FUN_007eabe8,A
+0xD2C,4,int/u32,0,A
+0xD30,4,int/u32,10,A
+0xD38,4,int/u32,&PTR_FUN_007ed90c,A
+0xD48,4,int/u32,0,A
+0xD4C,4,int/u32,10,A
+0xD54,4,int/u32,0,A
+0xD58,4,int/u32,0,A
+0xD5C,4,int/u32,0,A
+0xD60,4,int/u32,0,A
+0xD64,4,int/u32,0,A
+0xD68,4,int/u32,0x3f000000 (~0.5f),A
+0xD6C,1,undefined1,0,B
+0xD70,4,int/u32,0x3f4ccccd (~0.8f),A
+0xD74,4,int/u32,8,A
+0xD78,4,int/u32,5,A
+0xD7C,4,int/u32,0x32,A
+0xD80,4,int/u32,&PTR_FUN_007e4dd8,A
+0xD90,4,int/u32,0,A
+0xD94,4,int/u32,10,A
+0xD9C,4,int/u32,&PTR_FUN_007e4dd8,A
+0xDAC,4,int/u32,0,A
+0xDB0,4,int/u32,10,A
+0xDB8,4,int/u32,&PTR_FUN_007e4dd8,A
+0xDC8,4,int/u32,0,A
+0xDCC,4,int/u32,10,A
+0xDD4,4,int/u32,&PTR_FUN_007e4dd8,A
+0xDE4,4,int/u32,0,A
+0xDE8,4,int/u32,10,A
+0xDF0,4,int/u32,500,A
+0xDF4,4,int/u32,5,A
+0xDF8,4,int/u32,1,A
+0xDFC,4,int/u32,5000,A
+0xE00,4,int/u32,0xffffec78,A
+0xE04,4,int/u32,0x24,A
+0xE08,4,int/u32,0x1b,A
+0xE0C,4,int/u32,0x14,A
+0xE10,4,int/u32,&PTR_FUN_007e4dd8,A
+0xE20,4,int/u32,0,A
+0xE24,4,int/u32,10,A
+0xE2C,4,int/u32,&PTR_FUN_007e4dd8,A
+0xE3C,4,int/u32,0,A
+0xE40,4,int/u32,10,A
+0xE48,4,int/u32,5,A
+0xE4C,4,int/u32,&PTR_FUN_007e4dd8,A
+0xE5C,4,int/u32,0,A
+0xE60,4,int/u32,10,A
+0xE68,4,int/u32,&PTR_FUN_007e4dd8,A
+0xE78,4,int/u32,0,A
+0xE7C,4,int/u32,10,A
+0xE84,4,int/u32,&PTR_FUN_007e4dd8,A
+0xE94,4,int/u32,0,A
+0xE98,4,int/u32,10,A
+0xEA0,4,int/u32,&PTR_FUN_007e4dd8,A
+0xEB0,4,int/u32,0,A
+0xEB4,4,int/u32,10,A
+0xEC4,4,int/u32,&PTR_FUN_007e4dd8,A
+0xED4,4,int/u32,0,A
+0xED8,4,int/u32,10,A
+0xEE0,4,int/u32,0x19,A
+0xEE4,4,int/u32,10,A
+0xEE8,4,int/u32,&PTR_FUN_007e4dd8,A
+0xEF8,4,int/u32,0,A
+0xEFC,4,int/u32,10,A
+0xF04,4,int/u32,&PTR_FUN_007e4dd8,A
+0xF14,4,int/u32,0,A
+0xF18,4,int/u32,10,A
+0xF20,4,int/u32,&PTR_FUN_007e4dd8,A
+0xF30,4,int/u32,0,A
+0xF34,4,int/u32,10,A
+0xF3C,4,int/u32,0x3e800000 (~0.25f),A
+0xF40,4,int/u32,0x3f800000 (~1.0f),A
+0xF44,4,int/u32,0x3f800000 (~1.0f),A
+0xF48,4,int/u32,5,A
+0xF4C,4,int/u32,0x3f800000 (~1.0f),A
+0xF50,4,int/u32,0x3f800000 (~1.0f),A
+0xF54,4,int/u32,2,A
+0xF58,4,int/u32,0x3f800000 (~1.0f),A
+0xF5C,4,int/u32,2,A
+0xF60,4,int/u32,5,A
+0xF64,4,int/u32,0x3f800000 (~1.0f),A
+0xF68,1,undefined1,1,B
+0xF6C,4,int/u32,0,A
+0xF70,4,int/u32,0,A
+0xF74,4,int/u32,0,A
+0xF78,4,int/u32,0,A
+0xF7C,4,int/u32,0,A
+0xF80,4,int/u32,0,A
+0xF84,4,int/u32,0,A
+0xF88,4,int/u32,0,A
+0xF8C,4,int/u32,0,A
+0xF90,4,int/u32,0,A
+0xF94,4,int/u32,0,A
+0xF98,4,int/u32,0,A
+0xF9C,4,int/u32,0,A
+0xFA0,4,int/u32,0,A
+0xFA4,4,int/u32,0,A
+0xFA8,4,int/u32,0,A
+0xFAC,4,int/u32,0,A
+0xFB0,4,int/u32,0,A
+0xFB4,4,int/u32,0,A
+0xFB8,4,int/u32,0,A
+0xFBC,4,int/u32,0,A
+0xFC0,4,int/u32,0,A
+0xFC4,4,int/u32,0,A
+0xFC8,4,int/u32,0,A
+0xFCC,4,int/u32,100,A
+0xFD0,4,int/u32,0x1c2,A
+0xFD4,1,undefined1,0,B
+0xFD5,1,undefined1,0,C
+0xFD8,4,int/u32,8,A
+0xFDC,4,int/u32,0,A
+0xFE0,4,int/u32,0,A
+0xFE4,4,int/u32,0,A
+0xFE8,4,int/u32,0,A
+0xFEC,4,int/u32,3,A
+0xFF0,4,int/u32,0,A
+0xFF4,4,int/u32,0,A
+0xFF8,4,int/u32,&PTR_FUN_007f0cfc,A
+0x1008,4,int/u32,0,A
+0x100C,4,int/u32,10,A
+0x1014,4,int/u32,0,A
+0x1018,4,int/u32,0,A
+0x101C,4,int/u32,0,A
+0x1020,4,int/u32,0,A
+0x1024,4,int/u32,0,A
+0x1028,4,int/u32,0,A
+0x102C,4,int/u32,0,A
+0x1030,4,int/u32,0,A
+0x1034,4,int/u32,0,A
+0x1038,4,int/u32,0,A
+0x1040,4,int/u32,0,A
+0x1044,4,int/u32,0,A
+0x1048,4,int/u32,0,A
+0x104C,4,int/u32,0,A
+0x1050,4,int/u32,0,A
+0x1054,4,int/u32,0,A
+0x1058,4,int/u32,0,A
+0x105C,4,int/u32,0,A
+0x1060,4,int/u32,0,A
+0x1064,4,int/u32,0,A
+0x1068,4,int/u32,0,A
+0x106C,4,int/u32,0,A
+0x1070,4,int/u32,0,A
+0x1074,4,int/u32,0,A
+0x1078,4,int/u32,0,A
+0x107C,4,int/u32,0,A
+0x1080,4,int/u32,0,A
+0x1084,4,int/u32,0,A
+0x1088,4,int/u32,0,A
+0x108C,4,int/u32,0,A
+0x1090,4,int/u32,0,A
+0x1094,4,int/u32,0,A
+0x1098,4,int/u32,0,A
+0x109C,4,int/u32,0x3ff80000 (~1.938f),A
+0x10A0,4,int/u32,0,A
+0x10A4,4,int/u32,0x40080000 (~3.0),A
+0x10A8,4,int/u32,0,A
+0x10AC,4,int/u32,0x40140000 (~5.0),A
+0x10B0,4,int/u32,0,A
+0x10B4,4,int/u32,0x3fe80000 (~1.812f),A
+0x10B8,4,int/u32,0xeb851eb8,A
+0x10BC,4,int/u32,0x3fbeb851 (~1.49f),A
+0x10C0,4,int/u32,5,A
+0x10C8,4,int/u32,0xeb851eb8,A
+0x10CC,4,int/u32,0x3fbeb851 (~1.49f),A
+0x10D0,4,int/u32,5,A
+0x10D8,4,int/u32,0x47ae147b,A
+0x10DC,4,int/u32,0x3fc47ae1 (~1.535f),A
+0x10E0,4,int/u32,10,A
+0x10E8,4,int/u32,0x1eb851ec,A
+0x10EC,4,int/u32,0x3fc1eb85 (~1.515f),A
+0x10F0,4,int/u32,10,A
+0x10F8,4,int/u32,0,A
+0x10FC,4,int/u32,0x3fe00000 (~0.5),A
+0x1100,4,int/u32,0x28,A
+0x1108,4,int/u32,0x9999999a,A
+0x110C,4,int/u32,0x3fb99999 (~1.45f),A
+0x1110,4,int/u32,2,A
+0x1118,4,int/u32,0x47ae147b,A
+0x111C,4,int/u32,0x3fc47ae1 (~1.535f),A
+0x1120,4,int/u32,2,A
+0x1124,4,int/u32,4,A
+0x1128,4,int/u32,0x47ae147b,A
+0x112C,4,int/u32,0x3fc47ae1 (~1.535f),A
+0x1130,4,int/u32,3,A
+0x1134,4,int/u32,0x32,A
+0x1138,4,int/u32,2000,A
+0x113C,4,int/u32,2,A
+0x1140,4,int/u32,2000,A
+0x1144,4,int/u32,0x19,A
+0x1148,4,int/u32,0,A
+0x1150,4,int/u32,0xd2f1a9fc,A
+0x1154,4,int/u32,0x3f90624d (~1.128f),A
+0x1158,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1168,4,int/u32,0,A
+0x116C,4,int/u32,10,A
+0x1174,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1184,4,int/u32,0,A
+0x1188,4,int/u32,10,A
+0x1190,4,int/u32,5000,A
+0x1194,4,int/u32,&PTR_FUN_007e4dd8,A
+0x11A4,4,int/u32,0,A
+0x11A8,4,int/u32,10,A
+0x11B0,4,int/u32,&PTR_FUN_007e4dd8,A
+0x11C0,4,int/u32,0,A
+0x11C4,4,int/u32,10,A
+0x11CC,4,int/u32,&PTR_FUN_007e4dd8,A
+0x11DC,4,int/u32,0,A
+0x11E0,4,int/u32,10,A
+0x11E8,4,int/u32,&PTR_FUN_007e4dd8,A
+0x11F8,4,int/u32,0,A
+0x11FC,4,int/u32,10,A
+0x1204,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1214,4,int/u32,0,A
+0x1218,4,int/u32,10,A
+0x1220,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1230,4,int/u32,0,A
+0x1234,4,int/u32,10,A
+0x123C,4,int/u32,&PTR_FUN_007e4dd8,A
+0x124C,4,int/u32,0,A
+0x1250,4,int/u32,10,A
+0x1258,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1268,4,int/u32,0,A
+0x126C,4,int/u32,10,A
+0x1274,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1284,4,int/u32,0,A
+0x1288,4,int/u32,10,A
+0x1290,4,int/u32,&PTR_FUN_007e4dd8,A
+0x12A0,4,int/u32,0,A
+0x12A4,4,int/u32,10,A
+0x12AC,4,int/u32,&PTR_FUN_007e4dd8,A
+0x12BC,4,int/u32,0,A
+0x12C0,4,int/u32,10,A
+0x12C8,4,int/u32,&PTR_FUN_007e4dd8,A
+0x12D8,4,int/u32,0,A
+0x12DC,4,int/u32,10,A
+0x12E4,4,int/u32,&PTR_FUN_007e4dd8,A
+0x12F4,4,int/u32,0,A
+0x12F8,4,int/u32,10,A
+0x1300,4,int/u32,1000,A
+0x1304,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1314,4,int/u32,0,A
+0x1318,4,int/u32,10,A
+0x1320,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1330,4,int/u32,0,A
+0x1334,4,int/u32,10,A
+0x133C,4,int/u32,&PTR_FUN_007e4dd8,A
+0x134C,4,int/u32,0,A
+0x1350,4,int/u32,10,A
+0x1358,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1368,4,int/u32,0,A
+0x136C,4,int/u32,10,A
+0x1374,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1384,4,int/u32,0,A
+0x1388,4,int/u32,10,A
+0x1390,4,int/u32,&PTR_FUN_007e4dd8,A
+0x13A0,4,int/u32,0,A
+0x13A4,4,int/u32,10,A
+0x13AC,4,int/u32,&PTR_FUN_007e4dd8,A
+0x13BC,4,int/u32,0,A
+0x13C0,4,int/u32,10,A
+0x13C8,4,int/u32,&PTR_FUN_007e4dd8,A
+0x13E8,4,int/u32,0,A
+0x13EC,4,int/u32,0x3ff00000 (~1.0),A
+0x13F0,4,int/u32,&PTR_FUN_007e4dd8,A
+0x1410,4,int/u32,0,A
+0x1414,4,int/u32,0,A
+0x1418,4,int/u32,0,A
+0x141C,4,int/u32,0x3ff00000 (~1.0),A
+0x1420,4,int/u32,0,A
+0x1424,4,int/u32,0x3ff00000 (~1.0),A
+0x1428,4,int/u32,0,A
+0x142C,4,int/u32,0x3fe00000 (~0.5),A
+0x1430,4,int/u32,0x100,A
+0x1434,4,int/u32,5,A
+0x1438,4,int/u32,4,A
+0x143C,4,int/u32,5,A
+0x1440,4,int/u32,4,A
+0x1444,4,int/u32,3,A
+0x1448,4,int/u32,2,A
+0x144C,4,int/u32,3,A
+0x1450,4,int/u32,4,A
+0x1454,4,int/u32,4,A
+0x1458,4,int/u32,3,A
+0x145C,4,int/u32,2,A
+0x1460,4,int/u32,1,A
+0x1464,4,int/u32,2,A
+0x1468,4,int/u32,0,A
+0x146C,4,int/u32,0,A
+0x1470,4,int/u32,1,A
+0x1474,4,int/u32,0xff,A
+0x1478,4,int/u32,0x2000,A
+0x147C,4,int/u32,0,A
+0x1480,4,int/u32,0x9c4,A
+0x1484,4,int/u32,10000,A
+0x1488,4,int/u32,10000,A
+0x148C,4,int/u32,100,A
+0x1490,4,int/u32,1,A
+0x1494,4,int/u32,10,A
+0x1498,4,int/u32,0x14,A
+0x149C,4,int/u32,10,A
+0x14A0,4,int/u32,6,A
+0x14A4,4,int/u32,1,A
+0x14A8,4,int/u32,1,A
+0x14AC,1,undefined1,1,B
+0x14AD,1,undefined1,0,C
+0x14AE,1,undefined1,1,C
+0x14AF,1,undefined1,1,C
+0x14B0,1,undefined1,1,B
+0x14B1,1,undefined1,1,C
+0x14B2,1,undefined1,0,C
+0x14B3,1,undefined1,0,C
+0x14B4,1,undefined1,0,B
+0x14B5,1,undefined1,0,C
+0x14B6,1,undefined1,0,C
+0x14B7,1,undefined1,0,C
+0x14B8,1,undefined1,1,B
+0x14B9,1,undefined1,1,C
+0x14BA,1,undefined1,1,C
+0x14BB,1,undefined1,1,C
+0x14BC,4,int/u32,0x400,A
+0x14C0,4,int/u32,0x33333333,A
+0x14C4,4,int/u32,0x3fe33333 (~1.775f),A
+0x14C8,4,int/u32,0xeb851eb8,A
+0x14CC,4,int/u32,0x3f9eb851 (~1.24f),A
+0x14D0,4,int/u32,8,A
+0x14D8,4,int/u32,0,A
+0x14DC,4,int/u32,0x3fd00000 (~0.25),A
+0x14E0,4,int/u32,0x14,A
+0x14E8,4,int/u32,0,A
+0x14EC,4,int/u32,0x40000000 (~2.0),A
+0x14F0,4,int/u32,0,A
+0x14F4,4,int/u32,0x3fe00000 (~0.5),A
+0x14F8,4,int/u32,200,A
+0x14FC,4,int/u32,100,A
+0x1500,4,int/u32,300,A
+0x1508,4,int/u32,0x9999999a,A
+0x150C,4,int/u32,0x3fa99999 (~1.325f),A
+0x1510,4,int/u32,0,A
+0x1514,4,int/u32,0x40140000 (~5.0),A
+# 1085 default-value stores extracted
+
+0x1518,4,int/u32,0x9999999a,A
+0x151C,4,int/u32,0x3fa99999 (~1.325f),A
+0x1520,4,int/u32,2,A
+0x1528,4,int/u32,0xd2f1a9fc,A
+0x152C,4,int/u32,0x3f90624d (~1.128f),A
+0x1530,4,int/u32,1000,A
+0x1638,4,int/u32,0,A
+0x163C,4,int/u32,0x40000000 (~2.0),A
+0x1640,4,int/u32,0,A
+0x1644,4,int/u32,0x40100000 (~4.0),A
+0x1648,4,int/u32,0x9999999a,A
+0x164C,4,int/u32,0x3fa99999 (~1.325f),A
+0x1650,4,int/u32,0,A
+0x1654,4,int/u32,0x3ff00000 (~1.0),A
+0x1658,4,int/u32,0,A
+0x165C,4,int/u32,0x3ff00000 (~1.0),A
+0x1660,4,int/u32,500,A
+0x1668,4,int/u32,0x9999999a,A
+0x166C,4,int/u32,0x3fc99999 (~1.575f),A
+0x1670,4,int/u32,0x9999999a,A
+0x1674,4,int/u32,0x3fb99999 (~1.45f),A
+0x1678,4,int/u32,0,A
+0x167C,4,int/u32,0x40240000 (~10.0),A
+0x1680,4,int/u32,0,A
+0x1684,4,int/u32,0x40000000 (~2.0),A
+0x1690,4,int/u32,0,A
+0x1694,4,int/u32,0x402c0000 (~14.0),A
+0x1698,4,int/u32,0,A
+0x169C,4,int/u32,0x40140000 (~5.0),A
+0x16A0,4,int/u32,0,A
+0x16A4,4,int/u32,0x40240000 (~10.0),A
+0x16A8,4,int/u32,0,A
+0x16AC,4,int/u32,0x40000000 (~2.0),A
+0x16B0,4,int/u32,0,A
+0x16B4,4,int/u32,0x3ff00000 (~1.0),A
+0x16B8,4,int/u32,3,A
+0x16BC,4,int/u32,0x32,A
+0x16C0,4,int/u32,0,A
+0x16C4,4,int/u32,1,A
+0x16C8,4,int/u32,1000,A
+0x16CC,4,int/u32,5,A
+0x16D0,4,int/u32,0,A
+0x16D4,4,int/u32,0x3fd00000 (~0.25),A
+0x16D8,4,int/u32,1,A
+0x16E0,4,int/u32,0xd2f1a9fc,A
+0x16E4,4,int/u32,0x3f90624d (~1.128f),A
+0x16E8,4,int/u32,0xd2f1a9fc,A
+0x16EC,4,int/u32,0x3f90624d (~1.128f),A
+0x16F0,4,int/u32,0xd2f1a9fc,A
+0x16F4,4,int/u32,0x3f90624d (~1.128f),A
+0x16F8,4,int/u32,0,A
+0x16FC,4,int/u32,0x3ff00000 (~1.0),A
+0x1700,4,int/u32,0,A
+0x1704,4,int/u32,0x3fe00000 (~0.5),A
+0x1708,4,int/u32,0,A
+0x170C,4,int/u32,0x3fe00000 (~0.5),A
+0x1710,4,int/u32,0xed916873,A
+0x1714,4,int/u32,0x3fb53f7c (~1.416f),A
+0x1718,4,int/u32,0x280,A
+0x171C,4,int/u32,0x200,A
+0x1720,4,int/u32,0x200,A
+0x1728,4,int/u32,0x180,A
+0x172C,4,int/u32,0x280,A
+0x1730,4,int/u32,0x200,A
+0x1734,4,int/u32,0x100,A
+0x1738,4,int/u32,0,A
+0x173C,4,int/u32,0x3fe00000 (~0.5),A
+0x1740,4,int/u32,1000,A
+0x1748,4,int/u32,0,A
+0x174C,4,int/u32,0x3ff00000 (~1.0),A
+0x1750,4,int/u32,0xeb851eb8,A
+0x1754,4,int/u32,0x3f9eb851 (~1.24f),A
+0x1758,4,int/u32,1000,A
+0x1760,4,int/u32,0xd2f1a9fc,A
+0x1764,4,int/u32,0x3f90624d (~1.128f),A
+0x1768,4,int/u32,0x3c,A
+0x1770,4,int/u32,0,A
+0x1774,4,int/u32,0x3fd00000 (~0.25),A
+0x1778,4,int/u32,0x600,A
+0x177C,4,int/u32,0x2000,A
+0x1780,4,int/u32,0x500,A
+0x1784,4,int/u32,0x1000,A
+0x1788,4,int/u32,0x5000,A
+0x178C,4,int/u32,0x300,A
+0x1790,4,int/u32,0x7fffffff,A
+0x1794,4,int/u32,0xfa,A
+0x1798,4,int/u32,200,A
+0x179C,4,int/u32,900,A
+0x17A0,4,int/u32,0x5a,A
+0x17A4,4,int/u32,10,A
+0x17A8,4,int/u32,10,A
+0x17AC,4,int/u32,3,A
+0x17B0,1,undefined1,1,B
+0x17B4,4,int/u32,0,A
+0x17B8,4,int/u32,10,A
+0x17BC,4,int/u32,400,A
+0x17C0,4,int/u32,800,A
+0x17C4,4,int/u32,0x32,A
+0x17C8,1,undefined1,0,B
+0x17CC,4,int/u32,100,A
+0x17D0,4,int/u32,0,A
+0x17D4,4,int/u32,0,A
+0x17D8,4,int/u32,0,A
+0x17DC,4,int/u32,0,A
+0x17E0,1,undefined1,1,B
+0x17E1,1,undefined1,0,C
+0x17E2,1,undefined1,1,C
+0x17E3,1,undefined1,1,C
+0x17E4,1,undefined1,0,B
+0x17E5,1,undefined1,0,C
+0x17E6,1,undefined1,1,C
+0x17E7,1,undefined1,1,C
+0x17E8,1,undefined1,0,B
+0x17E9,1,undefined1,0,C
+0x17EA,1,undefined1,0,C
+0x17EB,1,undefined1,0,C
+0x17EC,1,undefined1,0,B
+0x17ED,1,undefined1,0,C
+0x17EE,1,undefined1,1,C
+0x17EF,1,undefined1,0,C
+0x17F0,1,undefined1,0,B
+0x17F1,1,undefined1,1,C
+0x17F2,1,undefined1,1,C
+0x17F3,1,undefined1,1,C
+0x17F4,4,int/u32,0,A
+0x17F8,4,int/u32,0x3f800000 (~1.0f),A
+0x17FC,4,int/u32,0,A
+0x1800,4,int/u32,300,A
+0x1804,4,int/u32,0,A
+0x1808,4,int/u32,0,A
+0x180C,4,int/u32,0,A
+0x1810,4,int/u32,0,A
+0x1814,4,int/u32,0,A
+0x1818,4,int/u32,0,A
+0x181C,4,int/u32,0,A
+0x1820,4,int/u32,0,A
+0x1824,4,int/u32,0,A
+0x1828,4,int/u32,0,A
+0x182C,4,int/u32,0,A
+0x1830,1,undefined1,0,B
+0x1831,1,undefined1,0,C
+0x1832,1,undefined1,0,C
+0x1834,4,int/u32,0,A
+0x1838,4,int/u32,0,A
+0x1840,4,int/u32,0,A
+0x1844,4,int/u32,0x3ff00000 (~1.0),A
+0x1848,4,int/u32,0,A
+0x184C,4,int/u32,0,A
+0x1850,1,undefined1,0,B
+0x1858,4,int/u32,0,A
+0x185C,4,int/u32,0x3fe00000 (~0.5),A
+0x1860,1,undefined1,0xff,B
+0x1861,1,undefined1,0xff,C
+0x1862,1,undefined1,0xff,C
+0x1863,1,undefined1,0,C
+0x1864,1,undefined1,0,B
+0x1865,1,undefined1,0,C
+0x1866,1,undefined1,0,C
+0x1867,1,undefined1,0,C
+0x1868,1,undefined1,0,B
+0x1869,1,undefined1,0,C
+0x186A,1,undefined1,0,C
+0x186B,1,undefined1,0,C
+0x186C,4,int/u32,0x32,A
+0x1870,4,int/u32,0,A
+0x18A4,4,int/u32,0,A
+0x18A8,4,int/u32,0,A
+0x18AC,4,int/u32,0,A
+0x18B0,4,int/u32,0,A
+0x18B4,4,int/u32,0x3f800000 (~1.0f),A
+0x18B8,4,int/u32,0x3f800000 (~1.0f),A
