@@ -581,7 +581,7 @@ impl FogState {
     /// Clear one cell's vector in native reverse order. Each shared record is
     /// first unlinked by exact ID from all footprint cells, then returned to
     /// the caller in destruction/invalidation order. Other empty vectors stay
-    /// allocated, matching `CellClass::ClearFoggedObjects @ 0x004802D0`.
+    /// allocated, matching `FUN_004802A0 (0x004802D0 is not a function entry; the name is not a symbol)`.
     pub fn clear_fogged_objects_at(
         &mut self,
         viewer: InternedId,
@@ -629,7 +629,7 @@ impl FogState {
             .resize(usize::from(self.width) * usize::from(self.height), 0);
     }
 
-    /// Native `CellClass::SetCloakedByHouse @ 0x00487110`.
+    /// Native `FUN_00487110 (unlabelled; name not a symbol)`.
     pub fn set_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word_mut(rx, ry) else {
             return false;
@@ -640,7 +640,7 @@ impl FogState {
         changed
     }
 
-    /// Native `CellClass::ClearCloakedByHouse @ 0x00487130`.
+    /// Native `FUN_00487130 (unlabelled; name not a symbol)`.
     pub fn clear_cloaked_by_house(&mut self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word_mut(rx, ry) else {
             return false;
@@ -651,7 +651,7 @@ impl FogState {
         changed
     }
 
-    /// Native `CellClass::IsSensedByHouse @ 0x004870B0`; the pinned label is
+    /// Native `CellClass::IsVisibleToHouse @ 0x004870B0 (the pinned label stands)`; the pinned label is
     /// stale and this tests cloak-generator ownership, not sensor coverage.
     pub fn is_cloaked_by_house(&self, house_index: u8, rx: u16, ry: u16) -> bool {
         let Some(word) = self.cloak_word(rx, ry) else {
@@ -681,7 +681,7 @@ impl FogState {
         self.cloaked_by_houses.get_mut(index)
     }
 
-    /// Native `FootClass::Sensors_AddAt @ 0x004DE7B0`: outer-Y/inner-X strict
+    /// Native `TechnoClass::AddSensorsAt @ 0x004DE7B0`: outer-Y/inner-X strict
     /// circle and signed-word increment. Returned cells are the exact ordered
     /// boundary where native forces resident objects through virtual `+0x420`.
     pub fn sensors_add_at(
@@ -693,7 +693,7 @@ impl FogState {
         self.update_sensor_circle(house, center, radius, true)
     }
 
-    /// Paired `FootClass::Sensors_RemoveAt @ 0x004DE940` decrement walk.
+    /// Paired `0x004DE940 (removal twin; symbol UNVERIFIED)` decrement walk.
     pub fn sensors_remove_at(
         &mut self,
         house: InternedId,
@@ -1510,6 +1510,29 @@ pub fn apply_spy_sat(
 ///   - friendly viewers (owner + allies): set FLAG_GAP_FOG — the cell renders
 ///     half-bright fog while keeping the owner's own vision.
 /// Call AFTER spy_sat so gap wins in contested areas.
+///
+/// **Two VERA-internal departures, both recorded.**
+///
+/// 1. *The conceal is permanent.* Clearing `FLAG_REVEALED` destroys the
+///    player's map knowledge for good — the terrain stays black until it is
+///    physically re-seen. The live native gap path,
+///    `BuildingClass::UpdateGapGenerator_Tick` @ `0x00454DB0` → `FUN_00487110`,
+///    sets a per-house **bit** in `CellClass+0x78`, and `FUN_00487130` clears
+///    it, so when the generator dies prior knowledge is intact. (Note the
+///    footprint above matches `MapClass::Conceal_Radius` @ `0x00567F70`, but
+///    that function is not this behaviour's owner — its sole caller is
+///    `FUN_006E1A70`.) Trigger: any Gap Generator or Psychic Sensor covering
+///    ground the enemy has already scouted. Player effect: retail restores the
+///    old map when the generator falls; VERA leaves it black. Frequency: every
+///    match in which one is built. Downstream risk: making it reversible means a
+///    per-house bit plane, not a flag clear.
+/// 2. *`FLAG_GAP_FOG` has one consumer left and it is the wrong one.* The
+///    tactical shroud buffer deliberately stopped reading it, but the minimap
+///    still dims on it, so the generator's owner sees a half-dimmed patch on
+///    radar over territory that is full-bright on the tactical map. Trigger:
+///    owning a Gap Generator. Player effect: the two views disagree. Frequency:
+///    every frame while one is up. Downstream risk: either the flag or the
+///    minimap consumer is stale; they must be settled together.
 ///
 /// Takes a list of (owner_name, rx, ry, radius) for each gap generator.
 pub fn apply_gap_generators(

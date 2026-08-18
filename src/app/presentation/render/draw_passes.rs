@@ -138,6 +138,19 @@ pub(super) fn dispatch_draw_passes(
     );
 
     // --- Step 3.5: Overlay shadows — bridge decks ---
+    //
+    // **This is the only shadow pass in the renderer.** GSI-13.11 covers three
+    // — ground, object and voxel — and the other two do not exist: a
+    // repo-wide search finds no shadow instance emission for infantry,
+    // vehicles, buildings or aircraft, and no voxel shadow in any shader. So
+    // every tank, soldier, structure and plane in an ordinary skirmish is
+    // missing its ground shadow. Recorded, not closed. Trigger: every frame
+    // with any unit or building on screen. Player effect: the scene reads flat
+    // against retail, which shadows every object. Frequency: continuous.
+    // Downstream risk: the SHP-blitter contract the bridge path already honours
+    // (1-bit stencil half, composited darken) is the shape the object pass has
+    // to reuse, and `BRIDGE_SHADOW_DARKEN_ALPHA` already carries its own
+    // recorded lightness drift against the native halve.
     // Second sweep of the native cell-content layer: after every overlay body
     // is down, each overlay-bearing cell draws its shadow half. The atlas bakes
     // these as black texels whose alpha approximates the blitter's darken, so
