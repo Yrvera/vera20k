@@ -937,6 +937,27 @@ pub struct ObjectType {
     /// `DamageParticleSystems=` CSV list — spawned periodically while the
     /// object is damaged.
     pub damage_particle_systems: Vec<String>,
+    /// `MaxDebris=` — the ceiling on how many debris objects this type throws
+    /// when it dies. `TechnoClass::ReceiveDamage @ 0x00701900` draws the count
+    /// from `[MinDebris, MaxDebris]` and spends it on `DebrisTypes` VoxelAnims
+    /// and `DebrisAnims` SHP anims.
+    ///
+    /// 456 stock sections author it, 17 of them spelled `Maxdebris=`; gamemd
+    /// matches keys case-insensitively, so this is read that way and all 456
+    /// count.
+    pub max_debris: i32,
+    /// `MinDebris=` — the floor of the same range. 272 stock sections, every
+    /// one of them a `[BuildingTypes]` member.
+    pub min_debris: i32,
+    /// `DebrisTypes=` CSV of `[VoxelAnims]` ids. 36 stock sections author it
+    /// and every one of them names exactly `TIRE`.
+    pub debris_types: Vec<String>,
+    /// `DebrisMaximums=` CSV, positionally paired with `debris_types`: the cap
+    /// on how many of each type may be thrown. 36 stock sections.
+    pub debris_maximums: Vec<i32>,
+    /// `DebrisAnims=` CSV of `[Animations]` ids — the SHP half of the debris a
+    /// death throws, as distinct from the VXL half above. 166 stock sections.
+    pub debris_anims: Vec<String>,
     /// `Cyborg=` bool — gamemd's TechnoTypeClass `+0xC8F` "emits damage sparks"
     /// flag that `AI_Update` gates the per-tick damage-Spark prob-roll on.
     /// Verified: only `InfantryTypeClass::ReadINI` writes `+0xC8F` (from `Cyborg=`);
@@ -1458,6 +1479,14 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             damage_particle_systems: parse_csv_string_list(section.get("DamageParticleSystems")),
+            max_debris: section.get_i32_ignoring_case("MaxDebris").unwrap_or(0),
+            min_debris: section.get_i32_ignoring_case("MinDebris").unwrap_or(0),
+            debris_types: parse_csv_string_list(section.get_ignoring_case("DebrisTypes")),
+            debris_maximums: parse_csv_string_list(section.get_ignoring_case("DebrisMaximums"))
+                .iter()
+                .filter_map(|value| value.parse::<i32>().ok())
+                .collect(),
+            debris_anims: parse_csv_string_list(section.get_ignoring_case("DebrisAnims")),
             cyborg: section.get_bool("Cyborg").unwrap_or(false),
             destroy_particle_systems: parse_csv_string_list(section.get("DestroyParticleSystems")),
             damage_smoke_offset: section
@@ -2448,6 +2477,37 @@ mod tests {
         assert_eq!(obj.super_gap_radius_in_cells, 0);
     }
 
+    #[test]
+    fn gsi_05_14_debris_keys_parse_including_the_retail_lowercase_spelling() {
+        // A death spends a count drawn from [MinDebris, MaxDebris] on
+        // DebrisTypes VoxelAnims and DebrisAnims SHP anims.
+        let ini: IniFile = IniFile::from_str(
+            "[GAPOWR]\n\
+             MinDebris=4\nMaxDebris=9\n\
+             DebrisTypes=TIRE\nDebrisMaximums=3\n\
+             DebrisAnims=DBRIS1LG,DBRIS1SM,DBRIS4LG\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "GAPOWR",
+            ini.section("GAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert_eq!((obj.min_debris, obj.max_debris), (4, 9));
+        assert_eq!(obj.debris_types, vec!["TIRE".to_string()]);
+        assert_eq!(obj.debris_maximums, vec![3]);
+        assert_eq!(obj.debris_anims.len(), 3);
+
+        // 17 of the 456 stock sections spell it `Maxdebris=`, and gamemd's
+        // INIClass compares keys case-insensitively, so those 17 do throw
+        // debris in retail. An exact-cased read would silently give them 0.
+        let ini: IniFile = IniFile::from_str("[NAPOWR]\nMaxdebris=7\nMindebris=2\n");
+        let obj = ObjectType::from_ini_section(
+            "NAPOWR",
+            ini.section("NAPOWR").unwrap(),
+            ObjectCategory::Building,
+        );
+        assert_eq!((obj.min_debris, obj.max_debris), (2, 7));
+    }
     #[test]
     fn techno_type_parses_damage_particle_systems_csv() {
         let ini: IniFile = IniFile::from_str(

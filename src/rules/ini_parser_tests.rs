@@ -57,9 +57,7 @@ fn entryless_physical_sections_are_discarded() {
 #[test]
 fn retail_parabomb_empty_body_does_not_hide_later_definition() {
     // ARTMD has an entryless PARABOMB occurrence before this populated body.
-    let ini = IniFile::from_str(
-        "[PARABOMB]\n\n[PARABOMB]\nRate=200\nLoopStart=7\nLoopCount=15\n",
-    );
+    let ini = IniFile::from_str("[PARABOMB]\n\n[PARABOMB]\nRate=200\nLoopStart=7\nLoopCount=15\n");
 
     let parabomb = ini.section("PARABOMB").expect("populated PARABOMB body");
     assert_eq!(parabomb.get("Rate"), Some("200"));
@@ -212,8 +210,7 @@ fn semicolon_truncates_before_equals_and_empty_entries_are_omitted() {
 
 #[test]
 fn test_section_names_order() {
-    let ini: IniFile =
-        IniFile::from_str("[Zebra]\nKey=Z\n[Alpha]\nKey=A\n[Middle]\nKey=M\n");
+    let ini: IniFile = IniFile::from_str("[Zebra]\nKey=Z\n[Alpha]\nKey=A\n[Middle]\nKey=M\n");
 
     let names: Vec<&str> = ini.section_names();
     assert_eq!(names, vec!["Zebra", "Alpha", "Middle"]);

@@ -194,6 +194,28 @@ impl IniSection {
         self.set(&next.to_string(), value);
     }
 
+    /// Value lookup that ignores key case.
+    ///
+    /// The ordinary readers match keys exactly, which is right for almost
+    /// everything because retail spells keys consistently. `MaxDebris=` is the
+    /// exception this exists for: 17 of the 456 stock sections that author it
+    /// spell it `Maxdebris=`, and gamemd's `INIClass` compares keys
+    /// case-insensitively, so those 17 do take effect in retail. Reach for this
+    /// only where a retail spelling inconsistency is known and counted — making
+    /// every reader case-insensitive is an INI-layer change with its own row.
+    pub fn get_ignoring_case(&self, key: &str) -> Option<&str> {
+        self.key_ignore_ascii_case(key)
+            .and_then(|exact| self.entries.get(exact))
+            .map(String::as_str)
+    }
+
+    /// [`Self::get_i32`]'s case-insensitive sibling; see
+    /// [`Self::get_ignoring_case`] for when to use it.
+    pub fn get_i32_ignoring_case(&self, key: &str) -> Option<i32> {
+        let exact = self.key_ignore_ascii_case(key)?.to_string();
+        self.get_i32(&exact)
+    }
+
     fn key_ignore_ascii_case(&self, key: &str) -> Option<&str> {
         self.key_order
             .iter()
