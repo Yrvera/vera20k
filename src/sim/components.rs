@@ -113,6 +113,26 @@ pub struct SubCell(pub u8);
 /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
 ///
 /// Affects unit stats (damage, armor, speed bonuses) and visual indicators.
+///
+/// RESIDUAL (GSI-08.12) — nothing ever promotes. Every non-test writer of this
+/// field sets it at spawn — rookie from the three spawn paths, or `200` from a
+/// scripted elite in scenario bootstrap — and combat never increments it. There
+/// is no experience accumulator on `GameEntity` at all: `kill_award_points`
+/// feeds the score, not a unit's own progress, and `VeteranRatio=` is not
+/// parsed. Only four of the roughly fifteen `VeteranAbilities=`/
+/// `EliteAbilities=` tokens are parsed (`EXPLODES`, `STRONGER`, `SCATTER`,
+/// `FEARLESS`) against 70 and 69 stock entries.
+/// - Trigger: any unit surviving kills.
+/// - Player effect: no unit ever earns a chevron. Veteran and elite damage,
+///   armour and weapon swaps are all implemented and all unreachable, so an
+///   army that should be visibly stronger after ten minutes never changes.
+/// - Frequency: continuous — this is every engagement of every match, and it is
+///   one of the most legible progressions in ordinary play.
+/// - Downstream risk: promotion feeds weapon selection, the damage multiplier,
+///   the armour divisor and `VeteranROF=` (itself unconsumed, recorded on
+///   `rof_to_cooldown_frames`), so landing it changes combat outcomes broadly
+///   and moves the pinned replay hash. It wants its own slice with a
+///   re-baseline, not a corner of another row.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Veterancy(pub u16);
 

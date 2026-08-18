@@ -36,6 +36,20 @@ fn ftol(v: f64) -> i32 {
 /// NB the caller must pass a real (non-null) warhead: gamemd has a third
 /// `warhead == NULL -> 0` early-out folded into the same OR as the two below;
 /// it is the caller's concern since this kernel takes decoded f64 inputs.
+/// RESIDUAL (GSI-08.10) — two inputs are approximated. `MinDamage=` is not
+/// parsed anywhere, so the kernel clamps only at the top; and `Verses=` is
+/// stored as percent-quantised `u8` alongside the full-precision `verses_f64`,
+/// so any consumer that reads the quantised form loses the fraction native
+/// keeps.
+/// - Trigger: a hit whose post-Verses damage falls under the floor, or a
+///   Verses value that is not a whole percent.
+/// - Player effect: heavily-resisted hits do slightly less than retail (they
+///   should be floored), and rounding differences accumulate across a long
+///   exchange into a different number of shots to kill.
+/// - Frequency: stock authors `MinDamage=` once, so that arm is near-dead; the
+///   quantisation arm is every hit that reads the `u8` path.
+/// - Downstream risk: changing either moves damage numbers, so it moves every
+///   kill-timing test and the pinned replay hash.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_warhead_damage(
     damage: i32,

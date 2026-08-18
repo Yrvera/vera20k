@@ -133,6 +133,30 @@ enum ImmediateProjectileReason {
     SpecialTrajectory,
 }
 
+/// RESIDUAL (GSI-08.06/08.07/08.08) — this classifier is also the flight-model
+/// gate, and most of the native flight keys reach it only as reasons to opt
+/// *out* of authoritative flight rather than as models. `Vertical=` (5 stock),
+/// `Inaccurate=` (2), `Proximity=` (18) and `SubjectToCliffs=`/
+/// `SubjectToElevation=` (30) each disqualify a shot here; `ProjectileTrajectory`
+/// itself has only `Straight` and `Ballistic`, so vertical launch, scatter,
+/// proximity detection and cliff collision have no implementation to fall back
+/// on. `Floater=` (2) and `DetonationAltitude=` (4) are parsed with no reader,
+/// `Acceleration=` (6) is carried but unused by the advance, and the
+/// `AirburstWeapon=`/`ShrapnelWeapon=` child spawn is not wired from here.
+/// - Trigger: firing any weapon whose projectile carries one of those keys —
+///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
+/// - Player effect: those shots fall back to the non-authoritative path, so
+///   they resolve without the flight the player expects: no vertical climb, no
+///   scatter, no proximity detonation, and no airburst children.
+/// - Frequency: bounded by the types above rather than continuous, but V3s and
+///   Dreadnoughts are standard Soviet play and the nuke fires in most long
+///   matches.
+/// - Downstream risk: each missing model is its own trajectory implementation
+///   against `BulletClass::AI`; they share the projectile store but not the
+///   math, so they want separate slices. Launch-side effects are recorded
+///   separately: `spawn_manager.rs` already flags its launch-position drift, no
+///   `MuzzleFlash=` art anim is spawned for non-garrison weapons, and `Ammo=`
+///   is decremented only for aircraft.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -1145,6 +1169,22 @@ fn emit_infantry_death_anim(
 ///
 /// `base_damage` is the post-modifier damage at the impact center; it
 /// drives AnimList selection via `damage / 25`, clamped to `len - 1`.
+/// RESIDUAL (GSI-08.11) — a dying unit does not play its own explosion. The
+/// effect chosen here comes from the *warhead*'s `AnimList=` (70 stock entries)
+/// indexed by damage; the TechnoType's own `Explosion=` list is authored on 487
+/// stock entries and has no reader anywhere in the crate. Crew survival is the
+/// other half: `Crewed=` (126 stock) only queues the building arm, so a
+/// destroyed `Crewed=yes` vehicle ejects nobody, and no survivor-type resolution
+/// exists — the survivor path here handles the smudge, not the unit.
+/// - Trigger: every unit and building death.
+/// - Player effect: deaths look wrong twice over. A Grizzly and an Apocalypse
+///   die with the same warhead-derived puff instead of their authored
+///   explosions, and no crew ever runs out of a wreck or a levelled structure.
+/// - Frequency: continuous — this is the most-watched moment in the game.
+/// - Downstream risk: crew ejection spawns entities, so it moves unit counts,
+///   occupancy and the pinned replay hash; the explosion swap is comparatively
+///   contained but still changes anim spawn order and its RNG draws. The debris
+///   half of this row is recorded separately on `rules/warhead_type.rs`.
 pub(crate) fn emit_warhead_detonation_effects(
     warhead: &WarheadType,
     base_damage: i32,
