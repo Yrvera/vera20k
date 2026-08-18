@@ -45,9 +45,11 @@ pub mod type_handle_table; // InternedId -> TypeHandle, one-hop entity->type res
 pub mod substrate; // direction/facing tables; no render/ui/audio/net dep
 
 // --- Subsystem folders (multi-file subsystems with internal mod.rs) ---
+pub mod bounce;
 pub mod combat; // targeting, weapons, AOE, fire gates, damage resolution
 pub mod miner; // harvester state machine, dock sequences, ore delivery
 pub mod production; // build queue, placement, economy, tech tree, selling
+pub mod voxel_anim;
 pub mod world; // Simulation orchestrator, command dispatch, spawn, hash
 
 // --- Mission scheduler substrate + radio contact RPC vocabulary ---
