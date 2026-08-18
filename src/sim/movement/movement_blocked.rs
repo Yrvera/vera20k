@@ -99,9 +99,19 @@ pub(super) fn handle_blocked_tick(
     // site; whether each of them maps onto one of the five native compares is
     // UNCHECKED and recorded separately.)
     if close_enough_abort && mcfg.close_enough > SIM_ZERO {
-        let dx = (goal.0 as i32 - current_pos.0 as i32).abs();
-        let dy = (goal.1 as i32 - current_pos.1 as i32).abs();
-        let dist = SimFixed::from_num((dx + dy) * 256);
+        // Native compares a genuine 3-D Euclidean lepton distance —
+        // `CoordStruct::Distance3D` / `Sqrt_Approx(dx² + dy² + dz²)`, at
+        // `0x004B3225` and `0x004B38C1` — against `Rules+0x1718` (`CloseEnough`).
+        // A Manhattan sum over-reads a diagonal approach by up to √2, so the
+        // give-up radius used to trip early and the unit stopped short of its
+        // goal on any diagonal.
+        //
+        // Z is still dropped: VERA's goal here is a cell pair with no height.
+        // VERA-internal, gamemd equivalent UNCHECKED — it matters only where the
+        // mover and its goal sit on different planes, i.e. bridge approaches.
+        let dx = (goal.0 as i64 - current_pos.0 as i64).abs() * 256;
+        let dy = (goal.1 as i64 - current_pos.1 as i64).abs() * 256;
+        let dist = SimFixed::from_num(crate::util::fixed_math::isqrt_i64(dx * dx + dy * dy));
         if dist < mcfg.close_enough {
             log::info!(
                 "CLOSE_ENOUGH entity={} pos=({},{}) goal=({},{}) dist={} - stopping",

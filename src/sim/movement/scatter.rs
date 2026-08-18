@@ -1,9 +1,23 @@
 //! Cell scatter system — displaces idle mobile units away from a target cell.
 //!
 //! When a cell becomes blocked (building placed, terrain change, etc.), idle
-//! mobile units near that cell must scatter to nearby passable cells. This
-//! reproduces the behavior of `HouseClass::ScatterUnitsFromCell`
-//! from the original engine.
+//! mobile units near that cell must scatter to nearby passable cells.
+//!
+//! **VERA-internal, gamemd equivalent UNCHECKED.** There is no
+//! `HouseClass::ScatterUnitsFromCell` in this program — the name this header
+//! used to carry was invented. The scatter functions that do exist are
+//! `CellClass::Scatter_Objects` @ `0x00481670`,
+//! `DriveLocomotionClass::Stop_And_Scatter` @ `0x004B4890`,
+//! `HouseClass::ScatterAllUnits` @ `0x004FC6D0`, `InfantryClass::Scatter` @
+//! `0x0051D0D0`, `ScatterCommandClass::Execute` @ `0x00730FE0` and
+//! `UnitClass::Scatter` @ `0x00743A50`. Every claim below — the periodic
+//! `TechnoClass::AI` scatter, `rules+0x1808` as its interval, 351 direction
+//! tries, the 350-entry global foundation offset table and
+//! `IDLE_SCATTER_INTERVAL` — is asserted with no address and is unverified.
+//! Trigger: any cell-blocked scatter. Player effect: idle units displace by
+//! VERA's own rule. Frequency: every building placement and terrain change.
+//! Downstream risk: `Scatter_Objects` is the verified mechanism and caps its
+//! collected list at ten; this file does not model that at all.
 //!
 //! ## Original engine behavior
 //! The original walks a global foundation offset table (350 entries of `(dx, dy)`

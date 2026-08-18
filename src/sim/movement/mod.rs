@@ -208,11 +208,27 @@ pub(crate) fn install_forced_drive_track(
 // Constants — shared across movement submodules via `super::`
 // ---------------------------------------------------------------------------
 
-/// Initial path retry counter before giving up (original engine: FootClass+0x64C, init=10).
-/// Decremented on each failed Find_Path. At 0 the unit abandons the move order.
+/// Initial path retry counter before giving up.
+///
+/// **VERA-internal, gamemd has no equivalent.** The earlier claim — "FootClass
+/// +0x64C, init=10, decremented on each failed Find_Path, at 0 the unit abandons
+/// the move order" — is refuted twice over. `Foot+0x64C` is written with a
+/// literal 10 on the **code-6** arm of `Process_Movement` (`LAB_004B3282`) and
+/// tested `< 1` at the head of the next pass to skip the move; it is never
+/// decremented per `Find_Path` failure and never abandons an order. The
+/// escalation clock is a different record entirely: `Foot+0x668` = frame and
+/// `Foot+0x670` = `Rules+0x1768`, stored only on the `Foot+0x6B7 == 0`
+/// transition of the code-2 arm, and the urgency it feeds is 1 or 2.
+///
+/// Trigger: ten consecutive failed repaths. Player effect: VERA drops the order;
+/// gamemd keeps escalating. Frequency: any unit walled in by traffic long
+/// enough. Downstream risk: the same offset was being claimed for two different
+/// VERA constants, so both have to be re-derived together.
 const PATH_STUCK_INIT: u8 = 10;
 /// Minimum height level difference to trigger Rust's defensive cliff detection.
-/// Original engine: abs(current_z / HeightStep - cell.height) >= 3 levels.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED** — "abs(current_z / HeightStep
+/// - cell.height) >= 3 levels" carries no address and no verified owner.
 const CLIFF_HEIGHT_THRESHOLD: u16 = 3;
 /// Infantry wobble phase increment per second (radians/sec).
 /// One full cycle (2π) per ~2.5 seconds ≈ 2.5 rad/s. Matches slow

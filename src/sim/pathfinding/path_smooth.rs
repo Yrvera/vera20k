@@ -350,12 +350,30 @@ const MAX_OPTIMIZE_STEPS: usize = 20;
 /// exceeds the distance traveled along the ideal line.
 const DRIFT_THRESHOLD: i32 = 1;
 
-/// Optimizes a path by correcting segments that drift too far from the ideal
-/// straight line between their endpoints.
+/// **Dead, and a different mechanism from the native second pass. Recorded, not
+/// closed.**
 ///
-/// Analyzes up to `MAX_OPTIMIZE_STEPS` steps. When cumulative perpendicular
-/// drift exceeds a threshold, the drifting segment is replaced with a straighter
-/// cardinal+diagonal decomposition.
+/// `find_drift_segment` accumulates `cum_dx`/`cum_dy` from `path[start]` to
+/// `path[i + 1]`, which is identically `ideal_dx`/`ideal_dy`, so the cross
+/// product is always zero, `drift_sq` is always zero, and the threshold test can
+/// never fire. This function returns its input unchanged for every path, and so
+/// does [`optimize_layered_path`].
+///
+/// Native's second pass, `Path_optimize_straight_segments` @ `0x0042B7F0`, is
+/// not a perpendicular-drift test at all: it scans a 20-step window, closes a
+/// segment when the running `|dx|` or `|dy|` *decreases* — an axis reversal —
+/// and otherwise reroutes when Chebyshev displacement from the segment origin
+/// fails to exceed a stored high-water mark. That is a loop detector, and its
+/// reroute writes `0xFFFFFFFE` delete markers with a final compaction, so the
+/// native pass **shortens** the path. This one splices a replacement and never
+/// deletes.
+///
+/// Trigger: every A* result — `AStar_main_loop` @ `0x00429A90` runs
+/// `Path_smooth_corners` @ `0x0042B210` then `0x0042B7F0` on every successful
+/// search. Player effect: VERA ships pass 1 only, so paths keep steps retail
+/// removes. Frequency: every path, every match. Downstream risk: fixing the
+/// tautology would enable a mechanism that is still not the native one, so the
+/// two have to be replaced together, not repaired in place.
 pub fn optimize_path(
     path: Vec<(u16, u16)>,
     walkable: &dyn Fn(u16, u16) -> bool,
