@@ -589,6 +589,8 @@ pub struct CellRectOccupancyContext<'a> {
 /// margin caps. The `*2` doubling and the `+2`/`+4` diamond constants live in
 /// `cell_in_playfield_diamond`. The `off_*` names are legacy source-struct
 /// offsets retained to avoid rename churn across consumers and tests.
+/// Research:
+/// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`, section 3.4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlayfieldBounds {
     /// `[Map] Size=` width (3rd value).

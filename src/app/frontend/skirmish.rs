@@ -650,6 +650,10 @@ mod tests {
         assert!(slots[0].is_human);
     }
 
+    /// gamemd-derived: active YR `ScenarioClass__Gather_Start_Positions
+    /// @ 0x00688380`, seed block `0x00688528..0x0068857C`, draws Y before X
+    /// from the full cell-array bounds. Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_GATHER_START_POSITIONS_DEFICIENT_WAYPOINT_FALLBACK_00688380_GHIDRA_REPORT.md`.
     #[test]
     fn native_gather_generates_deficient_start_with_two_ranged_draws() {
         let authored = Waypoint {
@@ -730,6 +734,11 @@ mod tests {
         ));
     }
 
+    /// gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
+    /// @ 0x0056DC20` gates the candidate anchor through
+    /// `MapClass__Is_Cell_In_Playfield_CellClass @ 0x00578540` before the 8x8
+    /// scan. Research:
+    /// `docs/research/skirmish-ui/FOOTCLASS_FIND_NEARBY_PASSABLE_CELL_0056DC20_START_FALLBACK_GHIDRA_REPORT.md`.
     #[test]
     fn deficient_start_skips_passable_anchor_outside_diamond() {
         let terrain = test_terrain(32, 32);
@@ -763,6 +772,10 @@ mod tests {
         );
     }
 
+    /// gamemd-derived: `CellRect__CheckPassability @ 0x0056E7C0` scans the 8x8
+    /// footprint after `0x00578540` gates only its anchor; retail does not
+    /// diamond-test the other 63 cells. Research:
+    /// `docs/research/skirmish-ui/FOOTCLASS_FIND_NEARBY_PASSABLE_CELL_0056DC20_START_FALLBACK_GHIDRA_REPORT.md`.
     #[test]
     fn deficient_start_gates_anchor_not_full_8x8_footprint() {
         let terrain = test_terrain(32, 32);
@@ -799,6 +812,9 @@ mod tests {
         );
     }
 
+    /// gamemd-derived: standard Battle dispatches start gathering through its
+    /// `+0x80 @ 0x005D6BE0` and `+0x84 @ 0x005D6C70` phases, both reaching
+    /// `ScenarioClass__Gather_Start_Positions @ 0x00688380`.
     #[test]
     fn gsi_04_16_standard_battle_gathers_deficient_starts_twice() {
         let authored = Waypoint {
@@ -1859,6 +1875,12 @@ mod tests {
         );
     }
 
+    /// gamemd-derived: active YR
+    /// `MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030` falls
+    /// through to `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0`; probes
+    /// clamp through the `0x00565C10` full cell-array rect and then use the
+    /// `0x00578460` diamond. Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`.
     #[test]
     fn nearoref_blocked_start_fallback_uses_full_cell_array_clamp() {
         let mut sim = Simulation::with_seed(0);
@@ -2089,10 +2111,16 @@ mod tests {
         assert_eq!(ai_units, 4);
     }
 
-    /// NearOreF.MAP geometry: `Size=0,0,80,58`, `LocalSize=2,4,76,48`.
+    /// gamemd-derived: active YR
+    /// `MultiplayerGameMode__Create_Starting_Base_Unit @ 0x005D7030` and
+    /// `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0` use the independent
+    /// full-array clamp (`0x00565C10`) and playfield diamond (`0x00578460`).
+    /// NearOreF.MAP geometry is `Size=0,0,80,58`, `LocalSize=2,4,76,48`.
     /// GameMD unlimbos all eight starting MCVs exactly on their authored
     /// waypoints. The former Cartesian LocalSize test accepted only indices 1
     /// and 2, displaced the other six, and consumed fallback RNG.
+    /// Research:
+    /// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`.
     #[test]
     fn all_eight_nearoref_mcvs_spawn_on_authored_waypoints_without_fallback_rng() {
         let mut sim = Simulation::with_seed(0);

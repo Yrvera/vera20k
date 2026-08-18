@@ -36,12 +36,13 @@ pub(crate) struct NativeStartBounds {
 }
 
 impl NativeStartBounds {
-    /// The native start machinery is bounded by the MapClass CELL-ARRAY rect,
-    /// never by `LocalSize=`: `MapClass::Resize` @ `0x00565C10` writes
+    /// gamemd-derived: active YR start placement is bounded by the MapClass
+    /// CELL-ARRAY rect, never by `LocalSize=`. `MapClass::Resize @ 0x00565C10` writes
     /// `MapClass+0x124..0x130` as `(1, 1, SizeW+SizeH-1, SizeW+SizeH-1)`, and
-    /// both `ScenarioClass::Gather_Start_Positions` @ `0x00688564` (deficient
-    /// seed draws) and the starting-unit scan-place helper @ `0x00688ED0`
-    /// (fallback probe clamp) read exactly those four fields. Playable-area
+    /// both `ScenarioClass__Gather_Start_Positions @ 0x00688380` (deficient
+    /// seed block `0x00688528..0x0068857C`) and
+    /// `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0` (fallback probe clamp)
+    /// read exactly those four fields. Playable-area
     /// acceptance is the separate isometric-diamond predicate
     /// (`cell_rect::cell_is_in_playfield`); `LocalSize=` feeds that test's
     /// band constants only, never an axis-aligned bound. Treating LocalSize
@@ -109,8 +110,9 @@ pub(crate) fn native_gather_start_positions(
     }
 
     while starts.len() < target_count {
-        // `ScenarioClass::Gather_Start_Positions` @ `0x00688564`: the first
-        // draw `RandomRanged(0, rect.h - 10)` lands on the Y axis
+        // gamemd-derived: active YR `ScenarioClass__Gather_Start_Positions
+        // @ 0x00688380`, seed block `0x00688528..0x0068857C`: the first draw
+        // `RandomRanged(0, rect.h - 10)` lands on the Y axis
         // (`+ 10 + rect.y`), the second `RandomRanged(10, rect.w - 10)` on the
         // X axis (`+ rect.x`). The rect is the MapClass cell-array rect (see
         // `NativeStartBounds::from_session`), which is square, so a transposed
@@ -183,9 +185,10 @@ pub(crate) fn find_nearby_start_rect(
             {
                 continue;
             }
-            // Active YR `FootClass::Find_Nearby_Passable_Cell @ 0x0056DC20`
-            // applies `MapClass::Is_Cell_In_Playfield(cell, 1) @ 0x00578540`
-            // to the candidate anchor before scanning its 8x8 passability rect.
+            // gamemd-derived: active YR `FootClass__Find_Nearby_Passable_Cell
+            // @ 0x0056DC20` applies `MapClass__Is_Cell_In_Playfield_CellClass
+            // @ 0x00578540` to the candidate anchor before
+            // `CellRect__CheckPassability @ 0x0056E7C0` scans its 8x8 rect.
             // Only the anchor is diamond-gated; requiring all 64 cells to lie in
             // the diamond would be stricter than retail.
             if !cell_is_in_playfield(
