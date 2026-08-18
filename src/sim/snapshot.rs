@@ -258,7 +258,7 @@ use crate::sim::world::Simulation;
 // and prevents score-bonus Scenario RNG draws from repeating after load.
 // Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
 // SetGameSpeed transition. Appending the enum variant changes the bincode schema.
-const SNAPSHOT_VERSION: u32 = 81;
+const SNAPSHOT_VERSION: u32 = 82;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1538,12 +1538,13 @@ impl Simulation {
             .expect("validated overlay cache")
             .iter_occupied()
             .filter_map(|(rx, ry, cell)| {
-                cell.overlay_id.map(|overlay_id| crate::map::overlay::OverlayEntry {
-                    rx,
-                    ry,
-                    overlay_id,
-                    frame: cell.overlay_data,
-                })
+                cell.overlay_id
+                    .map(|overlay_id| crate::map::overlay::OverlayEntry {
+                        rx,
+                        ry,
+                        overlay_id,
+                        frame: cell.overlay_data,
+                    })
             })
             .collect();
         let native_tiberium_stats =
@@ -2161,9 +2162,17 @@ mod tests {
         let restore_output = restored
             .restore_map_authority_after_snapshot_load(&rules, &registry)
             .expect("restored overlay and navigation authority");
-        let terrain = restored.resolved_terrain.as_ref().expect("restored terrain");
+        let terrain = restored
+            .resolved_terrain
+            .as_ref()
+            .expect("restored terrain");
         assert!(!terrain.cell(0, 0).expect("cleared cell").overlay_blocks);
-        assert!(terrain.cell(2, 0).expect("runtime wall cell").overlay_blocks);
+        assert!(
+            terrain
+                .cell(2, 0)
+                .expect("runtime wall cell")
+                .overlay_blocks
+        );
         let path = restored.path_grid().expect("canonical restored path grid");
         assert!(path.is_walkable(0, 0));
         assert!(!path.is_walkable(2, 0));
@@ -2527,10 +2536,16 @@ mod tests {
     /// 78 -> 79 moved building-overlay finalization before the returned hash
     /// and made the already-serialized overlay component hash-authoritative;
     /// 79 -> 80 added the serialized/hash-authoritative terminal score snapshot;
-    /// 80 -> 81 added the pending-command offline GameSpeed transition payload.
+    /// 80 -> 81 added the pending-command offline GameSpeed transition payload;
+    /// 81 -> 82 made a serialized `AnimClass` coordinate owner-RELATIVE while
+    /// its `owner_entity` is set, matching
+    /// `AnimClass::SetOwnerObject @ 0x00424B50`. The layout is unchanged, so
+    /// old bytes still decode — and would then be re-resolved through the owner
+    /// a whole owner-coordinate away, moving every attached anim and the
+    /// returned hash with it. Cross-version load is refused for that reason.
     #[test]
-    fn gsi_13_06_snapshot_version_is_81() {
-        assert_eq!(super::SNAPSHOT_VERSION, 81);
+    fn gsi_13_06_snapshot_version_is_82() {
+        assert_eq!(super::SNAPSHOT_VERSION, 82);
     }
 
     #[test]
@@ -2577,14 +2592,14 @@ mod tests {
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v81 building-overlay header");
-        assert_eq!(header.version, 81);
+        let header = GameSnapshot::read_header(&bytes).expect("v82 building-overlay header");
+        assert_eq!(header.version, 82);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v81 building-overlay snapshot")
+            .expect("v82 building-overlay snapshot")
             .sim;
         restored
             .restore_after_snapshot_load()
-            .expect("v81 building-overlay snapshot restores structurally");
+            .expect("v82 building-overlay snapshot restores structurally");
         let overlays = restored
             .substrate
             .entities
@@ -2662,7 +2677,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "counter.map", 0);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v81 body-counter snapshot")
+            .expect("v82 body-counter snapshot")
             .sim;
         assert_eq!(
             restored
@@ -2784,7 +2799,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_game_speed_transition_roundtrips_in_v81_and_executes_once() {
+    fn pending_game_speed_transition_roundtrips_in_v82_and_executes_once() {
         use crate::sim::command::{Command, CommandEnvelope};
         use crate::sim::house_state::HouseState;
 
@@ -2802,10 +2817,10 @@ mod tests {
         assert_eq!(sim.state_hash(), hash_without_pending_input);
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
-        let header = GameSnapshot::read_header(&bytes).expect("v81 GameSpeed header");
-        assert_eq!(header.version, 81);
+        let header = GameSnapshot::read_header(&bytes).expect("v82 GameSpeed header");
+        assert_eq!(header.version, 82);
         let mut restored = GameSnapshot::load(&bytes)
-            .expect("v81 GameSpeed snapshot")
+            .expect("v82 GameSpeed snapshot")
             .sim;
         assert_eq!(
             restored.pending_commands_for_tests(),

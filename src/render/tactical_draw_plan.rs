@@ -203,14 +203,20 @@ impl TacticalDrawPlan {
     /// `lower_cell_instances`, which the SHP, unit and overlay instance
     /// builders consume. What is unchecked is whether every family reaches the
     /// frame through it: `render/tactical_compat.rs` and parts of the instance
-    /// builders assemble buffers on their own, and the anim layer-2 override
-    /// recorded in `sim/anim_class.rs` short-circuits before this planner sees
-    /// the anim at all.
-    /// - Trigger: drawing an owner-attached anim, or any family that bypasses
-    ///   the planner.
+    /// builders still assemble buffers on their own.
+    ///
+    /// The owner-attached anim half of this is CLOSED — GSI-05.12 removed the
+    /// short-circuit that used to keep burning-building fires out of this
+    /// planner. `AnimClass::GetLayer @ 0x00424CB0` forces layer 2 for any anim
+    /// carrying an owner, so `anim_render_destination` now routes them through
+    /// `anim_object_draw` into the same `ground_objects` vector as buildings
+    /// and units, and they sort here on the same key.
+    /// - Trigger: any family that still assembles its own buffer instead of
+    ///   entering this planner.
     /// - Player effect: where a bypassing path and this ordering disagree, a
     ///   sprite draws in front of or behind something it should not.
-    /// - Frequency: continuous for the anim override — every burning building.
+    /// - Frequency: per-family, and unmeasured — that is the open part. No
+    ///   bypassing family has been shown to disagree with this ordering.
     /// - Downstream risk: settling it needs a comparison against a real frame,
     ///   which `--lib` cannot reach, so it wants a capture harness rather than
     ///   another unit test.

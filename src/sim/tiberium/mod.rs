@@ -1080,9 +1080,9 @@ SpreadPercentage=.06
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
         let bytes = GameSnapshot::save(&sim, 0, 0, "gsi_04_09_packed.map", 0);
-        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 81);
+        assert_eq!(GameSnapshot::read_header(&bytes).unwrap().version, 82);
         let restored = GameSnapshot::load(&bytes)
-            .expect("v81 packed-map snapshot")
+            .expect("v82 packed-map snapshot")
             .sim;
         assert_eq!(restored.state_hash(), expected_hash);
         let restored_grid = restored
