@@ -337,7 +337,15 @@ pub struct DrivePathQueue {
     /// the queue on `next_index >= path.len()` before either reader sees it.
     /// Frequency: zero while that clear holds. Downstream risk: the two
     /// `!directions.is_empty()` readers diverge the moment the queue and
-    /// `MovementTarget` are allowed to disagree.
+    /// `MovementTarget` are allowed to disagree — which for **Ship** has
+    /// already happened: `navcom` marks ship exhaustion by setting
+    /// `cursor = directions.len()` and deliberately leaving `directions`
+    /// populated, and the drive-side clear in `movement_step` never touches
+    /// `ship_locomotion.path`. Trigger: an exhausted ship path. Player effect:
+    /// unmeasured — the branch's first act is the `next_index >= path.len()`
+    /// return, so no naval symptom is traced. Frequency: every ship that
+    /// finishes a path. Downstream risk: the predicate is wrong today and only
+    /// a later guard keeps it harmless.
     #[serde(default)]
     pub cursor: u16,
     /// Native FootClass path-reference cell (`+0x558`). Drive advances this

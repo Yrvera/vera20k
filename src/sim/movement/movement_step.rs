@@ -2150,22 +2150,18 @@ pub(super) fn process_cell_crossings(
         if let Some(loco) = locomotor {
             loco.layer = next_layer;
         }
-        if !reserve_destination_after_transition(
+        reserve_destination_after_transition(
             category,
             entity_id,
             locomotor,
-            drive_track_state,
             position,
             sub_cell,
-            target,
             next_layer,
             nx,
             ny,
             occupancy,
             snap.sub_cell_priority_mission && snap.nav_com_cell == Some((nx, ny)),
-        ) {
-            break;
-        }
+        );
         // After reservation, infantry sub_cell may have changed.
         if category == EntityCategory::Infantry {
             occupancy.update_sub_cell(nx, ny, entity_id, *sub_cell);
