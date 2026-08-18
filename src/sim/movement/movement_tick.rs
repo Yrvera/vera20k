@@ -2390,7 +2390,14 @@ fn tick_movement_with_grids_scoped(
                         let head_cell = target.path[target.next_index];
                         let ndx = head_cell.0 as i32 - cur_cell.0 as i32;
                         let ndy = head_cell.1 as i32 - cur_cell.1 as i32;
-                        if ndx != 0 || ndy != 0 {
+                        // gamemd's queue head is octant-adjacent by
+                        // construction (the path queue stores direction
+                        // octants), so a chain is only planned against an
+                        // adjacent node. A two-cell head occurs in VERA only
+                        // while a curve kept across a mid-flight re-order still
+                        // has its own two-node head queued; chaining against it
+                        // would anchor the follow-on curve on the wrong cell.
+                        if (ndx != 0 || ndy != 0) && ndx.abs() <= 1 && ndy.abs() <= 1 {
                             let next_face = super::facing_from_delta(ndx, ndy);
                             // Use the active track's post-turn facing as the
                             // chain "from-dir." By the time the chain attempt
