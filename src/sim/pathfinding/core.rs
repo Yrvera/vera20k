@@ -450,7 +450,10 @@ const CAME_FROM_BRIDGE: usize = 1 << 20;
 /// deliberately differ: the producer marks ramp and bridgehead cells walkable
 /// *without* marking them structural. `check_bridge_traversal` in the same
 /// expansion reads `has_structural_bridge()` for that same bit, so the two
-/// halves of one step disagree about what `0x100` means. Trigger: any ramp or
+/// halves of one step disagree about what `0x100` means — and
+/// [`compute_neighbor_height`] is a third reader with the same mismatch, at all
+/// three of its cases (native gates them on `Cell+0x140 & 0x100` at
+/// `0x0042A4B6` and `0x0042A4C2`). Trigger: any ramp or
 /// bridgehead cell. Player effect: the closed-list selection and the carried
 /// height take the deck branch where gamemd takes ground, so a bridge approach
 /// can be planned on the wrong plane. Frequency: every bridge approach on every

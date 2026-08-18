@@ -1474,6 +1474,49 @@ fn test_compute_neighbor_height_ramp_up() {
     // Case 3: parent not bridge, neighbor is bridge,
     // diff = 4 - 0 = 4, in [2,4] -> ramp up to bridge deck
     assert_eq!(compute_neighbor_height(4, &parent, &neighbor), 4);
+
+    // `AStar_create_node` @ 0x0042A460 accepts a drop of 2 or 3 as well —
+    // `abs((neighbor.Level - parent_height) + 3) <= 1` — and reads no
+    // bridgehead flag. Both cases used to carry the ground level instead.
+    assert_eq!(compute_neighbor_height(2, &parent, &neighbor), 4, "drop of 2");
+    assert_eq!(compute_neighbor_height(3, &parent, &neighbor), 4, "drop of 3");
+
+    let unflagged = PathCell {
+        transition: false,
+        ..neighbor
+    };
+    assert_eq!(
+        compute_neighbor_height(4, &parent, &unflagged),
+        4,
+        "a deck cell with no bridgehead flag still promotes",
+    );
+
+    // Drops outside 2..=4 stay on the ground plane.
+    assert_eq!(compute_neighbor_height(1, &parent, &neighbor), 0, "drop of 1");
+    assert_eq!(compute_neighbor_height(5, &parent, &neighbor), 0, "drop of 5");
+}
+
+#[test]
+fn bridge_traversal_allows_a_null_parent() {
+    // 0x004D9CC5 `TEST ESI,ESI; JZ 0x004D9E5E` reaches `XOR EAX,EAX`, so an
+    // unresolvable predecessor — the outer map ring — is allowed, not refused.
+    let candidate = bridge_test_cell(0, false, false, 0);
+    let grid = PathGrid::from_cells(vec![candidate], 1, 1);
+
+    let result = check_bridge_traversal(
+        &grid,
+        BridgeTraversalInput {
+            candidate: grid.cell(0, 0).unwrap(),
+            candidate_coord: (0, 0),
+            // West from column 0: the predecessor is off-map.
+            direction: 2,
+            path_height: 0,
+            parent: None,
+        },
+    );
+
+    assert!(result.allowed);
+    assert!(!result.force_bridge_list);
 }
 
 #[test]
