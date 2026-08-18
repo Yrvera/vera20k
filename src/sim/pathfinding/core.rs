@@ -405,8 +405,17 @@ const DIR_TIEBREAK: [i32; 8] = [
     8, // NW  (original ≈0.008)
 ];
 
-/// Direction-8 tube edge tie-breaker. The recovered normal-direction table has
-/// only 8 entries; keep tube jumps after normal edges when costs tie.
+/// **VERA-internal, gamemd has no equivalent.** The native direction-8 arm at
+/// `0x00429FA3` charges the Chebyshev cell distance from the tube entrance to
+/// its **exit** and then skips the `FMUL`/`FADD` entirely — a tube edge takes
+/// **no tiebreak at all**. VERA charges `STEP_COST × path_len()` plus this
+/// constant, which keeps tube jumps ordered after normal edges on a tie.
+///
+/// Trigger: any expansion across a tube edge. Player effect: the tube's cost
+/// differs from retail's whenever the tunnel is not straight (path length vs
+/// endpoint distance), which shifts whether the unit takes the tunnel at all.
+/// Frequency: tunnel maps only, and there on every cross-map order.
+/// Downstream risk: low — it is one arm of the neighbour loop.
 const TUBE_DIR_TIEBREAK: i32 = 9;
 
 /// 8-directional neighbor offsets: (dx, dy, is_diagonal).
@@ -423,7 +432,8 @@ const NEIGHBORS: [(i32, i32, bool); 8] = [
 ];
 
 /// Threshold for ground vs bridge closed-list selection.
-/// Binary: abs(path_height - cell.height_level) < 2 at 0x00429e7d.
+/// Binary: `abs(path_height - cell.height_level) < 2`, the `CMP EAX,0x1` at
+/// `0x00429E75` inside the layer-flag block that starts at `0x00429E54`.
 const BRIDGE_HEIGHT_THRESHOLD: u8 = 2;
 
 /// Encode source cell index + bridge flag into came_from value.
@@ -1516,7 +1526,9 @@ pub fn astar_search(
 }
 
 fn apply_search_cost_class_multiplier(step_cost: i32, cost_class: u8) -> i32 {
-    // Original: Pathfinding::NeighborStepCost indexes the YR table at 0x81870c.
+    // Original: `AStar_compute_edge_cost` @ `0x00429830` indexes the class base
+    // table at `0x0081870C` (read site `0x00429848`, its only reader). There is
+    // no `NeighborStepCost` symbol in this program.
     let multiplier = match cost_class {
         0 | 2 | 3 => 1,
         1 => 1000,
@@ -2392,6 +2404,16 @@ struct AStarNode {
 }
 
 impl Ord for AStarNode {
+    /// **VERA-internal tie-break, gamemd equivalent UNCHECKED.** Native
+    /// resolves an exact f-tie by its heap's insertion order, which a
+    /// `BinaryHeap` cannot reproduce; this orders by g descending, then y,
+    /// then x so the search is reproducible for lockstep and replay.
+    ///
+    /// Trigger: two open nodes with identical f. Player effect: a different
+    /// expansion order, and so possibly a different equal-cost route.
+    /// Frequency: uncommon once the 0.001-0.008 direction tiebreaks apply,
+    /// since they separate most otherwise-equal edges. Downstream risk: none
+    /// within VERA — it is what makes the search deterministic.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Primary: f_cost ascending (lower is better).
         // Tiebreak: higher g_cost preferred (closer to goal, more "explored").

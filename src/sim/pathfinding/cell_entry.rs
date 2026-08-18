@@ -278,7 +278,8 @@ pub enum CanEnterCellResult {
 ///
 /// This is deliberately not a terrain-speed percentage. `TerrainCostGrid` remains
 /// responsible for SpeedType movement rates; this value is the small native
-/// classification consumed by `NeighborStepCost` during A* expansion.
+/// classification `AStar_compute_edge_cost` @ `0x00429830` consumes during A*
+/// expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchCellCostDecision {
     /// The raw value returned by the per-Foot predicate.
@@ -287,8 +288,8 @@ pub struct SearchCellCostDecision {
     pub effective_cost_class: Option<u8>,
     /// Whether this neighbor may be expanded.
     pub expands: bool,
-    /// Whether the normal NeighborStepCost path is reachable.
-    pub should_call_neighbor_step_cost: bool,
+    /// Whether the normal edge-cost path is reachable.
+    pub should_call_edge_cost: bool,
 }
 
 /// Apply the search-only cost-class gate used after YR's `FootClass` +0x1AC call.
@@ -316,7 +317,7 @@ pub fn search_cell_cost_decision(
         raw_cost_class,
         effective_cost_class: expands.then_some(effective_cost_class),
         expands,
-        should_call_neighbor_step_cost: expands,
+        should_call_edge_cost: expands,
     }
 }
 
@@ -1895,7 +1896,7 @@ mod tests {
                 raw_cost_class: 7,
                 effective_cost_class: None,
                 expands: false,
-                should_call_neighbor_step_cost: false,
+                should_call_edge_cost: false,
             }
         );
     }
@@ -1905,7 +1906,7 @@ mod tests {
         let decision = search_cell_cost_decision(4, false);
         assert_eq!(decision.effective_cost_class, Some(4));
         assert!(decision.expands);
-        assert!(decision.should_call_neighbor_step_cost);
+        assert!(decision.should_call_edge_cost);
     }
 
     #[test]
@@ -1913,7 +1914,7 @@ mod tests {
         let decision = search_cell_cost_decision(6, true);
         assert_eq!(decision.effective_cost_class, Some(0));
         assert!(decision.expands);
-        assert!(decision.should_call_neighbor_step_cost);
+        assert!(decision.should_call_edge_cost);
     }
 
     #[test]
@@ -1921,6 +1922,6 @@ mod tests {
         let decision = search_cell_cost_decision(2, false);
         assert_eq!(decision.effective_cost_class, Some(2));
         assert!(decision.expands);
-        assert!(decision.should_call_neighbor_step_cost);
+        assert!(decision.should_call_edge_cost);
     }
 }

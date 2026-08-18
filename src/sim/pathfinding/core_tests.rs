@@ -1615,6 +1615,70 @@ fn make_resolved_cell(rx: u16, ry: u16) -> ResolvedTerrainCell {
 }
 
 #[test]
+fn a_height_change_costs_the_same_as_a_flat_step() {
+    // `AStar_compute_edge_cost` @ 0x00429830 has no height, level, slope or ramp
+    // term, and `AStar_main_loop` @ 0x00429A90's seven reads of the cell level
+    // byte +0x11B all feed the bridge/layer selection. A ramp step must
+    // therefore cost exactly one step.
+    //
+    // Row y=1 rises to level 1 in its middle three cells; row y=0 stays flat.
+    // Straight along y=1 is four steps crossing four height changes (up, level,
+    // level, down); the y=0 detour is also four steps but entirely flat. Under a
+    // ×4 height multiplier the straight run cost 13 steps against the detour's
+    // 4, so the search took the detour.
+    let build = |raised: bool| {
+        let mut cells = Vec::with_capacity(10);
+        for ry in 0..2u16 {
+            for rx in 0..5u16 {
+                let mut cell = make_resolved_cell(rx, ry);
+                if raised && ry == 1 {
+                    if (1..=3).contains(&rx) {
+                        cell.level = 1;
+                    } else {
+                        // The ±1 step is legal only when the *lower* cell is a
+                        // ramp, so the two cells flanking the rise carry one.
+                        cell.slope_type = 1;
+                    }
+                }
+                cells.push(cell);
+            }
+        }
+        ResolvedTerrainGrid::from_cells(5, 2, cells)
+    };
+
+    let route = |terrain: &ResolvedTerrainGrid| {
+        let grid = PathGrid::from_resolved_terrain(terrain);
+        find_path_with_costs(
+            &grid,
+            (0, 1),
+            (4, 1),
+            None,
+            None,
+            None,
+            Some(terrain),
+            None,
+            0,
+            false,
+            false,
+        )
+    };
+
+    let flat = build(false);
+    let raised = build(true);
+    assert_eq!(
+        raised.cell(2, 1).expect("raised cell").level,
+        1,
+        "precondition: the strip really is raised",
+    );
+    let flat_path = route(&flat).expect("flat route exists");
+    assert_eq!(
+        route(&raised),
+        Some(flat_path),
+        "a height change must not change the route",
+    );
+}
+
+#[test]
 fn path_grid_preserves_low_bridge_tube_metadata() {
     let mut cell = make_resolved_cell(0, 0);
     cell.yr_cell_land_type = YR_CELL_LAND_TUNNEL;
