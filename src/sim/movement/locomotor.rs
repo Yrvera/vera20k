@@ -57,9 +57,12 @@ pub enum MovementLayer {
 /// ILocomotion-frame `+0x31` and delegates to `ProcessMovement` @ `0x0075AEC0`,
 /// whose 1505 instructions contain no object-relative `+0x50` and no state
 /// switch; `DriveLocomotionClass::Process` @ `0x004B0500` branches on `+0x54`
-/// and `+0x5F` instead. The `+0x50` in that family is Drive's **piggyback
-/// slot** (`Begin_Piggyback` @ `0x004AF8E0`). The only numbered 0..=6 locomotor
-/// state machine in the binary is Jumpjet's, at object `+0x4C`, switched in
+/// and `+0x5F` instead. The `+0x50` that does exist in that family is Drive's
+/// **piggyback slot**, in the *IPiggyback* frame at LocomotorBase+0x18
+/// (`Begin_Piggyback` @ `0x004AF8E0`; `Save` @ `0x004AF800` reaches the same
+/// slot as LocomotorBase `+0x68`) — a different frame from the ILocomotion one
+/// these phases would live in. The only numbered 0..=6 locomotor state machine
+/// in the binary is Jumpjet's, at *ILocomotion*-frame `+0x4C`, switched in
 /// `JumpjetLocomotionClass::Process` @ `0x0054AEC0`.
 ///
 /// The variants below describe Drive behaviours — cruise speed, cell entry,
@@ -527,8 +530,10 @@ impl LocomotorState {
     /// dominates: a moving unit never unwinds.
     ///
     /// **Recorded gap, not closed — VERA has no single locomotor dispatch
-    /// point.** `FootClass::AI` @ `0x004DA530` makes exactly *one* virtual call
-    /// per object per frame, `ILocomotion::Process` (Drive ILocomotion vtable
+    /// point.** `FootClass::AI` @ `0x004DA530` makes exactly *one* `Process`
+    /// dispatch per object per frame (it also calls `Is_Moving_Now` `+0x80`
+    /// four times and `QueryInterface` around it), `ILocomotion::Process`
+    /// (Drive ILocomotion vtable
     /// `0x007E7EB0`, slot `+0x40` = `DriveLocomotionClass::Process` @
     /// `0x004B0500`), and the installed object alone decides which body runs —
     /// there is no kind switch anywhere. VERA instead runs about ten

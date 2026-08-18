@@ -194,11 +194,15 @@ pub fn set_destination_for_teleporter_entity(
             loco.effective_kind() == LocomotorKind::Teleport
                 && loco.active_kind() != LocomotorKind::Teleport
         });
-        // gamemd's Set_Destination unwinds a piggyback through the same gated
-        // protocol as FootClass::AI — `Is_Ok_To_End` first, and the transfer
-        // only when it returns true. There is no ungated END anywhere in the
-        // binary, so a Chrono Miner still driving keeps Drive installed and the
-        // per-tick restore picks it up on the frame the drive actually stops.
+        // `TechnoClass::Set_Destination` @ `0x00741970` unwinds through the
+        // same gated protocol `FootClass::AI` uses — `Is_Ok_To_End` (`+0x14`)
+        // first, transfer only when it returns true — at `0x00742587` and
+        // `0x00742681`. Its third END, `0x00742A7C`, and the war-factory-exit
+        // fragment at `0x0044E014` are gated on `Is_Piggybacking` (`+0x1C`)
+        // alone, so "no ungated END" would be too strong; every native END is
+        // nevertheless part of a *swap*. Here the gated form is the right one:
+        // a Chrono Miner still driving keeps Drive installed and the per-tick
+        // restore picks it up on the frame the drive actually stops.
         let gate = super::locomotor_end_gate_context(entity);
         let may_end = entity.locomotor.as_ref().is_some_and(|loco| {
             loco.can_restore_primary_from_piggyback(

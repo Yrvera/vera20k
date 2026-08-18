@@ -380,18 +380,27 @@ pub fn is_ok_to_end(state: &LocomotorState, context: EndGateContext) -> bool {
         // not an owner one: `TeleportLocomotionClass::Is_Ok_To_End` @
         // `0x00719F30` reads `*(char*)(this+0x1D)` where `this` is the
         // IPiggyback sub-object at LocomotorBase+0x18. Only `+0x27C` is an
-        // owner field. Neither has a Rust model yet, nor does the first clause
-        // `Is_Moving() == 0` or the shared `owner+0x6AD`
-        // (`FootClass::bIsDeploying`) — VERA-internal, gamemd equivalent
-        // UNCHECKED. This is the clause that hands a chrono-warped unit back to
+        // owner field, and neither `+0x35` nor `+0x27C` has a Rust model —
+        // VERA-internal, gamemd equivalent UNCHECKED. The other two clauses do:
+        // `Is_Moving() == 0` is approximated by `context.owner_moving` and
+        // `owner+0x6AD` (`FootClass::bIsDeploying`) by `context.owner_deploying`. This is the clause that hands a chrono-warped unit back to
         // its own locomotor when the warp finishes.
         LocomotorKind::Teleport => !context.owner_teleporting && !context.owner_deploying,
-        // None of these three has an `IPiggyback` vtable at all — the six
-        // providers are Drive `0x007E7E8C`, Walk `0x007F69D4`, Teleport
-        // `0x007F4FDC`, Ship `0x007F2D68`, Jumpjet `0x007ECD44` and DropPod
-        // `0x007E8254` — so gamemd can never reach an END gate for them. (The
+        // Tunnel (`0x00728A00`) and Rocket (`0x00661EC0`) have no `IPiggyback`
+        // vtable at all, so gamemd can never reach an END gate for them. (The
         // earlier reason given here, that no stock `Locomotor=` key selects
-        // them, is wrong for Rocket: three stock rows do select it.)
+        // them, is wrong for Rocket: `[V3ROCKET]`, `[DMISL]` and `[CMISL]` all
+        // do.)
+        //
+        // **DropPod is different and this arm is VERA-internal for it.**
+        // `DropPodLocomotionClass::Constructor` @ `0x004B5AB0` installs the
+        // IPiggyback vtable at `0x007E8254`, `Begin_Piggyback` @ `0x004B63B0`
+        // is a full body, and `Is_Ok_To_End` @ `0x004B6440` is exactly this
+        // module's common prefix — `!Is_Moving() && slot != 0` — so `false` is
+        // the wrong answer for it. Trigger: a DropPod locomotor with a live
+        // piggyback. Player effect: none — zero stock users of the class.
+        // Frequency: zero in ordinary skirmish. Downstream risk: the arm is one
+        // line from correct once anything installs one.
         LocomotorKind::Tunnel | LocomotorKind::Rocket | LocomotorKind::DropPod => false,
     }
 }

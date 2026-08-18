@@ -803,12 +803,39 @@ impl Simulation {
                     e.c4_plant = None;
                 }
                 // Cancel any special locomotor states in progress.
-                // The END gate, read before the mutable borrow. All four native
-                // END callsites — `FootClass::AI` @ `0x004DAE78` and the three
-                // in `UnitClass::Set_Destination` @ `0x0074256C`, `0x0074262A`
-                // and `0x00742A1E` — run behind `IPiggyback::Is_Ok_To_End`.
-                // There is no ungated END anywhere in the binary, so Stop must
-                // not unwind a Chrono Miner that is still driving.
+                // The END gate, read before the mutable borrow. gamemd has five
+                // END callsites. Three run behind `IPiggyback::Is_Ok_To_End`
+                // (`+0x14`): `FootClass::AI` @ `0x004DAEC3` and
+                // `TechnoClass::Set_Destination` @ `0x00742587` and
+                // `0x00742681`. Two run behind `Is_Piggybacking` (`+0x1C`,
+                // `0x004B4CD0` — a bare `slot != 0` test) alone: `0x00742A7C`
+                // and the war-factory-exit fragment at `0x0044E014`. So "no
+                // ungated END" is not true; what IS true is that **every**
+                // native END is immediately followed by `CoCreateInstance` +
+                // `Link_To_Object` + `Begin_Piggyback` — always a *swap*, never
+                // a bare unwind.
+                //
+                // **VERA-internal, gamemd has no counterpart for this site.**
+                // Stop performs a bare unwind. Gating it on `Is_Ok_To_End`
+                // narrows it to the conservative subset rather than inventing a
+                // swap, and stops a Chrono Miner that is still driving from
+                // losing its Drive a tick early. Trigger: Stop on a unit with a
+                // live piggyback. Player effect: retail's Stop leaves the
+                // installed locomotor alone. Frequency: Chrono Miners are the
+                // only stock piggybacking unit, so a handful of times a match
+                // for an Allied player who micros them. Downstream risk: the
+                // gate is read after `clear_navigation_for_entity` has already
+                // run `drive_stop_moving`, so `owner_moving` degrades to
+                // `head_to != position` where native evaluates it with the
+                // destination still live.
+                //
+                // Pinned only at the predicate level, by
+                // `drive_piggyback_restores_primary_teleport_only_after_not_moving`
+                // in `locomotor_tests`. No fixture drives a Stop command at a
+                // Teleport-primary mover with Drive piggybacked and `head_to`
+                // ahead of the position, so nothing pins that this site
+                // consults the gate at all — every existing `Command::Stop`
+                // fixture uses a mover for which `is_overridden()` is false.
                 let may_end = self.substrate.entities.get(*entity_id).is_some_and(|e| {
                     let gate = crate::sim::movement::locomotor_end_gate_context(e);
                     e.locomotor.as_ref().is_some_and(|loco| {
