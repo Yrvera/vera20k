@@ -32,7 +32,9 @@ pub struct SoundEntry {
     pub sounds: Vec<String>,
     /// Playback volume (0-100, default from [Defaults] or 100).
     pub volume: u8,
-    /// Priority (higher = more important, won't be evicted as easily).
+    /// Eviction priority, `LOWEST(0)`..`CRITICAL(4)`; higher survives longer.
+    ///
+    /// `sound(md).ini` writes this as a symbolic token, never a number.
     pub priority: u8,
     /// Audible range in cells (default 10). Used for spatial audio:
     /// max audible pixel distance = range * 60 (original engine multiplier).
@@ -114,7 +116,9 @@ impl SoundRegistry {
                 .get_i32("Volume")
                 .unwrap_or(default_volume as i32)
                 .clamp(0, 100) as u8;
-            let priority: u8 = section.get_i32("Priority").unwrap_or(1).clamp(0, 255) as u8;
+            let priority: u8 = section
+                .get("Priority")
+                .map_or(SOUND_PRIORITY_DEFAULT, parse_sound_priority);
             let range: u16 = section
                 .get_i32("Range")
                 .unwrap_or(default_range as i32)
@@ -272,6 +276,56 @@ impl EvaRegistry {
     }
 }
 
+/// `AudioEventClass::ParsePriority @ 0x004067D0` walks the `(token, value)`
+/// table at `0x00816018` with a case-insensitive compare and writes the value
+/// beside the first match. The table's NULL terminator carries `2`, so an
+/// unrecognised or absent token resolves to `NORMAL`.
+const SOUND_PRIORITY_TABLE: [(&str, u8); 5] = [
+    ("LOWEST", 0),
+    ("LOW", 1),
+    ("NORMAL", 2),
+    ("HIGH", 3),
+    ("CRITICAL", 4),
+];
+
+/// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors ten
+/// more. Counts below are case-insensitive section counts, matching how the
+/// engine matches keys. `Control=` (594) selects RANDOM, INTERRUPT, PREDELAY,
+/// LOOP, ALL and AMBIENT behaviour and is not parsed, so variant choice is a
+/// plain counter and none of the other modes exist; `Type=` (89) classifies
+/// GLOBAL/LOCAL/SHROUD and is not parsed, which is what leaves the `MinVolume=`
+/// floor unconditional in `audio/sfx.rs`; `Limit=` (77, of which one is the
+/// `[Defaults]` line) caps concurrent instances and is not parsed, so nothing
+/// bounds a repeated sound; `FShift=` (218) and `VShift=` (153) shift pitch;
+/// and `Attack=`/`Decay=` (12/9), `Delay=` (64), `Loop=` (1) and the single
+/// `MinVol=` typo likewise have no fields.
+/// - Trigger: playing any sound whose entry authors one of them, which is most
+///   of the registry.
+/// - Player effect: sounds do not interrupt or loop as authored, ambient beds
+///   cannot persist, repeated events stack without limit, and no envelope or
+///   pitch shift is applied.
+/// - Frequency: continuous.
+/// - Downstream risk: `Limit=` and `Control=INTERRUPT` need the channel
+///   arbitration that today lives inside the device-bound player, so they
+///   cannot be closed without extracting a device-free arbiter first.
+///
+/// The terminator's value in the same table.
+const SOUND_PRIORITY_DEFAULT: u8 = 2;
+
+/// Resolve one `Priority=` token.
+///
+/// Stock `soundmd.ini` authors 183 of these and every one is symbolic — `low`,
+/// `high`, `lowest`, `critical`, `normal`. Reading them through the numeric INI
+/// path silently yields `0` for all of them, which inverts the ordering the key
+/// exists to express.
+fn parse_sound_priority(raw: &str) -> u8 {
+    let token = raw.trim();
+    SOUND_PRIORITY_TABLE
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(token))
+        .map_or(SOUND_PRIORITY_DEFAULT, |&(_, value)| value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,13 +333,32 @@ mod tests {
     #[test]
     fn test_parse_single_sound() {
         let ini: IniFile =
-            IniFile::from_str("[VGCannon1]\nSounds=vgcannon.wav\nVolume=80\nPriority=5\n");
+            IniFile::from_str("[VGCannon1]\nSounds=vgcannon.wav\nVolume=80\nPriority=high\n");
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         assert_eq!(reg.len(), 1);
         let entry: &SoundEntry = reg.get("VGCannon1").expect("should find entry");
         assert_eq!(entry.sounds, vec!["vgcannon.wav"]);
         assert_eq!(entry.volume, 80);
-        assert_eq!(entry.priority, 5);
+        assert_eq!(entry.priority, 3);
+    }
+
+    /// Every token in the native table, in both cases, plus the terminator's
+    /// default for an unrecognised or numeric value.
+    #[test]
+    fn priority_tokens_match_the_native_parse_table() {
+        assert_eq!(parse_sound_priority("LOWEST"), 0);
+        assert_eq!(parse_sound_priority("low"), 1);
+        assert_eq!(parse_sound_priority("Normal"), 2);
+        assert_eq!(parse_sound_priority("HIGH"), 3);
+        assert_eq!(parse_sound_priority(" critical "), 4);
+        // The terminator's own value is the fact the fix turns on, so it is
+        // asserted as the literal 2 rather than against the constant that
+        // carries it — the old broken behaviour resolved everything to 0, and a
+        // constant-relative assertion would pass for that too.
+        assert_eq!(SOUND_PRIORITY_DEFAULT, 2);
+        assert_eq!(parse_sound_priority("5"), 2);
+        assert_eq!(parse_sound_priority(""), 2);
+        assert_eq!(parse_sound_priority("URGENT"), 2);
     }
 
     #[test]
@@ -335,7 +408,10 @@ mod tests {
         let reg: SoundRegistry = SoundRegistry::from_ini(&ini);
         let entry: &SoundEntry = reg.get("MinimalSound").unwrap();
         assert_eq!(entry.volume, 100);
-        assert_eq!(entry.priority, 1);
+        // `VocClass::ReadINI @ 0x00750440` passes the literal "NORMAL" as the
+        // ReadString default, so an absent key lands on the same 2 the
+        // terminator carries.
+        assert_eq!(entry.priority, 2);
     }
 
     #[test]

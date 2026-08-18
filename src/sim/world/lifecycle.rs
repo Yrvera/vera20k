@@ -65,9 +65,24 @@ fn building_base_reservation_rect(rx: u16, ry: u16, foundation: &str, spacing: i
     )
 }
 
+/// The "no valid cell here" sentinel `BulletClass::PointerExpired` compares its
+/// truncated target cell against, at `0x0046856E` and `0x0046857C`. Both
+/// `DAT_0089DDF0`/`DAT_0089DDF2` words read zero in the image, and the only
+/// writer in the program — the four-instruction routine at `0x00466270` — zeroes
+/// them, so the sentinel is the cell (0, 0) rather than a general off-map test.
+pub(crate) const NULL_TARGET_CELL_SENTINEL: (u16, u16) = (0, 0);
+
 /// Cell selected after the represented ObjectClass virtual `GetCoords` result
 /// is truncated from world leptons. BuildingClass shifts its stored NW anchor
 /// to the geometric foundation center before that truncation.
+///
+/// The `None` arm is unreachable at retail map sizes rather than by
+/// construction. `position.rx`/`ry` are `u16` and the in-cell offsets stay in
+/// `0..256`, but the Structure arm adds `(width - 1) * 128` leptons before
+/// truncating, so a multi-cell structure at the very top of the `u16` cell range
+/// would overflow and return `None`. No retail map approaches that bound.
+/// Native's own guard against a bad coordinate is the (0, 0) sentinel, checked
+/// at the callback instead, so this arm is not the sentinel's analogue.
 fn object_get_coords_cell(entity: &crate::sim::game_entity::GameEntity) -> Option<(u16, u16)> {
     let mut world_x = i32::from(entity.position.rx)
         .wrapping_mul(crate::sim::cell_kernel::LEPTONS_PER_CELL)
@@ -2091,7 +2106,12 @@ impl Simulation {
     /// gamemd-derived: active YR `DispatchPointerExpiredCleanup @ 0x007258D0`
     /// is called directly by `ObjectClass__UnInit @ 0x005F65F0` and again by
     /// `ObjectClass::Destroy @ 0x005F5280` inside the virtual Conceal path.
-    fn notify_pointer_expired(&mut self, expired_id: u64, context: UninitContext<'_>) {
+    /// The caller's terrain context stays unread: the projectile replacement
+    /// below is decided from the expiring object's own coordinate alone, and the
+    /// `Get_CellClass` note there says why no grid lookup gates it. The other
+    /// listener arms still read the object's liveness, health and mission from
+    /// the same destructure.
+    fn notify_pointer_expired(&mut self, expired_id: u64, _context: UninitContext<'_>) {
         let Some((
             expired_cell,
             expired_target_cell,
@@ -2121,20 +2141,43 @@ impl Simulation {
 
         // gamemd-derived: `BulletClass::PointerExpired @ 0x004684E0` replaces
         // a matching ordinary target with MapClass's Cell target from the
-        // pre-Conceal location; high-flying and off-map targets become null.
+        // pre-Conceal location. Nothing about being off the map produces null:
+        // only the high-flying predicate, map-editor mode, and the exact (0, 0)
+        // coordinate below do.
+        //
+        // The lookup itself cannot fail into null. `MapClass::Get_CellClass @
+        // 0x005657A0` returns the shared dummy CellClass at `0x00ABDC50` — after
+        // stamping the requested coord into `dummy + 0x24` — for both an
+        // out-of-range index and an in-range slot whose pointer is NULL, i.e.
+        // for the sparse cells outside the map diamond. So an unallocated cell
+        // is still a Cell target here, not a null one.
+        //
+        // Null comes only from the callback's own gates, all writing the `EBX`
+        // that `0x004684FD` zeroes. Two are modelled: the high-flying predicate
+        // and the coordinate sentinel at `0x0046856E`/`0x0046857C`, which
+        // compares the truncated cell against `DAT_0089DDF0`/`DAT_0089DDF2`.
+        // Both sentinel words are zero in the image and the only writer in the
+        // program (`0x00466270`) zeroes them again, so the sentinel is the cell
+        // (0, 0). The third gate, `g_MapEditorMode`, is deliberately omitted:
+        // it is zero for the whole of ordinary gameplay.
+        //
+        // RESIDUAL (GSI-05.11) — the dummy cell is one process-global object
+        // and `Get_CellClass` restamps its coord on every miss anywhere in the
+        // program, so a native Bullet holding it reads whichever coordinate was
+        // requested most recently, not the one stamped for it. `Cell { rx, ry }`
+        // pins a stable coordinate instead. Trigger: two misses in the same
+        // frame while a Bullet holds a dummy target. Player effect: a homing
+        // shot that lost an unallocated-cell target would drift toward an
+        // unrelated cell in native and fly straight here. Frequency: needs a
+        // target to die on an unallocated cell first, which ordinary skirmish
+        // play does not produce. Downstream risk: none while no other system
+        // models the dummy; modelling it would mean sharing one mutable cell
+        // identity across the store, which the deterministic id model rejects.
         let projectile_replacement_target = (!expired_is_high_flying)
             .then_some(())
             .and(expired_target_cell)
-            .and_then(|(rx, ry)| {
-                context
-                    .terrain()
-                    .or(self.resolved_terrain.as_ref())
-                    // A rectangular coordinate is not sufficient: production
-                    // terrain retains the native Size-diamond allocation mask,
-                    // and a missing slot has no CellClass target to retain.
-                    .and_then(|terrain| terrain.cell(rx, ry))
-                    .map(|_| ProjectileTarget::Cell { rx, ry })
-            })
+            .filter(|&cell| cell != NULL_TARGET_CELL_SENTINEL)
+            .map(|(rx, ry)| ProjectileTarget::Cell { rx, ry })
             .unwrap_or(ProjectileTarget::None);
 
         for listener_id in self.removal_listener_order() {

@@ -4151,7 +4151,7 @@ fn gsi_05_04_combat_fatal_garrison_recursion_keeps_cell_target() {
 }
 
 #[test]
-fn gsi_05_04_in_rectangle_native_unallocated_cell_becomes_explicit_null() {
+fn gsi_05_04_unallocated_cell_still_retains_the_never_null_dummy_cell_target() {
     let mut sim = Simulation::new();
     sim.session.map_width = 16;
     sim.session.map_height = 16;
@@ -4187,8 +4187,54 @@ fn gsi_05_04_in_rectangle_native_unallocated_cell_becomes_explicit_null() {
 
     assert_eq!(
         sim.projectiles.get(projectile_id).unwrap().target,
+        ProjectileTarget::Cell { rx: 8, ry: 8 },
+        "MapClass::Get_CellClass @ 0x005657A0 answers an unallocated slot with \
+         the shared dummy CellClass carrying the requested coord, never NULL"
+    );
+    assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
+}
+
+/// The sentinel arm of `BulletClass::PointerExpired`: `0x0046856E`/`0x0046857C`
+/// compare the truncated cell against `DAT_0089DDF0`/`DAT_0089DDF2`, both of
+/// which are zero, and a match writes the zeroed `EBX` into the target slot.
+///
+/// The scenario is production-unreachable on both sides, and deliberately so:
+/// native's diamond guard never allocates index 0, and a production
+/// `ResolvedTerrainGrid` carries the same allocation mask. The rectangular
+/// `from_cells` grid this test builds is what lets a unit stand there at all.
+/// The arm is modelled because it is the native gate, not because play reaches
+/// it.
+#[test]
+fn gsi_05_04_sentinel_origin_cell_target_becomes_explicit_null() {
+    let mut sim = Simulation::new();
+    sim.session.map_width = 16;
+    sim.session.map_height = 16;
+    install_common_raw_terrain(&mut sim, 16, 16, 0, None);
+
+    let target_id = sim.allocate_stable_id();
+    insert_entity(&mut sim, target_id, EntityCategory::Unit);
+    assert!(matches!(
+        sim.try_reveal_entity(target_id, request(0, 0, PlacementEvidence::MarkSucceeded)),
+        RevealOutcome::Revealed { .. }
+    ));
+
+    let projectile_id = sim.allocate_stable_id();
+    sim.admit_projectile(
+        projectile_id,
+        gsi_05_04_guided_projectile(
+            crate::sim::combat::RAD_NO_ATTACKER,
+            ProjectileTarget::Entity(target_id),
+            ProjectileCoord::new(128, 128, 0),
+        ),
+    );
+
+    sim.uninit(target_id);
+
+    assert_eq!(
+        sim.projectiles.get(projectile_id).unwrap().target,
         ProjectileTarget::None,
-        "the rectangular coordinate has no native-allocated CellClass target"
+        "cell (0, 0) is the native sentinel, so the target is cleared rather \
+         than retained as a Cell"
     );
     assert!(sim.projectiles.get(projectile_id).unwrap().in_logic_vector);
 }
@@ -4198,6 +4244,15 @@ fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
     let mut sim = Simulation::new();
     sim.session.map_width = 32;
     sim.session.map_height = 32;
+    // Installed so the case is production-shaped rather than a bare store; the
+    // replacement no longer reads terrain either way.
+    // `ObjectClass::IsHighFlying @ 0x005F6B90` is the only thing keeping this
+    // target from becoming the aircraft's Cell: drop that gate and the three
+    // *target* assertions below flip to `Cell { rx: 13, ry: 15 }`. The two
+    // `source_id` assertions do not move — native's firer clear at
+    // `0x00468503` is gated on the firer matching the expiring pointer
+    // (`0x004684FF`), never on the high-flying predicate.
+    install_common_raw_terrain(&mut sim, 32, 32, 0, None);
 
     let target_id = sim.allocate_stable_id();
     install_fly_aircraft(&mut sim, target_id, SimFixed::from_num(208));
@@ -4255,7 +4310,7 @@ fn gsi_05_04_high_flying_source_and_target_become_explicit_null() {
 }
 
 #[test]
-fn gsi_05_04_off_map_null_cleanup_is_idempotent_across_duplicate_uninit() {
+fn gsi_05_04_cell_target_cleanup_is_idempotent_across_duplicate_uninit() {
     let mut sim = Simulation::new();
     sim.session.map_width = 8;
     sim.session.map_height = 8;
@@ -4278,7 +4333,7 @@ fn gsi_05_04_off_map_null_cleanup_is_idempotent_across_duplicate_uninit() {
 
     sim.uninit(target_id);
     let after_first = sim.projectiles.get(projectile_id).unwrap().clone();
-    assert_eq!(after_first.target, ProjectileTarget::None);
+    assert_eq!(after_first.target, ProjectileTarget::Cell { rx: 9, ry: 9 });
     sim.lifecycle_test_events.clear();
 
     sim.uninit(target_id);
@@ -4294,7 +4349,7 @@ fn gsi_05_04_off_map_null_cleanup_is_idempotent_across_duplicate_uninit() {
                     expired_id,
                     projectile_id: visited_id,
                     source_id: crate::sim::combat::RAD_NO_ATTACKER,
-                    target: ProjectileTarget::None,
+                    target: ProjectileTarget::Cell { rx: 9, ry: 9 },
                     ..
                 } if *expired_id == target_id && *visited_id == projectile_id
             ))

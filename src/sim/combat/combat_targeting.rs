@@ -183,6 +183,34 @@ fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId)
 /// flags + Verses > 0%), and range. Ranks by distance, threat class, stable ID.
 /// Returns the target's stable entity ID.
 ///
+/// RESIDUAL (GSI-08.01) — the ranking is VERA's own, not `Greatest_Threat`'s.
+/// `threat_class` above is a four-bucket ordering invented here (armed, unarmed
+/// mobile, building, unknown) and the key is `(distance², class, stable id)`.
+/// Native scores each candidate with a weighted distance/value/`ThreatPosed`
+/// evaluation and selects the maximum. `calculate_ai_threat_score` in this file
+/// does model that score — from
+/// `TechnoClass::Calculate_Threat_Score @ 0x0070CD10` — but it is wired only to
+/// retaliation, never to acquisition.
+/// - Trigger: any unit or defence picking among two or more legal targets.
+/// - Player effect: the wrong pick. Nearest-first ignores value, so a Grizzly
+///   that should shoot the engineer walking past shoots the closer wall
+///   segment, and a base defence spreads onto whatever is nearest instead of
+///   concentrating on the biggest threat.
+/// - Frequency: continuous. Every engagement with more than one candidate in
+///   range resolves through this key.
+/// - Downstream risk: high, and that is why it is not a drive-by change. The
+///   key decides which target every attacker holds, so switching it moves the
+///   pinned replay hash and every combat test that depends on selection order;
+///   it needs its own slice with a re-baseline. `ThreatPosed=` is also not
+///   parsed anywhere despite 232 stock entries (141 of them `0`, i.e. "never
+///   pick me" — engineers, spies and the like), so the input the native score
+///   weights most heavily does not yet exist in the rules layer. `OmniFire=`
+///   (18 stock) and `DistributedWeaponFire=` are parsed and read by nothing,
+///   and spread-fire types are explicitly refused a target by the passive scan,
+///   so an Aegis Cruiser never acquires at all. `OpportunityFire=` (14) is the
+///   exception in that list — it is read by `passive_acquire_gate` in
+///   `world/techno_ai.rs` and covered by named tests there.
+///
 /// `scan_range_override`: when `Some`, replaces the mission-derived radius with
 /// a hard cutoff. Used by garrisoned buildings whose scan range is derived from
 /// foundation size + OccupyWeaponRange.

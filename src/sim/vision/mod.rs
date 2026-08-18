@@ -717,6 +717,20 @@ impl FogState {
     /// Native `TechnoClass::AddSensorsAt @ 0x004DE7B0`: outer-Y/inner-X strict
     /// circle and signed-word increment. Returned cells are the exact ordered
     /// boundary where native forces resident objects through virtual `+0x420`.
+    /// RESIDUAL (GSI-12.06) — the sensor plane has readers and no writer, so
+    /// `detects_cloak` is permanently false. Neither this nor its paired
+    /// remove walk has a production caller, and `DetectDisguise=` is not parsed
+    /// at all. `Sensors=`/`SensorsSight=` are parsed but reach only the UI ring
+    /// radius, never a deposit.
+    /// - Trigger: any unit or structure with `Sensors=yes` near a cloaked or
+    ///   disguised enemy.
+    /// - Player effect: no detector reveals anything. Paired with the cloak
+    ///   producer being write-dead, neither side of the stealth exchange works.
+    /// - Frequency: continuous once cloaking exists; today it is unobservable
+    ///   because nothing cloaks.
+    /// - Downstream risk: the plane is already hashed, so filling it changes the
+    ///   state hash even before it changes visibility; it must land with the
+    ///   cloak producer or the two will disagree about what is hidden.
     pub fn sensors_add_at(
         &mut self,
         house: InternedId,

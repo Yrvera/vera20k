@@ -433,6 +433,19 @@ const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
 const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
+/// RESIDUAL (GSI-04.14) — this delay and the `unwrap_or(20)` frame-count
+/// fallbacks beside the debris spawns below are VERA constants, not native
+/// values. The surrounding gate arithmetic is closed against the binary — the
+/// outer 95% gate, the two jitter draws, the 50% `MetallicDebris` gate — but
+/// the frame delay a spawned explosion carries, and the count used when an
+/// effect's SHP is unbound, were chosen here.
+/// - Trigger: every bridge span destroyed.
+/// - Player effect: the debris explosions start and run on VERA's cadence, so a
+///   collapse reads at a slightly different rhythm from retail.
+/// - Frequency: bounded by how often bridges are cut — routine on the retail
+///   maps that have them, absent on those that do not.
+/// - Downstream risk: none to the stream. These feed presentation rows only and
+///   consume no draws, so closing them is a lookup rather than a re-baseline.
 const BRIDGE_EFFECT_FRAME_DELAY: u16 = 1;
 // Safety cap on the extent-measurement walk (Phase 1 of the bounded
 // walker). gamemd has no explicit cap — the off-bridge band check
@@ -500,6 +513,21 @@ fn bridge_overlay_at(sim: &Simulation, rx: u16, ry: u16) -> Option<u8> {
         })
 }
 
+/// RESIDUAL (GSI-04.14) — the fallback starter and anchor search is a VERA
+/// heuristic with no cited native address, unlike the primary hut path, whose
+/// 5x5 scan order, seed canonicalisation and repair walk are all pinned to
+/// addresses and tests. It runs when the primary path finds no anchor.
+/// - Trigger: destroying a `BridgeRepairHut=yes` structure whose span does not
+///   resolve through the primary search — an irregular or already-damaged
+///   bridge.
+/// - Player effect: the wrong span may collapse, or none at all, where retail
+///   picks deterministically.
+/// - Frequency: uncommon; the primary path covers the ordinary intact-bridge
+///   case that stock maps present.
+/// - Downstream risk: a different span collapsing changes occupancy, zone
+///   connectivity and which units drop, so correcting it moves more than the
+///   visual — it wants the native fallback identified first, and no address for
+///   it has been found.
 fn build_hut_fallback_plan(sim: &Simulation, hut_center: (u16, u16)) -> HutFallbackPlan {
     let Some(starter) = find_hut_fallback_starter(sim, hut_center) else {
         return HutFallbackPlan::NoAcceptedStarter;

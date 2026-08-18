@@ -263,13 +263,31 @@ const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 /// with the rest of a defended-expansion group; the Chrono Miner is refused by
 /// its `Primary=none` on its own.
 ///
-/// One half of the type test is missing here: VERA does not parse
-/// `PreventAttackMove=`. Stock YR sets it on the three Engineers and the Spy,
-/// each of which carries a real `Primary=` (`DefuseKit` / `MakeupKit`) and so
-/// passes the weapon half; every other stock user of the key is an aircraft,
-/// which the aircraft rule already refuses. Until that key is parsed, a
-/// selection containing an Engineer or a Spy attack-moves here where retail
-/// leaves the chord inert — VERA-internal residual, gamemd rule itself verified.
+/// RESIDUAL (GSI-07.34) — one half of the type test is missing here. The key
+/// IS parsed (`rules/object_type.rs` into `prevent_attack_move`); what is
+/// absent is a reader — `entity_can_attack_move` below never consults it.
+/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Only
+/// two of the eleven are refused anyway by the aircraft rule above — `ORCA` and
+/// `BEAG`, the sole `[AircraftTypes]` members of the set. The other nine slip
+/// through, each carrying a real `Primary=` and so passing the weapon half: the
+/// three Engineers and the Spy (`DefuseKit`/`MakeupKit`), Boris (`CCOMAND`, an
+/// infantry type), and the four `[VehicleTypes]` helicopters `SHAD`, `HIND`,
+/// `SCHP` and `SCHD` (`BlackHawkCannon`), which `ObjectCategory` derives from
+/// list membership and so classifies as ordinary units, not aircraft.
+/// - Trigger: attack-moving a selection containing any of those nine.
+/// - Player effect: they take the order and move into the fight, where retail
+///   leaves the chord inert for them — an Engineer walks into fire, and a
+///   Nighthawk full of infantry flies at the enemy instead of holding.
+/// - Frequency: every mixed attack-move that sweeps one up — common, since
+///   players band-select whole groups.
+/// - Downstream risk: none beyond this predicate; the field is already on the
+///   type, so the fix is one read. The gamemd rule itself is verified — this is
+///   a missing consumer, not missing evidence.
+///
+/// Note also that the sim side is confirmed complete for this row:
+/// `MissionClass::Mission_Dispatch @ 0x005B3060` has no case for mission 29, so
+/// Attack Move is an assign-side selector with no dispatcher handler, exactly
+/// as modelled.
 fn entity_can_attack_move(
     sim: &crate::sim::world::Simulation,
     rules: Option<&crate::rules::ruleset::RuleSet>,

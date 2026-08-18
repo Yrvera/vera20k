@@ -28,6 +28,28 @@ use crate::assets::aud_file;
 use crate::rules::sound_ini::SoundRegistry;
 
 /// Maximum concurrent SFX sounds — matches original engine's 16 DirectSound buffers.
+/// RESIDUAL (GSI-15.03/15.04) — there is no channel pool, and the parts of
+/// these two rows that matter for parity are entangled with the device.
+/// Eviction is plain FIFO over this queue, so the `Priority=` tier now decoded
+/// in `rules/sound_ini.rs` is ignored and a `CRITICAL` cue loses to an older
+/// `LOWEST` one; the real concurrency ceiling is this cap plus one handle per
+/// animation plus the voice slot, not 16; `Limit=` is unenforced; there is no
+/// loop-handle mechanism, so the `Control=` loop and ambient variants cannot
+/// persist; interruption stops the old player outright with no fade, and the
+/// only fade is a fixed 3 ms ramp baked into the buffer before playback and
+/// skipped entirely for animation sounds; and finished handles are reaped only
+/// inside `play_decoded`, so an idle frame never cleans up.
+/// - Trigger: any moment more than a handful of sounds compete, and every
+///   ambient or looping cue.
+/// - Player effect: important cues get dropped for unimportant older ones,
+///   ambient beds never sustain, and interruptions click instead of crossing.
+/// - Frequency: continuous in any busy engagement.
+/// - Downstream risk: **not reachable from `cargo test -p vera20k --lib`.**
+///   `SfxPlayer::new` returns `None` without an audio device, so every path
+///   below it is unverifiable here and none of it may be claimed verified.
+///   Making it testable means extracting a device-free arbiter — which slot
+///   wins given priority, limit and age — from the player, and that extraction
+///   is the natural first slice of these two rows.
 const MAX_CONCURRENT_SFX: usize = 16;
 
 /// Range multiplier — converts VocClass Range value (cells) to pixels.
@@ -52,6 +74,25 @@ const MIN_VOLUME_CUTOFF: f32 = 0.05;
 ///
 /// `range_cells` — audible range from sound.ini Range= key (default 10).
 /// `min_volume_pct` — MinVolume= floor (0-100), volume never drops below this.
+/// RESIDUAL (GSI-15.02) — three approximations, all of them stated rather than
+/// derived. There is no stereo pan at all: every sound is upmixed symmetrically
+/// and set with one scalar gain, so the engine's pan axis is missing entirely.
+/// The listener is the viewport rectangle rather than a point, and the distance
+/// is `max(dx, dy)` after halving the viewport and doubling `dy` — an L-infinity
+/// metric, so anything on screen is at full volume. And the `MinVolume=` floor
+/// is applied unconditionally, ignoring the `Type=` classification that decides
+/// which sounds get a floor; with `[Defaults] MinVolume=50` that puts a 50%
+/// floor under every registry-resolved sound, while the fallback call sites pass
+/// `0`, so a registry hit and a registry miss attenuate differently.
+/// - Trigger: every positional sound.
+/// - Player effect: no stereo image, no falloff across the visible screen, and
+///   distant sounds that should fade out hold at half volume — the cutoff below
+///   is unreachable once the floor applies.
+/// - Frequency: continuous.
+/// - Downstream risk: `Type=` is not parsed either (89 stock entries), so
+///   fixing the floor needs the registry work in `rules/sound_ini.rs` first;
+///   pan needs a real stereo path through the mixer, which `--lib` cannot
+///   reach and which therefore cannot be closed by a unit test.
 pub fn calc_spatial_volume(
     sound_screen_x: f32,
     sound_screen_y: f32,

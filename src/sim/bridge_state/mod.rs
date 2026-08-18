@@ -4,10 +4,13 @@
 //! destroyable runtime state used by combat, layered pathing, and bridge-deck
 //! fallout handling.
 //!
-//! TODO(RE): This runtime currently models elevated bridge-deck presence/destruction only.
-//! The recovered low-bridge overlay damage progression now lives in
-//! `sim::bridge_specs`, but wiring it here still needs mutable overlay state,
-//! connected-section selection, and `AtomDamage`/BridgeStrength gate inputs.
+//! The low-bridge overlay progression this note used to say was unwired has
+//! since landed: `world::bridge_orchestrator` dispatches both the
+//! `LowStateMachine` and `LowDirect` paths, writes overlay bytes through the
+//! mutable state below, and applies the per-path BridgeStrength RNG gate. The
+//! remaining recorded gaps for this system live on their own owners in
+//! `world::bridge_orchestrator` — the VERA-chosen effect frame delay and
+//! frame-count fallbacks, and the hut fallback starter/anchor heuristic.
 
 pub mod walker;
 

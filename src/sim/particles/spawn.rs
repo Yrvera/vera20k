@@ -27,6 +27,45 @@ use glam::IVec3;
 impl Simulation {
     /// Spawn a new particle system. Returns the new system's stable id, or
     /// `None` if the type is `Spark` or `Railgun` (Tier 3 — not implemented).
+    ///
+    /// RESIDUAL (GSI-05.13) — Spark systems are absent on both ends, and the
+    /// contract for both is verified. The system AI is
+    /// `ParticleSystemClass::AI_Spark @ 0x0062E840`: guard `+0xF0 > 0`; burst
+    /// gate `+0xF0 == 1` or `RandomRanged(0, 0x7ffffffe) * 2^-31 <=` the
+    /// *double* at `pstype+0x2F8`; burst size `|Next()| % (cap/2) + cap/2`;
+    /// three shared draws taken unconditionally where the first divides by
+    /// `YVelocity` and lands on Y and the second divides by `XVelocity` and
+    /// lands on X; per particle one lifetime draw and a conditional color draw
+    /// inside `ParticleClass::Constructor @ 0x0062B5E0`, then three velocity
+    /// draws with the Z one absolute; magnitude `Sqrt_Approx((x*x + y*y) +
+    /// z*z)` read off the x87 stack at `0x0062EA85`, offset added, renormalise,
+    /// rescale by the original magnitude; countdown then deletion; and a facing
+    /// walk that steps -3 clamping at `0x11` below `0x12`, +3 clamping at
+    /// `0x29` above `0x28`, or holds.
+    ///
+    /// Its producer is a different function again: `TechnoClass::AI_Update @
+    /// 0x006F9E50` walks the type's `DamageParticleSystems=` list *forward* at
+    /// `0x006FAD5D` admitting only `BehavesLike == Spark` into its own slot
+    /// `+0x308`, gated by a health-band chance from `RulesClass+0x558` below
+    /// ConditionRed or `+0x560` above, compared strictly less-than at
+    /// `0x006FAE24`. That is why the Smoke-only filter in
+    /// `maintain_damage_smoke_after_receive` below is correct and must stay:
+    /// `TechnoClass::ReceiveDamage @ 0x00701900` really does admit only
+    /// `BehavesLike == Smoke` into `+0x310`.
+    /// - Trigger: any unit damaged past ConditionYellow whose
+    ///   `DamageParticleSystems=` names a Spark system — 126 of the 141 stock
+    ///   entries do, and 26 name nothing else.
+    /// - Player effect: damaged vehicles smoke but never spark.
+    /// - Frequency: continuous — every unit that survives a hit.
+    /// - Downstream risk: the producer needs a second attached-system slot
+    ///   beside `damage_smoke_system_id` and a per-tick chance draw, so it moves
+    ///   the shared RNG stream on a high-frequency seam and the pinned replay
+    ///   hash with it. `SpawnSparkPercentage` must also be widened: it is a
+    ///   `double` natively and `SimFixed` here, and for `[LGSparkSys]`'s `.2`
+    ///   the 3.05e-6 gap flips the gate often enough to diverge the stream.
+    ///   `spark.rs` and `spark_world.rs` already hold the verified per-particle
+    ///   kernel and its collision inputs, so the missing work is the two
+    ///   loops, not the math.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_particle_system(
         &mut self,

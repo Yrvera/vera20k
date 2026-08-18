@@ -133,6 +133,37 @@ enum ImmediateProjectileReason {
     SpecialTrajectory,
 }
 
+/// RESIDUAL (GSI-08.06/08.07/08.08) — this classifier is also the flight-model
+/// gate, and most of the native flight keys reach it only as reasons to opt
+/// *out* of authoritative flight rather than as models. `Vertical=` (5 stock),
+/// `Inaccurate=` (2), `Proximity=` (18), `SubjectToCliffs=` (30) and
+/// `SubjectToElevation=` (31) each disqualify a shot here;
+/// `ProjectileTrajectory` itself has only `Straight` and `Ballistic`, so
+/// vertical launch, scatter, proximity detection and cliff collision have no
+/// implementation to fall back on. `DetonationAltitude=` (4) is parsed with no
+/// reader, `Acceleration=` (6) is carried but unused by the advance, and
+/// `AirburstWeapon=` (1) has no consumer. The `airburst` bool it sits beside is
+/// carried into `ProjectileGuidance` and hashed, but its only behavioural read
+/// suppresses the cluster walk — it spawns no child, which is the gap.
+///
+/// Two nearby keys are NOT gaps: `Floater=` (2) is read on both ballistic
+/// launch paths to halve gravity and is carried and hashed by the homing
+/// state, and `ShrapnelWeapon=` (5) is fully wired through
+/// `emit_projectile_shrapnel`, scenario-RNG cell selection included.
+/// - Trigger: firing any weapon whose projectile carries one of those keys —
+///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
+/// - Player effect: those shots fall back to the non-authoritative path, so
+///   they resolve without the flight the player expects: no vertical climb, no
+///   scatter, no proximity detonation, and no airburst children.
+/// - Frequency: bounded by the types above rather than continuous, but V3s and
+///   Dreadnoughts are standard Soviet play and the nuke fires in most long
+///   matches.
+/// - Downstream risk: each missing model is its own trajectory implementation
+///   against `BulletClass::AI`; they share the projectile store but not the
+///   math, so they want separate slices. Launch-side effects are recorded
+///   separately: `spawn_manager.rs` already flags its launch-position drift, no
+///   `MuzzleFlash=` art anim is spawned for non-garrison weapons, and `Ammo=`
+///   is decremented only for aircraft.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -1145,6 +1176,22 @@ fn emit_infantry_death_anim(
 ///
 /// `base_damage` is the post-modifier damage at the impact center; it
 /// drives AnimList selection via `damage / 25`, clamped to `len - 1`.
+/// RESIDUAL (GSI-08.11) — a dying unit does not play its own explosion. The
+/// effect chosen here comes from the *warhead*'s `AnimList=` (70 stock entries)
+/// indexed by damage; the TechnoType's own `Explosion=` list is authored on 487
+/// stock entries and has no reader anywhere in the crate. Crew survival is the
+/// other half: `Crewed=` (126 stock) only queues the building arm, so a
+/// destroyed `Crewed=yes` vehicle ejects nobody, and no survivor-type resolution
+/// exists — the survivor path here handles the smudge, not the unit.
+/// - Trigger: every unit and building death.
+/// - Player effect: deaths look wrong twice over. A Grizzly and an Apocalypse
+///   die with the same warhead-derived puff instead of their authored
+///   explosions, and no crew ever runs out of a wreck or a levelled structure.
+/// - Frequency: continuous — this is the most-watched moment in the game.
+/// - Downstream risk: crew ejection spawns entities, so it moves unit counts,
+///   occupancy and the pinned replay hash; the explosion swap is comparatively
+///   contained but still changes anim spawn order and its RNG draws. The debris
+///   half of this row is recorded separately on `rules/warhead_type.rs`.
 pub(crate) fn emit_warhead_detonation_effects(
     warhead: &WarheadType,
     base_damage: i32,
@@ -6135,6 +6182,19 @@ pub(crate) fn resolve_attacker_fire(
         // Aligned iff destination matches AND no rotation in progress.
         // Both checks needed: destination may match while interpolation
         // is still mid-arc (animated value not yet at destination).
+        // RESIDUAL (GSI-08.04) — this gate exists only for entities that have a
+        // `barrel_facing`. Turretless vehicles, all infantry and all structures
+        // reach the fire step with no facing test at all, so they shoot
+        // instantly in any direction; native gates a turretless firer on its
+        // body facing.
+        // - Trigger: any turretless attacker acquiring a target off its heading.
+        // - Player effect: no turn-to-fire delay — an artillery piece or a rifle
+        //   infantryman fires the frame it acquires instead of after swinging
+        //   round, so first shots land early and units never visibly line up.
+        // - Frequency: continuous; infantry alone make this most engagements.
+        // - Downstream risk: adding the gate delays first shots, which moves
+        //   engagement outcomes and the pinned replay hash, so it wants its own
+        //   slice alongside the body-facing rate work.
         let aligned = barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
         if !aligned {
             if pending_at_fire_frame {
@@ -6287,6 +6347,28 @@ pub(crate) fn resolve_attacker_fire(
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
             TargetKind::Cell(rx, ry) => ProjectileTarget::Cell { rx, ry },
         };
+        // RESIDUAL (GSI-08.04) — the shot leaves the unit's centre, not its
+        // barrel. `PrimaryFireFLH=`/`SecondaryFireFLH=` and their elite variants
+        // are parsed and transformed (`rules/flh.rs`, `util/flh_transform.rs`),
+        // but the only consumer is `app/presentation/fire_effects.rs`, which
+        // places the muzzle flash and the report sound. Native's fire location
+        // is weapon-slot and barrel-facing dependent and is what the projectile
+        // is launched from, what range is measured from, and what line of fire
+        // is traced from.
+        // - Trigger: every shot from a unit whose FLH is not the origin, which
+        //   in stock artmd is most of them.
+        // - Player effect: the muzzle flash and the projectile disagree — the
+        //   flash sits at the barrel and the shot starts at the hull centre, so
+        //   at short range the tracer visibly begins in the wrong place. Range
+        //   is also measured from the centre, so a long-barrelled unit reaches
+        //   marginally less far than it should.
+        // - Frequency: continuous, every shot.
+        // - Downstream risk: high. Moving the origin changes ballistic launch
+        //   vectors and therefore impact frames, so it moves the pinned replay
+        //   hash and the closed ballistic vector tests; it also wants the
+        //   turret/barrel facing split recorded on `movement/turret.rs`, since
+        //   the native fire location reads the barrel facing rather than the
+        //   receiver's.
         let origin = ProjectileCoord::new(
             i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
             i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
@@ -6617,6 +6699,25 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
     dist_sq_leptons <= range_sq
 }
 
+/// `ROF=` is already a native frame count, so the cooldown is the raw value.
+///
+/// RESIDUAL (GSI-08.05) — nothing modifies it. `[General] VeteranROF=` is
+/// present in stock and has no consumer, so a veteran or elite unit reloads at
+/// exactly its rookie cadence; the only thing veterancy changes about firing is
+/// which weapon an elite selects. `RadialFireSegments=` is not parsed at all
+/// (one stock entry), and `BurstDelay=` is not parsed either, so the inter-shot
+/// gap inside a burst is the fixed `BURST_INTER_SHOT_DELAY` constant rather
+/// than an authored one.
+/// - Trigger: any promoted unit firing, and the one stock radial-fire type.
+/// - Player effect: promoted units feel slower than they should — a veteran
+///   Grizzly gains damage but not rate — and the radial type fires as an
+///   ordinary single-target weapon.
+/// - Frequency: the veterancy arm is continuous once promotion exists; today it
+///   is zero, because nothing promotes (see the GSI-08.12 residual). The
+///   `BurstDelay=` arm never fires in stock, which authors the key nowhere.
+/// - Downstream risk: `VeteranROF` becomes live the moment promotion lands, so
+///   the two want sequencing; changing cadence also moves every combat timing
+///   test and the pinned replay hash.
 fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
     rof_frames.clamp(1, u16::MAX as i32) as u16
 }

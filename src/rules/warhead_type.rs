@@ -61,6 +61,21 @@ pub struct WarheadType {
     /// Native binary32 `DelayKillAtMax` widened exactly to f64; default 1.0f.
     pub delay_kill_at_max_f64: f64,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
+    /// RESIDUAL (GSI-08.33) — three warhead effect flags are not parsed at all.
+    /// `Sparky=` (28 stock entries) should set fire on the ground at the impact,
+    /// `Bullets=` (20) selects the small-arms impact family, and `Deform=` (8)
+    /// craters the terrain. None has a field here, so none has a consumer.
+    /// - Trigger: any hit by a warhead carrying one of them — small arms are
+    ///   `Bullets=`, most fire weapons are `Sparky=`.
+    /// - Player effect: no ground fires from flame weapons, no small-arms impact
+    ///   family, and no terrain deformation from heavy ordnance, so impacts read
+    ///   flatter than retail.
+    /// - Frequency: `Bullets=` is continuous — it covers infantry small arms.
+    ///   `Sparky=` follows every flame weapon; `Deform=` is the rarest.
+    /// - Downstream risk: `Sparky=` needs a burning-cell producer, which does
+    ///   not exist either (recorded on `sim/radiation.rs`'s neighbours), and
+    ///   `Deform=` writes terrain height, so it reaches pathfinding and the
+    ///   render height map rather than staying inside combat.
     pub wall: bool,
     /// Whether this warhead can damage terrain objects with Wood armor gate.
     /// TerrainClass::Take_Damage requires this before applying damage.
@@ -148,6 +163,38 @@ pub struct WarheadType {
 
     // --- List fields ---
     /// Debris animation names spawned on detonation (Debris= in rules.ini).
+    ///
+    /// RESIDUAL (GSI-05.14) — dead on both ends, and the live keys sit on a
+    /// different class. No stock warhead section carries `Debris=` or
+    /// `DebrisMaximums=` at all; the debris that stock YR actually throws is
+    /// driven from TechnoType sections — `MaxDebris=` (456 stock sections, 17
+    /// of them spelled `Maxdebris=`; the engine matches keys case-insensitively
+    /// and so do these counts),
+    /// `MinDebris=` (272, all BuildingTypes), `DebrisTypes=` (36, every one of
+    /// them `TIRE`), `DebrisMaximums=` (36) and `DebrisAnims=` (166) — none of
+    /// which is parsed anywhere. These two fields also have no reader: they are
+    /// written by the parser below and never consulted.
+    ///
+    /// The consuming system is absent, not merely unwired. `VoxelAnimClass`
+    /// (constructor `0x007493B0`, AI `0x00749F30`, destructor `0x007499F0`,
+    /// draw `0x0046B0C0`; type class `0x0074AD80`) has no store, no type
+    /// registry and no `BounceClass` physics here — note that
+    /// `sim::components::VoxelAnimation` is an unrelated per-entity voxel frame
+    /// cursor, not this. `[VoxelAnims]` lists ten stock types (`PIECE`, `TIRE`,
+    /// `GASTANK`, `SONICTURRET`, `4TNKTURRET`, `CRYSTAL01/02`, `METEOR01/02`,
+    /// `PEBBLE`) whose bodies carry `Elasticity`, `Min/MaxAngularVelocity`,
+    /// `Min/MaxZVel`, `MaxXYVel`, `Duration`, `Damage`, `DamageRadius`,
+    /// `Warhead`, `ExpireAnim`, `IsMeteor` and `IsTiberium`; none is parsed.
+    /// - Trigger: any vehicle or building death.
+    /// - Player effect: no debris is thrown. Wrecks vanish into their explosion
+    ///   instead of scattering tyres, hull pieces and gas tanks, and buildings
+    ///   drop none of their `MinDebris` chunks.
+    /// - Frequency: continuous — this is every unit death in every match.
+    /// - Downstream risk: the launch side belongs to the death path
+    ///   (`GSI-08.11`) and the falling-object physics to `BounceClass`, which
+    ///   `Bouncer=` SHP anims need too, so the two rows want one shared physics
+    ///   owner rather than two. Bridge collapse already emits SHP debris as
+    ///   `WorldEffect` rows and would migrate onto that owner.
     pub debris: Vec<String>,
     /// Maximum count for each debris type (DebrisMaximums= in rules.ini).
     pub debris_maximums: Vec<i32>,

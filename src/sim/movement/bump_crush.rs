@@ -621,6 +621,20 @@ impl CrushTarget {
 /// predates this function; it is recorded here rather than credited to the
 /// original. Aircraft never appear in the ground occupant list, so excluding
 /// them is outcome-identical.
+/// RESIDUAL (GSI-08.17) — the crush kill skips one consequence. A crushed
+/// unit's `DeathWeapon=` never fires: `death_weapon_aoe` is reached only from
+/// the damage pipeline, and nothing in this file calls it, so a crushed
+/// Terrorist or Demo Truck does not detonate. Kill credit is NOT part of this
+/// gap — the crush-kill loop in `movement/movement_tick.rs` already routes
+/// through `capture_kill_credit`.
+/// - Trigger: driving over any unit with a `DeathWeapon=` — 13 stock types.
+/// - Player effect: running over a Terrorist is free, which is exactly
+///   backwards; retail punishes it.
+/// - Frequency: crushing is routine tank play, and those 13 types include the
+///   two units players most want to crush.
+/// - Downstream risk: firing the death weapon spawns an area-damage event from
+///   inside the movement pass, so it needs the same ordering care as any other
+///   movement-time damage commit.
 pub fn can_crush(capability: CrushCapability, target: CrushTarget) -> bool {
     // Structures and aircraft are never crushed.
     if matches!(

@@ -196,6 +196,19 @@ pub fn tick_fear_decay_and_prone(
     None
 }
 
+/// RESIDUAL (GSI-08.13) — death sequences are not selected. `SequenceKind`
+/// carries `Die1`..`Die5` and the sprite atlas can play them, but nothing in
+/// sim ever picks one: a killed infantryman spawns the warhead's `InfDeath=`
+/// anim (100 stock entries) and nothing else, so burn, electrocute, tumble and
+/// vaporise all collapse into a single generic death. `WetDie1/2`, `Tumble` and
+/// the `AirDeath*` ids are unmapped as well.
+/// - Trigger: every infantry death.
+/// - Player effect: no flame death, no Tesla frazzle, no vaporise — the visual
+///   payoff of picking the right weapon against infantry is missing.
+/// - Frequency: continuous; infantry are the most-killed class in the game.
+/// - Downstream risk: sequence choice reads the warhead's death type, so it
+///   couples this row to the warhead-effect row above it; the animation itself
+///   is presentation, but the selection is sim state and hashed.
 pub fn tick_fear_for_entities(
     entities: &mut crate::sim::entity_store::EntityStore,
     houses: &std::collections::BTreeMap<
