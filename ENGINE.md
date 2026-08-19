@@ -65,6 +65,12 @@ it lands still names its verified decompile source or an explicit UNCHECKED resi
 Order: `docs/research/` → live Ghidra decompilation → repo `ini/` → retail assets. Authority for
 any conflict: **binary → Ghidra → docs**.
 
+**It is common for research-doc details to be wrong.** Corridor-level structure (which function
+owns what, call order) usually holds, but offsets, constants, signs, operand order, and callsite
+identities drift routinely, and a doc's own "verified" label proves nothing. Re-derive any
+load-bearing numeric claim from the live decompile before landing code on it. A session that
+disproves a doc claim while touching that system corrects the doc in the same PR.
+
 Skill instructions write `<main-checkout>` for the primary repository root. `docs/research/`,
 `docs/plans/`, and the research-index *code* are tracked, so every worktree, clone, and fork
 has them. Gitignored corpora — `ini/`, the rest of `docs/` (`scans/`, `gap-scans/`,
