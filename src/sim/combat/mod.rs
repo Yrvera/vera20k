@@ -6155,6 +6155,30 @@ pub(crate) fn resolve_attacker_fire(
         return;
     }
 
+    // `TechnoClass::GetFireError` 0x006FC0B0 refuses the shot with error 5 when
+    // attacker and target disagree on OnBridge, both stand in bridge cells, and
+    // the attacker is not high-flying — a unit on the deck and a unit sheltering
+    // directly beneath it cannot shoot each other. `InRange` 0x006F7220 already
+    // blocks the under-to-over half through
+    // `attacker_under_bridge_targeting_above`; this is the over-to-under half
+    // and the cases where the height test does not fire.
+    //
+    // Evaluated here rather than inside `compute_in_range` because the native
+    // InRange has no such clause. Like the native it only suppresses the shot:
+    // no retarget, no clear, no effect on the pursuit stage.
+    if let (Some(t), Some(attacker_entity)) = (terrain.as_deref(), entities.get(snap.stable_id))
+        && in_range::fire_error_on_bridge_mismatch(attacker_entity, &snap.target, entities, t)
+    {
+        if pending_at_fire_frame {
+            out.pending_infantry_updates.push((snap.stable_id, None));
+            out.animation_switches.push((
+                snap.stable_id,
+                infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+            ));
+        }
+        return;
+    }
+
     // Burst / cooldown state machine.
     if snap.cooldown_ticks > 0 || snap.burst_delay_ticks > 0 {
         if pending_at_fire_frame {
