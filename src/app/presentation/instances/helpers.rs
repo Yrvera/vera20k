@@ -948,6 +948,12 @@ mod tests {
     /// wholly behind it. Whether the two compose to the same picture is
     /// UNCHECKED and cannot be settled without a live frame comparison.
     ///
+    /// Effect: VERA draws one sprite at one depth, so a tall unit at a deck
+    /// edge is either wholly in front of the bridge or wholly behind it,
+    /// where gamemd keeps its lower 16 rows in front while the body is
+    /// occluded. Whether the two compose to the same picture is UNCHECKED
+    /// and cannot be settled without a live frame comparison.
+    ///
     /// Trigger: every frame a `TooBigToFitUnderBridge` unit is drawn at the
     /// edge of a high bridge deck.
     ///
@@ -982,6 +988,11 @@ mod tests {
     ///    7..=16, skipping the 0xFF/0xFFFF no-tile sentinels. Zero means the
     ///    unit is at the OPEN edge of the deck rather than under its middle.
     ///    VERA has no counterpart, so it cannot distinguish edge from middle.
+    ///
+    /// Trigger: every frame any unit is drawn within one cell of a bridge
+    /// cell - VERA's 3x3 scan admits diagonals and ignores both the
+    /// orientation bit and the type flag, so it fires on units gamemd
+    /// never considers.
     ///
     /// Effect: VERA applies its bridge treatment to a wider and differently
     /// shaped set of units than gamemd does — including units that are merely

@@ -2634,6 +2634,11 @@ fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
 /// live observation or from porting the theater tileset reader first.
 /// Guessing them would put a fabricated constant into sim state that feeds
 /// ground height. Recorded rather than approximated.
+///
+/// Frequency: every successful engineer repair of a collapsed bridge. Repairs
+/// are uncommon per match, but the effect persists for the rest of the game
+/// once one happens, and a repaired bridge is something both players then
+/// path over.
 #[test]
 #[ignore = "gamemd restores pavement, iso-tile and the +4 level raise after a repair (0x00570050); VERA only re-dispatches RepairBridge"]
 fn bridge_repair_terrain_restoration_is_unported() {

@@ -816,6 +816,12 @@ mod bridge_constant_tests {
     /// beneath rises four levels leaves the bridge natively while VERA keeps it
     /// on the deck.
     ///
+    /// Frequency: every cell-boundary crossing by a ground unit on or
+    /// beside a bridge, so per-move on any bridged map - the highest
+    /// cadence of any open item in this family. That is exactly why the
+    /// unproved binding below matters rather than being a technicality:
+    /// a wrong port here would fire constantly.
+    ///
     /// **The binding is not proved.** 0x004DDC40 has no CALL xrefs — it is
     /// reached through a vtable slot, and the slot could not be established
     /// this session: the four DATA xrefs sit at a uniform +0xBC offset from
