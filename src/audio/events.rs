@@ -280,27 +280,46 @@ impl GameSoundEvent {
 ///
 /// Drained by the app layer each frame after sim ticking.
 ///
-/// RESIDUAL (GSI-15.05/15.08) — routing is by event variant, not by the INI
-/// classification, and several authored families have no emission site at all.
-/// Nothing emits ambient sound: `WorkingSound=` (9 stock), `AuxSound1=` (8),
-/// `AuxSound2=` (5), `TurretRotateSound=` (2) and the water enter/leave pair
-/// have no producer, and `MoveSound=` is parsed with per-entity countdown state
-/// already present but no event carries it. Weapon routing ignores
-/// `DownReport=` and the eight-facing report selection. On the voice side
-/// `VoiceFeedback=` (133 stock) and `VoiceCapture=` (3) have no consumers,
-/// `VoiceCrashing=` (7) is not parsed, taunts reach an empty match arm in the
-/// input dispatcher, and the voice slot has no acknowledgement repeat guard, so
-/// re-selecting a unit restarts its line immediately.
-/// - Trigger: moving a unit, a building running, a helicopter crashing, or
-///   spamming selection — all ordinary actions.
-/// - Player effect: the soundscape is thin. Units move silently, bases have no
-///   working hum, and unit chatter repeats without the native guard.
+/// RESIDUAL (GSI-15.05/15.08) — pass 2 split this into what is closed, what is
+/// landable and what is genuinely blocked.
+///
+/// **NO-DIFF, retired from the list.** `DownReport=` needs no consumer: all 15
+/// stock occurrences are commented out. The eight-facing report selection is
+/// `Report[facing_u16 % Report.Count]` (`0x006FF349`..`0x006FF393`), and no
+/// stock weapon authors a comma-separated `Report=` — 0 of 223 — so a single
+/// report is observationally identical. Two of the three voice guards native
+/// carries are already here: re-selecting an already-selected object emits
+/// nothing (`ObjectClass::Select @ 0x005F4520` returns false), and the
+/// one-voice-per-batch latch matches `g_SelectionVoice_Enable @ 0x00822CF2`.
+///
+/// **The repeat guard proper is NOT a timer, and it is what is missing.** Each
+/// techno owns a pending-voice index (`+0x4F0`, sentinel -1), a live handle
+/// (`+0x4DC`) and the playing index (`+0x4F4`). `TechnoClass::Queue_Voice @
+/// 0x00708D90` only latches; `TechnoClass::AI_Update @ 0x006F9EBB` drains it —
+/// handle free plays, handle live with the SAME index drops, handle live with a
+/// different index holds and retries next tick. Voices are non-positional
+/// (volume 1.0, pan 0x2000). VERA cannot model this yet because the drain needs
+/// a liveness fact that only the audio layer knows, and `sim/` must not depend
+/// on `audio/`: it wants a read-only per-tick liveness view passed INTO the
+/// tick, or an inbound event queue — never an import.
+/// - Trigger: ordering the same unit twice in quick succession.
+/// - Player effect: the line restarts where retail lets it finish.
+/// - Frequency: continuous — it is how players click.
+///
+/// **Still absent, unchanged.** Nothing emits ambient sound: `WorkingSound=`
+/// (9 stock), `AuxSound1=` (8), `AuxSound2=` (5), `TurretRotateSound=` (2) and
+/// the water enter/leave pair have no producer, and `MoveSound=` is parsed with
+/// per-entity countdown state but no event carries it — and its real trigger is
+/// UNKNOWN, since the site an existing research note names plays
+/// `[AudioVisual] ScoldSound=` instead. `VoiceFeedback=` (133 stock) and
+/// `VoiceCapture=` (3) have no consumers, `VoiceCrashing=` (7) is not parsed,
+/// and taunts reach an empty match arm.
+/// - Player effect: the soundscape is thin — units move silently and bases have
+///   no working hum.
 /// - Frequency: continuous.
-/// - Downstream risk: ambient cues need the looping handles recorded on
-///   `audio/sfx.rs`, so they are blocked behind the same device-free arbiter;
-///   the voice repeat guard is pure state and could land ahead of it.
-///   Selection variance is also split — the app picks with a plain counter
-///   while death pools draw from `SimRng`, so the two are unrelated mechanisms.
+/// - Downstream risk: every ambient family needs the looping handles recorded on
+///   `audio/sfx.rs`, so they sit behind the same device-free arbiter. The voice
+///   guard does not — it needs only the liveness channel above.
 #[derive(Debug, Default)]
 pub struct SoundEventQueue {
     events: Vec<GameSoundEvent>,

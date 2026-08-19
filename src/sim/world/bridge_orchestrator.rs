@@ -433,19 +433,38 @@ const BRIDGE_DEBRIS_OUTER_GATE_EXCLUSIVE: u32 = 2_040_109_464;
 const BRIDGE_METALLIC_GATE_EXCLUSIVE: u32 = 0x3FFF_FFFF;
 const BRIDGE_JITTER_SPAN_LEPTONS: u64 = 50;
 const BRIDGE_JITTER_HALF_LEPTONS: i32 = 25;
-/// RESIDUAL (GSI-04.14) — this delay and the `unwrap_or(20)` frame-count
-/// fallbacks beside the debris spawns below are VERA constants, not native
-/// values. The surrounding gate arithmetic is closed against the binary — the
-/// outer 95% gate, the two jitter draws, the 50% `MetallicDebris` gate — but
-/// the frame delay a spawned explosion carries, and the count used when an
-/// effect's SHP is unbound, were chosen here.
-/// - Trigger: every bridge span destroyed.
-/// - Player effect: the debris explosions start and run on VERA's cadence, so a
-///   collapse reads at a slightly different rhythm from retail.
-/// - Frequency: bounded by how often bridges are cut — routine on the retail
-///   maps that have them, absent on those that do not.
-/// - Downstream risk: none to the stream. These feed presentation rows only and
-///   consume no draws, so closing them is a lookup rather than a re-baseline.
+/// The gameplay frames each spawned bridge effect holds one image frame for.
+///
+/// gamemd-derived: `AnimTypeClass::Constructor @ 0x00427530` seeds this to 1,
+/// and `AnimTypeClass::ReadINI @ 0x00427D00` overwrites it with `900 / Rate`
+/// when the section authors `Rate=`. None of the four stock `BridgeExplosions`
+/// entries (`TWLT026`, `TWLT036`, `TWLT050`, `TWLT070`) authors one, so the
+/// constructor default is what retail uses here — this constant is NO-DIFF for
+/// the stock set, correcting pass 1's claim that it was invented.
+///
+/// The frame-count fallback beside the debris spawns is now `0`, not `20`:
+/// `AnimTypeClass::Constructor` sets `End` to 0 and `AnimClass::Constructor @
+/// 0x00421EA0` reads the SHP header only when `End == -1`, so an unbound SHP
+/// ends the anim immediately. Unreachable with retail assets.
+///
+/// The rest of the collapse is closed against `CellClass::BlowUpBridge @
+/// 0x0047DD70`, re-decompiled this pass: the outer 95% gate, both jitter draws,
+/// the 50% metallic gate, the metallic slot draw inside it, the `RandomRanged(1, 5)`
+/// start delay and the explosion slot draw all match, in order.
+///
+/// RESIDUAL (GSI-04.14) — two items remain, and the first is a SIM drift, not
+/// the presentation-only one pass 1 recorded.
+/// - `MetallicDebris=` entries resolve to `[DBRIS*]` AnimTypes carrying
+///   `RandomRate=220,600`, which `ReadINI` converts to a 1..1 pair; native's
+///   `AnimClass::Constructor` still runs `RandomRanged(1, 1)` for it, consuming
+///   a draw VERA does not. Those same types carry `Bouncer=yes`, `Damage=10/20`,
+///   `DamageRadius=50/80` and `Warhead=HE`, so retail's bridge debris bounces
+///   and hurts what it lands on; VERA's is inert.
+/// - Per-AnimType `Rate=` is still not looked up, so a modded bridge explosion
+///   authoring one would animate at VERA's constant.
+/// - Trigger: every bridge span destroyed. Frequency: routine on maps with
+///   bridges. Downstream risk: the missing draw shifts the stream for every
+///   collapse, so it must land with the damage half rather than alone.
 const BRIDGE_EFFECT_FRAME_DELAY: u16 = 1;
 // Safety cap on the extent-measurement walk (Phase 1 of the bounded
 // walker). gamemd has no explicit cap — the off-bridge band check
@@ -514,9 +533,11 @@ fn bridge_overlay_at(sim: &Simulation, rx: u16, ry: u16) -> Option<u8> {
 }
 
 /// RESIDUAL (GSI-04.14) — the fallback starter and anchor search is a VERA
-/// heuristic with no cited native address, unlike the primary hut path, whose
-/// 5x5 scan order, seed canonicalisation and repair walk are all pinned to
-/// addresses and tests. It runs when the primary path finds no anchor.
+/// heuristic. Pass 1 said it had "no cited native address"; that is wrong — the
+/// native owners are `MapClass::DestroyBridge_High_OnHutDeath @ 0x00574000` and
+/// `DestroyBridge_Low_OnHutDeath @ 0x00574C20`, reachable from the corpus and
+/// re-verifiable. What is missing is a reading of their fallback arm, not an
+/// address for it. It runs when the primary path finds no anchor.
 /// - Trigger: destroying a `BridgeRepairHut=yes` structure whose span does not
 ///   resolve through the primary search — an irregular or already-damaged
 ///   bridge.
@@ -1416,7 +1437,7 @@ fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(
             let anim_id = sim.metallic_debris[idx];
             let frames = rules
                 .effect_frame_count(sim.interner.resolve(anim_id))
-                .unwrap_or(20);
+                .unwrap_or(0);
             sim.world_effects.push(WorldEffect {
                 anim_spawn: None,
                 shp_name: anim_id,
@@ -1443,7 +1464,7 @@ fn spawn_bridge_debris(sim: &mut Simulation, rules: &RuleSet, cells: &BTreeSet<(
             let anim_id = sim.bridge_explosions[idx];
             let frames = rules
                 .effect_frame_count(sim.interner.resolve(anim_id))
-                .unwrap_or(20);
+                .unwrap_or(0);
             sim.world_effects.push(WorldEffect {
                 anim_spawn: None,
                 shp_name: anim_id,
@@ -1483,7 +1504,7 @@ fn spawn_bridge_explosion_effect(
     let frames = presentation
         .rules
         .effect_frame_count(presentation.interner.resolve(anim_id))
-        .unwrap_or(20);
+        .unwrap_or(0);
     presentation
         .world_effects
         .push(crate::sim::components::WorldEffect {

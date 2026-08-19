@@ -30,15 +30,18 @@ use crate::rules::sound_ini::SoundRegistry;
 /// Maximum concurrent SFX sounds — matches original engine's 16 DirectSound buffers.
 /// RESIDUAL (GSI-15.03/15.04) — there is no channel pool, and the parts of
 /// these two rows that matter for parity are entangled with the device.
-/// Eviction is plain FIFO over this queue, so the `Priority=` tier now decoded
-/// in `rules/sound_ini.rs` is ignored and a `CRITICAL` cue loses to an older
-/// `LOWEST` one; the real concurrency ceiling is this cap plus one handle per
-/// animation plus the voice slot, not 16; `Limit=` is unenforced; there is no
-/// loop-handle mechanism, so the `Control=` loop and ambient variants cannot
-/// persist; interruption stops the old player outright with no fade, and the
-/// only fade is a fixed 3 ms ramp baked into the buffer before playback and
-/// skipped entirely for animation sounds; and finished handles are reaped only
-/// inside `play_decoded`, so an idle frame never cleans up.
+/// Eviction is plain FIFO over this queue, so the `Priority=` tier decoded in
+/// `rules/sound_ini.rs` is ignored and a `CRITICAL` cue loses to an older
+/// `LOWEST` one; `Limit=` is unenforced (17 stock sounds cap at one instance);
+/// there is no loop-handle mechanism, so `Control=` loop and ambient variants
+/// cannot persist; interruption stops the old player outright with no fade; and
+/// finished handles are reaped only inside `play_decoded`, so an idle frame
+/// never cleans up.
+///
+/// Pass 2 established the cadence: `SoundSystem::UpdateTick @ 0x004041D0` is
+/// pumped from `AudioSystem::Pump @ 0x00406F70` off the message/service loop —
+/// NOT the sim tick — so the mixer's update rate is not frame-locked and must
+/// not be modelled as if it were.
 /// - Trigger: any moment more than a handful of sounds compete, and every
 ///   ambient or looping cue.
 /// - Player effect: important cues get dropped for unimportant older ones,
@@ -46,10 +49,12 @@ use crate::rules::sound_ini::SoundRegistry;
 /// - Frequency: continuous in any busy engagement.
 /// - Downstream risk: **not reachable from `cargo test -p vera20k --lib`.**
 ///   `SfxPlayer::new` returns `None` without an audio device, so every path
-///   below it is unverifiable here and none of it may be claimed verified.
-///   Making it testable means extracting a device-free arbiter — which slot
-///   wins given priority, limit and age — from the player, and that extraction
-///   is the natural first slice of these two rows.
+///   below it is unverifiable here and none of it may be claimed verified. The
+///   first slice is a device-free arbiter — a slot table, per-`SoundKey`
+///   instance counts and lowest-priority-wins eviction with an age tie-break,
+///   taking a request and returning admit-with-eviction or reject — with all
+///   rodio work left in this file. That arbiter is testable from `--lib`, and it
+///   is what `Limit=` and `Control=INTERRUPT` need before either can land.
 const MAX_CONCURRENT_SFX: usize = 16;
 
 /// Range multiplier — converts VocClass Range value (cells) to pixels.
@@ -74,25 +79,32 @@ const MIN_VOLUME_CUTOFF: f32 = 0.05;
 ///
 /// `range_cells` — audible range from sound.ini Range= key (default 10).
 /// `min_volume_pct` — MinVolume= floor (0-100), volume never drops below this.
-/// RESIDUAL (GSI-15.02) — three approximations, all of them stated rather than
-/// derived. There is no stereo pan at all: every sound is upmixed symmetrically
-/// and set with one scalar gain, so the engine's pan axis is missing entirely.
-/// The listener is the viewport rectangle rather than a point, and the distance
-/// is `max(dx, dy)` after halving the viewport and doubling `dy` — an L-infinity
-/// metric, so anything on screen is at full volume. And the `MinVolume=` floor
-/// is applied unconditionally, ignoring the `Type=` classification that decides
-/// which sounds get a floor; with `[Defaults] MinVolume=50` that puts a 50%
-/// floor under every registry-resolved sound, while the fallback call sites pass
-/// `0`, so a registry hit and a registry miss attenuate differently.
+/// RESIDUAL (GSI-15.02) — pass 2 transcribed the native function, so these are
+/// now three DRIFTs against a known target rather than three approximations.
+/// `VocClass::CalcVolumeAndPan @ 0x00750AC0` computes
+/// `volume = (maxRange - max(distX, 2 * distY)) / maxRange` with
+/// `maxRange = Range * 60`, both distances truncated by `ftol` before `abs`,
+/// measured against the TACTICAL VIEW rect (`0x00886FA8`/`0x00886FAC`) — not the
+/// window. The `max(dx, 2 * dy)` metric below is therefore structurally right.
+/// The differences:
+/// - **The `MinVolume=` floor is unconditional here.** Native applies it only
+///   for `Type=GLOBAL` (flag `0x10`, 52 stock entries; `[Defaults]` is not
+///   GLOBAL), and skips the half-viewport subtraction only for `Type=LOCAL`
+///   (flag `0x40`). With stock `[Defaults] MinVolume=50` VERA puts a 50% floor
+///   under every registry-resolved sound, so the audibility cutoff is
+///   unreachable and distant sounds hold at half volume.
+/// - **There is no pan.** Native returns
+///   `ftol(clamp(offsetX, +/-fullW) * 8192 / fullW + 8192)`, i.e. `0..16384`
+///   with 8192 centre, and it is NOT negated — an existing research note reading
+///   an `FCHS` as a pan negation is wrong; that instruction negates the width.
+/// - **The listener rect may be the window rather than the tactical view.**
 /// - Trigger: every positional sound.
-/// - Player effect: no stereo image, no falloff across the visible screen, and
-///   distant sounds that should fade out hold at half volume — the cutoff below
-///   is unreachable once the floor applies.
+/// - Player effect: no stereo image, and distant sounds that should fade out
+///   hold at half volume.
 /// - Frequency: continuous.
-/// - Downstream risk: `Type=` is not parsed either (89 stock entries), so
-///   fixing the floor needs the registry work in `rules/sound_ini.rs` first;
-///   pan needs a real stereo path through the mixer, which `--lib` cannot
-///   reach and which therefore cannot be closed by a unit test.
+/// - Downstream risk: the floor and the metric are landable without the
+///   arbiter, once `Type=` is parsed (see `rules/sound_ini.rs`); only wiring pan
+///   into a stereo gain pair needs the device path, which `--lib` cannot reach.
 pub fn calc_spatial_volume(
     sound_screen_x: f32,
     sound_screen_y: f32,

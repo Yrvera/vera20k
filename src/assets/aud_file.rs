@@ -205,12 +205,11 @@ pub(crate) fn decode_ima_adpcm_chunk(data: &[u8], state: &mut ImaAdpcmState, out
 
 /// Decode a Westwood Compressed (format 1) chunk.
 /// This is a simpler 2/4-bit adaptive scheme used by older .aud files.
-/// RESIDUAL (GSI-02.15) — format 1 has no test of any kind, and its own header
-/// comment calls it a basic implementation. Trigger: any `.aud` authored as
-/// Westwood Compressed rather than IMA ADPCM. Player effect: that sound decodes
-/// wrongly or silently. Frequency: unmeasured — the retail bags resolve through
-/// the format-99 path, so this may be unreached in stock. Downstream risk: none
-/// beyond the sample itself; the codec is self-contained.
+/// NO-DIFF (GSI-02.15) — format 1 is dead for stock assets. An `asset_scan`
+/// sweep over 57 archives and 13,348 entries finds all 23 retail `.aud` files
+/// are IMA ADPCM, so no retail bytes exist to test the format-1 path against and
+/// no stock playback can reach it. It stays untested because it is unreachable,
+/// not because the coverage was skipped.
 fn decode_ws_compressed_chunk(data: &[u8], out: &mut Vec<i16>) {
     // Westwood compressed format: each byte is either a 2-bit or 4-bit encoded delta.
     // For simplicity and because RA2 music primarily uses format 99 (IMA ADPCM),

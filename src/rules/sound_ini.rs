@@ -288,26 +288,34 @@ const SOUND_PRIORITY_TABLE: [(&str, u8); 5] = [
     ("CRITICAL", 4),
 ];
 
-/// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors ten
-/// more. Counts below are case-insensitive section counts, matching how the
-/// engine matches keys. `Control=` (594) selects RANDOM, INTERRUPT, PREDELAY,
-/// LOOP, ALL and AMBIENT behaviour and is not parsed, so variant choice is a
-/// plain counter and none of the other modes exist; `Type=` (89) classifies
-/// GLOBAL/LOCAL/SHROUD and is not parsed, which is what leaves the `MinVolume=`
-/// floor unconditional in `audio/sfx.rs`; `Limit=` (77, of which one is the
-/// `[Defaults]` line) caps concurrent instances and is not parsed, so nothing
-/// bounds a repeated sound; `FShift=` (218) and `VShift=` (153) shift pitch;
-/// and `Attack=`/`Decay=` (12/9), `Delay=` (64), `Loop=` (1) and the single
-/// `MinVol=` typo likewise have no fields.
+/// RESIDUAL (GSI-15.01) — the registry reads five keys and stock authors more,
+/// and pass 2 resolved the three that matter. `VocClass::ReadINI @ 0x00750440`
+/// reads fourteen keys in total; two previously unnamed strings are
+/// `0x00824314` = "Type" and `0x00824238` = "Loop".
+/// - `Control=` (594 stock, flag table at `0x008160C0`) selects RANDOM,
+///   INTERRUPT, PREDELAY, LOOP, ALL and AMBIENT. Unparsed, so variant choice is
+///   a plain counter and none of the other modes exist. An existing research doc
+///   has INTERRUPT and PREDELAY swapped — do not use it.
+/// - `Type=` (89 stock, flag table at `0x00816048`) is the one that gates
+///   volume: `CalcVolumeAndPan @ 0x00750AC0` applies the `MinVolume=` floor only
+///   for GLOBAL (`0x10`, 52 stock entries — `[Defaults]` is NOT global), skips
+///   the half-viewport subtraction only for LOCAL (`0x40`), and silences
+///   unrevealed cells for SHROUD (`0x800`). Parsing this is what unblocks the
+///   unconditional floor recorded in `audio/sfx.rs`.
+/// - `Limit=` (77) caps concurrent instances; 17 stock sounds cap at one.
+/// - `Loop=` is NO-DIFF — dead in stock.
+/// - `FShift=` (218), `VShift=` (153), `Attack=`/`Decay=` (12/9) and `Delay=`
+///   (64) remain unparsed pitch and envelope controls.
 /// - Trigger: playing any sound whose entry authors one of them, which is most
 ///   of the registry.
 /// - Player effect: sounds do not interrupt or loop as authored, ambient beds
 ///   cannot persist, repeated events stack without limit, and no envelope or
 ///   pitch shift is applied.
 /// - Frequency: continuous.
-/// - Downstream risk: `Limit=` and `Control=INTERRUPT` need the channel
-///   arbitration that today lives inside the device-bound player, so they
-///   cannot be closed without extracting a device-free arbiter first.
+/// - Downstream risk: `Type=` is a pure parse and lands on its own. `Limit=` and
+///   `Control=INTERRUPT` need the channel arbitration that today lives inside
+///   the device-bound player, so they cannot be closed before that device-free
+///   arbiter is extracted (recorded on `audio/sfx.rs`).
 ///
 /// The terminator's value in the same table.
 const SOUND_PRIORITY_DEFAULT: u8 = 2;
