@@ -136,41 +136,45 @@ enum ImmediateProjectileReason {
     Invisible,
     InstantSpeed,
     Vertical,
-    ObstacleTrajectory,
     SpecialTrajectory,
 }
 
-/// RESIDUAL (GSI-08.06/08.07/08.08) — this classifier is also the flight-model
-/// gate, and most of the native flight keys reach it only as reasons to opt
-/// *out* of authoritative flight rather than as models. `Vertical=` (5 stock),
-/// `Inaccurate=` (2), `Proximity=` (18), `SubjectToCliffs=` (30) and
-/// `SubjectToElevation=` (31) each disqualify a shot here;
-/// `ProjectileTrajectory` itself has only `Straight` and `Ballistic`, so
-/// vertical launch, scatter, proximity detection and cliff collision have no
-/// implementation to fall back on. `DetonationAltitude=` (4) is parsed with no
-/// reader, `Acceleration=` (6) is carried but unused by the advance, and
-/// `AirburstWeapon=` (1) has no consumer. The `airburst` bool it sits beside is
-/// carried into `ProjectileGuidance` and hashed, but its only behavioural read
-/// suppresses the cluster walk — it spawns no child, which is the gap.
+/// Which delivery path a weapon's shot takes.
 ///
-/// Two nearby keys are NOT gaps: `Floater=` (2) is read on both ballistic
-/// launch paths to halve gravity and is carried and hashed by the homing
-/// state, and `ShrapnelWeapon=` (5) is fully wired through
-/// `emit_projectile_shrapnel`, scenario-RNG cell selection included.
-/// - Trigger: firing any weapon whose projectile carries one of those keys —
-///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
-/// - Player effect: those shots fall back to the non-authoritative path, so
-///   they resolve without the flight the player expects: no vertical climb, no
-///   scatter, no proximity detonation, and no airburst children.
-/// - Frequency: bounded by the types above rather than continuous, but V3s and
-///   Dreadnoughts are standard Soviet play and the nuke fires in most long
-///   matches.
-/// - Downstream risk: each missing model is its own trajectory implementation
-///   against `BulletClass::AI`; they share the projectile store but not the
-///   math, so they want separate slices. Launch-side effects are recorded
-///   separately: `spawn_manager.rs` already flags its launch-position drift, no
-///   `MuzzleFlash=` art anim is spawned for non-garrison weapons, and `Ammo=`
-///   is decremented only for aircraft.
+/// gamemd-derived: `BulletClass::AI @ 0x004666E0` has exactly two branches,
+/// keyed on `ROT < 1`; the non-homing arm then splits on `Vertical` (`+0x2C0`).
+/// `Arcing`, `SubjectToCliffs`, `SubjectToElevation`, `SubjectToWalls`,
+/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` are never read by the AI —
+/// they are launch-time or detonation-time keys — so only `ROT` and `Vertical`
+/// select a flight model.
+///
+/// RESIDUAL (GSI-08.06/08.07/08.08) — four gaps remain, all verified this pass:
+/// - **Launch speed.** `TechnoClassFireAtSpawnsBullet @ 0x006FDD50` sets a
+///   homing or vertical shot's speed to 1 lepton/frame, and
+///   `BulletClassFireRevealArmAndSubmit @ 0x00468670` renormalises the vector to
+///   magnitude 1.0 when `ROT > 0`; the weapon's `Speed=` is only the ceiling
+///   that `Acceleration=` (`+0x2D0`, default 3) ramps toward. VERA launches
+///   every non-ballistic shot at full weapon speed, so missiles leave the tube
+///   at terminal velocity and reach their target early. Frequency: continuous —
+///   every missile in the game. Closing it needs `max_speed_leptons_per_frame`
+///   beside the current speed and a per-frame ramp, and moves the projectile
+///   hash.
+/// - **`Inaccurate=`/`FlakScatter=` are launch-time offsets**, not
+///   disqualifiers: two scenario draws each, at `0x006FDD50` (`Inaccurate &&
+///   Arcing`) and `0x00468670` (`FlakScatter && Inviso`). They still divert a
+///   shot off the tracked path here rather than offsetting its target.
+/// - **`Vertical=`** is the one genuinely missing flight model (the nuke, the
+///   Kirov bomb, the Disc drain).
+/// - **Detonation.** `Arm` gates only the fuse in native, where VERA gates all
+///   four detonation reasons — so an unarmed shot that hits a wall silently
+///   vanishes — and the fuse's reference coordinate is frozen at launch in
+///   native while VERA measures to the live target. `ranged_fuse_distance_step`
+///   itself is bit-exact against `ProximityDetector::Check @ 0x004E11F0`.
+///
+/// Not gaps: `Floater=` is read on both ballistic launch paths, `ShrapnelWeapon=`
+/// is fully wired, and gravity applies to every `ROT < 1, Vertical=no` bullet —
+/// VERA's gravity-free straight arm is wrong, but only four rare stock
+/// projectiles use it.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -190,16 +194,20 @@ fn classify_projectile_delivery(
     if projectile.vertical {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::Vertical);
     }
-    // YR BulletClass::AI linkage: Level's current-cell water predicate and
-    // wall entry are now owned by the world collision rung. Cliff/elevation
-    // kernels still need their native coordinate contracts.
+    // `BulletClass::AI @ 0x004666E0` reads neither `SubjectToCliffs` (+0x296)
+    // nor `SubjectToElevation` (+0x297) nor `Proximity` (+0x29F) — the flight
+    // loop branches only on `ROT < 1` and then on `Vertical` (+0x2C0). Those
+    // three keys are consumed elsewhere, so they must not disqualify a shot
+    // from authoritative flight; diverting them took essentially the whole
+    // missile family (every `AAHeatSeeker2` carrier, all stock AA missiles, the
+    // six Maverick weapons, the Dreadnought, dog and squid jumps, and Boomer
+    // torpedoes) off the tracked path.
+    //
+    // UNCHECKED: where `+0x296`/`+0x297` ARE consumed. Not in the AI loop; the
+    // collision rung already owns the wall and water predicates.
     let ballistic = projectile.arcing || weapon.lobber;
-    if !ballistic && (projectile.subject_to_cliffs || projectile.subject_to_elevation) {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::ObstacleTrajectory);
-    }
     if projectile.dropping
         || (projectile.very_high && projectile.rot <= 0)
-        || projectile.proximity
         || projectile.flak_scatter
         || projectile.inaccurate
         || projectile.degenerates
@@ -250,6 +258,29 @@ pub(crate) fn projectile_uses_authoritative_flight(
 mod projectile_delivery_tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    /// `BulletClass::AI @ 0x004666E0` branches only on `ROT < 1` and, on the
+    /// non-homing arm, on `Vertical`. `Proximity`, `SubjectToCliffs` and
+    /// `SubjectToElevation` are never read there, so none of them may push a
+    /// shot off authoritative flight.
+    #[test]
+    fn gsi_08_07_proximity_and_cliff_keys_keep_authoritative_flight() {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=PROXER\n1=CLIFFER\n[PROXER]\nStrength=100\nArmor=heavy\nPrimary=ProxGun\n[CLIFFER]\nStrength=100\nArmor=heavy\nPrimary=CliffGun\n[ProxGun]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=Prox\nWarhead=WH\n[CliffGun]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=Cliffy\nWarhead=WH\n[Prox]\nProximity=yes\nROT=8\n[Cliffy]\nSubjectToCliffs=yes\nSubjectToElevation=yes\nROT=0\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("projectile fixture parses");
+
+        for weapon_name in ["ProxGun", "CliffGun"] {
+            let weapon = rules.weapon(weapon_name).expect("weapon");
+            assert!(
+                matches!(
+                    classify_projectile_delivery(weapon, &rules),
+                    ProjectileDelivery::Persistent { .. }
+                ),
+                "{weapon_name} must stay on the tracked path"
+            );
+        }
+    }
 
     #[test]
     fn wall_projectile_uses_the_authoritative_collision_path() {
@@ -2283,9 +2314,10 @@ fn handle_entity_deaths(
                     ry: *ry,
                     damage: (*dmg).min(i32::from(u16::MAX)) as u16,
                     warhead_ref: wh_iid,
-                    is_ion_cannon: wh_iid == handles
-                        .expect("Simulation::resolve_type_handles must run before combat")
-                        .ion_cannon,
+                    is_ion_cannon: wh_iid
+                        == handles
+                            .expect("Simulation::resolve_type_handles must run before combat")
+                            .ion_cannon,
                     impact_z: *z as i32,
                 });
             }
@@ -2852,7 +2884,9 @@ pub(crate) fn commit_area_damage_receivers(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     commit_area_damage_receivers_with_scenario(
         receivers,
         entities,
@@ -3079,7 +3113,9 @@ pub(crate) fn commit_damage_events(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     commit_damage_events_with_isolation(
         damage_events,
         None,
@@ -4071,7 +4107,8 @@ fn emit_one_projectile_detonation(
                 ry: impact_ry,
                 damage,
                 warhead_ref: detonation.payload.warhead,
-                is_ion_cannon: detonation.payload.warhead == handles
+                is_ion_cannon: detonation.payload.warhead
+                    == handles
                         .expect("Simulation::resolve_type_handles must run before combat")
                         .ion_cannon,
                 impact_z,
@@ -4349,7 +4386,9 @@ pub fn tick_combat_with_fog(
     scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     // Test-convenience entry: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     let mut unused_main_rng = SimRng::new(0);
     let mut empty_houses = BTreeMap::new();
     tick_combat_with_fog_and_main_rng(
@@ -6569,7 +6608,8 @@ pub(crate) fn resolve_attacker_fire(
                 ry: target_ry,
                 damage: base_damage.min(i32::from(u16::MAX)) as u16,
                 warhead_ref: wh_iid,
-                is_ion_cannon: wh_iid == handles
+                is_ion_cannon: wh_iid
+                    == handles
                         .expect("Simulation::resolve_type_handles must run before combat")
                         .ion_cannon,
                 impact_z,
