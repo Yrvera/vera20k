@@ -1904,6 +1904,21 @@ mod cursor_animation_tests {
     /// on a bridged map - the same cadence as the defect it replaces, not
     /// narrower.
     ///
+    /// Also unported, verified separately and NOT part of the branch problem
+    /// above: at 0x0051E3B0 the BridgeRepairHut arm RETURNS unconditionally.
+    /// `read_memory 0x0051E520` decodes the tail after the
+    /// `CALL 0x00587410` at 0x0051E54C as
+    /// `NEG AL; SBB EAX,EAX; AND AL,0xFD; ADD EAX,0x20; RET 0x8` - 0x1D when
+    /// the predicate holds, 0x20 when it does not, with no path past it. gamemd
+    /// therefore never reaches a later cursor case for a hut, while
+    /// `capability_cursor_for_hover` falls through to the capturable and
+    /// friendly-structure cases below.
+    ///
+    /// Trigger: every engineer hover over a repair hut. Effect today is nil -
+    /// `CABHUT` carries no `Capturable=` in `ini/rulesmd.ini`, so the case
+    /// immediately below does not fire - but nothing constrains the cases after
+    /// it, and a modded or future hut type would diverge silently.
+    ///
     /// Blocker: the three geometry tables are data this crate has no reader
     /// for; the tolerance-3 record hop needs `FindBridgeRecord`'s semantics
     /// ported first; and settling the direction needs a live check of what a

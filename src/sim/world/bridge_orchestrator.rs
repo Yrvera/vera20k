@@ -307,7 +307,7 @@ const LOW_COLLAPSED_ANCHORS: [u8; 2] = [0x64, 0x65];
 /// UNVERIFIED. Do not assume the two branches agree anywhere. What IS
 /// established is that this port is correct whenever the native takes the
 /// overlay branch. See
-/// `bridge_hut_repair_cursor_misses_partially_damaged_spans`.
+/// `bridge_hut_repair_cursor_always_takes_the_overlay_branch`.
 pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, u16)) -> bool {
     let Some(bs) = sim.bridge_state.as_ref() else {
         return false;
