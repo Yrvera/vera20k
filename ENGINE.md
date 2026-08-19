@@ -17,9 +17,7 @@ behavior.
 
 ## The delivery bar
 
-> Every implemented behavior matches the verified `gamemd.exe` decompile semantics exactly —
-> formulas, thresholds, ordering, RNG consumption, timer semantics, state reads/writes, same-tick
-> consequences — or carries a recorded residual naming where and why it does not yet.
+> Every implemented behavior matches the verified `gamemd.exe` decompile semantics exactly.
 
 Resolve ambiguous intent toward it. "Verified" is the Evidence standard below — the decompiled
 body and its callsites actually read, this session or through a named research doc; exactness is
