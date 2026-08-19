@@ -3,7 +3,8 @@
 //! Replaces the 2D `lepton_distance_sq_raw` + `is_within_range_leptons` pair
 //! at the four targeting/cursor sites. Stage 1 implements 3D distance,
 //! IsLowFlying ground-snap, AirRange bonus, arcing-weapon 2D fallthrough,
-//! foundation bonus, bridge LOS gate, and the verified boundary semantics
+//! foundation bonus, the gamemd bridge fire gate (0x006FC0B0), and the
+//! verified boundary semantics
 //! (<= max inclusive, < min strict, -512 lep sentinel).
 //!
 //! Stages 2-N add the remaining range-VALUE chain (Bunker / OpenTopped /
@@ -12,7 +13,6 @@
 //! Depends on: rules (ObjectType, Weapon, ProjectileType), map (terrain
 //! height + bridge), util/lepton (constants), util/fixed_math (isqrt_i64).
 //! Does NOT depend on render/ui/sidebar/audio/net.
-
 
 use crate::map::entities::EntityCategory;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -250,7 +250,7 @@ pub(crate) fn compute_in_range(
         return false;
     }
 
-    if attacker_under_bridge_targeting_above(src, tz, terrain) {
+    if bridge_onbridge_mismatch_blocks_fire(attacker, target, entities, terrain) {
         return false;
     }
 
@@ -408,30 +408,59 @@ fn ground_z_with_bridge_offset(rx: u16, ry: u16, terrain: &ResolvedTerrainGrid) 
     Some(z)
 }
 
-/// Bridge LOS gate: returns true when the attacker is in a bridge cell, at a
-/// Z below the bridge deck top, and the target Z is at or above the deck top
-/// — meaning the attacker would have to fire through the deck.
-fn attacker_under_bridge_targeting_above(
-    src: (i64, i64, i64),
-    target_z_lep: i64,
+/// `cell+0x140 & 0x100` — "this cell belongs to a bridge". Written by
+/// `CellClass::SetBridgeDirection_NESW` 0x0047E040 / `_NWSE` 0x0047E470.
+fn cell_is_bridge(terrain: &ResolvedTerrainGrid, rx: u16, ry: u16) -> bool {
+    terrain
+        .cell(rx, ry)
+        .is_some_and(|cell| cell.bridge_facts.has_structural_bridge())
+}
+
+/// The bridge fire gate, ported from `TechnoClass::GetFireError` 0x006FC0B0
+/// (tail block, immediately before the `TypeClass+0xD97` / `CanFireAt` exits).
+///
+/// gamemd:
+/// ```text
+/// if (this->OnBridge != target->OnBridge) {                  // target must be a TechnoClass
+///     if (this->GetCell()   && (this_cell->flags_140  & 0x100)
+///         && !this->IsHighFlying()                           // vtable+0x54 -> 0x005F6B90
+///         && target->GetCell() && (target_cell->flags_140 & 0x100))
+///         return 5;                                          // FireError::Illegal
+///     ...
+/// }
+/// ```
+///
+/// The condition is symmetric: it blocks a deck unit firing at something
+/// directly beneath it just as much as the reverse. Both objects must stand in
+/// bridge cells — a unit sheltering under a bridge is NOT blocked from firing
+/// at an aircraft or a cliff-top unit whose own cell carries no bridge.
+///
+/// `piVar7` is `target & -(target->flags & 1)`, i.e. the target reinterpreted as
+/// a TechnoClass; cell/ground-targeted fire skips the whole block.
+fn bridge_onbridge_mismatch_blocks_fire(
+    attacker: &GameEntity,
+    target: &TargetKind,
+    entities: &EntityStore,
     terrain: &ResolvedTerrainGrid,
 ) -> bool {
-    let (sx, sy, sz) = src;
-    let rx = (sx / 256) as u16;
-    let ry = (sy / 256) as u16;
-    let cell_idx = ry as usize * terrain.width() as usize + rx as usize;
-    let cell = match terrain.cells.get(cell_idx) {
-        Some(c) => c,
-        None => return false,
+    let TargetKind::Entity(target_id) = target else {
+        return false;
     };
-    if !cell.has_bridge_deck {
+    let Some(target_entity) = entities.get(*target_id) else {
+        return false;
+    };
+    if attacker.on_bridge == target_entity.on_bridge {
         return false;
     }
-    let Some(ground_z) = terrain_ground_z_at(terrain, rx, ry, sx as i32, sy as i32) else {
+    if is_high_flying(attacker) {
         return false;
-    };
-    let bridge_top = ground_z + BRIDGE_HEIGHT_DELTA_LEPTONS;
-    sz < bridge_top && target_z_lep >= bridge_top
+    }
+    cell_is_bridge(terrain, attacker.position.rx, attacker.position.ry)
+        && cell_is_bridge(
+            terrain,
+            target_entity.position.rx,
+            target_entity.position.ry,
+        )
 }
 
 #[cfg(test)]
@@ -444,10 +473,10 @@ mod tests {
     use crate::sim::entity_store::EntityStore;
     use crate::sim::game_entity::GameEntity;
     use crate::sim::intern::test_interner;
+    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::sim::movement::locomotor::{
         AirMovePhase, GroundMovePhase, LocomotorState, MovementLayer,
     };
-    use crate::sim::movement::locomotion::LocomotorSlot;
     use crate::util::fixed_math::{SIM_ONE, SIM_ZERO, SimFixed};
     use crate::util::lepton::LEPTONS_PER_LEVEL;
 
@@ -1166,58 +1195,187 @@ mod tests {
         );
     }
 
-    // Test 11: Bridge LOS gate
-    #[test]
-    fn bridge_los_gate_blocks_under_bridge_to_deck() {
-        let rules = rules_with_weapon("Damage=1\nROF=20\nRange=2\nWarhead=WH", "", "");
-        let weapon = rules.weapon("GUN").expect("weapon");
-        let interner = test_interner();
+    // Test 11: the bridge fire gate, ported from gamemd
+    // `TechnoClass::GetFireError` 0x006FC0B0 (tail OnBridge-mismatch block).
 
-        // Build a 16x16 grid with a bridge deck on cell (5, 5), ground level 0.
-        // bridge_top = 0*104 + 416 = 416 lep.
+    /// 16x16 grid whose listed cells carry `CellClass+0x140` bit 0x100.
+    fn terrain_with_bridge_cells(cells_on_bridge: &[(u16, u16)]) -> ResolvedTerrainGrid {
         let mut cells: Vec<ResolvedTerrainCell> = (0..16)
             .flat_map(|ry| (0..16).map(move |rx| default_cell(rx, ry)))
             .collect();
-        let idx = 5 * 16 + 5;
-        cells[idx].has_bridge_deck = true;
-        cells[idx].bridge_deck_level = 4;
-        let bridge_terrain = ResolvedTerrainGrid::from_cells(16, 16, cells);
+        for &(rx, ry) in cells_on_bridge {
+            let idx = ry as usize * 16 + rx as usize;
+            cells[idx].has_bridge_deck = true;
+            cells[idx].bridge_deck_level = 4;
+            cells[idx].bridge_facts.raw_flags |= crate::map::bridge_facts::BRIDGE_FLAG_STRUCTURAL;
+        }
+        ResolvedTerrainGrid::from_cells(16, 16, cells)
+    }
 
+    fn in_range_against(
+        attacker: &GameEntity,
+        src: (i64, i64, i64),
+        target: GameEntity,
+        terrain: &ResolvedTerrainGrid,
+    ) -> bool {
+        let rules = rules_with_weapon("Damage=1\nROF=20\nRange=6\nWarhead=WH", "", "");
+        let weapon = rules.weapon("GUN").expect("weapon");
+        let interner = test_interner();
+        let mut entities = EntityStore::new();
+        entities.insert(target);
+        compute_in_range(
+            attacker,
+            src,
+            &TargetKind::Entity(200),
+            weapon,
+            &rules,
+            &interner,
+            &entities,
+            terrain,
+        )
+    }
+
+    /// gamemd 0x006FC0B0: mismatched `OnBridge` with BOTH cells carrying flag
+    /// 0x100 returns FireError 5. Deck unit shooting straight down at a unit
+    /// sheltering underneath.
+    #[test]
+    fn bridge_gate_blocks_deck_attacker_against_unit_underneath() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5), (5, 6)]);
+        let mut attacker = ground_attacker(5, 5, 0, "ATKR");
+        attacker.on_bridge = true;
+        let target = ground_target(5, 6, 0, "TGT");
+
+        let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 416i64);
+        assert!(
+            !in_range_against(&attacker, src, target, &terrain),
+            "deck attacker vs under-bridge target must be blocked (GetFireError 5)"
+        );
+    }
+
+    /// The mirror direction of the same block — gamemd tests the mismatch, not
+    /// which side is higher.
+    #[test]
+    fn bridge_gate_blocks_under_bridge_attacker_against_deck_unit() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5), (5, 6)]);
+        let attacker = ground_attacker(5, 5, 0, "ATKR");
+        let mut target = ground_target(5, 6, 0, "TGT");
+        target.on_bridge = true;
+
+        let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
+        assert!(
+            !in_range_against(&attacker, src, target, &terrain),
+            "under-bridge attacker vs deck target must be blocked (GetFireError 5)"
+        );
+    }
+
+    /// gamemd requires the TARGET's cell to carry flag 0x100 as well. A unit
+    /// parked under a bridge firing at a target standing on ordinary ground is
+    /// not blocked — the pre-2026-08-19 VERA gate blocked this on Z alone.
+    #[test]
+    fn bridge_gate_allows_under_bridge_attacker_against_offbridge_target() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5)]);
+        let attacker = ground_attacker(5, 5, 0, "ATKR");
+        let mut target = ground_target(8, 5, 0, "TGT");
+        target.on_bridge = true;
+
+        let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
+        assert!(
+            in_range_against(&attacker, src, target, &terrain),
+            "target cell carries no bridge flag, so gamemd does not block"
+        );
+    }
+
+    /// Matching `OnBridge` skips the whole block, however tall the Z gap is.
+    #[test]
+    fn bridge_gate_allows_matching_onbridge_states() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5), (5, 6)]);
+        let attacker = ground_attacker(5, 5, 0, "ATKR");
+        let target = ground_target(5, 6, 0, "TGT");
+
+        let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
+        assert!(
+            in_range_against(&attacker, src, target, &terrain),
+            "both off-bridge: gamemd never enters the mismatch block"
+        );
+    }
+
+    /// `vtable+0x54` = `ObjectClass::IsHighFlying` 0x005F6B90 excludes the
+    /// attacker from the gate.
+    #[test]
+    fn bridge_gate_exempts_high_flying_attacker() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5), (5, 6)]);
+        let mut attacker = aircraft_at_altitude(HIGH_FLIGHT_THRESHOLD_LEPTONS);
+        attacker.stable_id = 100;
+        attacker.position.rx = 5;
+        attacker.position.ry = 5;
+        attacker.type_ref = crate::sim::intern::test_intern("ATKR");
+        let mut target = ground_target(5, 6, 0, "TGT");
+        target.on_bridge = true;
+
+        let src = (
+            5i64 * 256 + 128,
+            5i64 * 256 + 128,
+            HIGH_FLIGHT_THRESHOLD_LEPTONS,
+        );
+        assert!(
+            in_range_against(&attacker, src, target, &terrain),
+            "IsHighFlying attacker is exempt from the bridge fire gate"
+        );
+    }
+
+    /// Cell-targeted (force-fire) shots skip the block: gamemd reaches it only
+    /// through `piVar7`, the target reinterpreted as a TechnoClass.
+    #[test]
+    fn bridge_gate_ignores_cell_targets() {
+        let rules = rules_with_weapon("Damage=1\nROF=20\nRange=6\nWarhead=WH", "", "");
+        let weapon = rules.weapon("GUN").expect("weapon");
+        let interner = test_interner();
+        let terrain = terrain_with_bridge_cells(&[(5, 5), (5, 6)]);
         let attacker = ground_attacker(5, 5, 0, "ATKR");
         let entities = EntityStore::new();
 
-        // Attacker beneath deck (Z=0), target = cell on bridge cell (Z snaps to 416).
-        let under = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
-        let blocked = compute_in_range(
-            &attacker,
-            under,
-            &TargetKind::Cell(5, 5),
-            weapon,
-            &rules,
-            &interner,
-            &entities,
-            &bridge_terrain,
-        );
+        let src = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
         assert!(
-            !blocked,
-            "under-bridge attacker firing up at deck must be blocked"
+            compute_in_range(
+                &attacker,
+                src,
+                &TargetKind::Cell(5, 6),
+                weapon,
+                &rules,
+                &interner,
+                &entities,
+                &terrain,
+            ),
+            "force-fire on a bridge cell is never gated by the OnBridge mismatch"
         );
+    }
 
-        // Attacker on the deck (Z=416). Same cell. Gate should NOT trigger.
-        let on_deck = (5i64 * 256 + 128, 5i64 * 256 + 128, 416i64);
-        let allowed = compute_in_range(
-            &attacker,
-            on_deck,
-            &TargetKind::Cell(5, 5),
-            weapon,
-            &rules,
-            &interner,
-            &entities,
-            &bridge_terrain,
-        );
-        assert!(
-            allowed,
-            "attacker on the deck targeting the deck should not trip gate"
+    /// RESIDUAL — gamemd address 0x006FC0B0, `TechnoClass::GetFireError`.
+    ///
+    /// Trigger: any attacker/target pair whose `OnBridge` states differ while
+    /// both stand in bridge cells — i.e. shooting through a bridge deck at
+    /// point blank.
+    ///
+    /// Effect: gamemd returns FireError **5 (illegal)**. VERA expresses the
+    /// same refusal by returning "not in range" from `compute_in_range`, which
+    /// is FireError **8 (out of range)** in gamemd's vocabulary. The two codes
+    /// diverge in what the unit does next: `illegal` makes it drop the target,
+    /// `out of range` makes it try to close distance, so a VERA unit blocked by
+    /// the deck will walk toward its target instead of giving up on it.
+    ///
+    /// Frequency: every retail map with a bridge and units on both sides of a
+    /// deck — common in ordinary skirmish, but only while the two are already
+    /// within weapon range of each other.
+    ///
+    /// Fixing it needs the gate moved out of the range check into a real
+    /// `GetFireError` port that returns the code; that is a combat-module
+    /// change, not an `in_range` one.
+    #[test]
+    #[ignore = "gamemd 0x006FC0B0 returns FireError 5 (illegal); VERA reports out-of-range"]
+    fn bridge_gate_should_report_illegal_not_out_of_range() {
+        panic!(
+            "unimplemented: the bridge OnBridge-mismatch refusal must surface as \
+             FireError::Illegal, not as a failed range test"
         );
     }
 }

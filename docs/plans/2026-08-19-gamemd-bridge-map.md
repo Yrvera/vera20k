@@ -189,8 +189,7 @@ which is what fixes each family member's trigger and frequency.
 
 | Entry | Reaches | Trigger | Skirmish frequency |
 |---|---|---|---|
-| `LogicClass__PerTickUpdate 0x0055AFB0` | `RecalcBridgeShroudFlags 0x00578100` | every tick, unconditionally | **every tick** — the family's only tick-spine member |
-| `FUN_006E1A70` (at `0x006E1B6B`) | `RecalcBridgeShroudFlags 0x00578100` | **unexamined** — this is `0x00578100`'s second caller and it was not traced | UNCHECKED, see §11 |
+| ~~`LogicClass__PerTickUpdate 0x0055AFB0`~~ | ~~`RecalcBridgeShroudFlags 0x00578100`~~ | **RETRACTED 2026-08-19** — `0x00578100` is not a bridge function; see §10 | — |
 | `AStar_main_loop 0x00429A90` | `UpdateBridgePassability 0x0042ACF0` → `FindNearbyBridgePeer 0x0042B080` | every A\* search with nonzero urgency | very high — every unit path request |
 | `UnitClass__AI 0x007360C0` | `UnitClass__TubeMovement 0x007359F0` | per tick per unit inside a tube | high on maps with `[Tubes]` |
 | `UnitClass` / `InfantryClass` `Can_Enter_Cell` | `CheckBridgeTraversal 0x004D9C60`, `CellClass__IsTubeCell 0x00484AB0` | every movement legality test | very high |
@@ -369,7 +368,7 @@ inside this family.
 | `0x0056E990` | `MapClass__ToggleBridgePavement` | Pavement stamp/unstamp for a bridge cell | every ramp updater |
 | `0x00575EE0` | `NotifyBridgeSpanCollapse` | Walks the endpoint-exclusive four-cell-wide span and fires trigger event `0x1F` through each cell's `Tag +0x3C` | 6 callers, all collapse/edge paths |
 | `0x00578AC0` | `MapClass__IncrementBridgeCounter` | `++MapClass+0x1158`, the bridge-overlay draw-cache generation. Readers are the two bridge-branch sites in `CellClass__DrawOverlay_Body` | single caller `FUN_004F42F0`; frequency **UNCHECKED** |
-| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **The family's only per-tick member** — `LogicClass__PerTickUpdate` calls it at `0x0055B2AD` every tick. It has a **second caller, `FUN_006E1A70` at `0x006E1B6B`, which was not traced**, so the full trigger set is incomplete. The body's shroud computation was not re-derived either; the "shroud" claim is inherited and UNCHECKED | at least every tick, every map |
+| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **NOT A BRIDGE FUNCTION — retracted 2026-08-19.** Body decompiled: two full-map cell iterations. Pass 1 takes cells with `+0x140` bit `0x20`, clears `+0x12C` bits `0x08`/`0x10` and `+0x140` bits `0x01`/`0x02`/`0x20`, sets the `+0x138` dirty byte, enqueues a tactical redraw via `FUN_006DA7D0`, and notifies on `+0x120 == -2`. Pass 2 recomputes every cell's shroud edge bitmask through `Shroud_EdgeBitmask_Calculator` into `+0x120` and enqueues a redraw on change. No bridge field, flag, or tileset appears anywhere in it — and bit `0x20` is not a bridge bit: `SetBridgeDirection`'s clear mask `0xFFFEE07F` preserves it. See §10 | per tick, but **not bridge work** |
 | `0x00703B10` | `TechnoClass__IsOnBridge_ForFiring` | Own cell or an axis-matched neighbour carries `0x100`; the axis pairing is what proves bit `0x800` | `GetFireError` and draw — very high |
 | `0x004865D0` | `CellClass__HasBridgeOverlay` | **Name understates it** — tests shore pieces, water, and the four RMG river-bridge tilesets. A prior session recorded this drift; re-read this session and the drift stands. Only RMG consumers | RMG only — dormant in skirmish |
 | `0x0056A080` | `FUN_0056A080` | Bridge-family by callee set (calls both pavement span walkers, reads `g_BridgeSet_TileSetBase`) but **has zero xrefs** — unreachable in the current database | never |
@@ -485,15 +484,17 @@ Left un-renamed on purpose: a guess is worse than `FUN_*`.
 | `0x004865D0` | `CellClass__HasBridgeOverlay` | A prior session's drift note stands: the predicate covers shore pieces, water, and four RMG river-bridge tilesets. Tagged `BRIDGE_RMG` only |
 | `0x00578D80` | `IsOnBridgeRamp` | Tests the cliff tileset and the four waterfall tilesets; no bridge tileset appears in the body. Kept because its single caller sits inside `ComputeBridgeSurfaceMask`, which *is* bridge code |
 | `0x0047E040` / `0x0047E470` | `..._NESW` / `..._NWSE` | A prior session verified the two bodies byte-identical, so the compass suffixes cannot come from the code. What *is* verified is the caller split: `0x0047E040` is called only from High-family sites, `0x0047E470` only from Low-family sites |
-| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | The per-tick caller binding is verified; the "shroud" half of the name is inherited and was not re-derived |
+| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **Body decompiled 2026-08-19: the `Bridge` in the name is wrong, and the family has no per-tick member at all.** It is a whole-map shroud-edge recalculation that enqueues tactical redraws — `Shroud_EdgeBitmask_Calculator` into `cell+0x120`, dirty byte `+0x138`, redraw queue via `FUN_006DA7D0`. Candidate name `MapClass__RecalcShroudEdgesAndEnqueueRedraw`; **not applied — Ghidra is read-only under the current goal.** The `BRIDGE_HIGH`/`BRIDGE_LOW` tags applied to it earlier in the session are wrong and should be removed when a sync is next authorised. Its second caller `FUN_006E1A70` is moot for this family |
 
 ---
 
 ## 11. Residuals
 
-- **`FUN_006E1A70` is the second caller of `MapClass__RecalcBridgeShroudFlags`** and was not
-  traced. Until it is, "the family's only per-tick member" describes the `LogicClass` binding
-  only, not the function's full trigger set.
+- **Retracted:** the earlier residual about `FUN_006E1A70` is moot. `0x00578100` is not bridge
+  code (§10), so neither of its callers belongs to this family and the family has no per-tick
+  member. The consequence for ranking: nothing in Bridge/Tube/Ramp runs every tick, so the
+  visibility×frequency ordering is driven by the event members (destroy, repair, unit crossing)
+  and by the per-frame draw member `0x0073B140`.
 - **Frequency of `MapClass__IncrementBridgeCounter`** is unknown — its single caller
   `FUN_004F42F0` was not traced to a trigger.
 - **`FUN_00597A10`**, the second gate in front of `RandomMapGenerator__Generate`, was not opened.
