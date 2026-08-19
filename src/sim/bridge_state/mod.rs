@@ -326,6 +326,28 @@ pub enum DispatchPath {
     HighDirect,
 }
 
+/// `ApplyDamageToCell` 0x00587180 dispatch bands.
+///
+/// The driver tests `(0x49 < overlay) && (overlay < 100)` for the low walker
+/// and `(0xCC < overlay) && (overlay < 0xE7)` for the high one, so 0x64/0x65
+/// and 0xE7/0xE8 are NOT routed to a walker from here — they fall through to
+/// the tileset-family branch.
+///
+/// That is deliberately narrower than the bands `DestroyBridge_Low` 0x0057BAA0
+/// and `DestroyBridge_High` 0x0057CCF0 accept once they are already running:
+/// their own axis classes union to 0x4A..=0x65 and 0xCD..=0xE8, and their
+/// neighbour probes test `overlay < 0x4A || 0x65 < overlay` and
+/// `overlay < 0xCD || 0xE8 < overlay`. Both bands are real; see
+/// `BridgeRuntimeState::is_low_destroy_overlay` for the wider pair.
+const fn is_low_dispatch_overlay(overlay: u8) -> bool {
+    0x49 < overlay && overlay < 100
+}
+
+/// High twin of [`is_low_dispatch_overlay`]. See its doc comment.
+const fn is_high_dispatch_overlay(overlay: u8) -> bool {
+    0xCC < overlay && overlay < 0xE7
+}
+
 impl DispatchPath {
     /// State-machine paths support the IonCannon 3-retry loop. Direct-overlay
     /// paths are single-shot regardless of warhead.
@@ -889,8 +911,8 @@ impl BridgeRuntimeState {
             return false;
         };
         match path {
-            DispatchPath::HighDirect => (0xCD..=0xE6).contains(&cell.overlay_byte),
-            DispatchPath::LowDirect => (0x4A..=0x63).contains(&cell.overlay_byte),
+            DispatchPath::HighDirect => is_high_dispatch_overlay(cell.overlay_byte),
+            DispatchPath::LowDirect => is_low_dispatch_overlay(cell.overlay_byte),
             DispatchPath::HighStateMachine | DispatchPath::LowStateMachine => {
                 // BR-02: the SM block (binary block A/B) gates on bridge tile
                 // FAMILY, not the overlay band. Its driver is overlay-first
@@ -960,8 +982,8 @@ impl BridgeRuntimeState {
     ) -> StateOutcome {
         let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
         match overlay {
-            Some(o) if (0xCD..=0xE6).contains(&o) => self.destroy_bridge_high(rx, ry, terrain),
-            Some(o) if (0x4A..=0x63).contains(&o) => self.destroy_bridge_low(rx, ry, terrain),
+            Some(o) if is_high_dispatch_overlay(o) => self.destroy_bridge_high(rx, ry, terrain),
+            Some(o) if is_low_dispatch_overlay(o) => self.destroy_bridge_low(rx, ry, terrain),
             _ => match self.cell(rx, ry).map(|c| c.role) {
                 Some(BridgeCellRole::Bridgehead) => {
                     self.bridgehead_advance_state(rx, ry, is_high, terrain)

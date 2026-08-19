@@ -2498,3 +2498,30 @@ fn from_resolved_terrain_defaults_to_variant0_when_pre_class_is_none() {
         BridgeheadAnchorClass::Variant0
     );
 }
+
+/// `ApplyDamageToCell` 0x00587180 routes to a walker on a narrower band than
+/// the walkers themselves accept. Its tests are `(0x49 < o) && (o < 100)` and
+/// `(0xCC < o) && (o < 0xE7)`, so 0x64, 0x65, 0xE7 and 0xE8 fall through to
+/// the tileset-family branch even though `DestroyBridge_Low` 0x0057BAA0 and
+/// `DestroyBridge_High` 0x0057CCF0 name them as valid axis classes
+/// (0x64/0xE7 NS, 0x65/0xE8 EW) once already running.
+#[test]
+fn apply_damage_dispatch_bands_are_narrower_than_the_walker_bands() {
+    assert!(!is_low_dispatch_overlay(0x49));
+    assert!(is_low_dispatch_overlay(0x4A));
+    assert!(is_low_dispatch_overlay(0x63));
+    assert!(!is_low_dispatch_overlay(0x64));
+    assert!(!is_low_dispatch_overlay(0x65));
+
+    assert!(!is_high_dispatch_overlay(0xCC));
+    assert!(is_high_dispatch_overlay(0xCD));
+    assert!(is_high_dispatch_overlay(0xE6));
+    assert!(!is_high_dispatch_overlay(0xE7));
+    assert!(!is_high_dispatch_overlay(0xE8));
+
+    // The walker-side bands, which legitimately include those four values.
+    assert!(BridgeRuntimeState::is_low_destroy_overlay(0x64));
+    assert!(BridgeRuntimeState::is_low_destroy_overlay(0x65));
+    assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE7));
+    assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE8));
+}
