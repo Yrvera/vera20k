@@ -1390,9 +1390,10 @@ mod tests {
     /// RESIDUAL — gamemd address 0x006FC612, calling
     /// `TechnoClass::IsOnBridge_ForFiring` 0x00703B10.
     ///
-    /// Mechanism: `MOV AL,[EDI+0x131]` at 0x006FC606 gates on a weapon-type
-    /// byte; the `SpawnManagerClass` work immediately after (0x006FC631,
-    /// `[ESI+0x2D0]`, call 0x006B7D30) identifies it as the spawner weapons.
+    /// Mechanism: `MOV AL,[EDI+0x131]` at 0x006FC606 gates on the weapon-type
+    /// byte that `WeaponTypeClass::ReadINI` 0x007720FA fills from the INI key
+    /// `Spawner=` (key string at 0x00849538); the call to
+    /// `SpawnManagerClass::CountAliveSpawns` 0x006B7D30 just after confirms it.
     /// When set, `IsOnBridge_ForFiring` non-zero returns FireError 6 at
     /// 0x006FCD29. That predicate is NOT the mismatch gate: it early-outs to 0
     /// when the object's own `OnBridge` byte +0x8C is set, then tests the
@@ -1400,8 +1401,9 @@ mod tests {
     /// qualified by that neighbour's orientation bit 0x800 matching the axis it
     /// lies on.
     ///
-    /// Trigger: a spawner-armed unit (aircraft carrier, Boomer sub) standing on
-    /// or immediately beside a bridge deck cell.
+    /// Trigger: a `Spawner=` unit (aircraft carrier, Boomer sub) standing
+    /// UNDER or immediately beside a bridge deck cell. Not on the deck — the
+    /// +0x8C early-out exempts a unit that is actually on it.
     ///
     /// Effect: gamemd refuses to launch spawns; VERA launches them.
     ///
@@ -1414,26 +1416,62 @@ mod tests {
     }
 
     /// RESIDUAL — gamemd address 0x006F7220, the arcing branch of
-    /// `TechnoClass::InRange` (the `param_4+0xB8 == 0` side).
+    /// `TechnoClass::InRange`.
     ///
-    /// Mechanism: that branch ends in a slope test whose success is additionally
-    /// qualified by `(cell->flags_140 & 0x100) == 0 ||
-    /// (target.Z - source.Z) < 3 * g_nTechnoInRangeLevelHeightLeptons`, i.e.
-    /// bridge cells relax the arc requirement only within three level heights.
+    /// Branch selector: `0x006F73F6 MOV CL,[EDX+0x29B]` with `EDX` = the
+    /// projectile at `WeaponType+0xA0`. `BulletTypeClass::ReadINI` 0x0046BFC4
+    /// fills +0x29B from the INI key `Arcing=` (key string at 0x0081B130). It
+    /// is NOT `WeaponType+0xB8`, which is read at 0x006F737F and gates only the
+    /// MinimumRange test.
     ///
-    /// Trigger: arcing weapons (V3, Dreadnought, Apocalypse rocket, artillery)
-    /// firing over or onto a bridge.
+    /// Clause, at 0x006F74D7–0x006F7504: the arc/slope test at 0x0048ABC0 must
+    /// pass in every case, and when it does, the shot is additionally refused
+    /// unless the TARGET's cell has flag 0x100 clear, or
+    /// `target.Z - source.Z < 3 * g_nTechnoInRangeLevelHeightLeptons`. A bridge
+    /// cell under the target therefore TIGHTENS the check with an extra height
+    /// ceiling; it does not relax it. Note this reads the target's cell, the
+    /// opposite of the gate at 0x006F75FB in the same function, which reads the
+    /// source's.
     ///
-    /// Effect: VERA's `compute_in_range_arcing_2d` is a documented 2D
-    /// fallthrough stub with no slope arc and no bridge clause at all, so it
-    /// neither blocks nor relaxes anything here.
+    /// Trigger: arcing weapons (V3, Dreadnought, artillery, Apocalypse rocket)
+    /// firing at something standing on a bridge deck.
     ///
-    /// Frequency: every arcing shot near a bridge — but the whole arc check is
-    /// stubbed, so this clause is downstream of a larger unported mechanism and
-    /// cannot be fixed on its own.
+    /// Effect: `compute_in_range_arcing_2d` is a documented 2D fallthrough stub
+    /// with neither the slope test nor this ceiling, so VERA allows arcing
+    /// shots at deck targets that gamemd refuses.
+    ///
+    /// Frequency: every arcing shot at a unit on a bridge. Bounded by the fact
+    /// that the whole arc check is stubbed, so this clause is downstream of a
+    /// larger unported mechanism and cannot be fixed on its own.
     #[test]
-    #[ignore = "gamemd 0x006F7220 arcing branch has a bridge-conditioned slope clause; VERA's arcing path is a 2D stub"]
-    fn inrange_arcing_branch_bridge_clause_is_unported() {
-        panic!("unimplemented: InRange 0x006F7220 arcing-branch bridge slope clause");
+    #[ignore = "gamemd 0x006F74D7 adds a height ceiling for arcing shots at bridge-cell targets; VERA's arcing path is a 2D stub"]
+    fn inrange_arcing_branch_bridge_ceiling_is_unported() {
+        panic!("unimplemented: InRange 0x006F74D7 arcing bridge height ceiling");
+    }
+
+    /// Guards the INCLUSIVE half of the gate's boundary pair (`JGE` at
+    /// 0x006F762F): a target exactly on the deck top is refused. Without this
+    /// the target comparison could be inverted to `>` and every other test in
+    /// this group would still pass.
+    #[test]
+    fn inrange_bridge_gate_target_boundary_is_inclusive() {
+        let terrain = terrain_with_bridge_cells(&[(5, 5)]);
+        let attacker = ground_attacker(5, 5, 0, "ATKR");
+        let mut entities = EntityStore::new();
+        let mut target = ground_target(6, 5, 0, "TGT");
+        target.on_bridge = true;
+        entities.insert(target);
+
+        let under = (5i64 * 256 + 128, 5i64 * 256 + 128, 0i64);
+        assert!(
+            !in_range_at(
+                &attacker,
+                under,
+                &TargetKind::Entity(200),
+                &terrain,
+                &entities
+            ),
+            "a target sitting exactly at the deck top must be refused"
+        );
     }
 }

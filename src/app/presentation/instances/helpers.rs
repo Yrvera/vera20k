@@ -142,13 +142,20 @@ fn tactical_bounded_entity_encounter_order(
     state: &AppState,
     bulk_register_live_buildings: bool,
 ) -> Vec<u64> {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return Vec::new();
     };
     let zoom = state.match_state.input.zoom_level.max(f32::EPSILON);
     let margin = 32.0 / zoom;
-    let (width_px, height_px) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (width_px, height_px) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let min_x = state.match_state.input.camera_x - margin;
     let min_y = state.match_state.input.camera_y - margin;
     let max_x = state.match_state.input.camera_x + width_px as f32 / zoom + margin;
@@ -340,7 +347,9 @@ pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
 /// Higher elevation (z) → slightly smaller depth (closer to camera).
 pub(crate) fn compute_sprite_depth(state: &AppState, screen_y: f32, z: u8) -> f32 {
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -914,5 +923,79 @@ mod tests {
             new_depth < building_depth,
             "the ground row draws the building first and the aircraft over it"
         );
+    }
+
+    /// RESIDUAL — gamemd address 0x0073B140,
+    /// `UnitClass::Draw_Sprite_With_BridgeFudge` (UnitClass vtable slot 0x1CC).
+    ///
+    /// Mechanism: when the unit's type has `TooBigToFitUnderBridge`
+    /// (`TechnoTypeClass+0xE16`) and the unit is at the open edge of a bridge
+    /// deck, and the sprite is taller than 0x10 px, gamemd issues TWO blits
+    /// instead of one — the upper `h - 16` rows at a draw priority of
+    /// `vtable+0x2EC(0, ..) - 5`, then a 16x16 strip at the bottom through
+    /// `vtable+0x2EC(2, ..)`. The lower strip therefore stays in front of the
+    /// deck while the body is occluded by it, which is what stops a tall unit
+    /// from being clipped away entirely as it drives under the span.
+    ///
+    /// Unlike `UnitClass::Draw_Body_And_Turret` 0x0073C5F0, this blitter does
+    /// NOT dispatch on `TechnoTypeClass+0xCA1` (Turret) first, so turreted
+    /// units take the split too.
+    ///
+    /// VERA has no split: `is_under_bridge_render_state` routes the whole
+    /// sprite into a separate bridge instance stream and
+    /// `apply_bridge_depth_bias` nudges its depth by `ZFudgeBridge`. One
+    /// sprite, one depth — the unit is either wholly in front of the deck or
+    /// wholly behind it. Whether the two compose to the same picture is
+    /// UNCHECKED and cannot be settled without a live frame comparison.
+    ///
+    /// Trigger: every frame a `TooBigToFitUnderBridge` unit is drawn at the
+    /// edge of a high bridge deck.
+    ///
+    /// Frequency: high. `TooBigToFitUnderBridge=true` is set on 37 stock YR
+    /// types including MTNK, HTNK, LTNK, TTNK, YTNK, MGTK, FV, TNKD, V3, ROBO,
+    /// UTNK and the whole destroyer/carrier/dreadnought line — i.e. nearly
+    /// every tank in the game. Any high bridge on any retail map puts this on
+    /// screen within the first few minutes of a match.
+    #[test]
+    #[ignore = "gamemd 0x0073B140 split-blits TooBigToFitUnderBridge units at a deck edge; VERA draws one biased sprite"]
+    fn draw_bridge_fudge_split_blit_is_unported() {
+        panic!("unimplemented: UnitClass::Draw_Sprite_With_BridgeFudge 0x0073B140 split blit");
+    }
+
+    /// RESIDUAL — the predicate feeding the draw above.
+    ///
+    /// gamemd gates the split on three things, in order:
+    /// 1. `TechnoTypeClass+0xE16` — `TooBigToFitUnderBridge`. VERA's
+    ///    `is_under_bridge_render_state` does not read it at all, so every
+    ///    unit is treated the same.
+    /// 2. `TechnoClass::IsOnBridge_ForFiring` 0x00703B10 — the object's own
+    ///    `OnBridge` byte +0x8C must be CLEAR, then either the object's own
+    ///    cell carries `+0x140` bit 0x100, or one of exactly FOUR orthogonal
+    ///    neighbours does AND that neighbour's orientation bit 0x800 matches
+    ///    the axis it lies on. VERA scans a 3x3 block, diagonals included, with
+    ///    no axis test — so it admits diagonal neighbours gamemd rejects and
+    ///    ignores the orientation bit entirely.
+    /// 3. `TechnoClass::CountAdjacentBridgeDeckTiles` 0x00703E70 must return 0.
+    ///    Despite the name it returns 0, 1 or 2, never a count: it samples the
+    ///    three neighbours at `DAT_0089F698`, `DAT_0089F690` and `DAT_0089F694`
+    ///    and tests whether `cell+0x38 - g_BridgeSet_TileSetBase + 1` falls in
+    ///    7..=16, skipping the 0xFF/0xFFFF no-tile sentinels. Zero means the
+    ///    unit is at the OPEN edge of the deck rather than under its middle.
+    ///    VERA has no counterpart, so it cannot distinguish edge from middle.
+    ///
+    /// Effect: VERA applies its bridge treatment to a wider and differently
+    /// shaped set of units than gamemd does — including units that are merely
+    /// diagonally adjacent to a bridge cell, and units in the middle of a span
+    /// where gamemd would leave the draw alone.
+    ///
+    /// Frequency: same as the split blit above — every frame near a bridge.
+    ///
+    /// Deliberately left as a record rather than a blind fix: narrowing the
+    /// predicate changes which units enter the bridge instance stream, and the
+    /// result of that change is only judgeable from a live frame.
+    #[test]
+    #[ignore = "gamemd gates the bridge draw on TooBigToFitUnderBridge + 0x00703B10 + 0x00703E70==0; VERA uses a 3x3 cell scan"]
+    fn draw_bridge_predicate_diverges_from_is_on_bridge_for_firing() {
+        panic!("unimplemented: bridge draw predicate 0x00703B10 / 0x00703E70");
     }
 }
