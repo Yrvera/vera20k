@@ -6,10 +6,7 @@ regardless of which tool is driving belongs here and nowhere else.
 ## What this project is
 
 A from-scratch Rust engine that runs **Yuri's Revenge** — a faithful, playable replacement for
-`gamemd.exe`, not a mod tool or viewer. Parses retail `.mix` and every asset format from scratch,
-reads `.mmx`/`.map` from WAE, simulates from `rules(md).ini` / `art(md).ini`, renders with wgpu
-(egui overlays, custom-drawn sidebar). Lockstep correctness is a hard requirement — all sim math
-is fixed-point. YR (`*md`) takes priority; RA2 is the fallback.
+`gamemd.exe`.
 
 Scale is the intentional exception to native storage limits: **20,000 units, 30 players**.
 Replace any native structure that caps scale, preserving deterministic and player-visible
@@ -17,23 +14,30 @@ behavior.
 
 ## The delivery bar
 
-> An experienced Yuri's Revenge player should be able to play ordinary stock skirmish matches for
-> 30–60 minutes, using any faction on representative retail maps, without repeatedly noticing that
-> the game behaves, looks, sounds, or responds differently from `gamemd.exe`. An expert
-> deliberately testing edge cases may still find differences.
+> Every implemented behavior matches the verified `gamemd.exe` decompile semantics exactly.
 
-Resolve ambiguous intent toward it. Fix what a player notices often; ten-second screens and edge
-cases wait while ordinary-play gaps remain. Exact byte/pixel/frame/audio equivalence is a future
-aspiration, not the current gate. **Internals are not the spec — the production experience is.**
-Investigate binary internals when they can change common behavior, RNG, ordering, persistence, or
-architecture; not to make every helper resemble the original.
+Resolve ambiguous intent toward it. "Verified" is the Evidence standard below — the decompiled
+body and its callsites actually read, this session or through a named research doc; exactness is
+judged against that reading, never against intuition about what the original probably does. The
+bar governs semantics, not structure: Rust-native architecture stands, and the charter's scale
+replacement deliberately diverges internally while preserving deterministic and player-visible
+behavior. Byte/pixel/frame/audio output equivalence follows the same rule — match it or record
+the residual. Where exactness cannot yet be proven or afforded, the honest outcome is a
+residual-named deferral, never an approximation absorbed as equivalent.
+
+Player-visibility × frequency still ranks the work: fix what a player notices often first; edge
+cases and ten-second screens wait while ordinary-play gaps remain. Ranking orders and defers
+work — it never settles a verdict. "A player won't notice" is itself a claim requiring proof,
+never a shortcut's justification. **The decompile is the spec; the production experience is how
+you check it landed.**
 
 ## Evidence
 
 Active YR `gamemd.exe`, retail INIs/assets, and observed production behavior are the reference.
 Never guess when uncertainty could change common gameplay, deterministic state, authority,
-lifecycle, persistence, commands, or shared architecture. Use evidence proportionally — a
-localized observable fix needs no exhaustive binary proof.
+lifecycle, persistence, commands, or shared architecture. Evidence scales in breadth, never in
+standard — a localized fix needs no transitive-closure mapping of the binary, but every behavior
+it lands still names its verified decompile source or an explicit UNCHECKED residual.
 
 - **DRIFT is the default verdict** for any difference in formula, mechanism, ordering, field,
   byte, or render composition — not equivalent because it looks internal, rare, sub-pixel, or
@@ -55,8 +59,6 @@ localized observable fix needs no exhaustive binary proof.
 - Scans and traces sample; a pass with no findings certifies nothing.
 - **Every commit changing sim behavior names its gamemd source** — a live decompile citation, a
   named research doc, or an explicit "VERA-internal, gamemd equivalent UNCHECKED".
-- State what was observed, what was tested, what remains unknown. Never declare exact victory from
-  approximate evidence.
 
 ## Sources of truth
 
@@ -75,13 +77,10 @@ constants. `rules(md).ini` = gameplay data, `art(md).ini` = all visual/animation
 RA2 base INIs beneath them — then optional `LANGRULE.INI`, the mode INI, and the map INI in that
 order. Use the in-repo `ini/`, never an external mod repo.
 
-Inspect retail assets with the `asset` CLI (`cargo run -q --release --bin asset -- <verb>`,
-`--help` lists verbs) or the `asset-browser` MCP server, not another one-off binary. Its palette
-choice is inferred, so a plausible render is not evidence it is right; voxels render body-only;
-`parse-check` "ok" means only that `from_bytes` returned Ok. Navigate research with the
-`research-index` MCP server — top-N search ranks for triage and does not enumerate, so find the
-anchor, expand, and read cited sections before editing. Check modification times for a parallel
-session's in-progress output and extend it rather than duplicating.
+Inspect retail assets with the `asset` CLI or the `asset-browser` MCP server, never another
+one-off binary. Its palette choice is inferred — a plausible render is not evidence it is right;
+voxels render body-only; `parse-check` "ok" means only that parsing returned Ok. Navigate research
+with the `research-index` MCP server — top-N search ranks for triage and does not enumerate.
 
 **Do not create a research document unless code or a test lands in the same session.** Prose rots
 silently while a test goes red. Convert a doc into a test only while already touching that system;
@@ -107,8 +106,9 @@ semantics, same-tick consequences, registration/removal.
 - Plain functions implement behavior but commit state in verified native order.
 - Recurring primitives — radio links, mission state machines, locomotor piggybacking, dock
   reservations, authority handoffs — are **modeled as mechanisms**, not replaced by constants for
-  their common cases. Approximate locally only when the behavior is clear, the trigger bounded, no
-  deterministic or architectural debt is created, and the residual is recorded.
+  their common cases. Approximate locally only when the gamemd behavior has been read, the trigger
+  is bounded, no deterministic or architectural debt is created, and the divergence is recorded as
+  a deferred DRIFT against the bar — an approximation is a deferral, never an equivalent.
 - Parallel helpers must be pure/read-only, or commit deterministically without changing
   player-visible ordering, RNG consumption, or same-tick visibility.
 
@@ -176,18 +176,10 @@ it before any binary work. The rules that bind everywhere:
   `--sync-ghidra-labels`, or the user directly requests synchronization. `--no-sync-ghidra-labels`
   or any read-only request disables it. Workers are always read-only; after all readers stop, only
   the root or sole agent may mutate Ghidra, serially.
-- **Apply only certain, low-risk metadata.** A function label requires the exact boundary, behavior,
-  owner/receiver, and relevant active caller binding. A global/data label requires the exact storage
-  boundary and size, verified role, writer/initializer, consuming use, and active data binding. If
-  identity or binding is uncertain, keep `FUN_*`/`DAT_*`; an evidence comment may record only the
-  verified partial fact and must state the uncertainty. A synthetic memory reference requires proved
-  source instruction/table-slot bytes, exact target, operand, reference kind, and confirmed absence
-  of an equivalent reference. Never infer metadata from Rust comments, research prose, YRpp,
-  neighboring patterns, or an existing Ghidra name, and never remove analyzer references
-  automatically. After every authorized mutation: `save_program`, read it back, then continue. If
-  write tools are unavailable, report the queue without claiming application. Function creation,
-  prototypes, structs, field/type edits, variable renames, and byte patches require separate explicit
-  per-task authorization.
+- **Apply only certain, low-risk metadata** — full criteria in `ghidra-workflow.md`. If identity
+  or binding is uncertain, keep `FUN_*`/`DAT_*`. After every authorized mutation: `save_program`,
+  read it back, then continue. Function creation, prototypes, structs, field/type edits, variable
+  renames, and byte patches require separate explicit per-task authorization.
 - **Never invent** offsets, addresses, vtable slots, fields, enum values, or labels; not verified
   this session → `UNKNOWN`/`UNCHECKED`. Cite the decompile call inline for anything written into a
   doc, and treat your own prior claims as unverified.
@@ -199,20 +191,15 @@ it before any binary work. The rules that bind everywhere:
 
 ## System Map
 
-`docs/system-map/` is navigation — not parity proof, completion ledger, or work queue, and the
-surface is frozen (2026-07-27). Use `loop` and `mechanism` lookups *after* you have a symptom;
-never select work from missing fields or unmapped rows. Extend a loop only when verified work
-touches that system, updating just the affected nodes/edges, then run
-`python -m tools.system_map check --require-sources`. Never bulk-import call adjacency,
-bulk-annotate, or hand-edit generated files.
+`docs/system-map/` is navigation — not parity proof, completion ledger, or work queue. Use
+`loop`/`mechanism` lookups after you have a symptom; extend only the nodes/edges verified work
+touches, then run `python -m tools.system_map check --require-sources`.
 
 ## Change management
 
 - Reduce the request to a compact task contract — player scenario, scope, non-deferrable
   constraints, smallest production validation, residual risk, stop condition — then take the
   simplest robust Rust-native solution.
-- Read the relevant code and data before editing; generate multiple hypotheses before a
-  non-trivial fix.
 - **Debug end-to-end first** — log each pipeline stage (lookup → transform → output) and run once
   before deep-diving any stage statically.
 - **Verify the end-to-end result**, not just compilation. When removing or refactoring, trace all
@@ -221,8 +208,6 @@ bulk-annotate, or hand-edit generated files.
   build/place/sell, dock approach/link/deposit/depart); a symptom in one stage often originates in
   another.
 - **If a fix makes things worse, stop and reassess** instead of layering more changes.
-- No autonomous bulk refactors, renames, or rewrites without explicit approval.
-- **A shadow-mode slice flips to authoritative within two sessions or gets reverted.**
 
 ## Parallel sessions
 
@@ -259,8 +244,7 @@ bulk-annotate, or hand-edit generated files.
   plus the touched module only, `cargo test -p vera20k --lib <module_path>::` — always `--lib`, or
   you also link 13 unrelated side binaries. *PR integration/merge certification:* one full
   `cargo test -p vera20k --lib`, run once before the PR is declared ready for `main`, not per
-  slice or per commit. *Nightly:* full suite plus
-  slow/ignored retail certification; a red nightly is stop-the-line.
+  slice or per commit.
 - **Never run cargo commands in parallel** from one session; check first with
   `Get-Process cargo,rustc -ErrorAction SilentlyContinue` and wait if another session owns Cargo. A
   full build takes minutes — start it once in the background, then wait on the `test result:` line
