@@ -3045,8 +3045,11 @@ mod tests {
     ///
     /// Why this is not a small fix: porting the resolver alone gives dead
     /// code. It has to land together with the `EstimateZoneCost` consumer,
-    /// because that is what decides which endpoint flag each side gets, and
-    /// this crate has no counterpart for that function. Wiring the resolver
+    /// because that is what decides which endpoint flag each side gets. This
+    /// crate has a dormant `zone_cost_estimate`
+    /// (`sim::pathfinding::zone_search`), but it is `#[allow(dead_code)]`
+    /// with only test callers, so there is no live consumer to resolve
+    /// endpoints for. Wiring the resolver
     /// into `astar_search` at a guessed point would be inventing behaviour.
     #[test]
     #[ignore = "gamemd 0x00583180 resolves A* endpoints through a bridge record; VERA has no port and no EstimateZoneCost consumer"]

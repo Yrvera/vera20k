@@ -222,8 +222,11 @@ mod tests {
 
     /// RESIDUAL — gamemd address 0x007283C0, `MapClass::ReadTubesINI`.
     ///
-    /// Trigger: a `[Tubes]` row with fewer than six comma-separated fields, or
-    /// with no `-1` inside its first 100 path fields.
+    /// Trigger, corrected: a `[Tubes]` row that runs out of fields before it
+    /// reaches either a `-1` or the native loop's 100th slot. A row that
+    /// simply has no sentinel inside 100 fields is NOT this case - since the
+    /// truncation fix in this module it is kept at 99 steps, matching the
+    /// native counter.
     ///
     /// Effect: gamemd calls `CRT__strtok` 0x007C9CC2 past the end of the row,
     /// gets NULL, and passes it straight to `CRT__atoi` 0x007C9B72, which

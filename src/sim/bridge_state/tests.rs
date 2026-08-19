@@ -2619,8 +2619,6 @@ fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
 /// cell level feeds ground height, which feeds the bridge transition predicate
 /// and unit Z.
 ///
-/// they happen, and the effect persists for the rest of the game.
-///
 /// **Blocker, established 2026-08-19.** This cannot be ported as written.
 /// Every branch in the tail is selected by comparing
 /// `cell+0x38 - g_WoodBridgeSet_TileSetBase + 1` against runtime tile-class

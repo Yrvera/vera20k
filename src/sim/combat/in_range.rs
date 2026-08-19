@@ -1375,14 +1375,20 @@ mod tests {
     /// 0x006FCCA7), the call returns FireError 5 at 0x006FCCAE. Reached under
     /// the same `OnBridge`-mismatch guard as the gate above.
     ///
-    /// Trigger: a warhead carrying byte +0x159 fired across a deck at a large
-    /// height difference. The INI key behind +0x159 has NOT been resolved, so
-    /// the frequency clause cannot be written yet — that is itself the reason
-    /// this stays recorded rather than dismissed.
+    /// Trigger: a warhead whose `Parasite=` flag is set, fired across a
+    /// deck at a height difference over two level heights. The byte is
+    /// written by `WarheadTypeClass::ReadINI` at 0x0075D84E from the key
+    /// string at 0x0081717C, which `read_memory` gives as `Parasite`.
     ///
     /// Effect: unmodelled; VERA allows shots gamemd refuses.
+    ///
+    /// Frequency: bounded to the three stock warheads carrying
+    /// `Parasite=yes` in `ini/rulesmd.ini` - `[Parasite]` (Terror Drone),
+    /// `[ParasiteDog]` (attack dog) and `[ParasitePlus]` (Giant Squid) -
+    /// each attacking across a bridge deck. Uncommon, but all three are
+    /// ordinary skirmish units rather than edge cases.
     #[test]
-    #[ignore = "gamemd 0x006FCCAE height clause on warhead byte +0x159 is unported; INI key unresolved"]
+    #[ignore = "gamemd 0x006FCCAE Parasite-warhead height clause across a deck is unported"]
     fn getfireerror_bridge_height_clause_is_unported() {
         panic!("unimplemented: GetFireError 0x006FCCAE warhead +0x159 height clause");
     }

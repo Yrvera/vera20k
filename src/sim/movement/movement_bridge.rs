@@ -822,18 +822,40 @@ mod bridge_constant_tests {
     /// unproved binding below matters rather than being a technicality:
     /// a wrong port here would fire constantly.
     ///
-    /// **The binding is not proved.** 0x004DDC40 has no CALL xrefs — it is
-    /// reached through a vtable slot, and the slot could not be established
-    /// this session: the four DATA xrefs sit at a uniform +0xBC offset from
-    /// four candidate vtable bases, but callsites of `[reg + 0xbc]` resolve to
-    /// unrelated behaviour (`FlyLocomotionClass::Layer`, `Mission_Patrol`,
-    /// `Is_Cell_Harvestable`), so at least one base assumption is wrong.
-    /// Until the slot and a live callsite are proved, it is not established
-    /// that gamemd drives its cell-boundary bridge transition through this
-    /// function at all — which is why this is recorded rather than ported.
+    /// **The binding IS proved — corrected 2026-08-19.** An earlier version of
+    /// this note claimed the vtable slot could not be established and that it
+    /// was therefore unknown whether gamemd drives its cell-boundary bridge
+    /// transition through this function. Both claims were wrong, and the
+    /// reasoning behind them was a category error: a search for callsites of
+    /// `[reg + 0xBC]` was read as a list of callees, when it is a list of the
+    /// functions CONTAINING those callsites.
+    ///
+    /// The slot is **+0xBC**, fixed from the constructors that write each
+    /// vtable: `AircraftClass` 0x007E22A4 (written at 0x00413D87),
+    /// `FootClass` 0x007E8C94 (0x004D345D), `InfantryClass` 0x007EB058
+    /// (0x00517ACC) and `UnitClass` 0x007F5C70 (0x0073543A) all hold
+    /// 0x004DDC40 at base+0xBC — `read_memory 0x007E8D50` gives
+    /// `40 dc 4d 00` — while `BuildingLightClass` 0x007E3AD0 holds the
+    /// ObjectClass body 0x005F6A70 at the same slot. FootClass overriding
+    /// ObjectClass at one slot is the expected pair.
+    ///
+    /// The live caller is `FootClass::PerCellProcess`, `CALL dword ptr
+    /// [EDX + 0xBC]` at **0x004D8BE6** with the receiver as `this` — the
+    /// cell-boundary hook itself. So gamemd does drive the transition through
+    /// this predicate, and the divergence in the formulas above is real rather
+    /// than speculative.
+    ///
+    /// Remaining blocker, and it is the formula rather than the binding:
+    /// porting it means replacing a comparison of two `PathCell::ground_level`
+    /// values with two `CellClass::GetGroundHeight` results taken at exact
+    /// coordinates. `compute_bridge_transition` receives cells, not coords, so
+    /// the port needs coordinates and terrain threaded through the movement
+    /// transition path — a change to the predicate every ground unit crosses a
+    /// cell boundary with. That is its own slice, and it is the reason this is
+    /// still recorded; it is no longer an evidence gap.
     #[test]
-    #[ignore = "gamemd 0x005F6A70 tests ground-height differences; VERA tests level equality and flags. Vtable binding UNPROVED"]
-    fn should_be_on_bridge_predicate_differs_and_binding_is_unproved() {
+    #[ignore = "gamemd 0x005F6A70 tests ground-height differences; VERA tests level equality and flags. Binding proved at vtable+0xBC, caller 0x004D8BE6"]
+    fn should_be_on_bridge_predicate_differs_from_compute_bridge_transition() {
         panic!(
             "unproved binding: ShouldBeOnBridge 0x005F6A70 / 0x004DDC40 vs compute_bridge_transition"
         );

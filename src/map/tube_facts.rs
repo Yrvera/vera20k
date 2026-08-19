@@ -15,8 +15,11 @@
 /// `GetClassID` 0x007286D0, `Compute_CRC` 0x00728630 (which feeds 106 CRC
 /// words per tube: the four i16 endpoints, the i32 direction, all 100 path
 /// dwords and the length. The Ghidra plate on 0x00728630 says 105 and is
-/// wrong by one; that is a read-only candidate correction)
-/// map-editor save-side compaction. Tube records are immutable after load, so
+/// wrong by one; that is a read-only candidate correction) and
+/// `MapClass::WriteTubesINI` 0x00728280, the map-editor save-side
+/// compaction that rewrites the section and resets each entry cell's
+/// +0x116 tube index to -1; its sole caller is `Save_Scenario_Map_File`,
+/// an editor path with no in-match trigger. Tube records are immutable after load, so
 /// none of them can move gameplay state. gamemd equivalent UNCHECKED.
 ///
 /// Compact TubeClass array index.
