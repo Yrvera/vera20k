@@ -2555,38 +2555,78 @@ fn ramp_pavement_and_isotile_branch_is_unported() {
     );
 }
 
-/// RESIDUAL — gamemd addresses 0x00576770 `MapClass::UpdateAdjacentBridges_High`,
-/// 0x00571050 `MapClass::UpdateAdjacentBridges`, and the edge-tile writers they
+/// RESIDUAL - gamemd addresses 0x00576770 `MapClass::UpdateAdjacentBridges_High`,
+/// 0x00571050 `MapClass::UpdateAdjacentBridges`, and the edge writers they
 /// drive, 0x00576200 `UpdateBridgeEdgeTiles_High` and 0x00570AE0
 /// `UpdateBridgeEdgeTiles_Low`.
 ///
-/// Mechanism (0x00576770 decompiled): walk the eight directions from the
-/// damaged cell until a neighbour carries `+0x140 & 0x500`; pick a start
-/// coordinate from that neighbour's 0x100 / 0x400 / 0x80 bits; walk along the
-/// span while cells stay inside the map rect and carry a non-null entry in
-/// `MapClass+0x13C`; classify the landed cell's
-/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` against four runtime tile-class
-/// constants paired with a `+0x11A` sub-tile value of 8, 5, 12 or 7; and call
-/// `UpdateBridgeEdgeTiles_High` with mode 2 or 4, dirtying the screen rect only
-/// when the returned rect actually changed.
+/// **Both bodies re-decompiled 2026-08-19. The earlier version of this note
+/// called the gap purely visual and said the writers touch no damage state,
+/// pathing field or RNG. That is wrong**, and it is the reason this is being
+/// corrected rather than implemented: a port written against the old note
+/// would have been scoped as a tile-art fix and would have silently taken on
+/// bridge-flag and overlay writes.
 ///
-/// `compute_adjacent_bridges_dirty` reproduces only the first step's *result* —
-/// which two perpendicular cells to mark dirty. Neither the span walk, the
-/// tile-class classification, nor the edge-tile rewrite happens.
+/// Entry (0x00576770): walk the eight directions from the damaged cell until
+/// a neighbour carries `+0x140 & 0x500`; pick a start coordinate from that
+/// neighbour's 0x100 / 0x400 / 0x80 bits; walk along the axis chosen by the
+/// neighbour's `0x800` bit while cells stay inside the map rect and carry a
+/// non-null entry in `MapClass+0x13C`; classify the landed cell's
+/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` against SIX theater tileset
+/// globals paired with a `+0x11A` sub-tile value of 8, 5, 12 or 7; and call
+/// `UpdateBridgeEdgeTiles_High` with mode 2 or 4, dirtying the screen rect
+/// through `TacticalClass::DirtyScreenRect` only when the returned rect
+/// actually changed.
 ///
-/// Trigger: every bridge collapse, on the cells where a dropped span meets the
-/// structure that survives it.
+/// The globals are theater INI tileset indices written by
+/// `Read_Theater_TileSets_INI`; `DAT_00ABAD30` is `[General] BridgeMiddle1`
+/// (key string 0x008292C4, stored at 0x00545C1E), which `map::theater`
+/// already parses. The remaining five were not resolved to their keys.
 ///
-/// Effect: the rim tiles at the break keep their intact art. The span is gone
-/// and its edges still look joined.
+/// **What 0x00576200 actually does, and why this is not a visual slice:** it
+/// walks up to 30 cells along the span looking for the tile class matching
+/// its mode, unions a screen rect through
+/// `TacticalClass::CoordsToClient2`, and at the anchor-flag transition it
+/// calls `NotifyBridgeSpanCollapse`, then
+/// `CellClass::SetBridgeDirection_NESW` with direction 0 (mode 2) or 6
+/// (mode 4), writes `cell+0x11E = 0`, writes `cell+0x44 = -1` clearing the
+/// overlay, calls `RadarClass::MarkTerrainDirty`, and re-enters itself.
 ///
-/// Frequency: every collapse on any map with a bridge. Purely visual — the
-/// walk writes iso-tile ids and a dirty rect, and touches no damage state,
-/// pathing field or RNG.
+/// `SetBridgeDirection` is the writer of the `0x100` and `0x800` bits in
+/// `cell+0x140`. Those bits are read by the pathfinding zone build, the
+/// destroy and repair walkers, `CheckBridgeTraversal` 0x004D9C60 and the
+/// render predicate `IsOnBridge_ForFiring` 0x00703B10. `cell+0x44` is the
+/// overlay byte the destroy walkers match their bands against. So this
+/// function re-stamps sim-visible bridge topology at collapse time; it is not
+/// rim art.
+///
+/// `compute_adjacent_bridges_dirty` reproduces only the first step's
+/// *result* - which two perpendicular cells to mark dirty. Neither the span
+/// walk, the tile classification, the re-stamp, nor the overlay clear
+/// happens.
+///
+/// Trigger: every bridge collapse. Confirmed from callers - eight call sites,
+/// all in `ProcessBridgeDamageStateMachine_High` 0x00576BB0 and both hut-death
+/// destroy paths `MapClass::DestroyBridge_High_OnHutDeath` 0x005745B4 and
+/// `_Low_OnHutDeath` 0x005751D0.
+///
+/// Effect: the rim tiles at the break keep their intact art, AND the cells at
+/// the break keep bridge flags and an overlay id that gamemd clears. The
+/// second half is the part that matters: VERA's own predicates keep reading a
+/// span the engine has already unstamped.
+///
+/// Frequency: every collapse on any map with a bridge.
+///
+/// Blocker, restated: this is not a slice. It needs the five unresolved
+/// theater tileset keys, a `+0x11A` sub-tile reader, the `MapClass+0x13C`
+/// span array, a `SetBridgeDirection` re-stamp path, and a screen-rect union
+/// - and because it writes flags the pathfinder and the render predicate
+/// read, it needs the same evidence bar as a sim change rather than a render
+/// one.
 #[test]
-#[ignore = "gamemd rewrites bridge edge tiles after a collapse (0x00576770 -> 0x00576200); VERA only marks the two perpendicular cells dirty"]
+#[ignore = "gamemd 0x00576770 -> 0x00576200 re-stamps bridge flags and clears the overlay at a collapse break, not just edge art; VERA does neither"]
 fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
-    panic!("unimplemented: UpdateAdjacentBridges / UpdateBridgeEdgeTiles edge rewrite");
+    panic!("unimplemented: UpdateAdjacentBridges / UpdateBridgeEdgeTiles span walk and re-stamp");
 }
 
 /// RESIDUAL — gamemd addresses 0x00570050 `ProcessBridgeDestruction_Low`,
