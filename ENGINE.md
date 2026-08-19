@@ -17,23 +17,32 @@ behavior.
 
 ## The delivery bar
 
-> An experienced Yuri's Revenge player should be able to play ordinary stock skirmish matches for
-> 30–60 minutes, using any faction on representative retail maps, without repeatedly noticing that
-> the game behaves, looks, sounds, or responds differently from `gamemd.exe`. An expert
-> deliberately testing edge cases may still find differences.
+> Every implemented behavior matches the verified `gamemd.exe` decompile semantics exactly —
+> formulas, thresholds, ordering, RNG consumption, timer semantics, state reads/writes, same-tick
+> consequences — or carries a recorded residual naming where and why it does not yet.
 
-Resolve ambiguous intent toward it. Fix what a player notices often; ten-second screens and edge
-cases wait while ordinary-play gaps remain. Exact byte/pixel/frame/audio equivalence is a future
-aspiration, not the current gate. **Internals are not the spec — the production experience is.**
-Investigate binary internals when they can change common behavior, RNG, ordering, persistence, or
-architecture; not to make every helper resemble the original.
+Resolve ambiguous intent toward it. "Verified" is the Evidence standard below — the decompiled
+body and its callsites actually read, this session or through a named research doc; exactness is
+judged against that reading, never against intuition about what the original probably does. The
+bar governs semantics, not structure: Rust-native architecture stands, and the charter's scale
+replacement deliberately diverges internally while preserving deterministic and player-visible
+behavior. Byte/pixel/frame/audio output equivalence follows the same rule — match it or record
+the residual. Where exactness cannot yet be proven or afforded, the honest outcome is a
+residual-named deferral, never an approximation absorbed as equivalent.
+
+Player-visibility × frequency still ranks the work: fix what a player notices often first; edge
+cases and ten-second screens wait while ordinary-play gaps remain. Ranking orders and defers
+work — it never settles a verdict. "A player won't notice" is itself a claim requiring proof,
+never a shortcut's justification. **The decompile is the spec; the production experience is how
+you check it landed.**
 
 ## Evidence
 
 Active YR `gamemd.exe`, retail INIs/assets, and observed production behavior are the reference.
 Never guess when uncertainty could change common gameplay, deterministic state, authority,
-lifecycle, persistence, commands, or shared architecture. Use evidence proportionally — a
-localized observable fix needs no exhaustive binary proof.
+lifecycle, persistence, commands, or shared architecture. Evidence scales in breadth, never in
+standard — a localized fix needs no transitive-closure mapping of the binary, but every behavior
+it lands still names its verified decompile source or an explicit UNCHECKED residual.
 
 - **DRIFT is the default verdict** for any difference in formula, mechanism, ordering, field,
   byte, or render composition — not equivalent because it looks internal, rare, sub-pixel, or
@@ -107,8 +116,9 @@ semantics, same-tick consequences, registration/removal.
 - Plain functions implement behavior but commit state in verified native order.
 - Recurring primitives — radio links, mission state machines, locomotor piggybacking, dock
   reservations, authority handoffs — are **modeled as mechanisms**, not replaced by constants for
-  their common cases. Approximate locally only when the behavior is clear, the trigger bounded, no
-  deterministic or architectural debt is created, and the residual is recorded.
+  their common cases. Approximate locally only when the gamemd behavior has been read, the trigger
+  is bounded, no deterministic or architectural debt is created, and the divergence is recorded as
+  a deferred DRIFT against the bar — an approximation is a deferral, never an equivalent.
 - Parallel helpers must be pure/read-only, or commit deterministically without changing
   player-visible ordering, RNG consumption, or same-tick visibility.
 
