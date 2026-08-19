@@ -6286,8 +6286,19 @@ pub(crate) fn resolve_attacker_fire(
     //      fire. Frequency: uncommon — needs the launcher parked under a span,
     //      which players avoid because it blocks line of sight anyway.
     //      Downstream risk: none — the gate only suppresses a launch, it feeds
-    //      nothing. The exact 0x100/0x800 flag meanings and the four direction
-    //      offsets are UNCHECKED and must be traced before implementing.
+    //      nothing.
+    //
+    //      Blocker updated 2026-08-19: the flags and offsets are no longer
+    //      UNCHECKED. 0x100 is "cell belongs to a bridge", 0x800 is the span's
+    //      axis bit, and the four offsets are `g_DirectionOffsets` 0x0089F688
+    //      indices 4/0/2/6 — S, N, E, W — with N and S requiring 0x800 SET and
+    //      E and W requiring it CLEAR (table filled at runtime from 0x0049F2F0).
+    //      The predicate itself is now ported, as
+    //      `app::presentation::instances::helpers::is_on_bridge_for_firing`.
+    //      What blocks this gate is placement, not evidence: that function sits
+    //      above the sim boundary and `sim/` must never depend on `app/`, so
+    //      wiring it here means moving the predicate down to `map/bridge_facts`
+    //      first and having both callers read it there.
     //   2. `this->vtable+0x380` non-zero → error 6. **NOT MODELLED**; the slot's
     //      identity is UNCHECKED.
     //   3. `SpawnManagerClass::CountAliveSpawns == 0` → error 3. MODELLED below.
