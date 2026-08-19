@@ -491,15 +491,30 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
     SetBridgeDirectionResult { actions }
 }
 
-/// Outcome of one perpendicular `UpdateRamp_*_High`-style call. Mirrors the
-/// inner side effects of binary `UpdateRamp_NS_DamageA_High @ 0x00572230` and
-/// peers (HIGH §11.1).
+/// Outcome of one perpendicular `UpdateRamp_*` call. One Rust function stands
+/// in for all sixteen native ramp updaters, which are compiled twins differing
+/// only in the direction constant their caller passes:
 ///
-/// Currently models only the **anchor-flag-gated state-byte transition**.
-/// The pavement/bridgehead-overlay-write branch fires off-screen
-/// (`SetOverlayAndPropagate` / `ToggleBridgePavement`) and is deferred until
-/// the runtime-initialized tile-class constants are observed live —
-/// see plan §"Deferred to Implementation".
+/// HIGH — `UpdateRamp_NS_DamageA` 0x00572230, `NS_DamageB` 0x00572330,
+/// `NS_CollapseA` 0x00572440, `NS_CollapseB` 0x005727E0,
+/// `EW_DamageA` 0x00572B80, `EW_DamageB` 0x00572C90,
+/// `EW_CollapseA` 0x00572DA0, `EW_CollapseB` 0x00573170.
+/// LOW — `NS_DamageA` 0x0056ED40, `NS_DamageB` 0x0056EE40,
+/// `NS_CollapseA` 0x0056EF50, `NS_CollapseB` 0x0056F2F0,
+/// `EW_DamageA` 0x0056F690, `EW_DamageB` 0x0056F7A0,
+/// `EW_CollapseA` 0x0056F8B0, `EW_CollapseB` 0x0056FC80.
+///
+/// 0x00572230 decompiled 2026-08-19. It steps one cell along
+/// `g_DirectionOffsets[dir & 7]`, then does two independent things:
+/// 1. If the target carries `+0x140` bit 0x80, promote its `+0x11E` state
+///    byte: `< 4` becomes 4, `== 5` becomes 6. **This is the part modelled
+///    here.**
+/// 2. Unconditionally, map `cell+0x38 - g_BridgeSet_TileSetBase + 1` against
+///    three runtime tile-class constants and either call
+///    `MapClass::ToggleBridgePavement` 0x0056E990 or
+///    `MapClass::FloodFillIsoTileType`. **Not modelled** — see
+///    `ramp_pavement_and_isotile_branch_is_unported` in
+///    `sim::bridge_state::tests`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RampOutcome {
     /// True if the target cell's `damage_state` was mutated (target was an

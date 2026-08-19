@@ -2525,3 +2525,32 @@ fn apply_damage_dispatch_bands_are_narrower_than_the_walker_bands() {
     assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE7));
     assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE8));
 }
+
+/// RESIDUAL — gamemd addresses 0x00572230 (and its fifteen compiled twins,
+/// enumerated on `crate::sim::bridge_specs::RampOutcome`).
+///
+/// Mechanism: after the state-byte promotion this crate does model, every
+/// ramp updater unconditionally computes
+/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` on the perpendicular target and
+/// branches on three runtime tile-class constants: two of them call
+/// `MapClass::ToggleBridgePavement` 0x0056E990 with `(coord, 1, 0)`, and two
+/// more call `MapClass::FloodFillIsoTileType` to repaint the ramp iso-tile
+/// across its connected region. VERA runs neither.
+///
+/// Trigger: any damage or collapse step on a bridge whose anchor has a ramp
+/// or bridgehead neighbour — i.e. essentially every hit that damages a span.
+///
+/// Effect: the ramp keeps its intact iso-tile art and its pavement state after
+/// the span it leads to has been damaged or dropped. The bridge deck changes,
+/// the approach ramp does not.
+///
+/// Frequency: high on any map with a bridge that gets attacked, which is most
+/// matches on most retail maps carrying one. The residual is purely visual —
+/// no pathing, damage or RNG consequence was found in 0x00572230.
+#[test]
+#[ignore = "gamemd ramp updaters also toggle pavement and flood-fill the ramp iso-tile; VERA only promotes the state byte"]
+fn ramp_pavement_and_isotile_branch_is_unported() {
+    panic!(
+        "unimplemented: ToggleBridgePavement / FloodFillIsoTileType branch of the ramp updaters"
+    );
+}
