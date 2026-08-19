@@ -2784,3 +2784,31 @@ fn hut_span_scan_walks_ew_class_overlays_along_y() {
         "walking Y off a single row finds nothing, which is what proves the axis"
     );
 }
+
+/// The one layout where Y-major and X-major disagree, and therefore the only
+/// test that actually pins 0x00587410's scan order.
+///
+/// The 5x5 around (6, 6) spans x 4..=8, y 4..=8. Exactly two destroy-band cells
+/// sit inside it: (8, 6) = (cx+2, cy) and (6, 8) = (cx, cy+2). The native's
+/// outer counter is Y (0x00587443) and its inner is X (0x00587447), so the
+/// dy=+2 row is visited after the dy=0 row and **(6, 8) is the surviving
+/// seed**. The CABHUT death path's `hut_destroy_5x5_scan` is dx-outer and would
+/// visit the dx=+2 column last, keeping (8, 6) instead.
+///
+/// Both are NS-class overlays, so both walk along X. (8, 6) continues east out
+/// of the block to a collapsed anchor at (11, 6); (6, 8) dead-ends with no
+/// neighbour either way. A port using the wrong order answers true.
+#[test]
+fn hut_span_scan_order_is_y_major_not_x_major() {
+    let mut state = BridgeRuntimeState::default();
+    // (8, 6): NS-class, walks X, reaches an anchor outside the 5x5.
+    seed_overlay_row(&mut state, 6, 8..11, 0xCD);
+    seed_overlay_row(&mut state, 6, 11..12, 0xE7);
+    // (6, 8): NS-class, walks X, isolated - no neighbour east or west.
+    seed_overlay_row(&mut state, 8, 6..7, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "Y-major keeps (6, 8), which dead-ends; an X-major scan would keep          (8, 6) and wrongly answer true"
+    );
+}

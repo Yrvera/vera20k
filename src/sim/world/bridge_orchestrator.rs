@@ -267,35 +267,46 @@ pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
     )
 }
 
-/// gamemd's `BridgeRepairHut` death path scans the 5x5 hut-local window
-/// X-major: `x = -2..=2`, then `y = -2..=2`. The engineer repair path uses
-/// the shared Y-major helper, so hut collapse keeps its own ordering here.
 /// Overlay values a fully collapsed span leaves on its anchor: `0xE7` / `0xE8`
 /// on the high side, `0x64` / `0x65` on the low side. `DestroyBridgeWalker_*`
 /// writes them on final collapse and nothing else produces them.
 const HIGH_COLLAPSED_ANCHORS: [u8; 2] = [0xE7, 0xE8];
 const LOW_COLLAPSED_ANCHORS: [u8; 2] = [0x64, 0x65];
 
-/// The overlay half of `MapClass::FindBridgeConnection_Predicate` 0x00587410 —
+/// The overlay half of `MapClass::FindBridgeConnection_Predicate` 0x00587410 -
 /// the cursor-side "is there anything here to repair" test behind the engineer
 /// cursor over a bridge repair hut.
 ///
 /// Native shape: scan the 5x5 block around the hovered cell; a cell whose
 /// overlay falls in a destroy band selects the low or high family, and the walk
-/// then follows the axis PERPENDICULAR to the overlay's own class — an NS-class
-/// overlay walks along X, an EW-class overlay along Y — in both directions,
+/// then follows the axis PERPENDICULAR to the overlay's own class - an NS-class
+/// overlay walks along X, an EW-class overlay along Y - in both directions,
 /// continuing while the overlay stays inside the family band and returning true
 /// the moment a collapsed anchor appears.
 ///
-/// Not reproduced: the native's other branch. The two are NOT exclusive - all
-/// four scan cases write the same `[ESP+0x12]` selector, read once after the
-/// loop at 0x005876BA, so whichever matched LAST decides which branch runs.
-/// Since a repair hut normally sits beside bridge iso-tiles, the record branch
-/// is the ordinary case, and this port always takes the overlay one. That branch walks `BridgeRecord`s through per-tile geometry
-/// tables at 0x0082AA04 / 0x0082AA24 / 0x0082AA44 and returns true on the first
-/// inactive record. Both branches agree on the two cases that matter here — an
-/// intact span yields false and a collapsed one yields true — so the omission
-/// shows only on partially damaged spans. Recorded in
+/// **Two things about the native's branch selection are NOT reproduced here,
+/// and neither is a corner case.**
+///
+/// 1. *Which branch runs.* All four scan cases write the same `[ESP+0x12]`
+///    selector, read once after the loop at 0x005876BA, so whichever of the
+///    four matched LAST decides whether the native walks overlays (this
+///    function) or walks `BridgeRecord`s through the per-tile geometry tables
+///    at 0x0082AA04 / 0x0082AA24 / 0x0082AA44. This port always walks overlays.
+/// 2. *Per-cell precedence.* The 5x5 body is a strict if / else-if chain that
+///    tests `cell+0x38` against the two tileset windows at 0x00587483 and
+///    0x00587503 BEFORE it looks at `cell+0x44` against either overlay band at
+///    0x00587580 / 0x00587613. A cell that is both a bridge iso-tile and
+///    carries a destroy-band overlay is therefore a TILESET match and its
+///    overlay is never read. This port has no tile-index reader at all, so it
+///    would treat such a cell as an overlay match.
+///
+/// Whether cells satisfying both conditions occur on stock maps is UNCHECKED,
+/// and so is the record branch's answer for an intact span: its only
+/// true-returns are a record byte `+0x08` of zero and a coordinate matching
+/// neither endpoint, and the "inactive" reading of `+0x08` is itself
+/// UNVERIFIED. Do not assume the two branches agree anywhere. What IS
+/// established is that this port is correct whenever the native takes the
+/// overlay branch. See
 /// `bridge_hut_repair_cursor_misses_partially_damaged_spans`.
 pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, u16)) -> bool {
     let Some(bs) = sim.bridge_state.as_ref() else {
