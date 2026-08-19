@@ -190,9 +190,12 @@ pub struct ObjectType {
     /// `Explosion[Random__Next() % len]` at the object's coordinate, after the
     /// killing warhead's own `AnimList=` anim. 487 stock sections author it.
     pub explosion_anims: Vec<String>,
-    /// `DestroyAnim=` — a second, single animation played after the explosion.
+    /// `DestroyAnim=` — a second list, drawn from after the explosion.
     ///
-    /// gamemd-derived: same function, `TechnoTypeClass+0x748`.
+    /// gamemd-derived: same function; the vector is `TechnoTypeClass+0x748`
+    /// (items `+0x74C`, count `+0x758`, key push at `0x00713A97`) and native
+    /// takes `Random__Next() % count` from it, exactly as it does for
+    /// `Explosion=` — one draw each, explosion first.
     pub destroy_anims: Vec<String>,
     /// `Trainable=` — whether this object can gain veterancy from its kills.
     ///

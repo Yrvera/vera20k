@@ -2193,12 +2193,22 @@ fn handle_entity_deaths(
                 });
             }
 
-            // `UnitClass::Death_Explosion @ 0x00738680`: after the killing
-            // warhead's own `AnimList=` anim, the dying object plays ONE anim
-            // drawn from its type's `Explosion=` list and then one from
+            // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
+            // `AircraftClass::ReceiveDamage @ 0x0041661F` for aircraft: after
+            // the killing warhead's own `AnimList=` anim, the dying object plays
+            // ONE anim drawn from its type's `Explosion=` list and then one from
             // `DestroyAnim=`, both at its own coordinate, one `Random__Next()`
             // draw each. Without this a Grizzly and an Apocalypse died with the
             // same warhead-derived puff.
+            //
+            // INFANTRY are excluded deliberately: `get_xrefs_to 0x00738680`
+            // returns four callers, all `UnitClass`, and an operand scan for the
+            // `Explosion=` count (`type+0x73C`) finds readers only in
+            // `AircraftClass::ReceiveDamage` and
+            // `BuildingClass::DestructionEffects @ 0x0044194D`. Infantry death
+            // spawns from the `InfDeath`/`DeathAnims` table alone. No stock
+            // `[InfantryTypes]` section authors `Explosion=` either, so this is
+            // a contract correction rather than a visible one.
             //
             // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
             // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
@@ -2210,10 +2220,8 @@ fn handle_entity_deaths(
             // (forcing the last `Explosion=` entry for a loaded miner) is
             // likewise unread. Trigger: every building death, and every loaded
             // miner death. Frequency: continuous.
-            if matches!(
-                category,
-                EntityCategory::Unit | EntityCategory::Aircraft | EntityCategory::Infantry
-            ) && let Some(obj) = rules.object(interner.resolve(type_id))
+            if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
+                && let Some(obj) = rules.object(interner.resolve(type_id))
             {
                 for list in [&obj.explosion_anims, &obj.destroy_anims] {
                     if list.is_empty() {
@@ -5858,6 +5866,73 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
     cost.saturating_mul(multiplier)
 }
 
+/// Resolve and pay one kill's veterancy award.
+///
+/// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40`. The award is the
+/// victim's cost, zeroed when the two houses are allied and otherwise doubled
+/// for a veteran victim or tripled for an elite one; the recipient's own cost
+/// then divides it inside `VeterancyClass::Add @ 0x0074FF50`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn award_kill_experience(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    alliances: &HouseAllianceMap,
+    killer_id: u64,
+    victim_id: u64,
+) {
+    if killer_id == RAD_NO_ATTACKER || killer_id == victim_id {
+        return;
+    }
+    // `Record_The_Kill` reads the VICTIM type's `DontScore=` byte (`+0xC9F`) at
+    // 0x00702E4E and returns before the rank multiplier, before the accumulator
+    // and before the score add. Stock authors it on `SLAV`, `V3ROCKET`, `DMISL`
+    // and `CMISL` — the last three are the V3, Dreadnought and Boomer missiles,
+    // shot down by AA in most matches, so without this gate every intercepted
+    // missile promotes the interceptor.
+    let Some((victim_cost, victim_rank, victim_owner)) = entities
+        .get(victim_id)
+        .filter(|victim| !victim.dont_score)
+        .map(|victim| {
+            (
+                rules
+                    .object(interner.resolve(victim.type_ref))
+                    .map_or(0, |obj| obj.cost),
+                self::veterancy::rank_of(victim.veterancy_raw),
+                victim.owner,
+            )
+        })
+    else {
+        return;
+    };
+    let Some((killer_cost, trainable, killer_owner)) = entities.get(killer_id).and_then(|killer| {
+        rules
+            .object(interner.resolve(killer.type_ref))
+            .map(|obj| (obj.cost, obj.trainable, killer.owner))
+    }) else {
+        return;
+    };
+    // `0x00702E64` loads the KILLER's house and calls `HouseClass::IsAlly @
+    // 0x004F9A90`, which reads only the asker's own ally bitfield — a one-way
+    // test, not the symmetric OR most "don't shoot me" call sites want.
+    let allied = crate::map::houses::is_allied_with(
+        alliances,
+        interner.resolve(killer_owner),
+        interner.resolve(victim_owner),
+    );
+    let points = self::veterancy::kill_award_points(victim_cost, victim_rank, allied);
+    if let Some(killer) = entities.get_mut(killer_id) {
+        self::veterancy::award_kill(
+            killer,
+            killer_cost,
+            points,
+            trainable,
+            rules.general.veteran_ratio,
+            rules.general.veteran_cap,
+        );
+    }
+}
+
 /// Record who destroyed `victim`, at the instant it happened.
 ///
 /// Every lethal path funnels through here so there is one capture rather than a
@@ -5882,60 +5957,6 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
 /// kills, aircraft self-destruct, passengers dying with their transport
 /// (`world::lifecycle`) or with a collapsing bridge, and passengers ejected by a
 /// sell. Those victims book a Loss with no matching Kill.
-/// Resolve and pay one kill's veterancy award.
-///
-/// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40`. The award is the
-/// victim's cost, zeroed when the two houses are allied and otherwise doubled
-/// for a veteran victim or tripled for an elite one; the recipient's own cost
-/// then divides it inside `VeterancyClass::Add @ 0x0074FF50`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn award_kill_experience(
-    entities: &mut EntityStore,
-    rules: &RuleSet,
-    interner: &StringInterner,
-    alliances: &HouseAllianceMap,
-    killer_id: u64,
-    victim_id: u64,
-) {
-    if killer_id == RAD_NO_ATTACKER || killer_id == victim_id {
-        return;
-    }
-    let Some((victim_cost, victim_rank, victim_owner)) = entities.get(victim_id).map(|victim| {
-        (
-            rules
-                .object(interner.resolve(victim.type_ref))
-                .map_or(0, |obj| obj.cost),
-            self::veterancy::rank_of(victim.veterancy_raw),
-            victim.owner,
-        )
-    }) else {
-        return;
-    };
-    let Some((killer_cost, trainable, killer_owner)) = entities.get(killer_id).and_then(|killer| {
-        rules
-            .object(interner.resolve(killer.type_ref))
-            .map(|obj| (obj.cost, obj.trainable, killer.owner))
-    }) else {
-        return;
-    };
-    let allied = crate::map::houses::are_houses_friendly(
-        alliances,
-        interner.resolve(killer_owner),
-        interner.resolve(victim_owner),
-    );
-    let points = self::veterancy::kill_award_points(victim_cost, victim_rank, allied);
-    if let Some(killer) = entities.get_mut(killer_id) {
-        self::veterancy::award_kill(
-            killer,
-            killer_cost,
-            points,
-            trainable,
-            rules.general.veteran_ratio,
-            rules.general.veteran_cap,
-        );
-    }
-}
-
 pub(crate) fn capture_kill_credit(
     victim: &mut crate::sim::game_entity::GameEntity,
     killer_owner: Option<InternedId>,

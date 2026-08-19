@@ -30,6 +30,23 @@ pub fn adjust_for_z_leptons(z: i32) -> i32 {
     crate::util::native_x87::adjust_for_z_standard(z)
 }
 
+/// Mirror the lateral offset on odd burst shots.
+///
+/// gamemd-derived: `TechnoClass::GetFLH @ 0x006F3AD0` computes the sign from
+/// `CurrentBurstIndex` (`TechnoClass+0x3B8`) as `index & 0x80000001` — `-1` for
+/// odd, `+1` for even — and multiplies the lateral component by it INSIDE the
+/// translate, so every consumer of the fire coordinate inherits the alternation.
+/// It belongs here rather than in one caller: a muzzle flash placed by one rule
+/// and a projectile launched by another put the two on opposite sides of the
+/// hull on every odd shot, and 48 stock weapons author `Burst=`.
+pub fn flh_lateral_for_burst(lateral: i32, burst_index: u8) -> i32 {
+    if burst_index % 2 == 1 {
+        -lateral
+    } else {
+        lateral
+    }
+}
+
 /// Convert an FLH lepton offset into an isometric screen-space pixel offset.
 ///
 /// `forward`: distance along the unit's facing direction (positive = forward).

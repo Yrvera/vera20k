@@ -1646,8 +1646,12 @@ impl Simulation {
             return;
         };
         // Destroying an ally's object (or one's own) still counts as a kill but
-        // is worth no score.
-        let friendly = crate::map::houses::are_houses_friendly(
+        // is worth no score. `Record_The_Kill @ 0x00702D40` computes the award
+        // once — behind `HouseClass::IsAlly @ 0x004F9A90`, asked BY THE KILLER —
+        // and feeds the same value to the score add at 0x0070300F and to the
+        // veterancy accumulator, so this test must be the one-way one and must
+        // match `combat::award_kill_experience`.
+        let friendly = crate::map::houses::is_allied_with(
             &self.house_alliances,
             self.interner.resolve(killer),
             self.interner.resolve(owner),

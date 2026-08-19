@@ -125,8 +125,15 @@ pub fn accumulate(
     veteran_ratio: f64,
     veteran_cap: f64,
 ) -> NativeF32Bits {
-    if points <= 0 || recipient_cost <= 0 {
+    if points <= 0 {
         return raw;
+    }
+    // A zero-cost recipient is NOT an early return in native: the divide yields
+    // +INF, the compare sends it to the clamp, and the object stores
+    // `VeteranCap` — instant elite on its first kill. A negative cost yields
+    // -INF, which stores as a rookie value. Reproduce both rather than guarding.
+    if recipient_cost == 0 {
+        return NativeF32Bits::from_bits((veteran_cap as f32).to_bits());
     }
     // `FDIV`/`FADD` at x87 working precision, then one `FCOMP` against the cap
     // on the UNROUNDED sum, then a single `FSTP float` store. `X87Chop53` is
@@ -237,11 +244,18 @@ mod tests {
     }
 
     /// An award of zero — an allied kill, or a victim with no cost — leaves the
-    /// accumulator untouched rather than dividing by it.
+    /// accumulator untouched. A zero-cost RECIPIENT is a different case: native
+    /// divides by zero, gets `+INF`, and the clamp stores `VeteranCap`.
     #[test]
     fn gsi_08_12_zero_award_does_not_move_the_accumulator() {
         let start = accumulate(NativeF32Bits::POSITIVE_ZERO, 700, 900, RATIO, CAP);
         assert_eq!(accumulate(start, 700, 0, RATIO, CAP).bits(), start.bits());
-        assert_eq!(accumulate(start, 0, 900, RATIO, CAP).bits(), start.bits());
+    }
+
+    #[test]
+    fn gsi_08_12_zero_cost_recipient_saturates_to_the_cap() {
+        let out = accumulate(NativeF32Bits::POSITIVE_ZERO, 0, 900, RATIO, CAP);
+        assert_eq!(out.bits(), ELITE_THRESHOLD_BITS);
+        assert_eq!(rank_u16(out), 200);
     }
 }

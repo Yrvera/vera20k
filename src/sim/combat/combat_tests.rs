@@ -5279,7 +5279,7 @@ fn inviso_scatter_uses_scenario_rng_only_for_effect_and_paired_smudge() {
     );
     // `TechnoClass::GetROF @ 0x006FCFA0` draws its `RandomRanged(0, 2)` reload
     // jitter after the shot, on this same instance (`[0x00A8B230] + 0x218` —
-    // the one `FootClass::Mission_Attack @ 0x004D4EA0` also uses).
+    // the one `FootClass::Mission_Attack @ 0x004D4DC0` also uses).
     expected_rng.next_range_u32_inclusive(0, 2);
     let result = tick_combat(
         &mut store,
@@ -6733,4 +6733,51 @@ fn gsi_08_11_unit_death_plays_type_explosion_then_destroy_anim() {
         explosion_index < destroy_index,
         "Explosion= precedes DestroyAnim=: {names:?}"
     );
+}
+
+/// `Record_The_Kill @ 0x00702D40` reads the VICTIM type's `DontScore=` byte
+/// (`+0xC9F`) at 0x00702E4E and returns before the multiplier, before the
+/// accumulator and before the score add. Stock marks the V3, Dreadnought and
+/// Boomer missiles that way, and they are shot down in most matches — without
+/// the gate every interception promotes the interceptor.
+#[test]
+fn gsi_08_12_a_dont_score_victim_pays_no_experience() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n1=HTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n[HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\nDontScore=yes\n[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[General]\nVeteranRatio=3.0\nVeteranCap=2\n",
+    ))
+    .expect("dont-score fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    let mut interner = test_interner();
+    let mut scenario_rng = SimRng::new(11);
+
+    for victim_id in 2..=6u64 {
+        let mut victim = make_entity_owned(victim_id, "HTNK", 8, 5, 1, "Americans");
+        victim.dont_score = true;
+        store.insert(victim);
+        issue_attack_command(&mut store, 1, victim_id, None, &interner);
+        if let Some(attacker) = store.get_mut(1)
+            && let Some(target) = attacker.attack_target.as_mut()
+        {
+            target.cooldown_ticks = 0;
+        }
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut scenario_rng,
+        );
+        store.remove(victim_id);
+    }
+
+    let killer = store.get(1).expect("killer");
+    assert_eq!(killer.veterancy, 0, "five DontScore kills earn nothing");
+    assert_eq!(killer.veterancy_raw.bits(), 0);
 }

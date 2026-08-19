@@ -40,10 +40,19 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
 
     // `ParticleSystemClass::AI_Gas @ 0x0062E6D0` walks its particle array
     // BACKWARDS in both loops (`for (i = count - 1; i >= 0; i--)`), unlike
-    // `AI_Smoke`, whose first loop runs forward. Nothing in the per-particle
-    // tick depends on the order, but the second walk's order decides which
-    // chain children are dropped once the cap is reached, so both are kept
-    // native-order here.
+    // `AI_Smoke`, whose first loop runs forward. Both are kept native-order
+    // here.
+    //
+    // RESIDUAL (GSI-05.13) — the order alone does not close the cap behaviour.
+    // Native appends each chain child DURING the walk and tests the cap with
+    // the dying parents still counted, because the particle's own destroy
+    // vtable fires only after the append; VERA prunes first and then appends,
+    // so it has more headroom and drops a different set once a system is at
+    // capacity. Trigger: a Gas system at `ParticleCap` with several parents
+    // dying in one tick. Player effect: none today — nothing spawns a Gas
+    // system. Frequency: zero until a producer lands. Downstream risk: the
+    // dropped set is state, so it must be settled with that producer rather
+    // than after it.
     //
     // Phase 1 — tick existing particles.
     for p in sys.particles.iter_mut().rev() {
