@@ -35,7 +35,10 @@ base at all.** State it precisely, because the loose version is false:
 - **Members that reference a tileset base** are cleanly split, and *no* member reads both. High
   members compare against `g_BridgeSet_TileSetBase` (`0x00AA0E28`) and are the ones that apply
   the four-level deck rise (`cell+0x11B += 4`); Low members use `g_WoodBridgeSet_TileSetBase`
-  (`0x00ABAD1C`) and never apply the rise. The only functions appearing in both xref lists are
+  (`0x00ABAD1C`). **Corrected 2026-08-19: the rise is NOT a High-only marker.**
+  `ProcessBridgeDestruction_Low` `0x00570050` reads the wood base and applies
+  `cell+0x11B += 4` to three neighbours while restoring a repaired low bridge, so the base a
+  member reads is the reliable half of this split and the deck rise is not. The only functions appearing in both xref lists are
   the genuinely shared ones of §6 — `ComputeBridgeZones`, `Add`/`RemoveBridgeZoneEdges`,
   `RegisterBridgeOrTubeHierarchyPairs`, `ApplyDamageToCell`, `Apply_area_damage`,
   `FindBridgeConnection_Predicate`, `CellClass__IsSpecialTerrainTile`,

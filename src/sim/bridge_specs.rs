@@ -481,9 +481,14 @@ pub fn set_bridge_direction(span: &AnchorSpan, set: bool) -> SetBridgeDirectionR
             // walks the AltObject list calling vtable+0xEC, appends the coord
             // to the global at 0x0087F8C0, and then — only when
             // `RulesClass+0x168 > 0` and a `RandomRanged(0, 0x7FFFFFFE)` roll
-            // lands under 0.95 — draws four to five more times to place one or
-            // two debris anims. Those draws are lockstep-visible, so the gate
-            // order matters as much as the anims.
+            // lands under 0.95, draws five or six MORE times, i.e. six or
+            // seven in total including the gate roll. Call sites:
+            // 0x0047DE54 (gate), 0x0047DEC6 (x jitter), 0x0047DF04 (y
+            // jitter), 0x0047DF43 (the < 0.5 test), 0x0047DF91 (first anim
+            // index, only on the < 0.5 branch), 0x0047DFE1
+            // (`RandomRanged(1, 5)`) and 0x0047E004 (second anim index).
+            // Those draws are lockstep-visible, so the count matters as
+            // much as the anims.
             // Destruction path: slots 0, 1, 2, 4 = BlowUpBridge; 3, 5 = FlagOnly.
             if AnchorSpan::BLOW_UP_SLOTS.contains(&slot) {
                 CellAction::BlowUpBridge

@@ -2974,9 +2974,14 @@ mod tests {
     /// endpoints. Both branches then register the SAME three zero-flag pairs in
     /// the same order: endpoints, same-side offsets, opposite-side offsets.
     ///
-    /// `register_high_bridge_hierarchy_edges_for_record` implements only the
-    /// bridge branch — it returns immediately unless `record.is_high()`, so no
-    /// tube ever contributes a hierarchy edge.
+    /// `register_high_bridge_hierarchy_edges_for_record` returns
+    /// immediately unless `record.is_high()`, which drops TWO things gamemd
+    /// registers: the tube branch above, and the wood-bridge half of the
+    /// bridge branch. 0x00582D70 enters that branch on
+    /// `CellClass::IsBridge` 0x00486750 OR `CellClass::IsWoodBridge`
+    /// 0x00486770, selecting `g_WoodBridgeSet_TileSetBase` for the
+    /// tile-offset lookup in the wood case, so a low wooden bridge
+    /// contributes no hierarchy edge here either.
     ///
     /// Trigger: a move order whose start and goal sit on opposite sides of a
     /// low-bridge tunnel, far enough apart that the search uses the zone

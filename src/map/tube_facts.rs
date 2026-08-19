@@ -12,9 +12,10 @@
 /// The record's other five natives are persistence and have no counterpart
 /// here by design, because VERA snapshots instead of implementing
 /// IPersistStream: `TubeClass::Load` 0x007281A0, `Save` 0x007281E0,
-/// `GetClassID` 0x007286D0, `Compute_CRC` 0x00728630 (which feeds 105 CRC
-/// words per tube — the four i16 endpoints, the i32 direction, all 100 path
-/// dwords and the length) and `MapClass::WriteTubesINI` 0x00728280, the
+/// `GetClassID` 0x007286D0, `Compute_CRC` 0x00728630 (which feeds 106 CRC
+/// words per tube: the four i16 endpoints, the i32 direction, all 100 path
+/// dwords and the length. The Ghidra plate on 0x00728630 says 105 and is
+/// wrong by one; that is a read-only candidate correction)
 /// map-editor save-side compaction. Tube records are immutable after load, so
 /// none of them can move gameplay state. gamemd equivalent UNCHECKED.
 ///
