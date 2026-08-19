@@ -621,20 +621,28 @@ impl CrushTarget {
 /// predates this function; it is recorded here rather than credited to the
 /// original. Aircraft never appear in the ground occupant list, so excluding
 /// them is outcome-identical.
-/// RESIDUAL (GSI-08.17) — the crush kill skips one consequence. A crushed
-/// unit's `DeathWeapon=` never fires: `death_weapon_aoe` is reached only from
-/// the damage pipeline, and nothing in this file calls it, so a crushed
-/// Terrorist or Demo Truck does not detonate. Kill credit is NOT part of this
-/// gap — the crush-kill loop in `movement/movement_tick.rs` already routes
-/// through `capture_kill_credit`.
-/// - Trigger: driving over any unit with a `DeathWeapon=` — 13 stock types.
-/// - Player effect: running over a Terrorist is free, which is exactly
-///   backwards; retail punishes it.
-/// - Frequency: crushing is routine tank play, and those 13 types include the
-///   two units players most want to crush.
-/// - Downstream risk: firing the death weapon spawns an area-damage event from
-///   inside the movement pass, so it needs the same ordering care as any other
-///   movement-time damage commit.
+/// NO-DIFF (GSI-08.17) — pass 1's named gap is not one. A crushed unit's
+/// `DeathWeapon=` does not fire in gamemd either:
+/// `TechnoClass::Fire_Death_Weapon @ 0x0070D690` has exactly two callers,
+/// `ReceiveDamage @ 0x00701900` and `FlyLocomotionClass::Process @ 0x004CD600`,
+/// and the crush loop at `0x007416A0` enters neither. Detonating a crushed
+/// Terrorist would be a regression, not a fix. Native's crush consequences are
+/// the crusher-positioned `CrushSound`, `FreeAllMindControlCaptures`,
+/// `Record_The_Kill` (score, trigger events, EVA and the crusher's veterancy,
+/// which this engine now pays), then unmark, limbo and `UnInit` — no anim, no
+/// smudge, no RNG.
+///
+/// RESIDUAL (GSI-08.17) — two real gaps sit underneath it.
+/// - **Overlay crushing.** `Per_Cell_Process @ 0x0073AFD4` flattens any overlay
+///   whose `ObjectTypeClass::Crushable=` (`+0x22D`) is set: a `Crusher=yes` tank
+///   drives through sandbags and all three fence types, and a
+///   `MovementZone=CrusherAll` type (stock: the Battle Fortress alone) also
+///   flattens the eight `Wall=yes` overlays. Trigger: any tank driving over a
+///   wall line. Player effect: walls that should fall stop the tank instead.
+///   Frequency: routine. This one writes the overlay grid and the zone graph,
+///   so it is a movement gap rather than a cosmetic one.
+/// - **Mind-control release.** A crushed controller does not free its captives
+///   here, so their ownership stays with a dead object.
 pub fn can_crush(capability: CrushCapability, target: CrushTarget) -> bool {
     // Structures and aircraft are never crushed.
     if matches!(

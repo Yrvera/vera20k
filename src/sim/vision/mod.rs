@@ -717,20 +717,28 @@ impl FogState {
     /// Native `TechnoClass::AddSensorsAt @ 0x004DE7B0`: outer-Y/inner-X strict
     /// circle and signed-word increment. Returned cells are the exact ordered
     /// boundary where native forces resident objects through virtual `+0x420`.
-    /// RESIDUAL (GSI-12.06) — the sensor plane has readers and no writer, so
-    /// `detects_cloak` is permanently false. Neither this nor its paired
-    /// remove walk has a production caller, and `DetectDisguise=` is not parsed
-    /// at all. `Sensors=`/`SensorsSight=` are parsed but reach only the UI ring
-    /// radius, never a deposit.
-    /// - Trigger: any unit or structure with `Sensors=yes` near a cloaked or
-    ///   disguised enemy.
-    /// - Player effect: no detector reveals anything. Paired with the cloak
-    ///   producer being write-dead, neither side of the stealth exchange works.
-    /// - Frequency: continuous once cloaking exists; today it is unobservable
-    ///   because nothing cloaks.
-    /// - Downstream risk: the plane is already hashed, so filling it changes the
-    ///   state hash even before it changes visibility; it must land with the
-    ///   cloak producer or the two will disagree about what is hidden.
+    /// RESIDUAL (GSI-12.06) — the deposit walk is right; everything around it is
+    /// missing, and the radius pass 1 named is the wrong key.
+    /// - The radius is `SensorsSight=` (`TechnoTypeClass+0x5F0`), not `Sensors=`.
+    ///   `Sensors=` is a separate rule: an adjacent enemy carrying it forces a
+    ///   cloaked object to surface.
+    /// - The callers are FootClass-only: `Unlimbo @ 0x004D7318`, `Limbo @
+    ///   0x004DB376`, `PerCellProcess` removing the old cell at `0x004D8611` and
+    ///   adding the new one at `0x004D8621`, and `ChangeOwner @ 0x004DBEFB` /
+    ///   `0x004DBF81`. Buildings deposit through their own
+    ///   `BuildingClass::AddSensorArrayAt @ 0x00455820`. VERA calls none of them.
+    /// - The detection rule is: a cloaked object is visible to house H when H
+    ///   has a sensor count at the object's OWN cell, or when H and the owner
+    ///   are mutually allied. `DetectDisguise=` is a separate predicate and is
+    ///   not parsed.
+    /// - Trigger: any `SensorsSight=` unit near a submerged submarine.
+    /// - Player effect: no detector reveals anything.
+    /// - Frequency: continuous once cloaking exists; unobservable today because
+    ///   nothing cloaks (GSI-12.05).
+    /// - Downstream risk: this and the cloak producer must land together, and
+    ///   the pairing should DELETE VERA's `cloaked_by_houses` plane rather than
+    ///   fill it — native keeps cloak state on the object and only the count on
+    ///   the cell.
     pub fn sensors_add_at(
         &mut self,
         house: InternedId,

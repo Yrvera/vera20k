@@ -327,6 +327,20 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // body's passive-acquire block admits missions {Move, Harvest, Guard}
         // and nothing else, so an Area Guard object is deliberately never
         // scanned there; this arm is its single acquisition route.
+        //
+        // RESIDUAL (GSI-07.16) — pass 1 left this row unmarked, and a leaf-level
+        // read finds the Foot body matches while BOTH categories are routed past
+        // a real override.
+        // - `InfantryClass::Mission_AreaGuard @ 0x0051F640` carries the same
+        //   deployed-DoType shim as its Guard slot, including a
+        //   `RandomRanged(10, 20)` draw VERA never makes. Trigger: a deployed GI
+        //   or Desolator on Area Guard — ordinary micro. Frequency: routine, and
+        //   the missing draw diverges the scenario stream on every dispatch.
+        // - `UnitClass::Mission_AreaGuard @ 0x00744100` is the slave-miner
+        //   recall and returns `RandomRanged(0, 2)` where the Foot body returns
+        //   `RandomRanged(1, 5)` — an RNG fork, not just a different delay.
+        //   Frequency: zero today (no slave miners), continuous once they land.
+        // The Foot body's own slave-recall arm is absent for the same reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
             evaluate_foot_area_guard(sim, id, rules)
         }
@@ -339,30 +353,38 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // dispatch timer, so an object on Hunt is assigned and then does
         // nothing. Trigger: anything queued onto Hunt — the crate and trigger
         // paths assign it today. Player effect: hunting units stand still.
-        // Frequency: low in stock skirmish, because the main assigner would be
-        // an AI opponent, which this project has not built yet. Downstream
+        // Frequency: NOT AI-only, contrary to pass 1 — VERA's own berserk path
+        // queues Hunt, so every Chaos Drone use reaches this arm. Downstream
         // risk: the selector needs the Capture/Sabotage target scan, so it
-        // lands with the engineer and terrorist mission work, not before.
+        // lands with the engineer and terrorist mission work, not before. The
+        // cadence half of the row is closed below.
         //
-        // RESIDUAL (GSI-07.09) — Mission 4 Retreat has no handler at all. It is
-        // absent from the stub set as well, so a Retreat-committed object falls
-        // out of the dispatcher with its timer untouched; native
-        // `FootClass::Mission_Retreat @ 0x004DA2C0` oscillates between two
-        // states. Trigger: any assigner queuing Retreat. Player effect: the
-        // object freezes instead of withdrawing. Frequency: zero today for the
-        // same reason as Hunt. Downstream risk: the missing timer touch means
-        // the object also never re-enters the dispatch cadence, so a future
-        // assigner would strand it rather than merely mis-handle it.
+        // SKIP/PROVE (GSI-07.09) — Mission 4 Retreat is a dead slot for foot
+        // objects, and pass 1's reason was wrong. `FootClass::Mission_Retreat @
+        // 0x004DA2C0` (slot `+0x230`, proven from the dispatch jump table at
+        // `0x005B34E8` entry 4) is a two-state destination oscillator returning
+        // `ftol(.1 * 900) + RandomRanged(0, 2)` unconditionally — but a bounded
+        // assigner sweep (every `Queue_Mission` two-push site, all 29
+        // `Assign_Mission` sites, and every direct `mov [this+0xAC], 4`) finds
+        // mission 4 queued at exactly four addresses, ALL of them
+        // `AircraftClass` (ParaDropApproach, Open, Rescue, Receive_Radio) — and
+        // aircraft dispatch through `0x00415A50`, not this body. So the
+        // frequency is zero because no foot assigner exists, not because this
+        // project lacks an AI. Keep the enum slot; the only cost of the missing
+        // arm is that a Retreat-committed foot object would leave its timer
+        // untouched, which nothing can produce today.
         (EntityCategory::Infantry, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
             jittered_mission_cadence(sim, rules, MissionType::Hunt),
         ),
         // The `UnitClass` Hunt override retries the strict target probe, then
         // queues Enter only if its separate approach virtual returns one.
-        // Neither producer exists here, so preserve its exact no-jitter
-        // fallback rather than infer arrival from target presence.
-        (EntityCategory::Unit, Some(MissionType::Hunt)) => {
-            MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Hunt))
-        }
+        // Neither producer exists here, so the body stays absent — but the
+        // cadence is jittered: pass 1 preserved a "no-jitter fallback" that does
+        // not exist. BOTH exits of `UnitClass::Mission_Hunt @ 0x0073EFC0` and
+        // `FootClass::Mission_Hunt @ 0x004D5350` draw `RandomRanged(0, 2)`.
+        (EntityCategory::Unit, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
+            jittered_mission_cadence(sim, rules, MissionType::Hunt),
+        ),
         // Everything else: the object still reaches a handler and still re-arms
         // its timer. Where that handler is the un-overridden base one, the
         // return value is a verified constant and no RNG is drawn; where the

@@ -2720,11 +2720,7 @@ mod tests {
 
     /// Build an Attack-committed attacker of `type_name` two cells from a
     /// target, i.e. squarely inside the close band, and return the sim.
-    fn attack_band_fixture(
-        seed: u64,
-        type_name: &str,
-        category: EntityCategory,
-    ) -> Simulation {
+    fn attack_band_fixture(seed: u64, type_name: &str, category: EntityCategory) -> Simulation {
         let mut sim = Simulation::with_seed(seed);
         let mut attacker = entity_of(1, category);
         attacker.attack_target = Some(AttackTarget::new(2));
@@ -2919,7 +2915,6 @@ mod tests {
             "CloseRange= on a vehicle must not halve the cadence — the native test is on the class"
         );
     }
-
 
     /// The Attack handler's only exit. With the shoot-at target gone and no
     /// destination left, the idle-mode selector commits Guard — and Guard is
@@ -3260,8 +3255,12 @@ mod tests {
         );
     }
 
+    /// Both `UnitClass::Mission_Hunt @ 0x0073EFC0` exits and the
+    /// `FootClass::Mission_Hunt @ 0x004D5350` body it falls through to draw
+    /// `RandomRanged(0, 2)`. The earlier "no-jitter fallback" this test pinned
+    /// does not exist in the binary.
     #[test]
-    fn unit_hunt_handler_uses_base_cadence_without_foot_jitter() {
+    fn gsi_07_20_unit_hunt_handler_draws_the_foot_jitter() {
         let mut sim = Simulation::with_seed(0xF007);
         let rules = representative_foot_handler_rules();
         let mut unit = entity_of(1, EntityCategory::Unit);
@@ -3276,16 +3275,23 @@ mod tests {
 
         sim.object_ai_visit_one(1, Some(&rules), ObjectAiCtx::default());
 
-        assert_eq!(
-            sim.substrate
-                .entities
-                .get(1)
-                .unwrap()
-                .mission
-                .dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, 14)
+        let delay = sim
+            .substrate
+            .entities
+            .get(1)
+            .unwrap()
+            .mission
+            .dispatch_timer()
+            .delay();
+        assert!(
+            (14..=16).contains(&delay),
+            "Hunt re-arms at Rate + RandomRanged(0, 2), got {delay}"
         );
-        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+        assert_ne!(
+            sim.scenario_rng.logical_state(),
+            before_rng,
+            "the jitter draw lands on the scenario stream"
+        );
     }
 
     #[test]
@@ -3307,11 +3313,9 @@ mod tests {
 
         let unit = sim.substrate.entities.get(1).unwrap();
         assert_eq!(unit.mission.queued(), MissionId::NONE);
-        assert_eq!(
-            unit.mission.dispatch_timer(),
-            MissionDispatchTimer::from_raw(0, 14)
-        );
-        assert_eq!(sim.scenario_rng.logical_state(), before_rng);
+        let delay = unit.mission.dispatch_timer().delay();
+        assert!((14..=16).contains(&delay), "Rate + RandomRanged(0, 2)");
+        assert_ne!(sim.scenario_rng.logical_state(), before_rng);
     }
 
     // ===== The base (un-overridden) mission handler =====

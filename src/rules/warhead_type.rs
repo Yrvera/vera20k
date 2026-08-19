@@ -61,21 +61,19 @@ pub struct WarheadType {
     /// Native binary32 `DelayKillAtMax` widened exactly to f64; default 1.0f.
     pub delay_kill_at_max_f64: f64,
     /// Whether this warhead can damage walls/bridges (Wall=yes).
-    /// RESIDUAL (GSI-08.33) — three warhead effect flags are not parsed at all.
-    /// `Sparky=` (28 stock entries) should set fire on the ground at the impact,
-    /// `Bullets=` (20) selects the small-arms impact family, and `Deform=` (8)
-    /// craters the terrain. None has a field here, so none has a consumer.
-    /// - Trigger: any hit by a warhead carrying one of them — small arms are
-    ///   `Bullets=`, most fire weapons are `Sparky=`.
-    /// - Player effect: no ground fires from flame weapons, no small-arms impact
-    ///   family, and no terrain deformation from heavy ordnance, so impacts read
-    ///   flatter than retail.
-    /// - Frequency: `Bullets=` is continuous — it covers infantry small arms.
-    ///   `Sparky=` follows every flame weapon; `Deform=` is the rarest.
-    /// - Downstream risk: `Sparky=` needs a burning-cell producer, which does
-    ///   not exist either (recorded on `sim/radiation.rs`'s neighbours), and
-    ///   `Deform=` writes terrain height, so it reaches pathfinding and the
-    ///   render height map rather than staying inside combat.
+    /// NO-DIFF (GSI-08.33) — pass 1's three "unparsed effect flags" have no
+    /// gameplay consumer in gamemd either, and its stock-authorship claim was
+    /// inverted. `WarheadTypeClass::ReadINI @ 0x0075D3A0` does store `Sparky=`
+    /// (`+0x14A`), `Bullets=` (`+0x17A`), `Deform=` (`+0x98`) and
+    /// `DeformThreshhold=` (`+0x100`), but exhaustive displacement sweeps find
+    /// `Sparky`, `Deform` and `DeformThreshhold` reaching only
+    /// `WarheadTypeClass::Compute_CRC @ 0x0075DEC0`, and `Bullets` reaching
+    /// nothing at all. `Apply_area_damage @ 0x00489280`, which owns every
+    /// warhead effect on ore, walls, bridges, barrels and the rocker, never
+    /// touches any of them. `Deform` is Tiberian Sun cell-height deformation
+    /// with its consumer deleted. And all 28 stock `Sparky=` entries are `no`,
+    /// including `[Fire]` and `[Fire2]` — the opposite of "most fire weapons are
+    /// Sparky". Parsing them here would add fields nothing can read.
     pub wall: bool,
     /// Whether this warhead can damage terrain objects with Wood armor gate.
     /// TerrainClass::Take_Damage requires this before applying damage.
