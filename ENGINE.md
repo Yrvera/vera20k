@@ -226,8 +226,6 @@ bulk-annotate, or hand-edit generated files.
   build/place/sell, dock approach/link/deposit/depart); a symptom in one stage often originates in
   another.
 - **If a fix makes things worse, stop and reassess** instead of layering more changes.
-- No autonomous bulk refactors, renames, or rewrites without explicit approval.
-- **A shadow-mode slice flips to authoritative within two sessions or gets reverted.**
 
 ## Parallel sessions
 
