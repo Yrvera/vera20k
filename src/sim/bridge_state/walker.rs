@@ -114,6 +114,10 @@ impl BridgeRuntimeState {
         RepairOutcome::default()
     }
 
+    /// `MapClass::RepairBridge_Low` 0x0057F200 — the repair-side twin of
+    /// `DestroyBridge_Low` 0x0057BAA0. Same axis classes, same three-case
+    /// start-cell shift, dispatching into the repair walkers instead of the
+    /// destroy ones.
     fn repair_bridge_low(
         &mut self,
         rx: u16,
@@ -135,6 +139,12 @@ impl BridgeRuntimeState {
         RepairOutcome::default()
     }
 
+    /// `MapClass::RepairBridge_High` 0x0057F440. Verified by decompile: it
+    /// splits on NS = 0xCD..=0xD5 u 0xDF..=0xE2 u {0xE7} versus
+    /// EW = 0xD6..=0xDE u 0xE3..=0xE6 u {0xE8} — the same classes
+    /// `DestroyBridge_High` 0x0057CCF0 uses — then shifts the start cell by
+    /// probing the two neighbours against the union band 0xCD..=0xE8 before
+    /// entering the walker.
     fn repair_bridge_high(
         &mut self,
         rx: u16,
@@ -156,6 +166,7 @@ impl BridgeRuntimeState {
         RepairOutcome::default()
     }
 
+    /// `MapClass::RepairBridgeWalker_NS_Low` 0x0057F6A0.
     fn repair_bridge_walker_ns_low(
         &mut self,
         sx: u16,
@@ -195,6 +206,7 @@ impl BridgeRuntimeState {
         outcome
     }
 
+    /// `MapClass::RepairBridgeWalker_EW_Low` 0x0057FBC0.
     fn repair_bridge_walker_ew_low(
         &mut self,
         sx: u16,
@@ -234,6 +246,7 @@ impl BridgeRuntimeState {
         outcome
     }
 
+    /// `MapClass::RepairBridgeWalker_NS_High` 0x005800D0.
     fn repair_bridge_walker_ns_high(
         &mut self,
         sx: u16,
@@ -273,6 +286,7 @@ impl BridgeRuntimeState {
         outcome
     }
 
+    /// `MapClass::RepairBridgeWalker_EW_High` 0x00580600.
     fn repair_bridge_walker_ew_high(
         &mut self,
         sx: u16,
