@@ -177,6 +177,15 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
 /// Caller ensures the hut itself is not damaged — the hut survives the
 /// collapse, mirroring the original game's `BridgeRepairHut` death branch.
 #[cfg(test)]
+/// `MapClass::DestroyBridge_High_OnHutDeath` 0x00574000 and
+/// `DestroyBridge_Low_OnHutDeath` 0x00574C20 — the CABHUT death entry.
+/// Both callers are `BombClass::Detonate` 0x00438720 (callsite 0x0043896A)
+/// and `BuildingClass::Update` 0x0043FB20 (callsite 0x00440301). The 5x5
+/// overlay scan hands its first hit to
+/// `MapClass::DestroyBridgeFromCell_Low` 0x00574780 /
+/// `_High` 0x005749C0, which classify the anchor overlay into the NS or EW
+/// band, walk back up to two cells to the canonical edge anchor, and call
+/// the matching `CollapseBridge_*`.
 pub(crate) fn dispatch_bridge_collapse_from_hut(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -517,17 +526,30 @@ fn bridge_overlay_at(sim: &Simulation, rx: u16, ry: u16) -> Option<u8> {
 /// heuristic with no cited native address, unlike the primary hut path, whose
 /// 5x5 scan order, seed canonicalisation and repair walk are all pinned to
 /// addresses and tests. It runs when the primary path finds no anchor.
+///
+/// **The native fallback is identified.** It is the tail of
+/// `MapClass::DestroyBridge_Low_OnHutDeath` 0x00574C20 and its high twin
+/// 0x00574000, decompiled 2026-08-19: when the 5x5 overlay scan finds nothing,
+/// the native walks the eight directions out to three cells looking for a cell
+/// with `+0x140 & 0x500`, resolves an anchor from that cell's 0x100 / 0x400 /
+/// 0x80 bits (pure-bridgehead cells walk up to four perpendicular cells then
+/// offset two more), walks forward in direction `(flags & 0x800) ? 6 : 0`
+/// calling `ApplyDamageToCell` up to three times on each cell
+/// `MapClass::IsBridgeRampTile` 0x005746C0 accepts, and stops when
+/// `MapClass::IsLowBridgeEndpointTile` 0x00574600 fires. The structure here —
+/// starter search, `find_hut_fallback_ramp_cell`, `apply_hut_damage_retries`,
+/// `find_hut_fallback_endpoint_cell` — follows that shape.
 /// - Trigger: destroying a `BridgeRepairHut=yes` structure whose span does not
 ///   resolve through the primary search — an irregular or already-damaged
 ///   bridge.
-/// - Player effect: the wrong span may collapse, or none at all, where retail
-///   picks deterministically.
+/// - Player effect: if the ported shape diverges, the wrong span may collapse,
+///   or none at all, where retail picks deterministically.
 /// - Frequency: uncommon; the primary path covers the ordinary intact-bridge
 ///   case that stock maps present.
 /// - Downstream risk: a different span collapsing changes occupancy, zone
-///   connectivity and which units drop, so correcting it moves more than the
-///   visual — it wants the native fallback identified first, and no address for
-///   it has been found.
+///   connectivity and which units drop. Now that the native address is known,
+///   a term-by-term comparison against 0x00574C20 is the next step rather than
+///   more search.
 fn build_hut_fallback_plan(sim: &Simulation, hut_center: (u16, u16)) -> HutFallbackPlan {
     let Some(starter) = find_hut_fallback_starter(sim, hut_center) else {
         return HutFallbackPlan::NoAcceptedStarter;
