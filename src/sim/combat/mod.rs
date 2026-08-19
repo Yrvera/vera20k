@@ -102,6 +102,13 @@ use super::production::foundation_dimensions;
 /// Radius in cells that RevealOnFire clears shroud around the fire location.
 const REVEAL_ON_FIRE_RADIUS: u16 = 3;
 /// Step size for selecting explosion anim from a warhead's AnimList: idx = damage / 25.
+/// The facing slack a firer is allowed before its shot is refused, in 16-bit
+/// facing units — 1/32 of a turn.
+///
+/// gamemd-derived: `UnitClass::GetFireError @ 0x00740FD0`, built at
+/// `0x007412C9`/`0x007412CC` and compared at `0x007412ED`/`0x007412EF`.
+const NATIVE_FIRE_FACING_TOLERANCE: i32 = 0x0800;
+
 const ANIM_LIST_DAMAGE_STEP: u16 = 25;
 
 /// Explicitly classified delivery decision at weapon fire.
@@ -521,9 +528,12 @@ pub struct AttackTarget {
     pub pending_infantry_fire: Option<PendingInfantryFire>,
 }
 
-/// Delay in simulation ticks between individual shots within a burst.
-/// 1 game frame (~66ms) — fast but visible.
-const BURST_INTER_SHOT_DELAY: u8 = 1;
+/// The inclusive bounds of the mid-burst delay draw.
+///
+/// gamemd-derived: `TechnoClass::GetROF @ 0x006FCFA0` — the mid-burst branch
+/// (`burst index < Burst=`) returns `Random::RandomRanged(3, 5)`.
+const BURST_INTER_SHOT_DELAY_MIN: i32 = 3;
+const BURST_INTER_SHOT_DELAY_MAX: i32 = 5;
 
 fn infantry_fire_sequence(
     obj: &ObjectType,
@@ -6179,9 +6189,28 @@ pub(crate) fn resolve_attacker_fire(
             target_sub_x,
             target_sub_y,
         );
-        // Aligned iff destination matches AND no rotation in progress.
-        // Both checks needed: destination may match while interpolation
-        // is still mid-arc (animated value not yet at destination).
+        // gamemd-derived: the turret alignment arm of the fire gate —
+        // `UnitClass::GetFireError @ 0x00740FD0`, tolerance built at
+        // `0x007412C3`..`0x007412CC` and compared at
+        // `0x007412D4`..`0x007412EF`. Native does NOT require an exact match
+        // and has no not-rotating term: it takes the 16-bit signed difference
+        // between the animated facing and the desired one, and fires whenever
+        // `|delta| <= tolerance`. The `JGE` skips the error return, so `0x0800`
+        // itself passes and `0x0801` fails. `AircraftClass::GetFireError @
+        // 0x0041A9E0` hardcodes the same `0x800`.
+        //
+        // DRIFT (GSI-08.03) — the wider arm is not modelled. Native widens the
+        // tolerance to `0x1000` when `[type+0x2DC]` is set
+        // (`NEG`/`SBB`/`AND 8`/`ADD 8` at `0x007412C3`), and
+        // `BuildingClass::GetFireError @ 0x00447F10` narrows it to `0x0000`
+        // when its own flag is set. Both flags are UNCHECKED, so only the
+        // common `0x0800` constant is implemented.
+        // - Trigger: firing a weapon whose type sets `+0x2DC`.
+        // - Player effect: that weapon holds fire through an arc native would
+        //   already shoot through — at most one extra 1/32-turn of swing.
+        // - Frequency: unknown until `+0x2DC` is identified; bounded by however
+        //   many weapon types set it.
+        // - Downstream risk: none structural; the constant becomes a lookup.
         // RESIDUAL (GSI-08.04) — this gate exists only for entities that have a
         // `barrel_facing`. Turretless vehicles, all infantry and all structures
         // reach the fire step with no facing test at all, so they shoot
@@ -6195,7 +6224,8 @@ pub(crate) fn resolve_attacker_fire(
         // - Downstream risk: adding the gate delays first shots, which moves
         //   engagement outcomes and the pinned replay hash, so it wants its own
         //   slice alongside the body-facing rate work.
-        let aligned = barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
+        let delta = i32::from(barrel.current(binary_frame).wrapping_sub(desired) as i16);
+        let aligned = delta.abs() <= NATIVE_FIRE_FACING_TOLERANCE;
         if !aligned {
             if pending_at_fire_frame {
                 out.pending_infantry_updates.push((snap.stable_id, None));
@@ -6623,10 +6653,24 @@ pub(crate) fn resolve_attacker_fire(
         snap.burst_remaining.saturating_sub(1)
     };
     if current_remaining > 0 {
+        // gamemd-derived: `TechnoClass::GetROF @ 0x006FCFA0`, mid-burst branch.
+        // The gap between shots inside a burst is drawn, not fixed.
+        //
+        // RESIDUAL (GSI-08.05) — the infantry override ahead of the draw is not
+        // modelled. Native checks `InfantryTypeClass::BurstDelay{1..4}`
+        // (`+0xE44 + idx*4`, sentinel `-1`) first for an infantry firer and
+        // returns the authored value without drawing. No stock section authors
+        // any `BurstDelay%d=`, so every stock burst reaches the draw and the
+        // draw count is unchanged; a mod that authors one would diverge, and
+        // would also consume an RNG draw native does not.
+        let burst_delay = scenario_rng.next_range_u32_inclusive(
+            BURST_INTER_SHOT_DELAY_MIN as u32,
+            BURST_INTER_SHOT_DELAY_MAX as u32,
+        ) as u8;
         out.burst_updates
-            .push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
+            .push((snap.stable_id, current_remaining, burst_delay, 0));
     } else {
-        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof);
+        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof, scenario_rng);
         // Garrison ROF: divide by occupant count, then by multiplier.
         // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
         if let Some(ref gs) = snap.garrison {
@@ -6699,27 +6743,42 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
     dist_sq_leptons <= range_sq
 }
 
-/// `ROF=` is already a native frame count, so the cooldown is the raw value.
+/// The end-of-burst reload, from `TechnoClass::GetROF @ 0x006FCFA0`.
 ///
-/// RESIDUAL (GSI-08.05) — nothing modifies it. `[General] VeteranROF=` is
-/// present in stock and has no consumer, so a veteran or elite unit reloads at
-/// exactly its rookie cadence; the only thing veterancy changes about firing is
-/// which weapon an elite selects. `RadialFireSegments=` is not parsed at all
-/// (one stock entry), and `BurstDelay=` is not parsed either, so the inter-shot
-/// gap inside a burst is the fixed `BURST_INTER_SHOT_DELAY` constant rather
-/// than an authored one.
-/// - Trigger: any promoted unit firing, and the one stock radial-fire type.
-/// - Player effect: promoted units feel slower than they should — a veteran
-///   Grizzly gains damage but not rate — and the radial type fires as an
-///   ordinary single-target weapon.
-/// - Frequency: the veterancy arm is continuous once promotion exists; today it
-///   is zero, because nothing promotes (see the GSI-08.12 residual). The
-///   `BurstDelay=` arm never fires in stock, which authors the key nowhere.
-/// - Downstream risk: `VeteranROF` becomes live the moment promotion lands, so
-///   the two want sequencing; changing cadence also moves every combat timing
-///   test and the pinned replay hash.
-fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
-    rof_frames.clamp(1, u16::MAX as i32) as u16
+/// gamemd-derived: the full-ROF branch computes
+/// `ftol(ROF * house difficulty ROF + Random::RandomRanged(0, 2))`. `ROF=` is
+/// already a native frame count, and the jitter is an ADDED integer, not a
+/// scale — a shot's reload is `ROF`, `ROF + 1` or `ROF + 2`. The draw is
+/// unconditional on this branch, so it must stay in the same slice as the
+/// mid-burst draw or the scenario stream shifts twice.
+///
+/// RESIDUAL (GSI-08.05) — three arms of the native function are still absent.
+/// - The per-house difficulty multiplier. Native scales `ROF` by the owning
+///   house's difficulty ROF before the truncation; VERA parses no
+///   `[Easy]/[Normal]/[Difficult] ROF=` and plumbs no per-house difficulty to
+///   this site. Frequency today: zero — every house in VERA is Normal, whose
+///   stock value is `1.0`, and there is no AI opponent to carry another.
+///   It becomes ±20% on every weapon in the game the moment a difficulty other
+///   than Normal can reach a house.
+/// - `[General] VeteranROF=` (`RulesClass+0x690`, read at `0x0066EF61`, stock
+///   0.6). Native applies it ONCE — there is no `EliteROF` key in the binary —
+///   and only when the firer's `VeteranAbilities=`/`EliteAbilities=` list
+///   contains `ROF` (`TechnoTypeClass+0x2A0` / `+0x2B2`, 40 and 68 stock
+///   types). Frequency today: zero, because nothing promotes (GSI-08.12);
+///   continuous the moment promotion lands, which is why the two want
+///   sequencing.
+/// - `RadialFireSegments=` (`TechnoTypeClass+0x6A4`) is not parsed. One stock
+///   author, `[AEGIS]`, which is buildable in an ordinary skirmish: native
+///   replaces the launch direction with
+///   `body facing + (PI * counter / segments - PI / 2)`, cycling a counter at
+///   `TechnoClass+0x43C`. Player effect: the Aegis Cruiser fires straight at
+///   one target instead of sweeping its flak arc. Frequency: every Aegis
+///   engagement in an Allied naval match.
+/// - Downstream risk: all three change firing cadence or direction, so each
+///   moves combat-timing fixtures and the pinned replay hash.
+fn rof_to_cooldown_frames(rof_frames: i32, scenario_rng: &mut SimRng) -> u16 {
+    let jitter = scenario_rng.next_range_u32_inclusive(0, 2) as i32;
+    rof_frames.saturating_add(jitter).clamp(1, u16::MAX as i32) as u16
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};

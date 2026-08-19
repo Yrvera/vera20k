@@ -43,11 +43,41 @@ fn test_rules() -> RuleSet {
 }
 
 #[test]
-fn weapon_rof_is_already_a_native_frame_count() {
-    assert_eq!(rof_to_cooldown_frames(-1), 1);
-    assert_eq!(rof_to_cooldown_frames(0), 1);
-    assert_eq!(rof_to_cooldown_frames(20), 20);
-    assert_eq!(rof_to_cooldown_frames(i32::from(u16::MAX) + 1), u16::MAX);
+fn gsi_08_05_rof_is_a_native_frame_count_plus_a_zero_to_two_jitter() {
+    // `TechnoClass::GetROF @ 0x006FCFA0` returns
+    // `ftol(ROF * difficulty + RandomRanged(0, 2))`. The jitter is ADDED, so a
+    // 20-frame weapon reloads in 20, 21 or 22 frames — never 40, and never a
+    // flat 20.
+    let mut rng = crate::sim::rng::SimRng::new(0xC0FFEE_1234);
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..256 {
+        seen.insert(rof_to_cooldown_frames(20, &mut rng));
+    }
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        vec![20, 21, 22],
+        "the jitter spans exactly RandomRanged(0, 2)"
+    );
+    // The floor and the saturating ceiling still hold with the jitter applied.
+    assert!((1..=3).contains(&rof_to_cooldown_frames(-1, &mut rng)));
+    assert!((1..=2).contains(&rof_to_cooldown_frames(0, &mut rng)));
+    assert_eq!(
+        rof_to_cooldown_frames(i32::from(u16::MAX) + 1, &mut rng),
+        u16::MAX
+    );
+}
+
+#[test]
+fn gsi_08_05_rof_jitter_is_deterministic_for_a_seed() {
+    let mut a = crate::sim::rng::SimRng::new(7);
+    let mut b = crate::sim::rng::SimRng::new(7);
+    let left: Vec<u16> = (0..32)
+        .map(|_| rof_to_cooldown_frames(26, &mut a))
+        .collect();
+    let right: Vec<u16> = (0..32)
+        .map(|_| rof_to_cooldown_frames(26, &mut b))
+        .collect();
+    assert_eq!(left, right);
 }
 
 #[test]
@@ -285,7 +315,8 @@ fn gsi_04_10_projectile_inert_suppresses_bridge_ore_and_collector_rng() {
     let mut resource_nodes = BTreeMap::new();
     let mut inline_hooks = None;
 
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     emit_projectile_detonations(
         &[detonation],
         &mut entities,
@@ -926,7 +957,8 @@ fn test_tick_combat_only_emits_bridge_damage_for_wall_warheads() {
     .expect("bridge combat rules should parse");
     // Combat reads IonCannonWarhead at the bridge-damage emit boundary; tests
     // that drive tick_combat must resolve before invoking it.
-    let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&bridge_rules, &mut interner);
+    let _handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&bridge_rules, &mut interner);
     let mut wall_store = EntityStore::new();
     wall_store.insert(make_entity(3, "MTNK", 5, 5, 300));
     wall_store.insert(make_entity(4, "MTNK", 8, 5, 300));
@@ -990,7 +1022,8 @@ fn gsi_04_07_damage_wad_precedes_wall_and_wood_armor_routing() {
         entities.insert(make_entity(1, "MTNK", 5, 5, 300));
         entities.insert(make_entity(2, "MTNK", 8, 5, 300));
         let mut interner = test_interner();
-        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         issue_attack_command(&mut entities, 1, 2, None, &interner);
         let mut overlays = OverlayGrid::new(12, 12);
         overlays.place_overlay(8, 5, 0, 0);
@@ -1070,7 +1103,8 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     second.suspended_attack_target = Some(TargetKind::Entity(10));
     entities.insert(second);
     let mut interner = test_interner();
-    let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let _handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     assert!(issue_attack_cell_command(
         &mut entities,
         10,
@@ -1091,7 +1125,13 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     let mut overlays = OverlayGrid::new(16, 16);
     overlays.place_overlay(8, 5, 0, 0);
     let mut scenario_rng = SimRng::new(31);
-    let before = scenario_rng.state();
+    // Two attackers fire this tick, so the scenario stream advances by exactly
+    // two `GetROF` reload jitters (`RandomRanged(0, 2)` @ `0x006FD0B0`) and
+    // nothing else — in particular the WAD warhead still draws no Strength.
+    let mut expected_rng = scenario_rng.clone();
+    expected_rng.next_range_u32_inclusive(0, 2);
+    expected_rng.next_range_u32_inclusive(0, 2);
+    let before = expected_rng.state();
     let result = tick_combat_with_fog(
         &mut entities,
         &mut OccupancyGrid::new(),
@@ -1116,7 +1156,7 @@ fn gsi_04_07_damage_live_order_second_attacker_reads_restored_target() {
     assert_eq!(
         scenario_rng.state(),
         before,
-        "WAD consumes no Strength draw"
+        "WAD consumes no Strength draw beyond the two reload jitters"
     );
     assert_eq!(
         result
@@ -1188,7 +1228,8 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         entities.insert(later_attacker);
         entities.insert(make_entity(30, "TARGET", 5, 5, 100));
         let mut interner = test_interner();
-        let _handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let _handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         assert!(issue_attack_cell_command(
             &mut entities,
             20,
@@ -1216,13 +1257,14 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
         let mut scenario_rng = SimRng::new(1);
         let mut main_rng = SimRng::new(41);
         let mut houses = BTreeMap::new();
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let result = tick_combat_with_fog_and_main_rng(
             &mut entities,
             &mut OccupancyGrid::new(),
             &rules,
             &mut interner,
-        Some(handles),
+            Some(handles),
             None,
             &BTreeMap::new(),
             &mut houses,
@@ -1277,12 +1319,21 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
             .target,
         TargetKind::Entity(30)
     );
+    // Detonation processing runs before the fire phase, so the inline wall
+    // draw lands first and the surviving attacker's `GetROF` reload jitter
+    // (`RandomRanged(0, 2)` @ `0x006FD0B0`) follows it.
     let mut one_draw = SimRng::new(1);
     assert_eq!(one_draw.next_range_u32_inclusive(0, 400), 213);
+    one_draw.next_range_u32_inclusive(0, 2);
     assert_eq!(fatal_rng, one_draw.state(), "nested wall draw is inline");
 
     let (survives, surviving_grid, surviving_entities, surviving_rng) = run(11, true);
-    assert_eq!(surviving_rng, SimRng::new(1).state());
+    // No wall draw when the wall survives — only the attacker's reload jitter.
+    assert_eq!(surviving_rng, {
+        let mut expected = SimRng::new(1);
+        expected.next_range_u32_inclusive(0, 2);
+        expected.state()
+    });
     assert_eq!(surviving_grid.cell(8, 5).overlay_id, Some(0));
     assert!(survives.wall_mutations.is_empty());
     assert!(survives.cell_target_detaches.is_empty());
@@ -1301,7 +1352,11 @@ fn gsi_04_07_damage_prior_projectile_fatal_death_weapon_is_inline() {
     let (ungated, ungated_grid, ungated_entities, ungated_rng) = run(10, false);
     assert_eq!(ungated_entities.get(10).unwrap().health.current, 0);
     assert_eq!(ungated_grid.cell(8, 5).overlay_id, Some(0));
-    assert_eq!(ungated_rng, SimRng::new(1).state());
+    assert_eq!(ungated_rng, {
+        let mut expected = SimRng::new(1);
+        expected.next_range_u32_inclusive(0, 2);
+        expected.state()
+    });
     assert!(ungated.wall_mutations.is_empty());
     assert!(ungated.cell_target_detaches.is_empty());
 }
@@ -1423,13 +1478,14 @@ fn gsi_04_07_damage_retaliation_is_receiver_synchronous_and_uses_mission_overrid
         let mut scenario_rng = SimRng::new(11);
         let mut main_rng = SimRng::new(13);
         let mut houses = BTreeMap::new();
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+        let handles =
+            crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
         let result = tick_combat_with_fog_and_main_rng(
             &mut entities,
             &mut occupancy,
             &rules,
             &mut interner,
-        Some(handles),
+            Some(handles),
             None,
             &BTreeMap::new(),
             &mut houses,
@@ -1925,10 +1981,7 @@ fn gsi_04_07_damage_receiver_smoke_creation_precedes_retaliation() {
         180
     );
     assert!(
-        sim.particle_systems()
-            .get(system_id)
-            .unwrap()
-            .done_spawning,
+        sim.particle_systems().get(system_id).unwrap().done_spawning,
         "recovery above ConditionYellow invokes mark-only ParticleSystem Destroy"
     );
     assert_eq!(
@@ -2451,7 +2504,8 @@ fn gsi_04_07_damage_repair_bullet_cellspread_zero_keeps_signed_area_record() {
     let mut emitted = CombatEmit::default();
     let mut resources = BTreeMap::new();
     let mut inline_hooks = None;
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     emit_projectile_detonations(
         &[detonation],
         &mut entities,
@@ -3217,7 +3271,7 @@ fn gsi_04_07_damage_death_weapon_gate_selection_and_native_damage() {
 }
 
 #[test]
-fn test_tick_combat_respects_cooldown() {
+fn gsi_08_05_tick_combat_respects_the_jittered_cooldown() {
     let rules: RuleSet = test_rules();
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "MTNK", 5, 5, 300));
@@ -3226,54 +3280,49 @@ fn test_tick_combat_respects_cooldown() {
     issue_attack_command(&mut store, 1, 2, None, &interner);
     let mut main_rng = SimRng::new(1);
 
+    let mut fire_once =
+        |store: &mut EntityStore, interner: &mut StringInterner, rng: &mut SimRng| {
+            tick_combat(
+                store,
+                &mut OccupancyGrid::new(),
+                &rules,
+                interner,
+                &mut BTreeMap::new(),
+                0u64,
+                100,
+                0u32,
+                rng,
+            );
+        };
+
     // First shot fires immediately (cooldown=0).
-    tick_combat(
-        &mut store,
-        &mut OccupancyGrid::new(),
-        &rules,
-        &mut interner,
-        &mut BTreeMap::new(),
-        0u64,
-        100,
-        0u32,
-        &mut main_rng,
-    );
+    fire_once(&mut store, &mut interner, &mut main_rng);
     let h1: u16 = store.get(2).unwrap().health.current;
 
-    // Next tick should not fire again immediately.
-    tick_combat(
-        &mut store,
-        &mut OccupancyGrid::new(),
-        &rules,
-        &mut interner,
-        &mut BTreeMap::new(),
-        0u64,
-        100,
-        0u32,
-        &mut main_rng,
+    // `TechnoClass::GetROF @ 0x006FCFA0` returns `ROF + RandomRanged(0, 2)`,
+    // so a `ROF=50` weapon reloads in 50, 51 or 52 frames — the exact value is
+    // drawn, which is why this test counts the countdown instead of hardcoding
+    // a frame number.
+    let cooldown = store
+        .get(1)
+        .unwrap()
+        .attack_target
+        .as_ref()
+        .unwrap()
+        .cooldown_ticks;
+    assert!(
+        (50..=52).contains(&cooldown),
+        "ROF=50 must reload in 50..=52 frames, got {cooldown}"
     );
-    let h2: u16 = store.get(2).unwrap().health.current;
-    assert_eq!(h1, h2, "Should not fire during cooldown");
 
-    // ROF is a native frame count. After 49 post-shot combat updates the
-    // countdown is still 1, so no second shot has fired yet.
-    for _ in 0..48 {
-        tick_combat(
-            &mut store,
-            &mut OccupancyGrid::new(),
-            &rules,
-            &mut interner,
-            &mut BTreeMap::new(),
-            0u64,
-            100,
-            0u32,
-            &mut main_rng,
-        );
+    // Every frame up to the last one leaves the target untouched.
+    for _ in 0..cooldown - 1 {
+        fire_once(&mut store, &mut interner, &mut main_rng);
     }
     assert_eq!(
         store.get(2).unwrap().health.current,
-        h2,
-        "ROF=50 must not re-fire on post-shot frame 49"
+        h1,
+        "no second shot before the countdown reaches zero"
     );
     assert_eq!(
         store
@@ -3286,20 +3335,12 @@ fn test_tick_combat_respects_cooldown() {
         1
     );
 
-    // The 50th update decrements 1 -> 0 before the fire decision.
-    tick_combat(
-        &mut store,
-        &mut OccupancyGrid::new(),
-        &rules,
-        &mut interner,
-        &mut BTreeMap::new(),
-        0u64,
-        100,
-        0u32,
-        &mut main_rng,
+    // The next update decrements 1 -> 0 before the fire decision.
+    fire_once(&mut store, &mut interner, &mut main_rng);
+    assert!(
+        store.get(2).unwrap().health.current < h1,
+        "the shot lands on the frame the countdown clears"
     );
-    let h3: u16 = store.get(2).unwrap().health.current;
-    assert!(h3 < h2, "ROF=50 should re-fire on post-shot frame 50");
 }
 
 fn selected_death_sounds_for(
@@ -3317,7 +3358,8 @@ fn selected_death_sounds_for(
     )]);
     let mut scenario_rng = SimRng::new(0);
     let mut handled_deaths = Vec::new();
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     let effects = handle_entity_deaths(
         &mut entities,
         &mut OccupancyGrid::new(),
@@ -3377,9 +3419,18 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
     )]);
     let mut sounds = Vec::new();
     let mut scenario_rng = SimRng::new(73);
-    let scenario_before = scenario_rng.state();
+    // The one attacker fires this tick, so the scenario stream advances by its
+    // `GetROF` reload jitter (`RandomRanged(0, 2)` @ `0x006FD0B0`) and nothing
+    // else — the death-sound choices themselves still draw only on the human
+    // and main streams.
+    let scenario_before = {
+        let mut expected = scenario_rng.clone();
+        expected.next_range_u32_inclusive(0, 2);
+        expected.state()
+    };
     let mut human_rng = SimRng::new(1);
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     tick_combat_with_fog_and_main_rng(
         &mut entities,
         &mut OccupancyGrid::new(),
@@ -3423,7 +3474,7 @@ fn fatal_sound_selection_uses_human_voice_then_die_sound_main_draws() {
     assert_eq!(
         scenario_rng.state(),
         scenario_before,
-        "death-sound choices must not consume Scenario RNG"
+        "death-sound choices must not consume Scenario RNG beyond the reload jitter"
     );
     let mut two_draw_reference = SimRng::new(1);
     two_draw_reference.next_u32();
@@ -5165,7 +5216,8 @@ fn persistent_projectile_delays_damage_across_save_load_continuation() {
     entities.remove(1);
     let mut main_rng = SimRng::new(1);
     let mut houses = BTreeMap::new();
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     tick_combat_with_fog_and_main_rng(
         &mut entities,
         &mut OccupancyGrid::new(),
@@ -5225,6 +5277,10 @@ fn inviso_scatter_uses_scenario_rng_only_for_effect_and_paired_smudge() {
         target_coord.2,
         target_coord.3,
     );
+    // `TechnoClass::GetROF @ 0x006FCFA0` draws its `RandomRanged(0, 2)` reload
+    // jitter after the shot, on this same instance (`[0x00A8B230] + 0x218` —
+    // the one `FootClass::Mission_Attack @ 0x004D4EA0` also uses).
+    expected_rng.next_range_u32_inclusive(0, 2);
     let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -5273,6 +5329,8 @@ fn inviso_empty_animlist_still_consumes_one_draw() {
     let mut scenario_rng = SimRng::new(1);
     let mut expected_rng = scenario_rng.clone();
     expected_rng.next_u32();
+    // Plus the end-of-burst reload jitter, `GetROF @ 0x006FCFA0`.
+    expected_rng.next_range_u32_inclusive(0, 2);
     let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -5291,7 +5349,7 @@ fn inviso_empty_animlist_still_consumes_one_draw() {
 }
 
 #[test]
-fn non_inviso_projectile_does_not_advance_scenario_rng() {
+fn gsi_08_05_non_inviso_projectile_advances_scenario_rng_by_the_reload_jitter() {
     let rules = inviso_weapon_rules(false, true);
     let mut store = EntityStore::new();
     store.insert(make_entity(1, "SHOOTER", 5, 5, 300));
@@ -5306,7 +5364,11 @@ fn non_inviso_projectile_does_not_advance_scenario_rng() {
     );
 
     let mut scenario_rng = SimRng::new(1);
-    let before = scenario_rng.logical_state();
+    // A non-inviso shot takes no scatter draw, but it still reloads, and
+    // `TechnoClass::GetROF @ 0x006FCFA0` draws `RandomRanged(0, 2)` for the
+    // reload unconditionally. Exactly one draw, on the scenario instance.
+    let mut expected_rng = scenario_rng.clone();
+    expected_rng.next_range_u32_inclusive(0, 2);
     let result = tick_combat(
         &mut store,
         &mut OccupancyGrid::new(),
@@ -5319,7 +5381,7 @@ fn non_inviso_projectile_does_not_advance_scenario_rng() {
         &mut scenario_rng,
     );
 
-    assert_eq!(scenario_rng.logical_state(), before);
+    assert_eq!(scenario_rng.logical_state(), expected_rng.logical_state());
     assert_eq!(explosion_coord(&result.explosion_effects[0]), target_coord);
 }
 
@@ -5343,21 +5405,22 @@ fn two_inviso_attackers_consume_consecutive_draws_in_live_order() {
 
     let mut scenario_rng = SimRng::new(1);
     let mut expected_rng = scenario_rng.clone();
+    // Per attacker, in live order: the inviso scatter draws, then that
+    // attacker's own `GetROF` reload jitter.
+    let mut expected_shot = |rng: &mut SimRng| {
+        let coord = inviso_scatter::scatter_inviso_effect_coord(
+            rng,
+            target_coord.0,
+            target_coord.1,
+            target_coord.2,
+            target_coord.3,
+        );
+        rng.next_range_u32_inclusive(0, 2);
+        coord
+    };
     let expected = [
-        inviso_scatter::scatter_inviso_effect_coord(
-            &mut expected_rng,
-            target_coord.0,
-            target_coord.1,
-            target_coord.2,
-            target_coord.3,
-        ),
-        inviso_scatter::scatter_inviso_effect_coord(
-            &mut expected_rng,
-            target_coord.0,
-            target_coord.1,
-            target_coord.2,
-            target_coord.3,
-        ),
+        expected_shot(&mut expected_rng),
+        expected_shot(&mut expected_rng),
     ];
     let result = tick_combat_with_fog(
         &mut store,
@@ -6344,7 +6407,8 @@ fn projectile_shrapnel_targets_hostile_head_before_random_cell_child() {
     let mut main_rng = SimRng::new(1);
     let mut houses = BTreeMap::new();
 
-    let handles = crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
+    let handles =
+        crate::sim::type_handle_table::ResolvedRuleHandles::resolve(&rules, &mut interner);
     let result = tick_combat_with_fog_and_main_rng(
         &mut entities,
         &mut occupancy,

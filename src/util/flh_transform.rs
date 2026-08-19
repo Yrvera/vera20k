@@ -8,8 +8,8 @@
 //! 1. Rotate the (Forward, Lateral) vector by the facing angle:
 //!    - RA2 facing: 0=N, 64=E, 128=S, 192=W
 //!    - angle = TAU * (facing / 256.0)
-//!    - world_x = Forward * sin(angle) + Lateral * cos(angle)
-//!    - world_y = -Forward * cos(angle) + Lateral * sin(angle)
+//!    - world_x = Forward * sin(angle) - Lateral * cos(angle)
+//!    - world_y = -Forward * cos(angle) - Lateral * sin(angle)
 //! 2. Convert world leptons to isometric screen pixels:
 //!    - screen_x = (world_x - world_y) * 30.0 / 256.0
 //!    - screen_y = (world_x + world_y) * 15.0 / 256.0 - AdjustForZ(Height)
@@ -33,7 +33,7 @@ pub fn adjust_for_z_leptons(z: i32) -> i32 {
 /// Convert an FLH lepton offset into an isometric screen-space pixel offset.
 ///
 /// `forward`: distance along the unit's facing direction (positive = forward).
-/// `lateral`: distance perpendicular to facing (positive = right of facing).
+/// `lateral`: distance perpendicular to facing (positive = LEFT of facing).
 /// `height`: vertical offset (positive = up, produces negative screen Y).
 /// `facing`: RA2 facing byte (0=N, 64=E, 128=S, 192=W).
 ///
@@ -52,9 +52,16 @@ pub fn flh_to_screen_offset(forward: i32, lateral: i32, height: i32, facing: u8)
 
     // Rotate (Forward, Lateral) by facing angle into world-space leptons.
     // Forward aligns with the facing direction (sin for X, -cos for Y).
-    // Lateral is perpendicular (cos for X, sin for Y).
-    let world_x: f32 = f * sin + l * cos;
-    let world_y: f32 = -f * cos + l * sin;
+    //
+    // gamemd-derived: `TechnoClass::GetFLH @ 0x006F3AD0`. Native builds
+    // `Rz(theta) * T(FLH.x, ySign * FLH.y, FLH.z)` with
+    // `theta = -(pi/16) * (dir32 - 8)` and then NEGATES the Y component
+    // (`FCHS @ 0x006F3D0A`) before adding it to the object coordinate. Walked
+    // on the stock MTNK fixture (`PrimaryFireFLH=190,25,120`, body north,
+    // turret east): native puts the muzzle 190 leptons east and 25 leptons
+    // NORTH of centre, so a positive lateral sits to the firer's LEFT.
+    let world_x: f32 = f * sin - l * cos;
+    let world_y: f32 = -f * cos - l * sin;
 
     let screen_x: f32 = (world_x - world_y) * HALF_SCREEN_X_PER_LEPTON;
     let screen_y: f32 =
@@ -73,7 +80,9 @@ pub fn flh_to_world_offset(forward: i32, lateral: i32, facing: u8) -> (f32, f32)
     let (sin, cos) = angle.sin_cos();
     let f: f32 = forward as f32;
     let l: f32 = lateral as f32;
-    (f * sin + l * cos, -f * cos + l * sin)
+    // Same rotation as `flh_to_screen_offset`: positive lateral is to the
+    // firer's LEFT (`TechnoClass::GetFLH @ 0x006F3AD0`).
+    (f * sin - l * cos, -f * cos - l * sin)
 }
 
 /// Convert FLH using the 32-way facing quantization used by gamemd's fire-origin path.
@@ -87,8 +96,9 @@ pub fn flh_to_screen_offset_32way(
         return (0.0, 0.0);
     }
     let facing_16: u16 = (facing as u16) << 8;
-    let bucket: i16 =
-        i16::from(crate::util::direction_tables::step32_from_facing16(facing_16)) - 8;
+    let bucket: i16 = i16::from(crate::util::direction_tables::step32_from_facing16(
+        facing_16,
+    )) - 8;
     let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
     flh_to_screen_offset(forward, lateral, height, quantized_facing)
 }
@@ -100,8 +110,9 @@ pub fn flh_to_world_offset_32way(forward: i32, lateral: i32, facing: u8) -> (f32
         return (0.0, 0.0);
     }
     let facing_16: u16 = (facing as u16) << 8;
-    let bucket: i16 =
-        i16::from(crate::util::direction_tables::step32_from_facing16(facing_16)) - 8;
+    let bucket: i16 = i16::from(crate::util::direction_tables::step32_from_facing16(
+        facing_16,
+    )) - 8;
     let quantized_facing: u8 = (((bucket + 8) as u16 * 8) & 0xff) as u8;
     flh_to_world_offset(forward, lateral, quantized_facing)
 }
@@ -140,9 +151,22 @@ mod tests {
 
     #[test]
     fn test_lateral_only_facing_north() {
+        // Positive lateral is to the firer's LEFT — west when facing north —
+        // so the screen offset mirrors the pre-correction values.
         let (sx, sy) = flh_to_screen_offset(0, 50, 0, 0);
-        assert!((sx - 5.86).abs() < 0.1, "sx={}", sx);
-        assert!((sy - 2.93).abs() < 0.1, "sy={}", sy);
+        assert!((sx - (-5.86)).abs() < 0.1, "sx={}", sx);
+        assert!((sy - (-2.93)).abs() < 0.1, "sy={}", sy);
+    }
+
+    #[test]
+    fn gsi_08_04_flh_lateral_is_left_of_facing() {
+        // `TechnoClass::GetFLH @ 0x006F3AD0`, walked on the stock MTNK
+        // `PrimaryFireFLH=190,25,120` with the aim facing east: the muzzle is
+        // 190 leptons east and 25 leptons north of the hull centre. +Y is
+        // south in this frame, so north is a negative world Y.
+        let (wx, wy) = flh_to_world_offset(190, 25, 64);
+        assert!((wx - 190.0).abs() < 0.01, "wx={wx}");
+        assert!((wy - (-25.0)).abs() < 0.01, "wy={wy}");
     }
 
     #[test]
@@ -162,7 +186,7 @@ mod tests {
     #[test]
     fn test_negative_lateral() {
         let (sx, _sy) = flh_to_screen_offset(0, -50, 0, 0);
-        assert!((sx - (-5.86)).abs() < 0.1, "sx={}", sx);
+        assert!((sx - 5.86).abs() < 0.1, "sx={}", sx);
     }
 
     #[test]
