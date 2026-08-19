@@ -1926,6 +1926,18 @@ pub(crate) fn build_bridge_redirect(
     has_structural_cell.then_some(redirect)
 }
 
+/// `MapClass::GetZoneID` 0x0056D230, bridge branch. Verified term by term
+/// 2026-08-19: a structural cell (`+0x140` bit 0x100) must match the first
+/// high `BridgeRecord` at **tolerance 1**; an intact record always resolves
+/// through endpoint A; an inactive record walks east or south along the
+/// record axis until the cell stops being structural and picks endpoint B
+/// only when the exit is still a concrete or wood bridge tile whose LandType
+/// is not Rock, otherwise A.
+///
+/// This is NOT `MapClass::ResolvePathCoord_BridgeAware` 0x00583180, which is
+/// a different resolver on a different consumer - see
+/// `resolve_path_coord_active_branch_is_unported`. The two share only their
+/// inactive branch. Do not merge them.
 fn bridge_redirect_for_structural_cell(
     terrain: &ResolvedTerrainGrid,
     bridge_records: &[BridgeEndpointRecord],
@@ -3000,39 +3012,47 @@ mod tests {
         panic!("unimplemented: tube branch of RegisterBridgeOrTubeHierarchyPairs 0x00582D70");
     }
 
-    /// RESIDUAL — gamemd address 0x00583180,
+    /// RESIDUAL - gamemd address 0x00583180,
     /// `MapClass::ResolvePathCoord_BridgeAware`.
     ///
-    /// gamemd has two bridge-aware coordinate resolvers that share their
-    /// INACTIVE-record branch and differ on the ACTIVE one.
-    /// `bridge_redirect_for_structural_cell` reproduces the inactive branch:
-    /// walk east or south along the span until the structural flag stops, then
-    /// pick endpoint B when the exit cell is a bridge tile whose LandType is
-    /// not Rock, endpoint A otherwise.
+    /// **Correction 2026-08-19.** An earlier version of this note compared
+    /// 0x00583180 against `bridge_redirect_for_structural_cell` and called
+    /// that function divergent. It is not: it is a faithful port of
+    /// `MapClass::GetZoneID` 0x0056D230, and the two natives are separate
+    /// resolvers with separate consumers that happen to share an inactive
+    /// branch. Nothing in this crate is wrong; a whole mechanism is absent.
     ///
-    /// The active branch of 0x00583180 is NOT reproduced. It calls
-    /// `MapClass::FindBridgeRecord` 0x0056DA10 at **tolerance 2** (this crate
-    /// passes 1), keeps the queried cell's perpendicular lane offset — X offset
-    /// when `cell+0x140` bit 0x800 is clear, Y offset when it is set — adds
-    /// that offset to both endpoints, compares the two `Sqrt_Approx` distances,
-    /// and returns the CLOSER endpoint, with an exact tie selecting endpoint B.
-    /// This crate returns `record.endpoint_a` unconditionally.
+    /// What is absent: 0x00583180 is called only from
+    /// `AStar_pathfind_search` 0x0042C900 and
+    /// `PathfinderClass::EstimateZoneCost` 0x0042D170, the latter resolving
+    /// BOTH endpoints through it under two independent caller flags before
+    /// running `Zone_precheck` and a `FindBridgeAdjacentZoneCell` walk. Its
+    /// active branch calls `FindBridgeRecord` at tolerance 2, keeps the
+    /// queried cell's perpendicular lane offset - X offset when `+0x140` bit
+    /// 0x800 is clear, Y offset when it is set - adds that offset to both
+    /// endpoints, compares two `Sqrt_Approx` distances and returns the closer
+    /// endpoint, an exact tie selecting endpoint B.
     ///
-    /// Trigger: A* entry and cost resolution for any coordinate sitting on an
+    /// Trigger: A* entry and zone-cost estimation for any coordinate on an
     /// intact high bridge.
     ///
-    /// Effect: a query from the far half of a span resolves to the near
-    /// endpoint in gamemd and to endpoint A in VERA, and the lane offset is
-    /// dropped, so the resolved coordinate loses its across-span position.
-    /// A unit pathing onto or along an intact high bridge can be routed toward
-    /// the wrong end of it.
+    /// Effect: VERA's A* takes its start and goal coordinates unresolved, so
+    /// a path onto or along an intact high bridge is planned from the raw
+    /// cell rather than from the span endpoint gamemd would project to, and
+    /// the zone-cost estimate that biases long searches is absent entirely.
     ///
-    /// Frequency: every path query touching an intact high bridge — common on
-    /// any retail map with one, and it is the intact case, not the destroyed
-    /// one, so it fires from the first move order onward.
+    /// Frequency: every path query touching an intact high bridge.
+    ///
+    /// Why this is not a small fix: porting the resolver alone gives dead
+    /// code. It has to land together with the `EstimateZoneCost` consumer,
+    /// because that is what decides which endpoint flag each side gets, and
+    /// this crate has no counterpart for that function. Wiring the resolver
+    /// into `astar_search` at a guessed point would be inventing behaviour.
     #[test]
-    #[ignore = "gamemd 0x00583180 projects to the nearer endpoint keeping the lane offset; VERA returns endpoint A"]
+    #[ignore = "gamemd 0x00583180 resolves A* endpoints through a bridge record; VERA has no port and no EstimateZoneCost consumer"]
     fn resolve_path_coord_active_branch_is_unported() {
-        panic!("unimplemented: active-record branch of ResolvePathCoord_BridgeAware 0x00583180");
+        panic!(
+            "unimplemented: ResolvePathCoord_BridgeAware 0x00583180 + its EstimateZoneCost consumer"
+        );
     }
 }

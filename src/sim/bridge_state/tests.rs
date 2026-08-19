@@ -2619,8 +2619,21 @@ fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
 /// cell level feeds ground height, which feeds the bridge transition predicate
 /// and unit Z.
 ///
-/// Frequency: every repair. Repairs are uncommon per match but decisive when
 /// they happen, and the effect persists for the rest of the game.
+///
+/// **Blocker, established 2026-08-19.** This cannot be ported as written.
+/// Every branch in the tail is selected by comparing
+/// `cell+0x38 - g_WoodBridgeSet_TileSetBase + 1` against runtime tile-class
+/// constants - `DAT_00ABAD30`, `DAT_00ABC2B4`, `DAT_00AA1130`, `DAT_00AA1028`,
+/// `DAT_00AA1548`, `DAT_00AA0740` - and the `+0x11B += 4` raise fires only on
+/// the `DAT_00ABAD30 + 4` variant paired with a `+0x11A` sub-tile of 5. Those
+/// constants live in BSS and are written per theater by
+/// `Read_Theater_TileSets_INI`, so they cannot be read out of the binary
+/// statically. `BridgeRampTile::relative_tile_index` is the right field to
+/// hold the comparison, but the values to compare against have to come from a
+/// live observation or from porting the theater tileset reader first.
+/// Guessing them would put a fabricated constant into sim state that feeds
+/// ground height. Recorded rather than approximated.
 #[test]
 #[ignore = "gamemd restores pavement, iso-tile and the +4 level raise after a repair (0x00570050); VERA only re-dispatches RepairBridge"]
 fn bridge_repair_terrain_restoration_is_unported() {
