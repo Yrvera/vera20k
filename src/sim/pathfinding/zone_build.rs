@@ -525,7 +525,7 @@ fn patch_hierarchy_level(
         {
             continue;
         }
-        register_high_bridge_hierarchy_edges_for_record(
+        register_bridge_hierarchy_edges_for_record(
             &mut edge_buckets,
             graph.cell_zone_ids(),
             resolved_terrain,
@@ -690,7 +690,7 @@ fn register_high_bridge_hierarchy_edges(
         if !record.active {
             continue;
         }
-        register_high_bridge_hierarchy_edges_for_record(
+        register_bridge_hierarchy_edges_for_record(
             edge_buckets,
             zone_ids,
             terrain,
@@ -701,7 +701,22 @@ fn register_high_bridge_hierarchy_edges(
     }
 }
 
-fn register_high_bridge_hierarchy_edges_for_record(
+/// `MapClass::RegisterBridgeOrTubeHierarchyPairs` 0x00582D70, bridge branch.
+///
+/// The native enters this branch on `CellClass::IsBridge` 0x00486750 **OR**
+/// `CellClass::IsWoodBridge` 0x00486770, selecting `g_BridgeSet_TileSetBase`
+/// when the first matched and `g_WoodBridgeSet_TileSetBase` when the second
+/// did, then indexes the SAME direction table with
+/// `IsoTileTypeIndex - base`. Concrete and wooden bridges register the same
+/// three pairs.
+///
+/// This used to return early unless `record.is_high()`, which silently dropped
+/// every wooden bridge's hierarchy edges. `high_bridge_tile_offset` already
+/// probes both tileset windows, so it is the correct gate on its own: a cell in
+/// neither window yields `None` and returns, which is where the native falls
+/// into its tube branch instead — still unported, see
+/// `tube_hierarchy_pairs_are_unregistered`.
+fn register_bridge_hierarchy_edges_for_record(
     edge_buckets: &mut HierarchyEdgeBuckets,
     zone_ids: &[ZoneId],
     terrain: &ResolvedTerrainGrid,
@@ -709,12 +724,6 @@ fn register_high_bridge_hierarchy_edges_for_record(
     width: u16,
     height: u16,
 ) {
-    // The shared native helper handles high bridges and low tubes. This slice
-    // retains the verified call/filter/order interface; tube pair geometry is
-    // owned by the later tube-topology item.
-    if !record.is_high() {
-        return;
-    }
     let Some(endpoint_a_cell) = terrain.cell(record.endpoint_a.0, record.endpoint_a.1) else {
         return;
     };
@@ -2986,14 +2995,10 @@ mod tests {
     /// endpoints. Both branches then register the SAME three zero-flag pairs in
     /// the same order: endpoints, same-side offsets, opposite-side offsets.
     ///
-    /// `register_high_bridge_hierarchy_edges_for_record` returns
-    /// immediately unless `record.is_high()`, which drops TWO things gamemd
-    /// registers: the tube branch above, and the wood-bridge half of the
-    /// bridge branch. 0x00582D70 enters that branch on
-    /// `CellClass::IsBridge` 0x00486750 OR `CellClass::IsWoodBridge`
-    /// 0x00486770, selecting `g_WoodBridgeSet_TileSetBase` for the
-    /// tile-offset lookup in the wood case, so a low wooden bridge
-    /// contributes no hierarchy edge here either.
+    /// The wood-bridge half of this gap is FIXED: the `record.is_high()` early
+    /// return was dropped, so wooden bridges now register the same three pairs
+    /// concrete ones do, matching the native's `IsBridge` OR `IsWoodBridge`
+    /// entry. Only the tube branch remains unported.
     ///
     /// Trigger: a move order whose start and goal sit on opposite sides of a
     /// low-bridge tunnel, far enough apart that the search uses the zone
@@ -3057,5 +3062,58 @@ mod tests {
         panic!(
             "unimplemented: ResolvePathCoord_BridgeAware 0x00583180 + its EstimateZoneCost consumer"
         );
+    }
+
+    /// `MapClass::RegisterBridgeOrTubeHierarchyPairs` 0x00582D70 enters its
+    /// bridge branch on `CellClass::IsBridge` 0x00486750 **OR**
+    /// `CellClass::IsWoodBridge` 0x00486770. VERA used to return early unless
+    /// the record was High, so every wooden bridge contributed no hierarchy
+    /// edge and long-range paths were planned as if it were not there.
+    #[test]
+    fn wood_bridge_records_register_hierarchy_edges_like_concrete_ones() {
+        fn edges_for(kind: BridgeRecordKind, tile: i32, wood_base: Option<u16>) -> usize {
+            let terrain = redirect_terrain(4, 1, Some(200), wood_base, |cell| {
+                cell.final_tile_index = tile;
+            });
+
+            let record = BridgeEndpointRecord {
+                endpoint_a: (0, 0),
+                endpoint_b: (3, 0),
+                group_id: 1,
+                active: true,
+                bridge_kind: kind,
+            };
+            let zone_ids: Vec<ZoneId> = vec![1, 2, 3, 4];
+            let mut buckets = HierarchyEdgeBuckets::new();
+            register_bridge_hierarchy_edges_for_record(
+                &mut buckets,
+                &zone_ids,
+                &terrain,
+                &record,
+                4,
+                1,
+            );
+            buckets.buckets.iter().map(|b| b.len()).sum()
+        }
+
+        // Wood tile (base 300, offset 0) on a Low record: the native registers,
+        // and so must this.
+        let wood = edges_for(BridgeRecordKind::Low, 300, Some(300));
+        assert!(
+            wood > 0,
+            "a wooden bridge must contribute hierarchy edges; before the fix this was 0"
+        );
+
+        // Same geometry on a concrete tile and a High record, for comparison.
+        let concrete = edges_for(BridgeRecordKind::High, 200, Some(300));
+        assert_eq!(
+            wood, concrete,
+            "both branches register the same three pairs in 0x00582D70"
+        );
+
+        // A tile in neither tileset window still registers nothing - that is
+        // where the native falls into its unported tube branch.
+        let neither = edges_for(BridgeRecordKind::Low, 900, Some(300));
+        assert_eq!(neither, 0, "no bridge tile, no bridge pairs");
     }
 }
