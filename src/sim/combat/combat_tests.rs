@@ -6685,3 +6685,52 @@ fn gsi_08_12_a_grizzly_promotes_through_the_damage_path() {
 
     assert_eq!(ranks, vec![0, 0, 100, 100, 200], "ranks after kills 1..5");
 }
+
+/// `UnitClass::Death_Explosion @ 0x00738680` plays one anim from the dying
+/// type's own `Explosion=` list and then one from `DestroyAnim=`, at its own
+/// coordinate, one `Random__Next()` draw each. Before this the type's list had
+/// no reader at all and every vehicle died with the warhead's puff.
+#[test]
+fn gsi_08_11_unit_death_plays_type_explosion_then_destroy_anim() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n1=HTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n[HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\nExplosion=TWLT070,TWLT120\nDestroyAnim=SMOKEY\n[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("death-explosion fixture parses");
+
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet"));
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 1, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(4),
+    );
+
+    let names: Vec<&str> = result
+        .explosion_effects
+        .iter()
+        .map(|effect| interner.resolve(effect.shp_name))
+        .collect();
+    let explosion_index = names
+        .iter()
+        .position(|name| *name == "TWLT070" || *name == "TWLT120")
+        .expect("the type's own Explosion= anim");
+    let destroy_index = names
+        .iter()
+        .position(|name| *name == "SMOKEY")
+        .expect("the type's DestroyAnim=");
+    assert!(
+        explosion_index < destroy_index,
+        "Explosion= precedes DestroyAnim=: {names:?}"
+    );
+}

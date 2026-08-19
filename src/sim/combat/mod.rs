@@ -1218,22 +1218,26 @@ fn emit_infantry_death_anim(
 ///
 /// `base_damage` is the post-modifier damage at the impact center; it
 /// drives AnimList selection via `damage / 25`, clamped to `len - 1`.
-/// RESIDUAL (GSI-08.11) — a dying unit does not play its own explosion. The
-/// effect chosen here comes from the *warhead*'s `AnimList=` (70 stock entries)
-/// indexed by damage; the TechnoType's own `Explosion=` list is authored on 487
-/// stock entries and has no reader anywhere in the crate. Crew survival is the
-/// other half: `Crewed=` (126 stock) only queues the building arm, so a
-/// destroyed `Crewed=yes` vehicle ejects nobody, and no survivor-type resolution
-/// exists — the survivor path here handles the smudge, not the unit.
-/// - Trigger: every unit and building death.
-/// - Player effect: deaths look wrong twice over. A Grizzly and an Apocalypse
-///   die with the same warhead-derived puff instead of their authored
-///   explosions, and no crew ever runs out of a wreck or a levelled structure.
-/// - Frequency: continuous — this is the most-watched moment in the game.
+/// The dying object's OWN explosion is emitted separately, in the death loop —
+/// see `UnitClass::Death_Explosion @ 0x00738680` there. This function is only
+/// the warhead's half.
+///
+/// RESIDUAL (GSI-08.11) — crew survival is still absent. `Crewed=` (126 stock
+/// sections) only queues the building smudge arm, so a destroyed `Crewed=yes`
+/// vehicle ejects nobody. Native resolves the survivor's type through
+/// `TechnoClass::Crew_Type @ 0x00707D20` (`AlliedCrew`/`SovietCrew`/`ThirdCrew`
+/// by side, falling to `Technician` behind a 15% `RandomRanged(0, 99)` draw for
+/// a veteran), ejects exactly one from a vehicle behind a `CrewEscape` draw
+/// (Rules `+0x5C0`, stock 50%), and 0-5 from a building through
+/// `How_Many_Survivors @ 0x00451330` (cost / `*SurvivorDivisor`, clamped 1..5)
+/// with a per-cell roll interleaved with the debris roll.
+/// - Trigger: every `Crewed=yes` vehicle or building death.
+/// - Player effect: no crew ever runs out of a wreck or a levelled structure.
+/// - Frequency: continuous.
 /// - Downstream risk: crew ejection spawns entities, so it moves unit counts,
-///   occupancy and the pinned replay hash; the explosion swap is comparatively
-///   contained but still changes anim spawn order and its RNG draws. The debris
-///   half of this row is recorded separately on `rules/warhead_type.rs`.
+///   occupancy, house counts and the pinned replay hash, and its per-cell draw
+///   order interleaves with the existing debris roll — it wants its own slice.
+///   The debris half of this row is recorded on `rules/warhead_type.rs`.
 pub(crate) fn emit_warhead_detonation_effects(
     warhead: &WarheadType,
     base_damage: i32,
@@ -2187,6 +2191,45 @@ fn handle_entity_deaths(
                     z: i32::from(z),
                     foundation: foundation.to_owned(),
                 });
+            }
+
+            // `UnitClass::Death_Explosion @ 0x00738680`: after the killing
+            // warhead's own `AnimList=` anim, the dying object plays ONE anim
+            // drawn from its type's `Explosion=` list and then one from
+            // `DestroyAnim=`, both at its own coordinate, one `Random__Next()`
+            // draw each. Without this a Grizzly and an Apocalypse died with the
+            // same warhead-derived puff.
+            //
+            // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
+            // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
+            // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
+            // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
+            // `DestroyAnim=` at the building coordinate; the sub-order of the
+            // scatter, delay and index draws is UNCHECKED, and getting it wrong
+            // would misroute the stream for every structure death. `Explodes=`
+            // (forcing the last `Explosion=` entry for a loaded miner) is
+            // likewise unread. Trigger: every building death, and every loaded
+            // miner death. Frequency: continuous.
+            if matches!(
+                category,
+                EntityCategory::Unit | EntityCategory::Aircraft | EntityCategory::Infantry
+            ) && let Some(obj) = rules.object(interner.resolve(type_id))
+            {
+                for list in [&obj.explosion_anims, &obj.destroy_anims] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let index = (main_rng.next_u32() % list.len() as u32) as usize;
+                    let shp_name = interner.intern(&list[index]);
+                    explosion_effects.push(ExplosionEffect {
+                        shp_name,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        z,
+                    });
+                }
             }
 
             if has_animation {
