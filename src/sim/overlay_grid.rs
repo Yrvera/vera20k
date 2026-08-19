@@ -615,16 +615,28 @@ pub fn recalc_overlay_passability(
     } else {
         flags
     };
+    // Ground blocking follows whichever land the cell ends up with. With no
+    // overlay land that is the pristine terrain value already cached in
+    // `base_ground_walk_blocked`; with one it is the overlay's `Land=` row.
+    // `CellClass__RecalcAttributes` @ `0x0047D2B0` recomputes LandType from
+    // scratch on every overlay change and keeps no separate blocked bit, so
+    // neither value may outlive the land that produced it.
+    let mut land_ground_blocked = terrain_cell.base_ground_walk_blocked;
     if let Some(flags) = current_land_flags {
         if let Some(land) = retained_overlay_land(flags, slope_type) {
             apply_overlay_land(terrain_cell, land, flags.land_speed_costs);
+            // The ramp exemption is a property of the tile, not the land row,
+            // so it survives the override exactly as it does in the pristine
+            // value baked into `base_ground_walk_blocked`.
+            land_ground_blocked =
+                terrain_cell.canonical_ramp.is_none() && flags.land_ground_blocked;
         }
     }
 
     terrain_cell.overlay_blocks = new_blocks;
     terrain_cell.overlay_zone_type = overlay_zone;
     terrain_cell.ground_walk_blocked =
-        terrain_cell.base_ground_walk_blocked || terrain_cell.terrain_object_blocks || new_blocks;
+        land_ground_blocked || terrain_cell.terrain_object_blocks || new_blocks;
     terrain_cell.build_blocked = terrain_cell.base_build_blocked
         || terrain_cell.terrain_object_blocks
         || new_blocks
@@ -2119,6 +2131,62 @@ IsRubble=yes
                 "overlay id {overlay_id}"
             );
         }
+    }
+
+    #[test]
+    fn low_bridge_land_override_clears_the_water_tiles_ground_block() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::terrain_rules::{LandType, SpeedCostProfile};
+
+        // A low bridge is an overlay, not a raised deck: LOBRDG01..28 /
+        // LOBRDB01..28 carry `Land=Road` and `NoUseTileLandType=yes`, and their
+        // span cells sit directly on the water tiles they cross.
+        let ini = IniFile::from_str(
+            "[OverlayTypes]
+0=LOBRDG10
+[Road]
+Foot=100%
+Track=100%
+Wheel=100%
+[Water]
+Foot=0%
+Track=0%
+Wheel=0%
+Float=100%
+[LOBRDG10]
+Land=Road
+NoUseTileLandType=yes
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+        let mut water_costs = SpeedCostProfile::default();
+        water_costs.wheel = Some(0);
+
+        let mut terrain = single_cell_terrain(LandType::Water.as_index(), water_costs, true, true);
+        let mut overlay_grid = OverlayGrid::new(1, 1);
+        overlay_grid.place_overlay(0, 0, 0, 1);
+        recalc_overlay_passability(&mut overlay_grid, &mut terrain, &registry, 0, 0);
+
+        let deck = terrain.cell(0, 0).expect("bridge deck cell");
+        assert_eq!(deck.land_type, LandType::Road.as_index());
+        assert!(!deck.is_water);
+        // The regression: `ground_walk_blocked` used to be rebuilt from
+        // `base_ground_walk_blocked`, so the water underneath kept the deck
+        // closed to every ground unit even though its LandType was Road.
+        assert!(
+            !deck.ground_walk_blocked,
+            "Land=Road + NoUseTileLandType must carry its own passability onto the cell"
+        );
+        // The pristine snapshot stays water — it is the restoration value.
+        assert!(deck.base_ground_walk_blocked);
+        assert_eq!(deck.base_land_type, LandType::Water.as_index());
+
+        // Removing the bridge hands the cell back to the water tile.
+        *overlay_grid.cell_mut(0, 0) = OverlayCell::default();
+        recalc_overlay_passability(&mut overlay_grid, &mut terrain, &registry, 0, 0);
+        let bare = terrain.cell(0, 0).expect("cleared cell");
+        assert_eq!(bare.land_type, LandType::Water.as_index());
+        assert!(bare.ground_walk_blocked);
     }
 
     #[test]

@@ -147,6 +147,19 @@ pub struct OverlayTypeFlags {
     pub no_use_tile_land_type: bool,
     /// Final Land row's speed profile, when that canonical rules section exists.
     pub land_speed_costs: Option<SpeedCostProfile>,
+    /// Whether the final Land row blocks ground movement on its own.
+    ///
+    /// Taken from the same `terrain_rules` row as `land_speed_costs`, because a
+    /// cell whose LandType the overlay replaces must derive *every* land
+    /// attribute from the replacement. `CellClass__RecalcAttributes` @
+    /// `0x0047D2B0` stores exactly one land attribute — `Cell->LandType` — and
+    /// its early overlay branch writes `OverlayTypeClass+0x298` (`Land=`) and
+    /// returns before the tile's own subtile land type is ever read, whenever
+    /// `Land` is Wall/Railroad or `+0x2AC` (`NoUseTileLandType`) is set. gamemd
+    /// has no cached per-cell "blocked" bit to go stale; ground passability is
+    /// re-derived from that stored LandType. VERA caches the derivation, so the
+    /// cache has to move with the LandType that produced it.
+    pub land_ground_blocked: bool,
     /// Strength= from rules.ini — hit points for destructible overlays.
     /// Only meaningful when wall=true. Default 1.
     pub strength: u16,
@@ -177,6 +190,7 @@ impl Default for OverlayTypeFlags {
             land: LandType::Clear,
             no_use_tile_land_type: true,
             land_speed_costs: None,
+            land_ground_blocked: false,
             radar_color: None,
             strength: 1,
             damage_levels: 1,
@@ -259,9 +273,10 @@ impl OverlayTypeRegistry {
         // Native registry allocation follows declaration order; numeric key
         // text is not a sorting authority.
         let terrain_rules = TerrainRules::from_ini(ini);
-        let clear_speed_costs = terrain_rules
-            .semantics_for_land_type(LandType::Clear.as_index())
-            .map(|semantics| semantics.speed_costs);
+        let clear_semantics = terrain_rules.semantics_for_land_type(LandType::Clear.as_index());
+        let clear_speed_costs = clear_semantics.map(|semantics| semantics.speed_costs);
+        let clear_ground_blocked =
+            clear_semantics.is_some_and(|semantics| semantics.ground_blocked);
         let mut flags: Vec<OverlayTypeFlags> = Vec::with_capacity(names.len());
         for (idx, name) in names.iter().enumerate() {
             let upper_name = name.to_ascii_uppercase();
@@ -278,9 +293,10 @@ impl OverlayTypeRegistry {
                 if tiberium && land == LandType::Clear {
                     land = LandType::Tiberium;
                 }
-                let land_speed_costs = terrain_rules
-                    .semantics_for_land_type(land.as_index())
-                    .map(|semantics| semantics.speed_costs);
+                let land_semantics = terrain_rules.semantics_for_land_type(land.as_index());
+                let land_speed_costs = land_semantics.map(|semantics| semantics.speed_costs);
+                let land_ground_blocked =
+                    land_semantics.is_some_and(|semantics| semantics.ground_blocked);
                 let land_wheel_speed_zero =
                     land_speed_costs.is_some_and(|speed_costs| speed_costs.wheel == Some(0));
                 // Strength from rules section (e.g., [GAWALL] Strength=300).
@@ -323,6 +339,7 @@ impl OverlayTypeRegistry {
                         .get_bool("NoUseTileLandType")
                         .unwrap_or(true),
                     land_speed_costs,
+                    land_ground_blocked,
                     radar_color,
                     strength,
                     damage_levels,
@@ -332,6 +349,7 @@ impl OverlayTypeRegistry {
                     bridge_deck,
                     track,
                     land_speed_costs: clear_speed_costs,
+                    land_ground_blocked: clear_ground_blocked,
                     land_wheel_speed_zero: clear_speed_costs
                         .is_some_and(|speed_costs| speed_costs.wheel == Some(0)),
                     ..OverlayTypeFlags::default()
