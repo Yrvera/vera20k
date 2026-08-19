@@ -8,6 +8,10 @@
 //!   Exit:   !(dst has bridge structural flag) AND src has bridge structural flag
 //! Both conditions independent; signed i8 height arithmetic.
 //!
+//! Native source for that predicate is each ground locomotor's own movement
+//! step, not a shared helper - see `compute_bridge_transition` below for the
+//! two verified copies and their addresses.
+//!
 //! See docs/plans/2026-05-11-bridge-locomotor-layer-correctness-design.md.
 
 use crate::sim::components::{BridgeOccupancy, Position};
@@ -151,12 +155,42 @@ pub(super) const BRIDGE_Z_OFFSET: SimFixed = SimFixed::lit("416");
 
 /// The on_bridge cell-flag predicate at a cell-boundary crossing.
 ///
-/// Both conditions evaluate independently — they are mutually exclusive on retail data
-/// but the audit caught a doc pseudocode bug that incorrectly structured them as if/else.
+/// gamemd has no shared helper for this: each ground locomotor carries its
+/// own copy of the same block, and the two that matter agree instruction for
+/// instruction.
 ///
-/// Height arithmetic uses signed i8 via wrapping_sub. u8 subtraction would underflow on
-/// malformed maps with height ≥ 128; retail maps use 0-15 only, so wrapping is functionally
-/// identical in practice.
+/// `WalkLocomotionClass::ProcessMovement` 0x0075C154 - 0x0075C199 and
+/// `DriveLocomotionClass::Process_Drive_Track` 0x004B2561 - 0x004B259B, with
+/// ESI/ECX the source cell and EAX the destination cell:
+///
+/// ```text
+/// MOVSX EDX, byte [src + 0x11B]      ; source ground level, SIGNED
+/// MOVSX EDI, byte [dst + 0x11B]      ; destination ground level, SIGNED
+/// SUB   EDX, 4
+/// CMP   EDI, EDX          ; JNZ over the enter arm
+///   TEST [dst + 0x140], 0x100        ; JZ over the enter arm
+///     foot->+0x8C = 1                ; ENTER
+/// TEST  [dst + 0x140], 0x100         ; JNZ done - destination is a bridge cell
+/// TEST  [src + 0x140], 0x100         ; JZ  done - source was not
+///   foot->+0x8C = 0                  ; EXIT
+/// ```
+///
+/// So the enter arm is an exact equality on level indices and the exit arm
+/// reads only the two bridge flags. Both arms are evaluated in sequence, not
+/// as if/else, which is what the function below does.
+///
+/// `ObjectClass::ShouldBeOnBridge` 0x005F6A70 is NOT this predicate despite
+/// the name - it compares ground heights in leptons at the object's
+/// destination coordinate and feeds zone reachability queries. See
+/// `should_be_on_bridge_is_a_reachability_input_not_the_transition` for the
+/// evidence and the one place the two really do diverge.
+///
+/// Height arithmetic uses signed i8 via `wrapping_sub` where the native
+/// sign-extends to 32 bits first and subtracts without wrapping. The two
+/// disagree only for a source level in 128..=131, where `wrapping_sub` lands
+/// back inside the i8 range and can match a destination level of 124..=127
+/// that the native's -132..=-129 never equals. Retail maps use levels 0-15,
+/// so no map reaches it; recorded rather than papered over.
 pub(super) fn compute_bridge_transition(
     src: &crate::sim::pathfinding::PathCell,
     dst: &crate::sim::pathfinding::PathCell,
@@ -408,6 +442,34 @@ mod tests {
         // does not fire Exit here.
         let src = cell(4, true, true);
         let dst = cell(0, false, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+
+    /// The two cases where reading `ObjectClass::ShouldBeOnBridge` as the
+    /// cell-transition predicate would have changed the answer. Both are
+    /// `NoChange` natively; a lepton-height port would make the first an
+    /// `Enter` and the second an `Exit`.
+    #[test]
+    fn five_level_drop_onto_a_deck_is_not_an_entry() {
+        // Enter needs dst == src - 4 exactly. A five-level drop is not it,
+        // even though the height difference clears three level heights.
+        let src = cell(5, true, true);
+        let dst = cell(0, true, false);
+        assert_eq!(
+            compute_bridge_transition(&src, &dst),
+            BridgeTransition::NoChange
+        );
+    }
+
+    #[test]
+    fn deck_to_deck_over_rising_terrain_is_not_an_exit() {
+        // Exit reads the two bridge flags only. The terrain under the deck
+        // climbing four levels between the cells does not end the crossing.
+        let src = cell(0, true, false);
+        let dst = cell(4, true, false);
         assert_eq!(
             compute_bridge_transition(&src, &dst),
             BridgeTransition::NoChange
@@ -783,81 +845,84 @@ mod bridge_constant_tests {
         );
     }
 
-    /// RESIDUAL — gamemd addresses 0x005F6A70 `ObjectClass::ShouldBeOnBridge`
-    /// and 0x004DDC40 `FootClass::ShouldBeOnBridge`, which gates the base on
-    /// the sign bit of the Foot byte at +0x684 and otherwise forwards to it.
+    /// RESIDUAL - gamemd 0x005F6A70 `ObjectClass::ShouldBeOnBridge`, its
+    /// FootClass override 0x004DDC40, and the reachability queries they feed.
     ///
-    /// Both bodies were decompiled 2026-08-19. 0x005F6A70 compares two
-    /// `CellClass::GetGroundHeight` results — one at the candidate coordinate
-    /// produced by `vtable+0x4C`, one at the object's own Location
-    /// (+0x9C/+0xA0/+0xA4):
+    /// Corrected 2026-08-19. An earlier note in this file claimed this
+    /// function was the native counterpart of `compute_bridge_transition` and
+    /// that the port diverged from it. That pairing was wrong, and acting on
+    /// it would have replaced a correct port. Slot +0xBC is genuinely
+    /// ShouldBeOnBridge, but nothing behind that slot writes the OnBridge byte:
+    ///
+    /// * The transition really is the locomotor block cited on
+    ///   `compute_bridge_transition` - the only `+0x8C = 1` stores on the
+    ///   ground-movement path are 0x0075C179 (Walk) and 0x004B1830 / 0x004B2586
+    ///   (Drive), each guarded by the level-equality and flag tests ported here.
+    /// * The boundary-time clear is `FootClass::PerCellProcess`'s own tail:
+    ///   `if (OnBridge && !(currentCell->+0x140 & 0x100)) vtable+0xEC`, where
+    ///   +0xEC is `ObjectClass::DropIn` 0x005F4160 and the byte it zeroes at
+    ///   `this+0x8C` is OnBridge.
+    /// * `ShouldBeOnBridge` takes its candidate coordinate from vtable+0x4C,
+    ///   which for a Foot is `FootClass::GetDestinationCoords` 0x004DBDF0 - the
+    ///   NavCom destination or tube exit, not the next cell. Its result is
+    ///   consumed as the source-side on-bridge argument of
+    ///   `MapClass::Can_Reach_Zone` 0x0056D100. Three call sites verified with
+    ///   the receiver read out of the disassembly - `FootClass::Locomotion_AI`
+    ///   0x005210E9, `WalkLocomotionClass::ProcessMovement` 0x0075B163 and
+    ///   `FootClass::PerCellProcess` 0x004D8BE6 - each pushing the result, then
+    ///   `TechnoType+0x5B4` as the MovementZone, into the same query. Further
+    ///   `[reg+0xBC]` sites on what is probably the same slot
+    ///   (`FootClass::CanReachDestination` 0x004D38F3,
+    ///   `TechnoClass::Set_Destination` 0x00741FE3,
+    ///   `FootClass::Is_Cell_Harvestable` 0x004DCF6F) have NOT had their
+    ///   receiver verified individually and are candidates only.
+    ///
+    /// What IS unported, and it is only this: gamemd answers those queries on
+    /// the layer `ShouldBeOnBridge` returns, which is the mover's OnBridge byte
+    /// *adjusted by where it is headed* -
     ///
     /// ```text
-    /// if (!OnBridge && (gh_current - gh_candidate) > 3 * g_nFootLevelHeightLeptons
-    ///     && (candidate_cell->flags_140 & 0x100))   return 1;
-    /// if ( OnBridge && (gh_candidate - gh_current) > 3 * g_nFootLevelHeightLeptons) return 0;
+    /// if (!OnBridge && (gh_location - gh_destination) > 3 * 104
+    ///     && (destinationCell->+0x140 & 0x100))   return 1;
+    /// if ( OnBridge && (gh_destination - gh_location) > 3 * 104) return 0;
     /// return OnBridge;
     /// ```
     ///
-    /// `compute_bridge_transition` uses different terms for both halves: entry
-    /// is `dst.ground_level == src.ground_level - 4` — an exact equality on
-    /// level indices where gamemd tests a lepton difference strictly greater
-    /// than three level heights, so a four-or-more-level drop and any sloped
-    /// intermediate qualify natively but not here — and exit is
-    /// `!dst.has_structural_bridge() && src.has_structural_bridge()`, a flag
-    /// test where gamemd uses the height difference alone and never reads the
-    /// flag on the way out.
+    /// where both terms are `CellClass::GetGroundHeight` 0x00578080 results in
+    /// leptons at exact coordinates, so they carry slope interpolation and are
+    /// terrain heights, not deck heights. `104` is `g_nFootLevelHeightLeptons`
+    /// 0x00AC13C8; its two derived globals, 2x for the flight threshold and 4x
+    /// for the 416-lepton deck offset, are already pinned in `util::lepton`.
+    /// VERA instead passes the mover's raw layer as `start_layer` and the goal
+    /// cell's own bridge flag as `goal_layer` (`movement_path::goal_zone_layer`,
+    /// `zone_map::ZoneGrid::can_reach`).
     ///
-    /// Trigger: every cell-boundary crossing by a ground unit near a bridge.
+    /// Trigger: a reachability query by a ground unit whose destination ground
+    /// is four or more levels below its current ground and carries a bridge
+    /// flag, or four or more levels above it - i.e. ordering a unit that is not
+    /// yet on a bridge to a cell on the deck, or a unit on the deck to a cell
+    /// up on the bank.
     ///
-    /// Effect where they disagree: a bridgehead whose drop is five levels or
-    /// more, or whose terrain slopes, enters the deck in gamemd and not here;
-    /// and a unit driving from one deck cell to another where the terrain
-    /// beneath rises four levels leaves the bridge natively while VERA keeps it
-    /// on the deck.
+    /// Effect: the zone id is looked up on the wrong layer, so a move order
+    /// across a bridge can be judged unreachable and substituted with a nearby
+    /// cell, or judged reachable and pathed on the wrong layer. It moves where
+    /// the unit ends up, not whether it renders on the deck.
     ///
-    /// Frequency: every cell-boundary crossing by a ground unit on or
-    /// beside a bridge, so per-move on any bridged map - the highest
-    /// cadence of any open item in this family. That is exactly why the
-    /// unproved binding below matters rather than being a technicality:
-    /// a wrong port here would fire constantly.
+    /// Frequency: `FootClass::Locomotion_AI` is a per-tick caller, so this is
+    /// per tick per moving ground unit whose destination sits four or more
+    /// levels off its current ground - not per order. On a bridged map with
+    /// traffic crossing, that is often. The retracted note put the cadence at
+    /// every cell crossing; the real one is lower than that but not by much,
+    /// and it lands on a different system.
     ///
-    /// **The binding IS proved — corrected 2026-08-19.** An earlier version of
-    /// this note claimed the vtable slot could not be established and that it
-    /// was therefore unknown whether gamemd drives its cell-boundary bridge
-    /// transition through this function. Both claims were wrong, and the
-    /// reasoning behind them was a category error: a search for callsites of
-    /// `[reg + 0xBC]` was read as a list of callees, when it is a list of the
-    /// functions CONTAINING those callsites.
-    ///
-    /// The slot is **+0xBC**, fixed from the constructors that write each
-    /// vtable: `AircraftClass` 0x007E22A4 (written at 0x00413D87),
-    /// `FootClass` 0x007E8C94 (0x004D345D), `InfantryClass` 0x007EB058
-    /// (0x00517ACC) and `UnitClass` 0x007F5C70 (0x0073543A) all hold
-    /// 0x004DDC40 at base+0xBC — `read_memory 0x007E8D50` gives
-    /// `40 dc 4d 00` — while `BuildingLightClass` 0x007E3AD0 holds the
-    /// ObjectClass body 0x005F6A70 at the same slot. FootClass overriding
-    /// ObjectClass at one slot is the expected pair.
-    ///
-    /// The live caller is `FootClass::PerCellProcess`, `CALL dword ptr
-    /// [EDX + 0xBC]` at **0x004D8BE6** with the receiver as `this` — the
-    /// cell-boundary hook itself. So gamemd does drive the transition through
-    /// this predicate, and the divergence in the formulas above is real rather
-    /// than speculative.
-    ///
-    /// Remaining blocker, and it is the formula rather than the binding:
-    /// porting it means replacing a comparison of two `PathCell::ground_level`
-    /// values with two `CellClass::GetGroundHeight` results taken at exact
-    /// coordinates. `compute_bridge_transition` receives cells, not coords, so
-    /// the port needs coordinates and terrain threaded through the movement
-    /// transition path — a change to the predicate every ground unit crosses a
-    /// cell boundary with. That is its own slice, and it is the reason this is
-    /// still recorded; it is no longer an evidence gap.
+    /// Blocker: the layer arguments are threaded through every move-order
+    /// caller as `MovementLayer`, and this needs the mover's location and its
+    /// destination coordinate at the same point, in leptons, to compute two
+    /// `GetGroundHeight`s. That is a signature change across the order path,
+    /// not a change here.
     #[test]
-    #[ignore = "gamemd 0x005F6A70 tests ground-height differences; VERA tests level equality and flags. Binding proved at vtable+0xBC, caller 0x004D8BE6"]
-    fn should_be_on_bridge_predicate_differs_from_compute_bridge_transition() {
-        panic!(
-            "unproved binding: ShouldBeOnBridge 0x005F6A70 / 0x004DDC40 vs compute_bridge_transition"
-        );
+    #[ignore = "gamemd 0x005F6A70 adjusts the reachability on-bridge layer by destination ground height; VERA passes the raw mover layer"]
+    fn should_be_on_bridge_is_a_reachability_input_not_the_transition() {
+        panic!("unimplemented: destination-height on-bridge layer for Can_Reach_Zone 0x0056D100");
     }
 }
