@@ -1,8 +1,10 @@
 //! Gas `BehavesLike` system + particle AI.
 //!
-//! Per-tick gas logic for both the system (spawning, accumulator) and the
-//! individual particles (lifetime, decel, damage countdown). Differs from
-//! smoke in two key ways:
+//! Per-tick gas logic for both the system and the individual particles
+//! (lifetime, decel, damage countdown). `ParticleSystemClass::AI_Gas @
+//! 0x0062E6D0` has no periodic spawn arm and no `Slowdown`/`SpawnCutoff`
+//! accumulator — those belong to `AI_Smoke @ 0x0062ED40` alone. Gas differs
+//! from smoke in two further ways:
 //!   - `NextParticle` chains spawn a SINGLE child at the parent's position
 //!     (offset by `NextParticleOffset`), not two symmetric children.
 //!   - The child copies the parent's velocity AND its drift_x/y/z fields,
@@ -35,10 +37,16 @@ use glam::IVec3;
 pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules: &RuleSet) {
     let pst = rules.particle_system_type(sys.type_id);
     let cap = pst.particle_cap as usize;
-    let tick = u64::from(sim.session.binary_frame);
 
+    // `ParticleSystemClass::AI_Gas @ 0x0062E6D0` walks its particle array
+    // BACKWARDS in both loops (`for (i = count - 1; i >= 0; i--)`), unlike
+    // `AI_Smoke`, whose first loop runs forward. Nothing in the per-particle
+    // tick depends on the order, but the second walk's order decides which
+    // chain children are dropped once the cap is reached, so both are kept
+    // native-order here.
+    //
     // Phase 1 — tick existing particles.
-    for p in &mut sys.particles {
+    for p in sys.particles.iter_mut().rev() {
         let pt = rules.particle_type(p.type_id);
         let frame_count = super::system_ai::resolve_image_frame_count(rules, pt);
         tick_particle(p, pt, frame_count);
@@ -48,7 +56,7 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
     // Single-child finding: each dying parent spawns ONE child at
     // `parent.coords + pt.next_particle_offset`, copying velocity + drift.
     let mut child_specs: Vec<ChildSpec> = Vec::new();
-    for p in &sys.particles {
+    for p in sys.particles.iter().rev() {
         if !p.marked_for_deletion {
             continue;
         }
@@ -75,62 +83,15 @@ pub(super) fn tick_system(sys: &mut ParticleSystem, sim: &mut Simulation, rules:
         sys.particles.push(make_child(spec, pt, sim.particle_rng()));
     }
 
-    // Phase 3 — spawn a new particle if conditions allow.
-    if !sys.done_spawning && pst.spawns {
-        let timer_int = sys.spawn_timer.to_num::<i32>().max(1) as u64;
-        if tick % timer_int == 0 {
-            if let Some(holds) = pst.holds_what {
-                if sys.particles.len() < cap {
-                    let pt = rules.particle_type(holds);
-                    let r = pst.spawn_radius.max(0) as u32;
-                    // PARITY-YELLOW: the original gas-system per-tick AI makes NO
-                    // spawn-offset RNG draw here — this periodic-spawn path is
-                    // cloned from smoke and has no counterpart in the gas AI, so
-                    // these two draws are a phantom scenario-cursor advance vs
-                    // gamemd. Converting them to the raw-signed helper preserves
-                    // current behavior and keeps the file consistent for the
-                    // regression guard; true cursor parity needs the gas spawn
-                    // path reworked (tracked: OQ-PARTICLE-RNG-007).
-                    let off_x = sim.particle_rng().next_raw_modulo_signed(r + 1);
-                    let off_y = sim.particle_rng().next_raw_modulo_signed(r + 1);
-                    let spawn_pos = IVec3::new(
-                        sys.coords.x + off_x,
-                        sys.coords.y + off_y,
-                        sys.coords.z + 10,
-                    );
-                    sys.particles.push(make_particle(
-                        holds,
-                        spawn_pos,
-                        spawn_pos,
-                        pt,
-                        sim.particle_rng(),
-                    ));
-                }
-            }
-        }
-    }
-
-    // Phase 4 — accumulator. Slowdown advances the timer toward spawn_cutoff;
-    // once the timer crosses the cutoff, the system stops spawning.
-    sys.spawn_timer += pst.slowdown;
-    if pst.spawn_cutoff < sys.spawn_timer {
-        // DRIFT (GSI-05.13), recorded when `done_spawning` became the single
-        // `ParticleSystemClass+0xF8` flag: `AI_Gas @ 0x0062E6D0` never writes
-        // that byte — its only `0xf8` reference is `CALL dword ptr [EDX+0xf8]`
-        // at `0x0062E818`, the PARTICLE's destroy vtable. So this write now
-        // additionally retires the system, which it did not do before, and
-        // native does not.
-        // - Trigger: a Gas system whose spawn accumulator passes its cutoff.
-        // - Player effect: none today. Nothing in this engine spawns a Gas
-        //   system, and the two stock ones (`[GasCloudSys]`, `[PsychCloudSys]`)
-        //   author no `Slowdown=`, `SpawnCutoff=` or `Spawns=`, so the
-        //   accumulator never moves.
-        // - Frequency: zero occurrences in this build.
-        // - Downstream risk: whoever lands a Gas producer must decide this
-        //   first — either native has a cutoff writer this pass did not find,
-        //   or the Gas cutoff is not a `+0xF8` write and needs its own field.
-        sys.done_spawning = true;
-    }
+    // `AI_Gas` ends here. There is no Phase 3 and no Phase 4: the periodic
+    // spawn arm and the `Slowdown`/`SpawnCutoff` accumulator live only in
+    // `ParticleSystemClass::AI_Smoke @ 0x0062ED40`, and both were imported into
+    // this function by mistake. Gas systems therefore never retire themselves —
+    // `done_spawning` is written for them by exactly one site, the `Lifetime=`
+    // countdown in `system_ai.rs`, mirroring `ParticleSystemClass::AI @
+    // 0x0062FD60`'s `sys[0xEC]` decrement. With `Lifetime=` absent on both stock
+    // Gas systems that countdown never fires, so the system persists, which is
+    // what native does.
 }
 
 /// Per-tick AI for one gas particle. Tier-2 form: state-AI advance →
@@ -400,33 +361,80 @@ mod tests {
     }
 
     #[test]
-    fn gas_spawn_cap_enforced() {
-        // Cap=5 — even with aggressive spawning, particle count must stay ≤ 5.
+    fn gas_system_never_spawns_periodically_even_with_spawns_authored() {
+        // `ParticleSystemClass::AI_Gas @ 0x0062E6D0` has no periodic spawn arm:
+        // `Spawns=`/`SpawnFrames=` are read by `AI_Smoke @ 0x0062ED40` only. A
+        // Gas system therefore emits nothing on its own, however it is authored.
         let rules = parse(
-            "[Particles]\n\
-             1=Gas\n\
-             [Gas]\n\
-             BehavesLike=Gas\n\
-             MaxEC=1000\n\
-             [ParticleSystems]\n\
-             1=Sys\n\
-             [Sys]\n\
-             BehavesLike=Gas\n\
-             HoldsWhat=Gas\n\
-             ParticleCap=5\n\
-             SpawnFrames=1\n\
-             Spawns=yes\n",
+            "[Particles]
+             1=Gas
+             [Gas]
+             BehavesLike=Gas
+             MaxEC=1000
+             [ParticleSystems]
+             1=Sys
+             [Sys]
+             BehavesLike=Gas
+             HoldsWhat=Gas
+             ParticleCap=5
+             SpawnFrames=1
+             Spawns=yes
+",
         );
         let mut sim = Simulation::new();
         let mut sys = fake_system(ParticleSystemTypeId(0));
+        let rng_before = sim.particle_rng().state();
         for _ in 0..50 {
             tick_system(&mut sys, &mut sim, &rules);
             sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
         }
         assert!(
-            sys.particles.len() <= 5,
-            "cap exceeded: {}",
+            sys.particles.is_empty(),
+            "AI_Gas spawned {} particles; native spawns none",
             sys.particles.len()
+        );
+        // The two smoke-imported spawn-offset draws are gone with the arm.
+        assert_eq!(
+            sim.particle_rng().state(),
+            rng_before,
+            "an idle Gas system must consume no particle-RNG draws"
+        );
+    }
+
+    #[test]
+    fn gas_system_never_sets_done_spawning_from_the_spawn_cutoff() {
+        // `AI_Gas` never reads `Slowdown` (`psType+0x2A0`) or `SpawnCutoff`
+        // (`psType+0x2AC`) and never writes the system's `+0xF8` retirement
+        // byte. With the stock defaults (`spawn_timer` 1, `spawn_cutoff` 0) the
+        // imported accumulator tripped on the very first tick.
+        let rules = parse(
+            "[Particles]
+             1=Gas
+             [Gas]
+             BehavesLike=Gas
+             MaxEC=1000
+             [ParticleSystems]
+             1=Sys
+             [Sys]
+             BehavesLike=Gas
+             HoldsWhat=Gas
+             ParticleCap=20
+",
+        );
+        let mut sim = Simulation::new();
+        let mut sys = fake_system(ParticleSystemTypeId(0));
+        for _ in 0..10 {
+            tick_system(&mut sys, &mut sim, &rules);
+            sim.session.binary_frame = sim.session.binary_frame.wrapping_add(1);
+        }
+        assert!(
+            !sys.done_spawning,
+            "only the Lifetime countdown retires a Gas system"
+        );
+        assert_eq!(
+            sys.spawn_timer,
+            SimFixed::from_num(1),
+            "no accumulator advances the Gas spawn timer"
         );
     }
 }

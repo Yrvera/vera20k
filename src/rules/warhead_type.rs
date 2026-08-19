@@ -162,42 +162,62 @@ pub struct WarheadType {
     pub cell_inf_death: i32,
 
     // --- List fields ---
-    /// Debris animation names spawned on detonation (Debris= in rules.ini).
+    /// `[VoxelAnims]` type names thrown on detonation.
     ///
-    /// RESIDUAL (GSI-05.14) — dead on both ends, and the live keys sit on a
-    /// different class. No stock warhead section carries `Debris=` or
-    /// `DebrisMaximums=` at all; the debris that stock YR actually throws is
-    /// driven from TechnoType sections — `MaxDebris=` (456 stock sections, 17
-    /// of them spelled `Maxdebris=`; the engine matches keys case-insensitively
-    /// and so do these counts),
-    /// `MinDebris=` (272, all BuildingTypes), `DebrisTypes=` (36, every one of
-    /// them `TIRE`), `DebrisMaximums=` (36) and `DebrisAnims=` (166) — none of
-    /// which is parsed anywhere. These two fields also have no reader: they are
-    /// written by the parser below and never consulted.
+    /// gamemd-derived: `WarheadTypeClass::ReadINI` "DebrisTypes" @ `0x0075DAF5`
+    /// -> warhead `+0x18C`, resolved through the `VoxelAnimTypeClass` name
+    /// lookup at `0x0074B960`. These are voxel-anim types, NOT AnimTypes.
+    ///
+    /// RESIDUAL (GSI-05.14) — the four warhead debris keys parse and nothing
+    /// reads them, and the producer players actually see lives on a different
+    /// class. `WarheadTypeClass::ReadINI` reads exactly `DebrisTypes=`,
+    /// `DebrisMaximums=` (`0x0075DCFC` -> `+0x1A8`), `MinDebris=`
+    /// (`0x0075DAAB` -> `+0x1C8`) and `MaxDebris=` (`0x0075DA95` -> `+0x1C4`);
+    /// no stock warhead authors any of them, so these fields are stock-dead.
+    /// The 456 `MaxDebris=`, 272 `MinDebris=`, 36 `DebrisTypes=`, 36
+    /// `DebrisMaximums=` and 166 `DebrisAnims=` lines in stock rules all sit on
+    /// TechnoType sections, read by `TechnoTypeClass::ReadINI` (`0x007126EB`,
+    /// `0x0071274F`) — that is the live producer, and `src/rules/object_type.rs`
+    /// already parses its `MaxDebris=`/`MinDebris=` pair. The three stock
+    /// `Debris=` lines are TiberiumClass keys (`TiberiumClass::ReadINI_Fields`
+    /// @ `0x00721B4F`, sections `[Cruentus]`/`[Vinifera]`/`[Aboreus]`) naming
+    /// AnimTypes CRYSTAL1-4, unrelated to either.
     ///
     /// The consuming system is absent, not merely unwired. `VoxelAnimClass`
     /// (constructor `0x007493B0`, AI `0x00749F30`, destructor `0x007499F0`,
     /// draw `0x0046B0C0`; type class `0x0074AD80`) has no store, no type
     /// registry and no `BounceClass` physics here — note that
     /// `sim::components::VoxelAnimation` is an unrelated per-entity voxel frame
-    /// cursor, not this. `[VoxelAnims]` lists ten stock types (`PIECE`, `TIRE`,
-    /// `GASTANK`, `SONICTURRET`, `4TNKTURRET`, `CRYSTAL01/02`, `METEOR01/02`,
-    /// `PEBBLE`) whose bodies carry `Elasticity`, `Min/MaxAngularVelocity`,
-    /// `Min/MaxZVel`, `MaxXYVel`, `Duration`, `Damage`, `DamageRadius`,
-    /// `Warhead`, `ExpireAnim`, `IsMeteor` and `IsTiberium`; none is parsed.
-    /// - Trigger: any vehicle or building death.
+    /// cursor, not this.
+    /// - Trigger: any vehicle or building death (through the TechnoType keys;
+    ///   the warhead keys need a mod to author them at all).
     /// - Player effect: no debris is thrown. Wrecks vanish into their explosion
     ///   instead of scattering tyres, hull pieces and gas tanks, and buildings
     ///   drop none of their `MinDebris` chunks.
-    /// - Frequency: continuous — this is every unit death in every match.
+    /// - Frequency: continuous — every unit death in every match, via the
+    ///   TechnoType side. Zero for these warhead fields in unmodded play.
     /// - Downstream risk: the launch side belongs to the death path
     ///   (`GSI-08.11`) and the falling-object physics to `BounceClass`, which
     ///   `Bouncer=` SHP anims need too, so the two rows want one shared physics
     ///   owner rather than two. Bridge collapse already emits SHP debris as
     ///   `WorldEffect` rows and would migrate onto that owner.
-    pub debris: Vec<String>,
-    /// Maximum count for each debris type (DebrisMaximums= in rules.ini).
+    pub debris_types: Vec<String>,
+    /// Per-type debris count cap.
+    ///
+    /// gamemd-derived: `WarheadTypeClass::ReadINI` "DebrisMaximums" @
+    /// `0x0075DCFC` -> warhead `+0x1A8`.
     pub debris_maximums: Vec<i32>,
+    /// Lower bound on the debris count.
+    ///
+    /// gamemd-derived: `WarheadTypeClass::ReadINI` "MinDebris" @ `0x0075DAAB`
+    /// -> warhead `+0x1C8`, clamped up to 0 at `0x0075DAC6`.
+    pub min_debris: i32,
+    /// Upper bound on the debris count.
+    ///
+    /// gamemd-derived: `WarheadTypeClass::ReadINI` "MaxDebris" @ `0x0075DA95`
+    /// -> warhead `+0x1C4`. Native RAISES this to `min_debris` when it is
+    /// lower (`0x0075DAE0`); it never lowers `min_debris` to meet it.
+    pub max_debris: i32,
 }
 
 impl WarheadType {
@@ -225,8 +245,8 @@ impl WarheadType {
             .map(|s| s.to_string())
             .collect();
 
-        let debris: Vec<String> = section
-            .get_list("Debris")
+        let debris_types: Vec<String> = section
+            .get_list("DebrisTypes")
             .unwrap_or_default()
             .into_iter()
             .filter(|s| !s.is_empty())
@@ -239,6 +259,17 @@ impl WarheadType {
             .into_iter()
             .filter_map(|s| s.trim().parse::<i32>().ok())
             .collect();
+
+        // `WarheadTypeClass::ReadINI @ 0x0075DA95..0x0075DAE6`: MaxDebris is
+        // read first, MinDebris is clamped up to zero, and only then is
+        // MaxDebris raised to meet MinDebris. The order is load-bearing — a
+        // negative MinDebris must not drag MaxDebris below zero.
+        let max_debris = section.get_i32_ignoring_case("MaxDebris").unwrap_or(0);
+        let min_debris = section
+            .get_i32_ignoring_case("MinDebris")
+            .unwrap_or(0)
+            .max(0);
+        let max_debris = max_debris.max(min_debris);
 
         Self {
             id: id.to_string(),
@@ -292,8 +323,10 @@ impl WarheadType {
             cell_inf_death: section.get_i32("CellInfDeath").unwrap_or(0),
 
             // List fields
-            debris,
+            debris_types,
             debris_maximums,
+            min_debris,
+            max_debris,
         }
     }
 }
@@ -560,5 +593,40 @@ mod tests {
         assert_eq!(neg.prone_damage_basis_points, 10_000);
         assert_eq!(bad.prone_damage_basis_points, 10_000);
         assert_eq!(huge.prone_damage_basis_points, 10_000);
+    }
+
+    #[test]
+    fn gsi_05_14_warhead_reads_debristypes_not_debris() {
+        // `WarheadTypeClass::ReadINI` never looks at "Debris" — that string's
+        // only reader is `TiberiumClass::ReadINI_Fields @ 0x00721B4F`. The
+        // warhead key is "DebrisTypes" @ 0x0075DAF5.
+        let ini = IniFile::from_str(
+            "[W]
+Debris=CRYSTAL1
+DebrisTypes=TIRE
+",
+        );
+        let wh = WarheadType::from_ini_section("W", ini.section("W").unwrap());
+        assert_eq!(wh.debris_types, vec!["TIRE".to_string()]);
+    }
+
+    #[test]
+    fn gsi_05_14_mindebris_clamps_to_zero_then_raises_maxdebris() {
+        // 0x0075DAC6 clamps MinDebris up to 0; 0x0075DAE0 then raises MaxDebris
+        // to MinDebris. The second clamp is the one an obvious implementation
+        // gets backwards by lowering MinDebris instead.
+        let ini = IniFile::from_str(
+            "[Neg]
+MinDebris=-4
+MaxDebris=2
+[Inverted]
+MinDebris=7
+MaxDebris=2
+",
+        );
+        let neg = WarheadType::from_ini_section("Neg", ini.section("Neg").unwrap());
+        assert_eq!((neg.min_debris, neg.max_debris), (0, 2));
+        let inv = WarheadType::from_ini_section("Inverted", ini.section("Inverted").unwrap());
+        assert_eq!((inv.min_debris, inv.max_debris), (7, 7));
     }
 }
