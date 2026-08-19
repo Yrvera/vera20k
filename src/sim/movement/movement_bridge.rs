@@ -131,6 +131,18 @@ pub(super) fn projected_on_bridge(current: bool, update: BridgeStateUpdate) -> b
 
 /// Bridge vertical clearance in leptons.
 /// 416 == 104 * 4 — the verified Foot-role Z distance from water surface to bridge deck.
+///
+/// gamemd produces this number twice, independently, and both producers agree
+/// with the constant here:
+/// - `DriveLocomotionClass::ComputeBridgeZOffset` 0x004AF4A0 is a one-shot
+///   initializer computing `ftol(4 * g_DriveHeightStep + 0.5)` into
+///   `g_BridgeZOffset_Drive` 0x008A07C4, consumed by `Set_Destination`
+///   0x004AFDE2 and `Process_Drive_Track` 0x004B0FE7 / 0x004B18CC.
+/// - `FootClass::Set_Height_On_Bridge` 0x005F5FA0 adds
+///   `g_nFootOnBridgeDeckOffsetLeptons` (416) to its height argument whenever
+///   the object's `+0x8C` OnBridge byte is set, then writes
+///   `CellClass::GetGroundHeight(coords) + offset` into `+0xA4`, bracketing the
+///   write with vtable+0x124 REMOVE/PUT when `+0x74` IsMarked is set.
 /// Added to braking distance when a ship passes under a bridge cell.
 /// Same physical fact as `sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS`
 /// (a `SimFixed` literal cannot be const-derived from it; the equality is
