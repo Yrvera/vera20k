@@ -442,6 +442,12 @@ impl BridgeRuntimeState {
         (0xCD..=0xE8).contains(&overlay)
     }
 
+    /// `DestroyBridge_High` 0x0057CCF0. Its axis classes are
+    /// NS = 0xCD..=0xD5 u 0xDF..=0xE2 u {0xE7} and
+    /// EW = 0xD6..=0xDE u 0xE3..=0xE6 u {0xE8}; their union is the band
+    /// [`Self::is_high_destroy_overlay`] tests, and the neighbour probes inside
+    /// the native function use that same union.
+    ///
     /// Overlay-direct HIGH walker entry. Three responsibilities:
     /// 1. Classify the input cell's overlay byte to pick NS or EW walker.
     /// 2. Pre-walk start-cell shift: read the body-axis neighbors to find
@@ -476,6 +482,11 @@ impl BridgeRuntimeState {
         StateOutcome::NoChange
     }
 
+    /// `DestroyBridge_Low` 0x0057BAA0. Its axis classes are
+    /// NS = 0x4A..=0x52 u 0x5C..=0x5F u {0x64} and
+    /// EW = 0x53..=0x5B u 0x60..=0x63 u {0x65}; their union is the band
+    /// [`Self::is_low_destroy_overlay`] tests.
+    ///
     /// Overlay-direct LOW walker entry. Same shape as `destroy_bridge_high`
     /// with overlay ranges shifted to the LOW body range
     /// (`[0x4A..=0x65]`).
@@ -842,6 +853,10 @@ impl BridgeRuntimeState {
 
     // ----- Walker bodies (HIGH). LOW remains stubbed for Task 8. -----
 
+    /// `MapClass::DestroyBridgeWalker_NS_High` 0x0057CF60. Cascades through
+    /// `MapClass::ApplyBridgeDestruction_NS_High` 0x0057E7A0 and, on final
+    /// collapse, `MapClass::FindBridgeEndpoints_NS_High` 0x0057DC20.
+    ///
     /// HIGH NS-axis walker. Reads the input cell's overlay, picks one of
     /// 5 cases:
     /// - `0xDF` → write 0xE0 to (this, north, south); cascade west sibling
@@ -949,6 +964,11 @@ impl BridgeRuntimeState {
         }
     }
 
+    /// `MapClass::DestroyBridgeWalker_EW_High` 0x0057D530 — the compiled twin
+    /// of 0x0057CF60 with the EW constants. Cascades through
+    /// `MapClass::ApplyBridgeDestruction_EW_High` 0x0057ED00 and
+    /// `MapClass::FindBridgeEndpoints_EW_High` 0x0057DAF0.
+    ///
     /// HIGH EW-axis walker. Mirror of `destroy_bridge_walker_ns_high` with:
     /// - `0xE3` → write 0xE4 to (this, west, east); cascade south sibling
     /// - `0xE5` → write 0xE6 to triple; cascade north sibling
@@ -1234,6 +1254,13 @@ impl BridgeRuntimeState {
 
     // ----- LOW walker bodies. -----
 
+    /// `MapClass::DestroyBridgeWalker_NS_Low` 0x0057BCF0 — verified against
+    /// the decompile: same body shape as 0x0057CF60 with the LOW constants,
+    /// down to the three `RadarClass::MarkTerrainDirty` calls and the
+    /// `RebuildZoneConnectivity` on final collapse. Cascades through
+    /// `MapClass::ApplyBridgeDestruction_NS_Low` 0x0057DD50 and
+    /// `MapClass::FindBridgeEndpoints_NS_Low` 0x0057C990.
+    ///
     /// LOW NS-axis walker. Mirror of `destroy_bridge_walker_ns_high` with
     /// LOW case values:
     /// - `0x5C` → write 0x5D to (this, north, south); cascade west sibling
@@ -1333,6 +1360,11 @@ impl BridgeRuntimeState {
         }
     }
 
+    /// `MapClass::DestroyBridgeWalker_EW_Low` 0x0057C2B0 — the compiled twin
+    /// of 0x0057BCF0 with the EW constants. Cascades through
+    /// `MapClass::ApplyBridgeDestruction_EW_Low` 0x0057E2A0 and
+    /// `MapClass::FindBridgeEndpoints_EW_Low` 0x0057C870.
+    ///
     /// LOW EW-axis walker. Mirror of NS LOW with EW case values:
     /// - `0x60` → write 0x61 to (this, west, east); cascade south sibling
     /// - `0x62` → write 0x63 to triple; cascade north sibling
