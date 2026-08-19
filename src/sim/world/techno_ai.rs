@@ -3015,6 +3015,7 @@ mod tests {
             effective_mission: Some(MissionType::Attack),
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
+            infantry_deployed_do_type: false,
         };
 
         assert_eq!(
@@ -3112,6 +3113,7 @@ mod tests {
             effective_mission: Some(MissionType::Attack),
             unit_deploy_begin_active: false,
             unit_deploy_reverse_active: false,
+            infantry_deployed_do_type: false,
         };
 
         for frozen in [MissionType::Hunt, MissionType::Sticky] {
