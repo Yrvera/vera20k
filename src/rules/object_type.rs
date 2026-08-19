@@ -184,6 +184,12 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
+    /// `Trainable=` — whether this object can gain veterancy from its kills.
+    ///
+    /// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40` skips the
+    /// experience award entirely for an untrainable killer. 82 stock sections
+    /// set `Trainable=no`. Default true.
+    pub trainable: bool,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
     /// `DontScore=` — this object's destruction is invisible to the end-of-match
@@ -1104,6 +1110,7 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            trainable: section.get_bool("Trainable").unwrap_or(true),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),

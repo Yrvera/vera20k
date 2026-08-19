@@ -15,6 +15,7 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         name: None,
         ui_name: None,
         cost: 0,
+        trainable: true,
         strength: 100,
         dont_score: false,
         special_threat_value: 0.0,

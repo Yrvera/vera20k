@@ -6633,3 +6633,55 @@ fn gsi_04_10_entity_fatal_hook_and_later_terrain_share_raw_occupation() {
         TerrainObjectLifecycle::Destroyed
     );
 }
+
+/// A Grizzly (`Cost=700`) killing rookie Rhinos (`Cost=900`) earns 900/(700*3)
+/// per kill through the real damage path, so it wears a chevron on kill 3 and
+/// goes elite on kill 5 — `TechnoClass::Record_The_Kill @ 0x00702D40` feeding
+/// `VeterancyClass::Add @ 0x0074FF50`.
+#[test]
+fn gsi_08_12_a_grizzly_promotes_through_the_damage_path() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[VehicleTypes]\n0=MTNK\n1=HTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\n[HTNK]\nStrength=1\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n[E1]\nStrength=125\nArmor=flak\nSpeed=4\nCost=200\nPrimary=M60\n[M60]\nDamage=25\nROF=20\nRange=5\nWarhead=SA\n[105mm]\nDamage=65\nROF=50\nRange=6\nWarhead=AP\n[SA]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n[General]\nVeteranRatio=3.0\nVeteranCap=2\n",
+    ))
+    .expect("veterancy fixture parses");
+
+    // Guard the fixture itself: the award divides by the killer's cost and
+    // multiplies by the victim's, so a mistyped section silently yields zero.
+    assert_eq!(rules.object("HTNK").map(|o| o.cost), Some(900));
+    assert_eq!(rules.object("MTNK").map(|o| o.cost), Some(700));
+    let mut ranks = Vec::new();
+    let mut killer = make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet");
+    killer.owner = test_intern("Soviet");
+    let mut store = EntityStore::new();
+    store.insert(killer);
+    // Intern the victim type before snapshotting the thread-local test
+    // interner, or the award cannot resolve its `Cost=`.
+    let _ = test_intern("HTNK");
+    let mut interner = test_interner();
+    let mut scenario_rng = SimRng::new(9);
+
+    for victim_id in 2..=6u64 {
+        store.insert(make_entity_owned(victim_id, "HTNK", 8, 5, 1, "Americans"));
+        issue_attack_command(&mut store, 1, victim_id, None, &interner);
+        if let Some(attacker) = store.get_mut(1) {
+            if let Some(target) = attacker.attack_target.as_mut() {
+                target.cooldown_ticks = 0;
+            }
+        }
+        tick_combat(
+            &mut store,
+            &mut OccupancyGrid::new(),
+            &rules,
+            &mut interner,
+            &mut BTreeMap::new(),
+            0,
+            100,
+            0,
+            &mut scenario_rng,
+        );
+        store.remove(victim_id);
+        ranks.push(store.get(1).expect("killer").veterancy);
+    }
+
+    assert_eq!(ranks, vec![0, 0, 100, 100, 200], "ranks after kills 1..5");
+}

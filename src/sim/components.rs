@@ -114,25 +114,34 @@ pub struct SubCell(pub u8);
 ///
 /// Affects unit stats (damage, armor, speed bonuses) and visual indicators.
 ///
-/// RESIDUAL (GSI-08.12) — nothing ever promotes. Every non-test writer of this
-/// field sets it at spawn — rookie from the three spawn paths, or `200` from a
-/// scripted elite in scenario bootstrap — and combat never increments it. There
-/// is no experience accumulator on `GameEntity` at all: `kill_award_points`
-/// feeds the score, not a unit's own progress, and `VeteranRatio=` is not
-/// parsed. Only four of the roughly fifteen `VeteranAbilities=`/
-/// `EliteAbilities=` tokens are parsed (`EXPLODES`, `STRONGER`, `SCATTER`,
-/// `FEARLESS`) against 70 and 69 stock entries.
-/// - Trigger: any unit surviving kills.
-/// - Player effect: no unit ever earns a chevron. Veteran and elite damage,
-///   armour and weapon swaps are all implemented and all unreachable, so an
-///   army that should be visibly stronger after ten minutes never changes.
-/// - Frequency: continuous — this is every engagement of every match, and it is
-///   one of the most legible progressions in ordinary play.
-/// - Downstream risk: promotion feeds weapon selection, the damage multiplier,
-///   the armour divisor and `VeteranROF=` (itself unconsumed, recorded on
-///   `rof_to_cooldown_frames`), so landing it changes combat outcomes broadly
-///   and moves the pinned replay hash. It wants its own slice with a
-///   re-baseline, not a corner of another row.
+/// This is the RANK PROJECTION of `GameEntity::veterancy_raw`, which is the
+/// authoritative running accumulator. gamemd-derived:
+/// `TechnoClass::Record_The_Kill @ 0x00702D40` awards the victim's cost —
+/// zeroed between allies, doubled for a veteran victim, tripled for an elite
+/// one — and `VeterancyClass::Add @ 0x0074FF50` divides it by the killer's own
+/// cost times `[General] VeteranRatio=`, clamping at `VeteranCap=`. The rank
+/// tests are `>= 1.0` for veteran and `>= 2.0` for elite. A Grizzly promotes on
+/// its third rookie Rhino and goes elite on its fifth.
+///
+/// RESIDUAL (GSI-08.12) — three parts of the native row are still open.
+/// - **The promotion event.** Crossing a rank plays `UpgradeVeteranSound=` or
+///   `UpgradeEliteSound=` and, for elite, arms a 150-frame flash
+///   (`TechnoClass::AI @ 0x006FA050`..`0x006FA14B`, cached rank at
+///   `TechnoClass+0x13C`). `veterancy_rank_cache` is carried and persisted for
+///   exactly this, and nothing announces yet. Trigger: every promotion. Player
+///   effect: a unit gains its chevron silently. Frequency: continuous.
+/// - **Award redirection.** Only the killer itself is paid. Native routes the
+///   experience to a garrisoned occupant, a spawner's owner or a transport's
+///   owner ahead of the platform, whose field identities are UNCHECKED. Trigger:
+///   kills by garrisoned infantry, Aircraft Carrier Hornets, an IFV. Frequency:
+///   routine wherever those appear.
+/// - **Ability tokens.** Only four of the roughly fifteen
+///   `VeteranAbilities=`/`EliteAbilities=` tokens are parsed (`EXPLODES`,
+///   `STRONGER`, `SCATTER`, `FEARLESS`) against 70 and 69 stock entries, and
+///   `ROF` — which gates `VeteranROF=` in `GetROF` — is one of the missing ones
+///   (see the GSI-08.05 residual on `rof_to_cooldown_frames`). Trigger: any
+///   promoted unit whose type grants an unparsed ability. Frequency: continuous
+///   now that promotion exists.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Veterancy(pub u16);
 

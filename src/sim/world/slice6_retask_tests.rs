@@ -180,8 +180,12 @@ fn unit(owner: &str, type_id: &str, cx: u16, cy: u16, cat: EntityCategory) -> Ma
 // schema, so all three probes move together. Rust regression ratchet; the
 // kept-curve contract is exercised by
 // `movement_tests::test_reissue_mid_curve_keeps_track_and_anchors_path_at_head`.
-const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xF2F0_9EA2_E633_977D;
-const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x18E3_B2D8_2E04_8245;
+// Re-baselined 2026-08-19 with the GSI-08.12 veterancy accumulator: the raw
+// float bits and the rank cache are now hashed per object, a composition-only
+// shift. No RNG draw is added — `VeterancyClass::Add @ 0x0074FF50` consumes
+// none — and record/replay stayed equal at every tick.
+const SLICE6_PRE_LIFECYCLE_V28_HASH: u64 = 0xD076_757F_1D14_2787;
+const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // Snapshot/hash schema v29 adds lossless Mission dwords, readiness leaves,
 // suspended Target/falling state, and raw locomotor-ready inputs. The two
 // schema probes below must prove the shift is composition-only before updating
@@ -274,7 +278,11 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x18E3_B2D8_2E04_8245;
 // by that commit, while non-stock READY/GUARD precedence remains UNCHECKED.
 // Re-baselined 2026-08-18 for the kept in-flight Drive curve on mid-curve
 // re-orders; see the dated comment at the two legacy probes above.
-const SLICE6_BASELINE_HASH: u64 = 0xD997_73E0_DDC6_FBEE;
+// Re-baselined 2026-08-19 with the GSI-08.12 veterancy accumulator: the raw
+// float bits and the rank cache are now hashed per object, a composition-only
+// shift. No RNG draw is added — `VeterancyClass::Add @ 0x0074FF50` consumes
+// none — and record/replay stayed equal at every tick.
+const SLICE6_BASELINE_HASH: u64 = 0x5C9D_1978_A5FB_CAC0;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

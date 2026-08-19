@@ -252,6 +252,17 @@ pub struct PendingBuildingFire {
 /// Unified entity struct — replaces all hecs ECS components.
 ///
 /// Every game object (unit, infantry, building, aircraft) is one `GameEntity`.
+/// `TechnoClass`'s rank cache starts at `-1` so an object's first sample after
+/// spawn caches its rank without announcing a promotion.
+fn veterancy_rank_cache_default() -> i8 {
+    -1
+}
+
+/// A rookie accumulator, for snapshots written before the field existed.
+fn veterancy_raw_default() -> crate::util::native_x87::NativeF32Bits {
+    crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO
+}
+
 /// Core fields are always present; optional subsystems use `Option<T>`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameEntity {
@@ -312,7 +323,26 @@ pub struct GameEntity {
     #[serde(default)]
     pub determines_waypoint_edge: bool,
     /// Veterancy level: 0 = rookie, 100 = veteran, 200 = elite.
+    ///
+    /// A projection of [`Self::veterancy_raw`], refreshed wherever the raw
+    /// accumulator is written. Every existing reader — the damage multiplier,
+    /// the armour divisor, elite weapon selection, the chevron — consumes this.
     pub veterancy: u16,
+    /// The running accumulator every rank is sampled from.
+    ///
+    /// gamemd-derived: the `VeterancyClass` float on `TechnoClass`, fed by
+    /// `Record_The_Kill @ 0x00702D40` through `VeterancyClass::Add @
+    /// 0x0074FF50`. Carried as its `f32` bit pattern so sim state holds no
+    /// float and hashing, snapshots and replay stay integer-exact.
+    #[serde(default = "veterancy_raw_default")]
+    pub veterancy_raw: crate::util::native_x87::NativeF32Bits,
+    /// Last rank announced, for crossing detection.
+    ///
+    /// gamemd-derived: `TechnoClass+0x13C`, initialised to `-1` by the
+    /// constructor so the first sample after spawn caches without announcing.
+    /// `-1` uninitialised, `0` rookie, `1` veteran, `2` elite.
+    #[serde(default = "veterancy_rank_cache_default")]
+    pub veterancy_rank_cache: i8,
     /// Mutable Techno instance armor multiplier. Native construction seeds
     /// this double to 1.0; armor powerups are its active non-neutral writer.
     #[serde(default = "default_armor_multiplier")]
@@ -962,6 +992,8 @@ impl GameEntity {
             base_reservation_spacing: None,
             determines_waypoint_edge: false,
             veterancy,
+            veterancy_raw: crate::sim::combat::veterancy::raw_for_rank(veterancy),
+            veterancy_rank_cache: veterancy_rank_cache_default(),
             armor_multiplier: NativeF64Bits::ONE,
             vision_range,
             is_voxel,

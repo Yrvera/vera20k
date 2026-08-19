@@ -801,6 +801,11 @@ impl Simulation {
             entity.base_reservation_spacing.hash(hasher);
             entity.determines_waypoint_edge.hash(hasher);
             entity.veterancy.hash(hasher);
+            // The raw accumulator is authoritative — `veterancy` is only its
+            // rank projection, so two objects one kill apart inside the same
+            // rank are distinct sim state.
+            entity.veterancy_raw.bits().hash(hasher);
+            entity.veterancy_rank_cache.hash(hasher);
             entity.armor_multiplier.bits().hash(hasher);
             entity.berserk.hash(hasher);
             entity.was_attacked_by_enemy.hash(hasher);

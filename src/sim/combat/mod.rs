@@ -28,6 +28,7 @@ pub(crate) mod in_range;
 mod inviso_scatter;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
+pub(crate) mod veterancy;
 
 #[cfg(test)]
 #[path = "combat_tests.rs"]
@@ -3366,6 +3367,20 @@ fn commit_damage_events_with_isolation(
             // victim-house anger callback.
             capture_kill_credit(target, attacker_owner, rules, interner);
         }
+        // `Record_The_Kill` awards the killer's experience in the same call, so
+        // it is a same-tick write the victim's own death effects can already
+        // observe. Deferring it to the lifecycle release point would change that
+        // visibility.
+        if reached_exact_zero {
+            award_kill_experience(
+                entities,
+                rules,
+                interner,
+                alliances,
+                attacker_id,
+                target_id,
+            );
+        }
         if postmortem_candidate.is_some()
             && let Some(hook) = inline_hooks.as_deref_mut()
         {
@@ -5824,6 +5839,60 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
 /// kills, aircraft self-destruct, passengers dying with their transport
 /// (`world::lifecycle`) or with a collapsing bridge, and passengers ejected by a
 /// sell. Those victims book a Loss with no matching Kill.
+/// Resolve and pay one kill's veterancy award.
+///
+/// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40`. The award is the
+/// victim's cost, zeroed when the two houses are allied and otherwise doubled
+/// for a veteran victim or tripled for an elite one; the recipient's own cost
+/// then divides it inside `VeterancyClass::Add @ 0x0074FF50`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn award_kill_experience(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    alliances: &HouseAllianceMap,
+    killer_id: u64,
+    victim_id: u64,
+) {
+    if killer_id == RAD_NO_ATTACKER || killer_id == victim_id {
+        return;
+    }
+    let Some((victim_cost, victim_rank, victim_owner)) = entities.get(victim_id).map(|victim| {
+        (
+            rules
+                .object(interner.resolve(victim.type_ref))
+                .map_or(0, |obj| obj.cost),
+            self::veterancy::rank_of(victim.veterancy_raw),
+            victim.owner,
+        )
+    }) else {
+        return;
+    };
+    let Some((killer_cost, trainable, killer_owner)) = entities.get(killer_id).and_then(|killer| {
+        rules
+            .object(interner.resolve(killer.type_ref))
+            .map(|obj| (obj.cost, obj.trainable, killer.owner))
+    }) else {
+        return;
+    };
+    let allied = crate::map::houses::are_houses_friendly(
+        alliances,
+        interner.resolve(killer_owner),
+        interner.resolve(victim_owner),
+    );
+    let points = self::veterancy::kill_award_points(victim_cost, victim_rank, allied);
+    if let Some(killer) = entities.get_mut(killer_id) {
+        self::veterancy::award_kill(
+            killer,
+            killer_cost,
+            points,
+            trainable,
+            rules.general.veteran_ratio,
+            rules.general.veteran_cap,
+        );
+    }
+}
+
 pub(crate) fn capture_kill_credit(
     victim: &mut crate::sim::game_entity::GameEntity,
     killer_owner: Option<InternedId>,
