@@ -2980,4 +2980,40 @@ mod tests {
     fn tube_hierarchy_pairs_are_unregistered() {
         panic!("unimplemented: tube branch of RegisterBridgeOrTubeHierarchyPairs 0x00582D70");
     }
+
+    /// RESIDUAL — gamemd address 0x00583180,
+    /// `MapClass::ResolvePathCoord_BridgeAware`.
+    ///
+    /// gamemd has two bridge-aware coordinate resolvers that share their
+    /// INACTIVE-record branch and differ on the ACTIVE one.
+    /// `bridge_redirect_for_structural_cell` reproduces the inactive branch:
+    /// walk east or south along the span until the structural flag stops, then
+    /// pick endpoint B when the exit cell is a bridge tile whose LandType is
+    /// not Rock, endpoint A otherwise.
+    ///
+    /// The active branch of 0x00583180 is NOT reproduced. It calls
+    /// `MapClass::FindBridgeRecord` 0x0056DA10 at **tolerance 2** (this crate
+    /// passes 1), keeps the queried cell's perpendicular lane offset — X offset
+    /// when `cell+0x140` bit 0x800 is clear, Y offset when it is set — adds
+    /// that offset to both endpoints, compares the two `Sqrt_Approx` distances,
+    /// and returns the CLOSER endpoint, with an exact tie selecting endpoint B.
+    /// This crate returns `record.endpoint_a` unconditionally.
+    ///
+    /// Trigger: A* entry and cost resolution for any coordinate sitting on an
+    /// intact high bridge.
+    ///
+    /// Effect: a query from the far half of a span resolves to the near
+    /// endpoint in gamemd and to endpoint A in VERA, and the lane offset is
+    /// dropped, so the resolved coordinate loses its across-span position.
+    /// A unit pathing onto or along an intact high bridge can be routed toward
+    /// the wrong end of it.
+    ///
+    /// Frequency: every path query touching an intact high bridge — common on
+    /// any retail map with one, and it is the intact case, not the destroyed
+    /// one, so it fires from the first move order onward.
+    #[test]
+    #[ignore = "gamemd 0x00583180 projects to the nearer endpoint keeping the lane offset; VERA returns endpoint A"]
+    fn resolve_path_coord_active_branch_is_unported() {
+        panic!("unimplemented: active-record branch of ResolvePathCoord_BridgeAware 0x00583180");
+    }
 }
