@@ -658,6 +658,8 @@ impl BridgeRuntimeState {
     /// - bit 1 (val 2): east in `{0xD4, 0xE7}`
     /// - bit 2 (val 4): west in `{0xD2, 0xD3, 0xD4, 0xE2}`
     /// - bit 3 (val 8): west in `{0xD5, 0xE7}`
+    /// `MapClass::CheckBridgeNeighbors_EW_High` 0x0057CAB0 — the west/east
+    /// twin of 0x0057CBE0.
     pub(super) fn check_bridge_neighbors_ew_high(&self, rx: u16, ry: u16) -> u8 {
         let east = self
             .cell(rx.saturating_add(1), ry)
@@ -689,6 +691,12 @@ impl BridgeRuntimeState {
     /// - bit 1 (val 2): north in `{0xDD, 0xE8}`
     /// - bit 2 (val 4): south in `{0xDB, 0xDC, 0xDD, 0xE6}`
     /// - bit 3 (val 8): south in `{0xDE, 0xE8}`
+    /// `MapClass::CheckBridgeNeighbors_NS_High` 0x0057CBE0. Reads the north
+    /// and south neighbours' overlay bytes into a 4-bit index: north in
+    /// {0xDA, 0xDC, 0xDE, 0xE4} sets bit 0 and {0xDD, 0xE8} sets bit 1; south
+    /// in {0xDB, 0xDC, 0xDD, 0xE6} sets bit 2 and {0xDE, 0xE8} sets bit 3.
+    /// The native body returns early on the bit-2 case, which is equivalent
+    /// here because the two south sets are disjoint.
     pub(super) fn check_bridge_neighbors_ns_high(&self, rx: u16, ry: u16) -> u8 {
         let north = if ry > 0 {
             self.cell(rx, ry - 1).map(|c| c.overlay_byte).unwrap_or(0)
@@ -1083,6 +1091,8 @@ impl BridgeRuntimeState {
     /// - bit 1 (val 2): east in `{0x51, 0x64}`
     /// - bit 2 (val 4): west in `{0x4F, 0x50, 0x51, 0x5F}`
     /// - bit 3 (val 8): west in `{0x52, 0x64}`
+    /// `MapClass::CheckBridgeNeighbors_EW_Low` 0x0057B870 — the LOW twin of
+    /// 0x0057CAB0.
     pub(super) fn check_bridge_neighbors_ew_low(&self, rx: u16, ry: u16) -> u8 {
         let east = self
             .cell(rx.saturating_add(1), ry)
@@ -1114,6 +1124,8 @@ impl BridgeRuntimeState {
     /// - bit 1 (val 2): north in `{0x5A, 0x65}`
     /// - bit 2 (val 4): south in `{0x58, 0x59, 0x5A, 0x63}`
     /// - bit 3 (val 8): south in `{0x5B, 0x65}`
+    /// `MapClass::CheckBridgeNeighbors_NS_Low` 0x0057B990 — the LOW twin of
+    /// 0x0057CBE0.
     pub(super) fn check_bridge_neighbors_ns_low(&self, rx: u16, ry: u16) -> u8 {
         let north = if ry > 0 {
             self.cell(rx, ry - 1).map(|c| c.overlay_byte).unwrap_or(0)

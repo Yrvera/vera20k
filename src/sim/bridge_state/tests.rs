@@ -2554,3 +2554,37 @@ fn ramp_pavement_and_isotile_branch_is_unported() {
         "unimplemented: ToggleBridgePavement / FloodFillIsoTileType branch of the ramp updaters"
     );
 }
+
+/// RESIDUAL — gamemd addresses 0x00576770 `MapClass::UpdateAdjacentBridges_High`,
+/// 0x00571050 `MapClass::UpdateAdjacentBridges`, and the edge-tile writers they
+/// drive, 0x00576200 `UpdateBridgeEdgeTiles_High` and 0x00570AE0
+/// `UpdateBridgeEdgeTiles_Low`.
+///
+/// Mechanism (0x00576770 decompiled): walk the eight directions from the
+/// damaged cell until a neighbour carries `+0x140 & 0x500`; pick a start
+/// coordinate from that neighbour's 0x100 / 0x400 / 0x80 bits; walk along the
+/// span while cells stay inside the map rect and carry a non-null entry in
+/// `MapClass+0x13C`; classify the landed cell's
+/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` against four runtime tile-class
+/// constants paired with a `+0x11A` sub-tile value of 8, 5, 12 or 7; and call
+/// `UpdateBridgeEdgeTiles_High` with mode 2 or 4, dirtying the screen rect only
+/// when the returned rect actually changed.
+///
+/// `compute_adjacent_bridges_dirty` reproduces only the first step's *result* —
+/// which two perpendicular cells to mark dirty. Neither the span walk, the
+/// tile-class classification, nor the edge-tile rewrite happens.
+///
+/// Trigger: every bridge collapse, on the cells where a dropped span meets the
+/// structure that survives it.
+///
+/// Effect: the rim tiles at the break keep their intact art. The span is gone
+/// and its edges still look joined.
+///
+/// Frequency: every collapse on any map with a bridge. Purely visual — the
+/// walk writes iso-tile ids and a dirty rect, and touches no damage state,
+/// pathing field or RNG.
+#[test]
+#[ignore = "gamemd rewrites bridge edge tiles after a collapse (0x00576770 -> 0x00576200); VERA only marks the two perpendicular cells dirty"]
+fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
+    panic!("unimplemented: UpdateAdjacentBridges / UpdateBridgeEdgeTiles edge rewrite");
+}
