@@ -1,5 +1,14 @@
 //! Search-scoped high-bridge passability markers.
 //!
+//! gamemd: `PathfinderClass::UpdateBridgePassability` 0x0042ACF0 and its
+//! peer lookup `PathfinderClass::FindNearbyBridgePeer` 0x0042B080. The native
+//! marker is an XOR of `CellClass+0x140` bit 0x40000 on persistent cell state,
+//! search-scoped because the A* success and failure tails call the function
+//! again; this module keeps the same XOR parity in an owned overlay so the
+//! marks cannot outlive a search. The 24-entry replay cap, the direction-8
+//! tube step, the (0,0) reset when `cell+0x116` is -1, and the 5x5 occupation
+//! scan that cancels an occupied probe centre all follow the native body.
+//!
 //! Retail `PathfinderClass::UpdateBridgePassability` XORs a temporary bit into
 //! selected cells immediately before an urgency 1/2 A* search and XORs the same
 //! cells again on every normal search exit.  Rust represents that transaction

@@ -178,6 +178,10 @@ impl CellBridgeView {
     /// `base` is the theater-loaded `g_BridgeSet_TileSetBase` equivalent (passed
     /// in because it is theater state, not cell-local). Returns `false` when no
     /// concrete-bridge set is loaded (`base == None` / `< 0`).
+    /// `CellClass::IsBridge` 0x00486750: `base != -1 && base <= IsoTileTypeIndex
+    /// < base + 0x10`. Leaf, no calls, no RNG. `base` is
+    /// `g_BridgeSet_TileSetBase` 0x00AA0E28, written per theater by
+    /// `Read_Theater_TileSets_INI` at 0x00545A80 / 0x00545DDB / 0x00546CB3.
     #[inline]
     pub fn is_bridge_tileset(&self, base: Option<i32>) -> bool {
         base.is_some_and(|b| {
@@ -195,6 +199,9 @@ impl CellBridgeView {
     /// from a resolved cell, prefer routing through that precompute rather than
     /// re-deriving the window with a re-passed base (single-source). This method
     /// exists for callers that hold only the tile id + base.
+    /// `CellClass::IsWoodBridge` 0x00486770 — the structural twin of
+    /// 0x00486750 with `g_WoodBridgeSet_TileSetBase` 0x00ABAD1C substituted,
+    /// written at 0x00545A86 / 0x00545DEA / 0x00546CB9.
     #[inline]
     pub fn is_wood_bridge_tileset(&self, wood_base: Option<i32>) -> bool {
         wood_base.is_some_and(|b| {
