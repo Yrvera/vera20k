@@ -6,10 +6,7 @@ regardless of which tool is driving belongs here and nowhere else.
 ## What this project is
 
 A from-scratch Rust engine that runs **Yuri's Revenge** — a faithful, playable replacement for
-`gamemd.exe`, not a mod tool or viewer. Parses retail `.mix` and every asset format from scratch,
-reads `.mmx`/`.map` from WAE, simulates from `rules(md).ini` / `art(md).ini`, renders with wgpu
-(egui overlays, custom-drawn sidebar). Lockstep correctness is a hard requirement — all sim math
-is fixed-point. YR (`*md`) takes priority; RA2 is the fallback.
+`gamemd.exe`.
 
 Scale is the intentional exception to native storage limits: **20,000 units, 30 players**.
 Replace any native structure that caps scale, preserving deterministic and player-visible
