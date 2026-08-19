@@ -2166,7 +2166,14 @@ impl Simulation {
         // (0, 0). The third gate, `g_MapEditorMode`, is deliberately omitted:
         // it is zero for the whole of ordinary gameplay.
         //
-        // DRIFT (GSI-05.11) — recorded, not pending. `MapClass::Get_CellClass @
+        // DRIFT (GSI-05.11) — recorded, not pending. Re-verified against the
+        // binary on the Phase 6 second pass: every cited address checks out
+        // instruction for instruction, and four neighbouring claims came back
+        // NO-DIFF — the high-flying predicate (`ObjectClass::IsHighFlying @
+        // 0x005F6B90`), the null-firer mapping, the sign-biased truncation, and
+        // the `+0xAC`/`+0x130` arms, which are BulletTypeClass/WeaponTypeClass
+        // comparisons this port cannot reach and must not implement.
+        // `MapClass::Get_CellClass @
         // 0x005657A0` stamps the requested packed coord into the shared dummy
         // CellClass (`0x00ABDC50`, coord at `+0x24`) on both miss paths — an
         // index outside `[0, 0x40000)` and an in-range NULL sparse slot — and
