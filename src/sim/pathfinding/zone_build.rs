@@ -1635,6 +1635,20 @@ pub(crate) fn extract_adjacency(
     ZoneAdjacency::new(adj_sets)
 }
 
+/// The zone-edge side of the bridge family. gamemd splits it across
+/// `MapClass::AddBridgeZoneEdges` 0x005851B0 and
+/// `MapClass::RemoveBridgeZoneEdges` 0x00584E50, which derive the same three
+/// coordinate pairs — endpoints, same-side offsets, opposite-side offsets, off
+/// `g_nHighBridgeHierarchyOffsetDirectionByTileOffset` — and then add or splice
+/// them out of the per-zone adjacency buckets in place.
+/// `MapClass::FindBridgeAdjacentZoneCell` 0x00583820 is the lookup those two
+/// share for locating the cell on the other side of a span.
+///
+/// This crate never splices: zone state is rebuilt, so the add path is the only
+/// one with a counterpart and the remove path has no behaviour to diverge from.
+/// The pair derivation itself is recorded in
+/// `tube_hierarchy_pairs_are_unregistered`, which covers the branch of
+/// 0x00582D70 that neither path here reaches.
 fn register_bridge_base_edges(
     edge_buckets: &mut BaseEdgeBuckets,
     ground_zones: &[ZoneId],

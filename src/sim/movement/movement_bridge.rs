@@ -782,4 +782,54 @@ mod bridge_constant_tests {
             SimFixed::from_num(crate::sim::map::bridge_topology::BRIDGE_DECK_HEIGHT_LEPTONS)
         );
     }
+
+    /// RESIDUAL — gamemd addresses 0x005F6A70 `ObjectClass::ShouldBeOnBridge`
+    /// and 0x004DDC40 `FootClass::ShouldBeOnBridge`, which gates the base on
+    /// the sign bit of the Foot byte at +0x684 and otherwise forwards to it.
+    ///
+    /// Both bodies were decompiled 2026-08-19. 0x005F6A70 compares two
+    /// `CellClass::GetGroundHeight` results — one at the candidate coordinate
+    /// produced by `vtable+0x4C`, one at the object's own Location
+    /// (+0x9C/+0xA0/+0xA4):
+    ///
+    /// ```text
+    /// if (!OnBridge && (gh_current - gh_candidate) > 3 * g_nFootLevelHeightLeptons
+    ///     && (candidate_cell->flags_140 & 0x100))   return 1;
+    /// if ( OnBridge && (gh_candidate - gh_current) > 3 * g_nFootLevelHeightLeptons) return 0;
+    /// return OnBridge;
+    /// ```
+    ///
+    /// `compute_bridge_transition` uses different terms for both halves: entry
+    /// is `dst.ground_level == src.ground_level - 4` — an exact equality on
+    /// level indices where gamemd tests a lepton difference strictly greater
+    /// than three level heights, so a four-or-more-level drop and any sloped
+    /// intermediate qualify natively but not here — and exit is
+    /// `!dst.has_structural_bridge() && src.has_structural_bridge()`, a flag
+    /// test where gamemd uses the height difference alone and never reads the
+    /// flag on the way out.
+    ///
+    /// Trigger: every cell-boundary crossing by a ground unit near a bridge.
+    ///
+    /// Effect where they disagree: a bridgehead whose drop is five levels or
+    /// more, or whose terrain slopes, enters the deck in gamemd and not here;
+    /// and a unit driving from one deck cell to another where the terrain
+    /// beneath rises four levels leaves the bridge natively while VERA keeps it
+    /// on the deck.
+    ///
+    /// **The binding is not proved.** 0x004DDC40 has no CALL xrefs — it is
+    /// reached through a vtable slot, and the slot could not be established
+    /// this session: the four DATA xrefs sit at a uniform +0xBC offset from
+    /// four candidate vtable bases, but callsites of `[reg + 0xbc]` resolve to
+    /// unrelated behaviour (`FlyLocomotionClass::Layer`, `Mission_Patrol`,
+    /// `Is_Cell_Harvestable`), so at least one base assumption is wrong.
+    /// Until the slot and a live callsite are proved, it is not established
+    /// that gamemd drives its cell-boundary bridge transition through this
+    /// function at all — which is why this is recorded rather than ported.
+    #[test]
+    #[ignore = "gamemd 0x005F6A70 tests ground-height differences; VERA tests level equality and flags. Vtable binding UNPROVED"]
+    fn should_be_on_bridge_predicate_differs_and_binding_is_unproved() {
+        panic!(
+            "unproved binding: ShouldBeOnBridge 0x005F6A70 / 0x004DDC40 vs compute_bridge_transition"
+        );
+    }
 }

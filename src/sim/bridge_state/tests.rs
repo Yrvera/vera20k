@@ -2588,3 +2588,41 @@ fn ramp_pavement_and_isotile_branch_is_unported() {
 fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
     panic!("unimplemented: UpdateAdjacentBridges / UpdateBridgeEdgeTiles edge rewrite");
 }
+
+/// RESIDUAL — gamemd addresses 0x00570050 `ProcessBridgeDestruction_Low`,
+/// 0x00573540 `ProcessBridgeDestruction_High`, the span walkers they drive
+/// (0x00569760 `MapClass::BridgePavementSpanWalker` and 0x00568E40 its high
+/// twin), `MapClass::ToggleBridgePavement` 0x0056E990 and
+/// `MapClass::ValidateBridgeZones` 0x0056DB70.
+///
+/// The names mislead: 0x00570050 decompiled 2026-08-19 is the REPAIR entry.
+/// Its 5x5 overlay scan hands the first cell in `[0x4A..=0x65]` to
+/// `MapClass::RepairBridge_Low` 0x0057F200 and returns. Everything after that
+/// is the terrain restoration the repair needs:
+/// - `ToggleBridgePavement(coord, 0, 0)` on the ramp cell, then
+///   `BridgePavementSpanWalker(cell, 2 or 4, &rect)` and a
+///   `TacticalClass::DirtyScreenRect` over the rect it returns;
+/// - on the `+4` tile-class variants, `FloodFillIsoTileType` back to the
+///   pre-collapse iso-tile and `cell+0x11B += 4` on three neighbours — the
+///   deck-level raise being put back;
+/// - `ValidateBridgeZones`, a recursive call two cells back along the span,
+///   and `RebuildZoneConnectivity` when validation reports a change.
+///
+/// `repair_bridge_from_engineer_scan` reproduces the scan and the
+/// `RepairBridge_*` dispatch. None of the restoration tail exists.
+///
+/// Trigger: every successful engineer repair of a collapsed bridge.
+///
+/// Effect: the deck becomes walkable again but the approach keeps its
+/// collapsed appearance, and the `+0x11B += 4` level raise is not re-applied,
+/// so the ramp cells stay at the dropped height. That is not purely visual —
+/// cell level feeds ground height, which feeds the bridge transition predicate
+/// and unit Z.
+///
+/// Frequency: every repair. Repairs are uncommon per match but decisive when
+/// they happen, and the effect persists for the rest of the game.
+#[test]
+#[ignore = "gamemd restores pavement, iso-tile and the +4 level raise after a repair (0x00570050); VERA only re-dispatches RepairBridge"]
+fn bridge_repair_terrain_restoration_is_unported() {
+    panic!("unimplemented: ProcessBridgeDestruction_* repair restoration tail");
+}
