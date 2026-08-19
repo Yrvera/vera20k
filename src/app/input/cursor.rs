@@ -1886,9 +1886,12 @@ mod cursor_animation_tests {
     /// cell whose ISO-TILE sits inside a bridge tileset window rather than a
     /// destroy-band overlay. That branch derives a coordinate from the tile
     /// geometry tables at 0x0082AA04, 0x0082AA24 and 0x0082AA44, then loops
-    /// `FindBridgeRecord` at tolerance 3, hopping endpoint to endpoint and
-    /// returning true on the first INACTIVE record or on a coordinate that
-    /// matches neither endpoint.
+    /// `FindBridgeRecord` at tolerance 3 (`PUSH 0x3` at 0x00587767), hopping
+    /// endpoint to endpoint and returning true on a coordinate that matches
+    /// neither endpoint, or on the first record whose byte at `+0x08` is
+    /// zero. `zone_build` binds that byte as the record's active flag from
+    /// `RebuildZoneConnectivity` 0x0056C510; no writer for it was traced
+    /// here, so the "inactive" reading is UNVERIFIED.
     ///
     /// Trigger: engineer selected, hovering a bridge repair hut whose span is
     /// PARTIALLY damaged - damaged enough for an inactive record, not enough
@@ -1900,6 +1903,14 @@ mod cursor_animation_tests {
     ///
     /// Frequency: narrower than the bug it replaces. It needs a span in a
     /// partially damaged state and an engineer already selected next to it.
+    ///
+    /// Also unported, and wider than the branch itself: at 0x0051E3B0 the
+    /// BridgeRepairHut arm RETURNS unconditionally - 0x1D when the predicate
+    /// holds, 0x20 when it does not - so gamemd never reaches any later
+    /// cursor case for a hut. This function falls through instead. `CABHUT`
+    /// carries no `Capturable=` in `ini/rulesmd.ini`, so the capture case
+    /// just below does not fire today, but nothing constrains the cases
+    /// after it.
     ///
     /// Blocker: the three geometry tables are data this crate has no reader
     /// for, and the tolerance-3 record hop needs `FindBridgeRecord`'s own

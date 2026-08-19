@@ -287,14 +287,16 @@ const LOW_COLLAPSED_ANCHORS: [u8; 2] = [0x64, 0x65];
 /// continuing while the overlay stays inside the family band and returning true
 /// the moment a collapsed anchor appears.
 ///
-/// Not reproduced: the native's other branch, taken when the 5x5 finds a cell
-/// whose ISO-TILE sits inside a bridge tileset window rather than an overlay in
-/// a destroy band. That branch walks `BridgeRecord`s through per-tile geometry
+/// Not reproduced: the native's other branch. The two are NOT exclusive - all
+/// four scan cases write the same `[ESP+0x12]` selector, read once after the
+/// loop at 0x005876BA, so whichever matched LAST decides which branch runs.
+/// Since a repair hut normally sits beside bridge iso-tiles, the record branch
+/// is the ordinary case, and this port always takes the overlay one. That branch walks `BridgeRecord`s through per-tile geometry
 /// tables at 0x0082AA04 / 0x0082AA24 / 0x0082AA44 and returns true on the first
 /// inactive record. Both branches agree on the two cases that matter here — an
 /// intact span yields false and a collapsed one yields true — so the omission
 /// shows only on partially damaged spans. Recorded in
-/// `bridge_hut_repair_cursor_ignores_whether_the_bridge_is_broken`.
+/// `bridge_hut_repair_cursor_misses_partially_damaged_spans`.
 pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, u16)) -> bool {
     let Some(bs) = sim.bridge_state.as_ref() else {
         return false;
@@ -304,34 +306,68 @@ pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, 
 
 /// State-only half of [`bridge_hut_has_collapsed_span`], split out so the walk
 /// can be tested without standing up a `Simulation`.
+///
+/// Seed selection follows 0x00587410 exactly, and it is not what it looks
+/// like: the native's 5x5 loop has **no break**. Every one of its four cases
+/// falls through to `INC EDI` at 0x005876A6, so the cell it finally walks from
+/// is the LAST cell that matched, not the first, and the iteration is Y-major
+/// (`EBP` outer adds to the coord's Y at 0x00587443, `EDI` inner adds to X at
+/// 0x00587447). Scanning every cell and accepting any hit would be more
+/// permissive than the binary, which is the direction of the bug this port
+/// exists to remove.
 pub(crate) fn hut_span_has_collapsed_anchor(
     bs: &BridgeRuntimeState,
     hut_center: (u16, u16),
 ) -> bool {
-    for (rx, ry) in hut_destroy_5x5_scan(hut_center) {
+    let Some((seed, axis, anchors, is_high)) = hut_scan_last_overlay_seed(bs, hut_center) else {
+        return false;
+    };
+    // Perpendicular convention: an NS-class overlay is walked along X.
+    let walk_axis = match axis {
+        Axis::NS => Axis::EW,
+        Axis::EW => Axis::NS,
+    };
+    [1i16, -1]
+        .into_iter()
+        .any(|step| walk_span_for_collapsed_anchor(bs, seed, walk_axis, step, anchors, is_high))
+}
+
+/// The native's surviving seed: the last destroy-band cell in Y-major order
+/// over the 5x5 block. Returns its family and axis alongside it.
+fn hut_scan_last_overlay_seed(
+    bs: &BridgeRuntimeState,
+    hut_center: (u16, u16),
+) -> Option<((u16, u16), Axis, &'static [u8; 2], bool)> {
+    let mut seed = None;
+    for (rx, ry) in hut_scan_5x5_y_major(hut_center) {
         let Some(overlay) = bs.cell(rx, ry).map(|c| c.overlay_byte) else {
             continue;
         };
-        let (axis, anchors, is_high) =
-            if let Some(axis) = BridgeRuntimeState::high_destroy_overlay_axis(overlay) {
-                (axis, &HIGH_COLLAPSED_ANCHORS, true)
-            } else if let Some(axis) = BridgeRuntimeState::low_destroy_overlay_axis(overlay) {
-                (axis, &LOW_COLLAPSED_ANCHORS, false)
-            } else {
-                continue;
-            };
-        // Perpendicular convention: an NS-class overlay is walked along X.
-        let walk_axis = match axis {
-            Axis::NS => Axis::EW,
-            Axis::EW => Axis::NS,
-        };
-        for step in [1i16, -1] {
-            if walk_span_for_collapsed_anchor(bs, (rx, ry), walk_axis, step, anchors, is_high) {
-                return true;
-            }
+        if let Some(axis) = BridgeRuntimeState::high_destroy_overlay_axis(overlay) {
+            seed = Some(((rx, ry), axis, &HIGH_COLLAPSED_ANCHORS, true));
+        } else if let Some(axis) = BridgeRuntimeState::low_destroy_overlay_axis(overlay) {
+            seed = Some(((rx, ry), axis, &LOW_COLLAPSED_ANCHORS, false));
         }
     }
-    false
+    seed
+}
+
+/// 0x00587410's scan order: outer counter on Y, inner on X. Distinct from
+/// [`hut_destroy_5x5_scan`], which is the X-major order the CABHUT death path
+/// uses; the two natives genuinely disagree and must not be shared.
+fn hut_scan_5x5_y_major(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
+    let (cx, cy) = (center.0 as i32, center.1 as i32);
+    (-2..=2i32).flat_map(move |dy| {
+        (-2..=2i32).filter_map(move |dx| {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+                None
+            } else {
+                Some((nx as u16, ny as u16))
+            }
+        })
+    })
 }
 
 fn walk_span_for_collapsed_anchor(

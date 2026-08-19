@@ -2732,3 +2732,55 @@ fn hut_span_scan_on_empty_state_is_false() {
     let state = BridgeRuntimeState::default();
     assert!(!crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)));
 }
+
+/// 0x00587410's 5x5 loop has no break, so the cell it walks from is the LAST
+/// match in Y-major order, not any match. Row y=4 leads to an anchor; row y=8
+/// does not. Y-major makes (8, 8) the surviving seed, so the predicate must
+/// answer false even though a reachable anchor exists from an earlier cell.
+#[test]
+fn hut_span_scan_walks_only_the_last_y_major_seed() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 4, 4..9, 0xCD);
+    seed_overlay_row(&mut state, 4, 9..12, 0xCD);
+    seed_overlay_row(&mut state, 4, 12..13, 0xE7);
+    seed_overlay_row(&mut state, 8, 4..9, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "scanning every cell and accepting any hit is more permissive than the binary"
+    );
+
+    // Same map with the anchor moved onto the surviving seed's row.
+    let mut reachable = BridgeRuntimeState::default();
+    seed_overlay_row(&mut reachable, 4, 4..9, 0xCD);
+    seed_overlay_row(&mut reachable, 8, 4..12, 0xCD);
+    seed_overlay_row(&mut reachable, 8, 12..13, 0xE7);
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&reachable, (6, 6)),
+        "the surviving seed's own span is walked"
+    );
+}
+
+/// The EW-class arm: an overlay in {0xD6..=0xDE} u {0xE3..=0xE6} u {0xE8} walks
+/// along Y, so the anchor has to be down a column rather than along a row.
+#[test]
+fn hut_span_scan_walks_ew_class_overlays_along_y() {
+    let mut column = BridgeRuntimeState::default();
+    for y in 4..14u16 {
+        seed_overlay_row(&mut column, y, 6..7, 0xD6);
+    }
+    seed_overlay_row(&mut column, 13, 6..7, 0xE8);
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&column, (6, 6)),
+        "an EW-class overlay is walked along Y"
+    );
+
+    // The same overlays laid out as a row leave the Y walk with nothing.
+    let mut row = BridgeRuntimeState::default();
+    seed_overlay_row(&mut row, 6, 4..14, 0xD6);
+    seed_overlay_row(&mut row, 6, 14..15, 0xE8);
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&row, (6, 6)),
+        "walking Y off a single row finds nothing, which is what proves the axis"
+    );
+}
