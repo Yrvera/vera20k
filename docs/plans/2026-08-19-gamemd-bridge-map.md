@@ -36,7 +36,7 @@ base at all.** State it precisely, because the loose version is false:
   members compare against `g_BridgeSet_TileSetBase` (`0x00AA0E28`) and are the ones that apply
   the four-level deck rise (`cell+0x11B += 4`); Low members use `g_WoodBridgeSet_TileSetBase`
   (`0x00ABAD1C`). **Corrected 2026-08-19: the rise is NOT a High-only marker.**
-  `ProcessBridgeDestruction_Low` `0x00570050` reads the wood base and applies
+  `MapClass__RepairBridgeOrRestoreRamp_Low` `0x00570050` reads the wood base and applies
   `cell+0x11B += 4` to three neighbours while restoring a repaired low bridge, so the base a
   member reads is the reliable half of this split and the deck rise is not. The only functions appearing in both xref lists are
   the genuinely shared ones of §6 — `ComputeBridgeZones`, `Add`/`RemoveBridgeZoneEdges`,
@@ -100,7 +100,7 @@ wrong on the neighbours.
 | `0x0080` | `(param_3 & 1) << 7` | write 1 (anchor) **only**; the later writes neither set nor clear it | `DrawOverlay_Body 0x0047F6A0` uses it to select the deck branch and to add `(Flags>>7 & 1)*4` levels; the ramp updaters gate their damage-frame bump on it |
 | `0x0100` | `(param_3 & 1) << 8` | writes 1, 2, 3, 5 | "cell belongs to a bridge" — the primary test in `CheckBridgeTraversal`, `UpdateBridgePassability`, `FindNearbyBridgePeer`, `ResolvePathCoord_BridgeAware`, `IsOnBridge_ForFiring` |
 | `0x0200` | `(param_3 & 1) << 9` | writes 1, 2, 5. **Write 3 clears it and never sets it** | required *together with* `0x0100` to enter the deck in `CheckBridgeTraversal 0x004D9C60` |
-| `0x0400` | `((char)param_3 == 0) << 10` — a **byte** test on the low 8 bits, not a dword test | writes 1, 2, 3, 5 | set when the direction stamp is a *clear*; `ProcessBridgeDestruction_Low` scans neighbours on `0x400` and on the pair mask `0x500` |
+| `0x0400` | `((char)param_3 == 0) << 10` — a **byte** test on the low 8 bits, not a dword test | writes 1, 2, 3, 5 | set when the direction stamp is a *clear*; `MapClass__RepairBridgeOrRestoreRamp_Low` scans neighbours on `0x400` and on the pair mask `0x500` |
 | `0x0800` | `(param_2 == 0) << 11` — a genuine dword test, unlike `0x400` | writes 1, 2, 3, 5 | bridge axis/orientation. `IsOnBridge_ForFiring 0x00703B10` pairs each of four neighbours with a required `0x800` state, which is what proves this bit selects NS vs EW |
 | `0x1000` | `(param_3 & 1) << 12` | writes 1, 2, 3, 4 — **four** cells. **Write 5 clears it and never sets it** | — |
 | `0x10000` | `(param_3 & 1) << 16` | writes 1, 2, 3, 5, 6 — **five** sites | — |
@@ -151,7 +151,7 @@ Built once at map load by `MapClass__ComputeBridgeZones 0x0056D6E0`; flipped by
 ### 2.5 The `MapClass` singleton
 
 `0x0087F7E8`. Proved rather than assumed: `g_CellArray_Base` is `0x0087F924`, exactly
-`0x0087F7E8 + 0x13C`, and `ProcessBridgeDestruction_Low 0x00570050` reads its cell array as
+`0x0087F7E8 + 0x13C`, and `MapClass__RepairBridgeOrRestoreRamp_Low 0x00570050` reads its cell array as
 `this->+0x13C`. This matters because several one-line family members are `__fastcall` with the
 receiver loaded as a literal (e.g. `MOV ECX,0x87f7e8` at `0x004F4311`), and the singleton
 identity is the only thing that makes their field offsets meaningful.
@@ -224,7 +224,7 @@ in §3 plus its `g_BridgeSet_TileSetBase` usage; all `UNCHECKED`.
 | `0x00574000` | `MapClass__DestroyBridge_High_OnHutDeath` | Repair-hut death → locate span anchor → hand to `0x005749C0` |
 | `0x005749C0` | `MapClass__DestroyBridgeFromCell_High` | Detect span axis from the anchor overlay, dispatch a Collapse walker |
 | `0x00576BA0` | `ProcessBridgeDamageStateMachine_High` | Per-cell damage state machine; drives the 8 `*_High` ramp updaters and `BlowUpBridge` |
-| `0x00573540` | `ProcessBridgeDestruction_High` | Post-destruction cell fixup; calls `RepairBridge_High`, `ToggleBridgePavement`, `ValidateBridgeZones`, `BridgePavementSpanWalker_High` |
+| `0x00573540` | `MapClass__RepairBridgeOrRestoreRamp_High` | Post-destruction cell fixup; calls `RepairBridge_High`, `ToggleBridgePavement`, `ValidateBridgeZones`, `BridgePavementSpanWalker_High` |
 | `0x0057CCF0` | `DestroyBridge_High` | Per-cell destroyer; classifies the high overlay band and dispatches a `DestroyBridgeWalker_*_High` |
 
 ### 4.2 Span walkers
@@ -283,7 +283,7 @@ in §3 plus its `g_BridgeSet_TileSetBase` usage; all `UNCHECKED`.
 | `0x00574C20` | `MapClass__DestroyBridge_Low_OnHutDeath` | Repair-hut death → `0x00574780` |
 | `0x00574780` | `MapClass__DestroyBridgeFromCell_Low` | Overlay band → walk back ≤2 cells to the canonical anchor → `CollapseBridge_{EW,NS}_Low` |
 | `0x00571490` | `ProcessBridgeDamageStateMachine_Low` | Per-cell damage state machine; drives the 8 `*_Low` ramp updaters, `BlowUpBridge`, `InvalidateBridgeZones` |
-| `0x00570050` | `ProcessBridgeDestruction_Low` | 5×5 rescan for a surviving bridge cell → `RepairBridge_Low`; otherwise walks the 8 directions, restamps pavement, recurses, and dirties the screen rect |
+| `0x00570050` | `MapClass__RepairBridgeOrRestoreRamp_Low` | 5×5 rescan for a surviving bridge cell → `RepairBridge_Low`; otherwise walks the 8 directions, restamps pavement, recurses, and dirties the screen rect |
 | `0x0057BAA0` | `DestroyBridge_Low` | Per-cell destroyer; returns 0 when the cell is outside the band so the caller retries |
 
 ### 5.2 Span walkers
@@ -371,7 +371,7 @@ inside this family.
 | `0x0056E990` | `MapClass__ToggleBridgePavement` | Pavement stamp/unstamp for a bridge cell | every ramp updater |
 | `0x00575EE0` | `NotifyBridgeSpanCollapse` | Walks the endpoint-exclusive four-cell-wide span and fires trigger event `0x1F` through each cell's `Tag +0x3C` | 6 callers, all collapse/edge paths |
 | `0x00578AC0` | `MapClass__IncrementBridgeCounter` | `++MapClass+0x1158`, the bridge-overlay draw-cache generation. Readers are the two bridge-branch sites in `CellClass__DrawOverlay_Body` | single caller `FUN_004F42F0`; frequency **UNCHECKED** |
-| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **NOT A BRIDGE FUNCTION — retracted 2026-08-19.** Body decompiled: two full-map cell iterations. Pass 1 takes cells with `+0x140` bit `0x20`, clears `+0x12C` bits `0x08`/`0x10` and `+0x140` bits `0x01`/`0x02`/`0x20`, sets the `+0x138` dirty byte, enqueues a tactical redraw via `FUN_006DA7D0`, and notifies on `+0x120 == -2`. Pass 2 recomputes every cell's shroud edge bitmask through `Shroud_EdgeBitmask_Calculator` into `+0x120` and enqueues a redraw on change. No bridge field, flag, or tileset appears anywhere in it — and bit `0x20` is not a bridge bit: `SetBridgeDirection`'s clear mask `0xFFFEE07F` preserves it. See §10 | per tick, but **not bridge work** |
+| `0x00578100` | `MapClass__RecalcShroudEdgesAndEnqueueRedraw` | **NOT A BRIDGE FUNCTION — retracted 2026-08-19.** Body decompiled: two full-map cell iterations. Pass 1 takes cells with `+0x140` bit `0x20`, clears `+0x12C` bits `0x08`/`0x10` and `+0x140` bits `0x01`/`0x02`/`0x20`, sets the `+0x138` dirty byte, enqueues a tactical redraw via `FUN_006DA7D0`, and notifies on `+0x120 == -2`. Pass 2 recomputes every cell's shroud edge bitmask through `Shroud_EdgeBitmask_Calculator` into `+0x120` and enqueues a redraw on change. No bridge field, flag, or tileset appears anywhere in it — and bit `0x20` is not a bridge bit: `SetBridgeDirection`'s clear mask `0xFFFEE07F` preserves it. See §10 | per tick, but **not bridge work** |
 | `0x00703B10` | `TechnoClass__IsOnBridge_ForFiring` | Own cell or an axis-matched neighbour carries `0x100`; the axis pairing is what proves bit `0x800` | `GetFireError` and draw — very high |
 | `0x004865D0` | `CellClass__HasBridgeOverlay` | **Name understates it** — tests shore pieces, water, and the four RMG river-bridge tilesets. A prior session recorded this drift; re-read this session and the drift stands. Only RMG consumers | RMG only — dormant in skirmish |
 | `0x0056A080` | `FUN_0056A080` | Bridge-family by callee set (calls both pavement span walkers, reads `g_BridgeSet_TileSetBase`) but **has zero xrefs** — unreachable in the current database | never |
@@ -487,7 +487,7 @@ Left un-renamed on purpose: a guess is worse than `FUN_*`.
 | `0x004865D0` | `CellClass__HasBridgeOverlay` | A prior session's drift note stands: the predicate covers shore pieces, water, and four RMG river-bridge tilesets. Tagged `BRIDGE_RMG` only |
 | `0x00578D80` | `IsOnBridgeRamp` | Tests the cliff tileset and the four waterfall tilesets; no bridge tileset appears in the body. Kept because its single caller sits inside `ComputeBridgeSurfaceMask`, which *is* bridge code |
 | `0x0047E040` / `0x0047E470` | `..._NESW` / `..._NWSE` | A prior session verified the two bodies byte-identical, so the compass suffixes cannot come from the code. What *is* verified is the caller split: `0x0047E040` is called only from High-family sites, `0x0047E470` only from Low-family sites |
-| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **Body decompiled 2026-08-19: the `Bridge` in the name is wrong, and the family has no per-tick member at all.** It is a whole-map shroud-edge recalculation that enqueues tactical redraws — `Shroud_EdgeBitmask_Calculator` into `cell+0x120`, dirty byte `+0x138`, redraw queue via `FUN_006DA7D0`. Candidate name `MapClass__RecalcShroudEdgesAndEnqueueRedraw`; **not applied — Ghidra is read-only under the current goal.** The `BRIDGE_HIGH`/`BRIDGE_LOW` tags applied to it earlier in the session are wrong and should be removed when a sync is next authorised. Its second caller `FUN_006E1A70` is moot for this family |
+| `0x00578100` | `MapClass__RecalcShroudEdgesAndEnqueueRedraw` | **Body decompiled 2026-08-19: the `Bridge` in the name is wrong, and the family has no per-tick member at all.** It is a whole-map shroud-edge recalculation that enqueues tactical redraws — `Shroud_EdgeBitmask_Calculator` into `cell+0x120`, dirty byte `+0x138`, redraw queue via `FUN_006DA7D0`. Candidate name `MapClass__RecalcShroudEdgesAndEnqueueRedraw`; **not applied — Ghidra is read-only under the current goal.** The `BRIDGE_HIGH`/`BRIDGE_LOW` tags applied to it earlier in the session are wrong and should be removed when a sync is next authorised. Its second caller `FUN_006E1A70` is moot for this family |
 
 ---
 
@@ -531,7 +531,7 @@ re-saved and read back).
 | `MapClass__WriteTubesINI` claimed to decrement `g_TubeCount`. `get_xrefs_to 0x008B4148` shows three READs and no WRITE in that function | §2.6 **and the applied plate comment** | Corrected in both; the plate now records the mistake and the real writers |
 | "**Every** High-family body … / **every** Low-family body …" — falsified by `0x0057CCF0`, `0x0057BAA0` and essentially all of §4.2/§4.3/§5.2/§5.3, which reference no tileset base and split on the overlay ordinal instead | §1, contradicting §2.3 two sections later | §1 rewritten to separate tileset-keyed from overlay-keyed members |
 | `g_WoodBridgeSet_TileSetBase`'s writers given as the `g_BridgeSet_TileSetBase` triple | §1 **and the applied plate comment on `0x00486750`** | Both corrected to `0x00545A86` / `0x00545DEA` / `0x00546CB9` |
-| `MapClass__RecalcBridgeShroudFlags` has a second caller, `FUN_006E1A70`, absent from the document | §3, §6, §11 | Added to all three; the "only per-tick member" claim narrowed |
+| `MapClass__RecalcShroudEdgesAndEnqueueRedraw` has a second caller, `FUN_006E1A70`, absent from the document | §3, §6, §11 | Added to all three; the "only per-tick member" claim narrowed |
 | §2.2's per-bit "where written" column wrong for `0x200`, `0x1000` and `0x10000`, and `0xFFFEE07F` presented as the function's uniform mask when it is the first write's mask | §2.2 | Table rebuilt per write, with the clear-but-never-set cases called out |
 | `0x0400` given as `(param_3 == 0) << 10` when the test is on the low byte | §2.2 | Corrected, with the asymmetry against `0x0800` noted |
 
@@ -539,7 +539,23 @@ The critic's own list is not treated as authority either: each defect above was 
 `get_xrefs_to 0x008B4148`, `get_xrefs_to 0x00ABAD1C`, and the six flag-write expressions in
 `0x0047E040` before the document was changed.
 
-## 13. Incidental database action
+## 13. Ghidra synchronisation applied 2026-08-19
+
+Applied on direct user request, after the comparison work. Each met the label bar (exact
+boundary, verified behaviour, active caller binding) and each kept its prior name in the plate:
+
+| Address | Change |
+|---|---|
+| `0x00578100` | Renamed `MapClass__RecalcBridgeShroudFlags` -> `MapClass__RecalcShroudEdgesAndEnqueueRedraw`; **`BRIDGE_HIGH` and `BRIDGE_LOW` tags removed** (both were applied earlier in the same session and were wrong). Not bridge code |
+| `0x00570050` | Renamed `ProcessBridgeDestruction_Low` -> `MapClass__RepairBridgeOrRestoreRamp_Low`. The old name said the opposite of what it does |
+| `0x00573540` | Renamed `ProcessBridgeDestruction_High` -> `MapClass__RepairBridgeOrRestoreRamp_High`, same reason |
+| `0x00728630` | Plate corrected: 106 CRC words per tube, not 105 |
+| `0x004DDC40` | Plate added: vtable slot `+0xBC` established from five constructors, live caller `FootClass::PerCellProcess` `0x004D8BE6`, and the callsite-vs-callee trap that hid it |
+
+Tag counts after: `BRIDGE_HIGH` 59, `BRIDGE_LOW` 65. The family is now 121 distinct members.
+`save_program` ran after each function and every edit was read back.
+
+## 14. Incidental database action
 
 One call to `disassemble_bytes 0x005E69E0 length=64` was made while chasing the RMG caller chain.
 That tool disassembles rather than only reading, so it is a database mutation. The region is
