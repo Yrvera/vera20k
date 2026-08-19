@@ -1,5 +1,12 @@
 //! Cutting a cliff stair into the ground.
 //!
+//! gamemd: `RmgRegion::CarveConnectorsOrBridges` 0x005905D0,
+//! `BuildRampOrientationMask` 0x00590FD0, the four straight-ramp carvers
+//! `CarveStraightRamp_ClearSouth` 0x005910F0, `_ClearEast` 0x00591740,
+//! `_ClearNorth` 0x00591D80, `_ClearWest` 0x00592440, and the two corner
+//! carvers `CarveCornerRamp_Diagonal` 0x00593030 and `_Reflected` 0x00593550.
+//! Dormant in stock YR skirmish for the reason recorded in `phases::bridge`.
+//!
 //! [`carve_straight_ramp_clear_south`] is the first of the original's seven
 //! carve routines. It takes the two endpoints a ramp site chose and turns the
 //! ground between them into a walkable stair: two rectangles handed to the
