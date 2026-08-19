@@ -752,15 +752,25 @@ fn test_default_building_has_stand_only() {
 // --- death_sequence_for_inf_death tests ---
 
 #[test]
-fn test_death_sequence_mapping() {
-    assert_eq!(death_sequence_for_inf_death(0), SequenceKind::Die1);
-    assert_eq!(death_sequence_for_inf_death(1), SequenceKind::Die1);
-    assert_eq!(death_sequence_for_inf_death(2), SequenceKind::Die2);
-    assert_eq!(death_sequence_for_inf_death(3), SequenceKind::Die3);
-    assert_eq!(death_sequence_for_inf_death(4), SequenceKind::Die4);
-    assert_eq!(death_sequence_for_inf_death(5), SequenceKind::Die5);
-    // Values > 5 clamp to Die5
-    assert_eq!(death_sequence_for_inf_death(10), SequenceKind::Die5);
+fn gsi_08_13_death_sequence_and_anim_arms_are_exclusive() {
+    use crate::sim::animation::inf_death_spawns_anim;
+    // The jump table at 0x00518D58 dispatches on `InfDeath - 1` over 0..9.
+    // 0 and > 10 fall off it entirely.
+    assert_eq!(death_sequence_for_inf_death(0), None);
+    assert!(!inf_death_spawns_anim(0));
+    assert_eq!(death_sequence_for_inf_death(11), None);
+    assert!(!inf_death_spawns_anim(11));
+    // 1 and 2 are the only sequence arms, and they spawn no animation.
+    assert_eq!(death_sequence_for_inf_death(1), Some(SequenceKind::Die1));
+    assert_eq!(death_sequence_for_inf_death(2), Some(SequenceKind::Die2));
+    assert!(!inf_death_spawns_anim(1));
+    assert!(!inf_death_spawns_anim(2));
+    // 3..=10 are animation arms, and they select no sequence — Die3, Die4 and
+    // Die5 are unreachable from the death handler.
+    for inf_death in 3..=10u8 {
+        assert_eq!(death_sequence_for_inf_death(inf_death), None);
+        assert!(inf_death_spawns_anim(inf_death));
+    }
 }
 
 // --- tick_animations integration tests ---

@@ -11,10 +11,12 @@
 
 use crate::app::AppState;
 use crate::app::input::commands::preferred_local_owner;
+use crate::app::input::dispatch::{
+    is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order,
+};
 use crate::app::input::entity_pick::{
     hover_target_at_point, pick_any_target_stable_id, pick_enemy_target_stable_id,
 };
-use crate::app::input::dispatch::{is_alt_held, is_ctrl_held, is_shift_held, selected_stable_ids_in_order};
 use crate::app::types::{HoverTargetKind, OrderMode};
 use crate::map::entities::EntityCategory;
 use crate::sim::command::{Command, CommandEnvelope};
@@ -177,8 +179,17 @@ fn emit_resolved_order_voice(state: &mut AppState, speaker_id: u64, queued: &[Co
 /// entity; retail speaks the object that resolved the order, so order resolution
 /// needs to name the speaker explicitly.
 fn emit_entity_order_voice(state: &mut AppState, speaker_id: u64, voice_field: &str) {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else { return };
-    let Some(rules) = state.rules().map(|r| r) else { return };
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
+        return;
+    };
+    let Some(rules) = state.rules().map(|r| r) else {
+        return;
+    };
     let Some(entity) = sim.entities().get(speaker_id) else {
         return;
     };
@@ -216,7 +227,12 @@ fn finish_order(
     queued: Vec<CommandEnvelope>,
     speaker_id: Option<u64>,
 ) -> bool {
-    let queued = if let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) {
+    let queued = if let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    {
         queued
             .into_iter()
             .filter_map(|envelope| {
@@ -232,9 +248,23 @@ fn finish_order(
     if let Some(speaker_id) = speaker_id {
         emit_resolved_order_voice(state, speaker_id, &queued);
     }
-    let current_tick = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation).map_or(0, |s| s.session.tick);
-    crate::app::presentation::target_lines::record_command_lines(&mut state.match_state.match_presentation.target_lines, &queued, current_tick);
-    if let Some(sim) = state.match_state.sim_runtime.as_mut().map(|rt| &mut rt.simulation) {
+    let current_tick = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+        .map_or(0, |s| s.session.tick);
+    crate::app::presentation::target_lines::record_command_lines(
+        &mut state.match_state.match_presentation.target_lines,
+        &queued,
+        current_tick,
+    );
+    if let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_mut()
+        .map(|rt| &mut rt.simulation)
+    {
         sim.queue_commands(queued);
     }
     true
@@ -263,26 +293,19 @@ const NO_WEAPON_NAMES: [&str; 2] = ["none", "<none>"];
 /// with the rest of a defended-expansion group; the Chrono Miner is refused by
 /// its `Primary=none` on its own.
 ///
-/// RESIDUAL (GSI-07.34) — one half of the type test is missing here. The key
-/// IS parsed (`rules/object_type.rs` into `prevent_attack_move`); what is
-/// absent is a reader — `entity_can_attack_move` below never consults it.
-/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Only
-/// two of the eleven are refused anyway by the aircraft rule above — `ORCA` and
-/// `BEAG`, the sole `[AircraftTypes]` members of the set. The other nine slip
-/// through, each carrying a real `Primary=` and so passing the weapon half: the
-/// three Engineers and the Spy (`DefuseKit`/`MakeupKit`), Boris (`CCOMAND`, an
-/// infantry type), and the four `[VehicleTypes]` helicopters `SHAD`, `HIND`,
-/// `SCHP` and `SCHD` (`BlackHawkCannon`), which `ObjectCategory` derives from
-/// list membership and so classifies as ordinary units, not aircraft.
-/// - Trigger: attack-moving a selection containing any of those nine.
-/// - Player effect: they take the order and move into the fight, where retail
-///   leaves the chord inert for them — an Engineer walks into fire, and a
-///   Nighthawk full of infantry flies at the enemy instead of holding.
-/// - Frequency: every mixed attack-move that sweeps one up — common, since
-///   players band-select whole groups.
-/// - Downstream risk: none beyond this predicate; the field is already on the
-///   type, so the fix is one read. The gamemd rule itself is verified — this is
-///   a missing consumer, not missing evidence.
+/// gamemd-derived: `TechnoTypeClass::Can_Attack_Move @ 0x00711E90` (vtable
+/// `+0xA4`) — `Primary != NULL && PreventAttackMove(+0x6C8) == 0`.
+///
+/// Stock YR sets `PreventAttackMove=yes` on eleven types and `=no` on two. Two
+/// of the eleven are refused anyway by the aircraft rule above — `ORCA` and
+/// `BEAG`, the sole `[AircraftTypes]` members of the set. The other nine used to
+/// slip through, each carrying a real `Primary=` and so passing the weapon
+/// half: the three Engineers and the Spy (`DefuseKit`/`MakeupKit`), Boris
+/// (`CCOMAND`, an infantry type), and the four `[VehicleTypes]` helicopters
+/// `SHAD`, `HIND`, `SCHP` and `SCHD` (`BlackHawkCannon`), which `ObjectCategory`
+/// derives from list membership and so classifies as ordinary units, not
+/// aircraft. An Engineer walked into fire and a Nighthawk full of infantry flew
+/// at the enemy where retail leaves the chord inert for them.
 ///
 /// Note also that the sim side is confirmed complete for this row:
 /// `MissionClass::Mission_Dispatch @ 0x005B3060` has no case for mission 29, so
@@ -302,16 +325,19 @@ fn entity_can_attack_move(
     ) {
         return false;
     }
-    rules
-        .and_then(|r| r.object(sim.interner.resolve(entity.type_ref)))
-        .and_then(|obj| obj.primary.as_deref())
-        .is_some_and(|primary| {
-            let primary = primary.trim();
-            !primary.is_empty()
-                && !NO_WEAPON_NAMES
-                    .iter()
-                    .any(|none| primary.eq_ignore_ascii_case(none))
-        })
+    let Some(obj) = rules.and_then(|r| r.object(sim.interner.resolve(entity.type_ref))) else {
+        return false;
+    };
+    if obj.prevent_attack_move {
+        return false;
+    }
+    obj.primary.as_deref().is_some_and(|primary| {
+        let primary = primary.trim();
+        !primary.is_empty()
+            && !NO_WEAPON_NAMES
+                .iter()
+                .any(|none| primary.eq_ignore_ascii_case(none))
+    })
 }
 
 /// Every selected object has to accept an attack-move order for the chord to fire.
@@ -350,8 +376,12 @@ fn nearest_reachable_goal(
     if crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, goal.0, goal.1) {
         return goal;
     }
-    crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(grid, goal, GOAL_FALLBACK_RADIUS)
-        .unwrap_or(goal)
+    crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
+        grid,
+        goal,
+        GOAL_FALLBACK_RADIUS,
+    )
+    .unwrap_or(goal)
 }
 
 /// The command one selected unit commits for a tactical click on an object.
@@ -409,7 +439,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     screen_y: f32,
     select_friendly_clicks: bool,
 ) -> bool {
-    let (world_x, world_y) = crate::app::match_runtime::sim_tick::screen_point_to_world(state, screen_x, screen_y);
+    let (world_x, world_y) =
+        crate::app::match_runtime::sim_tick::screen_point_to_world(state, screen_x, screen_y);
     let (target_rx, target_ry) =
         crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, screen_x, screen_y);
     // Retail modifier map: Ctrl = force fire, Alt = force move,
@@ -424,7 +455,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
     let order_mode = state.match_state.input.queued_order_mode;
     let owner: String = preferred_local_owner(state).unwrap_or_else(|| "Americans".to_string());
     let owner_id: InternedId = state
-        .match_state.sim_runtime
+        .match_state
+        .sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation)
         .and_then(|s| s.interner.get(&owner))
@@ -510,7 +542,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             state.match_state.sandbox_full_visibility,
             Some(&resources.rules),
             &resources.height_map,
-            Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
+            Some(
+                &state
+                    .match_state
+                    .match_presentation
+                    .tactical_bridge_inverse_map,
+            ),
         );
 
         let only_miners_selected = mobile_count > 0 && selected_miner_ids.len() == mobile_count;
@@ -991,7 +1028,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.match_state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
+                    Some(
+                        &state
+                            .match_state
+                            .match_presentation
+                            .tactical_bridge_inverse_map,
+                    ),
                 )
             } else {
                 pick_enemy_target_stable_id(
@@ -1002,7 +1044,12 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                     state.match_state.sandbox_full_visibility,
                     Some(&resources.rules),
                     &resources.height_map,
-                    Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
+                    Some(
+                        &state
+                            .match_state
+                            .match_presentation
+                            .tactical_bridge_inverse_map,
+                    ),
                 )
             };
             // Assign a shared group_id when multiple units move together.
@@ -1021,7 +1068,8 @@ pub(crate) fn try_queue_context_order_at_screen_point(
             // comment cited as a "shroud check" is in fact the waypoint lookup.
             // Left in place because removing it changes click routing; recorded
             // as a DRIFT for its own slice. Computed once outside the loop.
-            let cell_is_shrouded: bool = if force_fire && !state.match_state.sandbox_full_visibility {
+            let cell_is_shrouded: bool = if force_fire && !state.match_state.sandbox_full_visibility
+            {
                 let owner_id_for_fog = sim.interner.get(&owner).unwrap_or_default();
                 !sim.fog
                     .is_cell_revealed(owner_id_for_fog, target_rx, target_ry)
@@ -1090,7 +1138,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                         let goal: (u16, u16) = {
                             let mut g = (target_rx, target_ry);
                             if let Some(grid) = sim.path_grid() {
-                                if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(
+                                    grid, g.0, g.1,
+                                ) {
                                     if let Some(nearest) =
                                         crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
                                             grid, g, 12,
@@ -1116,7 +1166,9 @@ pub(crate) fn try_queue_context_order_at_screen_point(
                             let goal: (u16, u16) = {
                                 let mut g = (target_rx, target_ry);
                                 if let Some(grid) = sim.path_grid() {
-                                    if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(grid, g.0, g.1) {
+                                    if !crate::app::match_runtime::sim_tick::is_any_layer_walkable(
+                                        grid, g.0, g.1,
+                                    ) {
                                         if let Some(nearest) =
                                             crate::app::match_runtime::sim_tick::nearest_walkable_cell_layered(
                                                 grid, g, 12,
@@ -1382,6 +1434,7 @@ mod tests {
              1=HARV\n\
              2=SREF\n\
              3=CMIN\n\
+             4=SHAD\n\
              [AircraftTypes]\n\
              0=ORCA\n\
              [BuildingTypes]\n\
@@ -1397,6 +1450,10 @@ mod tests {
              Strength=1000\n\
              Harvester=yes\n\
              Primary=none\n\
+             [SHAD]\n\
+             Strength=200\n\
+             Primary=105mm\n\
+             PreventAttackMove=yes\n\
              [SREF]\n\
              Strength=200\n\
              Secondary=105mm\n\
@@ -1479,6 +1536,25 @@ mod tests {
         assert!(!entity_can_attack_move(&sim, Some(&rules), chrono_miner));
         // A secondary-only type is refused: the rule reads Primary only.
         assert!(!entity_can_attack_move(&sim, Some(&rules), arty));
+    }
+
+    /// `TechnoTypeClass::Can_Attack_Move @ 0x00711E90` reads BOTH halves: a real
+    /// `Primary=` and `PreventAttackMove=` off. The nine stock types that carry
+    /// the key and are not aircraft — the three Engineers, the Spy, Boris and
+    /// the four helicopters — all have a real primary, so the weapon half alone
+    /// let every one of them through.
+    #[test]
+    fn gsi_07_34_prevent_attack_move_refuses_an_armed_type() {
+        let rules = chord_rules();
+        let mut sim = Simulation::new();
+        sim.resolve_type_handles(&rules);
+        let height_map: std::collections::BTreeMap<(u16, u16), u8> =
+            std::collections::BTreeMap::new();
+
+        let nighthawk = sim
+            .spawn_object("SHAD", "Americans", 5, 6, 0, &rules, &height_map)
+            .expect("helicopter carrying PreventAttackMove=yes");
+        assert!(!entity_can_attack_move(&sim, Some(&rules), nighthawk));
     }
 
     /// Buildings and aircraft answer no unconditionally, whatever they are armed

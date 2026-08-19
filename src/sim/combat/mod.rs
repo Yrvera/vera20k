@@ -2166,7 +2166,13 @@ fn handle_entity_deaths(
                     .as_ref()
                     .map(|(wh, _)| wh.inf_death)
                     .unwrap_or(1);
-                if category == EntityCategory::Infantry {
+                // The two arms are mutually exclusive in native: the jump
+                // table at 0x00518D58 either runs `Do_Action(Die1|Die2)` with
+                // no anim (InfDeath 1, 2) or spawns an anim with no sequence
+                // (InfDeath 3..10), and InfDeath 0 or > 10 does neither.
+                if category == EntityCategory::Infantry
+                    && crate::sim::animation::inf_death_spawns_anim(inf_death)
+                {
                     concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry {
                         inf_death,
                         rx,
@@ -2179,9 +2185,12 @@ fn handle_entity_deaths(
                 }
                 if let Some(entity) = entities.get_mut(dead_id) {
                     entity.dying = true;
-                    if let Some(ref mut anim) = entity.animation {
-                        use crate::sim::animation::death_sequence_for_inf_death;
-                        anim.switch_to(death_sequence_for_inf_death(inf_death));
+                    if let Some(sequence) =
+                        crate::sim::animation::death_sequence_for_inf_death(inf_death)
+                    {
+                        if let Some(ref mut anim) = entity.animation {
+                            anim.switch_to(sequence);
+                        }
                     }
                 }
                 // Still report as "despawned" for fog/path updates — entity is
@@ -6212,18 +6221,28 @@ pub(crate) fn resolve_attacker_fire(
         //   many weapon types set it.
         // - Downstream risk: none structural; the constant becomes a lookup.
         // RESIDUAL (GSI-08.04) — this gate exists only for entities that have a
-        // `barrel_facing`. Turretless vehicles, all infantry and all structures
-        // reach the fire step with no facing test at all, so they shoot
-        // instantly in any direction; native gates a turretless firer on its
-        // body facing.
-        // - Trigger: any turretless attacker acquiring a target off its heading.
-        // - Player effect: no turn-to-fire delay — an artillery piece or a rifle
-        //   infantryman fires the frame it acquires instead of after swinging
-        //   round, so first shots land early and units never visibly line up.
-        // - Frequency: continuous; infantry alone make this most engagements.
-        // - Downstream risk: adding the gate delays first shots, which moves
-        //   engagement outcomes and the pinned replay hash, so it wants its own
-        //   slice alongside the body-facing rate work.
+        // `barrel_facing`, and native gates one more class of firer.
+        // `UnitClass::GetFireError @ 0x00740FD0` tests a TURRETLESS vehicle on
+        // its body facing (`this+0x388`) with the same 0x0800 tolerance, and
+        // `BuildingClass::GetFireError @ 0x00447F10` gates a turreted structure
+        // the same way. Infantry are NOT angle-gated at all — they are gated by
+        // their FIRE animation sequence in `InfantryClass::Fire_At_Target @
+        // 0x005206B0` — so VERA's lack of an angle test for them is correct,
+        // and a turretless STRUCTURE gets no gate in native either.
+        // - Trigger: any turretless vehicle acquiring a target off its heading.
+        // - Player effect: no turn-to-fire delay — an artillery piece fires the
+        //   frame it acquires instead of after swinging round, so first shots
+        //   land early and the unit never visibly lines up.
+        // - Frequency: continuous for the artillery/V3/Dreadnought family; the
+        //   infantry half of pass 1's claim was wrong, which removes most of the
+        //   volume it attributed here.
+        // - Downstream risk: the gate cannot land alone. On failure native
+        //   returns code 2 and `UnitClass::Fire_At_Target @ 0x00736DF0` commands
+        //   the body toward the target without consuming cooldown; VERA emits a
+        //   facing destination only for turreted units, so gating a turretless
+        //   attacker today would freeze it — it would never turn and never fire.
+        //   The emitter comes first, then the gate, and both move engagement
+        //   outcomes and the pinned replay hash.
         let delta = i32::from(barrel.current(binary_frame).wrapping_sub(desired) as i16);
         let aligned = delta.abs() <= NATIVE_FIRE_FACING_TOLERANCE;
         if !aligned {
@@ -6390,15 +6409,24 @@ pub(crate) fn resolve_attacker_fire(
         // - Player effect: the muzzle flash and the projectile disagree — the
         //   flash sits at the barrel and the shot starts at the hull centre, so
         //   at short range the tracer visibly begins in the wrong place. Range
-        //   is also measured from the centre, so a long-barrelled unit reaches
-        //   marginally less far than it should.
+        //   is NOT affected: `TechnoClass::CanFireAt @ 0x006F77B0` measures from
+        //   `vtable+0x48` (`GetCoords`), the object centre, which is what VERA
+        //   already does — pass 1's "reaches marginally less far" was wrong.
+        //   Only the projectile origin and the line of fire move.
         // - Frequency: continuous, every shot.
         // - Downstream risk: high. Moving the origin changes ballistic launch
         //   vectors and therefore impact frames, so it moves the pinned replay
-        //   hash and the closed ballistic vector tests; it also wants the
-        //   turret/barrel facing split recorded on `movement/turret.rs`, since
-        //   the native fire location reads the barrel facing rather than the
-        //   receiver's.
+        //   hash and the closed ballistic vector tests. The verified transform
+        //   is `GetFLH @ 0x006F3AD0`:
+        //   `M = Base * T(TechnoType+0x720, 0, 0) * Rz(theta) * T(x, ySign*y, z)`
+        //   with `theta = -(pi/16) * (dir32 - 8)`,
+        //   `dir32 = (((facing >> 10) + 1) >> 1) & 0x1F`, `ySign = -1` on an odd
+        //   `CurrentBurstIndex`, and the result's Y negated before it is added
+        //   to the object coordinate. The body rotation cancels, so the FLH
+        //   rotates by the ABSOLUTE aim facing while the turret offset rides the
+        //   body frame. It needs a fixed-point trig table; the pass-1 note that
+        //   it also wants a barrel-facing split is wrong — see
+        //   `movement/turret.rs`, native has two facings, not three.
         let origin = ProjectileCoord::new(
             i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
             i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),

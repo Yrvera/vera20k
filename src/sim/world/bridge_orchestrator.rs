@@ -1109,8 +1109,11 @@ fn kill_ground_occupants_at(sim: &mut Simulation, rx: u16, ry: u16, c4_inf_death
             entity.attack_target = None;
             entity.movement_target = None;
             entity.selected = false;
-            if let Some(ref mut anim) = entity.animation {
-                anim.switch_to(death_seq);
+            // `death_seq` is `None` whenever the warhead's `InfDeath=` picks
+            // an animation arm instead of a sequence — see the jump table at
+            // 0x00518D58.
+            if let (Some(seq), Some(anim)) = (death_seq, entity.animation.as_mut()) {
+                anim.switch_to(seq);
             }
         }
     }
