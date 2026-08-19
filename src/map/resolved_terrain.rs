@@ -2806,6 +2806,40 @@ mod tests {
         assert_eq!(cache.cached_water_set_base(), 1);
     }
 
+    /// `CellClass::IsTubeCell` 0x00484AB0 requires BOTH a tube index inside
+    /// `[0, g_TubeCount)` and `cell+0xEC` (LandType) == 10, but
+    /// `CellClass::GetTubeAtCell` 0x00484F20 tests only the index and hands
+    /// back the record regardless of land type. The asymmetry is deliberate in
+    /// the binary and load-bearing for tube exits, whose facing is read from
+    /// the record after the cell has already been left behind. Keep both sides
+    /// of it.
+    #[test]
+    fn tube_at_cell_ignores_land_type_while_is_tube_cell_requires_it() {
+        let mut cells = vec![make_test_cell(0, 0), make_test_cell(1, 0)];
+        cells[0].tube_index = Some(TubeId(0));
+        cells[0].yr_cell_land_type = YR_CELL_LAND_TUNNEL;
+        cells[1].tube_index = Some(TubeId(0));
+        // Land type deliberately NOT tunnel.
+        let tube = TubeFact {
+            entry: (0, 0),
+            exit: (1, 0),
+            direction: 2,
+            path_steps: Vec::new(),
+            source: TubeSource::AutoLowBridge,
+        };
+        let grid = ResolvedTerrainGrid::from_cells_with_tubes(2, 1, cells, vec![tube]);
+
+        assert!(grid.cell(0, 0).expect("cell").is_low_bridge_tube_cell());
+        assert!(
+            !grid.cell(1, 0).expect("cell").is_low_bridge_tube_cell(),
+            "0x00484AB0 requires LandType 10"
+        );
+        assert!(
+            grid.tube_at_cell(1, 0).is_some(),
+            "0x00484F20 applies no LandType test"
+        );
+    }
+
     #[test]
     fn direction_8_steps_through_cell_tube() {
         let mut cells = vec![

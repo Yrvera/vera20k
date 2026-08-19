@@ -2498,3 +2498,360 @@ fn from_resolved_terrain_defaults_to_variant0_when_pre_class_is_none() {
         BridgeheadAnchorClass::Variant0
     );
 }
+
+/// `ApplyDamageToCell` 0x00587180 routes to a walker on a narrower band than
+/// the walkers themselves accept. Its tests are `(0x49 < o) && (o < 100)` and
+/// `(0xCC < o) && (o < 0xE7)`, so 0x64, 0x65, 0xE7 and 0xE8 fall through to
+/// the tileset-family branch even though `DestroyBridge_Low` 0x0057BAA0 and
+/// `DestroyBridge_High` 0x0057CCF0 name them as valid axis classes
+/// (0x64/0xE7 NS, 0x65/0xE8 EW) once already running.
+#[test]
+fn apply_damage_dispatch_bands_are_narrower_than_the_walker_bands() {
+    assert!(!is_low_dispatch_overlay(0x49));
+    assert!(is_low_dispatch_overlay(0x4A));
+    assert!(is_low_dispatch_overlay(0x63));
+    assert!(!is_low_dispatch_overlay(0x64));
+    assert!(!is_low_dispatch_overlay(0x65));
+
+    assert!(!is_high_dispatch_overlay(0xCC));
+    assert!(is_high_dispatch_overlay(0xCD));
+    assert!(is_high_dispatch_overlay(0xE6));
+    assert!(!is_high_dispatch_overlay(0xE7));
+    assert!(!is_high_dispatch_overlay(0xE8));
+
+    // The walker-side bands, which legitimately include those four values.
+    assert!(BridgeRuntimeState::is_low_destroy_overlay(0x64));
+    assert!(BridgeRuntimeState::is_low_destroy_overlay(0x65));
+    assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE7));
+    assert!(BridgeRuntimeState::is_high_destroy_overlay(0xE8));
+}
+
+/// RESIDUAL — gamemd addresses 0x00572230 (and its fifteen compiled twins,
+/// enumerated on `crate::sim::bridge_specs::RampOutcome`).
+///
+/// Mechanism: after the state-byte promotion this crate does model, every
+/// ramp updater unconditionally computes
+/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` on the perpendicular target and
+/// branches on three runtime tile-class constants: two of them call
+/// `MapClass::ToggleBridgePavement` 0x0056E990 with `(coord, 1, 0)`, and two
+/// more call `MapClass::FloodFillIsoTileType` to repaint the ramp iso-tile
+/// across its connected region. VERA runs neither.
+///
+/// Trigger: any damage or collapse step on a bridge whose anchor has a ramp
+/// or bridgehead neighbour — i.e. essentially every hit that damages a span.
+///
+/// Effect: the ramp keeps its intact iso-tile art and its pavement state after
+/// the span it leads to has been damaged or dropped. The bridge deck changes,
+/// the approach ramp does not.
+///
+/// Frequency: high on any map with a bridge that gets attacked, which is most
+/// matches on most retail maps carrying one. The residual is purely visual —
+/// no pathing, damage or RNG consequence was found in 0x00572230.
+#[test]
+#[ignore = "gamemd ramp updaters also toggle pavement and flood-fill the ramp iso-tile; VERA only promotes the state byte"]
+fn ramp_pavement_and_isotile_branch_is_unported() {
+    panic!(
+        "unimplemented: ToggleBridgePavement / FloodFillIsoTileType branch of the ramp updaters"
+    );
+}
+
+/// RESIDUAL - gamemd addresses 0x00576770 `MapClass::UpdateAdjacentBridges_High`,
+/// 0x00571050 `MapClass::UpdateAdjacentBridges`, and the edge writers they
+/// drive, 0x00576200 `UpdateBridgeEdgeTiles_High` and 0x00570AE0
+/// `UpdateBridgeEdgeTiles_Low`.
+///
+/// **Both bodies re-decompiled 2026-08-19. The earlier version of this note
+/// called the gap purely visual and said the writers touch no damage state,
+/// pathing field or RNG. That is wrong**, and it is the reason this is being
+/// corrected rather than implemented: a port written against the old note
+/// would have been scoped as a tile-art fix and would have silently taken on
+/// bridge-flag and overlay writes.
+///
+/// Entry (0x00576770): walk the eight directions from the damaged cell until
+/// a neighbour carries `+0x140 & 0x500`; pick a start coordinate from that
+/// neighbour's 0x100 / 0x400 / 0x80 bits; walk along the axis chosen by the
+/// neighbour's `0x800` bit while cells stay inside the map rect and carry a
+/// non-null entry in `MapClass+0x13C`; classify the landed cell's
+/// `cell+0x38 - g_BridgeSet_TileSetBase + 1` against SIX theater tileset
+/// globals paired with a `+0x11A` sub-tile value of 8, 5, 12 or 7; and call
+/// `UpdateBridgeEdgeTiles_High` with mode 2 or 4, dirtying the screen rect
+/// through `TacticalClass::DirtyScreenRect` only when the returned rect
+/// actually changed.
+///
+/// The globals are theater INI tileset indices written by
+/// `Read_Theater_TileSets_INI`; `DAT_00ABAD30` is `[General] BridgeMiddle1`
+/// (key string 0x008292C4, stored at 0x00545C1E), which `map::theater`
+/// already parses. The remaining five were not resolved to their keys.
+///
+/// **What 0x00576200 actually does, and why this is not a visual slice:** it
+/// walks up to 30 cells along the span looking for the tile class matching
+/// its mode, unions a screen rect through
+/// `TacticalClass::CoordsToClient2`, and at the anchor-flag transition it
+/// calls `NotifyBridgeSpanCollapse`, then
+/// `CellClass::SetBridgeDirection_NESW` with direction 0 (mode 2) or 6
+/// (mode 4), writes `cell+0x11E = 0`, writes `cell+0x44 = -1` clearing the
+/// overlay, calls `RadarClass::MarkTerrainDirty`, and re-enters itself.
+///
+/// `SetBridgeDirection` is the writer of the `0x100` and `0x800` bits in
+/// `cell+0x140`. Those bits are read by the pathfinding zone build, the
+/// destroy and repair walkers, `CheckBridgeTraversal` 0x004D9C60 and the
+/// render predicate `IsOnBridge_ForFiring` 0x00703B10. `cell+0x44` is the
+/// overlay byte the destroy walkers match their bands against. So this
+/// function re-stamps sim-visible bridge topology at collapse time; it is not
+/// rim art.
+///
+/// `compute_adjacent_bridges_dirty` reproduces only the first step's
+/// *result* - which two perpendicular cells to mark dirty. Neither the span
+/// walk, the tile classification, the re-stamp, nor the overlay clear
+/// happens.
+///
+/// Trigger: every bridge collapse. Confirmed from callers - eight call sites,
+/// all in `ProcessBridgeDamageStateMachine_High` 0x00576BB0 and both hut-death
+/// destroy paths `MapClass::DestroyBridge_High_OnHutDeath` 0x005745B4 and
+/// `_Low_OnHutDeath` 0x005751D0.
+///
+/// Effect: the rim tiles at the break keep their intact art, AND the cells at
+/// the break keep bridge flags and an overlay id that gamemd clears. The
+/// second half is the part that matters: VERA's own predicates keep reading a
+/// span the engine has already unstamped.
+///
+/// Frequency: every collapse on any map with a bridge.
+///
+/// Blocker, restated: this is not a slice. It needs the five unresolved
+/// theater tileset keys, a `+0x11A` sub-tile reader, the `MapClass+0x13C`
+/// span array, a `SetBridgeDirection` re-stamp path, and a screen-rect union
+/// - and because it writes flags the pathfinder and the render predicate
+/// read, it needs the same evidence bar as a sim change rather than a render
+/// one.
+#[test]
+#[ignore = "gamemd 0x00576770 -> 0x00576200 re-stamps bridge flags and clears the overlay at a collapse break, not just edge art; VERA does neither"]
+fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
+    panic!("unimplemented: UpdateAdjacentBridges / UpdateBridgeEdgeTiles span walk and re-stamp");
+}
+
+/// RESIDUAL — gamemd addresses 0x00570050 `ProcessBridgeDestruction_Low`,
+/// 0x00573540 `ProcessBridgeDestruction_High`, the span walkers they drive
+/// (0x00569760 `MapClass::BridgePavementSpanWalker` and 0x00568E40 its high
+/// twin), `MapClass::ToggleBridgePavement` 0x0056E990 and
+/// `MapClass::ValidateBridgeZones` 0x0056DB70.
+///
+/// The names mislead: 0x00570050 decompiled 2026-08-19 is the REPAIR entry.
+/// Its 5x5 overlay scan hands the first cell in `[0x4A..=0x65]` to
+/// `MapClass::RepairBridge_Low` 0x0057F200 and returns. Everything after that
+/// is the terrain restoration the repair needs:
+/// - `ToggleBridgePavement(coord, 0, 0)` on the ramp cell, then
+///   `BridgePavementSpanWalker(cell, 2 or 4, &rect)` and a
+///   `TacticalClass::DirtyScreenRect` over the rect it returns;
+/// - on the `+4` tile-class variants, `FloodFillIsoTileType` back to the
+///   pre-collapse iso-tile and `cell+0x11B += 4` on three neighbours — the
+///   deck-level raise being put back;
+/// - `ValidateBridgeZones`, a recursive call two cells back along the span,
+///   and `RebuildZoneConnectivity` when validation reports a change.
+///
+/// `repair_bridge_from_engineer_scan` reproduces the scan and the
+/// `RepairBridge_*` dispatch. None of the restoration tail exists.
+///
+/// Trigger: every successful engineer repair of a collapsed bridge.
+///
+/// Effect: the deck becomes walkable again but the approach keeps its
+/// collapsed appearance, and the `+0x11B += 4` level raise is not re-applied,
+/// so the ramp cells stay at the dropped height. That is not purely visual —
+/// cell level feeds ground height, which feeds the bridge transition predicate
+/// and unit Z.
+///
+/// **Blocker, established 2026-08-19.** This cannot be ported as written.
+/// Every branch in the tail is selected by comparing
+/// `cell+0x38 - g_WoodBridgeSet_TileSetBase + 1` against runtime tile-class
+/// constants - `DAT_00ABAD30`, `DAT_00ABC2B4`, `DAT_00AA1130`, `DAT_00AA1028`,
+/// `DAT_00AA1548`, `DAT_00AA0740` - and the `+0x11B += 4` raise fires only on
+/// the `DAT_00ABAD30 + 4` variant paired with a `+0x11A` sub-tile of 5. Those
+/// constants live in BSS and are written per theater by
+/// `Read_Theater_TileSets_INI`, so they cannot be read out of the binary
+/// statically. `BridgeRampTile::relative_tile_index` is the right field to
+/// hold the comparison, but the values to compare against have to come from a
+/// live observation or from porting the theater tileset reader first.
+/// Guessing them would put a fabricated constant into sim state that feeds
+/// ground height. Recorded rather than approximated.
+///
+/// Frequency: every successful engineer repair of a collapsed bridge. Repairs
+/// are uncommon per match, but the effect persists for the rest of the game
+/// once one happens, and a repaired bridge is something both players then
+/// path over.
+#[test]
+#[ignore = "gamemd restores pavement, iso-tile and the +4 level raise after a repair (0x00570050); VERA only re-dispatches RepairBridge"]
+fn bridge_repair_terrain_restoration_is_unported() {
+    panic!("unimplemented: ProcessBridgeDestruction_* repair restoration tail");
+}
+
+// ---- MapClass::FindBridgeConnection_Predicate 0x00587410, overlay branch ----
+
+fn seed_overlay_row(state: &mut BridgeRuntimeState, y: u16, xs: std::ops::Range<u16>, overlay: u8) {
+    for x in xs {
+        state.test_seed_cell(
+            x,
+            y,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 5,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: overlay,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+    }
+}
+
+/// An intact high span carries healthy body overlays, which ARE inside the
+/// 0xCD..=0xE8 family band but are not the 0xE7 / 0xE8 collapsed anchors, so
+/// the native predicate walks the span and finds nothing.
+#[test]
+fn hut_span_scan_rejects_an_intact_high_span() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..14, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "an intact span offers nothing to repair"
+    );
+}
+
+/// A collapsed anchor anywhere along the walked span returns true, including
+/// well outside the 5x5 block the scan starts from.
+#[test]
+fn hut_span_scan_finds_a_collapsed_high_anchor_down_the_span() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..14, 0xCD);
+    seed_overlay_row(&mut state, 6, 11..12, 0xE7);
+
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "0xE7 is what DestroyBridgeWalker_NS_High writes on final collapse"
+    );
+}
+
+/// Low family, same shape, with the 0x64 anchor.
+#[test]
+fn hut_span_scan_finds_a_collapsed_low_anchor() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..10, 0x4A);
+    seed_overlay_row(&mut state, 6, 8..9, 0x64);
+
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "0x64 is the low-side collapsed anchor"
+    );
+    let mut intact = BridgeRuntimeState::default();
+    seed_overlay_row(&mut intact, 6, 0..10, 0x4A);
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&intact, (6, 6)),
+        "an intact low span offers nothing to repair"
+    );
+}
+
+/// The walk stops when the overlay leaves the family band, so a collapsed
+/// anchor on the far side of a gap is not reached.
+#[test]
+fn hut_span_scan_stops_at_the_band_edge() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 4..9, 0xCD);
+    seed_overlay_row(&mut state, 6, 9..10, 0x00);
+    seed_overlay_row(&mut state, 6, 10..13, 0xE7);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "an out-of-band cell ends the walk before the anchor"
+    );
+}
+
+/// Cells with no bridge runtime entry at all contribute nothing.
+#[test]
+fn hut_span_scan_on_empty_state_is_false() {
+    let state = BridgeRuntimeState::default();
+    assert!(!crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)));
+}
+
+/// 0x00587410's 5x5 loop has no break, so the cell it walks from is the LAST
+/// match in Y-major order, not any match. Row y=4 leads to an anchor; row y=8
+/// does not. Y-major makes (8, 8) the surviving seed, so the predicate must
+/// answer false even though a reachable anchor exists from an earlier cell.
+#[test]
+fn hut_span_scan_walks_only_the_last_y_major_seed() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 4, 4..9, 0xCD);
+    seed_overlay_row(&mut state, 4, 9..12, 0xCD);
+    seed_overlay_row(&mut state, 4, 12..13, 0xE7);
+    seed_overlay_row(&mut state, 8, 4..9, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "scanning every cell and accepting any hit is more permissive than the binary"
+    );
+
+    // Same map with the anchor moved onto the surviving seed's row.
+    let mut reachable = BridgeRuntimeState::default();
+    seed_overlay_row(&mut reachable, 4, 4..9, 0xCD);
+    seed_overlay_row(&mut reachable, 8, 4..12, 0xCD);
+    seed_overlay_row(&mut reachable, 8, 12..13, 0xE7);
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&reachable, (6, 6)),
+        "the surviving seed's own span is walked"
+    );
+}
+
+/// The EW-class arm: an overlay in {0xD6..=0xDE} u {0xE3..=0xE6} u {0xE8} walks
+/// along Y, so the anchor has to be down a column rather than along a row.
+#[test]
+fn hut_span_scan_walks_ew_class_overlays_along_y() {
+    let mut column = BridgeRuntimeState::default();
+    for y in 4..14u16 {
+        seed_overlay_row(&mut column, y, 6..7, 0xD6);
+    }
+    seed_overlay_row(&mut column, 13, 6..7, 0xE8);
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&column, (6, 6)),
+        "an EW-class overlay is walked along Y"
+    );
+
+    // The same overlays laid out as a row leave the Y walk with nothing.
+    let mut row = BridgeRuntimeState::default();
+    seed_overlay_row(&mut row, 6, 4..14, 0xD6);
+    seed_overlay_row(&mut row, 6, 14..15, 0xE8);
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&row, (6, 6)),
+        "walking Y off a single row finds nothing, which is what proves the axis"
+    );
+}
+
+/// The one layout where Y-major and X-major disagree, and therefore the only
+/// test that actually pins 0x00587410's scan order.
+///
+/// The 5x5 around (6, 6) spans x 4..=8, y 4..=8. Exactly two destroy-band cells
+/// sit inside it: (8, 6) = (cx+2, cy) and (6, 8) = (cx, cy+2). The native's
+/// outer counter is Y (0x00587443) and its inner is X (0x00587447), so the
+/// dy=+2 row is visited after the dy=0 row and **(6, 8) is the surviving
+/// seed**. The CABHUT death path's `hut_destroy_5x5_scan` is dx-outer and would
+/// visit the dx=+2 column last, keeping (8, 6) instead.
+///
+/// Both are NS-class overlays, so both walk along X. (8, 6) continues east out
+/// of the block to a collapsed anchor at (11, 6); (6, 8) dead-ends with no
+/// neighbour either way. A port using the wrong order answers true.
+#[test]
+fn hut_span_scan_order_is_y_major_not_x_major() {
+    let mut state = BridgeRuntimeState::default();
+    // (8, 6): NS-class, walks X, reaches an anchor outside the 5x5.
+    seed_overlay_row(&mut state, 6, 8..11, 0xCD);
+    seed_overlay_row(&mut state, 6, 11..12, 0xE7);
+    // (6, 8): NS-class, walks X, isolated - no neighbour east or west.
+    seed_overlay_row(&mut state, 8, 6..7, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "Y-major keeps (6, 8), which dead-ends; an X-major scan would keep          (8, 6) and wrongly answer true"
+    );
+}

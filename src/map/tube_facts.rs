@@ -4,6 +4,24 @@
 //! per-cell tube index on CellClass. Rust keeps the static map-load facts here;
 //! sim systems decide whether damage/state currently makes a tube usable.
 
+/// gamemd TubeClass. `MapClass::ReadTubesINI` 0x007283C0 allocates each record
+/// through `TubeClass::Constructor` 0x00727FD0 and fills +0x24/+0x26 entry,
+/// +0x2C direction, +0x28/+0x2A exit, the 100-slot path array at +0x30 and the
+/// length at +0x1C0 — the field set this struct mirrors.
+///
+/// The record's other five natives are persistence and have no counterpart
+/// here by design, because VERA snapshots instead of implementing
+/// IPersistStream: `TubeClass::Load` 0x007281A0, `Save` 0x007281E0,
+/// `GetClassID` 0x007286D0, `Compute_CRC` 0x00728630 (which feeds 106 CRC
+/// words per tube: the four i16 endpoints, the i32 direction, all 100 path
+/// dwords and the length. The Ghidra plate on 0x00728630 says 105 and is
+/// wrong by one; that is a read-only candidate correction) and
+/// `MapClass::WriteTubesINI` 0x00728280, the map-editor save-side
+/// compaction that rewrites the section and resets each entry cell's
+/// +0x116 tube index to -1; its sole caller is `Save_Scenario_Map_File`,
+/// an editor path with no in-match trigger. Tube records are immutable after load, so
+/// none of them can move gameplay state. gamemd equivalent UNCHECKED.
+///
 /// Compact TubeClass array index.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

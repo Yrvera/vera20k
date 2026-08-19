@@ -57,7 +57,8 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     // Sidebar/minimap hits are already short-circuited above, so the SW reticle
     // only renders on the tactical map.
     if let Some(section) = state.armed_super_weapon_type() {
-        let cursor_id = state.rules()
+        let cursor_id = state
+            .rules()
             .and_then(|r| r.super_weapon(section))
             .and_then(|sw| sw.action.as_deref())
             .and_then(super_weapon_cursor_id)
@@ -74,20 +75,29 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if state.armed_building_type().is_some() {
         return Some(CursorFeedbackKind::Invalid);
     }
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return None;
     };
     // Repair / Sell cursor modes take over the tactical map regardless of
     // selection — the wrench/dollar shows over own buildings, no-repair/no-sell
     // elsewhere. Placed before the empty-selection early return below because
     // gamemd shows these cursors even with nothing selected.
-    let (repair_mode, sell_mode) = crate::app::presentation::sidebar_render::current_sidebar_view(state)
-        .map(|view| (view.repair_button.active, view.sell_button.active))
-        .unwrap_or_default();
+    let (repair_mode, sell_mode) =
+        crate::app::presentation::sidebar_render::current_sidebar_view(state)
+            .map(|view| (view.repair_button.active, view.sell_button.active))
+            .unwrap_or_default();
     if repair_mode || sell_mode {
         let repair = repair_mode;
-        let (wx, wy) =
-            crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
+        let (wx, wy) = crate::app::match_runtime::sim_tick::screen_point_to_world(
+            state,
+            state.match_state.input.cursor_x,
+            state.match_state.input.cursor_y,
+        );
         let valid = crate::app::input::commands::own_building_under_point(state, wx, wy).is_some()
             || (!repair && crate::app::input::commands::sell_wall_under_cursor_is_eligible(state));
         return Some(if repair {
@@ -101,10 +111,16 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         return None;
     }
     let owner = preferred_local_owner_name(state).unwrap_or_else(|| "Americans".to_string());
-    let (world_x, world_y) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
-    let (hover_rx, hover_ry) =
-        crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, state.match_state.input.cursor_x, state.match_state.input.cursor_y);
+    let (world_x, world_y) = crate::app::match_runtime::sim_tick::screen_point_to_world(
+        state,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
+    );
+    let (hover_rx, hover_ry) = crate::app::match_runtime::sim_tick::screen_point_to_world_cell(
+        state,
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
+    );
     let owner_id = sim.interner.get(&owner);
     if crate::app::presentation::instances::cell_visibility_for_local_owner(
         owner_id,
@@ -119,7 +135,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         // instead of reverting to the default arrow.
         return Some(match state.match_state.input.queued_order_mode {
             crate::app::presentation::render::OrderMode::Move => CursorFeedbackKind::Move,
-            crate::app::presentation::render::OrderMode::AttackMove => CursorFeedbackKind::AttackMove,
+            crate::app::presentation::render::OrderMode::AttackMove => {
+                CursorFeedbackKind::AttackMove
+            }
             crate::app::presentation::render::OrderMode::Guard => CursorFeedbackKind::Guard,
         });
     }
@@ -136,7 +154,12 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         state.match_state.sandbox_full_visibility,
         state.rules(),
         &state.height_map(),
-        Some(&state.match_state.match_presentation.tactical_bridge_inverse_map),
+        Some(
+            &state
+                .match_state
+                .match_presentation
+                .tactical_bridge_inverse_map,
+        ),
     );
     // gamemd's DetermineAction resolves ONE object for the whole selection and
     // shows that object's action, for the cell branch as well as the object
@@ -159,7 +182,8 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
         let best_is_armed = best_id.is_some_and(|id| {
             sim.entities().get(id).is_some_and(|e| {
                 let type_str = sim.interner.resolve(e.type_ref);
-                state.rules()
+                state
+                    .rules()
                     .and_then(|r| r.object(type_str))
                     .is_some_and(|obj| obj.primary.is_some() || obj.secondary.is_some())
             })
@@ -370,7 +394,8 @@ fn what_action_on_cell(
                 .is_clear()
             };
             let bridge_deck_open = grid.is_walkable_on_layer(cell.0, cell.1, MovementLayer::Bridge);
-            if admits(MovementLayer::Ground) || (bridge_deck_open && admits(MovementLayer::Bridge)) {
+            if admits(MovementLayer::Ground) || (bridge_deck_open && admits(MovementLayer::Bridge))
+            {
                 CellAction::Move
             } else {
                 CellAction::NoMove
@@ -491,8 +516,20 @@ fn capability_cursor_for_hover(
 
             if sel_obj.engineer {
                 // 3. Engineer on bridge repair hut → repair (Enter cursor).
+                //    `MapClass::FindBridgeConnection_Predicate` 0x00587410 is
+                //    the native gate here, reached from
+                //    `InfantryClass::What_Action_OnCell` 0x0051F800 and
+                //    `What_Action_OnObject` 0x0051E3B0. The hut flag alone is
+                //    not enough: the connected span must actually be collapsed.
                 if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
-                    if hovered_obj.map_or(false, |o| o.bridge_repair_hut) {
+                    if hovered_obj.map_or(false, |o| o.bridge_repair_hut)
+                        && hovered_entity.is_some_and(|e| {
+                            crate::sim::world::bridge_orchestrator::bridge_hut_has_collapsed_span(
+                                sim,
+                                (e.position.rx, e.position.ry),
+                            )
+                        })
+                    {
                         return CursorFeedbackKind::Enter;
                     }
                 }
@@ -1019,7 +1056,9 @@ fn cursor_animation_start() -> &'static Instant {
 fn is_cursor_over_minimap(state: &AppState) -> bool {
     // Minimap interaction disabled when radar is not online.
     let minimap_visible: bool = state
-        .match_state.match_presentation.radar_anim
+        .match_state
+        .match_presentation
+        .radar_anim
         .as_ref()
         .map_or(true, |ra| ra.is_minimap_visible());
     if !minimap_visible {
@@ -1030,7 +1069,9 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
     };
     let rect = crate::app::presentation::sidebar_render::active_minimap_screen_rect(state);
     state
-        .match_state.match_presentation.minimap
+        .match_state
+        .match_presentation
+        .minimap
         .as_ref()
         .unwrap()
         .contains_screen_point_in_rect(
@@ -1044,14 +1085,21 @@ fn is_cursor_over_minimap(state: &AppState) -> bool {
 }
 
 pub(crate) fn current_sidebar_view_hit(state: &AppState) -> bool {
-    let sw = state.match_state.match_presentation.sidebar_layout_spec.sidebar_width;
+    let sw = state
+        .match_state
+        .match_presentation
+        .sidebar_layout_spec
+        .sidebar_width;
     let panel_rect = crate::sidebar::Rect {
         x: state.render_width() as f32 - sw - 10.0,
         y: 10.0,
         w: sw,
         h: state.render_height() as f32 - 20.0,
     };
-    panel_rect.contains(state.match_state.input.cursor_x, state.match_state.input.cursor_y)
+    panel_rect.contains(
+        state.match_state.input.cursor_x,
+        state.match_state.input.cursor_y,
+    )
 }
 
 /// Map a SuperWeaponType `Action=` INI string to its targeting cursor.
@@ -1823,6 +1871,63 @@ mod cursor_animation_tests {
         assert_eq!(
             super::cursor_id_for_feedback(CursorFeedbackKind::ScrollBlocked(ScrollDir::S)),
             Some(CursorId::NoMoveS),
+        );
+    }
+
+    /// RESIDUAL - gamemd address 0x00587410,
+    /// `MapClass::FindBridgeConnection_Predicate`, branch selection.
+    ///
+    /// The overlay branch is ported: step 3 above gates the engineer Enter
+    /// cursor on `bridge_hut_has_collapsed_span`, so a hut whose span carries
+    /// no collapsed anchor no longer offers a repair cursor.
+    ///
+    /// Trigger, corrected 2026-08-19: NOT "a partially damaged span". The
+    /// native picks its branch from whichever of the four 5x5 cases matched
+    /// LAST, and a cell whose iso-tile sits in a bridge tileset window is a
+    /// tileset match whose overlay is never read (the body is an if /
+    /// else-if chain testing `cell+0x38` before `cell+0x44`). A repair hut
+    /// sits beside ramp and bridgehead iso-tiles, so the tileset branch is
+    /// plausibly the ordinary case rather than a corner - though whether it
+    /// wins the last-match race on stock maps is UNCHECKED. Whenever it does,
+    /// gamemd walks `BridgeRecord`s at tolerance 3 and VERA walks overlays.
+    ///
+    /// Effect and DIRECTION: unbounded, and it can point either way. Where
+    /// the record branch would return true and the overlay walk finds no
+    /// anchor, VERA withholds a cursor gamemd shows - the opposite of the
+    /// over-eager cursor this fix removed. The repair itself is unaffected:
+    /// `context_order.rs` and the world-order path accept the order on the
+    /// hut flag alone, so a player who clicks anyway still repairs. What is
+    /// lost is the affordance, and a player reading the cursor concludes the
+    /// bridge cannot be repaired.
+    ///
+    /// Frequency: every mouse-over of a repair hut with an engineer selected
+    /// on a bridged map - the same cadence as the defect it replaces, not
+    /// narrower.
+    ///
+    /// Also unported, verified separately and NOT part of the branch problem
+    /// above: at 0x0051E3B0 the BridgeRepairHut arm RETURNS unconditionally.
+    /// `read_memory 0x0051E520` decodes the tail after the
+    /// `CALL 0x00587410` at 0x0051E54C as
+    /// `NEG AL; SBB EAX,EAX; AND AL,0xFD; ADD EAX,0x20; RET 0x8` - 0x1D when
+    /// the predicate holds, 0x20 when it does not, with no path past it. gamemd
+    /// therefore never reaches a later cursor case for a hut, while
+    /// `capability_cursor_for_hover` falls through to the capturable and
+    /// friendly-structure cases below.
+    ///
+    /// Trigger: every engineer hover over a repair hut. Effect today is nil -
+    /// `CABHUT` carries no `Capturable=` in `ini/rulesmd.ini`, so the case
+    /// immediately below does not fire - but nothing constrains the cases after
+    /// it, and a modded or future hut type would diverge silently.
+    ///
+    /// Blocker: the three geometry tables are data this crate has no reader
+    /// for; the tolerance-3 record hop needs `FindBridgeRecord`'s semantics
+    /// ported first; and settling the direction needs a live check of what a
+    /// stock hut's 5x5 actually contains.
+    #[test]
+    #[ignore = "gamemd 0x00587410 picks overlay-vs-record branch by last 5x5 match; VERA always walks overlays"]
+    fn bridge_hut_repair_cursor_always_takes_the_overlay_branch() {
+        panic!(
+            "unimplemented: branch selection + record branch of FindBridgeConnection_Predicate 0x00587410"
         );
     }
 }

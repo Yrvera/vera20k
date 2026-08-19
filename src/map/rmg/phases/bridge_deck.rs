@@ -1,5 +1,10 @@
 //! Ground checks for a low bridge deck.
 //!
+//! gamemd: `RandomMapGenerator::PlaceLowBridgeDeck` 0x0058F2C0,
+//! `ValidateLowBridgeDeckArea` 0x005902C0 and `PlaceBridgeRepairHut`
+//! 0x005904B0, reached from `BridgeAndConnectorPass` 0x0058EF10. Dormant in
+//! stock YR skirmish for the reason recorded in `phases::bridge`.
+//!
 //! The deck placer tries up to two hundred spots. Each attempt starts by
 //! rolling a cell out of [`pick_seed_cell`] — the only part of this file that
 //! touches the random stream — and the ground it lands on is then offered to

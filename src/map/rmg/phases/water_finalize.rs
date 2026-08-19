@@ -1,5 +1,19 @@
 //! Water finalizer: assigns visible water tile variants.
 //!
+//! gamemd: `MapClass::RmgFinalizeWaterShore` 0x0057A0C0 and the three helpers
+//! it alone calls — `ClearBridgeCell_Low` 0x0057A320, `UpdateBridgeTile_Low`
+//! 0x0057A430 and `SelectBridgeTileVariant_Low` 0x0057ACF0 — all three of
+//! which read `MapClass::ComputeBridgeSurfaceMask` 0x0057B210. Verified by
+//! `get_function_callers`: none of them has a runtime caller, and
+//! 0x0057A430 works in `RmgGrid__GetRegionTag` / `SetRegionTag` and
+//! `g_WaterSet_TileSetBase`, so the cluster is map-generation tile work, not
+//! in-match bridge behaviour. `MapClass::ComputeBridgeAdjacencyMask_Low`
+//! 0x00579B70 sits in the same band and is called only from
+//! `RaisePinchedCliffCell` 0x00579010, `SelectAndStampCliffFaceTile`
+//! 0x00579620 and `RandomMapGenerator::JitterCliffEdges` 0x005A19E0.
+//! `CellClass::HasBridgeOverlay` 0x004865D0 belongs to the same generator
+//! family. Dormant in stock YR skirmish for the reason in `phases::bridge`.
+//!
 //! For 2x2 all-water clusters (anchor + E/S/SE, none sub-tiled yet) a large
 //! multi-cell variant may be placed; single cells get one of six band
 //! variants. All three draws are scaled-FP chains with perturbed-mantissa

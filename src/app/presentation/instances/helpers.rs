@@ -142,13 +142,20 @@ fn tactical_bounded_entity_encounter_order(
     state: &AppState,
     bulk_register_live_buildings: bool,
 ) -> Vec<u64> {
-    let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+    let Some(sim) = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+    else {
         return Vec::new();
     };
     let zoom = state.match_state.input.zoom_level.max(f32::EPSILON);
     let margin = 32.0 / zoom;
-    let (width_px, height_px) =
-        crate::app::input::camera::tactical_viewport_size_px(state.render_width(), state.render_height());
+    let (width_px, height_px) = crate::app::input::camera::tactical_viewport_size_px(
+        state.render_width(),
+        state.render_height(),
+    );
     let min_x = state.match_state.input.camera_x - margin;
     let min_y = state.match_state.input.camera_y - margin;
     let max_x = state.match_state.input.camera_x + width_px as f32 / zoom + margin;
@@ -340,7 +347,9 @@ pub(crate) fn ground_sort_row(entity: &GameEntity, drawn_row_y: f32) -> f32 {
 /// Higher elevation (z) → slightly smaller depth (closer to camera).
 pub(crate) fn compute_sprite_depth(state: &AppState, screen_y: f32, z: u8) -> f32 {
     let (origin_y, world_height) = state
-        .match_state.match_presentation.terrain_grid
+        .match_state
+        .match_presentation
+        .terrain_grid
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
@@ -393,28 +402,88 @@ pub(crate) fn effective_anim_z_adjust(slot_z_adjust: i32, type_z_adjust: i32) ->
     }
 }
 
-pub(crate) fn is_near_bridge_cell(state: &AppState, rx: u16, ry: u16) -> bool {
-    for dy in -1i32..=1 {
-        for dx in -1i32..=1 {
+/// The four orthogonal neighbours `TechnoClass::IsOnBridge_ForFiring` samples,
+/// paired with the orientation bit each one demands.
+///
+/// The native reads `g_DirectionOffsets` 0x0089F688 at indices 4, 0, 2 and 6.
+/// That table is zero in the file image and filled at runtime by the
+/// initializer whose real entry is 0x0049F2F0 (Ghidra starts the function at
+/// 0x0049F300); with `DX == 0` and `CX == -1` throughout the body it resolves
+/// to N `(0,-1)`, E `(1,0)`, S `(0,1)`, W `(-1,0)` — the same order and values
+/// as `map::rmg::grid::DIRECTION_OFFSETS`, which pins them in its own tests.
+///
+/// The N and S entries require the neighbour's orientation bit `0x800` to be
+/// SET; the E and W entries require it CLEAR. That pairing is what makes the
+/// bit an axis flag: a neighbour only counts when the span running through it
+/// is oriented along the axis it lies on.
+const BRIDGE_FIRING_NEIGHBOURS: [((i32, i32), bool); 4] = [
+    ((0, 1), true),   // S  — g_DirectionOffsets[4] 0x0089F698
+    ((0, -1), true),  // N  — g_DirectionOffsets[0] 0x0089F688
+    ((1, 0), false),  // E  — g_DirectionOffsets[2] 0x0089F690
+    ((-1, 0), false), // W  — g_DirectionOffsets[6] 0x0089F6A0
+];
+
+/// `TechnoClass::IsOnBridge_ForFiring` 0x00703B10 — "is this object standing
+/// on, or immediately beside, a bridge deck".
+///
+/// ```text
+/// if (cell == null || this->+0x8C != 0)          return 0;   // already on the deck
+/// if (cell->+0x140 & 0x100)                      return 1;   // own cell is a bridge cell
+/// for each of the four orthogonal neighbours:
+///     if (n && (n->+0x140 & 0x100) && ((n->+0x140 & 0x800) != 0) == wants_bit)  return 1;
+/// return 0;
+/// ```
+///
+/// Note the early-out direction: a unit whose own OnBridge byte is SET answers
+/// **false**. The predicate is about being under or beside a deck, not on it.
+///
+/// This replaces a 3x3 block scan that admitted the four diagonals, ignored the
+/// orientation bit, and tested map membership rather than the structural flag.
+/// Its three verified native consumers are `TechnoClass::GetFireError`
+/// 0x006FC0B0, `UnitClass::Draw_Sprite_With_BridgeFudge` 0x0073B140 and the
+/// Z-fudge selector 0x004DAFF0, which is the one ported here.
+///
+/// **VERA-internal, gamemd equivalent UNCHECKED:** a neighbour that would fall
+/// outside the map is skipped rather than resolved. The native indexes its cell
+/// array with a wrapped coordinate and relies on the map border; VERA has no
+/// border cells to hit. Only cells on row or column 0 can reach it, and retail
+/// maps keep the playfield inside a border, so it is unreachable there.
+pub(crate) fn is_on_bridge_for_firing(
+    bridge_cells: &std::collections::BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell>,
+    rx: u16,
+    ry: u16,
+    on_bridge: bool,
+) -> bool {
+    if on_bridge {
+        return false;
+    }
+    if bridge_cells.get(&(rx, ry)).is_some_and(|c| c.structural) {
+        return true;
+    }
+    BRIDGE_FIRING_NEIGHBOURS
+        .iter()
+        .any(|&((dx, dy), wants_direction_zero)| {
             let nx = rx as i32 + dx;
             let ny = ry as i32 + dy;
-            if nx < 0 || ny < 0 {
-                continue;
+            if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+                return false;
             }
-            if state
-                .bridge_height_map()
-                .contains_key(&(nx as u16, ny as u16))
-            {
-                return true;
-            }
-        }
-    }
-    false
+            bridge_cells
+                .get(&(nx as u16, ny as u16))
+                .is_some_and(|c| c.structural && c.direction_zero == wants_direction_zero)
+        })
 }
 
 pub(crate) fn is_under_bridge_render_state(state: &AppState, entity: &GameEntity) -> bool {
-    entity.bridge_occupancy.is_none()
-        && is_near_bridge_cell(state, entity.position.rx, entity.position.ry)
+    is_on_bridge_for_firing(
+        &state
+            .match_state
+            .match_presentation
+            .tactical_bridge_inverse_map,
+        entity.position.rx,
+        entity.position.ry,
+        entity.bridge_occupancy.is_some(),
+    )
 }
 
 pub(crate) fn apply_bridge_depth_bias(state: &AppState, entity: &GameEntity, depth: f32) -> f32 {
@@ -913,6 +982,186 @@ mod tests {
         assert!(
             new_depth < building_depth,
             "the ground row draws the building first and the aircraft over it"
+        );
+    }
+
+    /// RESIDUAL — gamemd address 0x0073B140,
+    /// `UnitClass::Draw_Sprite_With_BridgeFudge` (UnitClass vtable slot 0x1CC).
+    ///
+    /// Mechanism: when the unit's type has `TooBigToFitUnderBridge`
+    /// (`TechnoTypeClass+0xE16`) and the unit is at the open edge of a bridge
+    /// deck, and the sprite is taller than 0x10 px, gamemd issues TWO blits
+    /// instead of one — the upper `h - 16` rows at a draw priority of
+    /// `vtable+0x2EC(0, ..) - 5`, then a 16x16 strip at the bottom through
+    /// `vtable+0x2EC(2, ..)`. The lower strip therefore stays in front of the
+    /// deck while the body is occluded by it, which is what stops a tall unit
+    /// from being clipped away entirely as it drives under the span.
+    ///
+    /// Unlike `UnitClass::Draw_Body_And_Turret` 0x0073C5F0, this blitter does
+    /// NOT dispatch on `TechnoTypeClass+0xCA1` (Turret) first, so turreted
+    /// units take the split too.
+    ///
+    /// VERA has no split: `is_under_bridge_render_state` routes the whole
+    /// sprite into a separate bridge instance stream and
+    /// `apply_bridge_depth_bias` nudges its depth by `ZFudgeBridge`. One
+    /// sprite, one depth — the unit is either wholly in front of the deck or
+    /// wholly behind it. Whether the two compose to the same picture is
+    /// UNCHECKED and cannot be settled without a live frame comparison.
+    ///
+    /// Effect: VERA draws one sprite at one depth, so a tall unit at a deck
+    /// edge is either wholly in front of the bridge or wholly behind it,
+    /// where gamemd keeps its lower 16 rows in front while the body is
+    /// occluded. Whether the two compose to the same picture is UNCHECKED
+    /// and cannot be settled without a live frame comparison.
+    ///
+    /// Trigger: every frame a `TooBigToFitUnderBridge` unit is drawn at the
+    /// edge of a high bridge deck.
+    ///
+    /// Frequency: high. `TooBigToFitUnderBridge=true` is set on 37 stock YR
+    /// types including MTNK, HTNK, LTNK, TTNK, YTNK, MGTK, FV, TNKD, V3, ROBO,
+    /// UTNK and the whole destroyer/carrier/dreadnought line — i.e. nearly
+    /// every tank in the game. Any high bridge on any retail map puts this on
+    /// screen within the first few minutes of a match.
+    #[test]
+    #[ignore = "gamemd 0x0073B140 split-blits TooBigToFitUnderBridge units at a deck edge; VERA draws one biased sprite"]
+    fn draw_bridge_fudge_split_blit_is_unported() {
+        panic!("unimplemented: UnitClass::Draw_Sprite_With_BridgeFudge 0x0073B140 split blit");
+    }
+
+    /// `TechnoClass::IsOnBridge_ForFiring` 0x00703B10 term by term. The
+    /// cases that discriminate it from the 3x3 membership scan it replaced.
+    fn tactical_bridge(
+        cells: &[((u16, u16), bool, bool)],
+    ) -> std::collections::BTreeMap<(u16, u16), crate::map::terrain::TacticalBridgeCell> {
+        cells
+            .iter()
+            .map(|&(coord, structural, direction_zero)| {
+                (
+                    coord,
+                    crate::map::terrain::TacticalBridgeCell {
+                        deck_z: 4,
+                        structural,
+                        direction_zero,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn on_bridge_for_firing_takes_the_own_cell_without_an_axis_test() {
+        // The own-cell arm reads 0x100 only; 0x800 never enters it.
+        let cells = tactical_bridge(&[((5, 5), true, false)]);
+        assert!(is_on_bridge_for_firing(&cells, 5, 5, false));
+        let cells = tactical_bridge(&[((5, 5), true, true)]);
+        assert!(is_on_bridge_for_firing(&cells, 5, 5, false));
+    }
+
+    #[test]
+    fn on_bridge_for_firing_is_false_when_the_unit_is_already_on_the_deck() {
+        // this->+0x8C set is the native's first early-out, and it returns 0.
+        let cells = tactical_bridge(&[((5, 5), true, false)]);
+        assert!(!is_on_bridge_for_firing(&cells, 5, 5, true));
+    }
+
+    #[test]
+    fn on_bridge_for_firing_rejects_a_diagonal_neighbour() {
+        // The 3x3 scan this replaced accepted all eight neighbours. The
+        // native samples exactly four, and NE is not one of them.
+        let cells = tactical_bridge(&[((6, 4), true, true)]);
+        assert!(!is_on_bridge_for_firing(&cells, 5, 5, false));
+        let cells = tactical_bridge(&[((6, 4), true, false)]);
+        assert!(!is_on_bridge_for_firing(&cells, 5, 5, false));
+    }
+
+    #[test]
+    fn on_bridge_for_firing_pairs_north_south_with_the_axis_bit_set() {
+        for coord in [(5u16, 4u16), (5, 6)] {
+            let matching = tactical_bridge(&[(coord, true, true)]);
+            assert!(
+                is_on_bridge_for_firing(&matching, 5, 5, false),
+                "{coord:?} with 0x800 set must count"
+            );
+            let mismatched = tactical_bridge(&[(coord, true, false)]);
+            assert!(
+                !is_on_bridge_for_firing(&mismatched, 5, 5, false),
+                "{coord:?} with 0x800 clear must not"
+            );
+        }
+    }
+
+    #[test]
+    fn on_bridge_for_firing_pairs_east_west_with_the_axis_bit_clear() {
+        for coord in [(6u16, 5u16), (4, 5)] {
+            let matching = tactical_bridge(&[(coord, true, false)]);
+            assert!(
+                is_on_bridge_for_firing(&matching, 5, 5, false),
+                "{coord:?} with 0x800 clear must count"
+            );
+            let mismatched = tactical_bridge(&[(coord, true, true)]);
+            assert!(
+                !is_on_bridge_for_firing(&mismatched, 5, 5, false),
+                "{coord:?} with 0x800 set must not"
+            );
+        }
+    }
+
+    #[test]
+    fn on_bridge_for_firing_needs_the_structural_flag_not_map_membership() {
+        // A deck cell present in the map but without 0x100 is not a match;
+        // the scan this replaced tested membership alone.
+        let cells = tactical_bridge(&[((5, 5), false, false), ((5, 4), false, true)]);
+        assert!(!is_on_bridge_for_firing(&cells, 5, 5, false));
+    }
+
+    /// RESIDUAL — the two gates around the ported predicate.
+    ///
+    /// `TechnoClass::IsOnBridge_ForFiring` 0x00703B10 is now ported term for
+    /// term as `is_on_bridge_for_firing`, and it is what
+    /// `is_under_bridge_render_state` answers with. Two gates that sit around
+    /// it in the native draw are still missing, and they pull in opposite
+    /// directions:
+    ///
+    /// 1. `TechnoTypeClass+0xE16` — `TooBigToFitUnderBridge`. In gamemd this
+    ///    gate comes FIRST in `Draw_Sprite_With_BridgeFudge` 0x0073B140, so a
+    ///    unit without the flag never reaches the predicate at all. VERA does
+    ///    not read the field, so short units get the bridge draw treatment too.
+    /// 2. `TechnoClass::CountAdjacentBridgeDeckTiles` 0x00703E70 must return 0.
+    ///    Despite the name it returns 0, 1 or 2, never a count: it samples the
+    ///    three neighbours at `DAT_0089F698`, `DAT_0089F690` and `DAT_0089F694`
+    ///    and tests whether `cell+0x38 - g_BridgeSet_TileSetBase + 1` falls in
+    ///    7..=16, skipping the 0xFF/0xFFFF no-tile sentinels. Zero means the
+    ///    unit is at the OPEN edge of the deck rather than under its middle.
+    ///    VERA has no tile-index reader here, so it cannot tell edge from
+    ///    middle and treats the whole span as edge.
+    ///
+    /// Neither gate belongs to the Z-fudge selector 0x004DAFF0, which is the
+    /// consumer `is_under_bridge_render_state` was ported against: there
+    /// `IsOnBridge_ForFiring` alone decides whether `ZFudgeBridge`
+    /// (`TechnoTypeClass+0xDCC`, read at 0x00715486) contributes. They belong
+    /// to the split blit, which VERA renders as a separate instance stream
+    /// instead — see `draw_bridge_fudge_split_blit_is_unported`.
+    ///
+    /// Trigger: every frame a unit WITHOUT `TooBigToFitUnderBridge` stands on
+    /// or orthogonally beside a matching-axis bridge cell, and every frame any
+    /// unit stands under the middle of a span rather than at its open edge.
+    ///
+    /// Effect: those units are routed into the under-bridge instance stream
+    /// and given the `ZFudgeBridge` depth bias where gamemd would draw them
+    /// normally. Both errors are now narrower than the 3x3 scan's were, and
+    /// both are inclusive — VERA still treats more units this way than gamemd,
+    /// never fewer.
+    ///
+    /// Frequency: every frame near a bridge, unchanged.
+    ///
+    /// Blocker: gate 1 needs `TooBigToFitUnderBridge` threaded onto the render
+    /// entity, and gate 2 needs a per-cell iso-tile index against the bridge
+    /// tileset base, which the presentation layer has no reader for.
+    #[test]
+    #[ignore = "gamemd 0x0073B140 gates the bridge draw on TooBigToFitUnderBridge and 0x00703E70==0 around the ported predicate; VERA has neither"]
+    fn draw_bridge_gates_around_is_on_bridge_for_firing_are_unported() {
+        panic!(
+            "unimplemented: TooBigToFitUnderBridge gate + CountAdjacentBridgeDeckTiles 0x00703E70"
         );
     }
 }

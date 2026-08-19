@@ -6155,6 +6155,30 @@ pub(crate) fn resolve_attacker_fire(
         return;
     }
 
+    // `TechnoClass::GetFireError` 0x006FC0B0 refuses the shot with error 5 when
+    // attacker and target disagree on OnBridge, both stand in bridge cells, and
+    // the attacker is not high-flying — a unit on the deck and a unit sheltering
+    // directly beneath it cannot shoot each other. `InRange` 0x006F7220 already
+    // blocks the under-to-over half through
+    // `attacker_under_bridge_targeting_above`; this is the over-to-under half
+    // and the cases where the height test does not fire.
+    //
+    // Evaluated here rather than inside `compute_in_range` because the native
+    // InRange has no such clause. Like the native it only suppresses the shot:
+    // no retarget, no clear, no effect on the pursuit stage.
+    if let (Some(t), Some(attacker_entity)) = (terrain.as_deref(), entities.get(snap.stable_id))
+        && in_range::fire_error_on_bridge_mismatch(attacker_entity, &snap.target, entities, t)
+    {
+        if pending_at_fire_frame {
+            out.pending_infantry_updates.push((snap.stable_id, None));
+            out.animation_switches.push((
+                snap.stable_id,
+                infantry_idle_sequence(snap.is_prone, snap.is_fully_deployed),
+            ));
+        }
+        return;
+    }
+
     // Burst / cooldown state machine.
     if snap.cooldown_ticks > 0 || snap.burst_delay_ticks > 0 {
         if pending_at_fire_frame {
@@ -6286,8 +6310,19 @@ pub(crate) fn resolve_attacker_fire(
     //      fire. Frequency: uncommon — needs the launcher parked under a span,
     //      which players avoid because it blocks line of sight anyway.
     //      Downstream risk: none — the gate only suppresses a launch, it feeds
-    //      nothing. The exact 0x100/0x800 flag meanings and the four direction
-    //      offsets are UNCHECKED and must be traced before implementing.
+    //      nothing.
+    //
+    //      Blocker updated 2026-08-19: the flags and offsets are no longer
+    //      UNCHECKED. 0x100 is "cell belongs to a bridge", 0x800 is the span's
+    //      axis bit, and the four offsets are `g_DirectionOffsets` 0x0089F688
+    //      indices 4/0/2/6 — S, N, E, W — with N and S requiring 0x800 SET and
+    //      E and W requiring it CLEAR (table filled at runtime from 0x0049F2F0).
+    //      The predicate itself is now ported, as
+    //      `app::presentation::instances::helpers::is_on_bridge_for_firing`.
+    //      What blocks this gate is placement, not evidence: that function sits
+    //      above the sim boundary and `sim/` must never depend on `app/`, so
+    //      wiring it here means moving the predicate down to `map/bridge_facts`
+    //      first and having both callers read it there.
     //   2. `this->vtable+0x380` non-zero → error 6. **NOT MODELLED**; the slot's
     //      identity is UNCHECKED.
     //   3. `SpawnManagerClass::CountAliveSpawns == 0` → error 3. MODELLED below.
