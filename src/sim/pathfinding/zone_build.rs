@@ -2945,4 +2945,39 @@ mod tests {
 
         assert!(!adj.are_adjacent(1, 2));
     }
+
+    /// RESIDUAL — gamemd address 0x00582D70,
+    /// `MapClass::RegisterBridgeOrTubeHierarchyPairs`.
+    ///
+    /// Mechanism: the native helper branches on the cell. `CellClass::IsBridge`
+    /// or `CellClass::IsWoodBridge` takes the bridge path, deriving the pair
+    /// direction from `g_nHighBridgeHierarchyOffsetDirectionByTileOffset`
+    /// indexed by `IsoTileTypeIndex - tileset base`. Everything else takes the
+    /// TUBE path: it reads `CellClass::GetTubeAtCell` 0x00484F20 on the cell
+    /// and on the two cells at `direction +/- 2`, returns early if either tube
+    /// record is null, and otherwise walks each record's own path buffer
+    /// (`Path_walk_directions_to_cell(tube+0x1C0, tube+0x30)`) to get the far
+    /// endpoints. Both branches then register the SAME three zero-flag pairs in
+    /// the same order: endpoints, same-side offsets, opposite-side offsets.
+    ///
+    /// `register_high_bridge_hierarchy_edges_for_record` implements only the
+    /// bridge branch — it returns immediately unless `record.is_high()`, so no
+    /// tube ever contributes a hierarchy edge.
+    ///
+    /// Trigger: a move order whose start and goal sit on opposite sides of a
+    /// low-bridge tunnel, far enough apart that the search uses the zone
+    /// hierarchy rather than a flat A*.
+    ///
+    /// Effect: the tunnel is invisible to the hierarchy, so the route is
+    /// planned around it. The unit either takes a visibly longer way round or,
+    /// where the tunnel is the only connection, finds no route at all.
+    ///
+    /// Frequency: bounded by how many retail maps ship a `[Tubes]` section and
+    /// by the order being long enough to reach the hierarchy. Not measured this
+    /// session, which is why it is recorded rather than ranked.
+    #[test]
+    #[ignore = "gamemd 0x00582D70 registers tube hierarchy pairs; VERA registers high-bridge pairs only"]
+    fn tube_hierarchy_pairs_are_unregistered() {
+        panic!("unimplemented: tube branch of RegisterBridgeOrTubeHierarchyPairs 0x00582D70");
+    }
 }
