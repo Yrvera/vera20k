@@ -29,14 +29,33 @@ set stays queryable (`search_functions_by_tag BRIDGE_HIGH` etc.):
 Counts overlap: shared helpers carry both `BRIDGE_HIGH` and `BRIDGE_LOW`. 123 distinct
 functions are tagged.
 
-**The High/Low split is not a naming convention — it is a data split.** Every High-family
-body does its iso-tile arithmetic against `g_BridgeSet_TileSetBase` (`0x00AA0E28`) and applies
-the four-level deck rise (`cell+0x11B += 4`). Every Low-family body uses
-`g_WoodBridgeSet_TileSetBase` (`0x00ABAD1C`) and never applies the rise. Both bases are
-written by `Read_Theater_TileSets_INI` (writes at `0x00545A80`, `0x00545DDB`, `0x00546CB3`) and
-are `-1` in a theater with no bridge tileset, which is why every predicate tests the sentinel
-first. *Evidence: `get_xrefs_to 0x00AA0E28`; `decompile_function 0x00486750`, `0x00486770`,
-`0x00568E40`, `0x00570050`.*
+**The High/Low split is partly a data split — but only among the members that touch a tileset
+base at all.** State it precisely, because the loose version is false:
+
+- **Members that reference a tileset base** are cleanly split, and *no* member reads both. High
+  members compare against `g_BridgeSet_TileSetBase` (`0x00AA0E28`) and are the ones that apply
+  the four-level deck rise (`cell+0x11B += 4`); Low members use `g_WoodBridgeSet_TileSetBase`
+  (`0x00ABAD1C`) and never apply the rise. The only functions appearing in both xref lists are
+  the genuinely shared ones of §6 — `ComputeBridgeZones`, `Add`/`RemoveBridgeZoneEdges`,
+  `RegisterBridgeOrTubeHierarchyPairs`, `ApplyDamageToCell`, `Apply_area_damage`,
+  `FindBridgeConnection_Predicate`, `CellClass__IsSpecialTerrainTile`,
+  `Read_Theater_TileSets_INI`.
+- **Most of the span machinery references neither base.** `DestroyBridge_High 0x0057CCF0`,
+  `DestroyBridge_Low 0x0057BAA0`, and essentially all of §4.2, §4.3, §5.2 and §5.3 split on the
+  **overlay ordinal `cell+0x44`** instead — the bands in §2.3. That is the real discriminator
+  for the walkers.
+
+So: the ramp updaters, edge-tile updaters, pavement span walkers and damage state machines are
+tileset-keyed; the collapse/destroy/repair walkers are overlay-keyed.
+
+Both bases are written by `Read_Theater_TileSets_INI` and are `-1` in a theater with no bridge
+tileset, which is why every predicate tests the sentinel first. The write sites differ per base:
+`g_BridgeSet_TileSetBase` at `0x00545A80`, `0x00545DDB`, `0x00546CB3`;
+`g_WoodBridgeSet_TileSetBase` at `0x00545A86`, `0x00545DEA`, `0x00546CB9`.
+
+*Evidence: `get_xrefs_to 0x00AA0E28` and `get_xrefs_to 0x00ABAD1C` (both complete lists);
+`decompile_function 0x00486750`, `0x00486770`, `0x0057CCF0`, `0x0057BAA0`, `0x00568E40`,
+`0x00570050`.*
 
 ---
 
@@ -65,22 +84,31 @@ first. *Evidence: `get_xrefs_to 0x00AA0E28`; `decompile_function 0x00486750`, `0
 ### 2.2 `CellClass+0x140` bridge flag bits
 
 Established by reading the single writer, `CellClass__SetBridgeDirection_NESW 0x0047E040`
-(and its byte-identical twin `_NWSE 0x0047E470`), whose clear mask is `0xFFFEE07F` — bits
-7–12 and 16 — and cross-checked against the consumers.
+(and its byte-identical twin `_NWSE 0x0047E470`), and cross-checked against the consumers.
 
-| Bit | Written as | Consumer evidence |
-|---|---|---|
-| `0x0080` | `(param_3 & 1) << 7`, **anchor cell only** | `DrawOverlay_Body 0x0047F6A0` uses it to select the deck branch and to add `(Flags>>7 & 1)*4` levels; the ramp updaters gate their damage-frame bump on it |
-| `0x0100` | `(param_3 & 1) << 8` | "cell belongs to a bridge" — the primary test in `CheckBridgeTraversal`, `UpdateBridgePassability`, `FindNearbyBridgePeer`, `ResolvePathCoord_BridgeAware`, `IsOnBridge_ForFiring` |
-| `0x0200` | `(param_3 & 1) << 9` | required *together with* `0x0100` to enter the deck in `CheckBridgeTraversal 0x004D9C60` |
-| `0x0400` | `(param_3 == 0) << 10` | set when the direction stamp is a *clear*; `ProcessBridgeDestruction_Low` scans neighbours on `0x400` and on the pair mask `0x500` |
-| `0x0800` | `(param_2 == 0) << 11` | bridge axis/orientation. `IsOnBridge_ForFiring 0x00703B10` pairs each of four neighbours with a required `0x800` state, which is what proves this bit selects NS vs EW |
-| `0x1000` | `(param_3 & 1) << 12` | written on the anchor and on the third stepped neighbour only |
-| `0x10000` | `(param_3 & 1) << 16` | written on the anchor, the far neighbour, and (for `param_2 == 6`) one extra west cell |
-| `0x40000` | XOR-toggled | **not** a bridge structure bit — the A\* temporary cost marker set by `UpdateBridgePassability`; A\* multiplies a marked destination's cost by `4.0` (`0x007E37BC`) |
+`0xFFFEE07F` — clearing bits 7–12 and 16 — is the mask of the **first** write, the one applied
+to the anchor cell. It is *not* the function's uniform mask: the function writes flags to up to
+six cells and each write clears a different set. The per-cell table below matters more than the
+mask, because a port that applies one mask everywhere gets the deck-entry and orientation bits
+wrong on the neighbours.
 
-*Evidence: `decompile_function 0x0047E040`, `0x0047F6A0`, `0x004D9C60`, `0x0042ACF0`,
-`0x00703B10`, `0x00570050`.*
+| Bit | Set as | Which of the six writes set it | Consumer evidence |
+|---|---|---|---|
+| `0x0080` | `(param_3 & 1) << 7` | write 1 (anchor) **only**; the later writes neither set nor clear it | `DrawOverlay_Body 0x0047F6A0` uses it to select the deck branch and to add `(Flags>>7 & 1)*4` levels; the ramp updaters gate their damage-frame bump on it |
+| `0x0100` | `(param_3 & 1) << 8` | writes 1, 2, 3, 5 | "cell belongs to a bridge" — the primary test in `CheckBridgeTraversal`, `UpdateBridgePassability`, `FindNearbyBridgePeer`, `ResolvePathCoord_BridgeAware`, `IsOnBridge_ForFiring` |
+| `0x0200` | `(param_3 & 1) << 9` | writes 1, 2, 5. **Write 3 clears it and never sets it** | required *together with* `0x0100` to enter the deck in `CheckBridgeTraversal 0x004D9C60` |
+| `0x0400` | `((char)param_3 == 0) << 10` — a **byte** test on the low 8 bits, not a dword test | writes 1, 2, 3, 5 | set when the direction stamp is a *clear*; `ProcessBridgeDestruction_Low` scans neighbours on `0x400` and on the pair mask `0x500` |
+| `0x0800` | `(param_2 == 0) << 11` — a genuine dword test, unlike `0x400` | writes 1, 2, 3, 5 | bridge axis/orientation. `IsOnBridge_ForFiring 0x00703B10` pairs each of four neighbours with a required `0x800` state, which is what proves this bit selects NS vs EW |
+| `0x1000` | `(param_3 & 1) << 12` | writes 1, 2, 3, 4 — **four** cells. **Write 5 clears it and never sets it** | — |
+| `0x10000` | `(param_3 & 1) << 16` | writes 1, 2, 3, 5, 6 — **five** sites | — |
+| `0x40000` | XOR-toggled elsewhere | not written here at all | **not** a bridge structure bit — the A\* temporary cost marker set by `UpdateBridgePassability`; A\* multiplies a marked destination's cost by `4.0` (`0x007E37BC`) |
+
+Write 4 is the narrowest: `Flags & 0xFFFFEFFF | uVar15`, i.e. it touches only `0x1000`. Write 6
+fires only when `param_2 == 6` and touches only `0x10000`.
+
+*Evidence: `decompile_function 0x0047E040` (all six flag-write expressions),
+`disassemble_function 0x0047E040`, `0x0047F6A0`, `0x004D9C60`, `0x0042ACF0`, `0x00703B10`,
+`0x00570050`.*
 
 ### 2.3 Bridge overlay bands (`CellClass+0x44`)
 
@@ -135,7 +163,7 @@ identity is the only thing that makes their field offsets meaningful.
 | `g_BridgeSet_TileSetBase` | `0x00AA0E28` | High/concrete bridge tileset base | `Read_Theater_TileSets_INI` |
 | `g_WoodBridgeSet_TileSetBase` | `0x00ABAD1C` | Low/wooden bridge tileset base | `Read_Theater_TileSets_INI` |
 | `g_TubeArray` | `0x008B413C` | Tube record vector | `TubeClass__Constructor` |
-| `g_TubeCount` | `0x008B4148` | Tube count | `TubeClass__Constructor`; decremented by `WriteTubesINI` compaction |
+| `g_TubeCount` | `0x008B4148` | Tube count | Written at only three sites: `TubeClass__Constructor 0x0072806F`, `0x007287A8`, `0x004E6791`. **`MapClass__WriteTubesINI` does not write it** — it holds three READs (`0x0072829B`, `0x00728302`, `0x007283A7`) and no WRITE, so its compaction decrements a local, and its emission loop re-reads the undiminished global while indexing a compacted array |
 | `g_BridgeZOffset_Drive` | `0x008A07C4` | `ftol(4 * g_DriveHeightStep)` — the deck rise for Drive | `DriveLocomotionClass__ComputeBridgeZOffset 0x004AF4A0` |
 | `g_BridgeZOffset_Teleport` | `0x00B0EC2C` | Deck rise for the teleport locomotor | not traced this session — UNCHECKED |
 | `g_BridgeZ_Offset` | `0x00B0782C` | Deck rise, third consumer | not traced this session — UNCHECKED |
@@ -162,6 +190,7 @@ which is what fixes each family member's trigger and frequency.
 | Entry | Reaches | Trigger | Skirmish frequency |
 |---|---|---|---|
 | `LogicClass__PerTickUpdate 0x0055AFB0` | `RecalcBridgeShroudFlags 0x00578100` | every tick, unconditionally | **every tick** — the family's only tick-spine member |
+| `FUN_006E1A70` (at `0x006E1B6B`) | `RecalcBridgeShroudFlags 0x00578100` | **unexamined** — this is `0x00578100`'s second caller and it was not traced | UNCHECKED, see §11 |
 | `AStar_main_loop 0x00429A90` | `UpdateBridgePassability 0x0042ACF0` → `FindNearbyBridgePeer 0x0042B080` | every A\* search with nonzero urgency | very high — every unit path request |
 | `UnitClass__AI 0x007360C0` | `UnitClass__TubeMovement 0x007359F0` | per tick per unit inside a tube | high on maps with `[Tubes]` |
 | `UnitClass` / `InfantryClass` `Can_Enter_Cell` | `CheckBridgeTraversal 0x004D9C60`, `CellClass__IsTubeCell 0x00484AB0` | every movement legality test | very high |
@@ -239,7 +268,7 @@ in §3 plus its `g_BridgeSet_TileSetBase` usage; all `UNCHECKED`.
 | Address | Name | Purpose |
 |---|---|---|
 | `0x0073B140` | `UnitClass__Draw_Sprite_With_BridgeFudge` | `UnitClass` vtable slot `0x1CC`. Split-blits a `TooBigToFitUnderBridge` unit at a deck edge so it is not clipped |
-| `0x00703E70` | `TechnoClass__CountAdjacentBridgeDeckTiles` | **Newly labelled.** Returns 0/1/2, not a true count — see §10 |
+| `0x00703E70` | `TechnoClass__CountAdjacentBridgeDeckTiles` | **Newly labelled.** Returns 0/1/2, never a true count: the first two direction hits assign 1 and the third adds 1. Consumers only compare against 0 — see §9 |
 
 ---
 
@@ -340,7 +369,7 @@ inside this family.
 | `0x0056E990` | `MapClass__ToggleBridgePavement` | Pavement stamp/unstamp for a bridge cell | every ramp updater |
 | `0x00575EE0` | `NotifyBridgeSpanCollapse` | Walks the endpoint-exclusive four-cell-wide span and fires trigger event `0x1F` through each cell's `Tag +0x3C` | 6 callers, all collapse/edge paths |
 | `0x00578AC0` | `MapClass__IncrementBridgeCounter` | `++MapClass+0x1158`, the bridge-overlay draw-cache generation. Readers are the two bridge-branch sites in `CellClass__DrawOverlay_Body` | single caller `FUN_004F42F0`; frequency **UNCHECKED** |
-| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **The family's only per-tick member** — `LogicClass__PerTickUpdate` calls it at `0x0055B2AD` every tick. The body's shroud computation was not re-derived; the "shroud" claim is inherited and UNCHECKED | every tick, every map |
+| `0x00578100` | `MapClass__RecalcBridgeShroudFlags` | **The family's only per-tick member** — `LogicClass__PerTickUpdate` calls it at `0x0055B2AD` every tick. It has a **second caller, `FUN_006E1A70` at `0x006E1B6B`, which was not traced**, so the full trigger set is incomplete. The body's shroud computation was not re-derived either; the "shroud" claim is inherited and UNCHECKED | at least every tick, every map |
 | `0x00703B10` | `TechnoClass__IsOnBridge_ForFiring` | Own cell or an axis-matched neighbour carries `0x100`; the axis pairing is what proves bit `0x800` | `GetFireError` and draw — very high |
 | `0x004865D0` | `CellClass__HasBridgeOverlay` | **Name understates it** — tests shore pieces, water, and the four RMG river-bridge tilesets. A prior session recorded this drift; re-read this session and the drift stands. Only RMG consumers | RMG only — dormant in skirmish |
 | `0x0056A080` | `FUN_0056A080` | Bridge-family by callee set (calls both pavement span walkers, reads `g_BridgeSet_TileSetBase`) but **has zero xrefs** — unreachable in the current database | never |
@@ -361,7 +390,7 @@ Record layout, from the constructor, the INI reader and the CRC contributor, whi
 |---|---|---|---|---|
 | `0x00727FD0` | `TubeClass__Constructor` | Builds the record, installs 4 vptrs, appends to `g_TubeArray`, writes the index into `cell+0x116` | `ReadTubesINI`, `CellClass__RecalcAttributes` — map load | yes |
 | `0x007283C0` | `MapClass__ReadTubesINI` | Parses `[Tubes]`; field order is entry X, entry Y, **direction**, exit X, exit Y, then the path | `ScenarioClass__Full_Init` — once per map | yes |
-| `0x00728280` | `MapClass__WriteTubesINI` | **Newly labelled.** Compacts `g_TubeArray` (dropping tubes whose cell no longer qualifies and renumbering the survivors) then emits the `[Tubes]` rows | `Save_Scenario_Map_File` only | **editor path — never in skirmish** |
+| `0x00728280` | `MapClass__WriteTubesINI` | **Newly labelled.** Compacts `g_TubeArray` (dropping tubes whose cell no longer qualifies and renumbering the survivors) then emits the `[Tubes]` rows. It does **not** write `g_TubeCount` — see §2.6 | `Save_Scenario_Map_File` only | **editor path — never in skirmish** |
 | `0x007359F0` | `UnitClass__TubeMovement` | Steps a unit through the path, interpolating Z between entry and exit ground heights over `+0x1C0` steps; on exit snaps to the exit cell centre, un-limbos, restores speed, and sets facing from `(record+0x2C << 13) − 0x8000` | `UnitClass__AI` — per tick per unit in a tube | yes |
 | `0x00484AB0` | `CellClass__IsTubeCell` | `cell+0x116` in range **and** `cell+0xEC == 10` | every ground `Can_Enter_Cell` — very high | yes |
 | `0x00484F20` | `CellClass__GetTubeAtCell` | Index → record; **does not** re-check LandType, unlike `IsTubeCell` | tube exit, cursor tests | yes |
@@ -385,8 +414,10 @@ ordinary play:
 
 1. `ScenarioClass__Read_Scenario 0x00684620` sets `Scen->IsRandom` (`ScenarioClass+0x34BD`) only
    when the scenario filename's extension compares equal to the string at `0x0083DA88`, which
-   `read_memory` shows to be **`.SED`**. Retail YR ships `.MPR` / `.YRM` / `.MAP` skirmish maps;
-   no `.SED` file is involved in choosing a stock map.
+   `read_memory` shows to be **`.SED`** (that address has exactly one xref, `0x0068465C`, inside
+   this function). Retail YR ships `.MPR` / `.YRM` / `.MAP` skirmish maps; no `.SED` file is
+   involved in choosing a stock map. There is a **second gate** on the same path: `Generate` runs
+   only if `FUN_00597A10(scenario_name)` also returns nonzero.
 2. `ChooseMap__AcceptRandomMapSetup 0x005E8590` → `RandomMapSetupDialog__Run 0x00595BC0` →
    `RandomMapSetupDialog__Proc 0x00596300` → `Generate`. The caller of `AcceptRandomMapSetup`
    sits at `0x005E6A11`, inside a code region for which Ghidra holds no function boundary.
@@ -460,8 +491,12 @@ Left un-renamed on purpose: a guess is worse than `FUN_*`.
 
 ## 11. Residuals
 
+- **`FUN_006E1A70` is the second caller of `MapClass__RecalcBridgeShroudFlags`** and was not
+  traced. Until it is, "the family's only per-tick member" describes the `LogicClass` binding
+  only, not the function's full trigger set.
 - **Frequency of `MapClass__IncrementBridgeCounter`** is unknown — its single caller
   `FUN_004F42F0` was not traced to a trigger.
+- **`FUN_00597A10`**, the second gate in front of `RandomMapGenerator__Generate`, was not opened.
 - **`ShipLocomotionClass__Compute_BridgeZOffset 0x0069EBB0`** has no CALL xrefs and its body was
   not decompiled; its relationship to `g_BridgeZ_Offset` / `g_BridgeZOffset_Teleport` is
   unestablished.
@@ -475,9 +510,32 @@ Left un-renamed on purpose: a guess is worse than `FUN_*`.
   but not mapped; it belongs to the theater family, not this one.
 - **Plate comments** were written for the members verified in this session and for every drift
   finding. Members that already carried a dated verified plate comment from a prior session were
-  left untouched rather than overwritten; the remainder carry tags and this document only.
+  left untouched rather than overwritten; the remainder carry tags and this document only. Two
+  plate comments written earlier in this session contained errors and were corrected in place —
+  see §12.
 
-## 12. Incidental database action
+## 12. Adversarial re-derivation pass
+
+A fresh read-only critic re-derived twelve sampled claims from the binary without access to this
+session's reasoning. Ten were confirmed. Six defects were raised and **all six were reproduced
+independently before being accepted**; every one is fixed above, and the two that had already been
+written into the Ghidra database were corrected there as well (`0x00728280` and `0x00486750`, each
+re-saved and read back).
+
+| Defect | Where it was | Fix |
+|---|---|---|
+| `MapClass__WriteTubesINI` claimed to decrement `g_TubeCount`. `get_xrefs_to 0x008B4148` shows three READs and no WRITE in that function | §2.6 **and the applied plate comment** | Corrected in both; the plate now records the mistake and the real writers |
+| "**Every** High-family body … / **every** Low-family body …" — falsified by `0x0057CCF0`, `0x0057BAA0` and essentially all of §4.2/§4.3/§5.2/§5.3, which reference no tileset base and split on the overlay ordinal instead | §1, contradicting §2.3 two sections later | §1 rewritten to separate tileset-keyed from overlay-keyed members |
+| `g_WoodBridgeSet_TileSetBase`'s writers given as the `g_BridgeSet_TileSetBase` triple | §1 **and the applied plate comment on `0x00486750`** | Both corrected to `0x00545A86` / `0x00545DEA` / `0x00546CB9` |
+| `MapClass__RecalcBridgeShroudFlags` has a second caller, `FUN_006E1A70`, absent from the document | §3, §6, §11 | Added to all three; the "only per-tick member" claim narrowed |
+| §2.2's per-bit "where written" column wrong for `0x200`, `0x1000` and `0x10000`, and `0xFFFEE07F` presented as the function's uniform mask when it is the first write's mask | §2.2 | Table rebuilt per write, with the clear-but-never-set cases called out |
+| `0x0400` given as `(param_3 == 0) << 10` when the test is on the low byte | §2.2 | Corrected, with the asymmetry against `0x0800` noted |
+
+The critic's own list is not treated as authority either: each defect above was re-checked against
+`get_xrefs_to 0x008B4148`, `get_xrefs_to 0x00ABAD1C`, and the six flag-write expressions in
+`0x0047E040` before the document was changed.
+
+## 13. Incidental database action
 
 One call to `disassemble_bytes 0x005E69E0 length=64` was made while chasing the RMG caller chain.
 That tool disassembles rather than only reading, so it is a database mutation. The region is
