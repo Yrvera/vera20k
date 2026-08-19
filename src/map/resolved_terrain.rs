@@ -1020,6 +1020,7 @@ impl ResolvedTerrainGrid {
                             &mut metadata,
                             land,
                             overlay_effects.effective_land_speed_costs,
+                            overlay_effects.effective_land_ground_blocked,
                         );
                     }
                 }
@@ -1050,7 +1051,12 @@ impl ResolvedTerrainGrid {
                     metadata.speed_costs.wheel,
                     terrain_object_occupation,
                 );
-                let ground_walk_blocked = base_ground_walk_blocked
+                // Same shape as `base_ground_walk_blocked`, but on the metadata
+                // *after* any overlay land override. `base_*` stays pristine on
+                // purpose — it is the restoration value for overlay removal —
+                // so reading it here would pin a low bridge's deck to the
+                // water underneath it.
+                let ground_walk_blocked = (canonical_ramp.is_none() && metadata.ground_blocked)
                     || terrain_object_blocks
                     || overlay_effects.overlay_blocks;
                 let bridge_walkable = overlay_effects.has_bridge_deck
@@ -1628,6 +1634,10 @@ struct OverlayEffects {
     is_low_bridge: bool,
     effective_land: Option<LandType>,
     effective_land_speed_costs: Option<SpeedCostProfile>,
+    /// Ground-blocking of `effective_land`'s rules row. Travels with
+    /// `effective_land` so the replacement LandType brings its own passability
+    /// instead of leaving the tile's behind. See `OverlayTypeFlags::land_ground_blocked`.
+    effective_land_ground_blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1945,8 +1955,7 @@ fn mark_invalid_subtile_metadata(
     metadata.slope_type = 0;
     metadata.template_height = 0;
     metadata.has_ramp = false;
-    apply_canonical_land_to_metadata(metadata, LandType::Clear, None);
-    metadata.ground_blocked = false;
+    apply_canonical_land_to_metadata(metadata, LandType::Clear, None, false);
     metadata.build_blocked = false;
     if let Some(clear) =
         terrain_rules.and_then(|rules| rules.semantics_for_land_type(LandType::Clear.as_index()))
@@ -2022,8 +2031,7 @@ fn merge_tmp_metadata(metadata: &mut TileMetadata, tile: &TmpTile) {
     metadata.raw_land_type = tile.terrain_type;
     metadata.yr_cell_land_type = yr_cell_land_type_from_tmp(tile.terrain_type);
     metadata.land_type =
-        crate::rules::terrain_rules::tmp_terrain_to_land_type(tile.terrain_type)
-            .as_index();
+        crate::rules::terrain_rules::tmp_terrain_to_land_type(tile.terrain_type).as_index();
     metadata.slope_type = tile.ramp_type;
     metadata.template_height = tile.height;
     metadata.render_offset_x = tile.offset_x;
@@ -2094,10 +2102,22 @@ fn apply_land_type_semantics(
     metadata.build_blocked = !semantics.buildable;
 }
 
+/// Replace every land-derived attribute of a cell with the overlay's `Land=` row.
+///
+/// Overlay land override: `CellClass__RecalcAttributes` @ `0x0047D2B0`. Its
+/// entry branch loads `OverlayTypeClass+0x298` into `Cell->LandType` and, when
+/// that land is Wall(4)/Railroad(9) or `+0x2AC` (`NoUseTileLandType`) is set,
+/// runs the LAT fixup and zone recompute and **returns** — the tile's own
+/// subtile land type is never consulted. LandType is the only land attribute
+/// gamemd stores, so nothing can survive the swap; passability is re-derived
+/// from it. `ground_blocked` is VERA's cache of that derivation and must be
+/// replaced here too, or a low bridge (`Land=Road`, `NoUseTileLandType=yes`)
+/// over water keeps the water tile's block and rejects every ground unit.
 fn apply_canonical_land_to_metadata(
     metadata: &mut TileMetadata,
     land: LandType,
     speed_costs: Option<SpeedCostProfile>,
+    ground_blocked: bool,
 ) {
     metadata.land_type = land.as_index();
     metadata.yr_cell_land_type = land.as_index();
@@ -2107,6 +2127,7 @@ fn apply_canonical_land_to_metadata(
     metadata.is_cliff_like = land.is_cliff_like();
     metadata.is_rough = land.is_rough();
     metadata.is_road = land.is_road();
+    metadata.ground_blocked = ground_blocked;
 }
 
 fn classify_overlay_effects(
@@ -2139,6 +2160,7 @@ fn classify_overlay_effects(
             if let Some(land) = retained_overlay_land(flags, slope_type) {
                 result.effective_land = Some(land);
                 result.effective_land_speed_costs = flags.land_speed_costs;
+                result.effective_land_ground_blocked = flags.land_ground_blocked;
             }
             if clears_tiberium_on_slope(flags, slope_type) {
                 continue;
@@ -3995,6 +4017,83 @@ NoUseTileLandType=yes
     }
 
     #[test]
+    fn low_bridge_overlay_land_replaces_the_tiles_ground_block_at_load() {
+        // Low bridges (LOBRDG01..28 wood, LOBRDB01..28 concrete) are overlays
+        // laid straight onto the water tiles they span, with `Land=Road` and
+        // `NoUseTileLandType=yes`. `CellClass__RecalcAttributes` @ 0x0047D2B0
+        // takes its early branch for exactly that pair and returns before the
+        // tile's own subtile land type is read, so nothing of the water
+        // survives — LandType is the only land attribute gamemd stores.
+        let ini = IniFile::from_str(
+            "[OverlayTypes]
+0=LOBRDB10
+1=WATERKEEP
+[Road]
+Foot=100%
+Track=100%
+Wheel=100%
+[Water]
+Float=100%
+[LOBRDB10]
+Land=Road
+NoUseTileLandType=yes
+[WATERKEEP]
+Land=Water
+NoUseTileLandType=yes
+",
+        );
+        let registry = OverlayTypeRegistry::from_ini(&ini, None);
+
+        // The blocked-ness of the replacement row travels with the land.
+        assert!(!registry.flags(0).expect("bridge flags").land_ground_blocked);
+        assert!(registry.flags(1).expect("water flags").land_ground_blocked);
+
+        // Start from a water tile: blocked to ground, water-classed.
+        let mut metadata = TileMetadata {
+            has_tmp_metadata: true,
+            land_type: LandType::Water.as_index(),
+            yr_cell_land_type: LandType::Water.as_index(),
+            terrain_class: TerrainClass::Water,
+            is_water: true,
+            ground_blocked: true,
+            ..TileMetadata::default()
+        };
+        let canonical_ramp = canonical_ramp_from_slope_type(metadata.slope_type);
+        let base_ground_walk_blocked = canonical_ramp.is_none() && metadata.ground_blocked;
+        assert!(base_ground_walk_blocked);
+
+        let overlay = OverlayEntry {
+            rx: 0,
+            ry: 0,
+            overlay_id: 0,
+            frame: 1,
+        };
+        let effects = classify_overlay_effects(Some(&vec![&overlay]), Some(&registry), 0, 0);
+        let land = effects.effective_land.expect("bridge retains Land=Road");
+        assert_eq!(land, LandType::Road);
+        assert!(!effects.effective_land_ground_blocked);
+
+        apply_canonical_land_to_metadata(
+            &mut metadata,
+            land,
+            effects.effective_land_speed_costs,
+            effects.effective_land_ground_blocked,
+        );
+
+        assert_eq!(metadata.land_type, LandType::Road.as_index());
+        assert!(!metadata.is_water);
+        // The regression: `ground_blocked` was the one land-derived field the
+        // override skipped, so the deck stayed impassable while every other
+        // attribute said Road.
+        assert!(!metadata.ground_blocked);
+        let ground_walk_blocked =
+            (canonical_ramp.is_none() && metadata.ground_blocked) || effects.overlay_blocks;
+        assert!(!ground_walk_blocked);
+        // The pristine snapshot is untouched, so overlay removal still restores water.
+        assert!(base_ground_walk_blocked);
+    }
+
+    #[test]
     fn gsi_04_04_load_tiberium_slope_branches_retain_only_early_copied_land() {
         let ini = IniFile::from_str(
             "\
@@ -4055,6 +4154,7 @@ NoUseTileLandType=no
                         &mut current,
                         effective_land,
                         effects.effective_land_speed_costs,
+                        effects.effective_land_ground_blocked,
                     );
                 }
                 let expected_land = if retains_current_land {
@@ -4185,8 +4285,7 @@ NoUseTileLandType=no
         let mut metadata = TileMetadata {
             has_tmp_metadata: true,
             raw_land_type: 15,
-            land_type: crate::rules::terrain_rules::tmp_terrain_to_land_type(15)
-                .as_index(),
+            land_type: crate::rules::terrain_rules::tmp_terrain_to_land_type(15).as_index(),
             slope_type: 2,
             terrain_class: TerrainClass::Cliff,
             ground_blocked: true,
