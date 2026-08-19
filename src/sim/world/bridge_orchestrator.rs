@@ -270,6 +270,101 @@ pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
 /// gamemd's `BridgeRepairHut` death path scans the 5x5 hut-local window
 /// X-major: `x = -2..=2`, then `y = -2..=2`. The engineer repair path uses
 /// the shared Y-major helper, so hut collapse keeps its own ordering here.
+/// Overlay values a fully collapsed span leaves on its anchor: `0xE7` / `0xE8`
+/// on the high side, `0x64` / `0x65` on the low side. `DestroyBridgeWalker_*`
+/// writes them on final collapse and nothing else produces them.
+const HIGH_COLLAPSED_ANCHORS: [u8; 2] = [0xE7, 0xE8];
+const LOW_COLLAPSED_ANCHORS: [u8; 2] = [0x64, 0x65];
+
+/// The overlay half of `MapClass::FindBridgeConnection_Predicate` 0x00587410 —
+/// the cursor-side "is there anything here to repair" test behind the engineer
+/// cursor over a bridge repair hut.
+///
+/// Native shape: scan the 5x5 block around the hovered cell; a cell whose
+/// overlay falls in a destroy band selects the low or high family, and the walk
+/// then follows the axis PERPENDICULAR to the overlay's own class — an NS-class
+/// overlay walks along X, an EW-class overlay along Y — in both directions,
+/// continuing while the overlay stays inside the family band and returning true
+/// the moment a collapsed anchor appears.
+///
+/// Not reproduced: the native's other branch, taken when the 5x5 finds a cell
+/// whose ISO-TILE sits inside a bridge tileset window rather than an overlay in
+/// a destroy band. That branch walks `BridgeRecord`s through per-tile geometry
+/// tables at 0x0082AA04 / 0x0082AA24 / 0x0082AA44 and returns true on the first
+/// inactive record. Both branches agree on the two cases that matter here — an
+/// intact span yields false and a collapsed one yields true — so the omission
+/// shows only on partially damaged spans. Recorded in
+/// `bridge_hut_repair_cursor_ignores_whether_the_bridge_is_broken`.
+pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, u16)) -> bool {
+    let Some(bs) = sim.bridge_state.as_ref() else {
+        return false;
+    };
+    hut_span_has_collapsed_anchor(bs, hut_center)
+}
+
+/// State-only half of [`bridge_hut_has_collapsed_span`], split out so the walk
+/// can be tested without standing up a `Simulation`.
+pub(crate) fn hut_span_has_collapsed_anchor(
+    bs: &BridgeRuntimeState,
+    hut_center: (u16, u16),
+) -> bool {
+    for (rx, ry) in hut_destroy_5x5_scan(hut_center) {
+        let Some(overlay) = bs.cell(rx, ry).map(|c| c.overlay_byte) else {
+            continue;
+        };
+        let (axis, anchors, is_high) =
+            if let Some(axis) = BridgeRuntimeState::high_destroy_overlay_axis(overlay) {
+                (axis, &HIGH_COLLAPSED_ANCHORS, true)
+            } else if let Some(axis) = BridgeRuntimeState::low_destroy_overlay_axis(overlay) {
+                (axis, &LOW_COLLAPSED_ANCHORS, false)
+            } else {
+                continue;
+            };
+        // Perpendicular convention: an NS-class overlay is walked along X.
+        let walk_axis = match axis {
+            Axis::NS => Axis::EW,
+            Axis::EW => Axis::NS,
+        };
+        for step in [1i16, -1] {
+            if walk_span_for_collapsed_anchor(bs, (rx, ry), walk_axis, step, anchors, is_high) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn walk_span_for_collapsed_anchor(
+    bs: &BridgeRuntimeState,
+    from: (u16, u16),
+    axis: Axis,
+    step: i16,
+    anchors: &[u8; 2],
+    is_high: bool,
+) -> bool {
+    let mut cur = from;
+    loop {
+        let Some(overlay) = bs.cell(cur.0, cur.1).map(|c| c.overlay_byte) else {
+            return false;
+        };
+        let in_band = if is_high {
+            BridgeRuntimeState::is_high_destroy_overlay(overlay)
+        } else {
+            BridgeRuntimeState::is_low_destroy_overlay(overlay)
+        };
+        if !in_band {
+            return false;
+        }
+        if anchors.contains(&overlay) {
+            return true;
+        }
+        let Some(next) = step_axis(cur, axis, step) else {
+            return false;
+        };
+        cur = next;
+    }
+}
+
 fn hut_destroy_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
     let (cx, cy) = (center.0 as i32, center.1 as i32);
     (-2..=2i32).flat_map(move |dx| {

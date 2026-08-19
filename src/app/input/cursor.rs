@@ -516,8 +516,20 @@ fn capability_cursor_for_hover(
 
             if sel_obj.engineer {
                 // 3. Engineer on bridge repair hut → repair (Enter cursor).
+                //    `MapClass::FindBridgeConnection_Predicate` 0x00587410 is
+                //    the native gate here, reached from
+                //    `InfantryClass::What_Action_OnCell` 0x0051F800 and
+                //    `What_Action_OnObject` 0x0051E3B0. The hut flag alone is
+                //    not enough: the connected span must actually be collapsed.
                 if matches!(hover.kind, HoverTargetKind::EnemyStructure) {
-                    if hovered_obj.map_or(false, |o| o.bridge_repair_hut) {
+                    if hovered_obj.map_or(false, |o| o.bridge_repair_hut)
+                        && hovered_entity.is_some_and(|e| {
+                            crate::sim::world::bridge_orchestrator::bridge_hut_has_collapsed_span(
+                                sim,
+                                (e.position.rx, e.position.ry),
+                            )
+                        })
+                    {
                         return CursorFeedbackKind::Enter;
                     }
                 }
@@ -1862,35 +1874,39 @@ mod cursor_animation_tests {
         );
     }
 
-    /// RESIDUAL — gamemd address 0x00587410,
-    /// `MapClass::FindBridgeConnection_Predicate`.
+    /// RESIDUAL - gamemd address 0x00587410,
+    /// `MapClass::FindBridgeConnection_Predicate`, tileset-window branch.
     ///
-    /// Mechanism: the only two callers are `InfantryClass::What_Action_OnCell`
-    /// 0x0051F800 (callsite 0x0051FA70) and `What_Action_OnObject` 0x0051E3B0
-    /// (callsite 0x0051E54C), so this is the cursor-side test, not the repair
-    /// itself. It scans the 5x5 block around the hovered cell for an iso-tile
-    /// inside either bridge tileset window (`g_WoodBridgeSet_TileSetBase` or
-    /// `g_BridgeSet_TileSetBase`, both `base..base+0x10`) or for an overlay in
-    /// a destroy band, then walks the span from whatever it found looking for a
-    /// DESTROYED anchor overlay — 0xE7 / 0xE8 on the high side, 0x64 / 0x65 on
-    /// the low side — and only then returns 1.
+    /// The overlay branch of this predicate is now ported: step 3 of
+    /// `capability_cursor_for_hover` gates the engineer Enter cursor on
+    /// `bridge_hut_has_collapsed_span`, so a hut whose span is intact no
+    /// longer offers a repair cursor.
     ///
-    /// Step 3 of `cursor_feedback_kind` returns `Enter` on the hovered object's
-    /// `bridge_repair_hut` flag alone. It never looks at the bridge.
+    /// Still absent: the branch the native takes when its 5x5 block finds a
+    /// cell whose ISO-TILE sits inside a bridge tileset window rather than a
+    /// destroy-band overlay. That branch derives a coordinate from the tile
+    /// geometry tables at 0x0082AA04, 0x0082AA24 and 0x0082AA44, then loops
+    /// `FindBridgeRecord` at tolerance 3, hopping endpoint to endpoint and
+    /// returning true on the first INACTIVE record or on a coordinate that
+    /// matches neither endpoint.
     ///
-    /// Trigger: an engineer selected, mouse over a bridge repair hut whose
-    /// bridge is INTACT.
+    /// Trigger: engineer selected, hovering a bridge repair hut whose span is
+    /// PARTIALLY damaged - damaged enough for an inactive record, not enough
+    /// for a collapsed anchor overlay.
     ///
-    /// Effect: VERA offers the repair cursor when there is nothing to repair.
-    /// gamemd's predicate fails and the cursor falls through to whatever the
-    /// later cases give.
+    /// Effect: VERA withholds the repair cursor in that middle state where
+    /// gamemd offers it. Both implementations agree on the two ends: intact
+    /// yields no cursor, fully collapsed yields one.
     ///
-    /// Frequency: cursor cadence, so every mouse move that qualifies — but it
-    /// needs an engineer selected near an intact hut, which bounds it to the
-    /// moments a player is actually shopping for a repair.
+    /// Frequency: narrower than the bug it replaces. It needs a span in a
+    /// partially damaged state and an engineer already selected next to it.
+    ///
+    /// Blocker: the three geometry tables are data this crate has no reader
+    /// for, and the tolerance-3 record hop needs `FindBridgeRecord`'s own
+    /// semantics ported first.
     #[test]
-    #[ignore = "gamemd 0x00587410 requires a destroyed anchor before offering the bridge-hut repair cursor; VERA checks only the hut flag"]
-    fn bridge_hut_repair_cursor_ignores_whether_the_bridge_is_broken() {
-        panic!("unimplemented: FindBridgeConnection_Predicate 0x00587410 span scan");
+    #[ignore = "gamemd 0x00587410 also accepts a partially damaged span via its tileset/record branch; VERA checks collapsed anchors only"]
+    fn bridge_hut_repair_cursor_misses_partially_damaged_spans() {
+        panic!("unimplemented: tileset-window branch of FindBridgeConnection_Predicate 0x00587410");
     }
 }

@@ -2639,3 +2639,96 @@ fn bridge_edge_tile_rewrite_after_collapse_is_unported() {
 fn bridge_repair_terrain_restoration_is_unported() {
     panic!("unimplemented: ProcessBridgeDestruction_* repair restoration tail");
 }
+
+// ---- MapClass::FindBridgeConnection_Predicate 0x00587410, overlay branch ----
+
+fn seed_overlay_row(state: &mut BridgeRuntimeState, y: u16, xs: std::ops::Range<u16>, overlay: u8) {
+    for x in xs {
+        state.test_seed_cell(
+            x,
+            y,
+            BridgeRuntimeCell {
+                deck_present: true,
+                destroyable: true,
+                deck_level: 5,
+                bridge_group_id: Some(1),
+                damage_state: DamageState::Healthy { variant: 0 },
+                axis: Some(Axis::NS),
+                role: BridgeCellRole::Body,
+                anchor_span_id: Some(1),
+                overlay_byte: overlay,
+                damaged_variant: false,
+                bridgehead_anchor_class: BridgeheadAnchorClass::Variant0,
+            },
+        );
+    }
+}
+
+/// An intact high span carries healthy body overlays, which ARE inside the
+/// 0xCD..=0xE8 family band but are not the 0xE7 / 0xE8 collapsed anchors, so
+/// the native predicate walks the span and finds nothing.
+#[test]
+fn hut_span_scan_rejects_an_intact_high_span() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..14, 0xCD);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "an intact span offers nothing to repair"
+    );
+}
+
+/// A collapsed anchor anywhere along the walked span returns true, including
+/// well outside the 5x5 block the scan starts from.
+#[test]
+fn hut_span_scan_finds_a_collapsed_high_anchor_down_the_span() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..14, 0xCD);
+    seed_overlay_row(&mut state, 6, 11..12, 0xE7);
+
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "0xE7 is what DestroyBridgeWalker_NS_High writes on final collapse"
+    );
+}
+
+/// Low family, same shape, with the 0x64 anchor.
+#[test]
+fn hut_span_scan_finds_a_collapsed_low_anchor() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 0..10, 0x4A);
+    seed_overlay_row(&mut state, 6, 8..9, 0x64);
+
+    assert!(
+        crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "0x64 is the low-side collapsed anchor"
+    );
+    let mut intact = BridgeRuntimeState::default();
+    seed_overlay_row(&mut intact, 6, 0..10, 0x4A);
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&intact, (6, 6)),
+        "an intact low span offers nothing to repair"
+    );
+}
+
+/// The walk stops when the overlay leaves the family band, so a collapsed
+/// anchor on the far side of a gap is not reached.
+#[test]
+fn hut_span_scan_stops_at_the_band_edge() {
+    let mut state = BridgeRuntimeState::default();
+    seed_overlay_row(&mut state, 6, 4..9, 0xCD);
+    seed_overlay_row(&mut state, 6, 9..10, 0x00);
+    seed_overlay_row(&mut state, 6, 10..13, 0xE7);
+
+    assert!(
+        !crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)),
+        "an out-of-band cell ends the walk before the anchor"
+    );
+}
+
+/// Cells with no bridge runtime entry at all contribute nothing.
+#[test]
+fn hut_span_scan_on_empty_state_is_false() {
+    let state = BridgeRuntimeState::default();
+    assert!(!crate::sim::world::bridge_orchestrator::hut_span_has_collapsed_anchor(&state, (6, 6)));
+}
