@@ -258,7 +258,10 @@ use crate::sim::world::Simulation;
 // and prevents score-bonus Scenario RNG draws from repeating after load.
 // Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
 // SetGameSpeed transition. Appending the enum variant changes the bincode schema.
-const SNAPSHOT_VERSION: u32 = 84;
+// Bumped 84 -> 85: Simulation now retains the signed `[Map] Size=` height used
+// to normalize later trigger-action-40 LocalSize writers. Without the serialized
+// input, a second writer after load could diverge even though mutable bounds load.
+const SNAPSHOT_VERSION: u32 = 85;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -1503,6 +1506,17 @@ impl Simulation {
             });
         }
 
+        // The app-supplied terrain template is the immutable load-time map.
+        // Action 40's mutable LocalSize is serialized on Simulation, so replay
+        // its CellClass-derived cache before overlay and zone reconstruction.
+        if let Some(bounds) = self.playfield_bounds {
+            let _ = self
+                .resolved_terrain
+                .as_mut()
+                .expect("validated terrain cache")
+                .recalc_playfield_attributes(bounds);
+        }
+
         {
             let overlay_grid = self.overlay_grid.as_mut().expect("validated overlay cache");
             let resolved_terrain = self
@@ -2550,8 +2564,8 @@ mod tests {
     /// both the spawn gate and the removal predicate. A serialized field is
     /// gone, so old bytes no longer decode.
     #[test]
-    fn gsi_13_06_snapshot_version_is_84() {
-        assert_eq!(super::SNAPSHOT_VERSION, 84);
+    fn gsi_04_01_snapshot_version_is_85() {
+        assert_eq!(super::SNAPSHOT_VERSION, 85);
     }
 
     #[test]

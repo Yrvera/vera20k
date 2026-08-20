@@ -30,6 +30,43 @@ fn hash_projectile_target(
     }
 }
 
+#[cfg(test)]
+mod playfield_authority_hash_tests {
+    use super::Simulation;
+    use crate::map::playfield::PlayfieldBounds;
+
+    fn playfield() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 80,
+            off_fc: 2,
+            off_100: 4,
+            off_104: 76,
+            off_108: 48,
+        }
+    }
+
+    #[test]
+    fn state_hash_includes_mutable_playfield_authority() {
+        let mut baseline = Simulation::new();
+        baseline.playfield_bounds = Some(playfield());
+        baseline.playfield_size_height = Some(58);
+
+        let mut changed_bounds = Simulation::new();
+        changed_bounds.playfield_bounds = Some(PlayfieldBounds {
+            off_100: 5,
+            ..playfield()
+        });
+        changed_bounds.playfield_size_height = Some(58);
+
+        let mut changed_size_height = Simulation::new();
+        changed_size_height.playfield_bounds = Some(playfield());
+        changed_size_height.playfield_size_height = Some(59);
+
+        assert_ne!(baseline.state_hash(), changed_bounds.state_hash());
+        assert_ne!(baseline.state_hash(), changed_size_height.state_hash());
+    }
+}
+
 fn hash_drive_track_state(
     state: &crate::sim::movement::drive_track::DriveTrackState,
     hasher: &mut impl Hasher,
@@ -146,7 +183,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -155,7 +192,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false, false)
+        self.state_hash_with_schema(true, false, false, false, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -164,7 +201,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false, false)
+        self.state_hash_with_schema(false, false, false, false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -175,6 +212,7 @@ impl Simulation {
         include_entity_animation_v44: bool,
         include_building_anim_overlays_v45: bool,
         include_terminal_score_v46: bool,
+        include_playfield_authority_v47: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -190,6 +228,9 @@ impl Simulation {
         if include_master_frame_v43 {
             self.trigger_runtime.hash_state(&mut hasher);
             self.team_script_vm.hash_state(&mut hasher);
+        }
+        if include_playfield_authority_v47 {
+            self.hash_playfield_authority(&mut hasher);
         }
 
         // LogicClass active-object order — authoritative (drives reconciliation order).
@@ -242,6 +283,32 @@ impl Simulation {
         self.session.fold_identity(&mut hasher);
 
         hasher.finish()
+    }
+
+    /// Fold mutable MapClass LocalSize authority and its immutable Size-height
+    /// normalization input. Trigger action 0x28 changes these bounds inside the
+    /// synchronized master frame (`TriggerAction__Execute @ 0x006DD8B0`), so a
+    /// lockstep hash that omitted them could accept divergent later placement,
+    /// path-zone, and trigger behavior.
+    fn hash_playfield_authority(&self, hasher: &mut impl Hasher) {
+        if self.playfield_bounds.is_none() && self.playfield_size_height.is_none() {
+            // Preserve the historical headless-fixture stream while still
+            // distinguishing every configured authority from absence.
+            return;
+        }
+        b"playfield-authority-v1".hash(hasher);
+        match self.playfield_bounds {
+            None => 0u8.hash(hasher),
+            Some(bounds) => {
+                1u8.hash(hasher);
+                bounds.base.hash(hasher);
+                bounds.off_fc.hash(hasher);
+                bounds.off_100.hash(hasher);
+                bounds.off_104.hash(hasher);
+                bounds.off_108.hash(hasher);
+            }
+        }
+        self.playfield_size_height.hash(hasher);
     }
 
     fn hash_terminal_score_snapshot(&self, hasher: &mut impl Hasher) {

@@ -7,6 +7,7 @@
 //! - Event 27/28 and 36/37: global/local variable set/clear
 //! - Action 22: force trigger
 //! - Action 28/29: set/clear global variable
+//! - Action 40: change visible map area
 //! - Action 53/54: enable/disable trigger
 //! - Action 48/112: center camera at waypoint
 //!
@@ -26,6 +27,7 @@ use crate::sim::world::Simulation;
 const ACTION_FORCE_TRIGGER: i32 = 22;
 const ACTION_SET_GLOBAL: i32 = 28;
 const ACTION_CLEAR_GLOBAL: i32 = 29;
+const ACTION_CHANGE_VISIBLE_MAP_AREA: i32 = 40;
 const ACTION_CENTER_CAMERA: i32 = 48;
 const ACTION_ENABLE_TRIGGER: i32 = 53;
 const ACTION_DISABLE_TRIGGER: i32 = 54;
@@ -125,7 +127,7 @@ impl TriggerRuntime {
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
-        simulation: Option<&Simulation>,
+        mut simulation: Option<&mut Simulation>,
     ) -> Vec<TriggerEffect> {
         let linked_by_id: BTreeMap<&str, &LinkedTrigger> = graph
             .triggers
@@ -137,7 +139,13 @@ impl TriggerRuntime {
             .triggers
             .iter()
             .filter(|linked| {
-                self.is_trigger_ready(linked, triggers, events, current_frame, simulation)
+                self.is_trigger_ready(
+                    linked,
+                    triggers,
+                    events,
+                    current_frame,
+                    simulation.as_deref(),
+                )
             })
             .map(|linked| linked.trigger_id.clone())
             .collect();
@@ -152,13 +160,26 @@ impl TriggerRuntime {
             let Some(linked) = linked_by_id.get(trigger_id.as_str()).copied() else {
                 continue;
             };
-            if !self.is_trigger_ready(linked, triggers, events, current_frame, simulation) {
+            if !self.is_trigger_ready(
+                linked,
+                triggers,
+                events,
+                current_frame,
+                simulation.as_deref(),
+            ) {
                 continue;
             }
 
             if let Some(action) = actions.get(&trigger_id) {
                 for entry in &action.entries {
-                    self.apply_action(entry, &mut effects, &mut queue, &mut queued, triggers);
+                    self.apply_action(
+                        entry,
+                        &mut effects,
+                        &mut queue,
+                        &mut queued,
+                        triggers,
+                        simulation.as_deref_mut(),
+                    );
                 }
             }
 
@@ -260,6 +281,7 @@ impl TriggerRuntime {
         queue: &mut VecDeque<String>,
         queued: &mut BTreeSet<String>,
         triggers: &TriggerMap,
+        simulation: Option<&mut Simulation>,
     ) {
         match action.kind {
             ACTION_FORCE_TRIGGER => {
@@ -275,6 +297,17 @@ impl TriggerRuntime {
             ACTION_CLEAR_GLOBAL => {
                 if let Some(index) = parse_u32_param(&action.params, 0) {
                     self.globals_set.remove(&index);
+                }
+            }
+            ACTION_CHANGE_VISIBLE_MAP_AREA => {
+                // `TActionClass::Read @ 0x006DD5B0` parses ActionID,
+                // ParamType, Param3, then stores the four writer dwords at
+                // +0x34..+0x40. ActionEntry.params is chunk[1..], so these are
+                // exactly indices 2..5; params[0]/[1] must never leak in.
+                if let Some(sim) = simulation
+                    && let Some(raw_local_size) = parse_visible_map_area(&action.params)
+                {
+                    let _ = sim.change_visible_map_area(raw_local_size);
                 }
             }
             ACTION_ENABLE_TRIGGER => {
@@ -366,6 +399,15 @@ fn parse_u32_param(fields: &[String], index: usize) -> Option<u32> {
 
 fn parse_i32_param(fields: &[String], index: usize) -> Option<i32> {
     fields.get(index)?.trim().parse::<i32>().ok()
+}
+
+fn parse_visible_map_area(fields: &[String]) -> Option<[i32; 4]> {
+    Some([
+        crate::rules::ini_value::atoi_lenient(fields.get(2)?.trim()),
+        crate::rules::ini_value::atoi_lenient(fields.get(3)?.trim()),
+        crate::rules::ini_value::atoi_lenient(fields.get(4)?.trim()),
+        crate::rules::ini_value::atoi_lenient(fields.get(5)?.trim()),
+    ])
 }
 
 fn parse_trigger_id_param(fields: &[String], index: usize) -> Option<String> {

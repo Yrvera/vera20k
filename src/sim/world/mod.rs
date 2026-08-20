@@ -753,6 +753,11 @@ pub struct Simulation {
     /// rectangle). `None` only in headless tests with no map loaded.
     #[serde(default)]
     pub playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
+    /// Immutable signed `[Map] Size=` height retained for later LocalSize
+    /// normalization. The live predicate needs only Size width, but action 40
+    /// can rewrite the four LocalSize dwords repeatedly during a scenario.
+    #[serde(default)]
+    pub(crate) playfield_size_height: Option<i32>,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -2004,6 +2009,7 @@ impl Simulation {
             smudge_grid: None,
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
+            playfield_size_height: None,
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -2599,7 +2605,7 @@ impl Simulation {
     }
 
     /// Advance map triggers by one tick. Uses `std::mem::take` to avoid
-    /// self-borrow conflict (advance reads entity/interner state via `&Simulation`).
+    /// self-borrow conflict while actions read and mutate Simulation authority.
     fn advance_triggers(
         &mut self,
         graph: &TriggerGraph,
@@ -2618,6 +2624,64 @@ impl Simulation {
         );
         self.trigger_runtime = rt;
         effects
+    }
+
+    /// Install the initial normalized MapClass playfield authority.
+    ///
+    /// `MapClass::Set_Clipped_LocalSize @ 0x00567230` establishes the five
+    /// predicate fields. Size height is retained separately because later
+    /// action-40 writers normalize another raw LocalSize against the same Size.
+    pub(crate) fn install_playfield_from_map_header(
+        &mut self,
+        header: &crate::map::map_file::MapHeader,
+    ) {
+        self.playfield_size_height = Some(header.height as i32);
+        self.playfield_bounds = Some(
+            crate::sim::cell_rect::PlayfieldBounds::from_map_header(header),
+        );
+    }
+
+    /// Apply YR trigger action 0x28's mutable visible-map-area authority.
+    ///
+    /// `FUN_006E21E0` writes LocalSize, normalizes it, recalculates all cells,
+    /// rebuilds zone connectivity/all levels, and refreshes radar before it
+    /// returns to `TriggerAction__Execute @ 0x006DD8B0`. Rust performs every
+    /// corresponding owned update synchronously here, so later actions and
+    /// the same master frame observe one coherent authority.
+    pub(crate) fn change_visible_map_area(&mut self, raw_local_size: [i32; 4]) -> bool {
+        let (Some(current), Some(size_height)) =
+            (self.playfield_bounds, self.playfield_size_height)
+        else {
+            // A live scenario always has MapClass Size authority. Headless
+            // fixtures without a map must not invent a rectangular fallback.
+            return false;
+        };
+        let bounds = crate::sim::cell_rect::PlayfieldBounds::from_raw_local_size(
+            current.base,
+            size_height,
+            raw_local_size,
+        );
+        self.playfield_bounds = Some(bounds);
+
+        let radar_cells = self
+            .resolved_terrain
+            .as_mut()
+            .map(|terrain| terrain.recalc_playfield_attributes(bounds))
+            .unwrap_or_default();
+
+        // Rebuild from the retained structure-blocked PathGrid. PathGrid does
+        // not cache the outside flag; ZoneGrid does, so a full rebuild covers
+        // native connectivity plus every retained hierarchy level without
+        // discarding dynamic building blockers.
+        if let Some(path_grid) = self.path_grid.clone() {
+            self.rebuild_zone_grid_full(path_grid.as_ref());
+        }
+
+        // Native calls RefreshRadar after the cell/zone rebuild. The renderer
+        // consumes this complete dirty generation as its exact Rust-owned
+        // terrain/minimap invalidation seam.
+        self.mark_radar_terrain_dirty_cells(radar_cells);
+        true
     }
 
     fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {

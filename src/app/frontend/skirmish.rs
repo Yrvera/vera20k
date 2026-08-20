@@ -479,7 +479,7 @@ mod tests {
         map.header.local_top = 4;
         map.header.local_width = 76;
         map.header.local_height = 48;
-        sim.playfield_bounds = Some(PlayfieldBounds::from_map_header(&map.header));
+        sim.install_playfield_from_map_header(&map.header);
         sim.session.map_width = 138;
         sim.session.map_height = 138;
         sim.session.local_left = 2;

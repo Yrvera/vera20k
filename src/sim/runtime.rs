@@ -365,9 +365,7 @@ where
     // Normal loading first clips/normalizes LocalSize through
     // `MapClass::Set_Clipped_LocalSize @ 0x00567230`; every playfield consumer
     // then shares those stored fields and the same isometric-diamond test.
-    sim.playfield_bounds = Some(crate::sim::cell_rect::PlayfieldBounds::from_map_header(
-        &map_data.header,
-    ));
+    sim.install_playfield_from_map_header(&map_data.header);
     let bridge_destroyable = map_data
         .special_flags
         .effective_destroyable_bridges(bridge_destroyability_mode);

@@ -17,6 +17,82 @@ use crate::sim::snapshot::GameSnapshot;
 use crate::sim::world::{MasterFrameTestRung, Simulation, TickLane, TriggerInputs};
 use std::collections::BTreeMap;
 
+fn flat_trigger_playfield_terrain(
+    width: u16,
+    height: u16,
+) -> crate::map::resolved_terrain::ResolvedTerrainGrid {
+    use crate::map::resolved_terrain::{ResolvedTerrainCell, zone_class};
+    use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
+
+    let prototype = ResolvedTerrainCell {
+        rx: 0,
+        ry: 0,
+        source_tile_index: 0,
+        source_sub_tile: 0,
+        final_tile_index: 0,
+        final_sub_tile: 0,
+        is_wood_bridge_repair_tile: false,
+        level: 0,
+        filled_clear: false,
+        tileset_index: Some(0),
+        land_type: 0,
+        yr_cell_land_type: 0,
+        slope_type: 0,
+        template_height: 0,
+        height_in_pixels: 0,
+        render_offset_x: 0,
+        render_offset_y: 0,
+        terrain_class: TerrainClass::Clear,
+        speed_costs: SpeedCostProfile::default(),
+        is_water: false,
+        is_cliff_like: false,
+        is_rough: false,
+        is_road: false,
+        accepts_smudge: false,
+        allows_tiberium: false,
+        variant: 0,
+        has_ramp: false,
+        canonical_ramp: None,
+        ground_walk_blocked: false,
+        terrain_object_blocks: false,
+        terrain_object_occupation: None,
+        overlay_blocks: false,
+        overlay_zone_type: None,
+        outside_playfield: false,
+        zone_type: zone_class::GROUND,
+        base_ground_walk_blocked: false,
+        base_build_blocked: false,
+        base_land_type: 0,
+        base_yr_cell_land_type: 0,
+        base_terrain_class: TerrainClass::Clear,
+        base_speed_costs: SpeedCostProfile::default(),
+        build_blocked: false,
+        has_bridge_deck: false,
+        bridge_walkable: false,
+        bridge_transition: false,
+        bridge_deck_level: 0,
+        bridge_layer: None,
+        bridge_facts: crate::map::bridge_facts::BridgeCellFacts::default(),
+        tube_index: None,
+        radar_left: [0; 3],
+        radar_right: [0; 3],
+        has_damaged_data: false,
+        bridgehead_anchor_class_at_load: None,
+    };
+    let cells = (0..height)
+        .flat_map(|ry| {
+            let prototype = prototype.clone();
+            (0..width).map(move |rx| {
+                let mut cell = prototype.clone();
+                cell.rx = rx;
+                cell.ry = ry;
+                cell
+            })
+        })
+        .collect();
+    crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(width, height, cells)
+}
+
 fn make_trigger(
     id: &str,
     linked_trigger_id: Option<&str>,
@@ -72,6 +148,159 @@ fn spawn_type(sim: &mut Simulation, type_id: &str) -> u64 {
     );
     sim.substrate.entities.insert(ge);
     sid
+}
+
+#[test]
+fn change_visible_map_area_uses_native_parameter_indices_and_atoi() {
+    let fields = vec![
+        "991".to_string(),
+        "-774".to_string(),
+        "2cells".to_string(),
+        "41".to_string(),
+        "junk".to_string(),
+        "+38tail".to_string(),
+        "A".to_string(),
+    ];
+    assert_eq!(parse_visible_map_area(&fields), Some([2, 41, 0, 38]));
+    assert_eq!(parse_visible_map_area(&fields[..5]), None);
+}
+
+#[test]
+fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
+    use crate::map::map_file::MapHeader;
+    use crate::map::playfield::PlayfieldBounds;
+    use crate::map::resolved_terrain::zone_class;
+    use crate::rules::locomotor_type::MovementZone;
+    use crate::sim::movement::locomotor::MovementLayer;
+    use crate::sim::pathfinding::PathGrid;
+    use crate::sim::pathfinding::zone_map::ZONE_INVALID;
+
+    let triggers: TriggerMap = [(
+        "AREA".to_string(),
+        make_trigger("AREA", None, "Change visible map area", true, false),
+    )]
+    .into_iter()
+    .collect();
+    let events: EventMap = [(
+        "AREA".to_string(),
+        MapEvent {
+            id: "AREA".to_string(),
+            fields: vec![],
+            conditions: vec![EventCondition {
+                kind: 47,
+                params: vec!["0".to_string(), "0".to_string()],
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    // Stock all06umd-shaped payload: 40,0,0,2,41,56,38,A. With params equal
+    // to chunk[1..], ParamType/Param3 are the first two zeroes and LocalSize
+    // is exactly params[2..=5].
+    let actions: ActionMap = [(
+        "AREA".to_string(),
+        MapAction {
+            id: "AREA".to_string(),
+            fields: vec![],
+            entries: vec![ActionEntry {
+                kind: 40,
+                params: ["0", "0", "2", "41", "56", "38", "A"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            }],
+        },
+    )]
+    .into_iter()
+    .collect();
+    let graph = build_trigger_graph(
+        &HashMap::new(),
+        &HashMap::new(),
+        &triggers,
+        &events,
+        &actions,
+    );
+    let header = MapHeader {
+        theater: "TEMPERATE".to_string(),
+        fill: "Clear".to_string(),
+        level: 0,
+        width: 80,
+        height: 58,
+        local_left: 2,
+        local_top: 4,
+        local_width: 76,
+        local_height: 48,
+    };
+    let mut sim = Simulation::new();
+    sim.install_playfield_from_map_header(&header);
+    let initial_bounds = sim.playfield_bounds.expect("initial playfield");
+    let mut terrain = flat_trigger_playfield_terrain(100, 100);
+    terrain.recalc_playfield_attributes(initial_bounds);
+    let path_grid = PathGrid::from_resolved_terrain(&terrain);
+    sim.resolved_terrain = Some(terrain);
+    sim.rebuild_zone_grid(&path_grid);
+    sim.trigger_runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
+
+    let before_zone = sim
+        .zone_grid
+        .as_ref()
+        .and_then(|zones| zones.map_for(MovementZone::Normal))
+        .expect("normal zone")
+        .zone_at(50, 50, MovementLayer::Ground);
+    assert_ne!(before_zone, ZONE_INVALID);
+    assert!(
+        !sim.resolved_terrain
+            .as_ref()
+            .unwrap()
+            .cell(50, 50)
+            .unwrap()
+            .outside_playfield
+    );
+
+    let tick = sim.advance_master_frame(
+        &[],
+        None,
+        &BTreeMap::new(),
+        None,
+        None,
+        67,
+        TickLane::Ordinary,
+        Some(TriggerInputs {
+            graph: &graph,
+            triggers: &triggers,
+            events: &events,
+            actions: &actions,
+        }),
+    );
+
+    assert_eq!(
+        sim.playfield_bounds,
+        Some(PlayfieldBounds {
+            base: 80,
+            off_fc: 2,
+            off_100: 41,
+            off_104: 56,
+            // Raw 38 clips to Size bottom 17, then the six-cell margin caps 11.
+            off_108: 11,
+        })
+    );
+    let terrain = sim.resolved_terrain.as_ref().unwrap();
+    assert!(terrain.cell(50, 50).unwrap().outside_playfield);
+    assert_eq!(terrain.cell(50, 50).unwrap().zone_type, zone_class::OUTSIDE);
+    assert!(!terrain.cell(85, 85).unwrap().outside_playfield);
+    assert_eq!(terrain.cell(85, 85).unwrap().zone_type, zone_class::GROUND);
+    let zones = sim.zone_grid.as_ref().expect("zones rebuilt");
+    let normal = zones.map_for(MovementZone::Normal).expect("normal zone");
+    assert_eq!(normal.zone_at(50, 50, MovementLayer::Ground), ZONE_INVALID);
+    assert_ne!(normal.zone_at(85, 85, MovementLayer::Ground), ZONE_INVALID);
+    assert_eq!(sim.radar_terrain_dirty_cells.len(), 100 * 100);
+    assert_eq!(sim.radar_terrain_dirty_generation, 1);
+    assert_eq!(tick.state_hash, sim.state_hash());
+
+    let bytes = GameSnapshot::save(&sim, 0, 0, "all06umd.map", 0);
+    let restored = GameSnapshot::load(&bytes).expect("action-40 snapshot loads").sim;
+    assert_eq!(restored.playfield_bounds, sim.playfield_bounds);
+    assert_eq!(restored.playfield_size_height, sim.playfield_size_height);
 }
 
 #[test]
@@ -1244,7 +1473,7 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
     spawn_type(&mut sim, "GAPOWR");
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, Some(&sim)),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, Some(&mut sim)),
         vec![
             TriggerEffect::CenterCameraAtWaypoint {
                 waypoint: 11,

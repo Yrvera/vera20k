@@ -34,17 +34,33 @@ impl PlayfieldBounds {
     /// `MapClass::Set_Clipped_LocalSize @ 0x00567230`, including wrapping
     /// arithmetic for malformed headers and no post-cap saturation.
     pub(crate) fn from_map_header(header: &MapHeader) -> Self {
-        let size_width = header.width as i32;
-        let size_height = header.height as i32;
-        let [clipped_left, clipped_top, clipped_width, clipped_height] = clip_local_size_to_map(
-            size_width,
-            size_height,
+        Self::from_raw_local_size(
+            header.width as i32,
+            header.height as i32,
             [
                 header.local_left as i32,
                 header.local_top as i32,
                 header.local_width as i32,
                 header.local_height as i32,
             ],
+        )
+    }
+
+    /// Normalize one raw LocalSize writer against the immutable map Size.
+    ///
+    /// In addition to the load path above, active YR trigger action 0x28 writes
+    /// four new signed dwords and calls the same normalization immediately
+    /// (`TriggerAction__Execute @ 0x006DD8B0` -> `FUN_006E21E0`). Keeping this
+    /// here prevents trigger runtime from copying MapClass's clip/margin math.
+    pub(crate) fn from_raw_local_size(
+        size_width: i32,
+        size_height: i32,
+        raw_local_size: [i32; 4],
+    ) -> Self {
+        let [clipped_left, clipped_top, clipped_width, clipped_height] = clip_local_size_to_map(
+            size_width,
+            size_height,
+            raw_local_size,
         );
 
         let left = clipped_left.max(2);

@@ -25,6 +25,7 @@ use crate::map::bridge_facts::{
 };
 use crate::map::lat;
 use crate::map::map_file::{MapCell, MapFile};
+use crate::map::playfield::PlayfieldBounds;
 use crate::map::overlay::OverlayEntry;
 use crate::map::overlay_types::{
     OverlayTypeFlags, OverlayTypeRegistry, clears_tiberium_on_slope, retained_overlay_land,
@@ -570,6 +571,47 @@ impl ResolvedTerrainGrid {
                 .is_none_or(|mask| mask.get(index).copied().unwrap_or(false))
                 .then_some(cell)
         })
+    }
+
+    /// Recompute the playfield-derived part of every live CellClass cache.
+    ///
+    /// `FUN_006E21E0`, reached by TriggerAction kind 0x28 from
+    /// `TriggerAction__Execute @ 0x006DD8B0`, runs
+    /// `CellClass::RecalcAttributes(-1) @ 0x0047D2B0` over all cells after the
+    /// LocalSize writer. Rust stores the two affected derived facts directly:
+    /// `outside_playfield` and the reduced `zone_type` that consumes it.
+    /// Other RecalcAttributes inputs did not change, so rewriting them would
+    /// manufacture unrelated runtime behavior.
+    pub(crate) fn recalc_playfield_attributes(
+        &mut self,
+        bounds: PlayfieldBounds,
+    ) -> Vec<(u16, u16)> {
+        let (cells, native_allocated) = (&mut self.cells, &self.native_allocated);
+        let mut refreshed = Vec::with_capacity(cells.len());
+        for (index, cell) in cells.iter_mut().enumerate() {
+            if native_allocated
+                .as_ref()
+                .is_some_and(|mask| !mask.get(index).copied().unwrap_or(false))
+            {
+                continue;
+            }
+            let outside = !bounds.contains_height_aware_packed(
+                i32::from(cell.rx),
+                i32::from(cell.ry),
+                cell.level as i8,
+                cell.slope_type,
+            );
+            cell.outside_playfield = outside;
+            cell.zone_type = recalc_zone_type(
+                outside,
+                cell.overlay_zone_type,
+                cell.land_type,
+                cell.speed_costs.wheel,
+                cell.terrain_object_occupation,
+            );
+            refreshed.push((cell.rx, cell.ry));
+        }
+        refreshed
     }
 
     /// Return the cell's zero-based slot in the first sixteen tiles of either
