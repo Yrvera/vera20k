@@ -10,21 +10,28 @@ pub struct OpaqueCloakTuple {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-/// RESIDUAL (GSI-12.05) — this whole module is write-dead. No production code
-/// ever sets `GameEntity::cloak` or `::disguise`; `apply_transition`,
-/// `evaluate_fire_cloak_gates`, `can_open_still_disguise_gate` and
-/// `choose_default_mirage_disguise` have only test callers. `Cloakable=` and
-/// `CloakingSpeed=` are not parsed anywhere either, despite four stock entries
-/// each, so even the inputs are missing.
-/// - Trigger: any cloaking or disguising unit — Yuri's stealth armour, the
-///   Mirage Tank, a Spy.
-/// - Player effect: nothing ever cloaks or disguises. Those units fight as
-///   ordinary visible ones, which removes the entire stealth layer of the game.
-/// - Frequency: continuous in any match involving those factions or units.
-/// - Downstream risk: cloak state gates drawing, targeting legality and the
-///   sensor plane recorded as write-dead in `sim/vision/mod.rs`; landing it
-///   means landing both together, and it changes what every scan can see, so it
-///   moves the pinned replay hash.
+/// RESIDUAL (GSI-12.05) — the model is right and the producers are missing.
+/// `apply_transition` matches `TechnoClass::StartCloaking @ 0x00703770` and
+/// `StartUncloaking @ 0x007036C0` field for field; what is absent is the
+/// per-frame driver (`CloakingTick @ 0x006FB740`), the `Cloakable=` and
+/// `CloakingSpeed=` parses, and the forced-uncloak hooks on taking damage
+/// (`0x0070281D`), firing (`0x00520716` / `0x00737043`) and adjacency
+/// (`0x004D8829`). Nothing sets `GameEntity::cloak` or `::disguise` today.
+/// - Trigger: `Cloakable=` is authored on exactly FOUR stock types, all naval —
+///   `DLPH`, `SUB`, `SQD`, `BSUB`. Cloak in stock YR IS submarine submerging;
+///   pass 1's "Yuri's stealth armour, the Mirage Tank, a Spy" framing conflated
+///   this row with the disguise row, which has its own dead producer.
+/// - Player effect: submarines never submerge, so they fight as ordinary
+///   surface ships and the entire submarine layer of a naval match is missing.
+/// - Frequency: continuous in any match with naval production.
+/// - Downstream risk: it must land WITH the sensor writer (`sim/vision/mod.rs`,
+///   GSI-12.06) — native reads cloak from the object's own state and only the
+///   sensor COUNT from the cell, so VERA's `cloaked_by_houses` plane should be
+///   deleted rather than filled. The harness INI authors none of the five keys,
+///   so a correctly gated producer moves no pinned hash.
+/// - Correction: the provenance comment further down this file citing
+///   `FootClass::Uncloak @ 0x00515620` is WRONG — that address is mid-body of an
+///   unrelated movement function.
 pub struct CloakRuntime {
     /// Native state id. States 0..3 deliberately remain opaque.
     pub state: i32,

@@ -28,6 +28,7 @@ pub(crate) mod in_range;
 mod inviso_scatter;
 pub mod smudge_dispatch;
 pub(crate) mod threat_range;
+pub(crate) mod veterancy;
 
 #[cfg(test)]
 #[path = "combat_tests.rs"]
@@ -102,6 +103,13 @@ use super::production::foundation_dimensions;
 /// Radius in cells that RevealOnFire clears shroud around the fire location.
 const REVEAL_ON_FIRE_RADIUS: u16 = 3;
 /// Step size for selecting explosion anim from a warhead's AnimList: idx = damage / 25.
+/// The facing slack a firer is allowed before its shot is refused, in 16-bit
+/// facing units — 1/32 of a turn.
+///
+/// gamemd-derived: `UnitClass::GetFireError @ 0x00740FD0`, built at
+/// `0x007412C9`/`0x007412CC` and compared at `0x007412ED`/`0x007412EF`.
+const NATIVE_FIRE_FACING_TOLERANCE: i32 = 0x0800;
+
 const ANIM_LIST_DAMAGE_STEP: u16 = 25;
 
 /// Explicitly classified delivery decision at weapon fire.
@@ -129,41 +137,45 @@ enum ImmediateProjectileReason {
     Invisible,
     InstantSpeed,
     Vertical,
-    ObstacleTrajectory,
     SpecialTrajectory,
 }
 
-/// RESIDUAL (GSI-08.06/08.07/08.08) — this classifier is also the flight-model
-/// gate, and most of the native flight keys reach it only as reasons to opt
-/// *out* of authoritative flight rather than as models. `Vertical=` (5 stock),
-/// `Inaccurate=` (2), `Proximity=` (18), `SubjectToCliffs=` (30) and
-/// `SubjectToElevation=` (31) each disqualify a shot here;
-/// `ProjectileTrajectory` itself has only `Straight` and `Ballistic`, so
-/// vertical launch, scatter, proximity detection and cliff collision have no
-/// implementation to fall back on. `DetonationAltitude=` (4) is parsed with no
-/// reader, `Acceleration=` (6) is carried but unused by the advance, and
-/// `AirburstWeapon=` (1) has no consumer. The `airburst` bool it sits beside is
-/// carried into `ProjectileGuidance` and hashed, but its only behavioural read
-/// suppresses the cluster walk — it spawns no child, which is the gap.
+/// Which delivery path a weapon's shot takes.
 ///
-/// Two nearby keys are NOT gaps: `Floater=` (2) is read on both ballistic
-/// launch paths to halve gravity and is carried and hashed by the homing
-/// state, and `ShrapnelWeapon=` (5) is fully wired through
-/// `emit_projectile_shrapnel`, scenario-RNG cell selection included.
-/// - Trigger: firing any weapon whose projectile carries one of those keys —
-///   V3 and Dreadnought missiles, the nuke, Boomer torpedoes, prism scatter.
-/// - Player effect: those shots fall back to the non-authoritative path, so
-///   they resolve without the flight the player expects: no vertical climb, no
-///   scatter, no proximity detonation, and no airburst children.
-/// - Frequency: bounded by the types above rather than continuous, but V3s and
-///   Dreadnoughts are standard Soviet play and the nuke fires in most long
-///   matches.
-/// - Downstream risk: each missing model is its own trajectory implementation
-///   against `BulletClass::AI`; they share the projectile store but not the
-///   math, so they want separate slices. Launch-side effects are recorded
-///   separately: `spawn_manager.rs` already flags its launch-position drift, no
-///   `MuzzleFlash=` art anim is spawned for non-garrison weapons, and `Ammo=`
-///   is decremented only for aircraft.
+/// gamemd-derived: `BulletClass::AI @ 0x004666E0` has exactly two branches,
+/// keyed on `ROT < 1`; the non-homing arm then splits on `Vertical` (`+0x2C0`).
+/// `Arcing`, `SubjectToCliffs`, `SubjectToElevation`, `SubjectToWalls`,
+/// `Proximity`, `FlakScatter`, `Inviso` and `Cluster` are never read by the AI —
+/// they are launch-time or detonation-time keys — so only `ROT` and `Vertical`
+/// select a flight model.
+///
+/// RESIDUAL (GSI-08.06/08.07/08.08) — four gaps remain, all verified this pass:
+/// - **Launch speed.** `TechnoClassFireAtSpawnsBullet @ 0x006FDD50` sets a
+///   homing or vertical shot's speed to 1 lepton/frame, and
+///   `BulletClassFireRevealArmAndSubmit @ 0x00468670` renormalises the vector to
+///   magnitude 1.0 when `ROT > 0`; the weapon's `Speed=` is only the ceiling
+///   that `Acceleration=` (`+0x2D0`, default 3) ramps toward. VERA launches
+///   every non-ballistic shot at full weapon speed, so missiles leave the tube
+///   at terminal velocity and reach their target early. Frequency: continuous —
+///   every missile in the game. Closing it needs `max_speed_leptons_per_frame`
+///   beside the current speed and a per-frame ramp, and moves the projectile
+///   hash.
+/// - **`Inaccurate=`/`FlakScatter=` are launch-time offsets**, not
+///   disqualifiers: two scenario draws each, at `0x006FDD50` (`Inaccurate &&
+///   Arcing`) and `0x00468670` (`FlakScatter && Inviso`). They still divert a
+///   shot off the tracked path here rather than offsetting its target.
+/// - **`Vertical=`** is the one genuinely missing flight model (the nuke, the
+///   Kirov bomb, the Disc drain).
+/// - **Detonation.** `Arm` gates only the fuse in native, where VERA gates all
+///   four detonation reasons — so an unarmed shot that hits a wall silently
+///   vanishes — and the fuse's reference coordinate is frozen at launch in
+///   native while VERA measures to the live target. `ranged_fuse_distance_step`
+///   itself is bit-exact against `ProximityDetector::Check @ 0x004E11F0`.
+///
+/// Not gaps: `Floater=` is read on both ballistic launch paths, `ShrapnelWeapon=`
+/// is fully wired, and gravity applies to every `ROT < 1, Vertical=no` bullet —
+/// VERA's gravity-free straight arm is wrong, but only four rare stock
+/// projectiles use it.
 fn classify_projectile_delivery(
     weapon: &crate::rules::weapon_type::WeaponType,
     rules: &RuleSet,
@@ -183,16 +195,20 @@ fn classify_projectile_delivery(
     if projectile.vertical {
         return ProjectileDelivery::Immediate(ImmediateProjectileReason::Vertical);
     }
-    // YR BulletClass::AI linkage: Level's current-cell water predicate and
-    // wall entry are now owned by the world collision rung. Cliff/elevation
-    // kernels still need their native coordinate contracts.
+    // `BulletClass::AI @ 0x004666E0` reads neither `SubjectToCliffs` (+0x296)
+    // nor `SubjectToElevation` (+0x297) nor `Proximity` (+0x29F) — the flight
+    // loop branches only on `ROT < 1` and then on `Vertical` (+0x2C0). Those
+    // three keys are consumed elsewhere, so they must not disqualify a shot
+    // from authoritative flight; diverting them took essentially the whole
+    // missile family (every `AAHeatSeeker2` carrier, all stock AA missiles, the
+    // six Maverick weapons, the Dreadnought, dog and squid jumps, and Boomer
+    // torpedoes) off the tracked path.
+    //
+    // UNCHECKED: where `+0x296`/`+0x297` ARE consumed. Not in the AI loop; the
+    // collision rung already owns the wall and water predicates.
     let ballistic = projectile.arcing || weapon.lobber;
-    if !ballistic && (projectile.subject_to_cliffs || projectile.subject_to_elevation) {
-        return ProjectileDelivery::Immediate(ImmediateProjectileReason::ObstacleTrajectory);
-    }
     if projectile.dropping
         || (projectile.very_high && projectile.rot <= 0)
-        || projectile.proximity
         || projectile.flak_scatter
         || projectile.inaccurate
         || projectile.degenerates
@@ -243,6 +259,29 @@ pub(crate) fn projectile_uses_authoritative_flight(
 mod projectile_delivery_tests {
     use super::*;
     use crate::rules::ini_parser::IniFile;
+
+    /// `BulletClass::AI @ 0x004666E0` branches only on `ROT < 1` and, on the
+    /// non-homing arm, on `Vertical`. `Proximity`, `SubjectToCliffs` and
+    /// `SubjectToElevation` are never read there, so none of them may push a
+    /// shot off authoritative flight.
+    #[test]
+    fn gsi_08_07_proximity_and_cliff_keys_keep_authoritative_flight() {
+        let ini = IniFile::from_str(
+            "[VehicleTypes]\n0=PROXER\n1=CLIFFER\n[PROXER]\nStrength=100\nArmor=heavy\nPrimary=ProxGun\n[CLIFFER]\nStrength=100\nArmor=heavy\nPrimary=CliffGun\n[ProxGun]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=Prox\nWarhead=WH\n[CliffGun]\nDamage=10\nROF=20\nRange=5\nSpeed=40\nProjectile=Cliffy\nWarhead=WH\n[Prox]\nProximity=yes\nROT=8\n[Cliffy]\nSubjectToCliffs=yes\nSubjectToElevation=yes\nROT=0\n[WH]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("projectile fixture parses");
+
+        for weapon_name in ["ProxGun", "CliffGun"] {
+            let weapon = rules.weapon(weapon_name).expect("weapon");
+            assert!(
+                matches!(
+                    classify_projectile_delivery(weapon, &rules),
+                    ProjectileDelivery::Persistent { .. }
+                ),
+                "{weapon_name} must stay on the tracked path"
+            );
+        }
+    }
 
     #[test]
     fn wall_projectile_uses_the_authoritative_collision_path() {
@@ -521,9 +560,12 @@ pub struct AttackTarget {
     pub pending_infantry_fire: Option<PendingInfantryFire>,
 }
 
-/// Delay in simulation ticks between individual shots within a burst.
-/// 1 game frame (~66ms) — fast but visible.
-const BURST_INTER_SHOT_DELAY: u8 = 1;
+/// The inclusive bounds of the mid-burst delay draw.
+///
+/// gamemd-derived: `TechnoClass::GetROF @ 0x006FCFA0` — the mid-burst branch
+/// (`burst index < Burst=`) returns `Random::RandomRanged(3, 5)`.
+const BURST_INTER_SHOT_DELAY_MIN: i32 = 3;
+const BURST_INTER_SHOT_DELAY_MAX: i32 = 5;
 
 fn infantry_fire_sequence(
     obj: &ObjectType,
@@ -1176,22 +1218,26 @@ fn emit_infantry_death_anim(
 ///
 /// `base_damage` is the post-modifier damage at the impact center; it
 /// drives AnimList selection via `damage / 25`, clamped to `len - 1`.
-/// RESIDUAL (GSI-08.11) — a dying unit does not play its own explosion. The
-/// effect chosen here comes from the *warhead*'s `AnimList=` (70 stock entries)
-/// indexed by damage; the TechnoType's own `Explosion=` list is authored on 487
-/// stock entries and has no reader anywhere in the crate. Crew survival is the
-/// other half: `Crewed=` (126 stock) only queues the building arm, so a
-/// destroyed `Crewed=yes` vehicle ejects nobody, and no survivor-type resolution
-/// exists — the survivor path here handles the smudge, not the unit.
-/// - Trigger: every unit and building death.
-/// - Player effect: deaths look wrong twice over. A Grizzly and an Apocalypse
-///   die with the same warhead-derived puff instead of their authored
-///   explosions, and no crew ever runs out of a wreck or a levelled structure.
-/// - Frequency: continuous — this is the most-watched moment in the game.
+/// The dying object's OWN explosion is emitted separately, in the death loop —
+/// see `UnitClass::Death_Explosion @ 0x00738680` there. This function is only
+/// the warhead's half.
+///
+/// RESIDUAL (GSI-08.11) — crew survival is still absent. `Crewed=` (126 stock
+/// sections) only queues the building smudge arm, so a destroyed `Crewed=yes`
+/// vehicle ejects nobody. Native resolves the survivor's type through
+/// `TechnoClass::Crew_Type @ 0x00707D20` (`AlliedCrew`/`SovietCrew`/`ThirdCrew`
+/// by side, falling to `Technician` behind a 15% `RandomRanged(0, 99)` draw for
+/// a veteran), ejects exactly one from a vehicle behind a `CrewEscape` draw
+/// (Rules `+0x5C0`, stock 50%), and 0-5 from a building through
+/// `How_Many_Survivors @ 0x00451330` (cost / `*SurvivorDivisor`, clamped 1..5)
+/// with a per-cell roll interleaved with the debris roll.
+/// - Trigger: every `Crewed=yes` vehicle or building death.
+/// - Player effect: no crew ever runs out of a wreck or a levelled structure.
+/// - Frequency: continuous.
 /// - Downstream risk: crew ejection spawns entities, so it moves unit counts,
-///   occupancy and the pinned replay hash; the explosion swap is comparatively
-///   contained but still changes anim spawn order and its RNG draws. The debris
-///   half of this row is recorded separately on `rules/warhead_type.rs`.
+///   occupancy, house counts and the pinned replay hash, and its per-cell draw
+///   order interleaves with the existing debris roll — it wants its own slice.
+///   The debris half of this row is recorded on `rules/warhead_type.rs`.
 pub(crate) fn emit_warhead_detonation_effects(
     warhead: &WarheadType,
     base_damage: i32,
@@ -2147,6 +2193,53 @@ fn handle_entity_deaths(
                 });
             }
 
+            // `UnitClass::Death_Explosion @ 0x00738680` for vehicles and
+            // `AircraftClass::ReceiveDamage @ 0x0041661F` for aircraft: after
+            // the killing warhead's own `AnimList=` anim, the dying object plays
+            // ONE anim drawn from its type's `Explosion=` list and then one from
+            // `DestroyAnim=`, both at its own coordinate, one `Random__Next()`
+            // draw each. Without this a Grizzly and an Apocalypse died with the
+            // same warhead-derived puff.
+            //
+            // INFANTRY are excluded deliberately: `get_xrefs_to 0x00738680`
+            // returns four callers, all `UnitClass`, and an operand scan for the
+            // `Explosion=` count (`type+0x73C`) finds readers only in
+            // `AircraftClass::ReceiveDamage` and
+            // `BuildingClass::DestructionEffects @ 0x0044194D`. Infantry death
+            // spawns from the `InfDeath`/`DeathAnims` table alone. No stock
+            // `[InfantryTypes]` section authors `Explosion=` either, so this is
+            // a contract correction rather than a visible one.
+            //
+            // RESIDUAL (GSI-08.11) — the BUILDING arm is not modelled. Native
+            // runs `BuildingClass::DestructionEffects @ 0x004415F0`, which plays
+            // the `Explosion=` list once PER FOUNDATION CELL at cell centre with
+            // a scatter helper and a `RandomRanged(0, 3)` anim delay, then one
+            // `DestroyAnim=` at the building coordinate; the sub-order of the
+            // scatter, delay and index draws is UNCHECKED, and getting it wrong
+            // would misroute the stream for every structure death. `Explodes=`
+            // (forcing the last `Explosion=` entry for a loaded miner) is
+            // likewise unread. Trigger: every building death, and every loaded
+            // miner death. Frequency: continuous.
+            if matches!(category, EntityCategory::Unit | EntityCategory::Aircraft)
+                && let Some(obj) = rules.object(interner.resolve(type_id))
+            {
+                for list in [&obj.explosion_anims, &obj.destroy_anims] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let index = (main_rng.next_u32() % list.len() as u32) as usize;
+                    let shp_name = interner.intern(&list[index]);
+                    explosion_effects.push(ExplosionEffect {
+                        shp_name,
+                        rx,
+                        ry,
+                        sub_x,
+                        sub_y,
+                        z,
+                    });
+                }
+            }
+
             if has_animation {
                 // Transitional Infantry/SHP handoff: health was already reduced
                 // to zero by damage processing. Combat owns only the Rust death
@@ -2156,7 +2249,13 @@ fn handle_entity_deaths(
                     .as_ref()
                     .map(|(wh, _)| wh.inf_death)
                     .unwrap_or(1);
-                if category == EntityCategory::Infantry {
+                // The two arms are mutually exclusive in native: the jump
+                // table at 0x00518D58 either runs `Do_Action(Die1|Die2)` with
+                // no anim (InfDeath 1, 2) or spawns an anim with no sequence
+                // (InfDeath 3..10), and InfDeath 0 or > 10 does neither.
+                if category == EntityCategory::Infantry
+                    && crate::sim::animation::inf_death_spawns_anim(inf_death)
+                {
                     concrete_smudge_plans.push(ConcreteDeathSmudgePlan::Infantry {
                         inf_death,
                         rx,
@@ -2169,9 +2268,12 @@ fn handle_entity_deaths(
                 }
                 if let Some(entity) = entities.get_mut(dead_id) {
                     entity.dying = true;
-                    if let Some(ref mut anim) = entity.animation {
-                        use crate::sim::animation::death_sequence_for_inf_death;
-                        anim.switch_to(death_sequence_for_inf_death(inf_death));
+                    if let Some(sequence) =
+                        crate::sim::animation::death_sequence_for_inf_death(inf_death)
+                    {
+                        if let Some(ref mut anim) = entity.animation {
+                            anim.switch_to(sequence);
+                        }
                     }
                 }
                 // Still report as "despawned" for fog/path updates — entity is
@@ -2264,9 +2366,10 @@ fn handle_entity_deaths(
                     ry: *ry,
                     damage: (*dmg).min(i32::from(u16::MAX)) as u16,
                     warhead_ref: wh_iid,
-                    is_ion_cannon: wh_iid == handles
-                        .expect("Simulation::resolve_type_handles must run before combat")
-                        .ion_cannon,
+                    is_ion_cannon: wh_iid
+                        == handles
+                            .expect("Simulation::resolve_type_handles must run before combat")
+                            .ion_cannon,
                     impact_z: *z as i32,
                 });
             }
@@ -2833,7 +2936,9 @@ pub(crate) fn commit_area_damage_receivers(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     commit_area_damage_receivers_with_scenario(
         receivers,
         entities,
@@ -3060,7 +3165,9 @@ pub(crate) fn commit_damage_events(
     sound_sink: &mut Option<&mut Vec<SimSoundEvent>>,
 ) -> (DeathEffects, Vec<UnderAttackEvent>) {
     // Test-convenience wrapper: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     commit_damage_events_with_isolation(
         damage_events,
         None,
@@ -3310,6 +3417,20 @@ fn commit_damage_events_with_isolation(
             // before Destroy's reference notification and before TechnoClass's
             // victim-house anger callback.
             capture_kill_credit(target, attacker_owner, rules, interner);
+        }
+        // `Record_The_Kill` awards the killer's experience in the same call, so
+        // it is a same-tick write the victim's own death effects can already
+        // observe. Deferring it to the lifecycle release point would change that
+        // visibility.
+        if reached_exact_zero {
+            award_kill_experience(
+                entities,
+                rules,
+                interner,
+                alliances,
+                attacker_id,
+                target_id,
+            );
         }
         if postmortem_candidate.is_some()
             && let Some(hook) = inline_hooks.as_deref_mut()
@@ -4052,7 +4173,8 @@ fn emit_one_projectile_detonation(
                 ry: impact_ry,
                 damage,
                 warhead_ref: detonation.payload.warhead,
-                is_ion_cannon: detonation.payload.warhead == handles
+                is_ion_cannon: detonation.payload.warhead
+                    == handles
                         .expect("Simulation::resolve_type_handles must run before combat")
                         .ion_cannon,
                 impact_z,
@@ -4330,7 +4452,9 @@ pub fn tick_combat_with_fog(
     scenario_rng: &mut SimRng,
 ) -> CombatTickResult {
     // Test-convenience entry: resolve rule handles the way sim init does.
-    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(rules, interner));
+    let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+        rules, interner,
+    ));
     let mut unused_main_rng = SimRng::new(0);
     let mut empty_houses = BTreeMap::new();
     tick_combat_with_fog_and_main_rng(
@@ -5742,6 +5866,73 @@ pub(crate) fn score_award_for_victim(victim: Option<&ObjectType>, veterancy: u16
     cost.saturating_mul(multiplier)
 }
 
+/// Resolve and pay one kill's veterancy award.
+///
+/// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40`. The award is the
+/// victim's cost, zeroed when the two houses are allied and otherwise doubled
+/// for a veteran victim or tripled for an elite one; the recipient's own cost
+/// then divides it inside `VeterancyClass::Add @ 0x0074FF50`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn award_kill_experience(
+    entities: &mut EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    alliances: &HouseAllianceMap,
+    killer_id: u64,
+    victim_id: u64,
+) {
+    if killer_id == RAD_NO_ATTACKER || killer_id == victim_id {
+        return;
+    }
+    // `Record_The_Kill` reads the VICTIM type's `DontScore=` byte (`+0xC9F`) at
+    // 0x00702E4E and returns before the rank multiplier, before the accumulator
+    // and before the score add. Stock authors it on `SLAV`, `V3ROCKET`, `DMISL`
+    // and `CMISL` — the last three are the V3, Dreadnought and Boomer missiles,
+    // shot down by AA in most matches, so without this gate every intercepted
+    // missile promotes the interceptor.
+    let Some((victim_cost, victim_rank, victim_owner)) = entities
+        .get(victim_id)
+        .filter(|victim| !victim.dont_score)
+        .map(|victim| {
+            (
+                rules
+                    .object(interner.resolve(victim.type_ref))
+                    .map_or(0, |obj| obj.cost),
+                self::veterancy::rank_of(victim.veterancy_raw),
+                victim.owner,
+            )
+        })
+    else {
+        return;
+    };
+    let Some((killer_cost, trainable, killer_owner)) = entities.get(killer_id).and_then(|killer| {
+        rules
+            .object(interner.resolve(killer.type_ref))
+            .map(|obj| (obj.cost, obj.trainable, killer.owner))
+    }) else {
+        return;
+    };
+    // `0x00702E64` loads the KILLER's house and calls `HouseClass::IsAlly @
+    // 0x004F9A90`, which reads only the asker's own ally bitfield — a one-way
+    // test, not the symmetric OR most "don't shoot me" call sites want.
+    let allied = crate::map::houses::is_allied_with(
+        alliances,
+        interner.resolve(killer_owner),
+        interner.resolve(victim_owner),
+    );
+    let points = self::veterancy::kill_award_points(victim_cost, victim_rank, allied);
+    if let Some(killer) = entities.get_mut(killer_id) {
+        self::veterancy::award_kill(
+            killer,
+            killer_cost,
+            points,
+            trainable,
+            rules.general.veteran_ratio,
+            rules.general.veteran_cap,
+        );
+    }
+}
+
 /// Record who destroyed `victim`, at the instant it happened.
 ///
 /// Every lethal path funnels through here so there is one capture rather than a
@@ -6203,23 +6394,53 @@ pub(crate) fn resolve_attacker_fire(
             target_sub_x,
             target_sub_y,
         );
-        // Aligned iff destination matches AND no rotation in progress.
-        // Both checks needed: destination may match while interpolation
-        // is still mid-arc (animated value not yet at destination).
+        // gamemd-derived: the turret alignment arm of the fire gate —
+        // `UnitClass::GetFireError @ 0x00740FD0`, tolerance built at
+        // `0x007412C3`..`0x007412CC` and compared at
+        // `0x007412D4`..`0x007412EF`. Native does NOT require an exact match
+        // and has no not-rotating term: it takes the 16-bit signed difference
+        // between the animated facing and the desired one, and fires whenever
+        // `|delta| <= tolerance`. The `JGE` skips the error return, so `0x0800`
+        // itself passes and `0x0801` fails. `AircraftClass::GetFireError @
+        // 0x0041A9E0` hardcodes the same `0x800`.
+        //
+        // DRIFT (GSI-08.03) — the wider arm is not modelled. Native widens the
+        // tolerance to `0x1000` when `[type+0x2DC]` is set
+        // (`NEG`/`SBB`/`AND 8`/`ADD 8` at `0x007412C3`), and
+        // `BuildingClass::GetFireError @ 0x00447F10` narrows it to `0x0000`
+        // when its own flag is set. Both flags are UNCHECKED, so only the
+        // common `0x0800` constant is implemented.
+        // - Trigger: firing a weapon whose type sets `+0x2DC`.
+        // - Player effect: that weapon holds fire through an arc native would
+        //   already shoot through — at most one extra 1/32-turn of swing.
+        // - Frequency: unknown until `+0x2DC` is identified; bounded by however
+        //   many weapon types set it.
+        // - Downstream risk: none structural; the constant becomes a lookup.
         // RESIDUAL (GSI-08.04) — this gate exists only for entities that have a
-        // `barrel_facing`. Turretless vehicles, all infantry and all structures
-        // reach the fire step with no facing test at all, so they shoot
-        // instantly in any direction; native gates a turretless firer on its
-        // body facing.
-        // - Trigger: any turretless attacker acquiring a target off its heading.
-        // - Player effect: no turn-to-fire delay — an artillery piece or a rifle
-        //   infantryman fires the frame it acquires instead of after swinging
-        //   round, so first shots land early and units never visibly line up.
-        // - Frequency: continuous; infantry alone make this most engagements.
-        // - Downstream risk: adding the gate delays first shots, which moves
-        //   engagement outcomes and the pinned replay hash, so it wants its own
-        //   slice alongside the body-facing rate work.
-        let aligned = barrel.current(binary_frame) == desired && !barrel.is_rotating(binary_frame);
+        // `barrel_facing`, and native gates one more class of firer.
+        // `UnitClass::GetFireError @ 0x00740FD0` tests a TURRETLESS vehicle on
+        // its body facing (`this+0x388`) with the same 0x0800 tolerance, and
+        // `BuildingClass::GetFireError @ 0x00447F10` gates a turreted structure
+        // the same way. Infantry are NOT angle-gated at all — they are gated by
+        // their FIRE animation sequence in `InfantryClass::Fire_At_Target @
+        // 0x005206B0` — so VERA's lack of an angle test for them is correct,
+        // and a turretless STRUCTURE gets no gate in native either.
+        // - Trigger: any turretless vehicle acquiring a target off its heading.
+        // - Player effect: no turn-to-fire delay — an artillery piece fires the
+        //   frame it acquires instead of after swinging round, so first shots
+        //   land early and the unit never visibly lines up.
+        // - Frequency: continuous for the artillery/V3/Dreadnought family; the
+        //   infantry half of pass 1's claim was wrong, which removes most of the
+        //   volume it attributed here.
+        // - Downstream risk: the gate cannot land alone. On failure native
+        //   returns code 2 and `UnitClass::Fire_At_Target @ 0x00736DF0` commands
+        //   the body toward the target without consuming cooldown; VERA emits a
+        //   facing destination only for turreted units, so gating a turretless
+        //   attacker today would freeze it — it would never turn and never fire.
+        //   The emitter comes first, then the gate, and both move engagement
+        //   outcomes and the pinned replay hash.
+        let delta = i32::from(barrel.current(binary_frame).wrapping_sub(desired) as i16);
+        let aligned = delta.abs() <= NATIVE_FIRE_FACING_TOLERANCE;
         if !aligned {
             if pending_at_fire_frame {
                 out.pending_infantry_updates.push((snap.stable_id, None));
@@ -6339,6 +6560,18 @@ pub(crate) fn resolve_attacker_fire(
     }
 
     // Fire one shot!
+    //
+    // The burst index is needed twice — the fire coordinate mirrors its lateral
+    // offset on odd shots, and the burst state machine advances on it — so it is
+    // resolved once here.
+    let weapon_burst: u8 = weapon.burst.max(1) as u8;
+    let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
+        0
+    } else {
+        weapon_burst
+            .saturating_sub(snap.burst_remaining)
+            .min(weapon_burst.saturating_sub(1))
+    };
     let warhead = selected.warhead;
     // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
     // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
@@ -6382,32 +6615,49 @@ pub(crate) fn resolve_attacker_fire(
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
             TargetKind::Cell(rx, ry) => ProjectileTarget::Cell { rx, ry },
         };
-        // RESIDUAL (GSI-08.04) — the shot leaves the unit's centre, not its
-        // barrel. `PrimaryFireFLH=`/`SecondaryFireFLH=` and their elite variants
-        // are parsed and transformed (`rules/flh.rs`, `util/flh_transform.rs`),
-        // but the only consumer is `app/presentation/fire_effects.rs`, which
-        // places the muzzle flash and the report sound. Native's fire location
-        // is weapon-slot and barrel-facing dependent and is what the projectile
-        // is launched from, what range is measured from, and what line of fire
-        // is traced from.
-        // - Trigger: every shot from a unit whose FLH is not the origin, which
-        //   in stock artmd is most of them.
-        // - Player effect: the muzzle flash and the projectile disagree — the
-        //   flash sits at the barrel and the shot starts at the hull centre, so
-        //   at short range the tracer visibly begins in the wrong place. Range
-        //   is also measured from the centre, so a long-barrelled unit reaches
-        //   marginally less far than it should.
-        // - Frequency: continuous, every shot.
-        // - Downstream risk: high. Moving the origin changes ballistic launch
-        //   vectors and therefore impact frames, so it moves the pinned replay
-        //   hash and the closed ballistic vector tests; it also wants the
-        //   turret/barrel facing split recorded on `movement/turret.rs`, since
-        //   the native fire location reads the barrel facing rather than the
-        //   receiver's.
+        // `TechnoClass::Fire_At` launches the bullet FROM the fire coordinate —
+        // `GetFLH @ 0x006F3AD0`, the muzzle — and derives the launch velocity as
+        // `target - FLH`, so the barrel offset sets both where the shot starts
+        // and which way it leaves. The muzzle animation and the report sound at
+        // `0x006FF3BE`/`0x006FF38B` are handed the identical local, which is why
+        // the presentation layer's own FLH use is the same contract rather than
+        // a second computation.
+        //
+        // The aim facing is the turret's when the attacker has one and the
+        // body's otherwise; the body facing supplies the base rotation.
+        let body_facing16 = crate::sim::movement::turret::body_facing_to_turret(snap.facing);
+        let aim_facing16 = snap
+            .barrel_facing
+            .as_ref()
+            .map_or(body_facing16, |barrel| barrel.current(binary_frame));
+        let flh_delta = rules
+            .art_registry
+            .get(&obj.image)
+            .or_else(|| rules.art_registry.get(&obj.id))
+            .and_then(|art| {
+                let flh = crate::rules::flh::resolve_flh(
+                    art.primary_fire_flh,
+                    art.secondary_fire_flh,
+                    art.elite_primary_fire_flh,
+                    art.elite_secondary_fire_flh,
+                    matches!(selected.slot, WeaponSlot::Primary),
+                    snap.veterancy,
+                );
+                crate::util::flh_transform::native_flh_world_delta(
+                    flh.forward,
+                    flh.lateral,
+                    flh.height,
+                    art.turret_offset,
+                    aim_facing16,
+                    body_facing16,
+                    burst_index,
+                )
+            })
+            .unwrap_or((0, 0, 0));
         let origin = ProjectileCoord::new(
-            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
-            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
-            origin_world_z_leptons,
+            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>() + flh_delta.0,
+            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>() + flh_delta.1,
+            origin_world_z_leptons + flh_delta.2,
         );
         let projectile_type = weapon
             .projectile
@@ -6546,7 +6796,8 @@ pub(crate) fn resolve_attacker_fire(
                 ry: target_ry,
                 damage: base_damage.min(i32::from(u16::MAX)) as u16,
                 warhead_ref: wh_iid,
-                is_ion_cannon: wh_iid == handles
+                is_ion_cannon: wh_iid
+                    == handles
                         .expect("Simulation::resolve_type_handles must run before combat")
                         .ion_cannon,
                 impact_z,
@@ -6609,14 +6860,6 @@ pub(crate) fn resolve_attacker_fire(
         .report
         .as_ref()
         .map(|report_id| interner.intern(report_id));
-    let weapon_burst: u8 = weapon.burst.max(1) as u8;
-    let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
-        0
-    } else {
-        weapon_burst
-            .saturating_sub(snap.burst_remaining)
-            .min(weapon_burst.saturating_sub(1))
-    };
     out.fire_events.push(SimFireEvent {
         attacker_id: snap.stable_id,
         attacker_type_ref: snap.type_id,
@@ -6658,10 +6901,24 @@ pub(crate) fn resolve_attacker_fire(
         snap.burst_remaining.saturating_sub(1)
     };
     if current_remaining > 0 {
+        // gamemd-derived: `TechnoClass::GetROF @ 0x006FCFA0`, mid-burst branch.
+        // The gap between shots inside a burst is drawn, not fixed.
+        //
+        // RESIDUAL (GSI-08.05) — the infantry override ahead of the draw is not
+        // modelled. Native checks `InfantryTypeClass::BurstDelay{1..4}`
+        // (`+0xE44 + idx*4`, sentinel `-1`) first for an infantry firer and
+        // returns the authored value without drawing. No stock section authors
+        // any `BurstDelay%d=`, so every stock burst reaches the draw and the
+        // draw count is unchanged; a mod that authors one would diverge, and
+        // would also consume an RNG draw native does not.
+        let burst_delay = scenario_rng.next_range_u32_inclusive(
+            BURST_INTER_SHOT_DELAY_MIN as u32,
+            BURST_INTER_SHOT_DELAY_MAX as u32,
+        ) as u8;
         out.burst_updates
-            .push((snap.stable_id, current_remaining, BURST_INTER_SHOT_DELAY, 0));
+            .push((snap.stable_id, current_remaining, burst_delay, 0));
     } else {
-        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof);
+        let mut rof_ticks = rof_to_cooldown_frames(weapon.rof, scenario_rng);
         // Garrison ROF: divide by occupant count, then by multiplier.
         // More occupants = proportionally faster fire (gamemd GetROF 0x006FCFA0).
         if let Some(ref gs) = snap.garrison {
@@ -6734,27 +6991,42 @@ pub(crate) fn is_within_range_leptons(dist_sq_leptons: i64, range_cells: SimFixe
     dist_sq_leptons <= range_sq
 }
 
-/// `ROF=` is already a native frame count, so the cooldown is the raw value.
+/// The end-of-burst reload, from `TechnoClass::GetROF @ 0x006FCFA0`.
 ///
-/// RESIDUAL (GSI-08.05) — nothing modifies it. `[General] VeteranROF=` is
-/// present in stock and has no consumer, so a veteran or elite unit reloads at
-/// exactly its rookie cadence; the only thing veterancy changes about firing is
-/// which weapon an elite selects. `RadialFireSegments=` is not parsed at all
-/// (one stock entry), and `BurstDelay=` is not parsed either, so the inter-shot
-/// gap inside a burst is the fixed `BURST_INTER_SHOT_DELAY` constant rather
-/// than an authored one.
-/// - Trigger: any promoted unit firing, and the one stock radial-fire type.
-/// - Player effect: promoted units feel slower than they should — a veteran
-///   Grizzly gains damage but not rate — and the radial type fires as an
-///   ordinary single-target weapon.
-/// - Frequency: the veterancy arm is continuous once promotion exists; today it
-///   is zero, because nothing promotes (see the GSI-08.12 residual). The
-///   `BurstDelay=` arm never fires in stock, which authors the key nowhere.
-/// - Downstream risk: `VeteranROF` becomes live the moment promotion lands, so
-///   the two want sequencing; changing cadence also moves every combat timing
-///   test and the pinned replay hash.
-fn rof_to_cooldown_frames(rof_frames: i32) -> u16 {
-    rof_frames.clamp(1, u16::MAX as i32) as u16
+/// gamemd-derived: the full-ROF branch computes
+/// `ftol(ROF * house difficulty ROF + Random::RandomRanged(0, 2))`. `ROF=` is
+/// already a native frame count, and the jitter is an ADDED integer, not a
+/// scale — a shot's reload is `ROF`, `ROF + 1` or `ROF + 2`. The draw is
+/// unconditional on this branch, so it must stay in the same slice as the
+/// mid-burst draw or the scenario stream shifts twice.
+///
+/// RESIDUAL (GSI-08.05) — three arms of the native function are still absent.
+/// - The per-house difficulty multiplier. Native scales `ROF` by the owning
+///   house's difficulty ROF before the truncation; VERA parses no
+///   `[Easy]/[Normal]/[Difficult] ROF=` and plumbs no per-house difficulty to
+///   this site. Frequency today: zero — every house in VERA is Normal, whose
+///   stock value is `1.0`, and there is no AI opponent to carry another.
+///   It becomes ±20% on every weapon in the game the moment a difficulty other
+///   than Normal can reach a house.
+/// - `[General] VeteranROF=` (`RulesClass+0x690`, read at `0x0066EF61`, stock
+///   0.6). Native applies it ONCE — there is no `EliteROF` key in the binary —
+///   and only when the firer's `VeteranAbilities=`/`EliteAbilities=` list
+///   contains `ROF` (`TechnoTypeClass+0x2A0` / `+0x2B2`, 40 and 68 stock
+///   types). Frequency today: zero, because nothing promotes (GSI-08.12);
+///   continuous the moment promotion lands, which is why the two want
+///   sequencing.
+/// - `RadialFireSegments=` (`TechnoTypeClass+0x6A4`) is not parsed. One stock
+///   author, `[AEGIS]`, which is buildable in an ordinary skirmish: native
+///   replaces the launch direction with
+///   `body facing + (PI * counter / segments - PI / 2)`, cycling a counter at
+///   `TechnoClass+0x43C`. Player effect: the Aegis Cruiser fires straight at
+///   one target instead of sweeping its flak arc. Frequency: every Aegis
+///   engagement in an Allied naval match.
+/// - Downstream risk: all three change firing cadence or direction, so each
+///   moves combat-timing fixtures and the pinned replay hash.
+fn rof_to_cooldown_frames(rof_frames: i32, scenario_rng: &mut SimRng) -> u16 {
+    let jitter = scenario_rng.next_range_u32_inclusive(0, 2) as i32;
+    rof_frames.saturating_add(jitter).clamp(1, u16::MAX as i32) as u16
 }
 
 pub use self::combat_targeting::{acquire_best_target_for_entity, tick_retaliation};

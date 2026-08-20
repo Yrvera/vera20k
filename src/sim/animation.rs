@@ -618,17 +618,40 @@ pub fn tick_voxel_animations(entities: &mut crate::sim::entity_store::EntityStor
     }
 }
 
-/// Map warhead InfDeath value to the appropriate death SequenceKind.
+/// Map a warhead's `InfDeath=` to the death sequence, if it selects one at all.
 ///
-/// InfDeath: 1→Die1, 2→Die2, 3→Die3, 4→Die4, 5→Die5. 0 defaults to Die1.
-pub fn death_sequence_for_inf_death(inf_death: u8) -> SequenceKind {
-    match inf_death.min(5) {
-        2 => SequenceKind::Die2,
-        3 => SequenceKind::Die3,
-        4 => SequenceKind::Die4,
-        5 => SequenceKind::Die5,
-        _ => SequenceKind::Die1,
+/// gamemd-derived: the `InfantryClass` death handler's jump table at
+/// `0x00518D58`, dispatched on `InfDeath - 1` over the range 0..9. The mapping
+/// is EXCLUSIVE: `1` plays `Die1` and `2` plays `Die2` with no animation, while
+/// `3..=10` spawn an animation and no sequence, and `0` or `> 10` do nothing at
+/// all. `Die3`, `Die4` and `Die5` are unreachable — no arm reaches DoType
+/// `0x0D`/`0x0E`/`0x0F`. Selection draws no RNG: `Do_Action` is called with
+/// `randomStart = 0`, which is the parameter that gates the frame-start draw.
+///
+/// RESIDUAL (GSI-08.13) — four arms ahead of the table are not modelled, each
+/// needing a field VERA does not carry: a paradropping infantryman forces
+/// `InfDeath = 3` (`CurrentDoType == 33`); a kill by a building whose type sets
+/// `+0x16BF` forces `5`, the Tesla-Coil skeleton death; a type with a non-empty
+/// `DeathAnims` list (`+0xE7C`) spawns from that list and returns, taking NO
+/// sequence; and `NotHuman=` (`+0xEAD`) forces `Die1`. Trigger: paradrops, any
+/// Tesla kill, and the `NotHuman=` types. Player effect: a Tesla-Coiled
+/// infantryman plays the ordinary death instead of the skeleton, and a
+/// `NotHuman=` type plays a sequence it does not own. Frequency: Tesla Coils are
+/// routine in a Soviet match; paradrops are per-support-power.
+pub fn death_sequence_for_inf_death(inf_death: u8) -> Option<SequenceKind> {
+    match inf_death {
+        1 => Some(SequenceKind::Die1),
+        2 => Some(SequenceKind::Die2),
+        _ => None,
     }
+}
+
+/// Whether this `InfDeath=` spawns a death ANIMATION rather than a sequence.
+///
+/// gamemd-derived: same jump table, arms 3..=10. Exclusive with
+/// [`death_sequence_for_inf_death`] by construction.
+pub fn inf_death_spawns_anim(inf_death: u8) -> bool {
+    (3..=10).contains(&inf_death)
 }
 
 #[cfg(test)]

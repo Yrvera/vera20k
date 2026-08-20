@@ -2769,6 +2769,18 @@ fn tick_movement_with_grids_scoped(
                     crate::sim::combat::capture_kill_credit(victim, crusher_owner, rules, interner);
                 }
             }
+            // A crush runs the same `Record_The_Kill @ 0x00702D40` the damage
+            // path does, so the crusher earns the victim's experience too.
+            if let Some(rules) = rules {
+                crate::sim::combat::award_kill_experience(
+                    entities,
+                    rules,
+                    interner,
+                    alliances,
+                    kill.crusher_id,
+                    victim_id,
+                );
+            }
             lifecycle_requests.push(LifecycleRequest::Uninit {
                 stable_id: victim_id,
                 reason: UninitReason::Crush,

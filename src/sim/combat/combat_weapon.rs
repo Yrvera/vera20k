@@ -148,23 +148,38 @@ const DEFAULT_DEPLOY_FIRE_WEAPON_INDEX: i32 = 1;
 /// 3. If Primary fails, try Secondary (elite-aware) with same checks.
 /// 4. If both fail, return None.
 ///
-/// RESIDUAL (GSI-08.02) — this is first-legal-slot, not `What_Weapon_Should_I_Use`.
-/// Native compares the two slots and takes the one that does more to this
-/// target's armor; here Primary wins whenever it is merely legal, so a unit with
-/// a weak anti-armor Primary and a strong anti-armor Secondary fires the wrong
-/// one. `MinimumRange=` (20 stock entries: V3, Dreadnought, the artillery
-/// family) is likewise a pure exclusion in `in_range.rs` rather than a reason to
-/// switch slots, so an artillery piece with something inside its dead zone
-/// simply stops firing instead of falling back to its other weapon.
-/// - Trigger: any attacker whose two slots differ in effectiveness against the
-///   chosen target, or whose target is inside `MinimumRange`.
-/// - Player effect: wrong weapon, or no shot at all at close range.
-/// - Frequency: continuous for the slot choice — most dual-weapon units meet
-///   both target classes in an ordinary match. The `MinimumRange` arm is rarer,
-///   bounded by those 20 types.
-/// - Downstream risk: the same key that row GSI-08.01's acquisition residual
-///   names — changing slot choice moves which target dies first, so it shifts
-///   the pinned replay hash and wants the same slice.
+/// RESIDUAL (GSI-08.02) — pass 2 corrected the shape of this gap twice over.
+///
+/// The Verses comparison pass 1 described does not exist.
+/// `TechnoClass::What_Weapon_Should_I_Use @ 0x006F3330` (vtable `+0x2E4`) reads
+/// Verses exactly twice, both `FCOMP` against 0.0 — secondary immune picks slot
+/// 0, primary immune picks slot 1 — which is outcome-identical to the
+/// first-legal-slot rule below. It never compares magnitudes, and it never
+/// reads `MinimumRange=` (`WeaponTypeClass+0xB8`), so that clause belongs to the
+/// range row, not here.
+///
+/// What IS missing is the eight predicates native runs AHEAD of those two
+/// tests, none of which this function has: `TurretCount > 0` returning
+/// `CurrentWeaponNumber`; the occupied-building arm; a `NeverUse` secondary;
+/// `OpenTransportWeapon`; the gattling stage pair (`stage * 2`, `+1` when the
+/// secondary's projectile is AA and the target is high-flying); the
+/// `Airstrike`/`IsLocomotor`/`DrainWeapon`/`AreaFire`/`ElectricAssault`
+/// branches; `NavalTargeting` through `SelectNavalTargetingWeapon @ 0x006F3820`;
+/// `LandTargeting == 2`; and an UNCONDITIONAL anti-air test that takes the
+/// secondary against an air target even when the primary is also AA-capable.
+/// - Trigger: 19 stock types author `NavalTargeting=`, one (`BSUB`) authors
+///   `LandTargeting=2`, and two gattling types resolve a slot on every shot.
+/// - Player effect: the wrong weapon in exactly the cases players notice —
+///   Tanya and the SEAL will not C4 a ship, Boris does not call his airstrike on
+///   a building, Destroyers do not switch to depth charges against a submarine,
+///   the Squid does not punch organics, and any dual-AA type fires its primary
+///   at aircraft where retail fires its secondary.
+/// - Frequency: continuous in any match with naval units or aircraft.
+/// - Downstream risk: closing it needs the target cell's `LandType`, its
+///   on-bridge flag and an is-high-flying fact plumbed into this selector's
+///   signature, which is why it is its own slice. It is INDEPENDENT of row
+///   GSI-08.12's promotion work — veterancy enters only through `GetWeapon`,
+///   which this file already matches exactly.
 #[allow(dead_code)] // Used by tests; production callers go through with_override.
 pub(crate) fn select_weapon<'a>(
     rules: &'a RuleSet,

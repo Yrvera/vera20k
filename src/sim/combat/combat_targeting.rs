@@ -216,16 +216,35 @@ fn threat_class(rules: &RuleSet, interner: &StringInterner, type_id: InternedId)
 ///   picking, NOT in this score. Implementing it into the C term on the
 ///   strength of the old note would have put a real key in the wrong place.
 ///
-///   **A second gap in the score itself, newly found.** Native picks its five
-///   coefficients from ONE OF TWO sources, branching on the scorer's owning
-///   house byte `+0x1FB`: clear takes `Rules+0x1068`..`+0x108C`, set takes the
-///   scorer TYPE's own `+0x2C8`..`+0x2EC`. `calculate_ai_threat_score` below
-///   always reads the `Rules` set (`[General] Dumb*Coefficient`), so a type
-///   carrying its own coefficients is scored with the wrong weights. There is
-///   also a `Rules+0x1090` bonus term added when the scorer's `+0x5600` field
-///   matches a candidate field, which this file does not model either.
-///   The identity of house `+0x1FB`, type `+0x2C8`..`+0x2EC` and the `+0x5600`
-///   pair are all UNCHECKED — they are recorded here as read, not as named.
+///   **A second gap in the score itself, and pass 2 settles which set is live.**
+///   Native picks its five coefficients from one of two sources, branching on
+///   the scorer's owning HOUSE byte `+0x1FB` (`0x0070CD4E` reads
+///   `param_1[0x87]`, the owner pointer): clear takes `Rules+0x1068`..`+0x108C`
+///   — the `[General] Dumb*Coefficient` set this file reads — and set takes the
+///   scorer TYPE's own `+0x2C8`..`+0x2EC`, seeded from `[General]
+///   *CoefficientDefault` by `TechnoTypeClass::ReadINI @ 0x007156D8` reading
+///   `Rules+0x1060`. That byte is latched to 1 by the setter at `0x00509130`,
+///   whose only callers are `BuildingClass::Unlimbo`/`Limbo`, and it is never
+///   cleared — so EVERY house flips it the moment its MCV deploys, at frame
+///   zero of an ordinary skirmish, and the per-type set is the live one. The
+///   `Dumb*` set VERA reads is effectively dead, and the two differ by two sign
+///   flips plus a 10x on the distance term. There is also a `Rules+0x1090`
+///   bonus added when the scorer's `+0x5600` field matches a candidate field,
+///   which this file does not model. The identity of type `+0x2C8`..`+0x2EC`
+///   and the `+0x5600` pair are UNCHECKED — recorded as read, not as named.
+///
+///   **Why this row stays deferred after a second pass.** The native passive
+///   path is not a re-keyed sort over a candidate list at all:
+///   `Retaliate_And_Scan @ 0x00709820` calls vtable `+0x3C4` with `flags & 3`,
+///   so acquisition always takes the ring topology — expanding square rings,
+///   the occupant list walked per cell, the best kept only on a STRICTLY
+///   greater score, and an early return at ring `cells/4` and again at
+///   `cells/2` once anything has been found. Ties break on scan order, never on
+///   stable id. `EntityStore` has no cell index and no native-insertion
+///   occupant order, so swapping in a score-max over `values()` would trade a
+///   named DRIFT for an unnamed one: VERA would evaluate candidates native
+///   never reaches. The prerequisite is the cell index, not the scoring
+///   function.
 ///   `OmniFire=`
 ///   (18 stock) and `DistributedWeaponFire=` are parsed and read by nothing,
 ///   and spread-fire types are explicitly refused a target by the passive scan,

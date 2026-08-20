@@ -197,29 +197,32 @@ pub struct TacticalDrawPlan {
 
 impl TacticalDrawPlan {
     /// Build fixed cell passes plus stable `LayerClass` object ordering.
-    /// RESIDUAL (GSI-13.12) — the planner is production, but it is not the
-    /// whole story. `native_layer_order` and `y_sort_key` do gate the live
-    /// frame through `tactical_entity_encounter_order` and
-    /// `lower_cell_instances`, which the SHP, unit and overlay instance
-    /// builders consume. What is unchecked is whether every family reaches the
-    /// frame through it: `render/tactical_compat.rs` and parts of the instance
-    /// builders still assemble buffers on their own.
+    /// RESIDUAL (GSI-13.12) — pass 2 named the bypass and found a second
+    /// ordering difference; `render/tactical_compat.rs`, pass 1's named
+    /// suspect, is not an ordering path at all.
+    /// - **The bypass is `build_world_effect_instances`** (`overlays.rs`), which
+    ///   never enters this planner. Bridge explosions and debris therefore
+    ///   interleave with objects by pixel-Y instead of sitting in their own
+    ///   layer. Native's default anim layer is 3 (Air), from
+    ///   `AnimTypeClass::Constructor @ 0x00427530`.
+    /// - **`Submit_Object @ 0x004A9720` sorts only layer 2.** VERA Y-sorts every
+    ///   layer, so any two objects sharing another layer can swap against
+    ///   retail.
+    /// - Trigger: any frame with a bridge collapse or debris on screen, and any
+    ///   frame with two objects in a non-ground layer.
+    /// - Player effect: a debris sprite draws in front of or behind something it
+    ///   should not.
+    /// - Frequency: bounded by those two conditions rather than continuous.
+    /// - Downstream risk: both halves must land together — routing world effects
+    ///   into the planner and restricting the Y-sort to layer 2 shift the render
+    ///   goldens, and doing them separately re-baselines twice.
     ///
-    /// The owner-attached anim half of this is CLOSED — GSI-05.12 removed the
-    /// short-circuit that used to keep burning-building fires out of this
+    /// The owner-attached anim half of this row is CLOSED — GSI-05.12 removed
+    /// the short-circuit that used to keep burning-building fires out of this
     /// planner. `AnimClass::GetLayer @ 0x00424CB0` forces layer 2 for any anim
-    /// carrying an owner, so `anim_render_destination` now routes them through
-    /// `anim_object_draw` into the same `ground_objects` vector as buildings
-    /// and units, and they sort here on the same key.
-    /// - Trigger: any family that still assembles its own buffer instead of
-    ///   entering this planner.
-    /// - Player effect: where a bypassing path and this ordering disagree, a
-    ///   sprite draws in front of or behind something it should not.
-    /// - Frequency: per-family, and unmeasured — that is the open part. No
-    ///   bypassing family has been shown to disagree with this ordering.
-    /// - Downstream risk: settling it needs a comparison against a real frame,
-    ///   which `--lib` cannot reach, so it wants a capture harness rather than
-    ///   another unit test.
+    /// carrying an owner, so `anim_render_destination` routes them through
+    /// `anim_object_draw` into the same `ground_objects` vector as buildings and
+    /// units, and they sort here on the same key.
     pub fn build(inputs: impl IntoIterator<Item = TacticalDrawInput>) -> Self {
         let mut plan = Self::default();
         let mut entries = Vec::new();

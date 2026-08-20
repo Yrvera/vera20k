@@ -184,6 +184,25 @@ pub struct ObjectType {
     pub ui_name: Option<String>,
     /// Credit cost to produce this object.
     pub cost: i32,
+    /// `Explosion=` — the type's OWN death animations, one chosen at random.
+    ///
+    /// gamemd-derived: `UnitClass::Death_Explosion @ 0x00738680` picks
+    /// `Explosion[Random__Next() % len]` at the object's coordinate, after the
+    /// killing warhead's own `AnimList=` anim. 487 stock sections author it.
+    pub explosion_anims: Vec<String>,
+    /// `DestroyAnim=` — a second list, drawn from after the explosion.
+    ///
+    /// gamemd-derived: same function; the vector is `TechnoTypeClass+0x748`
+    /// (items `+0x74C`, count `+0x758`, key push at `0x00713A97`) and native
+    /// takes `Random__Next() % count` from it, exactly as it does for
+    /// `Explosion=` — one draw each, explosion first.
+    pub destroy_anims: Vec<String>,
+    /// `Trainable=` — whether this object can gain veterancy from its kills.
+    ///
+    /// gamemd-derived: `TechnoClass::Record_The_Kill @ 0x00702D40` skips the
+    /// experience award entirely for an untrainable killer. 82 stock sections
+    /// set `Trainable=no`. Default true.
+    pub trainable: bool,
     /// Hit points (health). 0 = invincible or not applicable.
     pub strength: i32,
     /// `DontScore=` — this object's destruction is invisible to the end-of-match
@@ -1104,6 +1123,21 @@ impl ObjectType {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             cost: section.get_i32("Cost").unwrap_or(0),
+            explosion_anims: section
+                .get_list("Explosion")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| entry.to_string())
+                .collect(),
+            destroy_anims: section
+                .get_list("DestroyAnim")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| entry.to_string())
+                .collect(),
+            trainable: section.get_bool("Trainable").unwrap_or(true),
             strength: section.get_i32("Strength").unwrap_or(0),
             dont_score: section.get_bool("DontScore").unwrap_or(false),
             special_threat_value: section.get_f64("SpecialThreatValue").unwrap_or(0.0),

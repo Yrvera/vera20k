@@ -270,18 +270,27 @@ impl RadiationState {
     /// on a fresh center, or merge into the existing site (current effective
     /// level + added level, lifetime reset, field re-spread with the new
     /// level after the old outstanding contribution is removed).
-    /// RESIDUAL (GSI-04.21) — radiation is the only environmental hazard here.
-    /// There is no burning-cell producer at all: no `Flammability` consumer, no
-    /// cell fire state, and nothing for the `Sparky=` warhead flag recorded on
-    /// `rules/warhead_type.rs` to set alight.
-    /// - Trigger: any flame weapon hit, and any warhead that should ignite the
-    ///   ground.
-    /// - Player effect: fire weapons leave no burning ground, so their damage
-    ///   ends the moment the shot lands instead of persisting on the cell.
-    /// - Frequency: every flame engagement — a standard Allied and Yuri tactic.
-    /// - Downstream risk: burning cells are per-cell timed damage sources, so
-    ///   they need the same per-tick receiver ordering this module already
-    ///   establishes for rad sites; building it here would reuse that walk.
+    /// NO-DIFF (GSI-04.21) — radiation really is the only live environmental hazard,
+    /// and pass 1's neighbours are dead in gamemd rather than unported.
+    /// `TreeFlammability` (`Rules+0x588`) and `IsFlammable`
+    /// (`TerrainTypeClass+0x2B2`) are parsed and have ZERO live readers — verified
+    /// by an instruction search over all 1.16M instructions — and
+    /// `TerrainClass::Catch_Fire @ 0x0071C5B0` has only a vtable DATA xref. YR has
+    /// no burning-cell state at all. `Sparky=` does have a consumer
+    /// (`BuildingClass::ReceiveDamage @ 0x00442230`, spawning `DamageFireTypes`
+    /// anims) but no stock warhead sets it — all 29 are `Sparky=no`.
+    ///
+    /// RESIDUAL (GSI-04.21) — one live non-radiation hazard exists and belongs to a
+    /// different owner: `AnimTypeClass Damage=` (`+0x2A8`) accumulates in
+    /// `AnimClass::AI @ 0x00423AC0` and applies through `Apply_area_damage @
+    /// 0x00489280`. In ordinary skirmish its only producers are building and bridge
+    /// debris (`DBRIS*`, `Damage=10/20`, `Warhead=HE`), so the gap is owned by
+    /// `sim/anim_class.rs`, not by this module.
+    /// - Trigger: standing next to a collapsing building or bridge.
+    /// - Player effect: debris that should hurt is inert.
+    /// - Frequency: every structure and bridge death.
+    /// - Downstream risk: it spawns damage events from the animation pass, so it
+    ///   needs the same ordering care as any other non-combat damage commit.
     pub fn apply_detonation(
         &mut self,
         det: RadDetonation,

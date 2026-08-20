@@ -332,8 +332,14 @@ const FINAL_STREAM_STATES: (u64, u64, u64) = (
 // snapshot blocks but deliberately retain Scenario RNG, so both move with that
 // one-stream behavior change. Record/replay remained exact; Main and MapGen did
 // not move. The native bonus formula and score traversal remain UNCHECKED.
-const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0xD0AD_C1E8_B07B_08DE;
-const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA58C_C0F0_6F32_5DFF;
+// Re-baselined 2026-08-19 for the GSI-08.12 veterancy accumulator: every object
+// now carries the raw `VeterancyClass` float (as bits) and the rank cache, and
+// both are hashed, so the state hash moves on composition alone. FINAL_STREAM_STATES
+// is byte-identical across all three streams — the award consumes no RNG, which is
+// what `VeterancyClass::Add @ 0x0074FF50` does — and record/replay stayed equal at
+// every tick, ruling out both nondeterminism and a routing change.
+const GLOBAL_HARNESS_PRE_LIFECYCLE_V28_HASH: u64 = 0x538F_0FF2_FACD_9ACA;
+const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // Snapshot/hash schema v29 originally added the exact Mission/readiness state.
 // Its schema shift was composition-only; the later behavior-bearing Drive,
 // authority-flip, and Harvest-absorption re-baselines are documented above.
@@ -462,7 +468,13 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xA58C_C0F0_6F32_5DFF;
 /// score plus its Scenario draw before hashing. The exact stream tuple and
 /// record/replay comparisons distinguish the RNG movement from nondeterminism.
 /// This remains a Rust regression ratchet, not new gamemd parity evidence.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0xCFC6_4FA3_7423_E77D;
+// Re-baselined 2026-08-19 for the GSI-08.12 veterancy accumulator: every object
+// now carries the raw `VeterancyClass` float (as bits) and the rank cache, and
+// both are hashed, so the state hash moves on composition alone. FINAL_STREAM_STATES
+// is byte-identical across all three streams — the award consumes no RNG, which is
+// what `VeterancyClass::Add @ 0x0074FF50` does — and record/replay stayed equal at
+// every tick, ruling out both nondeterminism and a routing change.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x59AA_21D8_07C4_E59C;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

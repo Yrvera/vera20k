@@ -1084,53 +1084,60 @@ impl Simulation {
     /// frame-equality cleanup at `0x00423C03`..`0x00423C1D`. `visit_anim` runs
     /// only the make-infantry occupation mark before its own gate.
     ///
-    /// Three of those five items are inert in this engine today, which is why
-    /// moving the gate now would be a no-op rather than a fix:
-    /// - `UpdateLoopingSound` is pure maintenance of a loop handle — it
-    ///   revalidates the handle, recomputes volume and pan through
-    ///   `VocClass::CalcVolumeAndPan`, and stops the loop when the volume comes
-    ///   back non-positive. There is no loop-handle mechanism in this engine to
-    ///   maintain (recorded on `audio/sfx.rs`), so there is nothing for the
-    ///   extra pass to act on. `[FIRE01]`/`[FIRE02]` carry
-    ///   `StartSound=BuildingFireBig` and `[FIRE03]` `StartSound=BuildingFireMed`,
-    ///   so `AnimType+0x2F8 != -1` does hold for exactly this trigger — the pass
-    ///   really does run in native.
+    /// Four of those five items are inert in gamemd itself for this trigger,
+    /// and the fifth is inert only here, which is why moving the gate now would
+    /// be a no-op rather than a fix:
+    /// - `BounceAI` plus the `AnimType+0x354` `ObjectClass::AI` call never run.
+    ///   `AnimType+0x354` is `IsFlamingGuy=` (`AnimTypeClass::ReadINI` read @
+    ///   `0x004282E2`, store @ `0x004282FC`, key string @ `0x818448`), and
+    ///   retail `artmd.ini` sets it on `[FLAMEGUY]` alone — never on
+    ///   `FIRE01/02/03`, the anims this trigger detaches.
+    /// - The `+0x11B` frame-equality cleanup at `0x00423C03`..`0x00423C1D` is
+    ///   dead code in gamemd. The byte is never written non-zero anywhere in
+    ///   the image: its only AnimClass writers are `AnimClass::Constructor @
+    ///   0x00421F5F` and `@ 0x004227A7`, both storing `BL` inside zero-init
+    ///   runs dominated by `XOR EBX,EBX` (`0x00421EB6` / `0x004225FC`), plus
+    ///   the `= 0` at `AnimClass::AI @ 0x00423C1D`.
     /// - The bouncer-impact block needs a bounce simulation, and there is none:
     ///   `Bouncer=` is parsed into `art_data.rs`'s `bouncer` flag with no sim
     ///   consumer, and damage-fire anims are not bouncers in any case.
     /// - The `+0x19D` writes cannot reach a `DrawIt` even in native — the same
     ///   call destroys the anim a few instructions later.
+    /// - `UpdateLoopingSound` is the one item that really runs in native:
+    ///   `[FIRE01]`/`[FIRE02]` carry `StartSound=BuildingFireBig` and
+    ///   `[FIRE03]` `StartSound=BuildingFireMed`, so `AnimType+0x2F8 != -1`
+    ///   holds. It is pure maintenance of a loop handle — revalidate, recompute
+    ///   volume and pan through `VocClass::CalcVolumeAndPan`, stop the loop when
+    ///   the volume comes back non-positive — and this engine has no loop-handle
+    ///   mechanism to maintain (recorded on `audio/sfx.rs`), so there is nothing
+    ///   for the extra pass to act on.
     ///
-    /// The other two are NOT argued inert, and are why this stays recorded
-    /// rather than dismissed: `BounceAI` plus the `AnimType+0x354`
-    /// `ObjectClass::AI` call, and the `+0x11B` frame-equality cleanup at
-    /// `0x00423C03`..`0x00423C1D` (`if [+0x11B] && [+0x11C] == [+0xAC] then
-    /// [+0x11B] = 0`, a draw-family-adjacent byte). Neither has a mapped
-    /// analogue in this store, so whether they carry a consequence is
-    /// UNCHECKED, not clean.
-    ///
-    /// - Trigger: a building destroyed while its damage-fire anims are live.
+    /// - Trigger: a building destroyed while its damage-fire anims are live —
+    ///   in this engine, `expire_anim_owner_reference` is the only producer of
+    ///   the marked state.
     /// - Player effect: none today; audible once loop handles exist, and what
     ///   that final pass emits is the corpus's own open item, OQ-09 in
     ///   `ANIMCLASS_DETACHEDOWNER_MARKER_0X19B_CONSUMERS_GHIDRA_REPORT.md`.
     /// - Frequency: every destroyed building that had reached a damage-fire
-    ///   threshold, so several times in an ordinary skirmish.
+    ///   threshold, so several times in an ordinary skirmish — with zero
+    ///   observable output until loop handles exist.
     /// - Downstream risk: this is sequenced, not open-ended. It becomes
     ///   observable exactly when `GSI-15.03`'s loop-handle mechanism lands, and
-    ///   the gate must move in the same slice that lands it. The corpus's
-    ///   negative fact applies verbatim and is the reason the gate has not been
-    ///   moved speculatively: do not place the inactive check at the top of AI
-    ///   unless every pre-check side effect is proven irrelevant — which is a
-    ///   claim about the prefix's contents, and the prefix grows.
+    ///   the gate must move in the same slice that lands it. Only
+    ///   `UpdateLoopingSound` has to be re-argued when that slice arrives; the
+    ///   other four are settled above.
     ///
     /// Separately unmodelled, and not a consequence of the ordering above: the
     /// `Rules+0x147C` occupied-cell path at `0x00424322`..`0x0042435E` is a
     /// second writer of the marker — native re-reads coords, resolves the cell
     /// through `MapClass::Get_CellClass_At_Coord @ 0x00565730`, tests it via
     /// `0x0047C520`, and sets `+0x19B = 1` at `0x00424358`. A third writer, the
-    /// `AnimType+0x360` overlay-bound path entered at `0x004243C2` and writing at
-    /// `0x00424427`, sits after the gate and is out of scope here. Neither has
-    /// an analogue in this store.
+    /// `AnimType+0x360` path entered at `0x004243C2` and writing at
+    /// `0x00424427` sits after the gate. `AnimType+0x360` is
+    /// `IsAnimatedTiberium=`, and that writer is the one native path which
+    /// routinely runs a full prefix in the marked state — unmodelled here only
+    /// because `art_data.rs`'s `is_animated_tiberium`/`hide_if_no_ore` have no
+    /// `sim/` consumer. Neither writer has an analogue in this store.
     ///
     /// DRIFT (GSI-05.12, structural) — `runtime.inactive` doubles as this
     /// store's "ready for pending delete" predicate

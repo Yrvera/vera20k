@@ -258,7 +258,7 @@ use crate::sim::world::Simulation;
 // and prevents score-bonus Scenario RNG draws from repeating after load.
 // Bumped 80 -> 81: pending CommandEnvelope payloads can now carry an offline
 // SetGameSpeed transition. Appending the enum variant changes the bincode schema.
-const SNAPSHOT_VERSION: u32 = 83;
+const SNAPSHOT_VERSION: u32 = 84;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2550,8 +2550,8 @@ mod tests {
     /// both the spawn gate and the removal predicate. A serialized field is
     /// gone, so old bytes no longer decode.
     #[test]
-    fn gsi_13_06_snapshot_version_is_83() {
-        assert_eq!(super::SNAPSHOT_VERSION, 83);
+    fn gsi_13_06_snapshot_version_is_84() {
+        assert_eq!(super::SNAPSHOT_VERSION, 84);
     }
 
     #[test]
@@ -2599,7 +2599,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "building-anim.map", 0);
         let header = GameSnapshot::read_header(&bytes).expect("v82 building-overlay header");
-        assert_eq!(header.version, 83);
+        assert_eq!(header.version, 84);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("v82 building-overlay snapshot")
             .sim;
@@ -2824,7 +2824,7 @@ mod tests {
 
         let bytes = GameSnapshot::save(&sim, 1, 2, "speed.map", 0);
         let header = GameSnapshot::read_header(&bytes).expect("v82 GameSpeed header");
-        assert_eq!(header.version, 83);
+        assert_eq!(header.version, 84);
         let mut restored = GameSnapshot::load(&bytes)
             .expect("v82 GameSpeed snapshot")
             .sim;

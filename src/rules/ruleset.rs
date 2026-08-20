@@ -276,6 +276,13 @@ pub struct GeneralRules {
     /// Receiver-side divisor selected by the rank-specific `STRONGER`
     /// ability (`VeteranArmor=` in `[General]`).
     pub veteran_armor: f64,
+    /// `[General] VeteranRatio=` — how many times its own cost an object must
+    /// destroy to gain one rank. `RulesClass+0x668`, read at `0x0066EEB0`.
+    pub veteran_ratio: f64,
+    /// `[General] VeteranCap=` — the accumulator clamp. `RulesClass+0x698`,
+    /// read at `0x0066EF94`. Stock `2`, which is exactly the elite threshold,
+    /// so elite is terminal.
+    pub veteran_cap: f64,
     /// Difficulty armor doubles in native Hard/Normal/Easy table order.
     pub difficulty_armor: [f64; 3],
     /// Leptons of elevation per +1 sight cell (LeptonsPerSightIncrease=).
@@ -886,6 +893,8 @@ impl Default for GeneralRules {
             gravity: 3,
             veteran_sight: 0,
             veteran_armor: 1.0,
+            veteran_ratio: VETERAN_RATIO_DEFAULT,
+            veteran_cap: VETERAN_CAP_DEFAULT,
             difficulty_armor: [1.0; 3],
             leptons_per_sight_increase: 0,
             gap_radius: 10,
@@ -1378,6 +1387,15 @@ impl RadiationRules {
     }
 }
 
+/// Fallback `VeteranRatio=` when `[General]` omits it.
+///
+/// UNCHECKED against `RulesClass`'s constructor initialiser for `+0x668`; stock
+/// `rulesmd.ini` supplies `3`, so this only bites a mod that deletes the key.
+const VETERAN_RATIO_DEFAULT: f64 = 3.0;
+/// Fallback `VeteranCap=` when `[General]` omits it. Same UNCHECKED status as
+/// [`VETERAN_RATIO_DEFAULT`]; stock supplies `2`.
+const VETERAN_CAP_DEFAULT: f64 = 2.0;
+
 impl GeneralRules {
     pub fn infantry_death_anim(&self, inf_death: u8) -> Option<&str> {
         self.infantry_death_anims
@@ -1506,6 +1524,10 @@ impl GeneralRules {
                 .unwrap_or(defaults.gravity),
             veteran_sight: general.get_i32("VeteranSight").unwrap_or(0),
             veteran_armor: general.get_f64("VeteranArmor").unwrap_or(1.0),
+            veteran_ratio: general
+                .get_f64("VeteranRatio")
+                .unwrap_or(VETERAN_RATIO_DEFAULT),
+            veteran_cap: general.get_f64("VeteranCap").unwrap_or(VETERAN_CAP_DEFAULT),
             difficulty_armor,
             leptons_per_sight_increase: general.get_i32("LeptonsPerSightIncrease").unwrap_or(0),
             gap_radius: general.get_i32("GapRadius").unwrap_or(10),

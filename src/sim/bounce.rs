@@ -57,16 +57,37 @@ pub struct BounceState {
     /// reads the orientation, and `Update`'s only interaction with the rotation
     /// quaternion is to negate its components on a bounce.
     ///
-    /// RESIDUAL (GSI-05.14) — the quaternion integration itself is not built.
+    /// RESIDUAL (GSI-05.14) — the quaternion integration itself is not built,
+    /// but it is now fully specified. Everything below was read this session;
+    /// only the sine/cosine table remains unknown, so the next slice builds it
+    /// rather than re-deriving it.
+    /// - Units are RADIANS. `VoxelAnimTypeClass::ReadINI @ 0x0074B128`/
+    ///   `0x0074B159` multiplies `MinAngularVelocity=`/`MaxAngularVelocity=` by
+    ///   the double at `0x007F65E8`, whose bytes are pi/180. A degrees reading
+    ///   spins debris ~57x too slowly.
+    /// - `Quaternion_FromAxisAngle @ 0x00646480` re-normalises the axis a
+    ///   SECOND time through `Sqrt_Approx` and then stores
+    ///   `(axis * sin(a/2), cos(a/2))` — `Math__SinFromTable`/
+    ///   `Math__CosFromTable`, whose table contents are UNCHECKED and are the
+    ///   one thing still needed.
+    /// - The product `FUN_00645ED0 @ 0x00645ED0` is a Hamilton product divided
+    ///   by the SQUARED norm, not the norm, guarded by a `!= 0.0` test. Port
+    ///   the quirk literally; a "corrected" normalise changes every frame of
+    ///   the tumble.
+    /// - `BounceClass::Update` integrates UNCONDITIONALLY once per tick at
+    ///   `0x0043A066` — `orientation(+0x30) = product(orientation, rotation)` —
+    ///   including on the no-contact early-out and on the tick that returns
+    ///   `Stopped`. The bounce arm negates only components 0..=2 of the
+    ///   rotation quaternion at `+0x40`, after the velocity writes at
+    ///   `0x00439E7F`..`0x00439E87` and before the integrate.
     /// - Trigger: drawing any live piece of debris.
     /// - Player effect: debris would fly the right arc but not tumble.
-    /// - Frequency: continuous once the producer and the draw path land.
+    /// - Frequency: zero today — no producer creates a `VoxelAnimObject` at
+    ///   all, so nothing bounces. Continuous the moment the producer lands,
+    ///   since stock `Duration=` runs 70-150 ticks per piece.
     /// - Downstream risk: none to the simulation. The spin is display-only and
-    ///   consumes no RNG beyond the axis draws already taken here, so it can
-    ///   land with the draw slice. It needs `Quaternion_FromAxisAngle`'s body,
-    ///   whose angle UNITS are UNCHECKED — the INI documents degrees and
-    ///   `VoxelAnimTypeClass::ReadINI` converts to radians, but the quaternion
-    ///   helper was not read.
+    ///   consumes no RNG beyond the axis draws already taken here, so it lands
+    ///   with the producer/draw slice and moves no hash.
     pub spin_axis: [NativeF32Bits; 3],
     /// The per-tick rotation angle — `Init`'s trailing argument, the one
     /// Ghidra's recovered signature omits.
@@ -310,10 +331,13 @@ impl BounceState {
     /// - Player effect: it would rebound along the slope's normal in retail and
     ///   rebounds vertically here, so a chunk landing on a hillside runs
     ///   downhill in retail and hops in place here.
-    /// - Frequency: bounded by two things and small because of both. Only
-    ///   `[TIRE]` has a non-zero `Elasticity` among stock `[VoxelAnims]`, and
-    ///   `Elasticity = 0` zeroes the velocity whatever the matrix; and debris
-    ///   lands on flat ground far more often than on a ramp.
+    /// - Frequency: corrected upward. `[TIRE]` is indeed the only stock
+    ///   `[VoxelAnims]` entry with a non-zero `Elasticity` (0.8), and
+    ///   `Elasticity = 0` zeroes the velocity whatever the matrix — but all 36
+    ///   stock `DebrisTypes=` lines name `TIRE`, so every debris-throwing stock
+    ///   vehicle throws exactly the bouncing type. The remaining bound is
+    ///   terrain alone: debris lands on flat ground far more often than on a
+    ///   ramp. Zero today, because no producer creates debris at all.
     /// - Downstream risk: closing it needs the runtime contents of
     ///   `MATRIX_TABLE_0x00B45188`, which `VXL_MasterLighting_Init` builds from
     ///   `Matrix3x4_BuildFromRotateXAndFacing` — the eight facings and two

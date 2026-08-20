@@ -99,6 +99,7 @@ pub(crate) fn resolve_fire_origin_from_art(
     slot: WeaponSlot,
     veterancy: u16,
     facing: u8,
+    burst_index: u8,
 ) -> FireOrigin {
     let flh = crate::rules::flh::resolve_flh(
         art.primary_fire_flh,
@@ -110,7 +111,7 @@ pub(crate) fn resolve_fire_origin_from_art(
     );
     let (dx, dy) = crate::util::flh_transform::flh_to_screen_offset_32way(
         flh.forward,
-        flh.lateral,
+        crate::util::flh_transform::flh_lateral_for_burst(flh.lateral, burst_index),
         flh.height,
         facing,
     );
@@ -247,11 +248,10 @@ pub(crate) fn resolve_fire_origin_from_sim(
         matches!(ev.weapon_slot, WeaponSlot::Primary),
         ev.veterancy,
     );
-    let lateral = if ev.origin_snapshot.burst_index % 2 == 1 {
-        -flh.lateral
-    } else {
-        flh.lateral
-    };
+    let lateral = crate::util::flh_transform::flh_lateral_for_burst(
+        flh.lateral,
+        ev.origin_snapshot.burst_index,
+    );
     let (world_dx, world_dy) =
         crate::util::flh_transform::flh_to_world_offset_32way(flh.forward, lateral, ev.facing);
     Ok(fire_origin_from_world_delta(
@@ -268,7 +268,11 @@ pub(crate) fn resolve_non_garrison_fire_origin(
     state: &AppState,
     ev: &SimFireEvent,
 ) -> Option<FireOrigin> {
-    let sim = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation)?;
+    let sim = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)?;
     let rules = state.rules()?;
     let art_reg = state.rules().map(|rules| &rules.art_registry)?;
     resolve_non_garrison_fire_origin_from_sim(sim, rules, art_reg, ev)
@@ -542,7 +546,12 @@ pub(crate) fn build_weapon_wave_visuals(
 
 pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[SimFireEvent]) {
     let (flashes, sounds, projectiles) = {
-        let Some(sim) = state.match_state.sim_runtime.as_ref().map(|rt| &rt.simulation) else {
+        let Some(sim) = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map(|rt| &rt.simulation)
+        else {
             return;
         };
         let Some(rules) = state.rules() else {
@@ -552,7 +561,9 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
             return;
         };
         let frame_counts = state
-            .match_state.match_presentation.sprite_atlas
+            .match_state
+            .match_presentation
+            .sprite_atlas
             .as_ref()
             .map(|atlas| &atlas.active_anim_frame_counts);
         let (flashes, sounds) =
@@ -561,8 +572,16 @@ pub(crate) fn spawn_non_garrison_fire_effects(state: &mut AppState, events: &[Si
         (flashes, sounds, projectiles)
     };
 
-    state.match_state.match_presentation.weapon_muzzle_flashes.extend(flashes);
-    state.match_state.match_presentation.projectile_visuals.extend(projectiles);
+    state
+        .match_state
+        .match_presentation
+        .weapon_muzzle_flashes
+        .extend(flashes);
+    state
+        .match_state
+        .match_presentation
+        .projectile_visuals
+        .extend(projectiles);
     for sound in sounds {
         state.match_state.match_audio.sound_events.push(sound);
     }
@@ -580,8 +599,14 @@ fn presentation_effect_frame_count(
 }
 
 pub(crate) fn tick_weapon_muzzle_flashes(state: &mut AppState, dt_ms: u32) {
-    tick_weapon_muzzle_flash_list(&mut state.match_state.match_presentation.weapon_muzzle_flashes, dt_ms);
-    tick_projectile_visuals(&mut state.match_state.match_presentation.projectile_visuals, dt_ms);
+    tick_weapon_muzzle_flash_list(
+        &mut state.match_state.match_presentation.weapon_muzzle_flashes,
+        dt_ms,
+    );
+    tick_projectile_visuals(
+        &mut state.match_state.match_presentation.projectile_visuals,
+        dt_ms,
+    );
 }
 
 fn tick_weapon_muzzle_flash_list(flashes: &mut Vec<WeaponMuzzleFlash>, dt_ms: u32) {
@@ -658,9 +683,9 @@ mod tests {
 
         let origin = (100.0, 200.0);
         let primary =
-            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Primary, 0, 0);
+            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Primary, 0, 0, 0);
         let secondary =
-            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Secondary, 0, 0);
+            resolve_fire_origin_from_art(origin, &position, entry, WeaponSlot::Secondary, 0, 0, 0);
         assert_ne!(primary.screen_y, secondary.screen_y);
         assert_eq!((primary.rx, primary.ry, primary.z), (10, 11, 0));
     }
@@ -1166,13 +1191,14 @@ mod tests {
             for (rx, ry) in [(10_u16, 10_u16), (23_u16, 20_u16)] {
                 let projectile =
                     target_fire_destination(&sim, TargetKind::Cell(rx, ry)).expect("cell target");
-                let world_effect = crate::app::presentation::instances::world_effect_screen_position(
-                    rx,
-                    ry,
-                    crate::util::lepton::CELL_CENTER_LEPTON,
-                    crate::util::lepton::CELL_CENTER_LEPTON,
-                    sim_impact_z_byte(&sim, rx, ry),
-                );
+                let world_effect =
+                    crate::app::presentation::instances::world_effect_screen_position(
+                        rx,
+                        ry,
+                        crate::util::lepton::CELL_CENTER_LEPTON,
+                        crate::util::lepton::CELL_CENTER_LEPTON,
+                        sim_impact_z_byte(&sim, rx, ry),
+                    );
                 assert_eq!(
                     (world_effect.0, world_effect.1),
                     (projectile.screen_x, projectile.screen_y),

@@ -14,10 +14,7 @@
 
 use super::gates::evaluate_gates;
 use super::kernel::apply_warhead_damage;
-use super::{
-    CombatMods, DamageGate, DamageOutcome, DamageState, ImmunityInputs,
-    TargetDamageView,
-};
+use super::{CombatMods, DamageGate, DamageOutcome, DamageState, ImmunityInputs, TargetDamageView};
 
 /// ftol toward zero (gamemd Math__ftol). Mirrors kernel::ftol; defined here to
 /// keep the receiver divides truncating identically without exporting it.
@@ -112,7 +109,20 @@ pub(crate) fn receive_damage(
     // ordinary kernel, HP write, and every downstream callback. This stays
     // after the Techno gates because accepted Psychedelic returns above without
     // delegating to ObjectClass.
-    if !gates.ignore_defenses && target.object_immune {
+    //
+    // `ObjectClass::ReceiveDamage @ 0x005F5390` opens with `if (Health < 1)
+    // return 0`, ahead of the Immune test: the kernel, the building min-1, the
+    // HP write and the state classification are all skipped for an
+    // already-dead receiver, while the Techno tail still feeds the anger nodes
+    // the PRE-kernel damage. VERA filtered dead targets at collection only, so
+    // a target driven to zero by an earlier record of the SAME blast — a Demo
+    // Truck, an Ivan-bombed cluster, any `DeathWeapon` cascade — was
+    // re-processed here and fed the post-Verses value instead.
+    // The `Health < 1` half is UNCONDITIONAL — only the Immune clause is behind
+    // `ignoreDefenses`. That distinction is the whole point here: VERA's two
+    // `ignore_defenses` callers are the C4 and Ivan expiry receivers, which is
+    // exactly the same-blast cascade this gate exists to stop.
+    if target.current_hp < 1 || (!gates.ignore_defenses && target.object_immune) {
         return DamageOutcome {
             post_object_damage: Some(dmg),
             reached_survivor_postlude: true,
@@ -231,6 +241,80 @@ mod tests {
         let mut t = [1.0; 11];
         t[5] = v;
         t
+    }
+
+    /// `ObjectClass::ReceiveDamage @ 0x005F5390` returns before the kernel for
+    /// a receiver already at zero health, and the Techno tail feeds the anger
+    /// nodes the PRE-kernel value.
+    #[test]
+    fn gsi_08_09_dead_target_skips_the_kernel_and_reports_pre_kernel_damage() {
+        let dead = receive_damage(
+            400,
+            0.0,
+            1.0,
+            &verses(0.25),
+            &tgt(300, 0),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
+        assert_eq!(dead.hp_delta, 0);
+        assert_eq!(dead.state, DamageState::Unaffected);
+        // Pre-kernel: the two armour divides are no-ops here, so 400 survives
+        // whole rather than being scaled by the 0.25 Verses entry.
+        assert_eq!(dead.post_object_damage, Some(400));
+        assert!(dead.reached_survivor_postlude);
+    }
+
+    /// The `Health < 1` half of the entry gate is unconditional: only the
+    /// Immune clause sits behind `ignoreDefenses`. VERA's two `ignore_defenses`
+    /// callers are the C4 and Ivan expiry receivers, which is exactly the
+    /// same-blast cascade the gate exists to stop.
+    #[test]
+    fn gsi_08_09_dead_target_is_gated_even_when_defenses_are_ignored() {
+        let ignoring = ImmunityInputs {
+            affects_allies: true,
+            ignore_defenses: true,
+            ..Default::default()
+        };
+        let out = receive_damage(
+            400,
+            0.0,
+            1.0,
+            &verses(1.0),
+            &tgt(300, 0),
+            &CombatMods::default(),
+            &ignoring,
+            0,
+            false,
+            MAXD,
+            RED,
+        );
+        assert_eq!(out.hp_delta, 0);
+        assert_eq!(out.state, DamageState::Unaffected);
+    }
+
+    /// One HP is still alive, so the gate must not fire.
+    #[test]
+    fn gsi_08_09_hp_one_still_enters_the_kernel() {
+        let alive = receive_damage(
+            400,
+            0.0,
+            1.0,
+            &verses(0.25),
+            &tgt(300, 1),
+            &CombatMods::default(),
+            &allow(),
+            0,
+            false,
+            MAXD,
+            RED,
+        );
+        assert_eq!(alive.hp_delta, 1);
+        assert_eq!(alive.state, DamageState::Dead);
     }
 
     #[test]

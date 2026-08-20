@@ -76,6 +76,26 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
                 .mission_leaf
                 .as_unit()
                 .is_some_and(|leaf| leaf.deploy_reverse_active() != 0),
+            // `InfantryClass::Mission_Attack @ 0x0051F3E0` branches at
+            // `0x0051F4D3` on `[this+0x6C4] ∈ {0x1B, 0x1C, 0x1D, 0x1E}` —
+            // Deploy, Deployed, DeployedFire, DeployedIdle in the sequence-name
+            // table at `0x008255C8`, bounded by
+            // `InfantryTypeClass::ReadSequenceData @ 0x00523D00`. `0x1F`
+            // (Undeploy) is OUTSIDE the set, which is why this is not
+            // `GameEntity::is_deployed()` or `infantry::is_deploy_locked()`:
+            // both of those admit the undeploying phase.
+            //
+            // The native gate also requires the owner to pass
+            // `HouseClass::IsControlledByHuman @ 0x0050B730`. Every house in
+            // VERA is human today, so that test is vacuously true; whoever
+            // lands an AI opponent must add it here rather than inherit a
+            // silent divergence.
+            infantry_deployed_do_type: category == EntityCategory::Infantry
+                && matches!(
+                    entity.deploy_state,
+                    Some(crate::sim::deploy::DeployPhase::Deploying { .. })
+                        | Some(crate::sim::deploy::DeployPhase::Deployed)
+                ),
         }
     };
     if !input.timer_due {
@@ -203,6 +223,28 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         //   risk is the reason it is written down: the consumer must land in
         //   the same slice as the bunker scan, or a bunker-acquired unit keeps
         //   the bunker as its target instead of re-picking one dispatch later.
+        // Deployed infantry never reach the Foot body — `InfantryClass`'s
+        // Attack slot `+0x210` is a real override at `0x0051F3E0` whose
+        // deployed arm runs the in-place re-acquire and returns the PLAIN
+        // Rate epilogue, with no half-cadence gate.
+        (EntityCategory::Infantry, Some(MissionType::Attack))
+            if input.infantry_deployed_do_type =>
+        {
+            // Order is load-bearing: `0x0051F4E2` calls `[vtable+0x428]`
+            // FIRST and only then computes `ftol(Rate) + RandomRanged(0, 2)`.
+            // The re-acquire can install or clear a target, so running it
+            // after the draw would both reorder the state writes and move the
+            // scenario-stream position for anything the scan itself consumes.
+            let queue = infantry_deployed_attack_reacquire(sim, id, rules, input);
+            let delay = jittered_mission_cadence(sim, rules, MissionType::Attack);
+            MissionHandlerEvaluation {
+                delay,
+                clear_stale_attack_target: input.has_attack_target
+                    && attack_target_is_stale(sim, id),
+                clear_attack_target: false,
+                queue,
+            }
+        }
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::Attack)) => {
             let cadence = jittered_mission_cadence(sim, rules, MissionType::Attack);
             let delay = if foot_attack_in_half_cadence_band(sim, rules, id) {
@@ -285,6 +327,20 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // body's passive-acquire block admits missions {Move, Harvest, Guard}
         // and nothing else, so an Area Guard object is deliberately never
         // scanned there; this arm is its single acquisition route.
+        //
+        // RESIDUAL (GSI-07.16) — pass 1 left this row unmarked, and a leaf-level
+        // read finds the Foot body matches while BOTH categories are routed past
+        // a real override.
+        // - `InfantryClass::Mission_AreaGuard @ 0x0051F640` carries the same
+        //   deployed-DoType shim as its Guard slot, including a
+        //   `RandomRanged(10, 20)` draw VERA never makes. Trigger: a deployed GI
+        //   or Desolator on Area Guard — ordinary micro. Frequency: routine, and
+        //   the missing draw diverges the scenario stream on every dispatch.
+        // - `UnitClass::Mission_AreaGuard @ 0x00744100` is the slave-miner
+        //   recall and returns `RandomRanged(0, 2)` where the Foot body returns
+        //   `RandomRanged(1, 5)` — an RNG fork, not just a different delay.
+        //   Frequency: zero today (no slave miners), continuous once they land.
+        // The Foot body's own slave-recall arm is absent for the same reason.
         (EntityCategory::Unit | EntityCategory::Infantry, Some(MissionType::AreaGuard)) => {
             evaluate_foot_area_guard(sim, id, rules)
         }
@@ -297,30 +353,38 @@ pub(super) fn dispatch_supported_foot_mission_cadence(
         // dispatch timer, so an object on Hunt is assigned and then does
         // nothing. Trigger: anything queued onto Hunt — the crate and trigger
         // paths assign it today. Player effect: hunting units stand still.
-        // Frequency: low in stock skirmish, because the main assigner would be
-        // an AI opponent, which this project has not built yet. Downstream
+        // Frequency: NOT AI-only, contrary to pass 1 — VERA's own berserk path
+        // queues Hunt, so every Chaos Drone use reaches this arm. Downstream
         // risk: the selector needs the Capture/Sabotage target scan, so it
-        // lands with the engineer and terrorist mission work, not before.
+        // lands with the engineer and terrorist mission work, not before. The
+        // cadence half of the row is closed below.
         //
-        // RESIDUAL (GSI-07.09) — Mission 4 Retreat has no handler at all. It is
-        // absent from the stub set as well, so a Retreat-committed object falls
-        // out of the dispatcher with its timer untouched; native
-        // `FootClass::Mission_Retreat @ 0x004DA2C0` oscillates between two
-        // states. Trigger: any assigner queuing Retreat. Player effect: the
-        // object freezes instead of withdrawing. Frequency: zero today for the
-        // same reason as Hunt. Downstream risk: the missing timer touch means
-        // the object also never re-enters the dispatch cadence, so a future
-        // assigner would strand it rather than merely mis-handle it.
+        // SKIP/PROVE (GSI-07.09) — Mission 4 Retreat is a dead slot for foot
+        // objects, and pass 1's reason was wrong. `FootClass::Mission_Retreat @
+        // 0x004DA2C0` (slot `+0x230`, proven from the dispatch jump table at
+        // `0x005B34E8` entry 4) is a two-state destination oscillator returning
+        // `ftol(.1 * 900) + RandomRanged(0, 2)` unconditionally — but a bounded
+        // assigner sweep (every `Queue_Mission` two-push site, all 29
+        // `Assign_Mission` sites, and every direct `mov [this+0xAC], 4`) finds
+        // mission 4 queued at exactly four addresses, ALL of them
+        // `AircraftClass` (ParaDropApproach, Open, Rescue, Receive_Radio) — and
+        // aircraft dispatch through `0x00415A50`, not this body. So the
+        // frequency is zero because no foot assigner exists, not because this
+        // project lacks an AI. Keep the enum slot; the only cost of the missing
+        // arm is that a Retreat-committed foot object would leave its timer
+        // untouched, which nothing can produce today.
         (EntityCategory::Infantry, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
             jittered_mission_cadence(sim, rules, MissionType::Hunt),
         ),
         // The `UnitClass` Hunt override retries the strict target probe, then
         // queues Enter only if its separate approach virtual returns one.
-        // Neither producer exists here, so preserve its exact no-jitter
-        // fallback rather than infer arrival from target presence.
-        (EntityCategory::Unit, Some(MissionType::Hunt)) => {
-            MissionHandlerEvaluation::cadence(mission_cadence(rules, MissionType::Hunt))
-        }
+        // Neither producer exists here, so the body stays absent — but the
+        // cadence is jittered: pass 1 preserved a "no-jitter fallback" that does
+        // not exist. BOTH exits of `UnitClass::Mission_Hunt @ 0x0073EFC0` and
+        // `FootClass::Mission_Hunt @ 0x004D5350` draw `RandomRanged(0, 2)`.
+        (EntityCategory::Unit, Some(MissionType::Hunt)) => MissionHandlerEvaluation::cadence(
+            jittered_mission_cadence(sim, rules, MissionType::Hunt),
+        ),
         // Everything else: the object still reaches a handler and still re-arms
         // its timer. Where that handler is the un-overridden base one, the
         // return value is a verified constant and no RNG is drawn; where the
@@ -377,6 +441,10 @@ pub(super) struct MissionHandlerInput {
     pub(super) effective_mission: Option<MissionType>,
     pub(super) unit_deploy_begin_active: bool,
     pub(super) unit_deploy_reverse_active: bool,
+    /// This is an infantryman whose DoType sits in native's deployed set, so
+    /// its Attack slot takes `InfantryClass::Mission_Attack`'s own override
+    /// instead of the Foot body.
+    pub(super) infantry_deployed_do_type: bool,
 }
 
 /// The handler result is evaluated before the one common MissionClass timer
@@ -940,6 +1008,87 @@ fn foot_attack_type_takes_half_cadence(
     };
     (primary.range * crate::util::fixed_math::SimFixed::from_num(256)).to_num::<i64>()
         < close_primary_range_leptons
+}
+
+/// `InfantryClass::Mission_Attack`'s deployed arm, vtable `+0x428` =
+/// `0x0051F330`, in native commit order:
+///
+/// 1. keep the installed target if it is still legal for the object's weapon
+///    (`[vtable+0x3A8]`) — nothing else runs;
+/// 2. otherwise rescan in place (`[vtable+0x3C4]`, `Greatest_Threat` with
+///    threat flags `1`) and, when the object either had a target or found one,
+///    commit the result through `Assign_Target` (`[vtable+0x3C8]`). Note the
+///    consequence: a stale target with nothing found is CLEARED here;
+/// 3. with nothing found and the committed mission not Guard, run
+///    `Enter_Idle_Mode(0, 1)` (`[vtable+0x484]`).
+///
+/// The object never walks: there is no destination write on any arm.
+///
+/// RESIDUAL — two approximations, both stated rather than absorbed:
+/// - step 1's legality test is `attack_target_is_stale`, which is aliveness,
+///   not `[vtable+0x3A8]`'s weapon-vs-target legality. A deployed GI holding a
+///   live target its weapon can no longer engage keeps it here, where native
+///   rescans. Trigger: a target that changes legality without dying — chiefly
+///   one that leaves range or cloaks. Frequency: occasional inside an
+///   engagement, and cloak does not exist in VERA yet (GSI-12.05).
+/// - the `GetTechnoType()->[+0xD94] == 0` gate on the idle exit is UNCHECKED
+///   and left out. Omitting it can only let the idle exit run where native
+///   skipped it; no stock type is known to set the byte.
+fn infantry_deployed_attack_reacquire(
+    sim: &mut Simulation,
+    id: u64,
+    rules: &RuleSet,
+    input: MissionHandlerInput,
+) -> Option<MissionType> {
+    let had_target = input.has_attack_target;
+    if had_target && !attack_target_is_stale(sim, id) {
+        return None;
+    }
+    // The raw scan, NOT `passive_target_scan`: that routine also stamps the
+    // scan frame and re-arms the acquisition cadence with its own
+    // `RandomRanged(0, 2)` draw, and `0x0051F330` calls `Greatest_Threat`
+    // directly through `[vtable+0x3C4]` without either.
+    let pick = crate::sim::combat::acquire_best_target_for_entity(
+        &sim.substrate.entities,
+        rules,
+        &sim.interner,
+        id,
+        Some(&sim.fog),
+        sim.resolved_terrain.as_ref(),
+    );
+    if had_target || pick.is_some() {
+        let current = sim
+            .substrate
+            .entities
+            .get(id)
+            .and_then(|e| e.attack_target.as_ref().map(|t| t.target));
+        match (current, pick) {
+            // Swinging onto a different victim keeps the rearm countdown, the
+            // burst counter and the inter-shot delay, exactly as the scanner's
+            // own retarget does — rebuilding the record would hand out a free
+            // shot on every re-pick.
+            (Some(held), Some(sid)) if held != crate::sim::combat::TargetKind::Entity(sid) => {
+                if let Some(entity) = sim.substrate.entities.get_mut(id) {
+                    crate::sim::combat::retarget_preserving_rearm(entity, sid);
+                }
+            }
+            _ => {
+                let _ = sim.set_archive_target_represented(
+                    id,
+                    pick.map(crate::sim::combat::TargetKind::Entity),
+                );
+            }
+        }
+        if let Some(entity) = sim.substrate.entities.get_mut(id) {
+            entity.passively_acquired_target = pick.is_some();
+        }
+    }
+    if pick.is_some() {
+        return None;
+    }
+    // `0x0051F3C0`: the idle exit is skipped when the committed mission is
+    // Guard (`5`). This arm only runs on Attack, so the test passes.
+    foot_enter_idle_mode_queue(rules, input)
 }
 
 fn attack_target_is_stale(sim: &Simulation, id: u64) -> bool {

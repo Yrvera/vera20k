@@ -283,20 +283,20 @@ pub fn decode_bag_audio(entry: &AudioBagEntry, data: &[u8]) -> Option<BagAudio> 
 /// Followed by nibble data for the remaining block bytes.
 ///
 /// If `block_size` is 0 (v1 IDX or unknown), treats the entire data as one block.
-/// RESIDUAL (GSI-02.15) — the multi-block preamble is unexercised. Every test
-/// in this module builds a v1 index by hand, so the 36-byte v2 stride and the
-/// `chunk_size`-driven loop below are never entered; only the
-/// `block_size == data.len()` single-block fallback is covered. Which version
-/// the retail `audio(md).idx` actually is was not determined here — the file is
-/// nested inside `ra2md.mix` and its name table is not plaintext-scannable.
-/// - Trigger: loading a v2 index, if retail ships one.
-/// - Player effect: if v2 is the retail format and the stride or preamble is
-///   wrong, sounds decode as noise or fail to resolve at all.
-/// - Frequency: unknown, and that is the point — this is either every sound or
-///   none, with no evidence in between.
-/// - Downstream risk: bounded to decode; nothing downstream reads the index
-///   shape. Settling it needs the `asset` CLI against a retail archive, which
-///   is a tooling step rather than a code change.
+/// RESIDUAL (GSI-02.15) — the multi-block preamble is unexercised, and pass 2
+/// established that it is the LIVE path, not a hypothetical one. Retail
+/// `audio(md).idx` is v2 and every one of its 2292 entries carries
+/// `chunk_size = 512`, so the 36-byte stride runs for every retail sound.
+/// `chunk_size` is a BYTE stride, proved by 8 of 8 sampled entries satisfying
+/// `(size mod 512) - 4 == 0 (mod 4)`, which `IMA_ADPCM::DecodeBlock @
+/// 0x0040AA70` requires. The preamble, the predictor-as-first-sample and the
+/// left/right interleave all match; only coverage is missing. `ABIRJ01A` is a
+/// concrete retail fixture — 28 full blocks plus a 52-byte tail.
+/// - Trigger: decoding any retail sound.
+/// - Player effect: none observed; the risk is a silent decode regression.
+/// - Frequency: continuous.
+/// - Downstream risk: none — this is test coverage over a path that already
+///   matches, so it is a cheap slice whenever assets are in reach.
 fn decode_ima_adpcm_blocks(data: &[u8], channels: u16, block_size: u32) -> Vec<i16> {
     use super::aud_file::ImaAdpcmState;
 

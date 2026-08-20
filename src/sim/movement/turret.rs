@@ -58,22 +58,29 @@ pub fn body_facing_to_turret(body: u8) -> u16 {
     (body as u16) << 8
 }
 
-/// RESIDUAL (GSI-08.14) — the turret model is one facing, and there is no
-/// recoil. Native splits the turret receiver from the barrel facing and reads
-/// them separately when it builds a fire location; `barrel_facing` here is the
-/// single value both roles share. `TurretRecoil=` is not parsed at all (2 stock
-/// entries), so no barrel slides back on firing, and no fire-time impulse is
-/// fed to the rocking system — `apply_rocker_impulse` is driven by damage only.
-/// - Trigger: firing any turreted vehicle; the recoil arm needs one of the two
-///   `TurretRecoil=` types.
-/// - Player effect: turrets fire without kicking back, so heavy guns read as
-///   weightless. The single-facing model additionally means a fire location
-///   derived from the barrel would use the receiver's angle.
-/// - Frequency: every shot from a turreted unit for the missing recoil;
-///   negligible for the two authored `TurretRecoil=` types.
-/// - Downstream risk: bounded while the fire origin is the unit centre (see the
-///   GSI-08.04 residual) — splitting the facings only pays off once FLH drives
-///   the projectile origin, so the two want one slice.
+/// NO-DIFF (GSI-08.14) — one facing is right, and pass 1's premise was wrong.
+/// `TechnoClass` carries exactly TWO `FacingClass` instances: the body at
+/// `+0x388` and the turret at `+0x3A0` (0x18 stride; `+0x3B8` is
+/// `CurrentBurstIndex`, not a third facing). There is no separate barrel
+/// facing, so `barrel_facing` here IS native's turret facing and the fire
+/// location reads that same value — the claimed coupling to the FLH slice
+/// (`GSI-08.04`) does not exist. `TurretROT=` likewise does not exist in
+/// gamemd; the only `TurretRot`-shaped string in the image is
+/// `TurretRotateSound`, so driving turret rotation from `ROT=` is correct.
+///
+/// RESIDUAL (GSI-08.14) — recoil is not modelled. Native keeps two
+/// `RecoilData` structs at `+0x3D8`/`+0x3F8`, arms them in `Fire_At` and
+/// advances them from `TechnoClass::AI_Update` through `0x0070ED10`; the
+/// displacement is read by four instructions, all in draw code, so it is
+/// render-only and feeds no gameplay path.
+/// - Trigger: firing a type that authors `TurretRecoil=`.
+/// - Player effect: the barrel does not slide back on firing, so heavy guns
+///   read as weightless.
+/// - Frequency: two stock authors, both BUILDINGS (the Grand Cannon and
+///   CAEAST02) — pass 1's "every shot from a turreted unit" was wrong, and no
+///   stock vehicle recoils at all.
+/// - Downstream risk: none to the simulation. It belongs to the render side
+///   and consumes no RNG.
 ///
 /// The barrel facing `tick_turret_rotation` drives this entity toward this tick:
 /// toward its attack target (lepton-precise) when it has one, else back to body
