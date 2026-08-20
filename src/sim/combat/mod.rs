@@ -4537,6 +4537,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng(
         terrain,
         None,
         false,
+        false,
         current_tick,
         tick_ms,
         binary_frame,
@@ -4790,6 +4791,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
     mut terrain: Option<&mut crate::map::resolved_terrain::ResolvedTerrainGrid>,
     bridge_state: Option<&BridgeRuntimeState>,
     scenario_no_damage: bool,
+    require_playfield_membership: bool,
     current_tick: u64,
     tick_ms: u32,
     binary_frame: u32,
@@ -5383,6 +5385,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             terrain_objects,
             terrain_area_state.as_deref(),
             scenario_no_damage,
+            require_playfield_membership,
             binary_frame,
             tick_ms,
             scenario_rng,
@@ -6004,6 +6007,7 @@ pub(crate) fn resolve_attacker_fire(
     terrain_objects: Option<combat_aoe::TerrainCollectionView<'_>>,
     terrain_area_state: Option<&TerrainAreaState>,
     scenario_no_damage: bool,
+    require_playfield_membership: bool,
     binary_frame: u32,
     _tick_ms: u32,
     scenario_rng: &mut SimRng,
@@ -6118,7 +6122,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
-                false,
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6224,7 +6228,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
-                false,
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6245,7 +6249,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
-                false,
+                require_playfield_membership,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {

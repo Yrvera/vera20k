@@ -4196,6 +4196,174 @@ fn test_tick_combat_visibility_blocks_fire() {
     );
 }
 
+#[derive(Clone, Copy)]
+enum PlayfieldRetargetBranch {
+    DeadOrMissing,
+    NewlyFriendly,
+    Invisible,
+}
+
+fn run_playfield_retarget_branch(
+    branch: PlayfieldRetargetBranch,
+    require_playfield_membership: bool,
+) -> u64 {
+    let rules = test_rules();
+    let mut store = EntityStore::new();
+    store.insert(make_entity_owned(10, "MTNK", 5, 5, 300, "Americans"));
+    let (current_hp, current_owner) = match branch {
+        PlayfieldRetargetBranch::DeadOrMissing => (0, "Soviet"),
+        PlayfieldRetargetBranch::NewlyFriendly => (300, "Allies"),
+        PlayfieldRetargetBranch::Invisible => (300, "Soviet"),
+    };
+    store.insert(make_entity_owned(
+        99,
+        "MTNK",
+        8,
+        5,
+        current_hp,
+        current_owner,
+    ));
+    let mut false_candidate = make_entity_owned(20, "MTNK", 6, 5, 300, "Soviet");
+    false_candidate.in_playfield = false;
+    store.insert(false_candidate);
+    let mut true_candidate = make_entity_owned(30, "MTNK", 7, 5, 300, "Soviet");
+    true_candidate.in_playfield = true;
+    store.insert(true_candidate);
+
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 10, 99, None, &interner);
+    let mut fog = FogState::default();
+    let american = test_intern("Americans");
+    fog.mark_visible_for_owner(american, 6, 5);
+    fog.mark_visible_for_owner(american, 7, 5);
+    if !matches!(branch, PlayfieldRetargetBranch::Invisible) {
+        fog.mark_visible_for_owner(american, 8, 5);
+    }
+    if matches!(branch, PlayfieldRetargetBranch::NewlyFriendly) {
+        fog.alliances
+            .entry("AMERICANS".to_string())
+            .or_default()
+            .insert("ALLIES".to_string());
+        fog.alliances
+            .entry("ALLIES".to_string())
+            .or_default()
+            .insert("AMERICANS".to_string());
+    }
+
+    let mut occupancy = OccupancyGrid::new();
+    let mut resources = BTreeMap::new();
+    let mut scenario_rng = SimRng::new(1);
+    if require_playfield_membership {
+        let handles = Some(crate::sim::type_handle_table::ResolvedRuleHandles::resolve(
+            &rules,
+            &mut interner,
+        ));
+        let mut main_rng = SimRng::new(0);
+        tick_combat_with_fog_and_main_rng_with_terrain_area(
+            &mut store,
+            &mut occupancy,
+            &rules,
+            &mut interner,
+            handles,
+            Some(&fog),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &[],
+            &HouseAllianceMap::new(),
+            None,
+            &mut resources,
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+            0,
+            100,
+            0,
+            &[],
+            &BTreeSet::new(),
+            &[],
+            &[],
+            None,
+            &[],
+            &mut scenario_rng,
+            &mut main_rng,
+            None,
+            None,
+        );
+    } else {
+        // Public/headless adapter deliberately has no live MapClass authority.
+        tick_combat_with_fog(
+            &mut store,
+            &mut occupancy,
+            &rules,
+            &mut interner,
+            Some(&fog),
+            &BTreeMap::new(),
+            None,
+            &mut resources,
+            None,
+            None,
+            None,
+            0,
+            100,
+            0,
+            &[],
+            None,
+            &mut scenario_rng,
+        );
+    }
+
+    match store
+        .get(10)
+        .and_then(|entity| entity.attack_target.as_ref())
+        .map(|attack| attack.target)
+        .expect("attacker retargets")
+    {
+        TargetKind::Entity(stable_id) => stable_id,
+        TargetKind::Cell(_, _) => panic!("retarget must stay object-backed"),
+    }
+}
+
+#[test]
+fn techno_playfield_dead_target_reacquisition_rejects_false_candidate() {
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::DeadOrMissing, false),
+        20,
+        "headless adapter preserves candidate admission without MapClass authority"
+    );
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::DeadOrMissing, true),
+        30,
+        "Evaluate_Candidate 0x006F7DB0 rejects stored +0x3D5=false"
+    );
+}
+
+#[test]
+fn techno_playfield_newly_friendly_reacquisition_rejects_false_candidate() {
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::NewlyFriendly, false),
+        20
+    );
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::NewlyFriendly, true),
+        30
+    );
+}
+
+#[test]
+fn techno_playfield_invisible_target_reacquisition_rejects_false_candidate() {
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::Invisible, false),
+        20
+    );
+    assert_eq!(
+        run_playfield_retarget_branch(PlayfieldRetargetBranch::Invisible, true),
+        30
+    );
+}
+
 #[test]
 fn test_tick_combat_retargets_by_distance_then_stable_id() {
     let rules: RuleSet = test_rules();

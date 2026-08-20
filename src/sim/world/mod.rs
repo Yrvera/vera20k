@@ -1318,6 +1318,10 @@ impl Simulation {
         let current_tick = u64::from(self.session.binary_frame);
         let binary_frame = self.session.binary_frame;
         let scenario_no_damage = self.session.no_damage;
+        // Active YR TechnoClass::Evaluate_Candidate @ 0x006F7DB0 reads the
+        // candidate's stored Techno+0x3D5 flag at 0x006F7DF1. Only a live
+        // MapClass authority makes that native admission rule applicable.
+        let require_playfield_membership = self.playfield_bounds.is_some();
 
         let combat_result = {
             let mut inline_hooks = SimulationCombatInlineHooks { sim: self };
@@ -1339,6 +1343,7 @@ impl Simulation {
                 resolved_terrain.as_mut(),
                 bridge_state.as_ref(),
                 scenario_no_damage,
+                require_playfield_membership,
                 current_tick,
                 tick_ms,
                 binary_frame,
