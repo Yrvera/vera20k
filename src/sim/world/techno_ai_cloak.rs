@@ -2,8 +2,16 @@
 
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
+use crate::sim::combat::TargetKind;
+use crate::sim::mission::concrete_effects::represented_assign_target;
 
 use super::Simulation;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SensorCloakReevaluation {
+    pub(crate) cloak_transitioned: bool,
+    pub(crate) reassigned_targeters: Vec<u64>,
+}
 
 fn stock_cloak_tick_facts(
     sim: &Simulation,
@@ -79,25 +87,62 @@ fn stock_cloak_tick_facts(
     })
 }
 
+fn sensor_targeters_in_native_dispatch_order(sim: &Simulation, cloaker_id: u64) -> Vec<u64> {
+    let Some(cloaker) = sim.substrate.entities.get(cloaker_id) else {
+        return Vec::new();
+    };
+    let cloaker_owner = cloaker.owner;
+    let cloaker_cell = (cloaker.position.rx, cloaker.position.ry);
+
+    // TechnoClass+0x420 @ 0x006F4EB0 reverse-scans g_TechnoClass_Array,
+    // appends admitted targeters, then reverse-dispatches the saved vector.
+    // The two reversals produce forward Techno construction order. VERA's
+    // stable object IDs are monotonic construction IDs, so the EntityStore's
+    // ordered Techno walk is the same order without copying the native arrays.
+    sim.substrate
+        .entities
+        .iter_sorted()
+        .filter_map(|(targeter_id, targeter)| {
+            let targets_cloaker = targeter.attack_target.as_ref().is_some_and(|target| {
+                target.target == TargetKind::Entity(cloaker_id)
+            });
+            let admitted = targeter.owner == cloaker_owner
+                || sim.fog.has_sensor_for_house(
+                    targeter.owner,
+                    cloaker_cell.0,
+                    cloaker_cell.1,
+                );
+            (targets_cloaker && admitted).then_some(targeter_id)
+        })
+        .collect()
+}
+
 /// Active `TechnoClass+0x420 @ 0x006F4EB0` owner-visible/CanAutoCloak arm.
 /// Sensor lifecycle calls this in exact CellClass FirstObject order after the
-/// corresponding signed counter mutation. The player-local redraw arm remains
-/// presentation state and is deliberately not serialized or world-hashed.
+/// corresponding signed counter mutation. Under the outer gate, native first
+/// snapshots admitted targeters, then starts cloak/sound, then reassigns the
+/// saved same target through `Assign_Target @ 0x006FCDB0`; that setter clears
+/// passive provenance before its same-target early return. The player-local
+/// redraw arm remains presentation state and is not serialized or world-hashed.
 pub(crate) fn sensor_reevaluate_stock_cloak(
     sim: &mut Simulation,
     id: u64,
     rules: &RuleSet,
-) -> bool {
+) -> SensorCloakReevaluation {
     let Some(facts) = stock_cloak_tick_facts(sim, id, rules) else {
-        return false;
+        return SensorCloakReevaluation::default();
     };
     let owner_cell_visible = sim.substrate.entities.get(id).is_some_and(|entity| {
         sim.fog
             .is_cell_visible(entity.owner, entity.position.rx, entity.position.ry)
     });
     if !owner_cell_visible || !facts.can_auto_cloak {
-        return false;
+        return SensorCloakReevaluation::default();
     }
+
+    // Snapshot before StartCloaking, its positional sound, or any targeter
+    // mutation. This is the DynamicVector transaction in 0x006F4EB0.
+    let reassigned_targeters = sensor_targeters_in_native_dispatch_order(sim, id);
     let start = sim.substrate
         .entities
         .get_mut(id)
@@ -106,7 +151,18 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
     if start.is_some_and(|start| start.play_sound) {
         emit_configured_cloak_sound(sim, id, rules);
     }
-    start.is_some_and(|start| start.transitioned)
+    for &targeter_id in &reassigned_targeters {
+        let targeter = sim
+            .substrate
+            .entities
+            .get_mut(targeter_id)
+            .expect("saved Techno targeter remains registered during sensor callback");
+        represented_assign_target(targeter, Some(TargetKind::Entity(id)));
+    }
+    SensorCloakReevaluation {
+        cloak_transitioned: start.is_some_and(|start| start.transitioned),
+        reassigned_targeters,
+    }
 }
 
 fn emit_configured_cloak_sound(sim: &mut Simulation, id: u64, rules: &RuleSet) {
