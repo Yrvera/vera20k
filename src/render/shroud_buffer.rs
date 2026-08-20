@@ -410,6 +410,22 @@ impl ShroudBuffer {
             }
         }
 
+        // Debug: dump the CPU brightness buffer as a grayscale PNG when
+        // RA2_DUMP_SHROUD names a path. Diagnostic only — no gamemd counterpart.
+        if let Ok(path) = std::env::var("RA2_DUMP_SHROUD") {
+            let w = self.width as usize;
+            let mut img = vec![0u8; w * self.height as usize];
+            for y in 0..self.height as usize {
+                let src = y * self.row_stride as usize;
+                img[y * w..(y + 1) * w].copy_from_slice(&self.pixels[src..src + w]);
+            }
+            if let Err(e) =
+                image::save_buffer(&path, &img, self.width, self.height, image::ColorType::L8)
+            {
+                log::warn!("shroud dump failed: {e}");
+            }
+        }
+
         // Upload to GPU.
         gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {

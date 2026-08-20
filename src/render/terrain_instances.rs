@@ -44,10 +44,6 @@ pub fn build_visible_instances(
     screen_width: f32,
     screen_height: f32,
     uv_fn: UvLookupFn<'_>,
-    fog: Option<(
-        crate::sim::intern::InternedId,
-        &crate::sim::vision::FogState,
-    )>,
     bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
 ) -> TerrainInstances {
     let view_left: f32 = camera_x - CULL_MARGIN;
@@ -71,13 +67,12 @@ pub fn build_visible_instances(
             continue;
         }
 
-        // Skip fully shrouded cells — matches gamemd which doesn't render terrain
-        // for unexplored cells at all (ZBuffer cleared to 0xFFFF prevents drawing).
-        if let Some((owner, fog_state)) = fog {
-            if !fog_state.is_cell_revealed(owner, cell.rx, cell.ry) {
-                continue;
-            }
-        }
+        // No shroud gate: the native tile walk draws every in-bounds cell
+        // regardless of explored state (`CellOverlay_TileDraw @ 0x00480350`
+        // has no shroud test), and the flat ABuffer curtain blacks out
+        // unexplored ground. Culling here left undrawn holes the curtain's
+        // feather could not darken — hard south-facing shroud edges wherever
+        // the feather extended past the last drawn tile.
 
         // Depth: reconstruct elevation-free iso row, then normalize.
         // Lower screen_y → larger depth (drawn behind). Elevation bias ensures
