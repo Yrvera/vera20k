@@ -1088,7 +1088,7 @@ mod tests {
 
         // Camera at origin, 1024x768 viewport — only first cell should be visible.
         let result: crate::render::terrain_instances::TerrainInstances =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None, None);
+            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, None, None);
         assert_eq!(result.normal.len(), 1);
     }
 
@@ -1146,7 +1146,6 @@ mod tests {
             0.0,
             1024.0,
             768.0,
-            None,
             None,
             None,
         );
@@ -1237,7 +1236,7 @@ mod tests {
         let uv_fn: UvLookupFn = Some(&lookup);
 
         let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
         let (tid, sub, var) = captured.borrow().expect("uv_fn was called");
         // Override fired: tile_id = NS AboutToFall slot = 203.
         assert_eq!(tid, 203);
@@ -1272,7 +1271,7 @@ mod tests {
         let uv_fn: UvLookupFn = Some(&lookup);
 
         let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed: native tile_id retained.
         assert_eq!(tid, 100);
@@ -1298,7 +1297,7 @@ mod tests {
         let uv_fn: UvLookupFn = Some(&lookup);
 
         let _ =
-            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, None, Some(&bs));
+            crate::render::terrain_instances::build_visible_instances(&grid, None, 0.0, 0.0, 1024.0, 768.0, uv_fn, Some(&bs));
         let (tid, _sub, _var) = captured.borrow().expect("uv_fn was called");
         // Override bypassed (no table): native tile_id retained.
         assert_eq!(tid, 100);

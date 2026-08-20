@@ -170,21 +170,9 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
         None
     };
     let terrain = if let Some(grid) = &state.match_state.match_presentation.terrain_grid {
-        // Skip terrain for fully shrouded cells — matches gamemd which doesn't
-        // render terrain under shroud. The multiply pass still darkens edges.
-        let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
-        let fog_vis: Option<(
-            crate::sim::intern::InternedId,
-            &crate::sim::vision::FogState,
-        )> = if state.match_state.sandbox_full_visibility {
-            None
-        } else if let (Some(rt), Some(owner)) = (state.match_state.sim_runtime.as_ref(), &local_owner_name) {
-            // F10 cone: render-feed reads go through SimView getters.
-            let view = rt.view();
-            view.interner().get(owner).map(|id| (id, view.fog()))
-        } else {
-            None
-        };
+        // Terrain draws regardless of shroud — the native tile walk has no
+        // explored gate (`CellOverlay_TileDraw @ 0x00480350`); the flat shroud
+        // curtain blacks out unexplored ground in the multiply pass.
         let bridge_state = state
             .match_state.sim_runtime
             .as_ref()
@@ -197,7 +185,6 @@ pub(super) fn build_world_instances(state: &mut AppState, sw: f32, sh: f32) -> W
             sw,
             sh,
             uv_fn,
-            fog_vis,
             bridge_state,
         )
     } else {

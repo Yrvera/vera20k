@@ -86,6 +86,7 @@ pub(crate) fn render_game(
     // Phase 2: Build debug overlay instances (pathgrid, cell grid, heightmap).
     let debug = build_instances::build_debug_instances(state, vsw, vsh);
 
+
     // Phase 3: Rebuild shroud ABuffer (CPU blit + GPU upload). The final
     // building-bracket front redraw samples this CPU buffer during UI build.
     let rw = state.render_width();
