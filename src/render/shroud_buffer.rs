@@ -9,12 +9,15 @@
 //! 2. Upload to an R8Unorm GPU texture
 //! 3. Full-screen multiply pass darkens the framebuffer per-pixel
 //!
+//! The lattice is FLAT: the native per-cell blit
+//! (`Tactical_layer_shroud_edges @ 0x006D3660`) zeroes the cell coord's Z
+//! before projecting, so terrain height never shifts a shroud frame and the
+//! diamonds tile the screen without gaps at height discontinuities.
+//!
 //! ## Dependency rules
 //! - Part of render/ — reads FogState (no mutation), uses GpuContext.
 
-use std::sync::OnceLock;
-
-use crate::map::terrain::{HEIGHT_STEP, iso_to_screen, screen_to_iso};
+use crate::map::terrain::{iso_to_screen, screen_to_iso};
 use crate::render::gpu::GpuContext;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
@@ -30,7 +33,6 @@ const BLACK: u8 = 0x00;
 /// SHP transparent pixel marker — skip (don't overwrite buffer).
 const TRANSPARENT: u8 = 0xFE;
 const SHROUD_CELL_PAD: i32 = 8;
-const SHROUD_HEIGHT_PAD_LEVELS: f32 = 16.0;
 
 /// What the shroud brightness buffer writes for one cell.
 ///
@@ -83,11 +85,6 @@ pub(crate) fn cell_fill(
         idx => CellFill::Frame(idx as usize),
     }
 }
-
-/// Warn once if `height_grid` is `None` after world init. The app normally
-/// derives this from the current `PathGrid`; missing data falls back to z=0
-/// blits and breaks elevated-terrain rendering.
-static MISSING_HEIGHT_GRID_WARNED: OnceLock<()> = OnceLock::new();
 
 /// Shroud edge frame lookup table.
 ///
@@ -217,7 +214,7 @@ impl ShroudBuffer {
         vp_h: i32,
     ) -> Option<((u16, u16), (u16, u16))> {
         let pad_x = self.canvas_w as f32;
-        let pad_y = self.canvas_h as f32 + HEIGHT_STEP * SHROUD_HEIGHT_PAD_LEVELS;
+        let pad_y = self.canvas_h as f32;
         let left = cam_x - pad_x;
         let right = cam_x + vp_w as f32 + pad_x;
         let top = cam_y - pad_y;
@@ -321,7 +318,6 @@ impl ShroudBuffer {
         screen_w: u32,
         screen_h: u32,
         zoom: f32,
-        height_grid: Option<&[u8]>,
     ) {
         // Render shroud at virtual resolution (screen / zoom) so diamond blits
         // stay at fixed world-pixel sizes. The fullscreen GPU shader stretches the
@@ -364,13 +360,6 @@ impl ShroudBuffer {
         self.last_cam_y = cam_y_r;
         self.last_zoom = zoom;
 
-        if height_grid.is_none() && MISSING_HEIGHT_GRID_WARNED.set(()).is_ok() {
-            log::warn!(
-                "shroud: height grid is None - shroud edges will render at \
-                 z=0 instead of cell elevation. Is the PathGrid missing?"
-            );
-        }
-
         // Fill bright, then darken unrevealed cells and blit edge transitions.
         // Blitting in world-pixel coordinates at virtual resolution
         // means diamond tiles match the world grid exactly; the GPU stretch handles zoom.
@@ -389,17 +378,15 @@ impl ShroudBuffer {
 
         for ry in ry_start..=ry_end {
             for rx in rx_start..=rx_end {
-                // Position shroud diamond at the cell's actual terrain height so
-                // the brightness buffer aligns with where the terrain renders.
-                // Fully shrouded cells aren't rendered as terrain at all (filtered
-                // in build_visible_instances), so alignment only matters for edges.
-                let cell_z = height_grid
-                    .and_then(|hg| {
-                        let idx = ry as usize * self.map_width as usize + rx as usize;
-                        hg.get(idx).copied()
-                    })
-                    .unwrap_or(0);
-                let (sx, sy) = iso_to_screen(rx, ry, cell_z);
+                // The shroud lattice is FLAT: gamemd's per-cell edge blit
+                // (`Tactical_layer_shroud_edges @ 0x006D3660`) takes
+                // `CellClass::Get_Center_Coords`, forces the coord's Z to 0,
+                // projects, then centers the 60x30 frame there. Terrain height
+                // never shifts a shroud blit, so the diamonds tile the screen
+                // with no gaps at cliffs, ramps, or bridge ends. Blitting at
+                // cell height instead left an undarkened tear at every height
+                // discontinuity.
+                let (sx, sy) = iso_to_screen(rx, ry, 0);
                 let vx = sx as i32 - cam_xi;
                 let vy = sy as i32 - cam_yi;
 

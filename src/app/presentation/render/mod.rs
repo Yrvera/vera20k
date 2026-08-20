@@ -93,11 +93,6 @@ pub(crate) fn render_game(
     // F10 cone: the render feed reads through SimView getters. This site
     // holds `&mut state.shroud_buffer`, so it keeps the field chain and views
     // the runtime directly for split borrows.
-    let shroud_height_grid = state
-        .match_state.sim_runtime
-        .as_ref()
-        .and_then(|rt| rt.view().path_grid())
-        .map(crate::sim::pathfinding::PathGrid::ground_height_grid);
     if let Some(ref mut shroud_buf) = state.match_state.match_presentation.shroud_buffer {
         if !state.match_state.sandbox_full_visibility {
             if let (Some(rt), Some(owner)) = (state.match_state.sim_runtime.as_ref(), &local_owner) {
@@ -112,7 +107,6 @@ pub(crate) fn render_game(
                     rw,
                     rh,
                     state.match_state.input.zoom_level,
-                    shroud_height_grid.as_deref(),
                 );
             }
         }
