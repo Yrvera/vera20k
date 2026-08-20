@@ -546,7 +546,6 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
     let mut min_y: f32 = f32::MAX;
     let mut max_x: f32 = f32::MIN;
     let mut max_y: f32 = f32::MIN;
-    let mut clipped: u32 = 0;
 
     for cell in &map.cells {
         // This legacy direct path has no theater context, so retain its tile-0
@@ -564,15 +563,11 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
 
         let (sx, sy): (f32, f32) = iso_to_screen(cell.rx, cell.ry, cell.z);
 
-        // Clip cells outside the playable area (LocalSize bounds).
-        // In RA2, these border cells are hidden under permanent shroud.
-        if let Some(ref bounds) = local_bounds {
-            if !bounds.contains(sx, sy) {
-                clipped += 1;
-                continue;
-            }
-        }
-
+        // Border filler cells (outside LocalSize) are kept: gamemd draws every
+        // allocated cell and hides the border purely by clamping the tactical
+        // camera to LocalSize. Dropping them while the fog still reveals them
+        // left revealed-but-undrawn holes — hard black cutouts with no shroud
+        // feathering — wherever a zoomed-out view reached the map border.
         cells.push(TerrainCell {
             screen_x: sx,
             screen_y: sy,
@@ -593,14 +588,6 @@ pub fn build_terrain_grid(map: &MapFile, local_bounds: Option<LocalBounds>) -> T
         min_y = min_y.min(sy);
         max_x = max_x.max(sx + TILE_WIDTH);
         max_y = max_y.max(sy + TILE_HEIGHT);
-    }
-
-    if clipped > 0 {
-        log::info!(
-            "LocalSize clip: {} cells kept, {} clipped (outside playable area)",
-            cells.len(),
-            clipped,
-        );
     }
 
     // Sort by screen_y for back-to-front draw order.
@@ -635,17 +622,12 @@ pub fn build_terrain_grid_from_resolved(
     let mut min_y: f32 = f32::MAX;
     let mut max_x: f32 = f32::MIN;
     let mut max_y: f32 = f32::MIN;
-    let mut clipped: u32 = 0;
 
     for cell in resolved.iter() {
         let (tile_id, sub_tile) = resolved.presentation_tile(cell);
         let (sx, sy) = iso_to_screen(cell.rx, cell.ry, cell.level);
-        if let Some(ref bounds) = local_bounds {
-            if !bounds.contains(sx, sy) {
-                clipped += 1;
-                continue;
-            }
-        }
+        // Filler cells kept — see build_terrain_grid: gamemd draws every
+        // allocated cell; only the camera clamp hides the border.
         cells.push(TerrainCell {
             screen_x: sx,
             screen_y: sy,
@@ -665,14 +647,6 @@ pub fn build_terrain_grid_from_resolved(
         min_y = min_y.min(sy);
         max_x = max_x.max(sx + TILE_WIDTH);
         max_y = max_y.max(sy + TILE_HEIGHT);
-    }
-
-    if clipped > 0 {
-        log::info!(
-            "LocalSize clip: {} resolved cells kept, {} clipped (outside playable area)",
-            cells.len(),
-            clipped,
-        );
     }
 
     cells.sort_by(|a, b| {
