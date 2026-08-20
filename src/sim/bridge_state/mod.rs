@@ -12,6 +12,30 @@
 //! `world::bridge_orchestrator` — the VERA-chosen effect frame delay and
 //! frame-count fallbacks, and the hut fallback starter/anchor heuristic.
 
+//!
+//! ## Tagged natives with no counterpart in this crate
+//!
+//! Four members of the Ghidra BRIDGE_HIGH / BRIDGE_LOW tag sets have no Rust
+//! behaviour to compare against, each for a different and verified reason:
+//!
+//! - `MapClass::RecalcBridgeShroudFlags` 0x00578100 — **not bridge code.**
+//!   Body decompiled 2026-08-19: two whole-map cell iterations that recompute
+//!   shroud edge bitmasks through `Shroud_EdgeBitmask_Calculator` into
+//!   `cell+0x120` and enqueue tactical redraws. No bridge field, flag or
+//!   tileset appears in it, and the `+0x140` bit 0x20 its first pass gates on
+//!   is not a bridge bit — `SetBridgeDirection`'s clear mask 0xFFFEE07F
+//!   preserves it. The tag is wrong; removing it needs a Ghidra write.
+//! - `FUN_0056A080` — bridge code with zero xrefs. Whether that is genuine
+//!   dead code or a lost indirect reference is unresolved; either way nothing
+//!   reaches it at runtime, so there is nothing to be faithful to.
+//! - `MapClass::IncrementBridgeCounter` 0x00578AC0 — single caller
+//!   `FUN_004F42F0`, itself untraced, so no trigger is established. No
+//!   counterpart here.
+//! - `ShipLocomotionClass::Compute_BridgeZOffset` 0x0069EBB0 — no CALL xrefs.
+//!   Its Drive-side analogue `DriveLocomotionClass::ComputeBridgeZOffset`
+//!   0x004AF4A0 is a one-shot constant initializer and is bound in
+//!   `sim::movement::movement_bridge`; this one cannot be bound without a
+//!   reference.
 pub mod walker;
 
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
@@ -324,6 +348,28 @@ pub enum DispatchPath {
     /// HIGH direct-overlay: `cell.overlay_byte ∈ [0xCD..=0xE6]`. Single-shot;
     /// no Z-gate.
     HighDirect,
+}
+
+/// `ApplyDamageToCell` 0x00587180 dispatch bands.
+///
+/// The driver tests `(0x49 < overlay) && (overlay < 100)` for the low walker
+/// and `(0xCC < overlay) && (overlay < 0xE7)` for the high one, so 0x64/0x65
+/// and 0xE7/0xE8 are NOT routed to a walker from here — they fall through to
+/// the tileset-family branch.
+///
+/// That is deliberately narrower than the bands `DestroyBridge_Low` 0x0057BAA0
+/// and `DestroyBridge_High` 0x0057CCF0 accept once they are already running:
+/// their own axis classes union to 0x4A..=0x65 and 0xCD..=0xE8, and their
+/// neighbour probes test `overlay < 0x4A || 0x65 < overlay` and
+/// `overlay < 0xCD || 0xE8 < overlay`. Both bands are real; see
+/// `BridgeRuntimeState::is_low_destroy_overlay` for the wider pair.
+const fn is_low_dispatch_overlay(overlay: u8) -> bool {
+    0x49 < overlay && overlay < 100
+}
+
+/// High twin of [`is_low_dispatch_overlay`]. See its doc comment.
+const fn is_high_dispatch_overlay(overlay: u8) -> bool {
+    0xCC < overlay && overlay < 0xE7
 }
 
 impl DispatchPath {
@@ -889,8 +935,8 @@ impl BridgeRuntimeState {
             return false;
         };
         match path {
-            DispatchPath::HighDirect => (0xCD..=0xE6).contains(&cell.overlay_byte),
-            DispatchPath::LowDirect => (0x4A..=0x63).contains(&cell.overlay_byte),
+            DispatchPath::HighDirect => is_high_dispatch_overlay(cell.overlay_byte),
+            DispatchPath::LowDirect => is_low_dispatch_overlay(cell.overlay_byte),
             DispatchPath::HighStateMachine | DispatchPath::LowStateMachine => {
                 // BR-02: the SM block (binary block A/B) gates on bridge tile
                 // FAMILY, not the overlay band. Its driver is overlay-first
@@ -960,8 +1006,8 @@ impl BridgeRuntimeState {
     ) -> StateOutcome {
         let overlay = self.cell(rx, ry).map(|c| c.overlay_byte);
         match overlay {
-            Some(o) if (0xCD..=0xE6).contains(&o) => self.destroy_bridge_high(rx, ry, terrain),
-            Some(o) if (0x4A..=0x63).contains(&o) => self.destroy_bridge_low(rx, ry, terrain),
+            Some(o) if is_high_dispatch_overlay(o) => self.destroy_bridge_high(rx, ry, terrain),
+            Some(o) if is_low_dispatch_overlay(o) => self.destroy_bridge_low(rx, ry, terrain),
             _ => match self.cell(rx, ry).map(|c| c.role) {
                 Some(BridgeCellRole::Bridgehead) => {
                     self.bridgehead_advance_state(rx, ry, is_high, terrain)
@@ -1077,6 +1123,8 @@ impl BridgeRuntimeState {
     /// `is_high_bridge` is currently unused (state transitions identical for
     /// HIGH and LOW per HIGH §11.1) but kept for API symmetry with the
     /// future overlay-write branch.
+    /// `ProcessBridgeDamageStateMachine_High` 0x00576BA0 and its LOW twin
+    /// `ProcessBridgeDamageStateMachine_Low` 0x00571490.
     pub fn body_cell_advance_state(
         &mut self,
         rx: u16,

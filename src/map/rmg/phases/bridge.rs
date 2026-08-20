@@ -1,5 +1,14 @@
 //! River-bridge placement for the carved map types.
 //!
+//! gamemd: `RandomMapGenerator::BuildRiverBridge` 0x0059E740 and
+//! `RandomMapGenerator::IsUniformLevelBridgeEndArea` 0x005A7440.
+//!
+//! The whole random-map generator is dormant in stock YR skirmish:
+//! `ScenarioClass::Read_Scenario` 0x00684620 sets `IsRandom` only when the
+//! scenario filename's extension matches the string at 0x0083DA88, which is
+//! `.SED`, and retail ships `.MPR`/`.YRM`/`.MAP`. Nothing here runs in an
+//! ordinary retail match, so this file sits below the divergence cut.
+//!
 //! When a river's cross-section runs straight for long enough, the walk may
 //! throw a bridge across itself: a clearance scan ahead, twelve ranks of water
 //! filled in (four near, eight far), the region grown behind the bridge by the

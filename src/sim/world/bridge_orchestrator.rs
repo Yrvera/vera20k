@@ -177,6 +177,15 @@ pub(crate) fn apply_bridge_damage_events_with_overlay_registry(
 /// Caller ensures the hut itself is not damaged — the hut survives the
 /// collapse, mirroring the original game's `BridgeRepairHut` death branch.
 #[cfg(test)]
+/// `MapClass::DestroyBridge_High_OnHutDeath` 0x00574000 and
+/// `DestroyBridge_Low_OnHutDeath` 0x00574C20 — the CABHUT death entry.
+/// Both callers are `BombClass::Detonate` 0x00438720 (callsite 0x0043896A)
+/// and `BuildingClass::Update` 0x0043FB20 (callsite 0x00440301). The 5x5
+/// overlay scan hands its first hit to
+/// `MapClass::DestroyBridgeFromCell_Low` 0x00574780 /
+/// `_High` 0x005749C0, which classify the anchor overlay into the NS or EW
+/// band, walk back up to two cells to the canonical edge anchor, and call
+/// the matching `CollapseBridge_*`.
 pub(crate) fn dispatch_bridge_collapse_from_hut(
     sim: &mut Simulation,
     rules: &RuleSet,
@@ -258,9 +267,151 @@ pub(crate) fn dispatch_bridge_collapse_from_hut_with_overlay_registry(
     )
 }
 
-/// gamemd's `BridgeRepairHut` death path scans the 5x5 hut-local window
-/// X-major: `x = -2..=2`, then `y = -2..=2`. The engineer repair path uses
-/// the shared Y-major helper, so hut collapse keeps its own ordering here.
+/// Overlay values a fully collapsed span leaves on its anchor: `0xE7` / `0xE8`
+/// on the high side, `0x64` / `0x65` on the low side. `DestroyBridgeWalker_*`
+/// writes them on final collapse and nothing else produces them.
+const HIGH_COLLAPSED_ANCHORS: [u8; 2] = [0xE7, 0xE8];
+const LOW_COLLAPSED_ANCHORS: [u8; 2] = [0x64, 0x65];
+
+/// The overlay half of `MapClass::FindBridgeConnection_Predicate` 0x00587410 -
+/// the cursor-side "is there anything here to repair" test behind the engineer
+/// cursor over a bridge repair hut.
+///
+/// Native shape: scan the 5x5 block around the hovered cell; a cell whose
+/// overlay falls in a destroy band selects the low or high family, and the walk
+/// then follows the axis PERPENDICULAR to the overlay's own class - an NS-class
+/// overlay walks along X, an EW-class overlay along Y - in both directions,
+/// continuing while the overlay stays inside the family band and returning true
+/// the moment a collapsed anchor appears.
+///
+/// **Two things about the native's branch selection are NOT reproduced here,
+/// and neither is a corner case.**
+///
+/// 1. *Which branch runs.* All four scan cases write the same `[ESP+0x12]`
+///    selector, read once after the loop at 0x005876BA, so whichever of the
+///    four matched LAST decides whether the native walks overlays (this
+///    function) or walks `BridgeRecord`s through the per-tile geometry tables
+///    at 0x0082AA04 / 0x0082AA24 / 0x0082AA44. This port always walks overlays.
+/// 2. *Per-cell precedence.* The 5x5 body is a strict if / else-if chain that
+///    tests `cell+0x38` against the two tileset windows at 0x00587483 and
+///    0x00587503 BEFORE it looks at `cell+0x44` against either overlay band at
+///    0x00587580 / 0x00587613. A cell that is both a bridge iso-tile and
+///    carries a destroy-band overlay is therefore a TILESET match and its
+///    overlay is never read. This port has no tile-index reader at all, so it
+///    would treat such a cell as an overlay match.
+///
+/// Whether cells satisfying both conditions occur on stock maps is UNCHECKED,
+/// and so is the record branch's answer for an intact span: its only
+/// true-returns are a record byte `+0x08` of zero and a coordinate matching
+/// neither endpoint, and the "inactive" reading of `+0x08` is itself
+/// UNVERIFIED. Do not assume the two branches agree anywhere. What IS
+/// established is that this port is correct whenever the native takes the
+/// overlay branch. See
+/// `bridge_hut_repair_cursor_always_takes_the_overlay_branch`.
+pub(crate) fn bridge_hut_has_collapsed_span(sim: &Simulation, hut_center: (u16, u16)) -> bool {
+    let Some(bs) = sim.bridge_state.as_ref() else {
+        return false;
+    };
+    hut_span_has_collapsed_anchor(bs, hut_center)
+}
+
+/// State-only half of [`bridge_hut_has_collapsed_span`], split out so the walk
+/// can be tested without standing up a `Simulation`.
+///
+/// Seed selection follows 0x00587410 exactly, and it is not what it looks
+/// like: the native's 5x5 loop has **no break**. Every one of its four cases
+/// falls through to `INC EDI` at 0x005876A6, so the cell it finally walks from
+/// is the LAST cell that matched, not the first, and the iteration is Y-major
+/// (`EBP` outer adds to the coord's Y at 0x00587443, `EDI` inner adds to X at
+/// 0x00587447). Scanning every cell and accepting any hit would be more
+/// permissive than the binary, which is the direction of the bug this port
+/// exists to remove.
+pub(crate) fn hut_span_has_collapsed_anchor(
+    bs: &BridgeRuntimeState,
+    hut_center: (u16, u16),
+) -> bool {
+    let Some((seed, axis, anchors, is_high)) = hut_scan_last_overlay_seed(bs, hut_center) else {
+        return false;
+    };
+    // Perpendicular convention: an NS-class overlay is walked along X.
+    let walk_axis = match axis {
+        Axis::NS => Axis::EW,
+        Axis::EW => Axis::NS,
+    };
+    [1i16, -1]
+        .into_iter()
+        .any(|step| walk_span_for_collapsed_anchor(bs, seed, walk_axis, step, anchors, is_high))
+}
+
+/// The native's surviving seed: the last destroy-band cell in Y-major order
+/// over the 5x5 block. Returns its family and axis alongside it.
+fn hut_scan_last_overlay_seed(
+    bs: &BridgeRuntimeState,
+    hut_center: (u16, u16),
+) -> Option<((u16, u16), Axis, &'static [u8; 2], bool)> {
+    let mut seed = None;
+    for (rx, ry) in hut_scan_5x5_y_major(hut_center) {
+        let Some(overlay) = bs.cell(rx, ry).map(|c| c.overlay_byte) else {
+            continue;
+        };
+        if let Some(axis) = BridgeRuntimeState::high_destroy_overlay_axis(overlay) {
+            seed = Some(((rx, ry), axis, &HIGH_COLLAPSED_ANCHORS, true));
+        } else if let Some(axis) = BridgeRuntimeState::low_destroy_overlay_axis(overlay) {
+            seed = Some(((rx, ry), axis, &LOW_COLLAPSED_ANCHORS, false));
+        }
+    }
+    seed
+}
+
+/// 0x00587410's scan order: outer counter on Y, inner on X. Distinct from
+/// [`hut_destroy_5x5_scan`], which is the X-major order the CABHUT death path
+/// uses; the two natives genuinely disagree and must not be shared.
+fn hut_scan_5x5_y_major(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
+    let (cx, cy) = (center.0 as i32, center.1 as i32);
+    (-2..=2i32).flat_map(move |dy| {
+        (-2..=2i32).filter_map(move |dx| {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            if nx < 0 || ny < 0 || nx > u16::MAX as i32 || ny > u16::MAX as i32 {
+                None
+            } else {
+                Some((nx as u16, ny as u16))
+            }
+        })
+    })
+}
+
+fn walk_span_for_collapsed_anchor(
+    bs: &BridgeRuntimeState,
+    from: (u16, u16),
+    axis: Axis,
+    step: i16,
+    anchors: &[u8; 2],
+    is_high: bool,
+) -> bool {
+    let mut cur = from;
+    loop {
+        let Some(overlay) = bs.cell(cur.0, cur.1).map(|c| c.overlay_byte) else {
+            return false;
+        };
+        let in_band = if is_high {
+            BridgeRuntimeState::is_high_destroy_overlay(overlay)
+        } else {
+            BridgeRuntimeState::is_low_destroy_overlay(overlay)
+        };
+        if !in_band {
+            return false;
+        }
+        if anchors.contains(&overlay) {
+            return true;
+        }
+        let Some(next) = step_axis(cur, axis, step) else {
+            return false;
+        };
+        cur = next;
+    }
+}
+
 fn hut_destroy_5x5_scan(center: (u16, u16)) -> impl Iterator<Item = (u16, u16)> {
     let (cx, cy) = (center.0 as i32, center.1 as i32);
     (-2..=2i32).flat_map(move |dx| {
@@ -533,22 +684,33 @@ fn bridge_overlay_at(sim: &Simulation, rx: u16, ry: u16) -> Option<u8> {
 }
 
 /// RESIDUAL (GSI-04.14) — the fallback starter and anchor search is a VERA
-/// heuristic. Pass 1 said it had "no cited native address"; that is wrong — the
-/// native owners are `MapClass::DestroyBridge_High_OnHutDeath @ 0x00574000` and
-/// `DestroyBridge_Low_OnHutDeath @ 0x00574C20`, reachable from the corpus and
-/// re-verifiable. What is missing is a reading of their fallback arm, not an
-/// address for it. It runs when the primary path finds no anchor.
+/// heuristic with no cited native address, unlike the primary hut path, whose
+/// 5x5 scan order, seed canonicalisation and repair walk are all pinned to
+/// addresses and tests. It runs when the primary path finds no anchor.
+///
+/// **The native fallback is identified.** It is the tail of
+/// `MapClass::DestroyBridge_Low_OnHutDeath` 0x00574C20 and its high twin
+/// 0x00574000, decompiled 2026-08-19: when the 5x5 overlay scan finds nothing,
+/// the native walks the eight directions out to three cells looking for a cell
+/// with `+0x140 & 0x500`, resolves an anchor from that cell's 0x100 / 0x400 /
+/// 0x80 bits (pure-bridgehead cells walk up to four perpendicular cells then
+/// offset two more), walks forward in direction `(flags & 0x800) ? 6 : 0`
+/// calling `ApplyDamageToCell` up to three times on each cell
+/// `MapClass::IsBridgeRampTile` 0x005746C0 accepts, and stops when
+/// `MapClass::IsLowBridgeEndpointTile` 0x00574600 fires. The structure here —
+/// starter search, `find_hut_fallback_ramp_cell`, `apply_hut_damage_retries`,
+/// `find_hut_fallback_endpoint_cell` — follows that shape.
 /// - Trigger: destroying a `BridgeRepairHut=yes` structure whose span does not
 ///   resolve through the primary search — an irregular or already-damaged
 ///   bridge.
-/// - Player effect: the wrong span may collapse, or none at all, where retail
-///   picks deterministically.
+/// - Player effect: if the ported shape diverges, the wrong span may collapse,
+///   or none at all, where retail picks deterministically.
 /// - Frequency: uncommon; the primary path covers the ordinary intact-bridge
 ///   case that stock maps present.
 /// - Downstream risk: a different span collapsing changes occupancy, zone
-///   connectivity and which units drop, so correcting it moves more than the
-///   visual — it wants the native fallback identified first, and no address for
-///   it has been found.
+///   connectivity and which units drop. Now that the native address is known,
+///   a term-by-term comparison against 0x00574C20 is the next step rather than
+///   more search.
 fn build_hut_fallback_plan(sim: &Simulation, hut_center: (u16, u16)) -> HutFallbackPlan {
     let Some(starter) = find_hut_fallback_starter(sim, hut_center) else {
         return HutFallbackPlan::NoAcceptedStarter;

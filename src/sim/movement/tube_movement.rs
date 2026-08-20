@@ -1,5 +1,9 @@
 //! Native TubeClass movement for explicit map tubes.
 //!
+//! gamemd: `UnitClass::TubeMovement` 0x007359F0, which reads the cell's tube
+//! through `CellClass::GetTubeAtCell` 0x00484F20 and, on exit, drives
+//! `FacingClass::UpdateFacing` from the record's +0x2C direction field.
+//!
 //! Automatic tunnel/low-bridge records have a zero-length path. They are
 //! predicate and zone metadata only: the retail producer divides by path
 //! length, so a zero-step shell must never become active movement state.
