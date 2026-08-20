@@ -21,6 +21,7 @@ pub mod lepton;
 pub mod logging;
 pub mod lzo;
 pub mod native_string;
+pub mod native_trig;
 pub mod native_x87;
 pub mod read_helpers;
 pub mod single_instance;
