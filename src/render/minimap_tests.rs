@@ -536,3 +536,241 @@ fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
     );
     assert_ne!(initial_geometry.camera_local_bounds(), camera_bounds);
 }
+
+fn radar_gate_projection() -> RadarProjectionFacts {
+    RadarProjectionFacts {
+        world_origin_x: 0.0,
+        world_origin_y: 0.0,
+        world_width: 1.0,
+        world_height: 1.0,
+        map_offset_x: 0.0,
+        map_offset_y: 0.0,
+        map_pixel_w: 1.0,
+        map_pixel_h: 1.0,
+    }
+}
+
+fn radar_gate_rules(fields: &str) -> RuleSet {
+    RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(&format!(
+        "[VehicleTypes]\n0=DOT\n[DOT]\nStrength=100\n{fields}\n"
+    )))
+    .expect("radar gate fixture rules")
+}
+
+fn radar_gate_fixture(
+    owner: &str,
+) -> (
+    crate::sim::entity_store::EntityStore,
+    crate::sim::intern::StringInterner,
+    BTreeMap<crate::sim::intern::InternedId, crate::sim::house_state::HouseState>,
+) {
+    let mut entity = crate::sim::game_entity::GameEntity::test_default(1, "DOT", owner, 0, 0);
+    entity.in_playfield = true;
+    entity.lifecycle.in_limbo = false;
+    let mut entities = crate::sim::entity_store::EntityStore::new();
+    entities.insert(entity);
+    let interner = crate::sim::intern::test_interner();
+    let owner_id = interner.get(owner).expect("fixture owner interned");
+    let mut houses = BTreeMap::new();
+    houses.insert(
+        owner_id,
+        crate::sim::house_state::HouseState::new(owner_id, 0, None, false, 0, 10),
+    );
+    (entities, interner, houses)
+}
+
+#[test]
+fn radar_pixel_shroud_exception_distinguishes_local_pointer_from_singleplayer_human() {
+    let local = test_intern("Local");
+    let (entities, interner, mut houses) = radar_gate_fixture("SecondHuman");
+    let second = test_intern("SecondHuman");
+    let house = houses.get_mut(&second).unwrap();
+    house.is_human = false;
+    house.player_control = true;
+    let fog = FogState::default();
+    let entry = RadarTrackerEntry {
+        stable_id: 1,
+        x: 0,
+        y: 0,
+    };
+    let rules = radar_gate_rules("");
+
+    assert!(radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        false,
+        false,
+        Some(&rules),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+    assert!(!radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        false,
+        true,
+        Some(&rules),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+}
+
+#[test]
+fn radar_pixel_radar_invisible_precedes_radar_visible_but_alliance_restores() {
+    let local = test_intern("Local");
+    let enemy = test_intern("Enemy");
+    let (entities, interner, houses) = radar_gate_fixture("Enemy");
+    let entry = RadarTrackerEntry {
+        stable_id: 1,
+        x: 0,
+        y: 0,
+    };
+    let rules = radar_gate_rules("RadarInvisible=yes\nRadarVisible=yes");
+    let mut fog = FogState::default();
+    assert!(!radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        true,
+        true,
+        Some(&rules),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+
+    let allies = BTreeSet::from(["LOCAL".to_string(), "ENEMY".to_string()]);
+    fog.alliances.insert("LOCAL".to_string(), allies.clone());
+    fog.alliances.insert("ENEMY".to_string(), allies);
+    assert!(fog.is_friendly_id(local, enemy, &interner));
+    assert!(radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        true,
+        true,
+        Some(&rules),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+}
+
+#[test]
+fn radar_pixel_insignificant_passive_owner_requires_radar_visible() {
+    let local = test_intern("Local");
+    let enemy = test_intern("Passive");
+    let (entities, interner, mut houses) = radar_gate_fixture("Passive");
+    houses.get_mut(&enemy).unwrap().multiplay_passive = true;
+    let entry = RadarTrackerEntry {
+        stable_id: 1,
+        x: 0,
+        y: 0,
+    };
+    let fog = FogState::default();
+    let hidden = radar_gate_rules("Insignificant=yes\nRadarVisible=no");
+    let restored = radar_gate_rules("Insignificant=yes\nRadarVisible=yes");
+    assert!(!radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        true,
+        true,
+        Some(&hidden),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+    assert!(radar_pixel_candidate_eligible(
+        entry,
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        true,
+        true,
+        Some(&restored),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+}
+
+#[test]
+fn radar_pixel_fogged_but_explored_cell_passes_render_gate_without_gap_proxy() {
+    let local = test_intern("Local");
+    let (entities, interner, houses) = radar_gate_fixture("Enemy");
+    let mut fog = FogState::default();
+    fog.mark_visible_for_owner(local, 0, 0);
+    fog.by_owner.get_mut(&local).unwrap().clear_all_visible();
+    assert!(fog.is_cell_revealed(local, 0, 0));
+    assert!(!fog.is_cell_visible(local, 0, 0));
+    assert!(radar_pixel_candidate_eligible(
+        RadarTrackerEntry {
+            stable_id: 1,
+            x: 0,
+            y: 0,
+        },
+        &entities,
+        &houses,
+        Some(local),
+        &fog,
+        false,
+        true,
+        Some(&radar_gate_rules("")),
+        Some(&interner),
+        radar_gate_projection(),
+    ));
+}
+
+#[test]
+fn radar_building_tracker_pixels_use_owner_color_not_khaki() {
+    let mut entity = crate::sim::game_entity::GameEntity::test_default(
+        1,
+        "GAPOWR",
+        "Americans",
+        0,
+        0,
+    );
+    entity.category = crate::map::entities::EntityCategory::Structure;
+    let interner = crate::sim::intern::test_interner();
+    let mut colors = HouseColorMap::new();
+    colors.insert("Americans".to_string(), HouseColorIndex(1));
+    let color = radar_entity_owner_color(&entity, Some(&interner), &colors, &test_ramps());
+    assert_eq!(color, owner_dot_color("Americans", &colors, &test_ramps()));
+    assert_ne!(color, [200, 200, 160, 255]);
+}
+
+#[test]
+fn radar_tracker_color_uses_active_disguise_house_without_changing_priority_owner() {
+    let mut entity = crate::sim::game_entity::GameEntity::test_default(
+        1,
+        "MGTK",
+        "Americans",
+        0,
+        0,
+    );
+    let soviet = test_intern("Soviet");
+    let mut disguise = crate::sim::cloak_disguise::DisguiseRuntime::default();
+    disguise.disguised = true;
+    disguise.disguised_as_house = Some(soviet);
+    entity.disguise = Some(disguise);
+    let interner = crate::sim::intern::test_interner();
+    let mut colors = HouseColorMap::new();
+    colors.insert("Americans".to_string(), HouseColorIndex(1));
+    colors.insert("Soviet".to_string(), HouseColorIndex(2));
+    let ramps = test_ramps();
+    assert_eq!(
+        radar_entity_owner_color(&entity, Some(&interner), &colors, &ramps),
+        owner_dot_color("Soviet", &colors, &ramps)
+    );
+    assert_eq!(entity.owner, test_intern("Americans"));
+}

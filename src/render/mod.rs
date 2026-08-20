@@ -32,6 +32,7 @@ pub mod locomotor_visual;
 pub mod main_menu_shell_chrome;
 pub mod minimap;
 mod minimap_helpers;
+mod radar_tracker;
 pub mod native_surface_format;
 pub mod overlay_assets;
 pub mod terrain_instances;

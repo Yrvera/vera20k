@@ -1,0 +1,690 @@
+//! Retained live-radar object tracker.
+//!
+//! This is presentation state, deliberately not simulation state. Active YR's
+//! registered byte (`TechnoClass+0x423`) and discovery/visibility decisions are
+//! local-client facts: they read `g_PlayerPtr` and that client's shroud. The
+//! tracker is also recreated by `FUN_00655990` and on load. Serializing or
+//! world-hashing it would therefore make a local view cache part of lockstep.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::map::entities::EntityCategory;
+use crate::map::houses::HouseColorMap;
+use crate::rules::house_colors::HouseColorRamps;
+use crate::rules::ruleset::RuleSet;
+use crate::sim::intern::InternedId;
+use crate::sim::vision::FogState;
+
+use super::minimap_helpers::{owner_dot_color, parse_foundation_size, world_to_minimap_pixel};
+
+const TRACKER_BUCKET_COUNT: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RadarTrackerEntry {
+    pub stable_id: u64,
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RadarProjectionFacts {
+    pub world_origin_x: f32,
+    pub world_origin_y: f32,
+    pub world_width: f32,
+    pub world_height: f32,
+    pub map_offset_x: f32,
+    pub map_offset_y: f32,
+    pub map_pixel_w: f32,
+    pub map_pixel_h: f32,
+}
+
+impl RadarProjectionFacts {
+    pub fn cell_axis_scale(self) -> f32 {
+        // This preserves the installed Rust radar projection. Exact equivalence
+        // to native's 140x108 surface fit/rounding remains separately open.
+        let x_scale = self.map_pixel_w / self.world_width.max(1.0)
+            * (crate::map::terrain::TILE_WIDTH * 0.5);
+        let y_scale = self.map_pixel_h / self.world_height.max(1.0)
+            * (crate::map::terrain::TILE_HEIGHT * 0.5);
+        x_scale.abs().min(y_scale.abs()).max(f32::EPSILON)
+    }
+
+    fn pixel_to_cell(self, x: i32, y: i32) -> Option<(u16, u16)> {
+        let normalized_x = (x as f32 - self.map_offset_x) / self.map_pixel_w.max(1.0);
+        let normalized_y = (y as f32 - self.map_offset_y) / self.map_pixel_h.max(1.0);
+        let screen_x = self.world_origin_x + normalized_x * self.world_width;
+        let screen_y = self.world_origin_y + normalized_y * self.world_height;
+        // Inverse of iso_to_screen: sx=(rx-ry)*TILE_WIDTH/2 and
+        // sy=(rx+ry)*TILE_HEIGHT/2.
+        let rx = screen_x / crate::map::terrain::TILE_WIDTH
+            + screen_y / crate::map::terrain::TILE_HEIGHT;
+        let ry = screen_y / crate::map::terrain::TILE_HEIGHT
+            - screen_x / crate::map::terrain::TILE_WIDTH;
+        let rx = rx.round() as i32;
+        let ry = ry.round() as i32;
+        (rx >= 0 && ry >= 0 && rx <= i32::from(u16::MAX) && ry <= i32::from(u16::MAX))
+            .then_some((rx as u16, ry as u16))
+    }
+}
+
+pub(super) fn radar_owner_is_human_player(
+    owner: InternedId,
+    local_owner: InternedId,
+    houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+    game_mode_nonzero: bool,
+) -> bool {
+    if game_mode_nonzero {
+        owner == local_owner
+    } else {
+        houses
+            .get(&owner)
+            .is_some_and(|house| house.is_human || house.player_control)
+    }
+}
+
+pub(super) fn radar_entity_owner_color(
+    entity: &crate::sim::game_entity::GameEntity,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    house_colors: &HouseColorMap,
+    ramps: &HouseColorRamps,
+) -> [u8; 4] {
+    let color_owner = entity
+        .disguise
+        .as_ref()
+        .filter(|disguise| disguise.disguised)
+        .and_then(|disguise| disguise.disguised_as_house)
+        .unwrap_or(entity.owner);
+    let owner_str = interner.map_or("", |interner| interner.resolve(color_owner));
+    // Building and mobile tracker entries share RenderCellPixel's owner/remap
+    // path. Khaki is terrain-only. The existing RGBA ramp is not yet proof of
+    // native DirectDraw shift/loss packed-color equivalence.
+    owner_dot_color(owner_str, house_colors, ramps)
+}
+
+pub(super) fn radar_footprint_seen(
+    fog: &FogState,
+    local_owner: InternedId,
+    entity: &crate::sim::game_entity::GameEntity,
+    foundation: Option<(u32, u32)>,
+    current_visibility: bool,
+) -> bool {
+    let seen = |rx, ry| {
+        if current_visibility {
+            fog.is_cell_visible(local_owner, rx, ry)
+        } else {
+            fog.is_cell_revealed(local_owner, rx, ry)
+        }
+    };
+    if seen(entity.position.rx, entity.position.ry) {
+        return true;
+    }
+    let Some((width, height)) = foundation else {
+        return false;
+    };
+    // BuildingClass visibility @ 0x00457020 samples the origin and opposite
+    // foundation corner; it does not invent a square-dot admission rule.
+    let far_rx = entity
+        .position
+        .rx
+        .saturating_add(width.saturating_sub(1).min(u16::MAX.into()) as u16);
+    let far_ry = entity
+        .position
+        .ry
+        .saturating_add(height.saturating_sub(1).min(u16::MAX.into()) as u16);
+    seen(far_rx, far_ry)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_radar_object_update(
+    entity: &crate::sim::game_entity::GameEntity,
+    houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+    local_owner: Option<InternedId>,
+    fog: &FogState,
+    full_visibility: bool,
+    game_mode_nonzero: bool,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    projection: RadarProjectionFacts,
+    playfield_authority_configured: bool,
+) -> RadarObjectUpdate {
+    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+    let object = rules.and_then(|rules| rules.object(type_str));
+    let (screen_x, screen_y) = super::locomotor_visual::screen_position(entity);
+    // Tactical sprite anchors add half a tile row; native radar conversion
+    // consumes the world coordinate, so remove that render-only offset.
+    let screen_y = screen_y - crate::map::terrain::TILE_HEIGHT / 2.0;
+    let origin = world_to_minimap_pixel(
+        screen_x,
+        screen_y,
+        projection.world_origin_x,
+        projection.world_origin_y,
+        projection.world_width,
+        projection.world_height,
+        projection.map_offset_x,
+        projection.map_offset_y,
+        projection.map_pixel_w,
+        projection.map_pixel_h,
+    );
+    let foundation = (entity.category == EntityCategory::Structure)
+        .then(|| parse_foundation_size(&entity.foundation));
+    let owner_is_human_player = local_owner.is_some_and(|local_owner| {
+        radar_owner_is_human_player(entity.owner, local_owner, houses, game_mode_nonzero)
+    });
+    let (discovery_observed, registration_visible) = if full_visibility {
+        (true, true)
+    } else if let Some(local_owner) = local_owner {
+        (
+            radar_footprint_seen(fog, local_owner, entity, foundation, false),
+            radar_footprint_seen(fog, local_owner, entity, foundation, true),
+        )
+    } else {
+        (true, true)
+    };
+
+    RadarObjectUpdate {
+        stable_id: entity.stable_id,
+        owner: entity.owner,
+        origin: (origin.0 as i32, origin.1 as i32),
+        foundation,
+        radar_scale: projection.cell_axis_scale(),
+        base_eligible: entity.lifecycle.object_alive
+            && !entity.lifecycle.in_limbo
+            && (!playfield_authority_configured || entity.in_playfield)
+            && !object.is_some_and(|object| object.invisible_in_game),
+        owner_is_human_player,
+        discovery_observed,
+        // UNCHECKED residual: Techno+0x4A0 consumes virtual +0x324 @
+        // 0x0070D1D0. Current/revealed footprint state is the Rust-owned
+        // subset, not a claim that cloak/sensor/building state is closed.
+        registration_visible,
+        // AddObjectToTracker @ 0x00655560 compares directly to g_PlayerPtr,
+        // narrower than IsHumanPlayer's single-player shroud exception.
+        local_front: local_owner == Some(entity.owner),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn radar_pixel_candidate_eligible(
+    entry: RadarTrackerEntry,
+    entities: &crate::sim::entity_store::EntityStore,
+    houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
+    local_owner: Option<InternedId>,
+    fog: &FogState,
+    full_visibility: bool,
+    game_mode_nonzero: bool,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    projection: RadarProjectionFacts,
+) -> bool {
+    let Some(entity) = entities.get(entry.stable_id) else {
+        return false;
+    };
+    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
+    let object = rules.and_then(|rules| rules.object(type_str));
+
+    if let Some(local_owner) = local_owner {
+        let friendly = entity.owner == local_owner
+            || interner.is_some_and(|interner| {
+                fog.is_friendly_id(local_owner, entity.owner, interner)
+            });
+        if !full_visibility {
+            let (rx, ry) = projection
+                .pixel_to_cell(entry.x, entry.y)
+                .unwrap_or((entity.position.rx, entity.position.ry));
+            let owner_is_human = radar_owner_is_human_player(
+                entity.owner,
+                local_owner,
+                houses,
+                game_mode_nonzero,
+            );
+            if !fog.is_cell_revealed(local_owner, rx, ry) && !owner_is_human {
+                return false;
+            }
+        }
+        // RenderCellPixel @ 0x00655DFF tests RadarInvisible before the later
+        // Insignificant/RadarVisible branch. RadarVisible cannot rescue a
+        // hostile RadarInvisible object.
+        if object.is_some_and(|object| object.radar_invisible) && !friendly {
+            return false;
+        }
+    }
+
+    if object.is_some_and(|object| object.insignificant && !object.radar_visible)
+        && !houses
+            .get(&entity.owner)
+            .is_some_and(|house| !house.multiplay_passive)
+    {
+        return false;
+    }
+
+    // Negative native evidence: this live pixel gate does not read gap cover,
+    // current cloak state, Invisible=, or sensor state.
+    true
+}
+
+#[derive(Debug, Clone)]
+struct RadarObjectCache {
+    cached_x: i32,
+    cached_y: i32,
+    registered: bool,
+    discovered: bool,
+    owner: InternedId,
+    local_front: bool,
+    pixels: Vec<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RadarObjectUpdate {
+    pub stable_id: u64,
+    pub owner: InternedId,
+    pub origin: (i32, i32),
+    pub foundation: Option<(u32, u32)>,
+    pub radar_scale: f32,
+    pub base_eligible: bool,
+    pub owner_is_human_player: bool,
+    pub discovery_observed: bool,
+    /// Current Rust-owned visibility subset used at the vtable+0x324 seam.
+    /// The full active native predicate remains an explicit parity blocker.
+    pub registration_visible: bool,
+    pub local_front: bool,
+}
+
+/// Client-local equivalent of RadarClass+0x1258 plus the per-object cached
+/// `+0x208/+0x20C`, registered `+0x423`, and discovery facts needed to update
+/// it. Bucket order is observable because `RenderCellPixel @ 0x00655C50`
+/// selects the first eligible exact-coordinate entry.
+#[derive(Debug, Clone)]
+pub(super) struct RetainedRadarTracker {
+    buckets: Vec<Vec<RadarTrackerEntry>>,
+    objects: BTreeMap<u64, RadarObjectCache>,
+    action40_building_tail_pending: bool,
+}
+
+impl Default for RetainedRadarTracker {
+    fn default() -> Self {
+        Self {
+            buckets: vec![Vec::new(); TRACKER_BUCKET_COUNT],
+            objects: BTreeMap::new(),
+            action40_building_tail_pending: false,
+        }
+    }
+}
+
+impl RetainedRadarTracker {
+    /// `FUN_00655990` recreates tracker storage and clears every Techno's
+    /// `+0x423`, but does not clear discovery. The action's immediate forced
+    /// tail repopulates Buildings in reverse BuildingClass array order; mobiles
+    /// remain clear until their later ordinary `TechnoClass+0x4A0` visit.
+    pub fn reset_for_action40(&mut self) {
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+        for cache in self.objects.values_mut() {
+            cache.registered = false;
+            cache.pixels.clear();
+        }
+        self.action40_building_tail_pending = true;
+    }
+
+    /// Load/view replacement reconstructs all local presentation facts from
+    /// the restored world and fog, matching radar-storage recreation.
+    pub fn reset_for_load_or_view(&mut self) {
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+        self.objects.clear();
+        self.action40_building_tail_pending = false;
+    }
+
+    pub fn take_action40_building_tail_pending(&mut self) -> bool {
+        std::mem::take(&mut self.action40_building_tail_pending)
+    }
+
+    /// Remove objects which no longer exist or have reached an unregistering
+    /// lifecycle state. Objects merely absent from LogicClass are retained:
+    /// native radar registration is independent of LogicVector membership.
+    pub fn remove_absent_or_ineligible(
+        &mut self,
+        entities: &crate::sim::entity_store::EntityStore,
+    ) {
+        let stale: Vec<u64> = self
+            .objects
+            .keys()
+            .copied()
+            .filter(|&stable_id| {
+                entities.get(stable_id).is_none_or(|entity| {
+                    entity.lifecycle.in_limbo || !entity.lifecycle.object_alive
+                })
+            })
+            .collect();
+        for stable_id in stale {
+            self.unregister(stable_id);
+            self.objects.remove(&stable_id);
+        }
+    }
+
+    /// Presentation-frame equivalent of `TechnoClass+0x4A0 @ 0x0070D990`.
+    /// The exact native order is remove OLD, write cached coordinates, then add
+    /// NEW. Buildings retain their old cached coordinate on ordinary param=0;
+    /// action 40 passes param=1 and therefore forces recomputation.
+    pub fn update_object(&mut self, update: RadarObjectUpdate, force_building_coord: bool) {
+        let existing = self.objects.get(&update.stable_id);
+        let old_origin = existing.map(|cache| (cache.cached_x, cache.cached_y));
+        let origin = if update.foundation.is_some() && !force_building_coord {
+            old_origin.unwrap_or(update.origin)
+        } else {
+            update.origin
+        };
+        let was_registered = existing.is_some_and(|cache| cache.registered);
+        let was_discovered = existing.is_some_and(|cache| cache.discovered);
+        let discovered = was_discovered || update.discovery_observed;
+        let visible = update.base_eligible
+            && if update.owner_is_human_player {
+                discovered
+            } else {
+                update.registration_visible
+            };
+        let registration_identity_changed = existing.is_some_and(|cache| {
+            cache.owner != update.owner || cache.local_front != update.local_front
+        });
+
+        if was_registered
+            && (old_origin != Some(origin) || !visible || registration_identity_changed)
+        {
+            self.unregister(update.stable_id);
+        }
+
+        let registered_after_remove = self
+            .objects
+            .get(&update.stable_id)
+            .is_some_and(|cache| cache.registered);
+        self.objects
+            .entry(update.stable_id)
+            .and_modify(|cache| {
+                cache.cached_x = origin.0;
+                cache.cached_y = origin.1;
+                cache.discovered = discovered;
+                cache.owner = update.owner;
+                cache.local_front = update.local_front;
+            })
+            .or_insert(RadarObjectCache {
+                cached_x: origin.0,
+                cached_y: origin.1,
+                registered: false,
+                discovered,
+                owner: update.owner,
+                local_front: update.local_front,
+                pixels: Vec::new(),
+            });
+
+        if visible && !registered_after_remove {
+            let offsets = update.foundation.map_or_else(
+                || vec![(0, 0)],
+                |(width, height)| radar_foundation_brush(width, height, update.radar_scale),
+            );
+            let pixels: Vec<(i32, i32)> = offsets
+                .into_iter()
+                .map(|(x, y)| (origin.0.wrapping_add(x), origin.1.wrapping_add(y)))
+                .collect();
+            self.register(update.stable_id, &pixels, update.local_front);
+        }
+    }
+
+    /// AddObjectToTracker @ 0x00655560: reject an exact duplicate, insert the
+    /// local player's object at bucket front, append every non-local object.
+    fn add(&mut self, entry: RadarTrackerEntry, local_front: bool) -> bool {
+        let bucket = &mut self.buckets[tracker_bucket(entry.x, entry.y)];
+        if bucket.iter().any(|candidate| *candidate == entry) {
+            return false;
+        }
+        if local_front {
+            bucket.insert(0, entry);
+        } else {
+            bucket.push(entry);
+        }
+        true
+    }
+
+    fn register(&mut self, stable_id: u64, pixels: &[(i32, i32)], local_front: bool) {
+        let mut inserted = Vec::with_capacity(pixels.len());
+        for &(x, y) in pixels {
+            let entry = RadarTrackerEntry { stable_id, x, y };
+            if self.add(entry, local_front) {
+                inserted.push((x, y));
+            }
+        }
+        if let Some(cache) = self.objects.get_mut(&stable_id) {
+            cache.registered = true;
+            for pixel in inserted {
+                if !cache.pixels.contains(&pixel) {
+                    cache.pixels.push(pixel);
+                }
+            }
+        }
+    }
+
+    /// RemoveObjectFromTracker @ 0x00655740 shifts the remaining vector over
+    /// the removed entry. `Vec::remove` preserves that exact relative order.
+    fn unregister(&mut self, stable_id: u64) {
+        let pixels = self
+            .objects
+            .get(&stable_id)
+            .map(|cache| cache.pixels.clone())
+            .unwrap_or_default();
+        for (x, y) in pixels {
+            let bucket = &mut self.buckets[tracker_bucket(x, y)];
+            if let Some(index) = bucket
+                .iter()
+                .position(|entry| entry.stable_id == stable_id && entry.x == x && entry.y == y)
+            {
+                bucket.remove(index);
+            }
+        }
+        if let Some(cache) = self.objects.get_mut(&stable_id) {
+            cache.registered = false;
+            cache.pixels.clear();
+        }
+    }
+
+    /// RenderCellPixel's forward bucket scan, once for each occupied exact
+    /// coordinate. An ineligible earlier entry does not block a later one.
+    pub fn visible_winners(
+        &self,
+        mut eligible: impl FnMut(RadarTrackerEntry) -> bool,
+    ) -> Vec<RadarTrackerEntry> {
+        let mut chosen = BTreeSet::new();
+        let mut winners = Vec::new();
+        for bucket in &self.buckets {
+            for &entry in bucket {
+                let coordinate = (entry.x, entry.y);
+                if chosen.contains(&coordinate) || !eligible(entry) {
+                    continue;
+                }
+                chosen.insert(coordinate);
+                winners.push(entry);
+            }
+        }
+        winners
+    }
+
+    #[cfg(test)]
+    fn is_registered(&self, stable_id: u64) -> bool {
+        self.objects
+            .get(&stable_id)
+            .is_some_and(|cache| cache.registered)
+    }
+
+    #[cfg(test)]
+    fn entries_at(&self, x: i32, y: i32) -> Vec<u64> {
+        self.buckets[tracker_bucket(x, y)]
+            .iter()
+            .filter(|entry| entry.x == x && entry.y == y)
+            .map(|entry| entry.stable_id)
+            .collect()
+    }
+}
+
+fn tracker_bucket(x: i32, y: i32) -> usize {
+    x.wrapping_sub(y.wrapping_mul(5)) as u32 as usize & 0xff
+}
+
+/// Building radar brush constructor @ 0x006563B0. Native scales the foundation
+/// width/height by radar zoom, rounds with +0.5, applies the 1-vs-2 minimum,
+/// then emits this ordered isometric diamond rather than an occupancy square.
+pub(super) fn radar_foundation_brush(
+    foundation_width: u32,
+    foundation_height: u32,
+    radar_scale: f32,
+) -> Vec<(i32, i32)> {
+    let scaled_dimension = |cells: u32| {
+        let rounded = (cells as f32 * radar_scale + 0.5).floor() as i32;
+        rounded.max(if cells <= 1 { 1 } else { 2 })
+    };
+    let width = scaled_dimension(foundation_width);
+    let height = scaled_dimension(foundation_height);
+    let mut pixels = Vec::new();
+    for row in 0..width.wrapping_add(height).wrapping_sub(1) {
+        let start = if row < height {
+            -row
+        } else {
+            row.wrapping_sub(height.wrapping_mul(2)).wrapping_add(2)
+        };
+        let end = if row < width {
+            row
+        } else {
+            width.wrapping_mul(2).wrapping_sub(row).wrapping_sub(2)
+        };
+        for x in start..=end {
+            pixels.push((x, row));
+        }
+    }
+    pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::intern::test_intern;
+
+    fn update(stable_id: u64, local_front: bool) -> RadarObjectUpdate {
+        RadarObjectUpdate {
+            stable_id,
+            owner: test_intern(if local_front { "Local" } else { "Enemy" }),
+            origin: (40, 60),
+            foundation: None,
+            radar_scale: 1.0,
+            base_eligible: true,
+            owner_is_human_player: false,
+            discovery_observed: true,
+            registration_visible: true,
+            local_front,
+        }
+    }
+
+    #[test]
+    fn radar_tracker_local_front_beats_enemy_despite_opposite_stable_ids() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(update(1, false), false);
+        tracker.update_object(update(99, true), false);
+        assert_eq!(tracker.entries_at(40, 60), vec![99, 1]);
+        assert_eq!(tracker.visible_winners(|_| true)[0].stable_id, 99);
+    }
+
+    #[test]
+    fn radar_tracker_duplicate_insert_is_rejected_and_removal_preserves_order() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(update(1, false), false);
+        tracker.register(1, &[(40, 60)], false);
+        tracker.update_object(update(2, false), false);
+        tracker.update_object(update(3, false), false);
+        assert_eq!(tracker.entries_at(40, 60), vec![1, 2, 3]);
+        tracker.unregister(2);
+        assert_eq!(tracker.entries_at(40, 60), vec![1, 3]);
+    }
+
+    #[test]
+    fn radar_tracker_move_hidden_and_newly_visible_follow_remove_write_add_order() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(update(1, false), false);
+        let mut moved = update(1, false);
+        moved.origin = (41, 61);
+        tracker.update_object(moved, false);
+        assert!(tracker.entries_at(40, 60).is_empty());
+        assert_eq!(tracker.entries_at(41, 61), vec![1]);
+
+        moved.registration_visible = false;
+        tracker.update_object(moved, false);
+        assert!(!tracker.is_registered(1));
+        moved.registration_visible = true;
+        tracker.update_object(moved, false);
+        assert!(tracker.is_registered(1));
+        assert_eq!(tracker.entries_at(41, 61), vec![1]);
+    }
+
+    #[test]
+    fn radar_tracker_building_brush_is_native_irregular_diamond() {
+        assert_eq!(
+            radar_foundation_brush(3, 3, 1.0),
+            vec![
+                (0, 0),
+                (-1, 1), (0, 1), (1, 1),
+                (-2, 2), (-1, 2), (0, 2), (1, 2), (2, 2),
+                (-1, 3), (0, 3), (1, 3),
+                (0, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn radar_tracker_action40_immediately_repopulates_building_not_mobile() {
+        let mut tracker = RetainedRadarTracker::default();
+        tracker.update_object(update(1, false), false);
+        let mut building = update(2, false);
+        building.foundation = Some((2, 2));
+        tracker.update_object(building, false);
+        tracker.reset_for_action40();
+        assert!(!tracker.is_registered(1));
+        assert!(!tracker.is_registered(2));
+        assert!(tracker.take_action40_building_tail_pending());
+
+        // FUN_006E21E0's reverse-Building vtable+0x4A0(1) tail is immediate.
+        tracker.update_object(building, true);
+        assert!(tracker.is_registered(2));
+        assert!(!tracker.is_registered(1));
+        // The mobile returns only at its later ordinary Techno +0x4A0 visit.
+        tracker.update_object(update(1, false), false);
+        assert!(tracker.is_registered(1));
+    }
+
+    #[test]
+    fn radar_tracker_two_identical_action40_resets_both_rebuild() {
+        let mut tracker = RetainedRadarTracker::default();
+        let mut building = update(2, false);
+        building.foundation = Some((2, 2));
+        tracker.update_object(building, false);
+        for _ in 0..2 {
+            tracker.reset_for_action40();
+            assert!(tracker.take_action40_building_tail_pending());
+            assert!(!tracker.is_registered(2));
+            tracker.update_object(building, true);
+            assert!(tracker.is_registered(2));
+            assert_eq!(tracker.entries_at(40, 60).len(), 1);
+        }
+    }
+
+    #[test]
+    fn radar_tracker_action40_building_tail_uses_reverse_creation_order() {
+        let mut tracker = RetainedRadarTracker::default();
+        let mut older = update(1, false);
+        older.foundation = Some((1, 1));
+        let mut newer = update(2, false);
+        newer.foundation = Some((1, 1));
+        tracker.reset_for_action40();
+        assert!(tracker.take_action40_building_tail_pending());
+        // BuildingClass array insertion follows monotonic Abstract stable
+        // creation IDs in Rust; FUN_006E21E0 walks that array backward.
+        tracker.update_object(newer, true);
+        tracker.update_object(older, true);
+        assert_eq!(tracker.entries_at(40, 60), vec![2, 1]);
+    }
+}

@@ -598,15 +598,16 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             &state.renderer.gpu,
             &state.renderer.batch_renderer,
             view.entities(),
+            view.tactical_registration_order(),
+            view.houses(),
             &state.match_state.match_presentation.house_color_map,
             view.session().tick,
-            if state.match_state.sandbox_full_visibility {
-                None
-            } else {
-                local_owner
-                    .as_deref()
-                    .and_then(|owner| view.interner().get(owner).map(|id| (id, view.fog())))
-            },
+            local_owner
+                .as_deref()
+                .and_then(|owner| view.interner().get(owner)),
+            view.fog(),
+            state.match_state.sandbox_full_visibility,
+            view.session().game_mode_nonzero,
             Some(&rt.resources.rules),
             Some(view.radar_events()),
             Some(view.interner()),

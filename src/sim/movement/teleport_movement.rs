@@ -576,6 +576,7 @@ mod tests {
             radar: false,
             radar_invisible: false,
             radar_visible: false,
+            insignificant: false,
             harvester: false,
             refinery: false,
             bib: false,

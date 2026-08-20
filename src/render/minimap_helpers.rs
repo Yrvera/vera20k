@@ -17,9 +17,6 @@ pub(super) const MINIMAP_SIZE: u32 = 200;
 /// Margin from the screen edges in pixels.
 pub(super) const MINIMAP_MARGIN: f32 = 10.0;
 
-/// Size of each unit dot on the minimap in pixels (2x2 square).
-pub(super) const DOT_SIZE: u32 = 2;
-
 /// Depth value for minimap elements — always drawn in front of everything.
 pub(super) const MINIMAP_DEPTH: f32 = 0.0;
 
@@ -49,10 +46,9 @@ const MAX_DENSITY: f32 = 11.0;
 const COLOR_WALL: [u8; 4] = [170, 170, 130, 255];
 /// Bridge deck overlay color: brown.
 const COLOR_BRIDGE: [u8; 4] = [140, 100, 50, 255];
-/// Terrain object color (trees, rocks): dark green.
-const COLOR_TERRAIN_OBJ: [u8; 4] = [30, 80, 30, 255];
-/// Building radar color: khaki (matches original 0xC8,0xC8,0xA0 from GetRadarColor).
-pub(super) const COLOR_BUILDING: [u8; 4] = [200, 200, 160, 255];
+/// Terrain/background object color from CellClass::GetRadarColor. Live
+/// Building tracker pixels use their owner's remap color instead.
+const COLOR_TERRAIN_OBJ: [u8; 4] = [200, 200, 160, 255];
 
 /// Fog-of-war dimming factor for revealed (previously seen) cells.
 /// Original engine uses SHR 1 = exact halving.

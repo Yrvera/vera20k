@@ -31,13 +31,19 @@ use crate::rules::house_colors::HouseColorRamps;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
+use std::collections::BTreeMap;
 
 use super::minimap_helpers::{
-    COLOR_BUILDING, COLOR_SHROUD, DOT_SIZE, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
-    cell_visibility_color, compute_aspect_fit, dim_color, draw_line, owner_dot_color,
-    parse_foundation_size, radar_color_for_cell, set_pixel, terrain_brightness_for_theater,
-    world_to_minimap_pixel,
+    COLOR_SHROUD, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
+    cell_visibility_color, compute_aspect_fit, dim_color, draw_line,
+    radar_color_for_cell, set_pixel, terrain_brightness_for_theater, world_to_minimap_pixel,
 };
+use super::radar_tracker::{
+    RadarProjectionFacts, RetainedRadarTracker, build_radar_object_update,
+    radar_entity_owner_color, radar_pixel_candidate_eligible,
+};
+#[cfg(test)]
+use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 
@@ -253,6 +259,8 @@ pub struct MinimapRenderer {
     last_radar_terrain_dirty_generation: u64,
     playfield_bounds: Option<PlayfieldBounds>,
     installed_playfield_authority: Option<PlayfieldAuthorityStamp>,
+    /// Client-local +0x423/discovery cache; never snapshot/hash authority.
+    radar_tracker: RetainedRadarTracker,
 }
 
 impl MinimapRenderer {
@@ -315,6 +323,7 @@ impl MinimapRenderer {
                 bounds: playfield_bounds,
                 revision: playfield_revision,
             }),
+            radar_tracker: RetainedRadarTracker::default(),
         }
     }
 
@@ -342,6 +351,7 @@ impl MinimapRenderer {
             return false;
         }
 
+        let action40_rebuild = self.installed_playfield_authority.is_some();
         let projection =
             MinimapPlayfieldProjection::derive(grid, overlay_data, theater_name, playfield_bounds);
         self.base_terrain_rgba = projection.base_rgba;
@@ -361,6 +371,13 @@ impl MinimapRenderer {
         self.last_sim_tick = u64::MAX;
         self.last_fog_generation = u64::MAX;
         self.last_radar_terrain_dirty_generation = u64::MAX;
+        if action40_rebuild {
+            // FUN_00655990 clears +0x423; FUN_006E21E0 then forces Buildings.
+            self.radar_tracker.reset_for_action40();
+        } else {
+            // A stale/restore reconcile is not itself an action-40 firing.
+            self.radar_tracker.reset_for_load_or_view();
+        }
 
         gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -409,6 +426,7 @@ impl MinimapRenderer {
         // the restored sim's dirty list is empty; see the load-path notes.
         self.last_radar_terrain_dirty_generation = u64::MAX;
         self.installed_playfield_authority = None;
+        self.radar_tracker.reset_for_load_or_view();
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.
@@ -422,9 +440,14 @@ impl MinimapRenderer {
         gpu: &GpuContext,
         _batch: &BatchRenderer,
         entities: &crate::sim::entity_store::EntityStore,
+        logic_order: &[u64],
+        houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
         house_colors: &HouseColorMap,
         sim_tick: u64,
-        visibility: Option<(crate::sim::intern::InternedId, &FogState)>,
+        local_owner: Option<InternedId>,
+        fog: &FogState,
+        full_visibility: bool,
+        game_mode_nonzero: bool,
         rules: Option<&RuleSet>,
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
@@ -432,8 +455,8 @@ impl MinimapRenderer {
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
-        let fog_generation = visibility.map_or(0, |(_, fog)| fog.view_generation());
-        let visibility_owner = visibility.map(|(owner, _)| owner);
+        let fog_generation = if full_visibility { 0 } else { fog.view_generation() };
+        let visibility_owner = local_owner;
         if sim_tick == self.last_sim_tick
             && fog_generation == self.last_fog_generation
             && visibility_owner == self.last_visibility_owner
@@ -444,128 +467,134 @@ impl MinimapRenderer {
         if radar_terrain_dirty_generation != self.last_radar_terrain_dirty_generation {
             self.apply_bridge_terrain_dirty_cells(bridge_state, radar_terrain_dirty_cells);
         }
+        if visibility_owner != self.last_visibility_owner && self.last_sim_tick != u64::MAX {
+            // g_PlayerPtr controls bucket-front insertion and visibility. A
+            // view-owner switch must rebuild, not reuse the other client's
+            // ordered tracker.
+            self.radar_tracker.reset_for_load_or_view();
+        }
         self.last_sim_tick = sim_tick;
         self.last_fog_generation = fog_generation;
         self.last_visibility_owner = visibility_owner;
         self.last_radar_terrain_dirty_generation = radar_terrain_dirty_generation;
 
         let size: u32 = MINIMAP_SIZE;
-        let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
+        {
+            let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
 
-        // Fill scratch buffer: either shroud + fog-aware terrain, or base terrain copy.
-        if let Some((local_owner, fog)) = visibility {
-            for pixel in rgba.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&COLOR_SHROUD);
+            // Fill scratch buffer: either shroud + fog-aware terrain, or base terrain copy.
+            if let Some(local_owner) = local_owner.filter(|_| !full_visibility) {
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&COLOR_SHROUD);
+                }
+                for terrain_pixel in &self.terrain_pixels {
+                    let color = match cell_visibility_color(local_owner, fog, terrain_pixel) {
+                        Some(color) => color,
+                        None => continue,
+                    };
+                    set_pixel(rgba, size, terrain_pixel.px, terrain_pixel.py, color);
+                }
+            } else {
+                rgba.copy_from_slice(&self.base_terrain_rgba);
             }
-            for terrain_pixel in &self.terrain_pixels {
-                let color = match cell_visibility_color(local_owner, fog, terrain_pixel) {
-                    Some(color) => color,
-                    None => continue,
-                };
-                set_pixel(rgba, size, terrain_pixel.px, terrain_pixel.py, color);
+
+            // Stamp overlay pixels on top of terrain (ore, gems, walls, bridges, trees).
+            for overlay in &self.overlay_pixels {
+                if let Some(local_owner) = local_owner.filter(|_| !full_visibility) {
+                    if !fog.is_cell_revealed(local_owner, overlay.rx, overlay.ry) {
+                        continue;
+                    }
+                    let mut color: [u8; 4] = overlay.color;
+                    if overlay.classification == OverlayClassification::Bridge {
+                        color = dim_color(color, 0.5);
+                    }
+                    set_pixel(rgba, size, overlay.px, overlay.py, color);
+                } else {
+                    let mut color = overlay.color;
+                    if overlay.classification == OverlayClassification::Bridge {
+                        color = dim_color(color, 0.5);
+                    }
+                    set_pixel(rgba, size, overlay.px, overlay.py, color);
+                }
             }
-        } else {
-            rgba.copy_from_slice(&self.base_terrain_rgba);
         }
 
-        // Stamp overlay pixels on top of terrain (ore, gems, walls, bridges, trees).
-        for overlay in &self.overlay_pixels {
-            if let Some((local_owner, fog)) = visibility {
-                if !fog.is_cell_revealed(local_owner, overlay.rx, overlay.ry) {
+        // Trigger/action precedes LogicClass: action 40 clears all, forces the
+        // reverse Building tail, then mobiles return on ordinary +0x4A0 visits.
+        self.radar_tracker.remove_absent_or_ineligible(entities);
+        if self.radar_tracker.take_action40_building_tail_pending() {
+            for stable_id in entities.keys_sorted().into_iter().rev() {
+                let Some(entity) = entities.get(stable_id) else {
+                    continue;
+                };
+                if entity.category != EntityCategory::Structure {
                     continue;
                 }
-                let mut color: [u8; 4] = overlay.color;
-                if overlay.classification == OverlayClassification::Bridge {
-                    color = dim_color(color, 0.5);
-                }
-                set_pixel(rgba, size, overlay.px, overlay.py, color);
-            } else {
-                let mut color = overlay.color;
-                if overlay.classification == OverlayClassification::Bridge {
-                    color = dim_color(color, 0.5);
-                }
-                set_pixel(rgba, size, overlay.px, overlay.py, color);
+                let update = build_radar_object_update(
+                    entity,
+                    houses,
+                    local_owner,
+                    fog,
+                    full_visibility,
+                    game_mode_nonzero,
+                    rules,
+                    interner,
+                    self.radar_projection_facts(),
+                    self.playfield_bounds.is_some(),
+                );
+                self.radar_tracker.update_object(update, true);
             }
         }
+        for &stable_id in logic_order {
+            let Some(entity) = entities.get(stable_id) else {
+                continue;
+            };
+            let update = build_radar_object_update(
+                entity,
+                houses,
+                local_owner,
+                fog,
+                full_visibility,
+                game_mode_nonzero,
+                rules,
+                interner,
+                self.radar_projection_facts(),
+                self.playfield_bounds.is_some(),
+            );
+            self.radar_tracker.update_object(update, false);
+        }
 
-        // Stamp unit dots on top of terrain + overlays. Resolve the per-house
-        // ramp table once (the default empty table only when rules are absent).
+        // RenderCellPixel @ 0x00655C50 scans each ordered bucket forward and
+        // the first eligible exact-coordinate object supplies the owner color.
+        // Resolve the per-house ramp table once (the default empty table only
+        // when rules are absent).
         let default_ramps = HouseColorRamps::default();
         let ramps: &HouseColorRamps = rules
             .map(|r| &r.house_color_ramps)
             .unwrap_or(&default_ramps);
-        for entity in entities.values() {
-            if entity.lifecycle.in_limbo {
+        let projection = self.radar_projection_facts();
+        let winners = self.radar_tracker.visible_winners(|entry| {
+            radar_pixel_candidate_eligible(
+                entry,
+                entities,
+                houses,
+                local_owner,
+                fog,
+                full_visibility,
+                game_mode_nonzero,
+                rules,
+                interner,
+                projection,
+            )
+        });
+        let rgba: &mut Vec<u8> = &mut self.rgba_scratch;
+        for entry in winners {
+            let Some(entity) = entities.get(entry.stable_id) else {
                 continue;
-            }
-            let pos = &entity.position;
-            // Radar's Techno reader consumes the canonical TechnoClass+0x3D5
-            // byte. A fresh mode-one bounds query here would erase ordinary
-            // movement hysteresis and disagree after teleport/action writers.
-            if !minimap_entity_in_playfield(self.playfield_bounds.is_some(), entity) {
-                continue;
-            }
-            let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-            let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
-            let obj = rules.and_then(|r| r.object(type_str));
-            let radar_invisible: bool = obj.is_some_and(|o| o.radar_invisible);
-            let radar_visible: bool = obj.is_some_and(|o| o.radar_visible);
-
-            if let Some((local_owner, fog)) = visibility {
-                let friendly =
-                    interner.map_or(false, |i| fog.is_friendly_id(local_owner, entity.owner, i));
-                if radar_visible {
-                    // Always show — RadarVisible overrides fog.
-                } else if radar_invisible && !friendly {
-                    continue;
-                } else if !friendly
-                    && (!fog.is_cell_revealed(local_owner, pos.rx, pos.ry)
-                        || fog.is_cell_gap_covered(local_owner, pos.rx, pos.ry))
-                {
-                    continue;
-                }
-            }
-
-            let (entity_sx, entity_sy) = super::locomotor_visual::screen_position(entity);
-            // `world_origin_y`/`world_height` bound the terrain grid, which is
-            // built from `iso_to_screen` tile corners. An entity is drawn half a
-            // tile below its cell's tile row, so that half-tile has to come back
-            // off before normalising or every dot sits a minimap pixel south of
-            // the terrain pixel it belongs to.
-            let entity_sy = entity_sy - crate::map::terrain::TILE_HEIGHT / 2.0;
-            let (px, py): (u32, u32) = world_to_minimap_pixel(
-                entity_sx,
-                entity_sy,
-                self.world_origin_x,
-                self.world_origin_y,
-                self.world_width,
-                self.world_height,
-                self.map_offset_x,
-                self.map_offset_y,
-                self.map_pixel_w,
-                self.map_pixel_h,
-            );
-
-            let is_building = entity.category == EntityCategory::Structure;
-            let color: [u8; 4] = if is_building {
-                COLOR_BUILDING
-            } else {
-                owner_dot_color(owner_str, house_colors, ramps)
             };
-            let dot_size: u32 = if is_building {
-                let (fw, fh) = obj
-                    .map(|o| parse_foundation_size(&o.foundation))
-                    .unwrap_or((1, 1));
-                (fw.max(fh) + 1).min(5)
-            } else {
-                DOT_SIZE
-            };
-            for dy in 0..dot_size {
-                for dx in 0..dot_size {
-                    let dot_x: u32 = px.saturating_add(dx);
-                    let dot_y: u32 = py.saturating_add(dy);
-                    set_pixel(rgba, size, dot_x, dot_y, color);
-                }
+            let color = radar_entity_owner_color(entity, interner, house_colors, ramps);
+            if entry.x >= 0 && entry.y >= 0 {
+                set_pixel(rgba, size, entry.x as u32, entry.y as u32, color);
             }
         }
 
@@ -683,6 +712,19 @@ impl MinimapRenderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    fn radar_projection_facts(&self) -> RadarProjectionFacts {
+        RadarProjectionFacts {
+            world_origin_x: self.world_origin_x,
+            world_origin_y: self.world_origin_y,
+            world_width: self.world_width,
+            world_height: self.world_height,
+            map_offset_x: self.map_offset_x,
+            map_offset_y: self.map_offset_y,
+            map_pixel_w: self.map_pixel_w,
+            map_pixel_h: self.map_pixel_h,
+        }
     }
 
     fn apply_bridge_terrain_dirty_cells(

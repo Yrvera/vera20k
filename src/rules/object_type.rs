@@ -451,9 +451,14 @@ pub struct ObjectType {
     /// When true, this unit does NOT appear on enemy radar even when in line of sight.
     /// RadarInvisible= in rules.ini. Used by subs, Night Hawk, dolphins, giant squid.
     pub radar_invisible: bool,
-    /// When true, this unit ALWAYS appears on radar even when under shroud.
-    /// RadarVisible= in rules.ini. Used by certain special objects.
+    /// `RadarVisible=`. In active `RenderCellPixel` this restores an otherwise
+    /// skipped Insignificant/passive-owner entry. It does not override shroud
+    /// or an earlier hostile `RadarInvisible` rejection.
     pub radar_visible: bool,
+    /// `Insignificant=` (`ObjectTypeClass+0x232`). In the active live-radar
+    /// pixel gate this is distinct from `RadarVisible`: insignificant objects
+    /// owned by a passive/missing house are skipped unless RadarVisible is set.
+    pub insignificant: bool,
     /// Whether this unit is a resource harvester (Harvester=yes in rules.ini).
     /// Data-driven replacement for hardcoded type ID string checks.
     pub harvester: bool,
@@ -1265,6 +1270,7 @@ impl ObjectType {
             radar: section.get_bool("Radar").unwrap_or(false),
             radar_invisible: section.get_bool("RadarInvisible").unwrap_or(false),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
+            insignificant: section.get_bool("Insignificant").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
             refinery: section.get_bool("Refinery").unwrap_or(false),
             bib: section.get_bool("Bib").unwrap_or(false),
@@ -2504,6 +2510,28 @@ mod tests {
         assert!(!plain.invisible_in_game);
         assert!(!in_game.invisible);
         assert!(in_game.invisible_in_game);
+    }
+
+    #[test]
+    fn radar_insignificant_parses_independently_from_radar_visible() {
+        let ini = IniFile::from_str(
+            "[A]\nInsignificant=yes\nRadarVisible=no\n\
+             [B]\nInsignificant=no\nRadarVisible=yes\n",
+        );
+        let a = ObjectType::from_ini_section(
+            "A",
+            ini.section("A").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        let b = ObjectType::from_ini_section(
+            "B",
+            ini.section("B").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(a.insignificant);
+        assert!(!a.radar_visible);
+        assert!(!b.insignificant);
+        assert!(b.radar_visible);
     }
 
     #[test]
