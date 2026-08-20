@@ -114,6 +114,14 @@ impl MinimapRenderer {
         let (map_offset_x, map_offset_y, map_pixel_w, map_pixel_h) = compute_aspect_fit(w, h);
 
         for cell in &grid.cells {
+            // Radar shows only the playable rect: gamemd's radar is sized to
+            // LocalSize, so border filler cells never appear on it even though
+            // they render in the tactical view.
+            if let Some(ref bounds) = grid.local_bounds {
+                if !bounds.contains(cell.screen_x, cell.screen_y) {
+                    continue;
+                }
+            }
             let (px, py): (u32, u32) = world_to_minimap_pixel(
                 cell.screen_x,
                 cell.screen_y,
@@ -141,6 +149,13 @@ impl MinimapRenderer {
         // Build overlay pixels from classified overlay entries.
         let mut overlay_pixels: Vec<OverlayPixel> = Vec::new();
         for &(rx, ry, classification, density, precomputed) in overlay_data {
+            // Same playable-rect filter as terrain pixels above.
+            if let Some(ref bounds) = grid.local_bounds {
+                let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                if !bounds.contains(sx, sy) {
+                    continue;
+                }
+            }
             let color: [u8; 4] = if let Some(c) = precomputed {
                 c
             } else if let Some(c) = classification.color(density) {

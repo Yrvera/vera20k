@@ -575,14 +575,6 @@ pub(crate) fn build_overlay_instances(
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
-    // Playable area bounds — skip overlays outside LocalSize (border filler).
-    let local_bounds = state
-        .match_state
-        .match_presentation
-        .terrain_grid
-        .as_ref()
-        .and_then(|g| g.local_bounds);
-
     // Cell visibility for the local owner — used to cull overlays and terrain
     // objects in unrevealed cells. The shroud multiply pass darkens per-pixel,
     // but tall sprites (bridges, trees) extend their canopy into screen-space
@@ -704,12 +696,8 @@ pub(crate) fn build_overlay_instances(
         let (screen_x, screen_y) = terrain::iso_to_screen(entry.rx, entry.ry, z);
         let screen_y: f32 = screen_y + track_y_offset;
 
-        // Playable area bounds — skip overlays outside LocalSize (border filler).
-        if let Some(ref bounds) = local_bounds {
-            if !bounds.contains(screen_x, screen_y) {
-                continue;
-            }
-        }
+        // No LocalSize gate: gamemd draws overlays on border filler cells like
+        // any other; fog visibility and the camera clamp are the only hiders.
         if !in_view(
             screen_x, screen_y, 120.0, 120.0, cam_x, cam_y, sw, sh, 120.0,
         ) {
@@ -800,11 +788,6 @@ pub(crate) fn build_overlay_instances(
             .copied()
             .unwrap_or(0);
         let (screen_x, screen_y) = terrain::iso_to_screen(obj.rx, obj.ry, z);
-        if let Some(ref bounds) = local_bounds {
-            if !bounds.contains(screen_x, screen_y) {
-                continue;
-            }
-        }
         if !in_view(
             screen_x, screen_y, 120.0, 120.0, cam_x, cam_y, sw, sh, 120.0,
         ) {
