@@ -6781,3 +6781,60 @@ fn gsi_08_12_a_dont_score_victim_pays_no_experience() {
     assert_eq!(killer.veterancy, 0, "five DontScore kills earn nothing");
     assert_eq!(killer.veterancy_raw.bits(), 0);
 }
+
+/// The shot leaves the BARREL, not the hull centre.
+///
+/// `TechnoClass::Fire_At` launches from `GetFLH @ 0x006F3AD0`, and the stock
+/// MTNK fixture (`PrimaryFireFLH=190,25,120`, body north, turret east) puts that
+/// muzzle at `+189, -25, +120` leptons from the object coordinate — 189, not
+/// 190, because retail composes two table rotations whose residual truncates the
+/// X term down a lepton.
+#[test]
+fn gsi_08_04_projectile_spawns_at_the_muzzle_not_the_hull_centre() {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=MTNK\n1=HTNK\n[MTNK]\nStrength=300\nArmor=heavy\nSpeed=6\nCost=700\nPrimary=105mm\nTurret=yes\n[HTNK]\nStrength=2000\nArmor=heavy\nSpeed=4\nCost=900\nPrimary=105mm\n[105mm]\nDamage=65\nROF=50\nRange=6\nSpeed=40\nProjectile=Cannon\nWarhead=AP\n[Cannon]\nArcing=true\n[AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .expect("fire-origin fixture parses");
+    rules.merge_art_data(&crate::rules::art_data::ArtRegistry::from_ini(
+        &IniFile::from_str("[MTNK]\nPrimaryFireFLH=190,25,120\n"),
+    ));
+
+    let mut store = EntityStore::new();
+    let mut shooter = make_entity_owned(1, "MTNK", 5, 5, 300, "Soviet");
+    // Body facing north; the turret is aimed east at the target.
+    shooter.facing = 0;
+    shooter.barrel_facing = Some(crate::sim::movement::facing_class::FacingClass::new(
+        0x4000, 0,
+    ));
+    store.insert(shooter);
+    let _ = test_intern("HTNK");
+    store.insert(make_entity_owned(2, "HTNK", 8, 5, 2000, "Americans"));
+    let mut interner = test_interner();
+    issue_attack_command(&mut store, 1, 2, None, &interner);
+
+    let result = tick_combat(
+        &mut store,
+        &mut OccupancyGrid::new(),
+        &rules,
+        &mut interner,
+        &mut BTreeMap::new(),
+        0,
+        100,
+        0,
+        &mut SimRng::new(3),
+    );
+
+    let spawn = result
+        .projectile_spawns
+        .first()
+        .expect("the shot creates a tracked projectile");
+    let hull_x = i32::from(store.get(1).unwrap().position.rx) * 256
+        + store.get(1).unwrap().position.sub_x.to_num::<i32>();
+    let hull_y = i32::from(store.get(1).unwrap().position.ry) * 256
+        + store.get(1).unwrap().position.sub_y.to_num::<i32>();
+    assert_eq!(
+        (spawn.origin.x - hull_x, spawn.origin.y - hull_y),
+        (189, -25),
+        "muzzle offset in leptons"
+    );
+}

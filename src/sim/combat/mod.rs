@@ -6525,6 +6525,18 @@ pub(crate) fn resolve_attacker_fire(
     }
 
     // Fire one shot!
+    //
+    // The burst index is needed twice — the fire coordinate mirrors its lateral
+    // offset on odd shots, and the burst state machine advances on it — so it is
+    // resolved once here.
+    let weapon_burst: u8 = weapon.burst.max(1) as u8;
+    let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
+        0
+    } else {
+        weapon_burst
+            .saturating_sub(snap.burst_remaining)
+            .min(weapon_burst.saturating_sub(1))
+    };
     let warhead = selected.warhead;
     // Garrison damage: apply OccupyDamageMultiplier to base damage before AoE or
     // single-target paths. Matches gamemd Fire_At which modifies damage before bullet
@@ -6568,41 +6580,49 @@ pub(crate) fn resolve_attacker_fire(
             TargetKind::Entity(id) => ProjectileTarget::Entity(id),
             TargetKind::Cell(rx, ry) => ProjectileTarget::Cell { rx, ry },
         };
-        // RESIDUAL (GSI-08.04) — the shot leaves the unit's centre, not its
-        // barrel. `PrimaryFireFLH=`/`SecondaryFireFLH=` and their elite variants
-        // are parsed and transformed (`rules/flh.rs`, `util/flh_transform.rs`),
-        // but the only consumer is `app/presentation/fire_effects.rs`, which
-        // places the muzzle flash and the report sound. Native's fire location
-        // is weapon-slot and barrel-facing dependent and is what the projectile
-        // is launched from, what range is measured from, and what line of fire
-        // is traced from.
-        // - Trigger: every shot from a unit whose FLH is not the origin, which
-        //   in stock artmd is most of them.
-        // - Player effect: the muzzle flash and the projectile disagree — the
-        //   flash sits at the barrel and the shot starts at the hull centre, so
-        //   at short range the tracer visibly begins in the wrong place. Range
-        //   is NOT affected: `TechnoClass::CanFireAt @ 0x006F77B0` measures from
-        //   `vtable+0x48` (`GetCoords`), the object centre, which is what VERA
-        //   already does — pass 1's "reaches marginally less far" was wrong.
-        //   Only the projectile origin and the line of fire move.
-        // - Frequency: continuous, every shot.
-        // - Downstream risk: high. Moving the origin changes ballistic launch
-        //   vectors and therefore impact frames, so it moves the pinned replay
-        //   hash and the closed ballistic vector tests. The verified transform
-        //   is `GetFLH @ 0x006F3AD0`:
-        //   `M = Base * T(TechnoType+0x720, 0, 0) * Rz(theta) * T(x, ySign*y, z)`
-        //   with `theta = -(pi/16) * (dir32 - 8)`,
-        //   `dir32 = (((facing >> 10) + 1) >> 1) & 0x1F`, `ySign = -1` on an odd
-        //   `CurrentBurstIndex`, and the result's Y negated before it is added
-        //   to the object coordinate. The body rotation cancels, so the FLH
-        //   rotates by the ABSOLUTE aim facing while the turret offset rides the
-        //   body frame. It needs a fixed-point trig table; the pass-1 note that
-        //   it also wants a barrel-facing split is wrong — see
-        //   `movement/turret.rs`, native has two facings, not three.
+        // `TechnoClass::Fire_At` launches the bullet FROM the fire coordinate —
+        // `GetFLH @ 0x006F3AD0`, the muzzle — and derives the launch velocity as
+        // `target - FLH`, so the barrel offset sets both where the shot starts
+        // and which way it leaves. The muzzle animation and the report sound at
+        // `0x006FF3BE`/`0x006FF38B` are handed the identical local, which is why
+        // the presentation layer's own FLH use is the same contract rather than
+        // a second computation.
+        //
+        // The aim facing is the turret's when the attacker has one and the
+        // body's otherwise; the body facing supplies the base rotation.
+        let body_facing16 = crate::sim::movement::turret::body_facing_to_turret(snap.facing);
+        let aim_facing16 = snap
+            .barrel_facing
+            .as_ref()
+            .map_or(body_facing16, |barrel| barrel.current(binary_frame));
+        let flh_delta = rules
+            .art_registry
+            .get(&obj.image)
+            .or_else(|| rules.art_registry.get(&obj.id))
+            .and_then(|art| {
+                let flh = crate::rules::flh::resolve_flh(
+                    art.primary_fire_flh,
+                    art.secondary_fire_flh,
+                    art.elite_primary_fire_flh,
+                    art.elite_secondary_fire_flh,
+                    matches!(selected.slot, WeaponSlot::Primary),
+                    snap.veterancy,
+                );
+                crate::util::flh_transform::native_flh_world_delta(
+                    flh.forward,
+                    flh.lateral,
+                    flh.height,
+                    art.turret_offset,
+                    aim_facing16,
+                    body_facing16,
+                    burst_index,
+                )
+            })
+            .unwrap_or((0, 0, 0));
         let origin = ProjectileCoord::new(
-            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>(),
-            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>(),
-            origin_world_z_leptons,
+            i32::from(snap.pos_rx) * 256 + snap.sub_x.to_num::<i32>() + flh_delta.0,
+            i32::from(snap.pos_ry) * 256 + snap.sub_y.to_num::<i32>() + flh_delta.1,
+            origin_world_z_leptons + flh_delta.2,
         );
         let projectile_type = weapon
             .projectile
@@ -6805,14 +6825,6 @@ pub(crate) fn resolve_attacker_fire(
         .report
         .as_ref()
         .map(|report_id| interner.intern(report_id));
-    let weapon_burst: u8 = weapon.burst.max(1) as u8;
-    let burst_index = if weapon_burst <= 1 || snap.burst_remaining == 0 {
-        0
-    } else {
-        weapon_burst
-            .saturating_sub(snap.burst_remaining)
-            .min(weapon_burst.saturating_sub(1))
-    };
     out.fire_events.push(SimFireEvent {
         attacker_id: snap.stable_id,
         attacker_type_ref: snap.type_id,

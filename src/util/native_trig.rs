@@ -19,6 +19,22 @@ pub const NATIVE_TRIG_MIN_STEP: i32 = -31;
 /// Inclusive upper bound of [`NATIVE_TRIG_MIN_STEP`]'s range.
 pub const NATIVE_TRIG_MAX_STEP: i32 = 31;
 
+/// How `TechnoClass::GetFLH @ 0x006F3AD0` forms the angle these entries answer:
+///
+/// ```text
+/// FILD  dword [k]              ; the signed step, as an integer
+/// FMUL  double [0x007E4408]    ; times -(pi/16), a DOUBLE
+/// FSTP  double [tmp]           ; narrowed to f64
+/// FLD   double [tmp]
+/// FSTP  float  [arg]           ; then to f32 -- this is what RotateZ receives
+/// ```
+///
+/// The double constant is load-bearing. Forming the angle as
+/// `f32(k) * f32(-0.19634955)` instead selects a DIFFERENT table entry at 22 of
+/// the 63 reachable steps, because the index truncates and the two products
+/// straddle a boundary. The entries below were taken at the indices the
+/// disassembled index computation produces for the double form.
+///
 /// `sin(-(pi/16) * k)` exactly as retail returns it, indexed by `k + 31`.
 ///
 /// These are the bytes at `0x0084F084 + idx * 4`, not computed values: the
