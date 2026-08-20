@@ -334,6 +334,31 @@ impl SfxPlayer {
         false
     }
 
+    /// Play only a named `sound(md).ini` event and never reinterpret its ID as
+    /// an audio-bag filename. `RulesClass::ReadAudioVisual @ 0x006691E0`
+    /// resolves `[AudioVisual] CloakSound` through `VocClass::FindByName @
+    /// 0x007514D0`; a failed lookup preserves the invalid constructor index,
+    /// so `StartUncloaking @ 0x007036C0` produces no audible fallback.
+    pub fn play_registered_sound_with_volume(
+        &mut self,
+        sound_id: &str,
+        spatial_volume: f32,
+        registry: &SoundRegistry,
+        assets: &AssetManager,
+        audio_indices: &[crate::assets::audio_bag::AudioIndex],
+    ) -> bool {
+        let Some((filename, entry_volume)) =
+            select_registered_sound(sound_id, registry, &mut self.random_counter)
+        else {
+            return false;
+        };
+        let Some(decoded) = load_sfx(filename, assets, audio_indices) else {
+            return false;
+        };
+        let final_volume = (entry_volume * self.volume) as f32 * spatial_volume;
+        self.play_decoded(decoded, final_volume)
+    }
+
     /// Start or replace the sound owned by one animation object.
     pub fn play_animation_sound_with_volume(
         &mut self,
@@ -728,6 +753,20 @@ impl SfxPlayer {
     }
 }
 
+fn select_registered_sound<'a>(
+    sound_id: &str,
+    registry: &'a SoundRegistry,
+    random_counter: &mut u32,
+) -> Option<(&'a str, f64)> {
+    let entry = registry.get(sound_id)?;
+    if entry.sounds.is_empty() {
+        return None;
+    }
+    *random_counter = random_counter.wrapping_add(1);
+    let filename = &entry.sounds[(*random_counter as usize) % entry.sounds.len()];
+    Some((filename, entry.volume as f64 / 100.0))
+}
+
 /// Load a sound effect file and decode it to interleaved f32 stereo samples.
 ///
 /// Resolution order:
@@ -1080,6 +1119,30 @@ fn decode_pcm(pcm: &[u8], channels: u16, bits_per_sample: u16) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::ini_parser::IniFile;
+
+    #[test]
+    fn cloak_sound_registered_resolution_rejects_raw_sample_and_invalid_names() {
+        let registry = SoundRegistry::from_ini(&IniFile::from_str(
+            "[NavalUnitEmerge]\nSounds=vnavupa\nVolume=55\n",
+        ));
+        let mut counter = 0;
+
+        assert_eq!(
+            select_registered_sound("NavalUnitEmerge", &registry, &mut counter),
+            Some(("vnavupa", 0.55)),
+            "the retail Voc/event identity resolves to its registered sample"
+        );
+        assert_eq!(counter, 1);
+        for invalid in ["", "MissingCloakEvent", "vnavupa"] {
+            assert_eq!(
+                select_registered_sound(invalid, &registry, &mut counter),
+                None,
+                "an invalid Voc identity must not become a raw-bag fallback: {invalid}"
+            );
+        }
+        assert_eq!(counter, 1, "rejected identities do not advance sound selection");
+    }
 
     #[test]
     fn gsi_01_02_focus_gate_restores_distinct_live_sfx_gains_absolutely() {

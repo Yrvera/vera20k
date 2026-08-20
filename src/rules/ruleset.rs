@@ -3859,6 +3859,18 @@ SpawnCount=3
         assert_eq!(parsed.cloaking_stages, 13);
         assert_eq!(parsed.cloak_delay_frames, 27);
         assert_eq!(parsed.cloak_sound.as_deref(), Some("NavalUnitEmerge"));
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("[General]\nCloakingStages=9\n"))
+                .cloak_sound,
+            None,
+            "missing CloakSound preserves the native invalid-index default"
+        );
+        assert_eq!(
+            GeneralRules::from_ini(&IniFile::from_str("[AudioVisual]\nCloakSound=\n"))
+                .cloak_sound,
+            None,
+            "empty CloakSound preserves the native invalid-index default"
+        );
     }
 
     /// Build a minimal rules.ini string for testing.
