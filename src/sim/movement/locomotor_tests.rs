@@ -114,6 +114,8 @@ fn make_obj(locomotor: LocomotorKind, category: ObjectCategory) -> ObjectType {
         cloak_generator: false,
         radar: false,
         radar_invisible: false,
+        veteran_radar_invisible: false,
+        elite_radar_invisible: false,
         radar_visible: false,
         insignificant: false,
         harvester: false,

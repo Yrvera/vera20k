@@ -451,6 +451,13 @@ pub struct ObjectType {
     /// When true, this unit does NOT appear on enemy radar even when in line of sight.
     /// RadarInvisible= in rules.ini. Used by subs, Night Hawk, dolphins, giant squid.
     pub radar_invisible: bool,
+    /// `RADAR_INVISIBLE` in `VeteranAbilities=`. Active
+    /// `TechnoClass+0x324 @ 0x0070D1D0` reads this rank-selected byte before
+    /// deciding whether a sensor is required for radar registration.
+    pub veteran_radar_invisible: bool,
+    /// Elite counterpart at TechnoTypeClass+0x2B9. Elite objects inherit the
+    /// veteran ability and additionally consult this list.
+    pub elite_radar_invisible: bool,
     /// `RadarVisible=`. In active `RenderCellPixel` this restores an otherwise
     /// skipped Insignificant/passive-owner entry. It does not override shroud
     /// or an earlier hostile `RadarInvisible` rejection.
@@ -1269,6 +1276,14 @@ impl ObjectType {
             gap_generator: section.get_bool("GapGenerator").unwrap_or(false),
             radar: section.get_bool("Radar").unwrap_or(false),
             radar_invisible: section.get_bool("RadarInvisible").unwrap_or(false),
+            veteran_radar_invisible: ability_list_has(
+                section.get_list("VeteranAbilities"),
+                "RADAR_INVISIBLE",
+            ),
+            elite_radar_invisible: ability_list_has(
+                section.get_list("EliteAbilities"),
+                "RADAR_INVISIBLE",
+            ),
             radar_visible: section.get_bool("RadarVisible").unwrap_or(false),
             insignificant: section.get_bool("Insignificant").unwrap_or(false),
             harvester: section.get_bool("Harvester").unwrap_or(false),
@@ -2532,6 +2547,22 @@ mod tests {
         assert!(!a.radar_visible);
         assert!(!b.insignificant);
         assert!(b.radar_visible);
+    }
+
+    #[test]
+    fn radar_invisible_veterancy_abilities_parse_by_rank() {
+        let ini = IniFile::from_str(
+            "[DOT]\nVeteranAbilities=FASTER,RADAR_INVISIBLE\n\
+             EliteAbilities=STRONGER,RADAR_INVISIBLE\n",
+        );
+        let obj = ObjectType::from_ini_section(
+            "DOT",
+            ini.section("DOT").unwrap(),
+            ObjectCategory::Vehicle,
+        );
+        assert!(obj.veteran_radar_invisible);
+        assert!(obj.elite_radar_invisible);
+        assert!(!obj.radar_invisible);
     }
 
     #[test]

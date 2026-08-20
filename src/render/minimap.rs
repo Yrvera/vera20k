@@ -39,9 +39,10 @@ use super::minimap_helpers::{
     radar_color_for_cell, set_pixel, terrain_brightness_for_theater, world_to_minimap_pixel,
 };
 use super::radar_tracker::{
-    RadarProjectionFacts, RetainedRadarTracker, build_radar_object_update,
-    radar_entity_owner_color, radar_pixel_candidate_eligible,
+    RadarProjectionFacts, RetainedRadarTracker, radar_entity_owner_color,
+    radar_pixel_candidate_eligible,
 };
+use super::radar_visibility::build_radar_object_update;
 #[cfg(test)]
 use super::radar_tracker::RadarTrackerEntry;
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
@@ -452,6 +453,7 @@ impl MinimapRenderer {
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
         bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
@@ -530,6 +532,9 @@ impl MinimapRenderer {
                 if entity.category != EntityCategory::Structure {
                     continue;
                 }
+                if !entity.lifecycle.object_alive || entity.lifecycle.in_limbo {
+                    continue;
+                }
                 let update = build_radar_object_update(
                     entity,
                     houses,
@@ -540,7 +545,8 @@ impl MinimapRenderer {
                     rules,
                     interner,
                     self.radar_projection_facts(),
-                    self.playfield_bounds.is_some(),
+                    self.playfield_bounds,
+                    resolved_terrain,
                 );
                 self.radar_tracker.update_object(update, true);
             }
@@ -559,7 +565,8 @@ impl MinimapRenderer {
                 rules,
                 interner,
                 self.radar_projection_facts(),
-                self.playfield_bounds.is_some(),
+                self.playfield_bounds,
+                resolved_terrain,
             );
             self.radar_tracker.update_object(update, false);
         }

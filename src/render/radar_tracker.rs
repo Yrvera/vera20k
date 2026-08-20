@@ -8,14 +8,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
 use crate::rules::house_colors::HouseColorRamps;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
 
-use super::minimap_helpers::{owner_dot_color, parse_foundation_size, world_to_minimap_pixel};
+use super::minimap_helpers::owner_dot_color;
+use super::radar_visibility::{
+    RadarRegistrationVisibilityFacts, radar_owner_is_human_player,
+};
 
 const TRACKER_BUCKET_COUNT: usize = 256;
 
@@ -67,21 +69,6 @@ impl RadarProjectionFacts {
     }
 }
 
-pub(super) fn radar_owner_is_human_player(
-    owner: InternedId,
-    local_owner: InternedId,
-    houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
-    game_mode_nonzero: bool,
-) -> bool {
-    if game_mode_nonzero {
-        owner == local_owner
-    } else {
-        houses
-            .get(&owner)
-            .is_some_and(|house| house.is_human || house.player_control)
-    }
-}
-
 pub(super) fn radar_entity_owner_color(
     entity: &crate::sim::game_entity::GameEntity,
     interner: Option<&crate::sim::intern::StringInterner>,
@@ -99,108 +86,6 @@ pub(super) fn radar_entity_owner_color(
     // path. Khaki is terrain-only. The existing RGBA ramp is not yet proof of
     // native DirectDraw shift/loss packed-color equivalence.
     owner_dot_color(owner_str, house_colors, ramps)
-}
-
-pub(super) fn radar_footprint_seen(
-    fog: &FogState,
-    local_owner: InternedId,
-    entity: &crate::sim::game_entity::GameEntity,
-    foundation: Option<(u32, u32)>,
-    current_visibility: bool,
-) -> bool {
-    let seen = |rx, ry| {
-        if current_visibility {
-            fog.is_cell_visible(local_owner, rx, ry)
-        } else {
-            fog.is_cell_revealed(local_owner, rx, ry)
-        }
-    };
-    if seen(entity.position.rx, entity.position.ry) {
-        return true;
-    }
-    let Some((width, height)) = foundation else {
-        return false;
-    };
-    // BuildingClass visibility @ 0x00457020 samples the origin and opposite
-    // foundation corner; it does not invent a square-dot admission rule.
-    let far_rx = entity
-        .position
-        .rx
-        .saturating_add(width.saturating_sub(1).min(u16::MAX.into()) as u16);
-    let far_ry = entity
-        .position
-        .ry
-        .saturating_add(height.saturating_sub(1).min(u16::MAX.into()) as u16);
-    seen(far_rx, far_ry)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_radar_object_update(
-    entity: &crate::sim::game_entity::GameEntity,
-    houses: &BTreeMap<InternedId, crate::sim::house_state::HouseState>,
-    local_owner: Option<InternedId>,
-    fog: &FogState,
-    full_visibility: bool,
-    game_mode_nonzero: bool,
-    rules: Option<&RuleSet>,
-    interner: Option<&crate::sim::intern::StringInterner>,
-    projection: RadarProjectionFacts,
-    playfield_authority_configured: bool,
-) -> RadarObjectUpdate {
-    let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-    let object = rules.and_then(|rules| rules.object(type_str));
-    let (screen_x, screen_y) = super::locomotor_visual::screen_position(entity);
-    // Tactical sprite anchors add half a tile row; native radar conversion
-    // consumes the world coordinate, so remove that render-only offset.
-    let screen_y = screen_y - crate::map::terrain::TILE_HEIGHT / 2.0;
-    let origin = world_to_minimap_pixel(
-        screen_x,
-        screen_y,
-        projection.world_origin_x,
-        projection.world_origin_y,
-        projection.world_width,
-        projection.world_height,
-        projection.map_offset_x,
-        projection.map_offset_y,
-        projection.map_pixel_w,
-        projection.map_pixel_h,
-    );
-    let foundation = (entity.category == EntityCategory::Structure)
-        .then(|| parse_foundation_size(&entity.foundation));
-    let owner_is_human_player = local_owner.is_some_and(|local_owner| {
-        radar_owner_is_human_player(entity.owner, local_owner, houses, game_mode_nonzero)
-    });
-    let (discovery_observed, registration_visible) = if full_visibility {
-        (true, true)
-    } else if let Some(local_owner) = local_owner {
-        (
-            radar_footprint_seen(fog, local_owner, entity, foundation, false),
-            radar_footprint_seen(fog, local_owner, entity, foundation, true),
-        )
-    } else {
-        (true, true)
-    };
-
-    RadarObjectUpdate {
-        stable_id: entity.stable_id,
-        owner: entity.owner,
-        origin: (origin.0 as i32, origin.1 as i32),
-        foundation,
-        radar_scale: projection.cell_axis_scale(),
-        base_eligible: entity.lifecycle.object_alive
-            && !entity.lifecycle.in_limbo
-            && (!playfield_authority_configured || entity.in_playfield)
-            && !object.is_some_and(|object| object.invisible_in_game),
-        owner_is_human_player,
-        discovery_observed,
-        // UNCHECKED residual: Techno+0x4A0 consumes virtual +0x324 @
-        // 0x0070D1D0. Current/revealed footprint state is the Rust-owned
-        // subset, not a claim that cloak/sensor/building state is closed.
-        registration_visible,
-        // AddObjectToTracker @ 0x00655560 compares directly to g_PlayerPtr,
-        // narrower than IsHumanPlayer's single-player shroud exception.
-        local_front: local_owner == Some(entity.owner),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -280,13 +165,15 @@ pub(super) struct RadarObjectUpdate {
     pub origin: (i32, i32),
     pub foundation: Option<(u32, u32)>,
     pub radar_scale: f32,
-    pub base_eligible: bool,
-    pub owner_is_human_player: bool,
     pub discovery_observed: bool,
-    /// Current Rust-owned visibility subset used at the vtable+0x324 seam.
-    /// The full active native predicate remains an explicit parity blocker.
-    pub registration_visible: bool,
+    pub visibility: RadarRegistrationVisibilityFacts,
     pub local_front: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RadarSensedPresentationEvent {
+    pub stable_id: u64,
+    pub out_code: u8,
 }
 
 /// Client-local equivalent of RadarClass+0x1258 plus the per-object cached
@@ -367,7 +254,11 @@ impl RetainedRadarTracker {
     /// The exact native order is remove OLD, write cached coordinates, then add
     /// NEW. Buildings retain their old cached coordinate on ordinary param=0;
     /// action 40 passes param=1 and therefore forces recomputation.
-    pub fn update_object(&mut self, update: RadarObjectUpdate, force_building_coord: bool) {
+    pub fn update_object(
+        &mut self,
+        update: RadarObjectUpdate,
+        force_building_coord: bool,
+    ) -> Option<RadarSensedPresentationEvent> {
         let existing = self.objects.get(&update.stable_id);
         let old_origin = existing.map(|cache| (cache.cached_x, cache.cached_y));
         let origin = if update.foundation.is_some() && !force_building_coord {
@@ -378,12 +269,8 @@ impl RetainedRadarTracker {
         let was_registered = existing.is_some_and(|cache| cache.registered);
         let was_discovered = existing.is_some_and(|cache| cache.discovered);
         let discovered = was_discovered || update.discovery_observed;
-        let visible = update.base_eligible
-            && if update.owner_is_human_player {
-                discovered
-            } else {
-                update.registration_visible
-            };
+        let visibility = update.visibility.evaluate(discovered);
+        let visible = visibility.visible;
         let registration_identity_changed = existing.is_some_and(|cache| {
             cache.owner != update.owner || cache.local_front != update.local_front
         });
@@ -428,6 +315,10 @@ impl RetainedRadarTracker {
                 .collect();
             self.register(update.stable_id, &pixels, update.local_front);
         }
+        (visibility.out_code != 0).then_some(RadarSensedPresentationEvent {
+            stable_id: update.stable_id,
+            out_code: visibility.out_code,
+        })
     }
 
     /// AddObjectToTracker @ 0x00655560: reject an exact duplicate, insert the
@@ -564,7 +455,25 @@ pub(super) fn radar_foundation_brush(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::radar_visibility::RadarMobileVisibilityFacts;
     use crate::sim::intern::test_intern;
+
+    fn visible_mobile_facts() -> RadarMobileVisibilityFacts {
+        RadarMobileVisibilityFacts {
+            type_invisible: false,
+            sinking: false,
+            object_alive: true,
+            in_limbo: false,
+            owner_is_human_player: false,
+            fresh_in_playfield: true,
+            shrouded: false,
+            cloak_state: 0,
+            has_sensor: false,
+            allied_with_current_player: false,
+            height_leptons: 0,
+            veteran_radar_invisible: false,
+        }
+    }
 
     fn update(stable_id: u64, local_front: bool) -> RadarObjectUpdate {
         RadarObjectUpdate {
@@ -573,10 +482,8 @@ mod tests {
             origin: (40, 60),
             foundation: None,
             radar_scale: 1.0,
-            base_eligible: true,
-            owner_is_human_player: false,
             discovery_observed: true,
-            registration_visible: true,
+            visibility: RadarRegistrationVisibilityFacts::Mobile(visible_mobile_facts()),
             local_front,
         }
     }
@@ -612,13 +519,47 @@ mod tests {
         assert!(tracker.entries_at(40, 60).is_empty());
         assert_eq!(tracker.entries_at(41, 61), vec![1]);
 
-        moved.registration_visible = false;
+        moved.visibility = RadarRegistrationVisibilityFacts::Mobile(
+            RadarMobileVisibilityFacts {
+                shrouded: true,
+                ..visible_mobile_facts()
+            },
+        );
         tracker.update_object(moved, false);
         assert!(!tracker.is_registered(1));
-        moved.registration_visible = true;
+        moved.visibility = RadarRegistrationVisibilityFacts::Mobile(visible_mobile_facts());
         tracker.update_object(moved, false);
         assert!(tracker.is_registered(1));
         assert_eq!(tracker.entries_at(41, 61), vec![1]);
+    }
+
+    #[test]
+    fn radar_tracker_consumes_nonzero_visibility_outcode_as_local_event() {
+        let mut tracker = RetainedRadarTracker::default();
+        let mut sensed = update(1, false);
+        sensed.visibility = RadarRegistrationVisibilityFacts::Mobile(
+            RadarMobileVisibilityFacts {
+                cloak_state: 2,
+                has_sensor: true,
+                ..visible_mobile_facts()
+            },
+        );
+        assert_eq!(
+            tracker.update_object(sensed, false),
+            Some(RadarSensedPresentationEvent {
+                stable_id: 1,
+                out_code: 1,
+            })
+        );
+        sensed.visibility = RadarRegistrationVisibilityFacts::Mobile(
+            RadarMobileVisibilityFacts {
+                cloak_state: 2,
+                has_sensor: true,
+                allied_with_current_player: true,
+                ..visible_mobile_facts()
+            },
+        );
+        assert_eq!(tracker.update_object(sensed, false), None);
     }
 
     #[test]
