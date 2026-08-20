@@ -11,6 +11,7 @@ use crate::sim::intern::test_interner;
 fn boomer_rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
         "[General]\nCloakingStages=9\n\
+         [AudioVisual]\nCloakSound=NavalUnitEmerge\n\
          [VehicleTypes]\n0=BSUB\n1=TGTWOOD\n2=TGTLIGHT\n\
          [BSUB]\nStrength=2000\nArmor=heavy\nSpeed=4\nCloakable=yes\nCloakingSpeed=1\n\
          Primary=BoomerTorpedo\nSecondary=CruiseLauncher\n\
@@ -40,6 +41,7 @@ fn resolve_once(
     entities: &mut EntityStore,
     rules: &RuleSet,
     interner: &mut StringInterner,
+    sounds: &mut Vec<SimSoundEvent>,
     out: &mut CombatEmit,
 ) {
     let attacker = entities.get(1).unwrap();
@@ -76,6 +78,7 @@ fn resolve_once(
         77,
         67,
         &mut rng,
+        Some(sounds),
         &mut hooks,
         out,
     );
@@ -86,9 +89,10 @@ fn bsub_cruise_launcher_uncloaks_without_same_tick_fire_then_retry_fires() {
     let rules = boomer_rules();
     let mut entities = entities("TGTWOOD");
     let mut interner = test_interner();
+    let mut sounds = Vec::new();
     let mut blocked = CombatEmit::default();
 
-    resolve_once(&mut entities, &rules, &mut interner, &mut blocked);
+    resolve_once(&mut entities, &rules, &mut interner, &mut sounds, &mut blocked);
 
     assert_eq!(
         entities.get(1).unwrap().cloak.as_ref().unwrap().state,
@@ -100,17 +104,47 @@ fn bsub_cruise_launcher_uncloaks_without_same_tick_fire_then_retry_fires() {
     assert!(blocked.damage_events.is_empty());
     assert!(blocked.projectile_spawns.is_empty());
     assert!(blocked.burst_updates.is_empty(), "no ROF/burst write on the surfacing visit");
+    assert!(matches!(
+        sounds.as_slice(),
+        [SimSoundEvent::CloakSound {
+            sound_id,
+            rx: 10,
+            ry: 10,
+            sub_x,
+            sub_y,
+            world_z_leptons: 0,
+        }] if sound_id == "NavalUnitEmerge"
+            && *sub_x == crate::util::lepton::CELL_CENTER_LEPTON
+            && *sub_y == crate::util::lepton::CELL_CENTER_LEPTON
+    ));
+    assert_eq!(
+        interner.get("NavalUnitEmerge"),
+        None,
+        "the presentation-only cue must not enter serialized Simulation interner state"
+    );
+
+    let mut repeated = CombatEmit::default();
+    resolve_once(
+        &mut entities,
+        &rules,
+        &mut interner,
+        &mut sounds,
+        &mut repeated,
+    );
+    assert_eq!(sounds.len(), 1, "state 3 rejects repeated StartUncloaking sound");
+    assert!(repeated.fire_events.is_empty(), "the deferred visit remains shot-free");
 
     // Represent completion of StartUncloaking's ordinary state-3 progression.
     let cloak = entities.get_mut(1).unwrap().cloak.as_mut().unwrap();
     cloak.state = 0;
     cloak.visual_phase = None;
     let mut retry = CombatEmit::default();
-    resolve_once(&mut entities, &rules, &mut interner, &mut retry);
+    resolve_once(&mut entities, &rules, &mut interner, &mut sounds, &mut retry);
     assert_eq!(retry.fire_events.len(), 1);
     assert_eq!(interner.resolve(retry.fire_events[0].weapon_id), "CruiseLauncher");
     assert_eq!(retry.fire_events[0].weapon_slot, WeaponSlot::Secondary);
     assert!(!retry.burst_updates.is_empty(), "normal retry owns rearm state");
+    assert_eq!(sounds.len(), 1, "retry fire does not replay the transition cue");
 }
 
 #[test]
@@ -118,12 +152,14 @@ fn bsub_boomer_torpedo_explicit_no_fires_while_fully_cloaked() {
     let rules = boomer_rules();
     let mut entities = entities("TGTLIGHT");
     let mut interner = test_interner();
+    let mut sounds = Vec::new();
     let mut out = CombatEmit::default();
 
-    resolve_once(&mut entities, &rules, &mut interner, &mut out);
+    resolve_once(&mut entities, &rules, &mut interner, &mut sounds, &mut out);
 
     assert_eq!(entities.get(1).unwrap().cloak.as_ref().unwrap().state, 2);
     assert_eq!(out.fire_events.len(), 1);
     assert_eq!(interner.resolve(out.fire_events[0].weapon_id), "BoomerTorpedo");
     assert_eq!(out.fire_events[0].weapon_slot, WeaponSlot::Primary);
+    assert!(sounds.is_empty(), "DecloakToFire=no never enters StartUncloaking");
 }

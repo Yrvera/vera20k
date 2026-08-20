@@ -283,14 +283,29 @@ fn absolute_lepton_axis(cell: u16, sub_cell: SimFixed) -> i32 {
 /// footprint cell. That shift is owned by
 /// `render::locomotor_visual::BUILDING_ART_LIFT_PX`, not by this function —
 /// every other consumer here wants the plain projection.
-pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u8) -> (f32, f32) {
+pub(crate) fn lepton_to_screen_exact_z(
+    rx: u16,
+    ry: u16,
+    sub_x: SimFixed,
+    sub_y: SimFixed,
+    world_z_leptons: i32,
+) -> (f32, f32) {
     // Chop only after cell and sub-cell state form the complete absolute
     // coordinate. Chopping `sub_x`/`sub_y` first moves negative fractional
     // offsets across a native pixel boundary.
     let world_x = absolute_lepton_axis(rx, sub_x);
     let world_y = absolute_lepton_axis(ry, sub_y);
-    let world_z = i32::from(z as i8) * GROUND_LEVEL_HEIGHT_LEPTONS;
-    absolute_leptons_to_screen(world_x, world_y, world_z)
+    absolute_leptons_to_screen(world_x, world_y, world_z_leptons)
+}
+
+pub fn lepton_to_screen(rx: u16, ry: u16, sub_x: SimFixed, sub_y: SimFixed, z: u8) -> (f32, f32) {
+    lepton_to_screen_exact_z(
+        rx,
+        ry,
+        sub_x,
+        sub_y,
+        i32::from(z as i8) * GROUND_LEVEL_HEIGHT_LEPTONS,
+    )
 }
 
 /// Compute lepton direction vector and length for a cell-to-cell step.

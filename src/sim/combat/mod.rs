@@ -5393,6 +5393,7 @@ pub(crate) fn tick_combat_with_fog_and_main_rng_with_terrain_area(
             binary_frame,
             tick_ms,
             scenario_rng,
+            sound_sink.as_deref_mut(),
             &mut inline_hooks,
             &mut emit,
         );
@@ -6015,6 +6016,7 @@ pub(crate) fn resolve_attacker_fire(
     binary_frame: u32,
     _tick_ms: u32,
     scenario_rng: &mut SimRng,
+    mut sound_sink: Option<&mut Vec<SimSoundEvent>>,
     inline_hooks: &mut Option<&mut dyn CombatInlineHooks>,
     out: &mut CombatEmit,
 ) {
@@ -6410,11 +6412,21 @@ pub(crate) fn resolve_attacker_fire(
             cloak_state,
             1, // UnitClass::WhatAmI, not locomotor kind.
         ) {
-            if let Some(cloak) = entities
+            let start = entities
                 .get_mut(snap.stable_id)
                 .and_then(|entity| entity.cloak.as_mut())
+                .map(|cloak| {
+                    cloak.start_uncloaking_to_fire(binary_frame as i32, obj.cloaking_speed)
+                });
+            if start.is_some_and(|result| result.play_sound)
+                && let Some(sound_name) = rules.general.cloak_sound.as_deref()
+                && let Some(sink) = sound_sink.as_deref_mut()
+                && let Some(entity) = entities.get(snap.stable_id)
             {
-                cloak.start_uncloaking_to_fire(binary_frame as i32, obj.cloaking_speed);
+                sink.push(SimSoundEvent::cloak_sound(
+                    sound_name.to_owned(),
+                    &entity.position,
+                ));
             }
             return;
         }

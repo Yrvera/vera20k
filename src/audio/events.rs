@@ -109,6 +109,13 @@ pub enum GameSoundEvent {
         screen_pos: Option<(f32, f32)>,
     },
 
+    /// One-shot positional `[AudioVisual] CloakSound` requested by an accepted
+    /// native StartUncloaking arg-zero transition.
+    CloakSound {
+        sound_id: String,
+        screen_pos: Option<(f32, f32)>,
+    },
+
     /// A building finished construction — play the EVA "Construction complete" or similar.
     BuildingReady {
         /// sound.ini ID for the completion announcement.
@@ -233,6 +240,7 @@ impl GameSoundEvent {
             | Self::EntityDeployed { sound_id, .. }
             | Self::EntityUndeployed { sound_id, .. }
             | Self::ChronoTeleport { sound_id, .. }
+            | Self::CloakSound { sound_id, .. }
             | Self::BuildingReady { sound_id }
             | Self::UnitReady { sound_id }
             | Self::CannotDeployHere { sound_id }
@@ -264,6 +272,7 @@ impl GameSoundEvent {
             Self::EntityDeployed { screen_pos, .. } => *screen_pos,
             Self::EntityUndeployed { screen_pos, .. } => *screen_pos,
             Self::ChronoTeleport { screen_pos, .. } => *screen_pos,
+            Self::CloakSound { screen_pos, .. } => *screen_pos,
             Self::BuildingGarrisonedSfx { screen_pos, .. } => *screen_pos,
             Self::C4Planted { screen_pos, .. } => *screen_pos,
             Self::RefineryExitSfx { screen_pos, .. } => *screen_pos,

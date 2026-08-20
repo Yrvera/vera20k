@@ -6,6 +6,7 @@ use crate::sim::combat::AttackTarget;
 fn rules() -> RuleSet {
     RuleSet::from_ini(&IniFile::from_str(
         "[General]\nCloakingStages=9\nCloakDelay=.02\n\
+         [AudioVisual]\nCloakSound=NavalUnitEmerge\n\
          [VehicleTypes]\n0=SUB\n1=RANKED\n\
          [BuildingTypes]\n0=NAYARD\n\
          [SUB]\nStrength=600\nSpeed=4\nCloakable=yes\nCloakingSpeed=1\nSensorsSight=7\n\
@@ -81,6 +82,19 @@ fn stock_cloak_producer_should_uncloak_uses_current_activity_and_owner_visibilit
     sim.substrate.entities.get_mut(id).unwrap().attack_target = Some(AttackTarget::new(999));
     tick_stock_cloak_producer(&mut sim, id, &rules);
     assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 3);
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. }]
+            if sound_id == "NavalUnitEmerge"
+    ));
+    let hash_with_transient_cue = sim.state_hash();
+    let emitted = std::mem::take(&mut sim.sound_events);
+    assert_eq!(
+        sim.state_hash(),
+        hash_with_transient_cue,
+        "the transient positional cue is outside deterministic world hashing"
+    );
+    sim.sound_events = emitted;
 
     let (mut visible, rules, id) = spawned_sub();
     let owner = visible.substrate.entities.get(id).unwrap().owner;
@@ -101,6 +115,7 @@ fn stock_cloak_producer_should_uncloak_uses_current_activity_and_owner_visibilit
     visible.substrate.entities.get_mut(id).unwrap().attack_target = Some(AttackTarget::new(999));
     tick_stock_cloak_producer(&mut visible, id, &rules);
     assert_eq!(visible.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 2);
+    assert!(visible.sound_events.is_empty(), "no transition means no positional cue");
 }
 
 #[test]

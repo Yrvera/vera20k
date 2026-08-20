@@ -63,7 +63,7 @@ use crate::sim::bridge_state::{BridgeRuntimeState, DamageState};
 use crate::sim::combat;
 use crate::sim::combat::combat_weapon::WeaponSlot;
 use crate::sim::command::{Command, CommandEnvelope};
-use crate::sim::components::WorldEffect;
+use crate::sim::components::{Position, WorldEffect};
 use crate::sim::docking::aircraft_dock;
 use crate::sim::docking::building_dock;
 use crate::sim::entity_store::EntityStore;
@@ -422,6 +422,17 @@ pub enum SimSoundEvent {
         rx: u16,
         ry: u16,
     },
+    /// `TechnoClass::StartUncloaking @ 0x007036C0` accepted an arg-zero
+    /// state-1/2 transition and called positional `VocClass::PlayAt @
+    /// 0x007509E0` with `[AudioVisual] CloakSound` at the Techno world coord.
+    CloakSound {
+        sound_id: String,
+        rx: u16,
+        ry: u16,
+        sub_x: SimFixed,
+        sub_y: SimFixed,
+        world_z_leptons: i32,
+    },
     /// A base structure / harvester took enemy damage — the radar ping is
     /// already enqueued sim-side; `eva_allowed` mirrors the queue's dedup
     /// result (the BridgeRepaired pattern). App gates the EVA voice to the
@@ -491,6 +502,22 @@ pub enum SimSoundEvent {
         sub_y: SimFixed,
         z: u8,
     },
+}
+
+impl SimSoundEvent {
+    pub(crate) fn cloak_sound(sound_id: String, position: &Position) -> Self {
+        Self::CloakSound {
+            sound_id,
+            rx: position.rx,
+            ry: position.ry,
+            sub_x: position.sub_x,
+            sub_y: position.sub_y,
+            world_z_leptons: position.exact_z_leptons.unwrap_or_else(|| {
+                i32::from(position.z)
+                    .wrapping_mul(crate::util::lepton::GROUND_LEVEL_HEIGHT_LEPTONS)
+            }),
+        }
+    }
 }
 
 /// A fire event produced during combat — carries firing-tick facts for

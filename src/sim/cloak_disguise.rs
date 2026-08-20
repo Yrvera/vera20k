@@ -64,6 +64,16 @@ pub struct CloakTickFacts {
 pub struct CloakTickResult {
     pub transitioned: bool,
     pub consumed_scenario_rng: bool,
+    /// An accepted `StartUncloaking(0)` transition owns one positional
+    /// `[AudioVisual] CloakSound` request. Silent arg-one transitions and
+    /// rejected state visits leave this clear.
+    pub play_uncloak_sound: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StartUncloakingResult {
+    pub transitioned: bool,
+    pub play_sound: bool,
 }
 
 impl CloakRuntime {
@@ -121,9 +131,20 @@ impl CloakRuntime {
         true
     }
 
-    fn start_uncloaking(&mut self, now: i32, speed: i32) -> bool {
+    /// `TechnoClass::StartUncloaking @ 0x007036C0`. Native's boolean argument
+    /// is a sound-suppression flag: zero plays RulesClass+0x6A0 through
+    /// `VocClass::PlayAt @ 0x007509E0`, one performs only the state writes.
+    fn start_uncloaking(
+        &mut self,
+        now: i32,
+        speed: i32,
+        suppress_sound: bool,
+    ) -> StartUncloakingResult {
         if !matches!(self.state, 1 | 2) {
-            return false;
+            return StartUncloakingResult {
+                transitioned: false,
+                play_sound: false,
+            };
         }
         self.state = 3;
         self.visual_phase = Some(CloakVisualPhase::Uncloaking);
@@ -134,7 +155,10 @@ impl CloakRuntime {
             speed,
             duration_frames: speed,
         };
-        true
+        StartUncloakingResult {
+            transitioned: true,
+            play_sound: !suppress_sound,
+        }
     }
 
     /// Virtual `StartCloaking +0x460 @ 0x00703770` reached from the active
@@ -145,8 +169,12 @@ impl CloakRuntime {
 
     /// `UnitClass::Fire_At_Target @ 0x00736DF0` case 9 invokes virtual
     /// `StartUncloaking +0x45C @ 0x007036C0` after rechecking CanFireAt.
-    pub(crate) fn start_uncloaking_to_fire(&mut self, now: i32, speed: i32) -> bool {
-        self.start_uncloaking(now, speed)
+    pub(crate) fn start_uncloaking_to_fire(
+        &mut self,
+        now: i32,
+        speed: i32,
+    ) -> StartUncloakingResult {
+        self.start_uncloaking(now, speed, false)
     }
 
     fn advance_due_step(&mut self, now: i32) {
@@ -191,6 +219,7 @@ impl CloakRuntime {
         let mut result = CloakTickResult {
             transitioned: false,
             consumed_scenario_rng: false,
+            play_uncloak_sound: false,
         };
         if self.state == 0 {
             if !facts.state_zero_head_allows || !facts.can_auto_cloak {
@@ -225,10 +254,13 @@ impl CloakRuntime {
                     2 if !facts.health_above_red => {
                         result.consumed_scenario_rng = true;
                         if rng.next_range_u32_inclusive(0, 99) <= 9 {
-                            result.transitioned = self.start_uncloaking(
+                            let start = self.start_uncloaking(
                                 facts.current_frame,
                                 facts.cloaking_speed,
+                                true,
                             );
+                            result.transitioned = start.transitioned;
+                            result.play_uncloak_sound = start.play_sound;
                         }
                     }
                     3 | 5 => {
@@ -247,10 +279,13 @@ impl CloakRuntime {
                 }
             }
             2 if facts.should_uncloak => {
-                result.transitioned = self.start_uncloaking(
+                let start = self.start_uncloaking(
                     facts.current_frame,
                     facts.cloaking_speed,
+                    false,
                 );
+                result.transitioned = start.transitioned;
+                result.play_uncloak_sound = start.play_sound;
             }
             3 => match self.transition_visual_state() {
                 0 => {
@@ -409,6 +444,10 @@ pub(crate) fn fire_requires_uncloaking(
         && current_cloak_state != 0
         && (what_am_i != 2 || current_cloak_state == 2)
 }
+
+#[cfg(test)]
+#[path = "cloak_sound_tests.rs"]
+mod sound_tests;
 
 #[cfg(test)]
 mod tests {

@@ -155,13 +155,22 @@ pub(super) fn tick_stock_cloak_producer(sim: &mut Simulation, id: u64, rules: &R
     let Some(facts) = stock_cloak_tick_facts(sim, id, rules) else {
         return;
     };
-    if let Some(cloak) = sim
+    let result = sim
         .substrate
         .entities
         .get_mut(id)
         .and_then(|entity| entity.cloak.as_mut())
+        .map(|cloak| cloak.tick(facts, &mut sim.scenario_rng));
+    if result.is_some_and(|result| result.play_uncloak_sound)
+        && let Some(sound_name) = rules.general.cloak_sound.as_deref()
+        && let Some(position) = sim
+            .substrate
+            .entities
+            .get(id)
+            .map(|entity| entity.position.clone())
     {
-        cloak.tick(facts, &mut sim.scenario_rng);
+        sim.sound_events
+            .push(crate::sim::world::SimSoundEvent::cloak_sound(sound_name.to_owned(), &position));
     }
 }
 
