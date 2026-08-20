@@ -513,6 +513,33 @@ mod tests {
         ]
     }
 
+    /// Compact launch fixture whose four cells are all inside the normalized
+    /// playfield derived from `test_map_with_starts`'s 64x64 header.
+    fn test_in_playfield_launch_starts() -> [Waypoint; 4] {
+        [
+            Waypoint {
+                index: 0,
+                rx: 35,
+                ry: 35,
+            },
+            Waypoint {
+                index: 1,
+                rx: 45,
+                ry: 35,
+            },
+            Waypoint {
+                index: 2,
+                rx: 35,
+                ry: 45,
+            },
+            Waypoint {
+                index: 3,
+                rx: 45,
+                ry: 45,
+            },
+        ]
+    }
+
     fn test_height_map() -> BTreeMap<(u16, u16), u8> {
         BTreeMap::new()
     }
@@ -661,7 +688,8 @@ mod tests {
             rx: 30,
             ry: 30,
         };
-        let waypoints = HashMap::from([(0, authored)]);
+        let map = test_map_with_starts(&[authored]);
+        let playfield_bounds = PlayfieldBounds::from_map_header(&map.header);
         let terrain = test_terrain(64, 64);
         let bounds = NativeStartBounds {
             min_rx: 0,
@@ -676,7 +704,13 @@ mod tests {
         let occupancy = crate::sim::occupancy::OccupancyGrid::new();
 
         let starts = native_gather_start_positions(
-            &waypoints, 2, &terrain, &occupancy, bounds, None, &mut rng,
+            &map.waypoints,
+            2,
+            &terrain,
+            &occupancy,
+            bounds,
+            Some(playfield_bounds),
+            &mut rng,
         );
 
         assert_eq!(starts.len(), 2);
@@ -837,6 +871,7 @@ mod tests {
             "no exact plan means no colored loading assignment markers"
         );
         let bounds = NativeStartBounds::from_session(&sim, &terrain);
+        let playfield_bounds = Some(PlayfieldBounds::from_map_header(&map.header));
         let empty_occupancy = crate::sim::occupancy::OccupancyGrid::new();
         let mut expected_rng = sim.scenario_rng.clone();
         let provisional = native_gather_start_positions(
@@ -845,7 +880,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
-            None,
+            playfield_bounds,
             &mut expected_rng,
         );
         let final_starts = native_gather_start_positions(
@@ -854,7 +889,7 @@ mod tests {
             &terrain,
             &empty_occupancy,
             bounds,
-            None,
+            playfield_bounds,
             &mut expected_rng,
         );
         assert_ne!(provisional[1], final_starts[1]);
@@ -1727,7 +1762,7 @@ mod tests {
         session.options.bases = false;
         session.options.unit_count = 1;
         let terrain = test_terrain(64, 64);
-        let starts = test_launch_starts();
+        let starts = test_in_playfield_launch_starts();
         let mut map = test_map_with_starts(&starts);
         map.special_flags.initial_veteran = Some(true);
         let rules = test_starting_unit_rules();
@@ -1744,8 +1779,8 @@ mod tests {
 
         assert_eq!(result.spawned_mcvs, 0);
         assert_eq!(sim.entities().len(), 4);
-        assert_eq!(entity_position_for_owner(&sim, "Player"), Some((30, 30)));
-        assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((10, 10)));
+        assert_eq!(entity_position_for_owner(&sim, "Player"), Some((45, 45)));
+        assert_eq!(entity_position_for_owner(&sim, "Computer1"), Some((35, 35)));
         assert!(
             sim.entities()
                 .values()
@@ -1783,6 +1818,11 @@ mod tests {
         );
 
         assert_eq!(result.spawned_mcvs, 2);
+        assert_eq!(
+            sim.playfield_bounds,
+            Some(PlayfieldBounds::from_map_header(&map.header)),
+            "direct pre-funnel launch must install normalized MapClass fields"
+        );
         assert_eq!(sim.session.game_options.unit_count, 0);
         assert_eq!(sim.entities().len(), 2);
     }
@@ -1792,7 +1832,7 @@ mod tests {
         let mut sim = Simulation::new();
         let session = test_session();
         let terrain = test_terrain(64, 64);
-        let starts = test_launch_starts();
+        let starts = test_in_playfield_launch_starts();
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
 
@@ -1810,9 +1850,9 @@ mod tests {
         assert_eq!(
             crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
                 .and_then(|house| house.base_center),
-            Some((30, 30))
+            Some((45, 45))
         );
-        assert_eq!(entity_position_for_owner(&sim, "Player"), Some((30, 30)));
+        assert_eq!(entity_position_for_owner(&sim, "Player"), Some((45, 45)));
     }
 
     #[test]
@@ -1820,7 +1860,7 @@ mod tests {
         let mut sim = Simulation::new();
         let session = test_session();
         let terrain = test_terrain(64, 64);
-        let starts = test_launch_starts();
+        let starts = test_in_playfield_launch_starts();
         let map = test_map_with_starts(&starts);
         let rules = test_standard_launch_rules();
         initialize_skirmish_launch_houses(
@@ -1832,8 +1872,8 @@ mod tests {
         sim.spawn_object(
             "AMCV",
             "Neutral",
-            30,
-            30,
+            45,
+            45,
             STARTING_MCV_FACING,
             &rules,
             &test_height_map(),
@@ -1842,7 +1882,7 @@ mod tests {
         let mut expected_rng = sim.scenario_rng.clone();
         let direction = expected_rng.next_range_u32_inclusive(0, 7) as usize;
         let (dx, dy) = STARTING_MCV_FALLBACK_DIRECTIONS[direction];
-        let expected_position = ((30i32 + dx) as u16, (30i32 + dy) as u16);
+        let expected_position = ((45i32 + dx) as u16, (45i32 + dy) as u16);
         let _ = expected_rng.next_range_u32_inclusive(0, 0xffff);
 
         let result = apply_explicit_skirmish_launch_session(
@@ -1859,7 +1899,7 @@ mod tests {
         assert_eq!(
             crate::sim::house_state::house_state_for_owner(&sim.houses, "Player", &sim.interner)
                 .and_then(|house| house.base_center),
-            Some((30, 30))
+            Some((45, 45))
         );
         assert_eq!(
             entity_position_for_owner(&sim, "Player"),

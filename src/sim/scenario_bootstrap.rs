@@ -775,6 +775,12 @@ fn apply_resolved_skirmish_launch_session(
     descriptor: &MatchLaunchDescriptor,
     preloaded_battle_plan: Option<&PreloadedBattleStartPlan>,
 ) -> SkirmishLaunchApplyResult {
+    // Direct frontend/unit-test launch paths can enter before the shared
+    // scenario construction funnel. Retail has already completed
+    // `0x00654490 -> MapClass::Set_Clipped_LocalSize @ 0x00567230` before
+    // Battle start gathering and placement consume the playfield fields.
+    sim.playfield_bounds = Some(PlayfieldBounds::from_map_header(&map_data.header));
+
     let session = descriptor.session();
     let slots = normalized_launch_slots(session);
     if sim.houses.is_empty() {
