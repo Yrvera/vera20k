@@ -11,6 +11,8 @@ use crate::rules::locomotor_type::MovementZone;
 use crate::rules::ruleset::RuleSet;
 use crate::rules::terrain_rules::{LandType, SpeedCostProfile, TerrainClass};
 use crate::sim::combat::AttackTarget;
+use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind};
+use crate::sim::cell_rect::PlayfieldBounds;
 use crate::sim::components::{NavTargetRef, OrderIntent};
 use crate::sim::entity_store::EntityStore;
 use crate::sim::game_entity::GameEntity;
@@ -118,6 +120,252 @@ fn gsi_04_12_cell_listed_entity(
     entity.lifecycle.in_limbo = false;
     entity.lifecycle.cell_marked = true;
     entity
+}
+
+fn hierarchy_endpoint_bounds() -> PlayfieldBounds {
+    PlayfieldBounds {
+        base: 10,
+        off_fc: 2,
+        off_100: 1,
+        off_104: 10,
+        off_108: 6,
+    }
+}
+
+fn hierarchy_endpoint_zone_grid() -> ZoneGrid {
+    let mut reduced = PathGrid::new(16, 16);
+    for y in 0..16 {
+        reduced.set_blocked(7, y, true);
+    }
+    ZoneGrid::build(&reduced, &BTreeMap::new(), 16, 16)
+}
+
+fn hierarchy_endpoint_path(
+    start: (u16, u16),
+    goal: (u16, u16),
+    terrain: &ResolvedTerrainGrid,
+) -> Option<Vec<(u16, u16)>> {
+    let grid = PathGrid::new(16, 16);
+    let zone_grid = hierarchy_endpoint_zone_grid();
+    assert!(
+        !zone_grid.can_reach(
+            MovementZone::Normal,
+            start,
+            MovementLayer::Ground,
+            goal,
+            MovementLayer::Ground,
+        ),
+        "fixture must make hierarchy/reduced zones abort while raw cell A* stays open"
+    );
+    find_path_zoned_marker(
+        &grid,
+        start,
+        goal,
+        None,
+        None,
+        Some(&zone_grid),
+        MovementZone::Normal,
+        Some(MovementZone::Normal),
+        Some(terrain),
+        None,
+        None,
+        None,
+        0,
+        false,
+        false,
+        true,
+        Some(hierarchy_endpoint_bounds()),
+    )
+}
+
+#[test]
+fn playfield_hierarchy_outside_resolved_source_falls_back_to_flat_astar() {
+    let terrain = gsi_04_12_terrain(16, 16);
+    let bounds = hierarchy_endpoint_bounds();
+    assert!(!bounds.contains_height_aware_packed(6, 6, 0, 0));
+    assert!(bounds.contains_height_aware_packed(8, 6, 0, 0));
+
+    let path = hierarchy_endpoint_path((6, 6), (8, 6), &terrain)
+        .expect("outside resolved source must disable hierarchy, not fail pathfinding");
+    assert_eq!(path.first().copied(), Some((6, 6)));
+    assert_eq!(path.last().copied(), Some((8, 6)));
+}
+
+#[test]
+fn playfield_hierarchy_outside_resolved_goal_falls_back_to_flat_astar() {
+    let terrain = gsi_04_12_terrain(16, 16);
+    let bounds = hierarchy_endpoint_bounds();
+    assert!(bounds.contains_height_aware_packed(8, 6, 0, 0));
+    assert!(!bounds.contains_height_aware_packed(6, 6, 0, 0));
+
+    let path = hierarchy_endpoint_path((8, 6), (6, 6), &terrain)
+        .expect("outside resolved goal must disable hierarchy, not fail pathfinding");
+    assert_eq!(path.first().copied(), Some((8, 6)));
+    assert_eq!(path.last().copied(), Some((6, 6)));
+}
+
+#[test]
+fn playfield_hierarchy_mode_one_level_and_slope_boundaries() {
+    let mut terrain = gsi_04_12_terrain(16, 16);
+    let bounds = hierarchy_endpoint_bounds();
+    let (_, _, flat_inside) = resolve_hierarchy_endpoint_contract(
+        None,
+        Some(&terrain),
+        Some(bounds),
+        (7, 6),
+        false,
+        (8, 6),
+        false,
+    );
+    assert!(flat_inside, "sum=13 is just inside mode one at level zero");
+
+    terrain.cell_mut(7, 6).unwrap().level = 1;
+    let (_, _, raised_inside) = resolve_hierarchy_endpoint_contract(
+        None,
+        Some(&terrain),
+        Some(bounds),
+        (7, 6),
+        false,
+        (8, 6),
+        false,
+    );
+    assert!(!raised_inside, "signed level must move the strict mode-one edge");
+
+    let cell = terrain.cell_mut(7, 6).unwrap();
+    cell.level = 0;
+    cell.slope_type = 1;
+    let (_, _, sloped_inside) = resolve_hierarchy_endpoint_contract(
+        None,
+        Some(&terrain),
+        Some(bounds),
+        (7, 6),
+        false,
+        (8, 6),
+        false,
+    );
+    assert!(!sloped_inside, "nonzero slope below the native threshold adds one level");
+
+    terrain.cell_mut(10, 6).unwrap().slope_type = 1;
+    let (_, _, threshold_equal_inside) = resolve_hierarchy_endpoint_contract(
+        None,
+        Some(&terrain),
+        Some(bounds),
+        (10, 6),
+        false,
+        (8, 6),
+        false,
+    );
+    assert!(
+        threshold_equal_inside,
+        "sum equal to the native slope threshold must not add one level"
+    );
+}
+
+#[test]
+fn playfield_hierarchy_bridge_projection_tracks_intact_and_destroyed_records() {
+    let mut terrain = gsi_04_12_terrain(16, 16);
+    terrain.cell_mut(7, 6).unwrap().bridge_facts.raw_flags =
+        BRIDGE_FLAG_STRUCTURAL | BRIDGE_FLAG_DIRECTION_ZERO;
+    let grid = PathGrid::from_resolved_terrain(&terrain);
+    let record = BridgeEndpointRecord {
+        endpoint_a: (6, 6),
+        endpoint_b: (8, 6),
+        group_id: 1,
+        active: true,
+        bridge_kind: BridgeRecordKind::High,
+    };
+    let intact = ZoneGrid::build_with_terrain(
+        &grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[record.clone()],
+        16,
+        16,
+    );
+    let (intact_start, _, intact_inside) = resolve_hierarchy_endpoint_contract(
+        Some(&intact),
+        Some(&terrain),
+        Some(hierarchy_endpoint_bounds()),
+        (7, 6),
+        true,
+        (9, 6),
+        false,
+    );
+    assert_eq!(intact_start, (8, 6), "native distance tie selects endpoint B");
+    assert!(intact_inside);
+
+    let destroyed_record = BridgeEndpointRecord {
+        active: false,
+        ..record
+    };
+    let destroyed = ZoneGrid::build_with_terrain(
+        &grid,
+        &BTreeMap::new(),
+        Some(&terrain),
+        &[destroyed_record],
+        16,
+        16,
+    );
+    let (destroyed_start, _, destroyed_inside) = resolve_hierarchy_endpoint_contract(
+        Some(&destroyed),
+        Some(&terrain),
+        Some(hierarchy_endpoint_bounds()),
+        (7, 6),
+        true,
+        (9, 6),
+        false,
+    );
+    assert_eq!(
+        destroyed_start,
+        (6, 6),
+        "without a high-tile east exit, inactive native projection selects endpoint A"
+    );
+    assert!(!destroyed_inside);
+}
+
+#[test]
+fn playfield_hierarchy_initial_order_outside_endpoint_uses_flat_astar() {
+    let grid = PathGrid::new(16, 16);
+    let terrain = gsi_04_12_terrain(16, 16);
+    let zone_grid = hierarchy_endpoint_zone_grid();
+    assert!(!zone_grid.can_reach(
+        MovementZone::Normal,
+        (6, 6),
+        MovementLayer::Ground,
+        (8, 6),
+        MovementLayer::Ground,
+    ));
+
+    let mut entities = EntityStore::new();
+    let mut mover = gsi_04_12_cell_listed_entity(1, "HTNK", "Americans", 6, 6);
+    mover.category = crate::map::entities::EntityCategory::Unit;
+    mover.locomotor = Some(crate::sim::movement::locomotor::LocomotorState::for_test_kind(
+        crate::rules::locomotor_type::LocomotorKind::Drive,
+    ));
+    mover.drive_locomotion = Some(Default::default());
+    mover.in_playfield = true;
+    entities.insert(mover);
+
+    assert!(issue_move_command_with_layered(
+        &mut entities,
+        &grid,
+        1,
+        (8, 6),
+        SimFixed::from_num(128),
+        false,
+        None,
+        None,
+        Some(&terrain),
+        Some(&zone_grid),
+        None,
+        false,
+        None,
+        Some(hierarchy_endpoint_bounds()),
+        None,
+    ));
+    let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
+    assert_eq!(target.path.first().copied(), Some((6, 6)));
+    assert_eq!(target.path.last().copied(), Some((8, 6)));
 }
 
 #[test]
@@ -398,6 +646,8 @@ fn zone_precheck_hierarchy_path_bypasses_reduced_superzone_abort() {
         &astar_grid,
         (0, 0),
         (2, 0),
+        (0, 0),
+        (2, 0),
         None,
         None,
         Some(&zg),
@@ -428,6 +678,8 @@ fn zone_precheck_failed_hierarchy_keeps_zone_map_same_zone_fallback() {
     let blocker_counts = BlockerNeighborCounts::new(3, 1);
     let path = find_path_zoned_marker_inner(
         &astar_grid,
+        (0, 0),
+        (2, 0),
         (0, 0),
         (2, 0),
         None,
@@ -516,7 +768,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
         None,
         false,
         Some(&blocker_counts),
-        false,
+        None,
         Some(&mut cell_occupation),
     ));
     let movement = entities
@@ -559,7 +811,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
             None,
             false,
             Some(&blocker_counts),
-            false,
+            None,
             None,
         ),
         "destination projection must be selected by the destination structural bit"

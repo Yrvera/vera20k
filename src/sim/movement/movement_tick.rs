@@ -280,7 +280,7 @@ fn distance_to_goal_leptons(pos: &Position, goal: (u16, u16)) -> SimFixed {
 fn snapshot_mover(
     entities: &EntityStore,
     entity_id: u64,
-    playfield_authority_configured: bool,
+    playfield_bounds: Option<crate::sim::cell_rect::PlayfieldBounds>,
 ) -> Option<MoverSnapshot> {
     let e = entities.get(entity_id)?;
     Some(MoverSnapshot {
@@ -311,7 +311,7 @@ fn snapshot_mover(
             .nav_com
             .as_ref()
             .and_then(|nav| nav_target_object_cell(entities, nav)),
-        allow_zone_hierarchy: !playfield_authority_configured || e.in_playfield,
+        allow_zone_hierarchy: playfield_bounds.is_none() || e.in_playfield,
     })
 }
 
@@ -642,7 +642,6 @@ fn process_pending_drive_arrivals(
     >,
     interner: &crate::sim::intern::StringInterner,
     rules: Option<&crate::rules::ruleset::RuleSet>,
-    playfield_authority_configured: bool,
     cell_occupation: &mut CellOccupationGrid,
 ) {
     let Some(grid) = ctx.path_grid else {
@@ -726,7 +725,7 @@ fn process_pending_drive_arrivals(
                         | MovementZone::CrusherAll
                 ),
             entity.category == EntityCategory::Infantry,
-            !playfield_authority_configured || entity.in_playfield,
+            ctx.playfield_bounds.is_none() || entity.in_playfield,
         ) else {
             // VERA-internal retry policy: pathfinding failed, so re-arm the
             // deferred flag (cleared by `set_destination_internal_cell`
@@ -1542,6 +1541,7 @@ fn tick_movement_with_grids_scoped(
         path_grid,
         zone_grid,
         resolved_terrain,
+        playfield_bounds,
         blocker_neighbor_counts: blocker_neighbor_counts.as_ref(),
     };
     let mcfg = MovementConfig {
@@ -1699,7 +1699,6 @@ fn tick_movement_with_grids_scoped(
         &entity_block_sets,
         interner,
         rules,
-        playfield_bounds.is_some(),
         cell_occupation,
     );
     movers.clear();
@@ -1727,7 +1726,7 @@ fn tick_movement_with_grids_scoped(
 
         // Snapshot mover data before entering the inner loop so we can release the
         // mutable borrow on `entities` when needed for crush/bump immutable lookups.
-        let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds.is_some()) else {
+        let Some(snap) = snapshot_mover(entities, entity_id, playfield_bounds) else {
             continue;
         };
         let prone_crawls = entities.get(entity_id).and_then(|entity| {

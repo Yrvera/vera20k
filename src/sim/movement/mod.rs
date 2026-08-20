@@ -34,6 +34,7 @@ use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
+use crate::sim::cell_rect::PlayfieldBounds;
 use crate::sim::entity_store::EntityStore;
 use crate::sim::intern::InternedId;
 #[cfg(test)]
@@ -253,6 +254,7 @@ pub(super) struct PathfindingContext<'a> {
     pub path_grid: Option<&'a PathGrid>,
     pub zone_grid: Option<&'a ZoneGrid>,
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
+    pub playfield_bounds: Option<PlayfieldBounds>,
     pub blocker_neighbor_counts: Option<&'a crate::sim::pathfinding::BlockerNeighborCounts>,
 }
 

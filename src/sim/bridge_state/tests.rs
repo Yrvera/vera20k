@@ -7,6 +7,15 @@ use crate::map::resolved_terrain::{
 use crate::map::tube_facts::{TubeFact, TubeId};
 use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
 
+#[test]
+fn playfield_retail_high_bridge_walks_make_native_records_monotone() {
+    assert!(HIGH_BRIDGE_WALK_DIRECTION
+        .iter()
+        .copied()
+        .filter(|direction| *direction >= 0)
+        .all(|direction| matches!(direction, 2 | 4)));
+}
+
 /// 5x1 grid: ground at (0,0), bridge at (1,0)-(3,0), ground at (4,0).
 fn make_bridge_terrain() -> ResolvedTerrainGrid {
     const BRIDGE_SET_START: u16 = 100;

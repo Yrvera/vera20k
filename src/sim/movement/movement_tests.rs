@@ -294,7 +294,7 @@ fn gsi_04_05_production_drive_observes_premark_clear_cross_and_finish() {
             None,
             false,
             None,
-            false,
+            None,
             Some(cell_occupation),
         )
     };
@@ -731,7 +731,7 @@ fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
             None,
             false,
             None,
-            false,
+            None,
             None,
         ),
         "gamemd accepts a ground move order across a disconnected boundary"
@@ -753,6 +753,22 @@ fn gsi_06_02_cross_zone_move_order_is_accepted_and_moves_the_unit() {
 #[test]
 fn techno_playfield_false_mover_uses_flat_astar_instead_of_hierarchy_abort() {
     let grid = PathGrid::new(5, 1);
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(
+        5,
+        1,
+        (0..5)
+            .map(|rx| drive_speed_test_cell(rx, 0, Default::default()))
+            .collect(),
+    );
+    let bounds = crate::sim::cell_rect::PlayfieldBounds {
+        base: 0,
+        off_fc: -100,
+        off_100: -100,
+        off_104: 200,
+        off_108: 200,
+    };
+    assert!(bounds.contains_height_aware_packed(0, 0, 0, 0));
+    assert!(bounds.contains_height_aware_packed(4, 0, 0, 0));
     let mut reduced = PathGrid::new(5, 1);
     reduced.set_blocked(2, 0, true);
     let zone_grid = crate::sim::pathfinding::zone_map::ZoneGrid::build(
@@ -786,12 +802,12 @@ fn techno_playfield_false_mover_uses_flat_astar_instead_of_hierarchy_abort() {
         false,
         None,
         None,
-        None,
+        Some(&terrain),
         Some(&zone_grid),
         None,
         false,
         None,
-        true,
+        Some(bounds),
         None,
     ));
     let target = entities.get(1).unwrap().movement_target.as_ref().unwrap();
@@ -833,7 +849,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         false,
         None,
-        false,
+        None,
         Some(&mut occupation),
     ));
     assert_eq!(
@@ -863,7 +879,7 @@ fn gsi_04_05_second_mover_cannot_adopt_reserved_head_to_endpoint() {
         None,
         false,
         None,
-        false,
+        None,
         Some(&mut occupation),
     );
     let second_goal = entities

@@ -400,6 +400,7 @@ pub(super) fn find_move_path_with_marker(
             mover_is_crusher,
             is_infantry,
             allow_zone_hierarchy,
+            ctx.playfield_bounds,
         );
         let Some(path) = layered_result else {
             log::trace!(
@@ -482,6 +483,7 @@ pub(super) fn find_move_path_with_marker(
         mover_is_crusher,
         is_infantry,
         allow_zone_hierarchy,
+        ctx.playfield_bounds,
     )?;
 
     if contains_non_adjacent_step(&path) {
@@ -810,6 +812,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: Some(&zone_grid),
                 resolved_terrain: Some(&terrain),
+                playfield_bounds: None,
                 blocker_neighbor_counts: None,
             },
             false,
@@ -848,6 +851,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: None,
                 resolved_terrain: None,
+                playfield_bounds: None,
                 blocker_neighbor_counts: None,
             },
             false,
@@ -883,6 +887,84 @@ mod tests {
     }
 
     #[test]
+    fn playfield_hierarchy_blocked_repath_outside_endpoint_uses_flat_astar() {
+        let grid = PathGrid::new(16, 16);
+        let mut reduced = PathGrid::new(16, 16);
+        for y in 0..16 {
+            reduced.set_blocked(7, y, true);
+        }
+        let zone_grid = ZoneGrid::build(&reduced, &BTreeMap::new(), 16, 16);
+        assert!(!zone_grid.can_reach(
+            MovementZone::Normal,
+            (6, 6),
+            MovementLayer::Ground,
+            (8, 6),
+            MovementLayer::Ground,
+        ));
+        let terrain = ResolvedTerrainGrid::from_cells(
+            16,
+            16,
+            (0..16)
+                .flat_map(|ry| (0..16).map(move |rx| make_resolved_cell(rx, ry)))
+                .collect(),
+        );
+        let bounds = crate::sim::cell_rect::PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        assert!(!bounds.contains_height_aware_packed(6, 6, 0, 0));
+        assert!(bounds.contains_height_aware_packed(8, 6, 0, 0));
+
+        let mut target = MovementTarget {
+            path: vec![(6, 6), (7, 6), (8, 6)],
+            path_layers: vec![MovementLayer::Ground; 3],
+            next_index: 1,
+            final_goal: Some((8, 6)),
+            path_blocked: true,
+            blocked_delay: 1,
+            ..MovementTarget::default()
+        };
+        let mut facing = 0;
+        let mut rng = SimRng::new(0);
+
+        assert!(try_repath_after_block(
+            &mut target,
+            &mut facing,
+            (6, 6),
+            MovementLayer::Ground,
+            false,
+            PathfindingContext {
+                path_grid: Some(&grid),
+                zone_grid: Some(&zone_grid),
+                resolved_terrain: Some(&terrain),
+                playfield_bounds: Some(bounds),
+                blocker_neighbor_counts: None,
+            },
+            None,
+            None,
+            &mut rng,
+            Some(MovementZone::Normal),
+            false,
+            MovementConfig {
+                close_enough: crate::util::fixed_math::SIM_ZERO,
+                path_delay_ticks: 9,
+                blockage_path_delay_ticks: 60,
+            },
+            None,
+            0,
+            false,
+            false,
+            true,
+            None,
+        ));
+        assert_eq!(target.path.first().copied(), Some((6, 6)));
+        assert_eq!(target.path.last().copied(), Some((8, 6)));
+    }
+
+    #[test]
     fn gsi_04_12_marker_blocked_repath_consumes_overlay() {
         let grid = PathGrid::test_all_passable(5, 3);
         let mut marker_search = super::super::path_markers::BridgeMarkerSearch::default();
@@ -910,6 +992,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: None,
                 resolved_terrain: None,
+                playfield_bounds: None,
                 blocker_neighbor_counts: None,
             },
             None,
@@ -953,6 +1036,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: None,
                 resolved_terrain: None,
+                playfield_bounds: None,
                 blocker_neighbor_counts: None,
             },
             false,
@@ -980,6 +1064,7 @@ mod tests {
                 path_grid: Some(&grid),
                 zone_grid: None,
                 resolved_terrain: None,
+                playfield_bounds: None,
                 blocker_neighbor_counts: None,
             },
             true,

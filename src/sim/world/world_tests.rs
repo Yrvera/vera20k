@@ -5255,7 +5255,7 @@ fn gsi_04_05_stop_preserves_committed_drive_until_reserved_head_finishes() {
             None,
             false,
             None,
-            false,
+            None,
             Some(cell_occupation),
         )
     };
@@ -5482,7 +5482,7 @@ fn gsi_13_06_stop_preserves_committed_ship_segment_and_speed_state() {
             None,
             false,
             None,
-            false,
+            None,
             Some(cell_occupation),
         )
     };

@@ -1460,7 +1460,7 @@ fn issue_move_if_idle(
             None,
             false,
             Some(&blocker_neighbor_counts),
-            sim.playfield_bounds.is_some(),
+            sim.playfield_bounds,
             Some(&mut sim.substrate.cell_occupation),
         );
     }

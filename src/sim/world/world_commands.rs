@@ -653,7 +653,7 @@ impl Simulation {
                                 Some(&entity_block_map),
                                 info.mover_is_crusher,
                                 Some(&blocker_neighbor_counts),
-                                self.playfield_bounds.is_some(),
+                                self.playfield_bounds,
                                 Some(&mut self.substrate.cell_occupation),
                             );
                         }
@@ -706,7 +706,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         info.mover_is_crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     )
                 };
@@ -1089,7 +1089,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         info.mover_is_crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     )
                 };
@@ -1537,7 +1537,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1666,7 +1666,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1861,7 +1861,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -1987,7 +1987,7 @@ impl Simulation {
                         Some(&entity_block_map),
                         crusher,
                         Some(&blocker_neighbor_counts),
-                        self.playfield_bounds.is_some(),
+                        self.playfield_bounds,
                         Some(&mut self.substrate.cell_occupation),
                     );
                 }
@@ -2222,7 +2222,7 @@ impl Simulation {
                             Some(&entity_block_map),
                             crusher,
                             Some(&blocker_neighbor_counts),
-                            self.playfield_bounds.is_some(),
+                            self.playfield_bounds,
                             Some(&mut self.substrate.cell_occupation),
                         );
                     }
