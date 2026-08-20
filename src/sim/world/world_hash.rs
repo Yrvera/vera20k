@@ -189,7 +189,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -198,7 +198,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(true, false, false, false, false, false, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -207,7 +207,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false, false, false, false)
+        self.state_hash_with_schema(false, false, false, false, false, false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -220,6 +220,7 @@ impl Simulation {
         include_terminal_score_v46: bool,
         include_playfield_authority_v47: bool,
         include_techno_playfield_v87: bool,
+        include_sensor_deposit_v88: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -285,6 +286,7 @@ impl Simulation {
             include_entity_animation_v44,
             include_building_anim_overlays_v45,
             include_techno_playfield_v87,
+            include_sensor_deposit_v88,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -804,6 +806,7 @@ impl Simulation {
         include_entity_animation_v44: bool,
         include_building_anim_overlays_v45: bool,
         include_techno_playfield_v87: bool,
+        include_sensor_deposit_v88: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -1001,14 +1004,28 @@ impl Simulation {
                 cloak.cloaking_stages.hash(hasher);
                 cloak.late_visible.hash(hasher);
                 cloak.force_visible_call.hash(hasher);
-                cloak.opaque_counter1.hash(hasher);
-                cloak.opaque_tuple.start_frame.hash(hasher);
-                cloak.opaque_tuple.payload.hash(hasher);
-                cloak.opaque_tuple.duration_frames.hash(hasher);
-                cloak.opaque_cooldown2.hash(hasher);
-                cloak.opaque_mode_flag.hash(hasher);
+                cloak.step_delta.hash(hasher);
+                cloak.step_timer.start_frame.hash(hasher);
+                cloak.step_timer.speed.hash(hasher);
+                cloak.step_timer.duration_frames.hash(hasher);
+                cloak.recloak_delay_start.hash(hasher);
+                cloak.recloak_delay_frames.hash(hasher);
+                cloak.secondary_gate_start.hash(hasher);
+                cloak.secondary_gate_frames.hash(hasher);
             } else {
                 0u8.hash(hasher);
+            }
+            if include_sensor_deposit_v88 {
+                if let Some(deposit) = entity.sensor_deposit {
+                    1u8.hash(hasher);
+                    deposit.owner.hash(hasher);
+                    deposit.center.hash(hasher);
+                    deposit.add_radius.hash(hasher);
+                    deposit.remove_radius.hash(hasher);
+                    deposit.building_array.hash(hasher);
+                } else {
+                    0u8.hash(hasher);
+                }
             }
             if let Some(disguise) = entity.disguise.as_ref() {
                 1u8.hash(hasher);

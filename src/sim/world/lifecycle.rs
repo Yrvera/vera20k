@@ -1575,6 +1575,9 @@ impl Simulation {
         if !self.substrate.entities.contains(stable_id) {
             return ConcealOutcome::MissingOrDead;
         }
+        // FootClass::Limbo @ 0x004DB260 and BuildingClass::Limbo @
+        // 0x00445880 remove the exact deposited footprint before conceal.
+        self.remove_sensor_before_limbo(stable_id);
         // Dead and InLimbo are independent native state. TechnoClass::Limbo
         // still reaches ObjectClass::Conceal for a stored dead object; the
         // latter's InLimbo branch alone decides whether Conceal is a no-op.

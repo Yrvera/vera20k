@@ -1,51 +1,40 @@
 //! Evidence-bounded cloak and disguise runtime producers.
 
 use crate::sim::intern::InternedId;
+use crate::sim::rng::SimRng;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct OpaqueCloakTuple {
+pub struct CloakStepTimer {
     pub start_frame: i32,
-    pub payload: i32,
+    pub speed: i32,
     pub duration_frames: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-/// RESIDUAL (GSI-12.05) — the model is right and the producers are missing.
-/// `apply_transition` matches `TechnoClass::StartCloaking @ 0x00703770` and
-/// `StartUncloaking @ 0x007036C0` field for field; what is absent is the
-/// per-frame driver (`CloakingTick @ 0x006FB740`), the `Cloakable=` and
-/// `CloakingSpeed=` parses, and the forced-uncloak hooks on taking damage
-/// (`0x0070281D`), firing (`0x00520716` / `0x00737043`) and adjacency
-/// (`0x004D8829`). Nothing sets `GameEntity::cloak` or `::disguise` today.
-/// - Trigger: `Cloakable=` is authored on exactly FOUR stock types, all naval —
-///   `DLPH`, `SUB`, `SQD`, `BSUB`. Cloak in stock YR IS submarine submerging;
-///   pass 1's "Yuri's stealth armour, the Mirage Tank, a Spy" framing conflated
-///   this row with the disguise row, which has its own dead producer.
-/// - Player effect: submarines never submerge, so they fight as ordinary
-///   surface ships and the entire submarine layer of a naval match is missing.
-/// - Frequency: continuous in any match with naval production.
-/// - Downstream risk: it must land WITH the sensor writer (`sim/vision/mod.rs`,
-///   GSI-12.06) — native reads cloak from the object's own state and only the
-///   sensor COUNT from the cell, so VERA's `cloaked_by_houses` plane should be
-///   deleted rather than filled. The harness INI authors none of the five keys,
-///   so a correctly gated producer moves no pinned hash.
-/// - Correction: the provenance comment further down this file citing
-///   `FootClass::Uncloak @ 0x00515620` is WRONG — that address is mid-body of an
-///   unrelated movement function.
+/// Active `TechnoClass` cloak fields consumed by radar and tactical draw.
+///
+/// `CloakingTick @ 0x006FB740`, `StartCloaking @ 0x00703770`,
+/// `StartUncloaking @ 0x007036C0`, and `GetVisualState @ 0x00703860` establish
+/// every state/progress/timer write below. Stock YR exercises this continuously
+/// through DLPH/SUB/SQD/BSUB.
 pub struct CloakRuntime {
-    /// Native state id. States 0..3 deliberately remain opaque.
+    /// Native state id: 0 uncloaked, 1 cloaking, 2 fully cloaked, 3 uncloaking.
     pub state: i32,
-    /// Presentation phase is separate because the RE contract intentionally
-    /// does not assign gameplay names to every raw state id.
     pub visual_phase: Option<CloakVisualPhase>,
+    /// Native `CloakProgress +0x224`.
     pub depth: u32,
     pub cloaking_stages: u32,
     pub late_visible: bool,
     pub force_visible_call: bool,
-    pub opaque_counter1: i32,
-    pub opaque_tuple: OpaqueCloakTuple,
-    pub opaque_cooldown2: i32,
-    pub opaque_mode_flag: i32,
+    /// Native signed progress delta, +1 cloaking and -1 uncloaking.
+    pub step_delta: i32,
+    pub step_timer: CloakStepTimer,
+    /// `ReCloakDelayTimer +0x2EC/+0x2F4`.
+    pub recloak_delay_start: i32,
+    pub recloak_delay_frames: i32,
+    /// Independent `CanAutoCloak` gate timer at +0x240/+0x248.
+    pub secondary_gate_start: i32,
+    pub secondary_gate_frames: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -56,87 +45,233 @@ pub enum CloakVisualPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CloakTransitionKind {
-    Uncloak,
-    Recloak,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CloakTransitionParams {
-    pub kind: CloakTransitionKind,
+pub struct CloakTickFacts {
     pub current_frame: i32,
-    pub saved_payload: i32,
-    pub rules_counter1_frames: i32,
-    pub rules_tuple_duration_frames: i32,
-    pub suppress_side_effect: bool,
+    /// Head gate at 0x006FB740: usable intrinsic cloak with no firing/chrono
+    /// activity, or the current rank's CLOAK ability.
+    pub state_zero_head_allows: bool,
+    /// Exact `CanAutoCloak @ 0x006FBDC0` result from current world facts.
+    pub can_auto_cloak: bool,
+    /// Exact `ShouldUncloak @ 0x006FBC90` result from current world facts.
+    pub should_uncloak: bool,
+    /// Strict `ConditionRed < health_ratio` comparison.
+    pub health_above_red: bool,
+    pub cloaking_speed: i32,
+    pub cloak_delay_frames: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CloakTransitionResult {
+pub struct CloakTickResult {
     pub transitioned: bool,
-    pub should_emit_side_effect: bool,
+    pub consumed_scenario_rng: bool,
 }
 
 impl CloakRuntime {
-    /// `FootClass::Uncloak @ 0x00515620` and its adjacent recloak-side helper.
-    pub fn apply_transition(&mut self, params: CloakTransitionParams) -> CloakTransitionResult {
-        let accepted = match params.kind {
-            CloakTransitionKind::Uncloak => matches!(self.state, 1 | 2),
-            CloakTransitionKind::Recloak => matches!(self.state, 0 | 3),
-        };
-        if !accepted {
-            return CloakTransitionResult {
-                transitioned: false,
-                should_emit_side_effect: false,
-            };
-        }
-
-        self.state = match params.kind {
-            CloakTransitionKind::Uncloak => 3,
-            CloakTransitionKind::Recloak => 1,
-        };
-        self.visual_phase = Some(match params.kind {
-            CloakTransitionKind::Uncloak => CloakVisualPhase::Uncloaking,
-            CloakTransitionKind::Recloak => CloakVisualPhase::Cloaking,
-        });
-        self.opaque_counter1 = match params.kind {
-            CloakTransitionKind::Uncloak => params.rules_counter1_frames - 1,
-            CloakTransitionKind::Recloak => 0,
-        };
-        self.opaque_tuple = OpaqueCloakTuple {
-            start_frame: params.current_frame,
-            payload: params.saved_payload,
-            duration_frames: params.rules_tuple_duration_frames,
-        };
-        self.opaque_cooldown2 = params.rules_tuple_duration_frames;
-        self.opaque_mode_flag = match params.kind {
-            CloakTransitionKind::Uncloak => -1,
-            CloakTransitionKind::Recloak => 1,
-        };
-        CloakTransitionResult {
-            transitioned: true,
-            should_emit_side_effect: !params.suppress_side_effect,
+    pub fn new(current_frame: i32, cloaking_stages: i32) -> Self {
+        Self {
+            state: 0,
+            visual_phase: None,
+            depth: 0,
+            cloaking_stages: cloaking_stages.max(1) as u32,
+            late_visible: false,
+            force_visible_call: false,
+            step_delta: 0,
+            step_timer: CloakStepTimer {
+                start_frame: current_frame,
+                speed: 0,
+                duration_frames: 0,
+            },
+            recloak_delay_start: current_frame,
+            recloak_delay_frames: 0,
+            secondary_gate_start: current_frame,
+            secondary_gate_frames: 0,
         }
     }
 
-    /// Advance only the renderer-facing depth; raw native state remains owned
-    /// by the proved transition edges above.
-    pub fn advance_visual_depth(&mut self) {
-        match self.visual_phase {
-            Some(CloakVisualPhase::Cloaking) => {
-                self.depth = self.depth.saturating_add(1).min(self.cloaking_stages);
-                if self.depth == self.cloaking_stages {
-                    self.visual_phase = Some(CloakVisualPhase::FullyCloaked);
+    /// UnitClass::Unlimbo @ 0x00737BA0 sets only state 2 when runtime cloak
+    /// ability is present and stored Techno+0x3D5 is clear.
+    pub fn establish_unlimbo_fully_cloaked(&mut self) {
+        self.state = 2;
+        self.visual_phase = Some(CloakVisualPhase::FullyCloaked);
+    }
+
+    fn timer_remaining(start: i32, duration: i32, now: i32) -> i32 {
+        if duration <= 0 {
+            return 0;
+        }
+        if start == -1 {
+            return duration;
+        }
+        duration.saturating_sub(now.wrapping_sub(start)).max(0)
+    }
+
+    fn start_cloaking(&mut self, now: i32, speed: i32) -> bool {
+        if !matches!(self.state, 0 | 3) {
+            return false;
+        }
+        self.state = 1;
+        self.visual_phase = Some(CloakVisualPhase::Cloaking);
+        self.depth = 0;
+        self.step_delta = 1;
+        self.step_timer = CloakStepTimer {
+            start_frame: now,
+            speed,
+            duration_frames: speed,
+        };
+        true
+    }
+
+    fn start_uncloaking(&mut self, now: i32, speed: i32) -> bool {
+        if !matches!(self.state, 1 | 2) {
+            return false;
+        }
+        self.state = 3;
+        self.visual_phase = Some(CloakVisualPhase::Uncloaking);
+        self.depth = self.cloaking_stages.saturating_sub(1);
+        self.step_delta = -1;
+        self.step_timer = CloakStepTimer {
+            start_frame: now,
+            speed,
+            duration_frames: speed,
+        };
+        true
+    }
+
+    fn advance_due_step(&mut self, now: i32) {
+        if self.step_timer.speed == 0
+            || Self::timer_remaining(
+                self.step_timer.start_frame,
+                self.step_timer.duration_frames,
+                now,
+            ) != 0
+        {
+            return;
+        }
+        self.depth = if self.step_delta < 0 {
+            self.depth.saturating_sub(self.step_delta.unsigned_abs())
+        } else {
+            self.depth.wrapping_add(self.step_delta as u32)
+        };
+        self.step_timer.start_frame = now;
+        self.step_timer.duration_frames = self.step_timer.speed;
+    }
+
+    /// `GetVisualState @ 0x00703860` transition ladder. For the non-negative
+    /// native progress domain, integer division is output-equivalent to the
+    /// x87 divide/multiply followed by truncation toward zero.
+    pub fn transition_visual_state(&self) -> u8 {
+        if self.depth == 0 {
+            return 0;
+        }
+        let scaled = (u64::from(self.depth) * 256 / u64::from(self.cloaking_stages.max(1)))
+            .min(i32::MAX as u64) as i32;
+        match scaled {
+            ..=0x3f => 1,
+            0x40..=0x7f => 2,
+            0x80..=0xbf => 3,
+            0xc0..=0xfe => 4,
+            _ => 5,
+        }
+    }
+
+    /// Active state machine from `TechnoClass::CloakingTick @ 0x006FB740`.
+    pub fn tick(&mut self, facts: CloakTickFacts, rng: &mut SimRng) -> CloakTickResult {
+        let mut result = CloakTickResult {
+            transitioned: false,
+            consumed_scenario_rng: false,
+        };
+        if self.state == 0 {
+            if !facts.state_zero_head_allows || !facts.can_auto_cloak {
+                return result;
+            }
+            let start = if facts.health_above_red {
+                true
+            } else {
+                result.consumed_scenario_rng = true;
+                rng.next_range_u32_inclusive(0, 99) < 4
+            };
+            if start {
+                result.transitioned = self.start_cloaking(
+                    facts.current_frame,
+                    facts.cloaking_speed,
+                );
+            }
+            return result;
+        }
+
+        self.advance_due_step(facts.current_frame);
+        match self.state {
+            1 => {
+                if self.step_timer.speed == 0 {
+                    self.step_timer = CloakStepTimer {
+                        start_frame: 1,
+                        speed: 1,
+                        duration_frames: 1,
+                    };
+                }
+                match self.transition_visual_state() {
+                    2 if !facts.health_above_red => {
+                        result.consumed_scenario_rng = true;
+                        if rng.next_range_u32_inclusive(0, 99) <= 9 {
+                            result.transitioned = self.start_uncloaking(
+                                facts.current_frame,
+                                facts.cloaking_speed,
+                            );
+                        }
+                    }
+                    3 | 5 => {
+                        self.state = 2;
+                        self.visual_phase = Some(CloakVisualPhase::FullyCloaked);
+                        self.depth = 0;
+                        self.step_delta = 0;
+                        self.step_timer = CloakStepTimer {
+                            start_frame: facts.current_frame,
+                            speed: 0,
+                            duration_frames: 0,
+                        };
+                        result.transitioned = true;
+                    }
+                    _ => {}
                 }
             }
-            Some(CloakVisualPhase::Uncloaking) => {
-                self.depth = self.depth.saturating_sub(1);
-                if self.depth == 0 {
+            2 if facts.should_uncloak => {
+                result.transitioned = self.start_uncloaking(
+                    facts.current_frame,
+                    facts.cloaking_speed,
+                );
+            }
+            3 => match self.transition_visual_state() {
+                0 => {
+                    self.state = 0;
                     self.visual_phase = None;
+                    self.depth = 0;
+                    self.step_delta = 0;
+                    self.step_timer = CloakStepTimer {
+                        start_frame: facts.current_frame,
+                        speed: 0,
+                        duration_frames: 0,
+                    };
+                    self.recloak_delay_start = facts.current_frame;
+                    self.recloak_delay_frames = facts.cloak_delay_frames;
+                    result.transitioned = true;
                 }
-            }
+                1 if facts.can_auto_cloak => {
+                    result.transitioned = self.start_cloaking(
+                        facts.current_frame,
+                        facts.cloaking_speed,
+                    );
+                }
+                _ => {}
+            },
             _ => {}
         }
+        result
+    }
+
+    pub fn recloak_delay_expired(&self, now: i32) -> bool {
+        Self::timer_remaining(self.recloak_delay_start, self.recloak_delay_frames, now) == 0
+            && Self::timer_remaining(self.secondary_gate_start, self.secondary_gate_frames, now)
+                == 0
     }
 }
 
@@ -257,49 +392,125 @@ mod tests {
 
     #[test]
     fn cloak_transition_vectors() {
-        let mut state = CloakRuntime {
-            state: 1,
-            visual_phase: Some(CloakVisualPhase::Cloaking),
-            depth: 0,
-            cloaking_stages: 9,
-            late_visible: false,
-            force_visible_call: false,
-            opaque_counter1: 0,
-            opaque_tuple: OpaqueCloakTuple {
-                start_frame: 0,
-                payload: 0,
-                duration_frames: 0,
-            },
-            opaque_cooldown2: 0,
-            opaque_mode_flag: 0,
+        let mut state = CloakRuntime::new(0, 9);
+        let mut rng = SimRng::new(1);
+        let facts = |frame, can_auto, should_uncloak| CloakTickFacts {
+            current_frame: frame,
+            state_zero_head_allows: true,
+            can_auto_cloak: can_auto,
+            should_uncloak,
+            health_above_red: true,
+            cloaking_speed: 1,
+            cloak_delay_frames: 18,
         };
-        let out = state.apply_transition(CloakTransitionParams {
-            kind: CloakTransitionKind::Uncloak,
-            current_frame: 1000,
-            saved_payload: 4660,
-            rules_counter1_frames: 45,
-            rules_tuple_duration_frames: 30,
-            suppress_side_effect: false,
-        });
-        assert_eq!(
-            out,
-            CloakTransitionResult {
-                transitioned: true,
-                should_emit_side_effect: true
-            }
+        state.tick(facts(0, true, false), &mut rng);
+        assert_eq!(state.state, 1);
+        for frame in 1..=5 {
+            state.tick(facts(frame, true, false), &mut rng);
+        }
+        assert_eq!(state.state, 2, "visual state 3 completes active YR cloak");
+        state.tick(facts(6, false, true), &mut rng);
+        assert_eq!(state.state, 3);
+        for frame in 7..=14 {
+            state.tick(facts(frame, false, false), &mut rng);
+        }
+        assert_eq!(state.state, 0);
+        assert_eq!(state.recloak_delay_frames, 18);
+    }
+
+    fn seed_with_first_roll(mut accept: impl FnMut(u32) -> bool) -> u64 {
+        (0..100_000)
+            .find(|seed| {
+                let mut rng = SimRng::new(*seed);
+                accept(rng.next_range_u32_inclusive(0, 99))
+            })
+            .expect("bounded seed search finds requested roll")
+    }
+
+    #[test]
+    fn cloak_health_probability_branches_consume_exactly_one_scenario_draw() {
+        let facts = |frame| CloakTickFacts {
+            current_frame: frame,
+            state_zero_head_allows: true,
+            can_auto_cloak: true,
+            should_uncloak: false,
+            health_above_red: false,
+            cloaking_speed: 1,
+            cloak_delay_frames: 18,
+        };
+
+        let seed4 = seed_with_first_roll(|roll| roll < 4);
+        let mut actual = SimRng::new(seed4);
+        let mut expected = actual.clone();
+        assert!(expected.next_range_u32_inclusive(0, 99) < 4);
+        let mut cloak = CloakRuntime::new(0, 9);
+        let result = cloak.tick(facts(0), &mut actual);
+        assert!(result.consumed_scenario_rng && result.transitioned);
+        assert_eq!(cloak.state, 1);
+        assert_eq!(actual.logical_state(), expected.logical_state());
+
+        let seed4_boundary = seed_with_first_roll(|roll| roll == 4);
+        let mut actual = SimRng::new(seed4_boundary);
+        let mut cloak = CloakRuntime::new(0, 9);
+        let result = cloak.tick(facts(0), &mut actual);
+        assert!(result.consumed_scenario_rng && !result.transitioned);
+        assert_eq!(cloak.state, 0, "the 4% branch is strict `< 4`");
+
+        let seed10 = seed_with_first_roll(|roll| roll <= 9);
+        let mut actual = SimRng::new(seed10);
+        let mut expected = actual.clone();
+        assert!(expected.next_range_u32_inclusive(0, 99) <= 9);
+        let mut cloak = CloakRuntime::new(0, 9);
+        cloak.state = 1;
+        cloak.visual_phase = Some(CloakVisualPhase::Cloaking);
+        cloak.depth = 3; // trunc(3/9*256)=85 => active visual state 2.
+        cloak.step_delta = 1;
+        cloak.step_timer = CloakStepTimer {
+            start_frame: 0,
+            speed: 1,
+            duration_frames: 1,
+        };
+        let result = cloak.tick(facts(0), &mut actual);
+        assert!(result.consumed_scenario_rng && result.transitioned);
+        assert_eq!(cloak.state, 3);
+        assert_eq!(actual.logical_state(), expected.logical_state());
+
+        let seed10_boundary = seed_with_first_roll(|roll| roll == 10);
+        let mut actual = SimRng::new(seed10_boundary);
+        let mut cloak = CloakRuntime::new(0, 9);
+        cloak.state = 1;
+        cloak.visual_phase = Some(CloakVisualPhase::Cloaking);
+        cloak.depth = 3;
+        cloak.step_delta = 1;
+        cloak.step_timer = CloakStepTimer {
+            start_frame: 0,
+            speed: 1,
+            duration_frames: 1,
+        };
+        let result = cloak.tick(facts(0), &mut actual);
+        assert!(result.consumed_scenario_rng && !result.transitioned);
+        assert_eq!(cloak.state, 1, "the abort branch is inclusive only through 9");
+    }
+
+    #[test]
+    fn healthy_autocloak_does_not_advance_scenario_rng() {
+        let mut cloak = CloakRuntime::new(0, 9);
+        let mut rng = SimRng::new(0xC10A_C001);
+        let before = rng.logical_state();
+        let result = cloak.tick(
+            CloakTickFacts {
+                current_frame: 0,
+                state_zero_head_allows: true,
+                can_auto_cloak: true,
+                should_uncloak: false,
+                health_above_red: true,
+                cloaking_speed: 1,
+                cloak_delay_frames: 18,
+            },
+            &mut rng,
         );
-        assert_eq!(
-            (state.state, state.opaque_counter1, state.opaque_mode_flag),
-            (3, 44, -1)
-        );
-        assert_eq!(
-            state.opaque_tuple,
-            OpaqueCloakTuple {
-                start_frame: 1000,
-                payload: 4660,
-                duration_frames: 30
-            }
-        );
+        assert!(result.transitioned && !result.consumed_scenario_rng);
+        assert_eq!(rng.logical_state(), before);
     }
 
     #[test]
@@ -345,25 +556,24 @@ mod tests {
     }
 
     #[test]
-    fn visual_depth_progresses_without_renaming_raw_state() {
-        let mut state = CloakRuntime {
-            state: 1,
-            visual_phase: Some(CloakVisualPhase::Cloaking),
-            depth: 1,
-            cloaking_stages: 2,
-            late_visible: false,
-            force_visible_call: false,
-            opaque_counter1: 0,
-            opaque_tuple: OpaqueCloakTuple {
-                start_frame: 0,
-                payload: 0,
-                duration_frames: 0,
-            },
-            opaque_cooldown2: 0,
-            opaque_mode_flag: 0,
+    fn cloaking_speed_five_delays_each_progress_step() {
+        let mut state = CloakRuntime::new(0, 9);
+        let mut rng = SimRng::new(1);
+        let facts = |frame| CloakTickFacts {
+            current_frame: frame,
+            state_zero_head_allows: true,
+            can_auto_cloak: true,
+            should_uncloak: false,
+            health_above_red: true,
+            cloaking_speed: 5,
+            cloak_delay_frames: 18,
         };
-        state.advance_visual_depth();
-        assert_eq!(state.state, 1);
-        assert_eq!(state.visual_phase, Some(CloakVisualPhase::FullyCloaked));
+        state.tick(facts(0), &mut rng);
+        for frame in 1..5 {
+            state.tick(facts(frame), &mut rng);
+            assert_eq!(state.depth, 0);
+        }
+        state.tick(facts(5), &mut rng);
+        assert_eq!(state.depth, 1);
     }
 }

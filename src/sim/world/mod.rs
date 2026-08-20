@@ -17,6 +17,7 @@ mod lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
+mod techno_ai_cloak;
 pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
@@ -3404,6 +3405,9 @@ impl Simulation {
         if old_owner == new_owner {
             return;
         }
+        // FootClass::ChangeOwner @ 0x004DBED0 removes from the deposited old
+        // owner and adds to the new owner before later readers observe it.
+        self.transfer_sensor_before_owner_change(stable_id, new_owner);
 
         // Active YR chain: BuildingClass::ChangeOwner (0x00448260) delegates
         // to TechnoClass::ChangeOwner (0x007014A0), which calls
@@ -4993,6 +4997,9 @@ impl Simulation {
         // DEPENDS ON: production (newly placed buildings start build-up).
         let completed_buildings = self.tick_building_up();
         if let Some(rules) = rules {
+            for &stable_id in &completed_buildings {
+                self.add_building_sensor_array_if_powered(stable_id, rules);
+            }
             *spawned_entities |= production::spawn_completed_refinery_free_units(
                 self,
                 &completed_buildings,
@@ -5451,6 +5458,14 @@ impl Simulation {
                 .entities
                 .get(stable_id)
                 .map(|entity| (entity.position.rx, entity.position.ry));
+            if let Some(rules) = rules {
+                sim.move_unit_sensor_after_cell_change(
+                    stable_id,
+                    cell_before_movement,
+                    cell_after_movement,
+                    rules,
+                );
+            }
             if teleport_relocating {
                 // `TeleportLocomotionClass` arrival owns the exceptional exact
                 // outside clear at 0x00719A99; it must not flow through the

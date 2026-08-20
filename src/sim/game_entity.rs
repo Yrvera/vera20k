@@ -538,6 +538,11 @@ pub struct GameEntity {
     /// Evidence-bounded native cloak transition state and visual producer values.
     #[serde(default)]
     pub cloak: Option<CloakRuntime>,
+    /// Last sensor coverage actually deposited into CellClass counters.
+    /// Removal must use these cached owner/location/radius values after the
+    /// entity's current facts have changed.
+    #[serde(default)]
+    pub sensor_deposit: Option<crate::sim::sensor_lifecycle::SensorDeposit>,
     /// Core disguise identity, timestamp, and reveal tuple.
     #[serde(default)]
     pub disguise: Option<DisguiseRuntime>,
@@ -1050,6 +1055,7 @@ impl GameEntity {
             slave_harvester: None,
             order_intent: None,
             cloak: None,
+            sensor_deposit: None,
             disguise: None,
             teleport_state: None,
             tunnel_state: None,

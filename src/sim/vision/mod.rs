@@ -624,21 +624,9 @@ impl FogState {
         removed
     }
 
-    /// Recreate CellClass sensor storage for current map bounds. Sensor
-    /// producers can then use add/remove calls without owning visibility maps.
-    ///
-    /// **The sensor plane has readers but no writer, and that is a live gap.**
-    /// This runs every tick, and `sensors_add_at` / `sensors_remove_at` have no
-    /// production caller — tests only — so `detects_cloak` is permanently
-    /// `false`. Three render sites consume it (`instances::units`,
-    /// `instances::shp`, `instances::helpers`) and feed it into
-    /// `tactical_entity_render_admission`. Trigger: a detector standing where a
-    /// cloaked or submerged enemy is. Player effect: retail reveals it; VERA
-    /// does not, so submarines and Mirage Tanks stay hidden from the units that
-    /// exist to find them. Frequency: not every match, but ordinary in any match
-    /// that fields either — naval maps and Allied mirrors. Downstream risk: the
-    /// producer is the row's remaining work; the footprint walk it would call is
-    /// already ported and verified against `TechnoClass::AddSensorsAt`.
+    /// Recreate CellClass sensor storage for current map bounds. Production
+    /// deposits are owned by `sim::sensor_lifecycle`; this remains the explicit
+    /// map-storage recreation edge.
     pub fn reset_sensor_counts(&mut self) {
         self.sensors_by_house.clear();
     }
@@ -726,19 +714,18 @@ impl FogState {
     ///   0x004DB376`, `PerCellProcess` removing the old cell at `0x004D8611` and
     ///   adding the new one at `0x004D8621`, and `ChangeOwner @ 0x004DBEFB` /
     ///   `0x004DBF81`. Buildings deposit through their own
-    ///   `BuildingClass::AddSensorArrayAt @ 0x00455820`. VERA calls none of them.
+    ///   `BuildingClass::AddSensorArrayAt @ 0x00455820`. VERA's production
+    ///   lifecycle now routes these writers through `sim::sensor_lifecycle`.
     /// - The detection rule is: a cloaked object is visible to house H when H
     ///   has a sensor count at the object's OWN cell, or when H and the owner
     ///   are mutually allied. `DetectDisguise=` is a separate predicate and is
     ///   not parsed.
     /// - Trigger: any `SensorsSight=` unit near a submerged submarine.
-    /// - Player effect: no detector reveals anything.
-    /// - Frequency: continuous once cloaking exists; unobservable today because
-    ///   nothing cloaks (GSI-12.05).
-    /// - Downstream risk: this and the cloak producer must land together, and
-    ///   the pairing should DELETE VERA's `cloaked_by_houses` plane rather than
-    ///   fill it — native keeps cloak state on the object and only the count on
-    ///   the cell.
+    /// - Player effect: live radar registration consumes this plane; tactical
+    ///   cloak rendering still has separately owned presentation work.
+    /// - Frequency: continuous around stock submarines and detector units.
+    /// - Downstream risk: sensor-driven resident-object `+0x420` reevaluation
+    ///   and cloak-generator ownership remain separate mechanisms.
     pub fn sensors_add_at(
         &mut self,
         house: InternedId,
@@ -798,10 +785,13 @@ impl FogState {
                 let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
                 if add {
                     counters[index] = counters[index].wrapping_add(1);
-                } else if counters[index] > 0 {
-                    counters[index] = counters[index].wrapping_sub(1);
                 } else {
-                    continue;
+                    // `TechnoClass::RemoveSensorsAt @ 0x004DE940` decrements
+                    // the signed per-house word without a positive clamp.
+                    // Building sensor arrays intentionally remove with a
+                    // different radius than they added, so negative fringe
+                    // counts are active retail state rather than an error.
+                    counters[index] = counters[index].wrapping_sub(1);
                 }
                 touched.push((rx, ry));
             }

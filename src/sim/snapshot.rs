@@ -266,7 +266,11 @@ use crate::sim::world::Simulation;
 // Bumped 86 -> 87: GameEntity now persists and hashes the canonical
 // TechnoClass+0x3D5 playfield-membership byte. Its hysteretic ordinary-movement
 // writer means it cannot be reconstructed from position after load.
-const SNAPSHOT_VERSION: u32 = 87;
+// Bumped 87 -> 88: GameEntity now persists the exact deposited sensor owner,
+// cell, add/remove radii and building/unit discriminator. Limbo, movement, and
+// owner transfer must remove the historical deposit rather than recomputing it
+// from current position/rules, so this future-affecting cache is hash authority.
+const SNAPSHOT_VERSION: u32 = 88;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2567,10 +2571,13 @@ mod tests {
     /// `ParticleSystemClass+0xF8` actually is — one byte set by the lifetime
     /// countdown, the spawn cutoff and the spark countdown alike, and read by
     /// both the spawn gate and the removal predicate. A serialized field is
-    /// gone, so old bytes no longer decode.
+    /// gone, so old bytes no longer decode; 84 -> 85 retained signed map Size
+    /// height for action-40 normalization; 85 -> 86 added the mutable
+    /// playfield revision; 86 -> 87 added Techno+0x3D5 membership; 87 -> 88
+    /// added the exact historical sensor deposit needed for later removal.
     #[test]
-    fn gsi_04_01_snapshot_version_is_87() {
-        assert_eq!(super::SNAPSHOT_VERSION, 87);
+    fn gsi_04_01_snapshot_version_is_88() {
+        assert_eq!(super::SNAPSHOT_VERSION, 88);
     }
 
     #[test]
@@ -3487,9 +3494,16 @@ mod tests {
 
     #[test]
     fn cell_fog_sensor_and_cloak_state_roundtrips_with_hash() {
+        use crate::map::entities::EntityCategory;
+        use crate::sim::cloak_disguise::CloakRuntime;
+        use crate::sim::components::Health;
+        use crate::sim::game_entity::GameEntity;
+        use crate::sim::sensor_lifecycle::SensorDeposit;
+
         let mut sim = Simulation::new();
         let viewer = sim.interner.intern("AMERICANS");
         let source_owner = sim.interner.intern("RUSSIANS");
+        let type_ref = sim.interner.intern("SUB");
         sim.fog.width = 8;
         sim.fog.height = 8;
         sim.fog
@@ -3500,18 +3514,67 @@ mod tests {
             sim.fog
                 .draw_objects_cloaked(Some(source_owner), source_owner, 7, 3, 3)
         );
+        let entity_id = sim.allocate_stable_id();
+        let mut entity = GameEntity::new_at_frame_zero_for_test(
+            entity_id,
+            3,
+            3,
+            0,
+            0,
+            source_owner,
+            Health {
+                current: 600,
+                max: 600,
+            },
+            type_ref,
+            EntityCategory::Unit,
+            0,
+            5,
+            false,
+        );
+        let mut cloak = CloakRuntime::new(0, 9);
+        cloak.establish_unlimbo_fully_cloaked();
+        entity.cloak = Some(cloak);
+        entity.sensor_deposit = Some(SensorDeposit {
+            owner: viewer,
+            center: (3, 3),
+            add_radius: 2,
+            remove_radius: 2,
+            building_array: false,
+        });
+        sim.substrate.entities.insert(entity);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // fog/sensor/cloak persistence on that same post-load cursor.
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
 
         let bytes = GameSnapshot::save(&sim, 0, 0, "cell_fog_sensor_cloak", 0);
-        let restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
+        let mut restored = GameSnapshot::load(&bytes).expect("current snapshot").sim;
 
         assert_eq!(restored.state_hash(), expected_hash);
         assert_eq!(restored.fog.fogged_objects.len(), 1);
         assert!(restored.fog.has_sensor_for_house(viewer, 3, 3));
         assert!(restored.fog.is_cloaked_by_house(7, 3, 3));
+        let restored_entity = restored.substrate.entities.get(entity_id).unwrap();
+        assert_eq!(
+            restored_entity.cloak,
+            sim.substrate.entities.get(entity_id).unwrap().cloak
+        );
+        assert_eq!(
+            restored_entity.sensor_deposit,
+            sim.substrate.entities.get(entity_id).unwrap().sensor_deposit
+        );
+        let same_hash = restored.state_hash();
+        restored
+            .substrate
+            .entities
+            .get_mut(entity_id)
+            .unwrap()
+            .sensor_deposit
+            .as_mut()
+            .unwrap()
+            .center = (4, 3);
+        assert_ne!(restored.state_hash(), same_hash);
     }
 
     #[test]

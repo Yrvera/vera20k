@@ -422,6 +422,12 @@ pub struct GeneralRules {
     /// `condition_red` pre-scaled to integer ×1000 for deterministic sim comparisons.
     /// Computed once at parse time: `(condition_red * 1000.0) as i64`.
     pub condition_red_x1000: i64,
+    /// `[General] CloakingStages=` — native signed progress divisor. The
+    /// constructor and stock rules both use 9.
+    pub cloaking_stages: i32,
+    /// `[General] CloakDelay=` converted from minutes with native truncation
+    /// toward zero (`ftol(minutes * 900)`). Stock `.02` becomes 18 frames.
+    pub cloak_delay_frames: i32,
     /// `IdleActionFrequency=` from `[AudioVisual]`, pre-scaled to integer ×1000.
     ///
     /// Scales how long an idle infantryman waits between fidgets: the wait is
@@ -969,6 +975,8 @@ impl Default for GeneralRules {
             condition_yellow_x1000: 500,
             condition_red: 0.25,
             condition_red_x1000: 250,
+            cloaking_stages: 9,
+            cloak_delay_frames: 18,
             idle_action_frequency_x1000: STOCK_IDLE_ACTION_FREQUENCY_X1000,
             damage_fire_ordinary_ratio: DamageFireHealthRatio {
                 numerator: 1,
@@ -1657,6 +1665,10 @@ impl GeneralRules {
             condition_yellow_x1000: (condition_yellow_f32 as f64 * 1000.0) as i64,
             condition_red: condition_red_f32,
             condition_red_x1000: (condition_red_f32 as f64 * 1000.0) as i64,
+            cloaking_stages: general.get_i32("CloakingStages").unwrap_or(9),
+            cloak_delay_frames: (general.read_double("CloakDelay", 0.02) * 900.0)
+                .trunc()
+                .clamp(i32::MIN as f64, i32::MAX as f64) as i32,
             idle_action_frequency_x1000: (audio_visual
                 .map(|s| {
                     s.read_double(
@@ -3819,6 +3831,18 @@ SpawnCount=3
     }
     use super::*;
     use crate::rules::ini_parser::RulesLayerKind;
+
+    #[test]
+    fn cloak_global_defaults_and_native_minute_conversion_parse() {
+        let defaults = GeneralRules::default();
+        assert_eq!(defaults.cloaking_stages, 9);
+        assert_eq!(defaults.cloak_delay_frames, 18);
+        let parsed = GeneralRules::from_ini(&IniFile::from_str(
+            "[General]\nCloakingStages=13\nCloakDelay=.031\n",
+        ));
+        assert_eq!(parsed.cloaking_stages, 13);
+        assert_eq!(parsed.cloak_delay_frames, 27);
+    }
 
     /// Build a minimal rules.ini string for testing.
     fn make_test_rules() -> String {

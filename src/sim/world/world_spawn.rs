@@ -259,6 +259,11 @@ impl Simulation {
             let has_spawn_manager = ge.spawn_manager.is_some();
             let (stable_id, outcome) = self.unlimbo(ge);
             debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+            if let Some(ruleset) = rules {
+                self.initialize_cloak_after_unlimbo(stable_id, ruleset);
+                self.add_unit_sensor_after_unlimbo(stable_id, ruleset);
+                self.add_building_sensor_array_if_powered(stable_id, ruleset);
+            }
             if has_spawn_manager && let Some(ruleset) = rules {
                 crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, ruleset);
             }
@@ -492,6 +497,8 @@ impl Simulation {
         let has_spawn_manager = ge.spawn_manager.is_some();
         let (stable_id, outcome) = self.unlimbo(ge);
         debug_assert!(matches!(outcome, RevealOutcome::Revealed { .. }));
+        self.initialize_cloak_after_unlimbo(stable_id, rules);
+        self.add_unit_sensor_after_unlimbo(stable_id, rules);
         if has_spawn_manager {
             crate::sim::spawn_manager::commit_spawn_manager_pool(self, stable_id, rules);
         }
@@ -686,6 +693,50 @@ impl Simulation {
             },
         );
         (stable_id, outcome)
+    }
+
+    /// Unit/Infantry constructor cloak ability plus UnitClass::Unlimbo's
+    /// exceptional state-2 establishment. Active evidence: constructor copy at
+    /// 0x007355B6/0x00517D88 and UnitClass::Unlimbo @ 0x00737BA0.
+    fn initialize_cloak_after_unlimbo(&mut self, stable_id: u64, rules: &RuleSet) {
+        let Some((category, veterancy, in_playfield, type_ref)) = self
+            .substrate
+            .entities
+            .get(stable_id)
+            .map(|entity| {
+                (
+                    entity.category,
+                    entity.veterancy,
+                    entity.in_playfield,
+                    entity.type_ref,
+                )
+            })
+        else {
+            return;
+        };
+        if !matches!(category, EntityCategory::Unit | EntityCategory::Infantry) {
+            return;
+        }
+        let Some(object) = rules.object(self.interner.resolve(type_ref)) else {
+            return;
+        };
+        let rank_cloak = veterancy >= 100 && object.veteran_cloak
+            || veterancy >= 200 && object.elite_cloak;
+        if !object.cloakable && !rank_cloak {
+            return;
+        }
+        let mut cloak = crate::sim::cloak_disguise::CloakRuntime::new(
+            self.session.binary_frame as i32,
+            rules.general.cloaking_stages,
+        );
+        // Only UnitClass owns the direct Unlimbo state write, and it tests the
+        // copied runtime Cloakable byte rather than rank-granted CLOAK.
+        if category == EntityCategory::Unit && object.cloakable && !in_playfield {
+            cloak.establish_unlimbo_fully_cloaked();
+        }
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.cloak = Some(cloak);
+        }
     }
 
     /// Update VoxelAnimation frame_counts for all voxel entities from atlas data.

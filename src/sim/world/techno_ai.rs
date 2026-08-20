@@ -454,20 +454,12 @@ fn mission_common_step(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
 
 /// S4a pre-mission common block (the `TechnoClass::AI_Update` head: one-shot
 /// flag clear, turret-anim loop sound, cloak tick, health smoothing, target
-/// validation, …). No-op stub this slice — the verified body lands at the
-/// authoritative flip. Present so the bracket order is real code, not a comment.
+/// validation, …). The stock cloak producer now executes at the verified head;
+/// the remaining common-body items stay owned by their existing phases.
 #[allow(unused_variables)]
 fn techno_common_pre(sim: &mut Simulation, id: u64, rules: Option<&RuleSet>) {
-    if let Some(cloak) = sim
-        .substrate
-        .entities
-        .get_mut(id)
-        .and_then(|entity| entity.cloak.as_mut())
-    {
-        cloak.advance_visual_depth();
-    }
-
     let Some(rules) = rules else { return };
+    super::techno_ai_cloak::tick_stock_cloak_producer(sim, id, rules);
     let Some(entity) = sim.substrate.entities.get(id) else {
         return;
     };
