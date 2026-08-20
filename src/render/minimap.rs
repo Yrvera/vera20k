@@ -57,16 +57,6 @@ fn playfield_authority_needs_reconcile(
     installed != Some(PlayfieldAuthorityStamp { bounds, revision })
 }
 
-fn techno_cell_in_playfield(
-    bounds: PlayfieldBounds,
-    rx: u16,
-    ry: u16,
-    level: u8,
-    slope_type: u8,
-) -> bool {
-    bounds.contains_height_aware_packed(i32::from(rx), i32::from(ry), level as i8, slope_type)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn minimap_screen_point_to_camera_top_left(
     screen_x: f32,
@@ -439,7 +429,6 @@ impl MinimapRenderer {
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
         bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
-        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
@@ -510,14 +499,10 @@ impl MinimapRenderer {
                 continue;
             }
             let pos = &entity.position;
-            let entity_cell = resolved_terrain.and_then(|terrain| terrain.cell(pos.rx, pos.ry));
-            if !self
-                .playfield_bounds
-                .zip(entity_cell)
-                .is_some_and(|(bounds, cell)| {
-                    techno_cell_in_playfield(bounds, pos.rx, pos.ry, cell.level, cell.slope_type)
-                })
-            {
+            // Radar's Techno reader consumes the canonical TechnoClass+0x3D5
+            // byte. A fresh mode-one bounds query here would erase ordinary
+            // movement hysteresis and disagree after teleport/action writers.
+            if !minimap_entity_in_playfield(self.playfield_bounds.is_some(), entity) {
                 continue;
             }
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
@@ -927,6 +912,13 @@ impl MinimapRenderer {
     pub fn white_texture(&self) -> &BatchTexture {
         &self.white_texture
     }
+}
+
+fn minimap_entity_in_playfield(
+    playfield_authority_configured: bool,
+    entity: &crate::sim::game_entity::GameEntity,
+) -> bool {
+    !playfield_authority_configured || entity.in_playfield
 }
 
 /// Create a 2x2 solid white texture for drawing lines and rectangles.

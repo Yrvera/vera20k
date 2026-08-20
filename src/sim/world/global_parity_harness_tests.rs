@@ -474,7 +474,10 @@ const GLOBAL_HARNESS_PRE_MISSION_V29_HASH: u64 = 0xC5B2_3DFA_C256_6948;
 // is byte-identical across all three streams — the award consumes no RNG, which is
 // what `VeterancyClass::Add @ 0x0074FF50` does — and record/replay stayed equal at
 // every tick, ruling out both nondeterminism and a routing change.
-const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x59AA_21D8_07C4_E59C;
+// Re-baselined 2026-08-20 for the v87 TechnoClass+0x3D5 membership byte. Both
+// historical schema probes and all three committed RNG stream fingerprints
+// remained byte-identical, isolating this to current-schema hash composition.
+const GLOBAL_HARNESS_FINAL_HASH: u64 = 0x1167_0F9D_28F3_176B;
 
 fn harness_ini() -> IniFile {
     // Multi-faction vehicles + infantry + buildings (war factory, refinery) plus a

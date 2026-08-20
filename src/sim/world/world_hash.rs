@@ -189,7 +189,7 @@ impl Simulation {
     /// Hashes clocks, Scenario RNG, production, fog, alliances, and all entity
     /// components in stable-entity-ID order (EntityStore keys_sorted) for determinism.
     pub fn state_hash(&self) -> u64 {
-        self.state_hash_with_schema(true, true, true, true, true, true, true)
+        self.state_hash_with_schema(true, true, true, true, true, true, true, true)
     }
 
     /// Test-only provenance probe for the v29 Mission hash rebaseline.
@@ -198,7 +198,7 @@ impl Simulation {
     /// Mission/hash layout from representable final state.
     #[cfg(test)]
     pub(crate) fn state_hash_without_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(true, false, false, false, false, false, false)
+        self.state_hash_with_schema(true, false, false, false, false, false, false, false)
     }
 
     /// Test-only provenance probe for the historical pre-v28 baseline.
@@ -207,7 +207,7 @@ impl Simulation {
     /// schema changes do not invalidate that earlier proof.
     #[cfg(test)]
     pub(crate) fn state_hash_before_lifecycle_v28_and_mission_v29(&self) -> u64 {
-        self.state_hash_with_schema(false, false, false, false, false, false, false)
+        self.state_hash_with_schema(false, false, false, false, false, false, false, false)
     }
 
     fn state_hash_with_schema(
@@ -219,6 +219,7 @@ impl Simulation {
         include_building_anim_overlays_v45: bool,
         include_terminal_score_v46: bool,
         include_playfield_authority_v47: bool,
+        include_techno_playfield_v87: bool,
     ) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -283,6 +284,7 @@ impl Simulation {
             include_mission_v29,
             include_entity_animation_v44,
             include_building_anim_overlays_v45,
+            include_techno_playfield_v87,
         );
         self.hash_anims(&mut hasher);
         self.hash_particle_systems(&mut hasher);
@@ -801,6 +803,7 @@ impl Simulation {
         include_mission_v29: bool,
         include_entity_animation_v44: bool,
         include_building_anim_overlays_v45: bool,
+        include_techno_playfield_v87: bool,
     ) {
         for entity in self.substrate.entities.values() {
             entity.stable_id.hash(hasher);
@@ -816,6 +819,12 @@ impl Simulation {
                 entity.dying.hash(hasher);
                 entity.dirty_rect_eligible.hash(hasher);
                 entity.owned_count_released.hash(hasher);
+            }
+            if include_techno_playfield_v87 {
+                // TechnoClass+0x3D5 is mutable admission state, not a derived
+                // position query: ordinary movement is promote-only while
+                // teleport and Set_Clipped_LocalSize own exact demotions.
+                entity.in_playfield.hash(hasher);
             }
             entity.move_sound_active.hash(hasher);
             entity.move_sound_countdown.hash(hasher);
@@ -1768,6 +1777,9 @@ mod lifecycle_hash_tests {
         });
         assert_entity_mutation_changes_hash(|entity| {
             entity.occupier = !entity.occupier;
+        });
+        assert_entity_mutation_changes_hash(|entity| {
+            entity.in_playfield = !entity.in_playfield;
         });
         assert_entity_mutation_changes_hash(|entity| {
             entity.passive_scan_timer.arm(7, 12);

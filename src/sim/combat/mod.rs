@@ -6118,6 +6118,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                false,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6223,6 +6224,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                false,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {
@@ -6243,6 +6245,7 @@ pub(crate) fn resolve_attacker_fire(
                 fog,
                 garrison_retarget_range,
                 terrain.as_deref(),
+                false,
             ) {
                 out.retarget_events.push((snap.stable_id, new_target));
             } else {

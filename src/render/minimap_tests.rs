@@ -464,12 +464,21 @@ fn minimap_techno_membership_is_height_aware_at_raised_slope_edge() {
         .flat_map(|ry| (0u16..64).map(move |rx| (rx, ry)))
         .find(|&(rx, ry)| {
             bounds.contains_geometry_packed(rx.into(), ry.into())
-                && !techno_cell_in_playfield(bounds, rx, ry, 10, 1)
+                && !bounds.contains_height_aware_packed(rx.into(), ry.into(), 10, 1)
         })
         .expect("raised/slope edge where native mode 0 and mode 1 differ");
     assert!(bounds.contains_geometry_packed(rx.into(), ry.into()));
-    assert!(!techno_cell_in_playfield(bounds, rx, ry, 10, 1));
-    assert!(techno_cell_in_playfield(bounds, rx, ry, 0, 0));
+    assert!(!bounds.contains_height_aware_packed(rx.into(), ry.into(), 10, 1));
+    assert!(bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0));
+
+    let mut entity =
+        crate::sim::game_entity::GameEntity::test_default(1, "MTNK", "Americans", rx, ry);
+    entity.in_playfield = false;
+    assert!(!minimap_entity_in_playfield(true, &entity));
+    entity.in_playfield = true;
+    assert!(minimap_entity_in_playfield(true, &entity));
+    entity.in_playfield = false;
+    assert!(minimap_entity_in_playfield(false, &entity));
 }
 
 #[test]

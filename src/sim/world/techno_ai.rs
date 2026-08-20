@@ -927,6 +927,7 @@ fn passive_target_scan(sim: &mut Simulation, id: u64, rules: &RuleSet, mission: 
         id,
         Some(&sim.fog),
         sim.resolved_terrain.as_ref(),
+        sim.playfield_bounds.is_some(),
     );
     // Install the target only — no mission, no destination, and nothing fires
     // this tick. A unit that acquires while driving keeps driving, and an idle
@@ -1651,6 +1652,53 @@ mod tests {
         assert!(
             allied.passively_acquired_target,
             "the target must be flagged as scanner-acquired (it gates the drop/clear blocks)"
+        );
+    }
+
+    #[test]
+    fn techno_playfield_stored_membership_gates_same_frame_passive_targeting() {
+        let rules = passive_rules();
+        let heights = std::collections::BTreeMap::new();
+        let grid = crate::sim::pathfinding::PathGrid::new(64, 64);
+        let mut sim = Simulation::with_seed(0x3D5);
+        sim.spawn_from_map(
+            &[
+                passive_map_entity("Americans", "MTNK", 20, 20, EntityCategory::Unit),
+                passive_map_entity("Soviet", "UNARM", 23, 20, EntityCategory::Unit),
+            ],
+            Some(&rules),
+            &heights,
+        );
+        sim.playfield_bounds = Some(
+            crate::map::playfield::PlayfieldBounds::from_normalized_local_size(64, 2, 2, 56, 52),
+        );
+        sim.substrate.entities.get_mut(1).unwrap().in_playfield = true;
+        sim.substrate.entities.get_mut(2).unwrap().in_playfield = false;
+
+        for _ in 0..90 {
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+        }
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .attack_target
+                .is_none()
+        );
+
+        sim.substrate.entities.get_mut(2).unwrap().in_playfield = true;
+        for _ in 0..90 {
+            let _ = sim.advance_tick(&[], Some(&rules), &heights, Some(&grid), None, 67);
+        }
+        assert!(
+            sim.substrate
+                .entities
+                .get(1)
+                .unwrap()
+                .attack_target
+                .is_some(),
+            "Evaluate_Candidate @ 0x006F7DB0 admits the stored true member"
         );
     }
 

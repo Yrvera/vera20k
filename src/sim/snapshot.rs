@@ -263,7 +263,10 @@ use crate::sim::world::Simulation;
 // input, a second writer after load could diverge even though mutable bounds load.
 // Bumped 85 -> 86: every trigger-action-40 execution now serializes and hashes a
 // distinct playfield revision so repeated writers rebuild presentation after save/load.
-const SNAPSHOT_VERSION: u32 = 86;
+// Bumped 86 -> 87: GameEntity now persists and hashes the canonical
+// TechnoClass+0x3D5 playfield-membership byte. Its hysteretic ordinary-movement
+// writer means it cannot be reconstructed from position after load.
+const SNAPSHOT_VERSION: u32 = 87;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2566,8 +2569,8 @@ mod tests {
     /// both the spawn gate and the removal predicate. A serialized field is
     /// gone, so old bytes no longer decode.
     #[test]
-    fn gsi_04_01_snapshot_version_is_86() {
-        assert_eq!(super::SNAPSHOT_VERSION, 86);
+    fn gsi_04_01_snapshot_version_is_87() {
+        assert_eq!(super::SNAPSHOT_VERSION, 87);
     }
 
     #[test]
@@ -4756,6 +4759,28 @@ mod tests {
         assert!(restored_entity.dirty_rect_eligible);
         assert!(restored_entity.owned_count_released);
         assert_eq!(restored.state_hash(), changed_hash);
+    }
+
+    #[test]
+    fn techno_playfield_membership_roundtrips_and_changes_state_hash_v87() {
+        use crate::sim::game_entity::GameEntity;
+
+        let mut sim = Simulation::new();
+        sim.substrate
+            .entities
+            .insert(GameEntity::test_default(1, "MTNK", "Americans", 5, 5));
+        sim.scenario_rng = crate::sim::rng::SimRng::new(0);
+        let default_hash = sim.state_hash();
+        sim.substrate.entities.get_mut(1).unwrap().in_playfield = true;
+        let member_hash = sim.state_hash();
+        assert_ne!(default_hash, member_hash);
+
+        let bytes = GameSnapshot::save(&sim, 0, 0, "test_map", 0);
+        let restored = GameSnapshot::load(&bytes)
+            .expect("v87 membership loads")
+            .sim;
+        assert!(restored.substrate.entities.get(1).unwrap().in_playfield);
+        assert_eq!(restored.state_hash(), member_hash);
     }
 
     #[test]

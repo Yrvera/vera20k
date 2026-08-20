@@ -257,6 +257,35 @@ fn test_recompute_visibility_reveals_expected_cells() {
 }
 
 #[test]
+fn techno_playfield_stored_membership_gates_same_frame_los() {
+    let mut store = EntityStore::new();
+    spawn_with_vision(&mut store, 1, "Americans", 5, 5, 2);
+    let config = VisionConfig {
+        require_playfield_membership: true,
+        ..default_config()
+    };
+
+    let suppressed = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(16, 16)),
+        &Default::default(),
+        &config,
+        &ti(),
+    );
+    assert!(!suppressed.is_cell_visible(intern::test_intern("Americans"), 5, 5));
+
+    store.get_mut(1).unwrap().in_playfield = true;
+    let admitted = recompute_owner_visibility(
+        &store,
+        Some(&PathGrid::new(16, 16)),
+        &Default::default(),
+        &config,
+        &ti(),
+    );
+    assert!(admitted.is_cell_visible(intern::test_intern("Americans"), 5, 5));
+}
+
+#[test]
 fn test_recompute_visibility_clamps_to_grid_bounds() {
     let mut store = EntityStore::new();
     spawn_with_vision(&mut store, 1, "Americans", 0, 0, 4);
@@ -373,6 +402,7 @@ fn test_veteran_sight_bonus() {
     store.insert(entity);
 
     let config = VisionConfig {
+        require_playfield_membership: false,
         veteran_sight_bonus: 2,
         leptons_per_sight_increase: 0,
         reveal_by_height: false,
@@ -420,6 +450,7 @@ fn elevation_grants_no_sight_bonus_at_any_reachable_terrain_level() {
     );
     store.insert(entity);
     let config = VisionConfig {
+        require_playfield_membership: false,
         veteran_sight_bonus: 0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
@@ -464,6 +495,7 @@ fn test_elevation_sight_bonus_z0_gives_no_bonus() {
     );
     store.insert(entity);
     let config = VisionConfig {
+        require_playfield_membership: false,
         veteran_sight_bonus: 0,
         leptons_per_sight_increase: 2000,
         reveal_by_height: false,
@@ -505,6 +537,7 @@ fn test_elevation_sight_bonus_disabled_when_zero() {
     store.insert(entity);
     // leptons_per_sight_increase=0 → elevation bonus disabled.
     let config = VisionConfig {
+        require_playfield_membership: false,
         veteran_sight_bonus: 0,
         leptons_per_sight_increase: 0,
         reveal_by_height: false,

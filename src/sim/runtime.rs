@@ -195,6 +195,7 @@ impl SimRuntime {
                 triggers: &self.resources.triggers,
                 events: &self.resources.events,
                 actions: &self.resources.actions,
+                rules: Some(&self.resources.rules),
             }),
         )
     }

@@ -1628,6 +1628,7 @@ fn try_issue_chrono_far_return_teleport(
         true,
         true,
         false,
+        sim.playfield_bounds.is_some(),
     );
     if issued {
         emit_chrono_warp_sounds(sim, rules, snap.type_id, (snap.rx, snap.ry), staging);
@@ -2226,6 +2227,7 @@ fn issue_stock_miner_drive_move_with_overlay_registry(
         None,
         info.mover_is_crusher,
         Some(&blocker_neighbor_counts),
+        sim.playfield_bounds.is_some(),
         Some(&mut sim.substrate.cell_occupation),
     );
     if !issued {
@@ -2304,6 +2306,7 @@ pub(crate) fn issue_move_if_idle(
             None,
             false,
             Some(&blocker_neighbor_counts),
+            sim.playfield_bounds.is_some(),
             Some(&mut sim.substrate.cell_occupation),
         );
     }

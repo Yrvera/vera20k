@@ -314,6 +314,9 @@ pub(crate) struct TriggerInputs<'a> {
     pub triggers: &'a TriggerMap,
     pub events: &'a EventMap,
     pub actions: &'a ActionMap,
+    /// Bound match rules used by action callbacks that share ordinary Techno
+    /// runtime calculations (not reparsed or substituted by trigger data).
+    pub rules: Option<&'a RuleSet>,
 }
 
 #[cfg(test)]
@@ -2619,6 +2622,7 @@ impl Simulation {
         triggers: &TriggerMap,
         events: &EventMap,
         actions: &ActionMap,
+        rules: Option<&RuleSet>,
     ) -> Vec<TriggerEffect> {
         let mut rt = std::mem::take(&mut self.trigger_runtime);
         let effects = rt.advance_at_frame(
@@ -2628,6 +2632,7 @@ impl Simulation {
             events,
             actions,
             Some(self),
+            rules,
         );
         self.trigger_runtime = rt;
         effects
@@ -2656,7 +2661,11 @@ impl Simulation {
     /// returns to `TriggerAction__Execute @ 0x006DD8B0`. Rust performs every
     /// corresponding owned update synchronously here, so later actions and
     /// the same master frame observe one coherent authority.
-    pub(crate) fn change_visible_map_area(&mut self, raw_local_size: [i32; 4]) -> bool {
+    pub(crate) fn change_visible_map_area(
+        &mut self,
+        raw_local_size: [i32; 4],
+        rules: Option<&RuleSet>,
+    ) -> bool {
         let (Some(current), Some(size_height)) =
             (self.playfield_bounds, self.playfield_size_height)
         else {
@@ -2673,6 +2682,72 @@ impl Simulation {
         // FUN_006E21E0 runs the complete radar-surface rebuild on every
         // execution. Do not deduplicate equal normalized writers.
         self.playfield_revision = self.playfield_revision.wrapping_add(1);
+
+        // `MapClass::Set_Clipped_LocalSize @ 0x00567230` exact-recomputes the
+        // canonical TechnoClass+0x3D5 byte for every represented Techno. This
+        // must precede later action consumers and may both demote and promote;
+        // ordinary per-cell movement's writer is deliberately only 0 -> 1.
+        let membership_updates = self
+            .substrate
+            .entities
+            .keys_sorted()
+            .into_iter()
+            .filter_map(|stable_id| {
+                let entity = self.substrate.entities.get(stable_id)?;
+                let member = crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+                    (i32::from(entity.position.rx), i32::from(entity.position.ry)),
+                    Some(bounds),
+                    self.resolved_terrain.as_ref(),
+                );
+                let reveal = !entity.in_playfield
+                    && member
+                    && entity.lifecycle.object_alive
+                    && !entity.lifecycle.in_limbo
+                    && !entity.dying
+                    && entity.health.current > 0
+                    && entity.category != EntityCategory::Structure
+                    && self
+                        .houses
+                        .get(&entity.owner)
+                        .is_some_and(|house| house.is_human);
+                Some((stable_id, member, reveal))
+            })
+            .collect::<Vec<_>>();
+        for &(stable_id, member, _) in &membership_updates {
+            if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+                entity.in_playfield = member;
+            }
+        }
+        // FUN_006E21E0's false->true callback is the Techno reveal/update
+        // virtual (`0x0070ADC0`), only for human-owned live nonlimbo mobiles;
+        // Buildings are explicitly excluded. Rust's owned equivalent commits
+        // the sight reveal immediately, before this action returns.
+        let reveal_config = crate::sim::vision::VisionConfig {
+            require_playfield_membership: true,
+            veteran_sight_bonus: rules.map_or(0, |rules| rules.general.veteran_sight),
+            leptons_per_sight_increase: rules
+                .map_or(0, |rules| rules.general.leptons_per_sight_increase),
+            reveal_by_height: rules.is_none_or(|rules| rules.general.reveal_by_height),
+            fog_of_war: self.session.game_options.fog_of_war,
+        };
+        let height_grid = reveal_config
+            .reveal_by_height
+            .then(|| {
+                self.path_grid
+                    .as_ref()
+                    .map(|grid| grid.ground_height_grid())
+            })
+            .flatten();
+        for (stable_id, _, reveal) in membership_updates {
+            if reveal && let Some(entity) = self.substrate.entities.get(stable_id) {
+                crate::sim::vision::reveal_entity_vision(
+                    &mut self.fog,
+                    entity,
+                    &reveal_config,
+                    height_grid.as_deref(),
+                );
+            }
+        }
 
         if let Some(terrain) = self.resolved_terrain.as_mut() {
             terrain.recalc_playfield_attributes(bounds);
@@ -2692,10 +2767,68 @@ impl Simulation {
         true
     }
 
+    /// Exact mode-one query for the stored TechnoClass+0x3D5 writer family.
+    /// Absence means there is no live MapClass authority, not rectangular or
+    /// permissive fallback authority.
+    fn entity_playfield_membership_mode_one(&self, stable_id: u64) -> Option<bool> {
+        let bounds = self.playfield_bounds?;
+        let entity = self.substrate.entities.get(stable_id)?;
+        Some(crate::sim::cell_rect::cell_is_in_playfield_height_aware(
+            (i32::from(entity.position.rx), i32::from(entity.position.ry)),
+            Some(bounds),
+            self.resolved_terrain.as_ref(),
+        ))
+    }
+
+    /// Unlimbo's exact establishment writer (`TechnoClass::Unlimbo @
+    /// 0x006F6CFE`).
+    pub(crate) fn establish_entity_playfield_membership_on_unlimbo(&mut self, stable_id: u64) {
+        let Some(member) = self.entity_playfield_membership_mode_one(stable_id) else {
+            return;
+        };
+        if let Some(entity) = self.substrate.entities.get_mut(stable_id) {
+            entity.in_playfield = member;
+        }
+    }
+
+    /// Ordinary per-cell movement writer (`0x006F511A..0x006F5139`): only
+    /// promote 0 -> 1. A unit that walks back outside retains membership until
+    /// an exact writer (teleport or Set_Clipped_LocalSize) clears it.
+    fn promote_entity_playfield_membership_after_move(&mut self, stable_id: u64) {
+        if self
+            .substrate
+            .entities
+            .get(stable_id)
+            .is_none_or(|entity| entity.in_playfield)
+        {
+            return;
+        }
+        if self.entity_playfield_membership_mode_one(stable_id) == Some(true)
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.in_playfield = true;
+        }
+    }
+
+    /// Teleport arrival's exceptional exact outside clear (`0x00719A99`). An
+    /// inside arrival does not promote a previously-false byte.
+    fn clear_entity_playfield_membership_after_teleport(&mut self, stable_id: u64) {
+        if self.entity_playfield_membership_mode_one(stable_id) == Some(false)
+            && let Some(entity) = self.substrate.entities.get_mut(stable_id)
+        {
+            entity.in_playfield = false;
+        }
+    }
+
     fn poll_triggers_for_master_frame(&mut self, inputs: TriggerInputs<'_>) {
         // YR LogicClass::Update polls scenario triggers before the live-object walk.
-        let effects =
-            self.advance_triggers(inputs.graph, inputs.triggers, inputs.events, inputs.actions);
+        let effects = self.advance_triggers(
+            inputs.graph,
+            inputs.triggers,
+            inputs.events,
+            inputs.actions,
+            inputs.rules,
+        );
         self.trigger_effects.extend(effects);
     }
 
@@ -5171,6 +5304,11 @@ impl Simulation {
             }
 
             let before_movement = sim.movement_sound_probe(stable_id);
+            let cell_before_movement = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.position.rx, entity.position.ry));
             let one = [stable_id];
             movement_stats.merge(movement::tick_movement_object_with_grids(
                 &mut sim.substrate.entities,
@@ -5245,6 +5383,14 @@ impl Simulation {
             }
 
             sim.tick_air_movement_with_cell_lists_one(stable_id);
+            let teleport_relocating = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .and_then(|entity| entity.teleport_state.as_ref())
+                .is_some_and(|state| {
+                    state.phase == crate::sim::movement::teleport_movement::TeleportPhase::Relocate
+                });
             if let Some(rules) = rules {
                 let warp_out_type = sim.interner.intern(&rules.general.warp_out.name);
                 let warp_out_total_frames = rules
@@ -5294,6 +5440,20 @@ impl Simulation {
                 );
             }
             movement::tick_locomotor_piggyback_restore_one(&mut sim.substrate.entities, stable_id);
+
+            let cell_after_movement = sim
+                .substrate
+                .entities
+                .get(stable_id)
+                .map(|entity| (entity.position.rx, entity.position.ry));
+            if teleport_relocating {
+                // `TeleportLocomotionClass` arrival owns the exceptional exact
+                // outside clear at 0x00719A99; it must not flow through the
+                // ordinary promote-only per-cell writer.
+                sim.clear_entity_playfield_membership_after_teleport(stable_id);
+            } else if cell_before_movement != cell_after_movement {
+                sim.promote_entity_playfield_membership_after_move(stable_id);
+            }
 
             let mut lifecycle_requests = std::mem::take(&mut sim.pending_lifecycle_requests);
             for request in lifecycle_requests.drain(..) {
@@ -5424,6 +5584,7 @@ impl Simulation {
         // DEPENDS ON: movement (positions updated), spawn (new entities need LOS).
         // PRODUCES: fog state used by combat targeting (phase 5).
         let vision_config = vision::VisionConfig {
+            require_playfield_membership: self.playfield_bounds.is_some(),
             veteran_sight_bonus: rules.map_or(0, |r| r.general.veteran_sight),
             leptons_per_sight_increase: rules.map_or(0, |r| r.general.leptons_per_sight_increase),
             // Height-based LOS: terrain 4+ levels above the viewer at the

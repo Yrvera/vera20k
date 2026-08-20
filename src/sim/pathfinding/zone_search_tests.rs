@@ -516,6 +516,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
         None,
         false,
         Some(&blocker_counts),
+        false,
         Some(&mut cell_occupation),
     ));
     let movement = entities
@@ -558,6 +559,7 @@ fn gsi_04_12_layered_production_precheck_projects_only_hierarchy_coordinates() {
             None,
             false,
             Some(&blocker_counts),
+            false,
             None,
         ),
         "destination projection must be selected by the destination structural bit"

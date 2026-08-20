@@ -252,6 +252,7 @@ pub fn find_path_zoned(
         urgency,
         mover_is_crusher,
         is_infantry,
+        true,
     )
 }
 
@@ -272,6 +273,7 @@ pub(crate) fn find_path_zoned_marker(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
 ) -> Option<Vec<(u16, u16)>> {
     find_path_zoned_marker_inner(
         grid,
@@ -279,7 +281,11 @@ pub(crate) fn find_path_zoned_marker(
         goal,
         costs,
         entity_blocks,
-        zone_grid,
+        if allow_zone_hierarchy {
+            zone_grid
+        } else {
+            None
+        },
         mz,
         movement_zone,
         resolved_terrain,
@@ -602,6 +608,7 @@ pub fn find_layered_path_zoned(
         urgency,
         mover_is_crusher,
         is_infantry,
+        true,
     )
 }
 
@@ -624,7 +631,16 @@ pub(crate) fn find_layered_path_zoned_marker(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
 ) -> Option<Vec<LayeredPathStep>> {
+    // `AStar @ 0x0042CAD6` admits hierarchy only while the mover's stored
+    // TechnoClass+0x3D5 byte is true. False is not a hard failure: it bypasses
+    // zone/hierarchy admission and runs the ordinary flat/layered cell A*.
+    let zone_grid = if allow_zone_hierarchy {
+        zone_grid
+    } else {
+        None
+    };
     if !can_use_reduced_zone_precheck(movement_zone) {
         return find_layered_path_marker(
             grid,

@@ -614,6 +614,11 @@ impl Simulation {
             entity.position.sub_x = request.position.sub_x;
             entity.position.sub_y = request.position.sub_y;
         }
+        // `TechnoClass::Unlimbo @ 0x006F6CFE` establishes the canonical
+        // TechnoClass+0x3D5 byte from mode-one MapClass membership. Headless
+        // fixtures have no MapClass authority, so they retain the constructor
+        // default and their consumers explicitly leave the byte unenforced.
+        self.establish_entity_playfield_membership_on_unlimbo(stable_id);
         #[cfg(test)]
         self.trace_lifecycle_for_test(LifecycleTestEvent::RevealCoordinatesCommitted);
 

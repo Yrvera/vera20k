@@ -236,6 +236,42 @@ pub(crate) fn compute_click_selection_snapshot(
     bridge_height_map: Option<&TacticalBridgeInverseMap>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<SelectionMutation> {
+    compute_click_selection_snapshot_with_playfield(
+        entities,
+        encounter_order,
+        current_selection,
+        fog,
+        local_owner,
+        world_x,
+        world_y,
+        click_radius,
+        additive,
+        rules,
+        houses,
+        height_map,
+        bridge_height_map,
+        interner,
+        false,
+    )
+}
+
+pub(crate) fn compute_click_selection_snapshot_with_playfield(
+    entities: &EntityStore,
+    encounter_order: &[u64],
+    current_selection: &[u64],
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    world_x: f32,
+    world_y: f32,
+    click_radius: f32,
+    additive: bool,
+    rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
+    height_map: &std::collections::BTreeMap<(u16, u16), u8>,
+    bridge_height_map: Option<&TacticalBridgeInverseMap>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
+) -> Option<SelectionMutation> {
     let Some(picked_sid) = pick_entity_at_point(
         entities,
         encounter_order,
@@ -265,7 +301,7 @@ pub(crate) fn compute_click_selection_snapshot(
 
     let picked = entities.get(picked_sid)?;
     let type_str = interner.map_or("", |i| i.resolve(picked.type_ref));
-    let admitted = static_selection_gate(picked, type_str, rules);
+    let admitted = static_selection_gate(picked, type_str, rules, require_playfield_membership);
     // A shift-click adds when the selection it is joining is the local player's,
     // whatever was clicked. The native ACTION_SELECT arm asks
     // `HouseClass__IsHumanPlayer(CurrentObjects[0]->Owner)` — 0x004ABD42 loads
@@ -445,6 +481,42 @@ pub(crate) fn compute_box_selection_snapshot(
     houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<SelectionMutation> {
+    compute_box_selection_snapshot_with_playfield(
+        entities,
+        preflight_order,
+        encounter_order,
+        current_selection,
+        fog,
+        local_owner,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        additive,
+        rules,
+        houses,
+        interner,
+        false,
+    )
+}
+
+pub(crate) fn compute_box_selection_snapshot_with_playfield(
+    entities: &EntityStore,
+    preflight_order: &[u64],
+    encounter_order: &[u64],
+    current_selection: &[u64],
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    additive: bool,
+    rules: Option<&RuleSet>,
+    houses: Option<&HouseStates>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
+) -> Option<SelectionMutation> {
     if !band_rect_contains_drawn_object(
         entities,
         preflight_order,
@@ -470,6 +542,7 @@ pub(crate) fn compute_box_selection_snapshot(
         rules,
         houses,
         interner,
+        require_playfield_membership,
     );
     if additive {
         // The native band callback only ever calls Select — there is no Deselect
@@ -508,6 +581,32 @@ pub(crate) fn compute_type_select_tap(
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
     across_map: bool,
+) -> TypeSelectTapResult {
+    compute_type_select_tap_with_playfield(
+        entities,
+        screen_order,
+        map_order,
+        current_selection,
+        fog,
+        local_owner,
+        rules,
+        interner,
+        across_map,
+        false,
+    )
+}
+
+pub(crate) fn compute_type_select_tap_with_playfield(
+    entities: &EntityStore,
+    screen_order: &[u64],
+    map_order: &[u64],
+    current_selection: &[u64],
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    across_map: bool,
+    require_playfield_membership: bool,
 ) -> TypeSelectTapResult {
     let mut mutation = SelectionMutation::default();
     let mut selected = current_selection.to_vec();
@@ -560,10 +659,15 @@ pub(crate) fn compute_type_select_tap(
             rules,
             interner,
             true,
+            require_playfield_membership,
         );
         if visible.iter().any(|id| !selected.contains(id)) {
             mutation.select.extend(type_select_final_admissions(
-                entities, &visible, rules, interner,
+                entities,
+                &visible,
+                rules,
+                interner,
+                require_playfield_membership,
             ));
             return TypeSelectTapResult {
                 mutation,
@@ -582,12 +686,14 @@ pub(crate) fn compute_type_select_tap(
         rules,
         interner,
         false,
+        require_playfield_membership,
     );
     mutation.select.extend(type_select_final_admissions(
         entities,
         &map_candidates,
         rules,
         interner,
+        require_playfield_membership,
     ));
     TypeSelectTapResult {
         mutation,
@@ -611,6 +717,7 @@ fn type_select_candidates(
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
     screen_only: bool,
+    require_playfield_membership: bool,
 ) -> Vec<u64> {
     let local_owner_id = local_owner.and_then(|owner| interner.and_then(|i| i.get(owner)));
     source_order
@@ -629,7 +736,8 @@ fn type_select_candidates(
                 return None;
             }
             let dynamic = can_be_selected_now(entity, entities, rules, interner)
-                && type_is_selectable(type_id, rules);
+                && type_is_selectable(type_id, rules)
+                && (!require_playfield_membership || entity.in_playfield);
             let undeploying_building_fallback = entity.category == EntityCategory::Structure
                 && rules
                     .and_then(|r| r.object(type_id))
@@ -644,6 +752,7 @@ fn type_select_final_admissions(
     candidates: &[u64],
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
 ) -> Vec<u64> {
     candidates
         .iter()
@@ -651,7 +760,7 @@ fn type_select_final_admissions(
         .filter(|id| {
             entities.get(*id).is_some_and(|entity| {
                 let type_id = interner.map_or("", |i| i.resolve(entity.type_ref));
-                static_selection_gate(entity, type_id, rules)
+                static_selection_gate(entity, type_id, rules, require_playfield_membership)
             })
         })
         .collect()
@@ -670,6 +779,30 @@ pub(crate) fn compute_type_select_click_mutation(
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> SelectionMutation {
+    compute_type_select_click_mutation_with_playfield(
+        entities,
+        scope_order,
+        current_selection,
+        clicked_id,
+        additive,
+        local_owner,
+        rules,
+        interner,
+        false,
+    )
+}
+
+pub(crate) fn compute_type_select_click_mutation_with_playfield(
+    entities: &EntityStore,
+    scope_order: &[u64],
+    current_selection: &[u64],
+    clicked_id: u64,
+    additive: bool,
+    local_owner: Option<&str>,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
+) -> SelectionMutation {
     let Some(clicked) = entities.get(clicked_id) else {
         return SelectionMutation::default();
     };
@@ -684,6 +817,7 @@ pub(crate) fn compute_type_select_click_mutation(
                 rules,
                 interner,
                 false,
+                require_playfield_membership,
             )
             .into_iter()
             .filter(|id| current_selection.contains(id))
@@ -701,6 +835,7 @@ pub(crate) fn compute_type_select_click_mutation(
             rules,
             interner,
             true,
+            require_playfield_membership,
         ),
         ..Default::default()
     }
@@ -714,6 +849,39 @@ pub(crate) fn compute_type_select_box_mutation(
     screen_order: &[u64],
     scope_order: &[u64],
     current_selection: &[u64],
+    fog: Option<&FogState>,
+    local_owner: Option<&str>,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    additive: bool,
+    rules: Option<&RuleSet>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+) -> SelectionMutation {
+    compute_type_select_box_mutation_with_playfield(
+        entities,
+        screen_order,
+        scope_order,
+        current_selection,
+        fog,
+        local_owner,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        additive,
+        rules,
+        interner,
+        false,
+    )
+}
+
+pub(crate) fn compute_type_select_box_mutation_with_playfield(
+    entities: &EntityStore,
+    screen_order: &[u64],
+    scope_order: &[u64],
+    current_selection: &[u64],
     _fog: Option<&FogState>,
     local_owner: Option<&str>,
     min_x: f32,
@@ -723,6 +891,7 @@ pub(crate) fn compute_type_select_box_mutation(
     additive: bool,
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
 ) -> SelectionMutation {
     let mut represented_types = Vec::new();
     for &id in screen_order {
@@ -748,6 +917,7 @@ pub(crate) fn compute_type_select_box_mutation(
             rules,
             interner,
             true,
+            require_playfield_membership,
         ));
     }
     select.retain(|id| !additive || !current_selection.contains(id));
@@ -766,6 +936,7 @@ fn exact_type_group(
     rules: Option<&RuleSet>,
     interner: Option<&crate::sim::intern::StringInterner>,
     selecting: bool,
+    require_playfield_membership: bool,
 ) -> Vec<u64> {
     source_order
         .iter()
@@ -777,7 +948,8 @@ fn exact_type_group(
                 || entity.lifecycle.in_limbo
                 || entity.type_ref != type_ref
                 || local_owner.is_some_and(|local| !owner.eq_ignore_ascii_case(local))
-                || (selecting && !static_selection_gate(entity, type_id, rules))
+                || (selecting
+                    && !static_selection_gate(entity, type_id, rules, require_playfield_membership))
             {
                 return None;
             }
@@ -798,6 +970,7 @@ fn entities_in_rect(
     rules: Option<&RuleSet>,
     _houses: Option<&HouseStates>,
     interner: Option<&crate::sim::intern::StringInterner>,
+    require_playfield_membership: bool,
 ) -> Vec<u64> {
     encounter_order
         .iter()
@@ -811,7 +984,14 @@ fn entities_in_rect(
             }
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
-            if !is_local_band_candidate(local_owner, owner_str, entity, type_str, rules) {
+            if !is_local_band_candidate(
+                local_owner,
+                owner_str,
+                entity,
+                type_str,
+                rules,
+                require_playfield_membership,
+            ) {
                 return None;
             }
             if !can_be_selected_now(entity, entities, rules, interner) {
@@ -1051,6 +1231,7 @@ fn static_selection_gate(
     entity: &crate::sim::game_entity::GameEntity,
     entity_type: &str,
     rules: Option<&RuleSet>,
+    require_playfield_membership: bool,
 ) -> bool {
     entity.lifecycle.object_alive
         && !entity.lifecycle.in_limbo
@@ -1058,6 +1239,10 @@ fn static_selection_gate(
             .teleport_state
             .as_ref()
             .is_some_and(|teleport| teleport.warp_out_active())
+        // `TechnoClass::Select @ 0x006F32D0` requires the stored +0x3D5
+        // membership byte. The app supplies the live MapClass authority gate;
+        // headless selection fixtures leave it disabled.
+        && (!require_playfield_membership || entity.in_playfield)
         && type_is_selectable(entity_type, rules)
 }
 
@@ -1071,9 +1256,10 @@ fn is_local_band_candidate(
     entity: &crate::sim::game_entity::GameEntity,
     entity_type: &str,
     rules: Option<&RuleSet>,
+    require_playfield_membership: bool,
 ) -> bool {
     local_owner.is_none_or(|local| entity_owner.eq_ignore_ascii_case(local))
-        && static_selection_gate(entity, entity_type, rules)
+        && static_selection_gate(entity, entity_type, rules, require_playfield_membership)
 }
 
 #[cfg(test)]
@@ -1997,6 +2183,22 @@ mod tests {
         assert!(
             !tap.mutation.select.contains(&4),
             "off-screen linked type stays out"
+        );
+    }
+
+    #[test]
+    fn techno_playfield_stored_membership_gates_local_mobile_selection() {
+        let mut entity = GameEntity::test_default(1, "MTNK", "Americans", 5, 5);
+        entity.lifecycle.object_alive = true;
+        entity.lifecycle.in_limbo = false;
+        entity.in_playfield = false;
+        assert!(!static_selection_gate(&entity, "MTNK", None, true));
+        entity.in_playfield = true;
+        assert!(static_selection_gate(&entity, "MTNK", None, true));
+        entity.in_playfield = false;
+        assert!(
+            static_selection_gate(&entity, "MTNK", None, false),
+            "headless fixtures without MapClass authority preserve prior admission"
         );
     }
 }

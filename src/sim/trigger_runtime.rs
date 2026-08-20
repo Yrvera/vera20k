@@ -128,6 +128,7 @@ impl TriggerRuntime {
         events: &EventMap,
         actions: &ActionMap,
         mut simulation: Option<&mut Simulation>,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
     ) -> Vec<TriggerEffect> {
         let linked_by_id: BTreeMap<&str, &LinkedTrigger> = graph
             .triggers
@@ -179,6 +180,7 @@ impl TriggerRuntime {
                         &mut queued,
                         triggers,
                         simulation.as_deref_mut(),
+                        rules,
                     );
                 }
             }
@@ -282,6 +284,7 @@ impl TriggerRuntime {
         queued: &mut BTreeSet<String>,
         triggers: &TriggerMap,
         simulation: Option<&mut Simulation>,
+        rules: Option<&crate::rules::ruleset::RuleSet>,
     ) {
         match action.kind {
             ACTION_FORCE_TRIGGER => {
@@ -307,7 +310,7 @@ impl TriggerRuntime {
                 if let Some(sim) = simulation
                     && let Some(raw_local_size) = parse_visible_map_area(&action.params)
                 {
-                    let _ = sim.change_visible_map_area(raw_local_size);
+                    let _ = sim.change_visible_map_area(raw_local_size, rules);
                 }
             }
             ACTION_ENABLE_TRIGGER => {

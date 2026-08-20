@@ -1114,6 +1114,10 @@ impl FogState {
 
 /// Configuration for visibility computation, passed to `recompute_owner_visibility`.
 pub struct VisionConfig {
+    /// When true, Techno reveal/update readers require the canonical stored
+    /// TechnoClass+0x3D5 membership byte. Headless fixtures without live
+    /// MapClass authority leave this false.
+    pub require_playfield_membership: bool,
     /// Additive sight bonus for veteran+ units (from [General] VeteranSight=).
     /// Default 0 (vanilla RA2 gives no sight bonus from veterancy).
     pub veteran_sight_bonus: i32,
@@ -1132,6 +1136,7 @@ pub struct VisionConfig {
 impl Default for VisionConfig {
     fn default() -> Self {
         Self {
+            require_playfield_membership: false,
             veteran_sight_bonus: 0,
             leptons_per_sight_increase: 0,
             reveal_by_height: true,
@@ -1215,59 +1220,78 @@ pub fn recompute_owner_visibility_in_place(
         if entity.dying {
             continue;
         }
+        // `TechnoClass` reveal/update readers at 0x0070ADC0/0x0070AF50
+        // suppress a source whose canonical +0x3D5 byte is false. Do not
+        // replace this with a fresh position/bounds query: ordinary movement
+        // intentionally gives the byte promote-only hysteresis.
+        if config.require_playfield_membership && !entity.in_playfield {
+            continue;
+        }
         // Skip entities inside a transport — they don't provide vision.
         if entity.passenger_role.is_inside_transport() {
             continue;
         }
 
-        let vis = fog
-            .by_owner
-            .entry(entity.owner)
-            .or_insert_with(|| OwnerVisibility::new(width, height));
-
-        let height_leptons: i32 = entity_height_leptons(entity);
-
-        // Elevation raises sight MULTIPLICATIVELY, off the object's world Z in
-        // leptons, not additively off its terrain level:
-        //   sight = trunc(Sight * (1 + 0.10 * trunc(Z_leptons / LeptonsPerSightIncrease)))
-        // At the stock LeptonsPerSightIncrease=2000 no reachable height — not a
-        // level-15 plateau, not stock FlightLevel — produces a single step, so
-        // this is inert in an ordinary match. It is written as the engine's
-        // mechanism rather than folded to a constant because a map or mode INI
-        // can lower the key. Guarded against a zero divisor, which the engine
-        // does not do (VERA-internal; gamemd equivalent UNCHECKED).
-        let base_range: i32 = entity.vision_range as i32;
-        let elev_steps: i32 = if config.leptons_per_sight_increase > 0 {
-            height_leptons / config.leptons_per_sight_increase
-        } else {
-            0
-        };
-        let with_elevation: i32 =
-            (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
-        // Veterancy is multiplicative in the engine and gated on the type owning
-        // the sight promotion ability; VERA carries an additive stand-in because
-        // the parsed rules value is an integer. Both are inert at the stock
-        // `VeteranSight=0.0`, so this only diverges under a mod/map override.
-        let vet_bonus: i32 = if entity.veterancy >= 100 {
-            config.veteran_sight_bonus
-        } else {
-            0
-        };
-        let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
-
-        reveal_radius_into(
-            vis,
-            entity.position.rx,
-            entity.position.ry,
-            effective,
-            height_leptons,
-            config.reveal_by_height,
-            config.fog_of_war,
-            height_grid,
-            width,
-            height,
-        );
+        reveal_entity_vision(fog, entity, config, height_grid);
     }
+}
+
+/// Run the same effective-sight writer used by the ordinary Techno
+/// reveal/update pass for one already-admitted entity.
+///
+/// This is also the exact Rust-owned callback boundary for the false->true
+/// TechnoClass+0x3D5 transition in `MapClass::Set_Clipped_LocalSize`: action 40
+/// must not fall back to the raw `Sight=` radius and thereby lose elevation,
+/// veterancy, shifted-center, or height-LOS semantics.
+pub(crate) fn reveal_entity_vision(
+    fog: &mut FogState,
+    entity: &crate::sim::game_entity::GameEntity,
+    config: &VisionConfig,
+    height_grid: Option<&[u8]>,
+) {
+    let width = fog.width;
+    let height = fog.height;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let vis = fog
+        .by_owner
+        .entry(entity.owner)
+        .or_insert_with(|| OwnerVisibility::new(width, height));
+    let height_leptons: i32 = entity_height_leptons(entity);
+
+    // Elevation raises sight MULTIPLICATIVELY, off the object's world Z in
+    // leptons, not additively off its terrain level:
+    //   sight = trunc(Sight * (1 + 0.10 * trunc(Z_leptons / LeptonsPerSightIncrease)))
+    let base_range: i32 = entity.vision_range as i32;
+    let elev_steps: i32 = if config.leptons_per_sight_increase > 0 {
+        height_leptons / config.leptons_per_sight_increase
+    } else {
+        0
+    };
+    let with_elevation: i32 =
+        (base_range * (100 + ELEVATION_SIGHT_PERCENT_PER_STEP * elev_steps)) / 100;
+    // Veterancy is multiplicative in the engine and gated on the type owning
+    // the sight promotion ability; VERA carries the existing additive stand-in
+    // because the parsed rules value is an integer.
+    let vet_bonus: i32 = if entity.veterancy >= 100 {
+        config.veteran_sight_bonus
+    } else {
+        0
+    };
+    let effective: u16 = ((with_elevation + vet_bonus).max(0) as u16).min(MAX_SIGHT_RANGE);
+    reveal_radius_into(
+        vis,
+        entity.position.rx,
+        entity.position.ry,
+        effective,
+        height_leptons,
+        config.reveal_by_height,
+        config.fog_of_war,
+        height_grid,
+        width,
+        height,
+    );
 }
 
 fn resolve_bounds(entities: &EntityStore, path_grid: Option<&PathGrid>) -> (u16, u16) {

@@ -303,6 +303,51 @@ fn install_common_raw_terrain(
     sim.resolved_terrain = Some(terrain);
 }
 
+#[test]
+fn techno_playfield_ctor_unlimbo_movement_hysteresis_and_teleport_clear() {
+    use crate::map::playfield::PlayfieldBounds;
+
+    let mut sim = Simulation::new();
+    install_common_raw_terrain(&mut sim, 32, 32, 0, None);
+    let bounds = PlayfieldBounds::from_normalized_local_size(32, 2, 2, 24, 20);
+    sim.playfield_bounds = Some(bounds);
+    let inside = (0u16..32)
+        .flat_map(|ry| (0u16..32).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0))
+        .expect("mode-one inside cell");
+    let outside = (0u16..32)
+        .flat_map(|ry| (0u16..32).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| !bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0))
+        .expect("mode-one outside cell");
+
+    insert_entity(&mut sim, 1, EntityCategory::Unit);
+    assert!(!sim.substrate.entities.get(1).unwrap().in_playfield);
+    assert!(matches!(
+        sim.try_reveal_entity(1, common_raw_request(inside.0, inside.1, 0, 128, 128)),
+        RevealOutcome::Revealed { .. }
+    ));
+    assert!(
+        sim.substrate.entities.get(1).unwrap().in_playfield,
+        "TechnoClass::Unlimbo @ 0x006F6CFE establishes exact mode-one membership"
+    );
+
+    sim.substrate.entities.get_mut(1).unwrap().in_playfield = false;
+    sim.promote_entity_playfield_membership_after_move(1);
+    assert!(sim.substrate.entities.get(1).unwrap().in_playfield);
+    sim.substrate.entities.get_mut(1).unwrap().position.rx = outside.0;
+    sim.substrate.entities.get_mut(1).unwrap().position.ry = outside.1;
+    sim.promote_entity_playfield_membership_after_move(1);
+    assert!(
+        sim.substrate.entities.get(1).unwrap().in_playfield,
+        "ordinary Foot movement @ 0x006F511A promotes but never demotes"
+    );
+    sim.clear_entity_playfield_membership_after_teleport(1);
+    assert!(
+        !sim.substrate.entities.get(1).unwrap().in_playfield,
+        "Teleport arrival @ 0x00719A99 clears an outside member"
+    );
+}
+
 fn install_fly_aircraft(sim: &mut Simulation, stable_id: u64, altitude: SimFixed) {
     insert_entity(sim, stable_id, EntityCategory::Aircraft);
     let mut locomotor = LocomotorState::for_test_kind(LocomotorKind::Fly);

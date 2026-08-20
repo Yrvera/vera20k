@@ -282,7 +282,10 @@ const SLICE6_PRE_MISSION_V29_HASH: u64 = 0x8B8B_8734_0788_3530;
 // float bits and the rank cache are now hashed per object, a composition-only
 // shift. No RNG draw is added — `VeterancyClass::Add @ 0x0074FF50` consumes
 // none — and record/replay stayed equal at every tick.
-const SLICE6_BASELINE_HASH: u64 = 0x5C9D_1978_A5FB_CAC0;
+// Re-baselined 2026-08-20 for the v87 TechnoClass+0x3D5 membership byte.
+// The pre-v28 and pre-v29 probes above remained byte-identical, isolating this
+// to the intentional current-schema hash composition change.
+const SLICE6_BASELINE_HASH: u64 = 0x0A4A_3A49_2151_CDE7;
 
 #[test]
 fn replay_hash_stable_through_slice6() {

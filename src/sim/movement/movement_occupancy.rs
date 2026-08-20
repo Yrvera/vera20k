@@ -691,6 +691,7 @@ pub(super) fn handle_deferred_occupancy(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         is_infantry,
+                        snap.allow_zone_hierarchy,
                         false,
                         true,
                         marker_context,
@@ -873,6 +874,7 @@ pub(super) fn handle_deferred_occupancy(
                             PATH_STUCK_INIT,
                             mover_is_crusher,
                             is_infantry,
+                            snap.allow_zone_hierarchy,
                             // Allied building occupant is native code 7 (no
                             // grace); any other stationary friendly keeps the
                             // code-2 grace.
@@ -1025,6 +1027,7 @@ pub(super) fn handle_deferred_occupancy(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         is_infantry,
+                        snap.allow_zone_hierarchy,
                         false, // enemy blocker (code-5): keep code-2-style grace
                         true,
                         marker_context,
@@ -1156,6 +1159,7 @@ pub(super) fn handle_deferred_occupancy(
                             PATH_STUCK_INIT,
                             mover_is_crusher,
                             is_infantry,
+                            snap.allow_zone_hierarchy,
                             false, // temp block (moving friendly): keep grace
                             // Native code 2 has no CloseEnough give-up.
                             false,
@@ -1200,6 +1204,7 @@ pub(super) fn handle_deferred_occupancy(
                         PATH_STUCK_INIT,
                         mover_is_crusher,
                         is_infantry,
+                        snap.allow_zone_hierarchy,
                         true, // wall/impassable (code-7): skip grace
                         true,
                         marker_context,

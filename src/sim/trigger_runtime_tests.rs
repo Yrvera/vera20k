@@ -270,6 +270,7 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
             triggers: &triggers,
             events: &events,
             actions: &actions,
+            rules: None,
         }),
     );
 
@@ -300,9 +301,9 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
 
     // FUN_006E21E0 rebuilds radar surfaces for every firing. A second writer
     // must not disappear behind the persistent per-cell dirty-list dedup gate.
-    assert!(sim.change_visible_map_area([4, 40, 54, 12]));
+    assert!(sim.change_visible_map_area([4, 40, 54, 12], None));
     assert_eq!(sim.playfield_revision, 2);
-    assert!(sim.change_visible_map_area([4, 40, 54, 12]));
+    assert!(sim.change_visible_map_area([4, 40, 54, 12], None));
     assert_eq!(sim.playfield_revision, 3);
     assert!(sim.radar_terrain_dirty_cells.is_empty());
 
@@ -313,6 +314,143 @@ fn trigger_action_40_normalizes_and_refreshes_authority_same_frame() {
     assert_eq!(restored.playfield_bounds, sim.playfield_bounds);
     assert_eq!(restored.playfield_size_height, sim.playfield_size_height);
     assert_eq!(restored.playfield_revision, sim.playfield_revision);
+}
+
+#[test]
+fn techno_playfield_action_40_exact_recompute_and_mobile_reveal_callback() {
+    use crate::map::map_file::MapHeader;
+    use crate::map::playfield::PlayfieldBounds;
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::components::Health;
+    use crate::sim::house_state::HouseState;
+
+    let header = MapHeader {
+        theater: "TEMPERATE".to_string(),
+        fill: "Clear".to_string(),
+        level: 0,
+        width: 80,
+        height: 58,
+        local_left: 30,
+        local_top: 20,
+        local_width: 8,
+        local_height: 6,
+    };
+    let mut sim = Simulation::new();
+    sim.install_playfield_from_map_header(&header);
+    let initial = sim.playfield_bounds.unwrap();
+    let expanded = PlayfieldBounds::from_raw_local_size(80, 58, [2, 2, 76, 48]);
+    let candidates: Vec<(u16, u16)> = (0u16..100)
+        .flat_map(|ry| (0u16..100).map(move |rx| (rx, ry)))
+        .filter(|&(rx, ry)| {
+            expanded.contains_height_aware_packed(rx.into(), ry.into(), 0, 0)
+                && !initial.contains_height_aware_packed(rx.into(), ry.into(), 0, 0)
+        })
+        .collect();
+    let mobile_cell = candidates
+        .get(candidates.len() / 2)
+        .copied()
+        .expect("expansion adds cells");
+    let building_cell = candidates
+        .iter()
+        .copied()
+        .max_by_key(|&(rx, ry)| {
+            i32::from(rx).abs_diff(i32::from(mobile_cell.0))
+                + i32::from(ry).abs_diff(i32::from(mobile_cell.1))
+        })
+        .expect("distant expansion cell");
+    assert!(mobile_cell.0.abs_diff(building_cell.0) + mobile_cell.1.abs_diff(building_cell.1) > 10);
+    let veteran_probe = [(3i32, 0i32), (-3, 0), (0, 3), (0, -3)]
+        .into_iter()
+        .find_map(|(dx, dy)| {
+            let rx = i32::from(mobile_cell.0) + dx;
+            let ry = i32::from(mobile_cell.1) + dy;
+            (rx >= 0
+                && ry >= 0
+                && rx < 100
+                && ry < 100
+                && expanded.contains_height_aware_packed(rx, ry, 0, 0))
+            .then_some((rx as u16, ry as u16))
+        })
+        .expect("effective veteran sight probe");
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[General]\nVeteranSight=3\nRevealByHeight=no\n",
+    ))
+    .expect("effective-sight action fixture");
+
+    let owner = sim.interner.intern("Americans");
+    sim.houses
+        .insert(owner, HouseState::new(owner, 0, Some(owner), true, 0, 10));
+    sim.fog.width = 100;
+    sim.fog.height = 100;
+    let mobile_type = sim.interner.intern("MTNK");
+    let building_type = sim.interner.intern("GAPOWR");
+    let mut mobile = GameEntity::new_at_frame_zero_for_test(
+        1,
+        mobile_cell.0,
+        mobile_cell.1,
+        0,
+        0,
+        owner,
+        Health {
+            current: 100,
+            max: 100,
+        },
+        mobile_type,
+        EntityCategory::Unit,
+        100,
+        1,
+        true,
+    );
+    mobile.lifecycle.object_alive = true;
+    mobile.lifecycle.in_limbo = false;
+    let mut building = GameEntity::new_at_frame_zero_for_test(
+        2,
+        building_cell.0,
+        building_cell.1,
+        0,
+        0,
+        owner,
+        Health {
+            current: 100,
+            max: 100,
+        },
+        building_type,
+        EntityCategory::Structure,
+        0,
+        1,
+        false,
+    );
+    building.lifecycle.object_alive = true;
+    building.lifecycle.in_limbo = false;
+    sim.substrate.entities.insert(mobile);
+    sim.substrate.entities.insert(building);
+    sim.resolved_terrain = Some(flat_trigger_playfield_terrain(100, 100));
+
+    assert!(sim.change_visible_map_area([2, 2, 76, 48], Some(&rules)));
+    assert!(sim.substrate.entities.get(1).unwrap().in_playfield);
+    assert!(sim.substrate.entities.get(2).unwrap().in_playfield);
+    assert!(
+        sim.fog
+            .is_cell_revealed(owner, mobile_cell.0, mobile_cell.1)
+    );
+    assert!(
+        sim.fog
+            .is_cell_revealed(owner, veteran_probe.0, veteran_probe.1),
+        "0x0070ADC0 callback must use the shared veteran-adjusted sight, not raw VisionRange"
+    );
+    assert!(
+        !sim.fog
+            .is_cell_revealed(owner, building_cell.0, building_cell.1),
+        "FUN_006E21E0 excludes BuildingClass from the false-to-true callback"
+    );
+
+    assert!(sim.change_visible_map_area([30, 20, 8, 6], Some(&rules)));
+    assert!(!sim.substrate.entities.get(1).unwrap().in_playfield);
+    assert!(!sim.substrate.entities.get(2).unwrap().in_playfield);
+    assert!(sim.change_visible_map_area([2, 2, 76, 48], Some(&rules)));
+    assert!(sim.substrate.entities.get(1).unwrap().in_playfield);
+    assert!(sim.substrate.entities.get(2).unwrap().in_playfield);
 }
 
 #[test]
@@ -383,11 +521,11 @@ fn time_trigger_can_center_camera_at_waypoint() {
 
     assert!(
         runtime
-            .advance_at_frame(44, &graph, &triggers, &events, &actions, None)
+            .advance_at_frame(44, &graph, &triggers, &events, &actions, None, None)
             .is_empty()
     );
     assert_eq!(
-        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(45, &graph, &triggers, &events, &actions, None, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 9,
             immediate: true,
@@ -395,7 +533,7 @@ fn time_trigger_can_center_camera_at_waypoint() {
     );
     assert!(
         runtime
-            .advance_at_frame(46, &graph, &triggers, &events, &actions, None)
+            .advance_at_frame(46, &graph, &triggers, &events, &actions, None, None)
             .is_empty()
     );
 }
@@ -465,6 +603,7 @@ fn master_frame_polls_triggers_before_logic_houses_commit_and_delete() {
             triggers: &triggers,
             events: &events,
             actions: &actions,
+            rules: None,
         }),
     );
 
@@ -537,6 +676,7 @@ fn master_frame_save_load_continues_trigger_projectile_and_delete_state() {
         triggers: &triggers,
         events: &events,
         actions: &actions,
+        rules: None,
     };
 
     let mut original = Simulation::new();
@@ -848,7 +988,7 @@ fn global_actions_can_enable_and_force_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 3,
             immediate: true,
@@ -978,7 +1118,7 @@ fn linked_trigger_field_queues_followup_trigger() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 4,
             immediate: true,
@@ -1108,7 +1248,7 @@ fn forced_trigger_with_unmet_conditions_does_not_fire() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
         Vec::<TriggerEffect>::new()
     );
 }
@@ -1202,7 +1342,7 @@ fn mission_announce_then_force_end_emits_result_effects() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &HashMap::new());
 
     assert_eq!(
-        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(15, &graph, &triggers, &events, &actions, None, None),
         vec![
             TriggerEffect::MissionAnnouncement {
                 text: "Mission Accomplished".to_string(),
@@ -1347,12 +1487,12 @@ fn local_variables_seed_and_gate_followup_triggers() {
     let mut runtime = TriggerRuntime::from_map(&triggers, &local_variables);
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
         Vec::<TriggerEffect>::new()
     );
     assert!(runtime.locals_set.contains(&2));
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None),
+        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, None, None),
         vec![TriggerEffect::CenterCameraAtWaypoint {
             waypoint: 6,
             immediate: true,
@@ -1485,7 +1625,15 @@ fn techtype_exists_and_not_exists_query_simulation_world() {
     spawn_type(&mut sim, "GAPOWR");
 
     assert_eq!(
-        runtime.advance_at_frame(0, &graph, &triggers, &events, &actions, Some(&mut sim)),
+        runtime.advance_at_frame(
+            0,
+            &graph,
+            &triggers,
+            &events,
+            &actions,
+            Some(&mut sim),
+            None,
+        ),
         vec![
             TriggerEffect::CenterCameraAtWaypoint {
                 waypoint: 11,

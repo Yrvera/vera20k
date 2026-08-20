@@ -1020,6 +1020,7 @@ mod tests {
             true,
             true,
             false,
+            false,
         ));
 
         let entity = entities.get(1).expect("entity");
@@ -1059,6 +1060,7 @@ mod tests {
             true,
             true,
             true,
+            false,
         ));
 
         let entity = entities.get(1).expect("entity");

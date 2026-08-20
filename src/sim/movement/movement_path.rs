@@ -321,6 +321,7 @@ pub(super) fn find_move_path(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     find_move_path_with_marker(
         ctx,
@@ -340,6 +341,7 @@ pub(super) fn find_move_path(
         urgency,
         mover_is_crusher,
         is_infantry,
+        allow_zone_hierarchy,
     )
 }
 
@@ -362,6 +364,7 @@ pub(super) fn find_move_path_with_marker(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
 ) -> Option<(Vec<(u16, u16)>, Vec<MovementLayer>)> {
     let grid = ctx.path_grid?;
     let zone_grid = ctx.zone_grid;
@@ -396,6 +399,7 @@ pub(super) fn find_move_path_with_marker(
             urgency,
             mover_is_crusher,
             is_infantry,
+            allow_zone_hierarchy,
         );
         let Some(path) = layered_result else {
             log::trace!(
@@ -477,6 +481,7 @@ pub(super) fn find_move_path_with_marker(
         urgency,
         mover_is_crusher,
         is_infantry,
+        allow_zone_hierarchy,
     )?;
 
     if contains_non_adjacent_step(&path) {
@@ -565,6 +570,7 @@ pub(super) fn try_repath_after_block(
     urgency: u8,
     mover_is_crusher: bool,
     is_infantry: bool,
+    allow_zone_hierarchy: bool,
     marker_search: Option<&super::path_markers::BridgeMarkerSearch>,
 ) -> bool {
     let goal = target
@@ -633,6 +639,7 @@ pub(super) fn try_repath_after_block(
         effective_urgency,
         mover_is_crusher,
         is_infantry,
+        allow_zone_hierarchy,
     );
     let Some((new_path, new_layers)) = path_result else {
         target.movement_delay = mcfg.path_delay_ticks;
@@ -820,6 +827,7 @@ mod tests {
             0,
             false,
             false,
+            true,
         )
         .expect("movement path should use explicit tube despite disconnected zones");
 
@@ -858,6 +866,7 @@ mod tests {
             0,
             false,
             false,
+            true,
         )
         .expect("marker overlay should still allow a path");
 
@@ -917,6 +926,7 @@ mod tests {
             1,
             false,
             false,
+            true,
             Some(&marker_search),
         ));
         assert!(
@@ -960,6 +970,7 @@ mod tests {
             0,
             false,
             false,
+            true,
         )
         .expect("fixture must prove the removed ground-only retry could succeed");
         assert_eq!(flat.0.last().copied(), Some((2, 0)));
@@ -986,6 +997,7 @@ mod tests {
             0,
             false,
             false,
+            true,
         );
 
         assert!(

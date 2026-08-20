@@ -302,6 +302,10 @@ pub(super) struct MoverSnapshot {
     /// destination as an object pointer, so a cell destination never satisfies
     /// the priority condition.
     pub nav_com_cell: Option<(u16, u16)>,
+    /// Native AStar hierarchy admission reads the stored TechnoClass+0x3D5
+    /// byte. False under live MapClass authority bypasses hierarchy and uses
+    /// flat A*; headless fixtures without authority retain hierarchy.
+    pub allow_zone_hierarchy: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

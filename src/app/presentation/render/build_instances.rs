@@ -611,7 +611,6 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             Some(view.radar_events()),
             Some(view.interner()),
             view.bridge_state(),
-            view.resolved_terrain(),
             radar_dirty_cells,
             radar_dirty_generation,
         );
