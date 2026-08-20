@@ -415,6 +415,10 @@ pub(super) fn build_radar_object_update(
 }
 
 #[cfg(test)]
+#[path = "radar_visibility_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::map::bridge_facts::BridgeCellFacts;
@@ -511,14 +515,14 @@ mod tests {
         }
     }
 
-    fn flat_terrain(side: u16) -> ResolvedTerrainGrid {
+    pub(super) fn flat_terrain(side: u16) -> ResolvedTerrainGrid {
         let cells = (0..side)
             .flat_map(|ry| (0..side).map(move |rx| flat_cell(rx, ry)))
             .collect();
         ResolvedTerrainGrid::from_cells(side, side, cells)
     }
 
-    fn visibility_projection() -> RadarProjectionFacts {
+    pub(super) fn visibility_projection() -> RadarProjectionFacts {
         RadarProjectionFacts {
             world_origin_x: 0.0,
             world_origin_y: 0.0,
@@ -833,90 +837,4 @@ mod tests {
         assert!(!update.visibility.evaluate(false).visible);
     }
 
-    #[test]
-    fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
-        use crate::map::map_file::MapHeader;
-        use crate::rules::ini_parser::IniFile;
-        use crate::sim::world::Simulation;
-
-        let rules = RuleSet::from_ini(&IniFile::from_str(
-            "[VehicleTypes]\n0=SUB\n1=DEST\n\
-             [SUB]\nStrength=600\nSpeed=4\nCloakable=yes\nCloakingSpeed=1\n\
-             [DEST]\nStrength=600\nSpeed=6\nSensorsSight=8\n",
-        ))
-        .expect("stock submarine/detector fixture");
-        let header = MapHeader {
-            theater: "TEMPERATE".to_string(),
-            fill: "Clear".to_string(),
-            level: 0,
-            width: 64,
-            height: 64,
-            local_left: 2,
-            local_top: 2,
-            local_width: 56,
-            local_height: 52,
-        };
-        let mut sim = Simulation::with_seed(0xC10A_5E45);
-        sim.install_playfield_from_map_header(&header);
-        sim.fog.width = 64;
-        sim.fog.height = 64;
-        sim.resolved_terrain = Some(flat_terrain(64));
-        let bounds = sim.playfield_bounds.expect("normalized map authority");
-        let cell = (8u16..56)
-            .flat_map(|ry| (8u16..56).map(move |rx| (rx, ry)))
-            .find(|&(rx, ry)| bounds.contains_height_aware_packed(rx.into(), ry.into(), 0, 0))
-            .expect("interior mode-one cell");
-        let local = sim.interner.intern("Americans");
-        let sub = sim
-            .spawn_object_at_height("SUB", "Soviet", cell.0, cell.1, 0, 0, &rules)
-            .unwrap();
-        sim.substrate
-            .entities
-            .get_mut(sub)
-            .unwrap()
-            .cloak
-            .as_mut()
-            .unwrap()
-            .establish_unlimbo_fully_cloaked();
-        sim.fog.mark_visible_for_owner(local, cell.0, cell.1);
-
-        let evaluate = |sim: &Simulation| {
-            let update = build_radar_object_update(
-                sim.substrate.entities.get(sub).unwrap(),
-                &sim.houses,
-                Some(local),
-                &sim.fog,
-                false,
-                true,
-                Some(&rules),
-                Some(&sim.interner),
-                visibility_projection(),
-                sim.playfield_bounds,
-                sim.resolved_terrain.as_ref(),
-            );
-            update.visibility.evaluate(false)
-        };
-        assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
-
-        let detector = sim
-            .spawn_object_at_height("DEST", "Americans", cell.0, cell.1, 0, 0, &rules)
-            .unwrap();
-        assert_eq!(
-            evaluate(&sim),
-            RadarVisibilityResult {
-                visible: true,
-                out_code: 1,
-            }
-        );
-
-        // Two equal FUN_006E21E0 writers still advance the global refresh
-        // authority. The stock sensor deposit remains the live +0x328 input.
-        assert!(sim.change_visible_map_area([2, 2, 56, 52], Some(&rules)));
-        assert!(sim.change_visible_map_area([2, 2, 56, 52], Some(&rules)));
-        assert_eq!(sim.playfield_revision, 2);
-        assert_eq!(evaluate(&sim).out_code, 1);
-
-        sim.techno_limbo(detector);
-        assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
-    }
 }

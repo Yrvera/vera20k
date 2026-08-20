@@ -673,7 +673,7 @@ fn step_landing(
         _ => false,
     };
     if docked {
-        sim.techno_limbo(child_id);
+        sim.techno_limbo_with_rules(child_id, rules);
         let reload_rate = manager_field(sim, owner_id, |m| m.reload_rate).unwrap_or(0);
         with_slot(sim, owner_id, slot_index, |slot| {
             slot.state = SpawnSlotState::Reloading;

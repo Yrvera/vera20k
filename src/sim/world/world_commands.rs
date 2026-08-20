@@ -3628,7 +3628,7 @@ mod tests {
         spawn_bunkerable(&mut sim, 1, "Americans", "TANK", 14, 14);
         sim.reveal(1);
         sim.add_entity_occupancy(1);
-        crate::sim::docking::bunker_link::install_bunker_link(&mut sim, 2, 1);
+        crate::sim::docking::bunker_link::install_bunker_link(&mut sim, 2, 1, &rules);
         assert_eq!(
             sim.substrate.entities.get(2).unwrap().bunker_occupant,
             Some(1)

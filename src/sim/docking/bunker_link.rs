@@ -38,7 +38,12 @@ pub fn can_auto_deploy_here(sim: &Simulation, unit_id: u64, rules: &RuleSet) -> 
 /// hide it (full conceal — combat/render is deferred), set Guard mission, and
 /// emit the wall-up sound. Entry anims are emitted by the install machine just
 /// before this call.
-pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64) {
+pub fn install_bunker_link(
+    sim: &mut Simulation,
+    building_id: u64,
+    unit_id: u64,
+    rules: &RuleSet,
+) {
     // Building side first: occupant pointer + state → Occupied.
     if let Some(b) = sim.substrate.entities.get_mut(building_id) {
         b.bunker_occupant = Some(unit_id);
@@ -71,7 +76,7 @@ pub fn install_bunker_link(sim: &mut Simulation, building_id: u64, unit_id: u64)
     let _ = sim.mission_commence_exact(unit_id, now);
     // Techno Limbo broadcasts BREAK before Object Conceal removes Mark and
     // LogicVector membership. Reciprocal bunker state remains class-owned.
-    match sim.techno_limbo(unit_id) {
+    match sim.techno_limbo_with_rules(unit_id, rules) {
         ConcealOutcome::Concealed | ConcealOutcome::AlreadyConcealed => {
             emit_bunker_wall_sound(sim, building_id, true);
         }
@@ -412,12 +417,13 @@ mod tests {
     #[test]
     fn install_writes_both_sides_hides_unit_and_emits_up_sound() {
         let mut sim = Simulation::new();
+        let rules = rules();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
         // The unit must be a live (InCell) member before it can be concealed.
         assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
 
-        install_bunker_link(&mut sim, 2, 1);
+        install_bunker_link(&mut sim, 2, 1, &rules);
 
         let bunker = sim.substrate.entities.get(2).unwrap();
         assert_eq!(bunker.bunker_occupant, Some(1));
@@ -445,10 +451,11 @@ mod tests {
     #[test]
     fn break_clears_both_sides_and_returns_unit() {
         let mut sim = Simulation::new();
+        let rules = rules();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
         assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
-        install_bunker_link(&mut sim, 2, 1);
+        install_bunker_link(&mut sim, 2, 1, &rules);
 
         let released = break_bunker_link(&mut sim, 2);
         assert_eq!(released, Some(1));
@@ -461,10 +468,11 @@ mod tests {
 
     fn installed_sim() -> Simulation {
         let mut sim = Simulation::new();
+        let rules = rules();
         spawn_bunker(&mut sim, 2, "Americans");
         spawn_tank(&mut sim, 1, "Americans", "TANK");
         assert!(matches!(sim.reveal(1), RevealOutcome::Revealed { .. }));
-        install_bunker_link(&mut sim, 2, 1);
+        install_bunker_link(&mut sim, 2, 1, &rules);
         sim.sound_events.clear(); // drop the install up-sound; assert on down events
         sim
     }

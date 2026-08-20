@@ -888,7 +888,7 @@ impl Simulation {
         }
 
         // Despawn the MCV.
-        self.uninit(stable_id);
+        self.uninit_with_rules(stable_id, rules);
 
         // Spawn the construction yard.
         let owner_str = self.interner.resolve(owner_id).to_string();

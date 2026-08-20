@@ -328,7 +328,7 @@ pub fn try_drop(
     );
     if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
         if reveal_outcome == RevealOutcome::AlreadyRevealed {
-            let _ = sim.techno_limbo(passenger_id);
+            let _ = sim.techno_limbo_with_rules(passenger_id, rules);
         }
         sim.clear_radio_contacts_for(passenger_id);
         if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {

@@ -291,9 +291,9 @@ impl Simulation {
             if dx <= 1 && dy <= 1 {
                 // CAPTURE: the ownership chokepoint moves HouseState counts,
                 // the by-owner index, and the entity owner exactly once.
-                self.change_owner(building_id, engineer_owner);
+                self.change_owner_with_rules(building_id, engineer_owner, rules);
                 // Destroy engineer (consumed on capture).
-                self.uninit(engineer_id);
+                self.uninit_with_rules(engineer_id, rules);
                 any_captured = true;
             }
         }
@@ -475,7 +475,7 @@ impl Simulation {
             self.mark_radar_terrain_dirty_cells(outcome.radar_cells.iter().copied());
 
             // Step D: engineer consumed.
-            self.uninit(engineer_id);
+            self.uninit_with_rules(engineer_id, rules);
             // gamemd iterates a live object vector. Removing the current
             // engineer compacts the next object into this slot; the scheduler
             // then advances, so that immediate successor waits until later.

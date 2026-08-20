@@ -506,7 +506,7 @@ fn process_boarding_passenger(sim: &mut Simulation, rules: &RuleSet, pax_id: u64
         // CargoClass::AddPassenger conceals the passenger before splicing it
         // into the cargo chain. Techno Limbo owns BREAK, Mark removal, and
         // LogicVector removal in that order.
-        if sim.techno_limbo(pax_id) != ConcealOutcome::Concealed {
+        if sim.techno_limbo_with_rules(pax_id, rules) != ConcealOutcome::Concealed {
             return;
         }
         let boarded = sim
@@ -678,7 +678,7 @@ fn reconcile_civilian_garrison_owner_for_building(
         if new_owner == current_owner {
             return false;
         }
-        sim.change_owner(building_id, new_owner);
+        sim.change_owner_with_rules(building_id, new_owner, rules);
         return true;
     }
 
@@ -687,7 +687,7 @@ fn reconcile_civilian_garrison_owner_for_building(
         sim.sound_events.push(SimSoundEvent::StructureAbandoned {
             owner: current_owner,
         });
-        sim.change_owner(building_id, civilian_owner);
+        sim.change_owner_with_rules(building_id, civilian_owner, rules);
         return current_owner != civilian_owner;
     }
 
@@ -784,7 +784,7 @@ fn tick_boarding(sim: &mut Simulation, rules: &RuleSet) -> bool {
                 .is_some_and(|cargo| cargo.can_accept(pax_size));
 
             if can_board {
-                if sim.techno_limbo(pax_id) != ConcealOutcome::Concealed {
+                if sim.techno_limbo_with_rules(pax_id, rules) != ConcealOutcome::Concealed {
                     continue;
                 }
                 let boarded = sim
@@ -936,6 +936,7 @@ fn reveal_unloaded_passenger(
 
 fn restore_unloaded_passenger_after_reveal_failure(
     sim: &mut Simulation,
+    rules: &RuleSet,
     transport_id: u64,
     passenger_id: u64,
     passenger_size: u32,
@@ -945,7 +946,7 @@ fn restore_unloaded_passenger_after_reveal_failure(
         // Defensive only: a cargo passenger should be limbo. Re-establish a
         // coherent cargo state through lifecycle authority if that invariant
         // was already broken before this call.
-        let _ = sim.techno_limbo(passenger_id);
+        let _ = sim.techno_limbo_with_rules(passenger_id, rules);
     }
     if let Some(passenger) = sim.substrate.entities.get_mut(passenger_id) {
         passenger.passenger_role = PassengerRole::Inside { transport_id };
@@ -1020,6 +1021,7 @@ fn process_unloading_transport(sim: &mut Simulation, rules: &RuleSet, transport_
     if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
         restore_unloaded_passenger_after_reveal_failure(
             sim,
+            rules,
             transport_id,
             pax_id,
             pax_size,
@@ -1154,6 +1156,7 @@ fn tick_unloading(sim: &mut Simulation, rules: &RuleSet) -> bool {
         if !matches!(reveal_outcome, RevealOutcome::Revealed { .. }) {
             restore_unloaded_passenger_after_reveal_failure(
                 sim,
+                rules,
                 transport_id,
                 pax_id,
                 pax_size,

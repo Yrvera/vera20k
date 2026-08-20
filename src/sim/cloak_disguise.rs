@@ -137,6 +137,18 @@ impl CloakRuntime {
         true
     }
 
+    /// Virtual `StartCloaking +0x460 @ 0x00703770` reached from the active
+    /// sensor-count resident callback `0x006F4EB0`.
+    pub(crate) fn start_cloaking_from_sensor(&mut self, now: i32, speed: i32) -> bool {
+        self.start_cloaking(now, speed)
+    }
+
+    /// `UnitClass::Fire_At_Target @ 0x00736DF0` case 9 invokes virtual
+    /// `StartUncloaking +0x45C @ 0x007036C0` after rechecking CanFireAt.
+    pub(crate) fn start_uncloaking_to_fire(&mut self, now: i32, speed: i32) -> bool {
+        self.start_uncloaking(now, speed)
+    }
+
     fn advance_due_step(&mut self, now: i32) {
         if self.step_timer.speed == 0
             || Self::timer_remaining(
@@ -375,15 +387,27 @@ pub fn evaluate_fire_cloak_gates(
     target_house_passes_reveal_check: bool,
     decloak_to_fire: bool,
     current_cloak_state: i32,
-    movement_class_id: i32,
+    what_am_i: i32,
 ) -> FireCloakGateResult {
-    let blocked = decloak_to_fire
-        && current_cloak_state != 0
-        && (movement_class_id != 2 || current_cloak_state == 2);
     FireCloakGateResult {
         should_call_reveal_area1: reveal_on_fire && target_house_passes_reveal_check,
-        fire_error_code: blocked.then_some(9),
+        fire_error_code: fire_requires_uncloaking(
+            decloak_to_fire,
+            current_cloak_state,
+            what_am_i,
+        )
+        .then_some(9),
     }
+}
+
+pub(crate) fn fire_requires_uncloaking(
+    decloak_to_fire: bool,
+    current_cloak_state: i32,
+    what_am_i: i32,
+) -> bool {
+    decloak_to_fire
+        && current_cloak_state != 0
+        && (what_am_i != 2 || current_cloak_state == 2)
 }
 
 #[cfg(test)]

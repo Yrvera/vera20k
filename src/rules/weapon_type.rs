@@ -242,7 +242,11 @@ impl WeaponType {
             is_sonic: section.get_bool("IsSonic").unwrap_or(false),
             spawner: section.get_bool("Spawner").unwrap_or(false),
             limbo_launch: section.get_bool("LimboLaunch").unwrap_or(false),
-            decloak_to_fire: section.get_bool("DecloakToFire").unwrap_or(false),
+            // WeaponTypeClass constructor / ReadINI consumed by
+            // TechnoClass::GetFireError @ 0x006FC0B0: omitted
+            // DecloakToFire= is YES. Stock CruiseLauncher relies on the
+            // constructor default; BoomerTorpedo explicitly opts out.
+            decloak_to_fire: section.get_bool("DecloakToFire").unwrap_or(true),
             cell_rangefinding: section.get_bool("CellRangefinding").unwrap_or(false),
             fire_once: section.get_bool("FireOnce").unwrap_or(false),
             never_use: section.get_bool("NeverUse").unwrap_or(false),
@@ -337,6 +341,7 @@ mod tests {
         assert!(weapon.anim.is_empty());
         assert_eq!(weapon.laser_inner_color, [0, 0, 0]);
         assert_eq!(weapon.down_report, None);
+        assert!(weapon.decloak_to_fire, "native omitted-key default is yes");
     }
 
     #[test]
@@ -360,6 +365,24 @@ mod tests {
         // Unset bools remain false
         assert!(!weapon.bright);
         assert!(!weapon.camera);
+    }
+
+    #[test]
+    fn decloak_to_fire_default_yes_and_explicit_no_match_stock_boomer_weapons() {
+        let ini = IniFile::from_str(
+            "[CruiseLauncher]\nDamage=25\n\
+             [BoomerTorpedo]\nDamage=40\nDecloakToFire=no\n",
+        );
+        let cruise = WeaponType::from_ini_section(
+            "CruiseLauncher",
+            ini.section("CruiseLauncher").unwrap(),
+        );
+        let torpedo = WeaponType::from_ini_section(
+            "BoomerTorpedo",
+            ini.section("BoomerTorpedo").unwrap(),
+        );
+        assert!(cruise.decloak_to_fire);
+        assert!(!torpedo.decloak_to_fire);
     }
 
     #[test]

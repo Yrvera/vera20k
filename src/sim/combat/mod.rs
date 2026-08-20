@@ -47,6 +47,10 @@ mod combat_pursuit_tests;
 mod combat_turret_facing_tests;
 
 #[cfg(test)]
+#[path = "combat_cloak_fire_tests.rs"]
+mod combat_cloak_fire_tests;
+
+#[cfg(test)]
 #[path = "delayed_building_fire_tests.rs"]
 mod delayed_building_fire_tests;
 
@@ -6387,6 +6391,33 @@ pub(crate) fn resolve_attacker_fire(
             ));
         }
         return;
+    }
+
+    // TechnoClass::GetFireError @ 0x006FC0B0 returns 9 after the ordinary
+    // busy/rearm/ammo gates when DecloakToFire= is set and the current cloak
+    // state requires surfacing. UnitClass::Fire_At_Target @ 0x00736DF0 then
+    // rechecks CanFireAt, calls StartUncloaking(0), and emits no shot, damage,
+    // rearm, report, or fire event on this visit. The retained attack target is
+    // the Rust retry latch; native's separate firing-sequence byte has no Rust
+    // producer or reader to clear.
+    if snap.category == EntityCategory::Unit {
+        let cloak_state = entities
+            .get(snap.stable_id)
+            .and_then(|entity| entity.cloak.as_ref())
+            .map_or(0, |cloak| cloak.state);
+        if crate::sim::cloak_disguise::fire_requires_uncloaking(
+            weapon.decloak_to_fire,
+            cloak_state,
+            1, // UnitClass::WhatAmI, not locomotor kind.
+        ) {
+            if let Some(cloak) = entities
+                .get_mut(snap.stable_id)
+                .and_then(|entity| entity.cloak.as_mut())
+            {
+                cloak.start_uncloaking_to_fire(binary_frame as i32, obj.cloaking_speed);
+            }
+            return;
+        }
     }
 
     // Turret alignment check (FacingClass: destination match + not rotating).

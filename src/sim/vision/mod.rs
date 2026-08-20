@@ -732,7 +732,11 @@ impl FogState {
         center: (u16, u16),
         radius: u16,
     ) -> Vec<(u16, u16)> {
-        self.update_sensor_circle(house, center, radius, true)
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            self.increment_sensor_at(house, rx, ry);
+        }
+        touched
     }
 
     /// Paired `TechnoClass::RemoveSensorsAt` @ `0x004DE940` decrement walk.
@@ -742,28 +746,24 @@ impl FogState {
         center: (u16, u16),
         radius: u16,
     ) -> Vec<(u16, u16)> {
-        self.update_sensor_circle(house, center, radius, false)
+        let touched = self.sensor_circle_cells(center, radius);
+        for &(rx, ry) in &touched {
+            let _ = self.decrement_sensor_at_if_positive(house, rx, ry);
+        }
+        touched
     }
 
-    fn update_sensor_circle(
-        &mut self,
-        house: InternedId,
+    /// Exact outer-Y / inner-X strict-circle cell order shared by the four
+    /// active sensor writers. Mutation stays separate so Simulation can issue
+    /// each native resident callback immediately after that cell's counter.
+    pub(crate) fn sensor_circle_cells(
+        &self,
         center: (u16, u16),
         radius: u16,
-        add: bool,
     ) -> Vec<(u16, u16)> {
         let radius = i32::from(radius);
         if radius <= 0 || self.width == 0 || self.height == 0 {
             return Vec::new();
-        }
-        let cell_count = usize::from(self.width) * usize::from(self.height);
-        let counters = self
-            .sensors_by_house
-            .entry(house)
-            .or_insert_with(|| vec![0; cell_count]);
-        if counters.len() != cell_count {
-            counters.clear();
-            counters.resize(cell_count, 0);
         }
         let mut touched = Vec::new();
         for dy in -radius..radius {
@@ -782,21 +782,58 @@ impl FogState {
                 }
                 let rx = cell_x as u16;
                 let ry = cell_y as u16;
-                let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
-                if add {
-                    counters[index] = counters[index].wrapping_add(1);
-                } else {
-                    // `TechnoClass::RemoveSensorsAt @ 0x004DE940` decrements
-                    // the signed per-house word without a positive clamp.
-                    // Building sensor arrays intentionally remove with a
-                    // different radius than they added, so negative fringe
-                    // counts are active retail state rather than an error.
-                    counters[index] = counters[index].wrapping_sub(1);
-                }
                 touched.push((rx, ry));
             }
         }
         touched
+    }
+
+    fn sensor_counter_mut(&mut self, house: InternedId, rx: u16, ry: u16) -> &mut i16 {
+        let cell_count = usize::from(self.width) * usize::from(self.height);
+        let counters = self
+            .sensors_by_house
+            .entry(house)
+            .or_insert_with(|| vec![0; cell_count]);
+        if counters.len() != cell_count {
+            counters.clear();
+            counters.resize(cell_count, 0);
+        }
+        let index = usize::from(ry) * usize::from(self.width) + usize::from(rx);
+        &mut counters[index]
+    }
+
+    pub(crate) fn increment_sensor_at(&mut self, house: InternedId, rx: u16, ry: u16) {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        *counter = counter.wrapping_add(1);
+    }
+
+    /// Unit `RemoveSensorsAt @ 0x004DE940` queries `count > 0` before both the
+    /// decrement and resident callbacks. Returns whether native entered them.
+    pub(crate) fn decrement_sensor_at_if_positive(
+        &mut self,
+        house: InternedId,
+        rx: u16,
+        ry: u16,
+    ) -> bool {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        if *counter <= 0 {
+            return false;
+        }
+        *counter = counter.wrapping_sub(1);
+        true
+    }
+
+    /// BuildingClass::RemoveSensorArrayAt @ 0x004556D0 decrements the signed
+    /// word unconditionally. Its asymmetric remove radius therefore creates
+    /// active negative fringe counts.
+    pub(crate) fn decrement_sensor_at_unconditional(
+        &mut self,
+        house: InternedId,
+        rx: u16,
+        ry: u16,
+    ) {
+        let counter = self.sensor_counter_mut(house, rx, ry);
+        *counter = counter.wrapping_sub(1);
     }
 
     pub fn has_sensor_for_house(&self, house: InternedId, rx: u16, ry: u16) -> bool {

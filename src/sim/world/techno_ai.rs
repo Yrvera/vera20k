@@ -262,7 +262,7 @@ impl Simulation {
             );
             if finished {
                 self.release_move_sound(id);
-                self.uninit(id);
+                self.uninit_with_rules(id, rules);
             }
             return true;
         }

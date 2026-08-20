@@ -17,7 +17,7 @@ mod lifecycle;
 mod logic_vector;
 mod substrate;
 mod techno_ai;
-mod techno_ai_cloak;
+pub(crate) mod techno_ai_cloak;
 pub(crate) mod unit_post;
 mod world_commands;
 mod world_hash;
@@ -1207,7 +1207,7 @@ impl Simulation {
         category: EntityCategory,
         terrain: Option<&ResolvedTerrainGrid>,
     ) {
-        let uninit_context = UninitContext::with_terrain(terrain);
+        let uninit_context = UninitContext::with_terrain_and_rules(terrain, rules);
         match stage {
             crate::sim::combat::FatalLifecycleStage::MaintainDamageSmoke { state } => {
                 self.maintain_damage_smoke_after_receive(stable_id, state, rules);
@@ -1705,7 +1705,7 @@ impl Simulation {
                 crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
             }
             self.release_move_sound(dead_id);
-            self.uninit(dead_id);
+            self.uninit_with_rules(dead_id, rules);
         }
 
         let _ = crate::sim::world::bridge_orchestrator::apply_bridge_damage_events_with_overlay_registry(
@@ -3391,6 +3391,24 @@ impl Simulation {
     /// for every live transfer, regardless of whether capture or garrison code
     /// requested it.
     pub(crate) fn change_owner(&mut self, stable_id: u64, new_owner: InternedId) {
+        self.change_owner_impl(stable_id, new_owner, None);
+    }
+
+    pub(crate) fn change_owner_with_rules(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: &RuleSet,
+    ) {
+        self.change_owner_impl(stable_id, new_owner, Some(rules));
+    }
+
+    fn change_owner_impl(
+        &mut self,
+        stable_id: u64,
+        new_owner: InternedId,
+        rules: Option<&RuleSet>,
+    ) {
         let Some((old_owner, category, has_spawn_manager)) =
             self.substrate.entities.get(stable_id).map(|entity| {
                 (
@@ -3407,7 +3425,11 @@ impl Simulation {
         }
         // FootClass::ChangeOwner @ 0x004DBED0 removes from the deposited old
         // owner and adds to the new owner before later readers observe it.
-        self.transfer_sensor_before_owner_change(stable_id, new_owner);
+        if let Some(rules) = rules {
+            self.transfer_sensor_before_owner_change_with_rules(stable_id, new_owner, rules);
+        } else {
+            self.transfer_sensor_before_owner_change(stable_id, new_owner);
+        }
 
         // Active YR chain: BuildingClass::ChangeOwner (0x00448260) delegates
         // to TechnoClass::ChangeOwner (0x007014A0), which calls
@@ -4344,10 +4366,15 @@ impl Simulation {
             let Some((unit_type_id, owner_id, rx, ry, z, was_selected)) = spawn_data else {
                 continue;
             };
-            self.uninit(sid);
             let rules = match rules {
-                Some(r) => r,
-                None => continue,
+                Some(rules) => {
+                    self.uninit_with_rules(sid, rules);
+                    rules
+                }
+                None => {
+                    self.uninit(sid);
+                    continue;
+                }
             };
             let unit_type_str = self.interner.resolve(unit_type_id).to_string();
             let owner_str = self.interner.resolve(owner_id).to_string();
@@ -5479,7 +5506,11 @@ impl Simulation {
             for request in lifecycle_requests.drain(..) {
                 let LifecycleRequest::Uninit { stable_id, .. } = request;
                 sim.release_move_sound(stable_id);
-                sim.apply_lifecycle_request(request);
+                if let Some(rules) = rules {
+                    sim.apply_lifecycle_request_with_rules(request, rules);
+                } else {
+                    sim.apply_lifecycle_request(request);
+                }
             }
             debug_assert!(lifecycle_requests.is_empty());
             sim.pending_lifecycle_requests = lifecycle_requests;
@@ -5811,7 +5842,7 @@ impl Simulation {
                     crate::sim::docking::bunker_link::release_sell_destroy(self, dead_id);
                 }
                 self.release_move_sound(dead_id);
-                self.uninit(dead_id);
+                self.uninit_with_rules(dead_id, rules);
             }
             // Bridge damage: 4-path dispatcher + cascade
             // (kill ground occupants → DropIn deck → debris → rim refresh

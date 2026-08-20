@@ -399,7 +399,7 @@ impl RetainedRadarTracker {
     }
 
     #[cfg(test)]
-    fn is_registered(&self, stable_id: u64) -> bool {
+    pub(super) fn is_registered(&self, stable_id: u64) -> bool {
         self.objects
             .get(&stable_id)
             .is_some_and(|cache| cache.registered)
