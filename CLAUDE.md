@@ -29,7 +29,8 @@ specific to working with me in Claude Code.
 - **Verdict first** on evaluative questions ("is X useful?", "should we?"). If you can't
   decide, say "insufficient evidence" and list what's missing — don't hide a non-answer in
   a neutral overview.
-- **Be brief.** A few sentences by default. No preamble, no recap, no closing summary, no
+- **Be brief.** A few sentences by default; hard cap ~100–200 words per chat reply, even
+  for strategy or evaluative answers. No preamble, no recap, no closing summary, no
   tables or multi-section breakdowns in chat unless I ask. Thoroughness goes into the work
   and saved artifacts, not the message. One follow-up suggestion max. This does not apply
   inside `docs/research/`.
