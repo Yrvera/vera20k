@@ -350,6 +350,7 @@ mod tests {
     fn rules() -> RuleSet {
         RuleSet::from_ini(&IniFile::from_str(
             "[General]\nCloakingStages=9\nCloakDelay=.02\n\
+             [AudioVisual]\nCloakSound=NavalUnitEmerge\n\
              [VehicleTypes]\n0=DEST\n1=SUB\n2=SQD\n3=TGT\n\
              [BuildingTypes]\n0=NAPSIS\n1=NAPOWR\n\
              [DEST]\nStrength=600\nSpeed=6\nSensorsSight=8\n\
@@ -480,6 +481,13 @@ mod tests {
             1,
             "+0x420 owner-visible CanAutoCloak calls StartCloaking"
         );
+        assert_eq!(sim.sound_events.len(), 2, "each accepted callback emits exactly once");
+        assert!(sim.sound_events.iter().all(|event| matches!(
+            event,
+            crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. }
+                if sound_id == "NavalUnitEmerge"
+        )));
+        sim.sound_events.clear();
 
         for id in [older, newer] {
             let cloak = sim
@@ -495,11 +503,18 @@ mod tests {
         }
         let removed = sim.apply_unit_sensor_remove(detector, (20, 20), 1, Some(&rules));
         assert_eq!(removed, vec![newer, older]);
+        assert_eq!(
+            sim.sound_events.len(),
+            2,
+            "remove mutation and callbacks synchronously emit one cue per accepted resident"
+        );
+        sim.sound_events.clear();
         assert!(
             sim.apply_unit_sensor_remove(detector, (20, 20), 1, Some(&rules))
                 .is_empty(),
             "unit RemoveSensorsAt skips decrement and callbacks at nonpositive pre-count"
         );
+        assert!(sim.sound_events.is_empty());
 
         let building_removed =
             sim.apply_building_sensor_remove(detector, (20, 20), 1, Some(&rules));

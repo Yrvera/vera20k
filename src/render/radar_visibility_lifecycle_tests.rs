@@ -9,7 +9,9 @@ use crate::sim::world::Simulation;
 #[test]
 fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[VehicleTypes]\n0=SUB\n1=DEST\n\
+        "[General]\nCloakingStages=9\n\
+         [AudioVisual]\nCloakSound=NavalUnitEmerge\n\
+         [VehicleTypes]\n0=SUB\n1=DEST\n\
          [SUB]\nStrength=600\nSpeed=4\nCloakable=yes\nCloakingSpeed=1\n\
          [DEST]\nStrength=600\nSpeed=6\nSensorsSight=8\n",
     ))
@@ -56,10 +58,28 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         .unwrap()
         .establish_unlimbo_fully_cloaked();
     sim.fog.mark_visible_for_owner(local, cell.0, cell.1);
+    let entering = sim
+        .spawn_object_at_height("SUB", "Soviet", cell.0, cell.1, 0, 0, &rules)
+        .unwrap();
+    let entering_owner = sim.substrate.entities.get(entering).unwrap().owner;
+    sim.fog
+        .mark_visible_for_owner(entering_owner, cell.0, cell.1);
+    assert_eq!(
+        sim.substrate
+            .entities
+            .get(entering)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        0,
+        "inside-playfield Unlimbo leaves the sensor-callback fixture uncloaked"
+    );
 
-    let build_update = |sim: &Simulation| {
+    let build_update = |sim: &Simulation, stable_id| {
         build_radar_object_update(
-            sim.substrate.entities.get(sub).unwrap(),
+            sim.substrate.entities.get(stable_id).unwrap(),
             &sim.houses,
             Some(local),
             &sim.fog,
@@ -72,11 +92,13 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
             sim.resolved_terrain.as_ref(),
         )
     };
-    let evaluate = |sim: &Simulation| build_update(sim).visibility.evaluate(false);
+    let evaluate = |sim: &Simulation| build_update(sim, sub).visibility.evaluate(false);
     let mut tracker = crate::render::radar_tracker::RetainedRadarTracker::default();
     assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
-    assert_eq!(tracker.update_object(build_update(&sim), false), None);
+    assert_eq!(tracker.update_object(build_update(&sim, sub), false), None);
     assert!(!tracker.is_registered(sub));
+    assert_eq!(tracker.update_object(build_update(&sim, entering), false), None);
+    assert!(tracker.is_registered(entering));
 
     let detector = sim
         .spawn_object_at_height(
@@ -107,6 +129,41 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     }
     sim.move_unit_sensor_after_cell_change(detector, Some(far_cell), Some(cell), &rules);
     assert_eq!(
+        sim.substrate
+            .entities
+            .get(entering)
+            .unwrap()
+            .cloak
+            .as_ref()
+            .unwrap()
+            .state,
+        1,
+        "the same sensor add accepts StartCloaking(0) for the state-zero resident"
+    );
+    let cloak_sounds: Vec<_> = sim
+        .sound_events
+        .iter()
+        .filter_map(|event| match event {
+            crate::sim::world::SimSoundEvent::CloakSound { sound_id, .. } => Some(sound_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cloak_sounds.len(),
+        1,
+        "the accepted sensor callback emits exactly one entering-cloak cue"
+    );
+    assert_eq!(cloak_sounds[0], "NavalUnitEmerge");
+    assert_eq!(
+        tracker.update_object(build_update(&sim, entering), false),
+        None,
+        "state-one entering cloak remains radar-visible on the callback edge"
+    );
+    assert!(
+        tracker.is_registered(entering),
+        "the accepted sensor callback and tracker reconciliation agree in the same operation"
+    );
+    assert_eq!(
         evaluate(&sim),
         RadarVisibilityResult {
             visible: true,
@@ -126,7 +183,7 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
         "+0x420 @ 0x006F4EB0 is sensor/redraw reevaluation, not forced uncloaking"
     );
     assert_eq!(
-        tracker.update_object(build_update(&sim), false),
+        tracker.update_object(build_update(&sim, sub), false),
         Some(crate::render::radar_tracker::RadarSensedPresentationEvent {
             stable_id: sub,
             out_code: 1,
@@ -184,7 +241,7 @@ fn radar_visibility_consumes_live_stock_cloak_and_sensor_lifecycle() {
     sim.move_unit_sensor_after_cell_change(second_detector, Some(cell), Some(far_cell), &rules);
     assert_eq!(sim.fog.sensors_by_house[&local][sensor_index], 0);
     assert_eq!(evaluate(&sim), RadarVisibilityResult::HIDDEN);
-    assert_eq!(tracker.update_object(build_update(&sim), false), None);
+    assert_eq!(tracker.update_object(build_update(&sim, sub), false), None);
     assert!(
         !tracker.is_registered(sub),
         "same committed sensor move makes the presentation tracker unregister"

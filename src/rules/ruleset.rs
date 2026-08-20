@@ -3866,8 +3866,10 @@ SpawnCount=3
             "missing CloakSound preserves the native invalid-index default"
         );
         assert_eq!(
-            GeneralRules::from_ini(&IniFile::from_str("[AudioVisual]\nCloakSound=\n"))
-                .cloak_sound,
+            GeneralRules::from_ini(&IniFile::from_str(
+                "[General]\nCloakingStages=9\n[AudioVisual]\nCloakSound=\n",
+            ))
+            .cloak_sound,
             None,
             "empty CloakSound preserves the native invalid-index default"
         );

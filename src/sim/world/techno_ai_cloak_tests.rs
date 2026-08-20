@@ -42,11 +42,33 @@ fn stock_cloak_producer_healthy_trace_uses_type_speed_and_no_rng() {
     tick_stock_cloak_producer(&mut sim, id, &rules);
     assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 1);
     assert_eq!(sim.scenario_rng.logical_state(), before);
+    let entity = sim.substrate.entities.get(id).unwrap();
+    assert!(matches!(
+        sim.sound_events.as_slice(),
+        [crate::sim::world::SimSoundEvent::CloakSound {
+            sound_id,
+            rx,
+            ry,
+            sub_x,
+            sub_y,
+            world_z_leptons: 0,
+        }] if sound_id == "NavalUnitEmerge"
+            && *rx == entity.position.rx
+            && *ry == entity.position.ry
+            && *sub_x == entity.position.sub_x
+            && *sub_y == entity.position.sub_y
+    ));
+    assert_eq!(
+        sim.interner.get("NavalUnitEmerge"),
+        None,
+        "the transient entering-cloak cue must not mutate serialized interner state"
+    );
     for frame in 1..=5 {
         sim.session.binary_frame = frame;
         tick_stock_cloak_producer(&mut sim, id, &rules);
     }
     assert_eq!(sim.substrate.entities.get(id).unwrap().cloak.as_ref().unwrap().state, 2);
+    assert_eq!(sim.sound_events.len(), 1, "states one/two do not replay CloakSound");
 }
 
 #[test]

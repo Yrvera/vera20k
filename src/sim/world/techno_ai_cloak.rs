@@ -98,13 +98,31 @@ pub(crate) fn sensor_reevaluate_stock_cloak(
     if !owner_cell_visible || !facts.can_auto_cloak {
         return false;
     }
-    sim.substrate
+    let start = sim.substrate
         .entities
         .get_mut(id)
         .and_then(|entity| entity.cloak.as_mut())
-        .is_some_and(|cloak| {
-            cloak.start_cloaking_from_sensor(facts.current_frame, facts.cloaking_speed)
-        })
+        .map(|cloak| cloak.start_cloaking_from_sensor(facts.current_frame, facts.cloaking_speed));
+    if start.is_some_and(|start| start.play_sound) {
+        emit_configured_cloak_sound(sim, id, rules);
+    }
+    start.is_some_and(|start| start.transitioned)
+}
+
+fn emit_configured_cloak_sound(sim: &mut Simulation, id: u64, rules: &RuleSet) {
+    let Some(sound_name) = rules.general.cloak_sound.as_deref() else {
+        return;
+    };
+    let Some(position) = sim
+        .substrate
+        .entities
+        .get(id)
+        .map(|entity| entity.position.clone())
+    else {
+        return;
+    };
+    sim.sound_events
+        .push(crate::sim::world::SimSoundEvent::cloak_sound(sound_name.to_owned(), &position));
 }
 
 fn health_strictly_above_condition_red(
@@ -161,16 +179,8 @@ pub(super) fn tick_stock_cloak_producer(sim: &mut Simulation, id: u64, rules: &R
         .get_mut(id)
         .and_then(|entity| entity.cloak.as_mut())
         .map(|cloak| cloak.tick(facts, &mut sim.scenario_rng));
-    if result.is_some_and(|result| result.play_uncloak_sound)
-        && let Some(sound_name) = rules.general.cloak_sound.as_deref()
-        && let Some(position) = sim
-            .substrate
-            .entities
-            .get(id)
-            .map(|entity| entity.position.clone())
-    {
-        sim.sound_events
-            .push(crate::sim::world::SimSoundEvent::cloak_sound(sound_name.to_owned(), &position));
+    if result.is_some_and(|result| result.play_cloak_sound) {
+        emit_configured_cloak_sound(sim, id, rules);
     }
 }
 
