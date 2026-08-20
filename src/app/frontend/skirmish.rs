@@ -155,7 +155,7 @@ mod tests {
     use crate::map::waypoints::Waypoint;
     use crate::rules::ini_parser::IniFile;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
-    use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
+    use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
     use crate::sim::house_state::{HouseDifficulty, HouseState};
     use crate::sim::mission::MissionType;
     use crate::sim::rng::SimRng;
@@ -759,11 +759,10 @@ mod tests {
         assert!(deficient_start_rect_track_passable(
             &terrain, &occupancy, 6, 6
         ));
-        assert!(!cell_is_in_playfield(
+        assert!(!cell_is_in_playfield_height_aware(
             (6, 6),
             Some(diamond),
             Some(&terrain),
-            Some((terrain.width(), terrain.height())),
         ));
 
         assert_eq!(
@@ -793,17 +792,15 @@ mod tests {
             off_104: 10,
             off_108: 6,
         };
-        assert!(cell_is_in_playfield(
+        assert!(cell_is_in_playfield_height_aware(
             (6, 7),
             Some(diamond),
             Some(&terrain),
-            Some((terrain.width(), terrain.height())),
         ));
-        assert!(!cell_is_in_playfield(
+        assert!(!cell_is_in_playfield_height_aware(
             (13, 14),
             Some(diamond),
             Some(&terrain),
-            Some((terrain.width(), terrain.height())),
         ));
 
         assert_eq!(

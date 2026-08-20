@@ -298,7 +298,6 @@ pub(super) fn resolve_reachable_move_goal(
         occupancy: None,
         entities: None,
         zone_grid: Some(zone_grid),
-        map_size: Some((grid.width(), grid.height())),
         playfield_bounds: None,
     };
     // `target_cell` is set, so the frame counter is not consulted for selection.

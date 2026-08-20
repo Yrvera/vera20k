@@ -16,7 +16,7 @@ use crate::map::waypoints::Waypoint;
 use crate::rng_continuation::MapGenRngContinuation;
 use crate::rules::ruleset::RuleSet;
 use crate::sim::ai::AiPlayerState;
-use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield};
+use crate::sim::cell_rect::{PlayfieldBounds, cell_is_in_playfield_height_aware};
 use crate::sim::house_state::{HouseDifficulty, HouseState, determine_waypoint_edge};
 use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::rng::{SimRng, SimRngLogicalState};
@@ -44,7 +44,7 @@ impl NativeStartBounds {
     /// `Try_Unlimbo_Object_At_Or_Near_Cell @ 0x00688ED0` (fallback probe clamp)
     /// read exactly those four fields. Playable-area
     /// acceptance is the separate isometric-diamond predicate
-    /// (`cell_rect::cell_is_in_playfield`); `LocalSize=` feeds that test's
+    /// (`cell_rect::cell_is_in_playfield_height_aware`); `LocalSize=` feeds that test's
     /// band constants only, never an axis-aligned bound. Treating LocalSize
     /// as a cell rectangle here previously rejected most authored starts and
     /// clamped every displaced MCV onto the false edge.
@@ -191,12 +191,7 @@ pub(crate) fn find_nearby_start_rect(
             // `CellRect__CheckPassability @ 0x0056E7C0` scans its 8x8 rect.
             // Only the anchor is diamond-gated; requiring all 64 cells to lie in
             // the diamond would be stricter than retail.
-            if !cell_is_in_playfield(
-                (rx, ry),
-                playfield_bounds,
-                Some(terrain),
-                Some((terrain.width(), terrain.height())),
-            ) {
+            if !cell_is_in_playfield_height_aware((rx, ry), playfield_bounds, Some(terrain)) {
                 continue;
             }
             let (rx, ry) = (rx as u16, ry as u16);
@@ -1533,11 +1528,10 @@ fn starting_object_cell_placeable(
     // cell and every ring candidate with `MapClass::Is_Cell_In_Playfield(cell,
     // 1)`. The cell-array rect only clamps probe coordinates — it is never an
     // acceptance test.
-    if !crate::sim::cell_rect::cell_is_in_playfield(
+    if !crate::sim::cell_rect::cell_is_in_playfield_height_aware(
         (i32::from(rx), i32::from(ry)),
         sim.playfield_bounds,
         Some(resolved_terrain),
-        Some((resolved_terrain.width(), resolved_terrain.height())),
     ) {
         return false;
     }

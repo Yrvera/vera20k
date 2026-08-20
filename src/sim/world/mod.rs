@@ -4269,11 +4269,10 @@ impl Simulation {
         candidate: (i16, i16),
     ) -> group_destination::CandidateFacts {
         let signed_candidate = (i32::from(candidate.0), i32::from(candidate.1));
-        if !crate::sim::cell_rect::cell_is_in_playfield(
+        if !crate::sim::cell_rect::cell_is_in_playfield_height_aware(
             signed_candidate,
             self.playfield_bounds,
             self.resolved_terrain.as_ref(),
-            Some((grid.width(), grid.height())),
         ) {
             return group_destination::CandidateFacts::outside_playfield();
         }

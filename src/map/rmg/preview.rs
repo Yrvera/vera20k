@@ -10,6 +10,8 @@
 //! that changes the projection, the rounding, or the doubling changes the image
 //! the player sees, so each step is pinned by a test below.
 
+use crate::map::playfield::PlayfieldBounds;
+
 /// A cell to draw: its grid position and the two radar colours the isometric
 /// diamond's left and right halves contribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,44 +96,25 @@ fn projected_bounds(cells: &[PreviewCell]) -> Option<(i32, i32, i32, i32)> {
     bounds
 }
 
-/// The playfield rectangle in the diagonal space the playfield test works in.
-///
-/// Built from `LocalSize` plus the full map *width* only — the full height never
-/// enters the test.
+/// Map/RMG-facing view of the canonical MapClass playfield bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Playfield {
-    /// Exclusive lower bound on `x + y`.
-    sum_min_exclusive: i32,
-    /// Inclusive upper bound on `x + y`.
-    sum_max_inclusive: i32,
-    /// Exclusive lower bound on `x - y`.
-    diff_min_exclusive: i32,
-    /// Exclusive upper bound on `x - y`.
-    diff_max_exclusive: i32,
+    bounds: PlayfieldBounds,
 }
 
 impl Playfield {
-    /// Derive the playfield from a map header.
-    ///
-    /// The bounds are asymmetric on purpose: the `x + y` upper bound is
-    /// inclusive while the other three are strict. Getting any one of them
-    /// wrong shifts the admitted cell set by a row, and the preview's surface
-    /// size is the extent of exactly that set.
+    /// Derive the playfield from a raw map header through the final normalized
+    /// fields established by `0x004AD79D -> 0x00654490 -> 0x00567230`.
     pub fn from_header(header: &crate::map::map_file::MapHeader) -> Self {
-        Self::from_local_size(
-            header.width as i32,
-            header.local_left as i32,
-            header.local_top as i32,
-            header.local_width as i32,
-            header.local_height as i32,
-        )
+        Self {
+            bounds: PlayfieldBounds::from_map_header(header),
+        }
     }
 
-    /// The same geometry from the raw local-size numbers.
+    /// The same geometry from final normalized LocalSize fields.
     ///
-    /// Map generation has the dimensions long before there is a header to read
-    /// them back out of, so the arithmetic lives here and `from_header` is the
-    /// thin wrapper.
+    /// Active RMG's synthetic `(2,5,genW,genH)` tuple is already stable under
+    /// native normalization. Raw authored headers must use [`Self::from_header`].
     pub const fn from_local_size(
         map_width: i32,
         left: i32,
@@ -140,10 +123,9 @@ impl Playfield {
         height: i32,
     ) -> Self {
         Self {
-            sum_min_exclusive: map_width + 2 * top,
-            sum_max_inclusive: map_width + 2 * top + 2 * height + 2,
-            diff_min_exclusive: 2 * left - map_width,
-            diff_max_exclusive: 2 * left - map_width + 2 * width,
+            bounds: PlayfieldBounds::from_normalized_local_size(
+                map_width, left, top, width, height,
+            ),
         }
     }
 
@@ -154,12 +136,7 @@ impl Playfield {
     /// terrain rises. Callers that *do* want the elevation-aware form — map
     /// generation is the one that does — use [`Playfield::contains_raised`].
     pub const fn contains(&self, x: u16, y: u16) -> bool {
-        let sum = x as i32 + y as i32;
-        let diff = x as i32 - y as i32;
-        sum > self.sum_min_exclusive
-            && sum <= self.sum_max_inclusive
-            && diff > self.diff_min_exclusive
-            && diff < self.diff_max_exclusive
+        self.bounds.contains_geometry_packed(x as i32, y as i32)
     }
 
     /// The elevation-aware playfield test: the same rectangle, with its
@@ -177,25 +154,8 @@ impl Playfield {
     ///
     /// The `diff` bounds do not move; elevation only shifts along `x + y`.
     pub const fn contains_raised(&self, x: u16, y: u16, level: i8, slope: u8) -> bool {
-        let sum = x as i32 + y as i32;
-        let diff = x as i32 - y as i32;
-        let mut rise = level as i32;
-        // The near-edge probe uses the un-bumped rise, so it cannot cascade.
-        //
-        // The `4` is transcribed, not derived, and it is worth saying that no
-        // test pins it: the bump only changes a verdict for cells sitting
-        // exactly on the near bound, and those fall inside the probe zone for
-        // any margin from 2 up to the band's own width. So every value in that
-        // range behaves identically here. Kept at the transcribed value rather
-        // than simplified away, since only the margin's *range* is proven, not
-        // that the choice within it is free elsewhere.
-        if slope != 0 && sum < self.sum_min_exclusive + 4 + rise {
-            rise += 1;
-        }
-        sum > self.sum_min_exclusive + rise
-            && sum <= self.sum_max_inclusive + rise
-            && diff > self.diff_min_exclusive
-            && diff < self.diff_max_exclusive
+        self.bounds
+            .contains_height_aware_packed(x as i32, y as i32, level, slope)
     }
 }
 
@@ -618,7 +578,9 @@ mod tests {
             fill: "Clear".to_string(),
             level: 0,
             width,
-            height: 0,
+            // Keep the authored LocalSize stable under native bottom-margin
+            // normalization for the geometry fixtures below.
+            height: width,
             local_left,
             local_top,
             local_width,
@@ -651,6 +613,34 @@ mod tests {
         assert!(field.contains(x, y), "diff 2 is inside");
         let (x, y) = on_sum(4);
         assert!(!field.contains(x, y), "diff 4 is excluded, strict");
+    }
+
+    #[test]
+    fn preview_playfield_normalizes_header_local_size() {
+        let field = Playfield::from_header(&crate::map::map_file::MapHeader {
+            theater: "TEMPERATE".to_string(),
+            fill: "Clear".to_string(),
+            level: 0,
+            width: 80,
+            height: 80,
+            local_left: (-5i32) as u32,
+            local_top: (-6i32) as u32,
+            local_width: 100,
+            local_height: 100,
+        });
+
+        assert_eq!(
+            field.bounds,
+            PlayfieldBounds {
+                base: 80,
+                off_fc: 2,
+                off_100: 2,
+                off_104: 76,
+                off_108: 72,
+            }
+        );
+        assert!(field.contains(43, 42));
+        assert!(!field.contains(42, 42));
     }
 
     #[test]
@@ -730,8 +720,9 @@ mod tests {
     }
 
     #[test]
-    fn the_playfield_ignores_the_full_map_height() {
-        // Only the full map WIDTH enters the test; height never does.
+    fn normalized_predicate_ignores_full_map_height_after_bounds_are_stable() {
+        // Full map height participates in LocalSize normalization, but once the
+        // authored LocalSize is stable only the full map width enters 0x00578460.
         let short = Playfield::from_header(&header(20, 2, 5, 10, 8));
         let mut tall_header = header(20, 2, 5, 10, 8);
         tall_header.height = 500;

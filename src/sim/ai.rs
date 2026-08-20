@@ -684,7 +684,6 @@ fn ai_base_reservation_candidate_ok(
         terrain_object_cells: Some(&sim.production.terrain_object_cells),
         resolved_terrain: sim.resolved_terrain.as_ref(),
         overlay_grid: sim.overlay_grid.as_ref(),
-        map_size: Some((sim.session.map_width, sim.session.map_height)),
         playfield_bounds: sim.playfield_bounds,
     }) {
         return false;

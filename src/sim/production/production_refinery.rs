@@ -355,7 +355,6 @@ fn find_free_unit_nearby_cell(
         occupancy: Some(&sim.substrate.occupancy),
         entities: Some(&sim.substrate.entities),
         zone_grid: sim.zone_grid.as_ref(),
-        map_size: None,
         playfield_bounds: sim.playfield_bounds,
     };
     find_nearby_passable_cell_with_options(

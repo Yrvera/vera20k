@@ -30,6 +30,7 @@ pub mod lighting;
 pub mod map_file;
 pub mod overlay;
 pub mod overlay_types;
+pub mod playfield;
 pub mod preview;
 pub mod retail_trig;
 pub mod resolved_terrain;

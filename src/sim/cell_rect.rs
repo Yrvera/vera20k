@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::map::entities::EntityCategory;
-use crate::map::map_file::MapHeader;
+use crate::map::playfield::{lepton_to_packed_cell_component, rect_playfield_corners};
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid, zone_class};
 use crate::rules::locomotor_type::{MovementZone, SpeedType};
 use crate::sim::entity_store::EntityStore;
@@ -22,6 +22,7 @@ use crate::sim::pathfinding::zone_map::{ZoneGrid, ZoneId};
 // so runtime consumers keep their paths.
 pub use crate::map::cell_index::{CELL_ROW_STRIDE, MAX_CELL_INDEX, cell_linear_index};
 pub(crate) use crate::map::cell_index::{canonical_cell_coord, packed_cell_coord};
+pub use crate::map::playfield::PlayfieldBounds;
 
 /// A non-null cell reference — `Real` for an in-range, present cell, or `Dummy`
 /// carrying the requested coord and shared fallback height bytes for an
@@ -570,120 +571,10 @@ pub struct CellRectOccupancyContext<'a> {
     pub terrain_object_cells: Option<&'a BTreeMap<(u16, u16), u64>>,
     pub resolved_terrain: Option<&'a ResolvedTerrainGrid>,
     pub overlay_grid: Option<&'a OverlayGrid>,
-    pub map_size: Option<(u16, u16)>,
-    /// The map's isometric-diamond playfield bounds, when available. When present,
-    /// the playfield-corner test uses the exact diamond formula
-    /// (`rect_in_playfield_diamond`); when `None`, the test falls back to the
-    /// `map_size` rectangle — a non-authoritative convenience for callers that have
-    /// no diamond bounds yet (NOT the engine's shape).
+    /// The configured map's final normalized isometric-diamond fields. Absence
+    /// rejects the query: active MapClass has no rectangular/unbounded substitute
+    /// for `IsRectInPlayfield @ 0x00578390`.
     pub playfield_bounds: Option<PlayfieldBounds>,
-}
-
-/// The five map bound values that define the engine's isometric playfield diamond,
-/// read by `cell_in_playfield_diamond`.
-///
-/// Field meanings verified against active YR `MapClass::Set_Clipped_LocalSize
-/// @ 0x00567230`: `base` is the map's signed `[Map] Size=` width; the other
-/// four are `[Map] LocalSize=` after signed intersection with normalized
-/// `Size=(0,0,width,height)`, the native left/top floor, and right/bottom
-/// margin caps. The `*2` doubling and the `+2`/`+4` diamond constants live in
-/// `cell_in_playfield_diamond`. The `off_*` names are legacy source-struct
-/// offsets retained to avoid rename churn across consumers and tests.
-/// Research:
-/// `docs/research/skirmish-ui/SKIRMISH_MCV_NEARBY_PLACEMENT_FALLBACK_00688ED0_GHIDRA_REPORT.md`, section 3.4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PlayfieldBounds {
-    /// `[Map] Size=` width (3rd value).
-    pub base: i32,
-    /// Clipped/normalized `[Map] LocalSize=` left (1st value).
-    pub off_fc: i32,
-    /// Clipped/normalized `[Map] LocalSize=` top (2nd value).
-    pub off_100: i32,
-    /// Clipped/normalized `[Map] LocalSize=` width (3rd value).
-    pub off_104: i32,
-    /// Clipped/normalized `[Map] LocalSize=` height (4th value).
-    pub off_108: i32,
-}
-
-impl PlayfieldBounds {
-    /// Construct the live MapClass playfield fields from the raw map header.
-    ///
-    /// `MapHeader` preserves signed INI values in `u32` bit patterns; recover
-    /// them before reproducing `ClipRect @ 0x00421B60` and
-    /// `MapClass::Set_Clipped_LocalSize @ 0x00567230`. Wrapping arithmetic is
-    /// intentional x86 parity for malformed headers, and final spans are not
-    /// saturated back to zero after the native margin caps.
-    pub(crate) fn from_map_header(header: &MapHeader) -> Self {
-        let size_width = header.width as i32;
-        let size_height = header.height as i32;
-        let [clipped_left, clipped_top, clipped_width, clipped_height] = clip_local_size_to_map(
-            size_width,
-            size_height,
-            [
-                header.local_left as i32,
-                header.local_top as i32,
-                header.local_width as i32,
-                header.local_height as i32,
-            ],
-        );
-
-        let left = clipped_left.max(2);
-        let top = clipped_top.max(2);
-        let width_cap = size_width.wrapping_sub(left).wrapping_sub(2);
-        let height_cap = size_height.wrapping_sub(top).wrapping_sub(6);
-
-        Self {
-            base: size_width,
-            off_fc: left,
-            off_100: top,
-            off_104: clipped_width.min(width_cap),
-            off_108: clipped_height.min(height_cap),
-        }
-    }
-}
-
-/// Signed intersection of raw LocalSize with normalized Size, matching the
-/// active `ClipRect @ 0x00421B60` call inside `0x00567230`.
-fn clip_local_size_to_map(
-    size_width: i32,
-    size_height: i32,
-    [mut left, mut top, mut width, mut height]: [i32; 4],
-) -> [i32; 4] {
-    if size_width <= 0 || size_height <= 0 || width <= 0 || height <= 0 {
-        return [0; 4];
-    }
-
-    if left < 0 {
-        width = width.wrapping_add(left);
-        left = 0;
-    }
-    if width <= 0 {
-        return [0; 4];
-    }
-
-    if top < 0 {
-        height = height.wrapping_add(top);
-        top = 0;
-    }
-    if height <= 0 {
-        return [0; 4];
-    }
-
-    if size_width < left.wrapping_add(width) {
-        width = size_width.wrapping_sub(left);
-    }
-    if width <= 0 {
-        return [0; 4];
-    }
-
-    if size_height < top.wrapping_add(height) {
-        height = size_height.wrapping_sub(top);
-    }
-    if height <= 0 {
-        return [0; 4];
-    }
-
-    [left, top, width, height]
 }
 
 pub fn check_passability_rect(ctx: CellRectPassabilityContext<'_>) -> bool {
@@ -716,17 +607,7 @@ pub fn check_occupancy_rect(ctx: CellRectOccupancyContext<'_>) -> bool {
         return false;
     }
 
-    rect_in_playfield(
-        ctx.rect,
-        ctx.playfield_bounds,
-        ctx.resolved_terrain,
-        ctx.map_size
-            .or_else(|| {
-                ctx.resolved_terrain
-                    .map(|terrain| (terrain.width(), terrain.height()))
-            })
-            .or_else(|| ctx.overlay_grid.map(|grid| (grid.width(), grid.height()))),
-    )
+    rect_is_in_playfield_height_aware(ctx.rect, ctx.playfield_bounds, ctx.resolved_terrain)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -910,125 +791,66 @@ fn ground_building_present(
     })
 }
 
-/// Engine `IsRectInPlayfield`: test exactly four corners — NW `(x,y)`,
-/// NE `(x+w-1, y)`, SW `(x, y+h-1)`, SE `(x+w-1, y+h-1)` — in that fixed order,
-/// short-circuit AND, using INCLUSIVE `w-1`/`h-1` far edges. Each corner is judged
-/// by the isometric diamond predicate (`cell_in_playfield_diamond`), NOT a
-/// rectangular `0 <= x < width` index test.
-///
-/// A 0-size rect is NOT a no-op: with `width == 0` the NE/SE x become `x-1`, and
-/// with `height == 0` the SW/SE y become `y-1`, so the corners are evaluated at
-/// decremented coords and all four must still satisfy the diamond.
-///
-/// When `bounds` is `None` the function falls back to the `map_size` rectangle —
-/// a non-authoritative convenience for callers that have no diamond bounds wired
-/// yet. The diamond is the engine's shape; the rectangle is only a placeholder.
-fn rect_in_playfield(
+/// Height-aware `MapClass::IsRectInPlayfield @ 0x00578390`: test NW, NE,
+/// SW, then SE with native wrapping/truncation and short-circuit order.
+/// Missing configured bounds reject instead of substituting a rectangular or
+/// unbounded approximation that active MapClass does not have.
+fn rect_is_in_playfield_height_aware(
     rect: CellRect,
     bounds: Option<PlayfieldBounds>,
     terrain: Option<&ResolvedTerrainGrid>,
-    map_size: Option<(u16, u16)>,
 ) -> bool {
-    let corners = rect_playfield_corners(rect);
-
-    if let Some(bounds) = bounds {
-        return corners
-            .into_iter()
-            .all(|(sx, sy)| cell_in_playfield_diamond(sx, sy, &bounds, terrain));
-    }
-
-    // Fallback (no diamond bounds supplied): rectangular bounds. Not the engine's
-    // shape — only used until callers thread real playfield bounds.
-    let Some((width, height)) = map_size else {
-        return true;
+    let Some(bounds) = bounds else {
+        return false;
     };
-    corners
+    rect_playfield_corners(rect.x, rect.y, rect.width, rect.height)
         .into_iter()
-        .all(|(x, y)| x >= 0 && y >= 0 && x < i32::from(width) && y < i32::from(height))
+        .all(|cell| cell_is_in_playfield_height_aware(cell, Some(bounds), terrain))
 }
 
-/// Construct the packed corner coordinates in the engine's fixed order. The
-/// far-edge arithmetic happens before each component is truncated to its stored
-/// 16-bit word.
-fn rect_playfield_corners(rect: CellRect) -> [(i32, i32); 4] {
-    let (min_x, min_y) = packed_cell_coord(rect.x, rect.y);
-    let max_x = rect.x.wrapping_add(rect.width).wrapping_sub(1) as i16 as i32;
-    let max_y = rect.y.wrapping_add(rect.height).wrapping_sub(1) as i16 as i32;
-    [
-        (min_x, min_y), // NW
-        (max_x, min_y), // NE
-        (min_x, max_y), // SW
-        (max_x, max_y), // SE
-    ]
+/// Explicit mode-zero `MapClass::IsCellInPlayfield @ 0x00578460` seam.
+/// No CellClass lookup or dummy state is touched.
+pub fn cell_is_in_playfield_geometry_only(
+    cell: (i32, i32),
+    bounds: PlayfieldBounds,
+) -> bool {
+    bounds.contains_geometry_packed(cell.0, cell.1)
 }
 
-/// Exact single-cell `MapClass::Is_Cell_In_Playfield(cell, 1)` seam.
-///
-/// Production maps supply `bounds`, selecting the retail isometric-diamond
-/// predicate.  The rectangular fallback is retained only for headless callers
-/// that do not yet carry map-header bounds.
-pub(crate) fn cell_is_in_playfield(
+/// Explicit mode-one `MapClass::IsCellInPlayfield @ 0x00578460` seam.
+/// Missing configured bounds reject; active native callers do not replace the
+/// playfield diamond with a terrain rectangle or unconditional success.
+pub(crate) fn cell_is_in_playfield_height_aware(
     cell: (i32, i32),
     bounds: Option<PlayfieldBounds>,
     terrain: Option<&ResolvedTerrainGrid>,
-    map_size: Option<(u16, u16)>,
 ) -> bool {
-    let cell = packed_cell_coord(cell.0, cell.1);
-    if let Some(bounds) = bounds {
-        return cell_in_playfield_diamond(cell.0, cell.1, &bounds, terrain);
-    }
-    map_size.is_none_or(|(width, height)| {
-        cell.0 >= 0 && cell.1 >= 0 && cell.0 < i32::from(width) && cell.1 < i32::from(height)
-    })
-}
-
-/// Engine `Is_Cell_In_Playfield` with `height_flag = 1` (the value the sole rect
-/// caller passes): the isometric-diamond containment test for a single cell.
-///
-/// With `sx`, `sy` the cell's signed coords and `h` the height extension, the cell
-/// passes iff its sum `sx+sy` lies in the half-open band `(base+LOW, base+HIGH]`
-/// (low exclusive, high inclusive) AND both differences are strictly below their
-/// bound:
-/// - `(base + LOW)  <  (sx + sy)`            (strict low)
-/// - `(sx + sy)     <= (base + HIGH)`        (inclusive high)
-/// - `(sx - sy)     <  RIGHT`                (strict)
-/// - `(sy - sx)     <  LEFT`                 (strict)
-///
-/// where `LOW = off_100*2 + h`, `HIGH = 2 + (off_108 + off_100)*2 + h`,
-/// `RIGHT = (off_104 + off_fc)*2 - base`, `LEFT = base - off_fc*2`.
-///
-/// Height extension (height_flag = 1): `h = signed(cell.level)`; if the cell's slope
-/// byte is nonzero AND `sx+sy < base + 4 + off_100*2 + h` then `h += 1`. An
-/// fallback cell contributes its persistent shared bytes (zero after grid
-/// construction until a verified runtime writer changes them).
-fn cell_in_playfield_diamond(
-    sx: i32,
-    sy: i32,
-    bounds: &PlayfieldBounds,
-    terrain: Option<&ResolvedTerrainGrid>,
-) -> bool {
-    let (sx, sy) = packed_cell_coord(sx, sy);
-    let base = bounds.base;
-
-    // Height extension from the cell at (sx, sy). The cell level byte is read signed;
-    // a nonzero slope byte bumps h by 1 when the cell sits below the slope threshold.
-    let (mut h, slope_type) = match get_cellclass_fallback(terrain, sx, sy) {
-        CellRef::Real(cell) => (i32::from(cell.level as i8), cell.slope_type),
+    let Some(bounds) = bounds else {
+        return false;
+    };
+    let (x, y) = packed_cell_coord(cell.0, cell.1);
+    let (level, slope) = match get_cellclass_fallback(terrain, x, y) {
+        CellRef::Real(cell) => (cell.level as i8, cell.slope_type),
         CellRef::Dummy {
             level, slope_type, ..
-        } => (i32::from(level), slope_type),
+        } => (level, slope_type),
     };
-    if slope_type != 0 && (sx + sy) < base + 4 + bounds.off_100 * 2 + h {
-        h += 1;
-    }
+    bounds.contains_height_aware_packed(x, y, level, slope)
+}
 
-    let low = bounds.off_100 * 2 + h;
-    let high = 2 + (bounds.off_108 + bounds.off_100) * 2 + h;
-    let right = (bounds.off_104 + bounds.off_fc) * 2 - base;
-    let left = base - bounds.off_fc * 2;
-
-    let sum = sx + sy;
-    (base + low) < sum && sum <= (base + high) && (sx - sy) < right && (sy - sx) < left
+/// Forced-mode-one signed-lepton wrapper from
+/// `MapClass::IsCoordInPlayfield @ 0x005785F0`. Division by 256 truncates
+/// toward zero, the quotients truncate to signed i16, and z is ignored.
+pub fn cell_is_in_playfield_leptons(
+    coord: (i32, i32, i32),
+    bounds: Option<PlayfieldBounds>,
+    terrain: Option<&ResolvedTerrainGrid>,
+) -> bool {
+    let cell = (
+        lepton_to_packed_cell_component(coord.0),
+        lepton_to_packed_cell_component(coord.1),
+    );
+    cell_is_in_playfield_height_aware(cell, bounds, terrain)
 }
 
 fn reservation_mask(reservation_arg: i32) -> u32 {
@@ -1052,6 +874,7 @@ mod tests {
 
     use super::*;
     use crate::map::bridge_facts::{BRIDGE_FLAG_STRUCTURAL, BridgeCellFacts};
+    use crate::map::map_file::MapHeader;
     use crate::rules::terrain_rules::{SpeedCostProfile, TerrainClass};
     use crate::sim::occupancy::CellListInsertion;
     use crate::sim::pathfinding::zone_map::ZoneGrid;
@@ -1380,6 +1203,16 @@ mod tests {
         ResolvedTerrainGrid::from_cells(width, height, cells)
     }
 
+    fn wide_test_playfield() -> PlayfieldBounds {
+        PlayfieldBounds {
+            base: 0,
+            off_fc: -1_000,
+            off_100: -1_000,
+            off_104: 2_000,
+            off_108: 2_000,
+        }
+    }
+
     #[test]
     fn cellrect_occupancy_minus_one_skips_reservation_but_rejects_cell_blockers() {
         let mut terrain = flat_terrain(3, 1);
@@ -1396,8 +1229,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(check_occupancy_rect(clear_reserved));
 
@@ -1410,8 +1242,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(!check_occupancy_rect(sloped));
     }
@@ -1431,8 +1262,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(!check_occupancy_rect(same_house));
 
@@ -1445,8 +1275,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(check_occupancy_rect(other_house));
 
@@ -1459,8 +1288,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(check_occupancy_rect(skipped));
     }
@@ -1579,8 +1407,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(check_occupancy_rect(occupancy_rect));
     }
@@ -1648,7 +1475,7 @@ mod tests {
     }
 
     #[test]
-    fn gsi_04_01_packs_cell_inputs_and_wraps_rect_corners() {
+    fn playfield_rect_wrapper_matches_native_corner_contract() {
         let terrain = flat_terrain(512, 2);
 
         // Only the low word of each requested component reaches the native
@@ -1671,12 +1498,7 @@ mod tests {
         // Far corners use x+width-1/y+height-1, then truncate each component
         // to its stored word, without saturating at the i32 or i16 boundary.
         assert_eq!(
-            rect_playfield_corners(CellRect::new(
-                i32::from(i16::MAX),
-                i32::from(i16::MIN),
-                2,
-                0,
-            )),
+            rect_playfield_corners(i32::from(i16::MAX), i32::from(i16::MIN), 2, 0),
             [
                 (i32::from(i16::MAX), i32::from(i16::MIN)),
                 (i32::from(i16::MIN), i32::from(i16::MIN)),
@@ -1684,9 +1506,68 @@ mod tests {
                 (i32::from(i16::MIN), i32::from(i16::MAX)),
             ]
         );
-        assert!(rect_in_playfield(
+        assert!(rect_is_in_playfield_height_aware(
             CellRect::new(7, 6, 0x1_0001, 1),
             Some(diamond_bounds()),
+            None,
+        ));
+        assert_eq!(
+            rect_playfield_corners(7, 6, -1, -2),
+            [(7, 6), (5, 6), (7, 3), (5, 3)]
+        );
+        assert!(!rect_is_in_playfield_height_aware(
+            CellRect::new(7, 6, -1, -2),
+            Some(diamond_bounds()),
+            None,
+        ));
+    }
+
+    #[test]
+    fn playfield_modes_skip_or_apply_cell_height_explicitly() {
+        let bounds = PlayfieldBounds {
+            base: 10,
+            off_fc: 2,
+            off_100: 1,
+            off_104: 10,
+            off_108: 6,
+        };
+        let mut terrain = flat_terrain(16, 16);
+        terrain.cells[6 * 16 + 7].slope_type = 1;
+
+        // (7,6), sum=13, is just inside the geometry-only strict low edge 12.
+        // Mode one looks up the sloped cell, bumps h to one, and moves that edge
+        // to 13, so the same cell is excluded. Mode zero cannot touch the cell.
+        assert!(cell_is_in_playfield_geometry_only((7, 6), bounds));
+        assert!(!cell_is_in_playfield_height_aware(
+            (7, 6),
+            Some(bounds),
+            Some(&terrain),
+        ));
+    }
+
+    #[test]
+    fn playfield_leptons_truncate_toward_zero() {
+        assert_eq!(lepton_to_packed_cell_component(-1), 0);
+        assert_eq!(lepton_to_packed_cell_component(-255), 0);
+        assert_eq!(lepton_to_packed_cell_component(-256), -1);
+        assert_eq!(lepton_to_packed_cell_component(-257), -1);
+
+        let bounds = diamond_bounds();
+        assert_eq!(
+            cell_is_in_playfield_leptons(
+                (7 * 256 + 255, 6 * 256 + 1, i32::MAX),
+                Some(bounds),
+                None
+            ),
+            cell_is_in_playfield_height_aware((7, 6), Some(bounds), None),
+        );
+    }
+
+    #[test]
+    fn playfield_absence_does_not_use_rectangular_or_unbounded_fallback() {
+        assert!(!cell_is_in_playfield_height_aware((1, 1), None, None));
+        assert!(!rect_is_in_playfield_height_aware(
+            CellRect::single(1, 1),
             None,
             None,
         ));
@@ -1707,12 +1588,15 @@ mod tests {
         // Requested (-1,1) aliases canonical (511,0). Its signed level -1
         // shifts the strict low sum boundary from 0 to -1, making sum=0 pass.
         // The zero-field dummy leaves the boundary at 0 and therefore fails.
-        assert!(!cell_is_in_playfield((-1, 1), Some(bounds), None, None,));
-        assert!(cell_is_in_playfield(
+        assert!(!cell_is_in_playfield_height_aware(
+            (-1, 1),
+            Some(bounds),
+            None,
+        ));
+        assert!(cell_is_in_playfield_height_aware(
             (-1, 1),
             Some(bounds),
             Some(&terrain),
-            None,
         ));
     }
 
@@ -1749,17 +1633,15 @@ mod tests {
             off_108: 3,
         };
         let zero_dummy = flat_terrain(1, 1);
-        assert!(!cell_is_in_playfield(
+        assert!(!cell_is_in_playfield_height_aware(
             (-1, 0),
             Some(bounds),
             Some(&zero_dummy),
-            None,
         ));
-        assert!(cell_is_in_playfield(
+        assert!(cell_is_in_playfield_height_aware(
             (-1, 0),
             Some(bounds),
             Some(&terrain),
-            None,
         ));
     }
 
@@ -1838,8 +1720,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(check_occupancy_rect(clear)); // clear cell passes
 
@@ -1852,8 +1733,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(!check_occupancy_rect(slope_only));
 
@@ -1866,8 +1746,7 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
-            playfield_bounds: None,
+            playfield_bounds: Some(wide_test_playfield()),
         };
         assert!(!check_occupancy_rect(zone_only));
     }
@@ -1875,7 +1754,7 @@ mod tests {
     /// A diamond bounds fixture chosen so the playable region is a clean interior:
     /// pass iff `12 < sx+sy <= 26` AND `sx-sy < 14` AND `sy-sx < 6` (flat terrain,
     /// so the height extension `h = 0`). Derived from the resolved formula in
-    /// `cell_in_playfield_diamond` with these five values:
+    /// the canonical MapClass playfield predicate with these five values:
     ///   base=10, off_fc=2, off_100=1, off_104=10, off_108=6
     ///   LOW=off_100*2 = 2; HIGH=2+(off_108+off_100)*2 = 16;
     ///   RIGHT=(off_104+off_fc)*2-base = 14; LEFT=base-off_fc*2 = 6;
@@ -1900,7 +1779,6 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: None,
             overlay_grid: None,
-            map_size: None,
             playfield_bounds: Some(diamond_bounds()),
         }
     }
@@ -2033,7 +1911,6 @@ mod tests {
             terrain_object_cells: None,
             resolved_terrain: Some(&terrain),
             overlay_grid: None,
-            map_size: None,
             playfield_bounds: None,
         }));
 
@@ -2129,7 +2006,6 @@ mod tests {
                         terrain_object_cells: Some(&terrain_objects),
                         resolved_terrain: Some(&terrain),
                         overlay_grid: Some(&overlays),
-                        map_size: Some((1, 1)),
                         playfield_bounds: None,
                     },
                     0,
@@ -2212,7 +2088,6 @@ mod tests {
                         terrain_object_cells: None,
                         resolved_terrain: Some(&terrain),
                         overlay_grid: None,
-                        map_size: Some((2, 1)),
                         playfield_bounds: None,
                     },
                     i32::from(x),
