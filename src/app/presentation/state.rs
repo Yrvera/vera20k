@@ -41,6 +41,11 @@ pub(crate) struct MatchPresentationState {
     pub(crate) sidebar_chrome: Option<SidebarChromeSet>,
     pub(crate) software_cursor: Option<crate::app::presentation::render::SoftwareCursor>,
     pub(crate) terrain_grid: Option<TerrainGrid>,
+    /// Last mutable MapClass playfield authority installed into presentation.
+    /// `None` is an explicit stale gate (new map / quickload); the inner
+    /// optional bounds preserves fail-closed absence without inventing a rect.
+    pub(crate) installed_playfield_authority:
+        Option<(Option<crate::map::playfield::PlayfieldBounds>, u64)>,
     /// Overlay entries from map for per-frame instance generation.
     pub(crate) overlays: crate::app::presentation::overlay_index::OverlayRenderIndex,
     /// Terrain objects from map for per-frame instance generation.

@@ -5,7 +5,8 @@
 //! A white rectangle indicates the current camera viewport.
 //!
 //! ## Implementation
-//! - Terrain image is generated once at map load from TerrainGrid data.
+//! - Terrain image is generated at map load and whenever mutable MapClass
+//!   LocalSize authority changes.
 //! - Unit dots are overlaid on demand by copying the base image and stamping dots.
 //! - The combined image is only re-uploaded when sim/fog state changes.
 //! - A separate 2x2 white pixel texture is used for the viewport rectangle lines.
@@ -22,7 +23,8 @@
 
 use crate::map::entities::EntityCategory;
 use crate::map::houses::HouseColorMap;
-use crate::map::terrain::TerrainGrid;
+use crate::map::playfield::PlayfieldBounds;
+use crate::map::terrain::{PlayfieldPresentationGeometry, TerrainGrid};
 use crate::render::batch::{BatchRenderer, BatchTexture, SpriteInstance};
 use crate::render::gpu::GpuContext;
 use crate::rules::house_colors::HouseColorRamps;
@@ -34,14 +36,202 @@ use super::minimap_helpers::{
     COLOR_BUILDING, COLOR_SHROUD, DOT_SIZE, MINIMAP_DEPTH, MINIMAP_SIZE, VIEWPORT_LINE_THICKNESS,
     cell_visibility_color, compute_aspect_fit, dim_color, draw_line, owner_dot_color,
     parse_foundation_size, radar_color_for_cell, set_pixel, terrain_brightness_for_theater,
-    world_to_minimap_pixel, world_to_minimap_pixel_from_cell,
+    world_to_minimap_pixel,
 };
 pub use super::minimap_helpers::{OverlayClassification, default_minimap_rect};
 use super::minimap_helpers::{OverlayPixel, TerrainPixel};
 
+pub(crate) type MinimapOverlayDatum = (u16, u16, OverlayClassification, u8, Option<[u8; 4]>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlayfieldAuthorityStamp {
+    bounds: Option<PlayfieldBounds>,
+    revision: u64,
+}
+
+fn playfield_authority_needs_reconcile(
+    installed: Option<PlayfieldAuthorityStamp>,
+    bounds: Option<PlayfieldBounds>,
+    revision: u64,
+) -> bool {
+    installed != Some(PlayfieldAuthorityStamp { bounds, revision })
+}
+
+fn techno_cell_in_playfield(
+    bounds: PlayfieldBounds,
+    rx: u16,
+    ry: u16,
+    level: u8,
+    slope_type: u8,
+) -> bool {
+    bounds.contains_height_aware_packed(i32::from(rx), i32::from(ry), level as i8, slope_type)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn minimap_screen_point_to_camera_top_left(
+    screen_x: f32,
+    screen_y: f32,
+    screen_w: f32,
+    screen_h: f32,
+    rect_x: f32,
+    rect_y: f32,
+    rect_w: f32,
+    rect_h: f32,
+    world_origin_x: f32,
+    world_origin_y: f32,
+    world_width: f32,
+    world_height: f32,
+    map_offset_x: f32,
+    map_offset_y: f32,
+    map_pixel_w: f32,
+    map_pixel_h: f32,
+) -> (f32, f32) {
+    let size = MINIMAP_SIZE as f32;
+    let tex_x = (screen_x - rect_x) / rect_w.max(1.0) * size;
+    let tex_y = (screen_y - rect_y) / rect_h.max(1.0) * size;
+    let nx = ((tex_x - map_offset_x) / map_pixel_w.max(1.0)).clamp(0.0, 1.0);
+    let ny = ((tex_y - map_offset_y) / map_pixel_h.max(1.0)).clamp(0.0, 1.0);
+    let world_x = world_origin_x + nx * world_width;
+    let world_y = world_origin_y + ny * world_height;
+    (world_x - screen_w * 0.5, world_y - screen_h * 0.5)
+}
+
+struct MinimapPlayfieldProjection {
+    base_rgba: Vec<u8>,
+    world_origin_x: f32,
+    world_origin_y: f32,
+    world_width: f32,
+    world_height: f32,
+    terrain_pixels: Vec<TerrainPixel>,
+    overlay_pixels: Vec<OverlayPixel>,
+    map_offset_x: f32,
+    map_offset_y: f32,
+    map_pixel_w: f32,
+    map_pixel_h: f32,
+}
+
+impl MinimapPlayfieldProjection {
+    /// CPU-only equivalent of active YR `ComputeRadarMapBounds` followed by
+    /// radar-surface construction: enumerate exact mode-zero-valid cells, fit
+    /// that isometric rectangle, then include only matching terrain/overlays.
+    fn derive(
+        grid: &TerrainGrid,
+        overlay_data: &[MinimapOverlayDatum],
+        theater_name: &str,
+        bounds: Option<PlayfieldBounds>,
+    ) -> Self {
+        let size = MINIMAP_SIZE;
+        let mut base_rgba = vec![0u8; (size * size * 4) as usize];
+        for pixel in base_rgba.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&COLOR_SHROUD);
+        }
+
+        let geometry =
+            bounds.and_then(|bounds| PlayfieldPresentationGeometry::from_grid(grid, bounds));
+        let (world_origin_x, world_origin_y, world_width, world_height) = geometry
+            .map(|geometry| {
+                (
+                    geometry.origin_x,
+                    geometry.origin_y,
+                    geometry.world_width.max(1.0),
+                    geometry.world_height.max(1.0),
+                )
+            })
+            .unwrap_or((0.0, 0.0, 1.0, 1.0));
+        let (map_offset_x, map_offset_y, map_pixel_w, map_pixel_h) =
+            compute_aspect_fit(world_width, world_height);
+        let terrain_brightness = terrain_brightness_for_theater(theater_name);
+        let mut terrain_pixels =
+            Vec::with_capacity(geometry.map_or(0, |geometry| geometry.valid_cell_count));
+
+        if let Some(bounds) = bounds {
+            for cell in &grid.cells {
+                if !bounds.contains_geometry_packed(i32::from(cell.rx), i32::from(cell.ry)) {
+                    continue;
+                }
+                let (sx, sy) = crate::map::terrain::iso_to_screen(cell.rx, cell.ry, 0);
+                let (px, py) = world_to_minimap_pixel(
+                    sx,
+                    sy,
+                    world_origin_x,
+                    world_origin_y,
+                    world_width,
+                    world_height,
+                    map_offset_x,
+                    map_offset_y,
+                    map_pixel_w,
+                    map_pixel_h,
+                );
+                let color = radar_color_for_cell(cell, terrain_brightness);
+                set_pixel(&mut base_rgba, size, px, py, color);
+                terrain_pixels.push(TerrainPixel {
+                    rx: cell.rx,
+                    ry: cell.ry,
+                    px,
+                    py,
+                    color,
+                });
+            }
+        }
+
+        let mut overlay_pixels = Vec::new();
+        if let Some(bounds) = bounds {
+            for &(rx, ry, classification, density, precomputed) in overlay_data {
+                if !bounds.contains_geometry_packed(i32::from(rx), i32::from(ry)) {
+                    continue;
+                }
+                let color = if let Some(color) = precomputed {
+                    color
+                } else if let Some(color) = classification.color(density) {
+                    color
+                } else {
+                    continue;
+                };
+                let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+                let (px, py) = world_to_minimap_pixel(
+                    sx,
+                    sy,
+                    world_origin_x,
+                    world_origin_y,
+                    world_width,
+                    world_height,
+                    map_offset_x,
+                    map_offset_y,
+                    map_pixel_w,
+                    map_pixel_h,
+                );
+                set_pixel(&mut base_rgba, size, px, py, color);
+                overlay_pixels.push(OverlayPixel {
+                    rx,
+                    ry,
+                    px,
+                    py,
+                    color,
+                    classification,
+                });
+            }
+        }
+
+        Self {
+            base_rgba,
+            world_origin_x,
+            world_origin_y,
+            world_width,
+            world_height,
+            terrain_pixels,
+            overlay_pixels,
+            map_offset_x,
+            map_offset_y,
+            map_pixel_w,
+            map_pixel_h,
+        }
+    }
+}
+
 /// Minimap renderer — manages terrain image, unit overlay, and viewport rectangle.
 pub struct MinimapRenderer {
-    /// Base terrain image (RGBA, MINIMAP_SIZE x MINIMAP_SIZE). Generated once at init.
+    /// Base terrain image (RGBA, MINIMAP_SIZE x MINIMAP_SIZE), rebuilt on a
+    /// playfield-authority revision.
     base_terrain_rgba: Vec<u8>,
     /// GPU texture containing the current minimap image (terrain + unit dots).
     map_texture: BatchTexture,
@@ -71,6 +261,8 @@ pub struct MinimapRenderer {
     /// Last local owner used for fog-aware refresh.
     last_visibility_owner: Option<InternedId>,
     last_radar_terrain_dirty_generation: u64,
+    playfield_bounds: Option<PlayfieldBounds>,
+    installed_playfield_authority: Option<PlayfieldAuthorityStamp>,
 }
 
 impl MinimapRenderer {
@@ -85,107 +277,18 @@ impl MinimapRenderer {
         gpu: &GpuContext,
         batch: &BatchRenderer,
         grid: &TerrainGrid,
-        overlay_data: &[(u16, u16, OverlayClassification, u8, Option<[u8; 4]>)],
+        overlay_data: &[MinimapOverlayDatum],
         theater_name: &str,
+        playfield_bounds: Option<PlayfieldBounds>,
+        playfield_revision: u64,
     ) -> Self {
         let size: u32 = MINIMAP_SIZE;
         let pixel_count: usize = (size * size * 4) as usize;
-        let mut rgba: Vec<u8> = vec![0u8; pixel_count];
-        let mut terrain_pixels = Vec::with_capacity(grid.cells.len());
-        let terrain_brightness = terrain_brightness_for_theater(theater_name);
+        let projection =
+            MinimapPlayfieldProjection::derive(grid, overlay_data, theater_name, playfield_bounds);
 
-        // Fill with a dark background (unexplored/void areas).
-        for pixel in rgba.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&COLOR_SHROUD);
-        }
-
-        // Avoid division by zero for degenerate grids.
-        let w: f32 = if grid.world_width > 0.0 {
-            grid.world_width
-        } else {
-            1.0
-        };
-        let h: f32 = if grid.world_height > 0.0 {
-            grid.world_height
-        } else {
-            1.0
-        };
-
-        let (map_offset_x, map_offset_y, map_pixel_w, map_pixel_h) = compute_aspect_fit(w, h);
-
-        for cell in &grid.cells {
-            // Radar shows only the playable rect: gamemd's radar is sized to
-            // LocalSize, so border filler cells never appear on it even though
-            // they render in the tactical view.
-            if let Some(ref bounds) = grid.local_bounds {
-                if !bounds.contains(cell.screen_x, cell.screen_y) {
-                    continue;
-                }
-            }
-            let (px, py): (u32, u32) = world_to_minimap_pixel(
-                cell.screen_x,
-                cell.screen_y,
-                grid.origin_x,
-                grid.origin_y,
-                w,
-                h,
-                map_offset_x,
-                map_offset_y,
-                map_pixel_w,
-                map_pixel_h,
-            );
-
-            let color: [u8; 4] = radar_color_for_cell(cell, terrain_brightness);
-            set_pixel(&mut rgba, size, px, py, color);
-            terrain_pixels.push(TerrainPixel {
-                rx: cell.rx,
-                ry: cell.ry,
-                px,
-                py,
-                color,
-            });
-        }
-
-        // Build overlay pixels from classified overlay entries.
-        let mut overlay_pixels: Vec<OverlayPixel> = Vec::new();
-        for &(rx, ry, classification, density, precomputed) in overlay_data {
-            // Same playable-rect filter as terrain pixels above.
-            if let Some(ref bounds) = grid.local_bounds {
-                let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-                if !bounds.contains(sx, sy) {
-                    continue;
-                }
-            }
-            let color: [u8; 4] = if let Some(c) = precomputed {
-                c
-            } else if let Some(c) = classification.color(density) {
-                c
-            } else {
-                continue;
-            };
-            let (px, py): (u32, u32) = world_to_minimap_pixel_from_cell(
-                rx,
-                ry,
-                grid,
-                w,
-                h,
-                map_offset_x,
-                map_offset_y,
-                map_pixel_w,
-                map_pixel_h,
-            );
-            set_pixel(&mut rgba, size, px, py, color);
-            overlay_pixels.push(OverlayPixel {
-                rx,
-                ry,
-                px,
-                py,
-                color,
-                classification,
-            });
-        }
-
-        let (map_texture_raw, map_texture) = batch.create_updatable_texture(gpu, &rgba, size, size);
+        let (map_texture_raw, map_texture) =
+            batch.create_updatable_texture(gpu, &projection.base_rgba, size, size);
         let white_texture: BatchTexture = create_white_texture(gpu, batch);
         let rgba_scratch: Vec<u8> = vec![0u8; pixel_count];
 
@@ -193,31 +296,114 @@ impl MinimapRenderer {
             "Minimap created: {}x{} px, {} terrain cells, {} overlay pixels",
             size,
             size,
-            grid.cells.len(),
-            overlay_pixels.len(),
+            projection.terrain_pixels.len(),
+            projection.overlay_pixels.len(),
         );
 
         Self {
-            base_terrain_rgba: rgba,
+            base_terrain_rgba: projection.base_rgba,
             map_texture,
             map_texture_raw,
             rgba_scratch,
             white_texture,
-            world_origin_x: grid.origin_x,
-            world_origin_y: grid.origin_y,
-            world_width: w,
-            world_height: h,
-            terrain_pixels,
-            overlay_pixels,
-            map_offset_x,
-            map_offset_y,
-            map_pixel_w,
-            map_pixel_h,
+            world_origin_x: projection.world_origin_x,
+            world_origin_y: projection.world_origin_y,
+            world_width: projection.world_width,
+            world_height: projection.world_height,
+            terrain_pixels: projection.terrain_pixels,
+            overlay_pixels: projection.overlay_pixels,
+            map_offset_x: projection.map_offset_x,
+            map_offset_y: projection.map_offset_y,
+            map_pixel_w: projection.map_pixel_w,
+            map_pixel_h: projection.map_pixel_h,
             last_sim_tick: u64::MAX,
             last_fog_generation: u64::MAX,
             last_visibility_owner: None,
             last_radar_terrain_dirty_generation: u64::MAX,
+            playfield_bounds,
+            installed_playfield_authority: Some(PlayfieldAuthorityStamp {
+                bounds: playfield_bounds,
+                revision: playfield_revision,
+            }),
         }
+    }
+
+    /// Synchronously install a changed normalized LocalSize authority and
+    /// rebuild the radar surface/mapping. The revision is part of the gate so
+    /// a repeated writer still performs native's full RefreshRadar path.
+    pub(crate) fn reconcile_playfield(
+        &mut self,
+        gpu: &GpuContext,
+        grid: &TerrainGrid,
+        overlay_data: &[MinimapOverlayDatum],
+        theater_name: &str,
+        playfield_bounds: Option<PlayfieldBounds>,
+        playfield_revision: u64,
+    ) -> bool {
+        let authority = PlayfieldAuthorityStamp {
+            bounds: playfield_bounds,
+            revision: playfield_revision,
+        };
+        if !playfield_authority_needs_reconcile(
+            self.installed_playfield_authority,
+            playfield_bounds,
+            playfield_revision,
+        ) {
+            return false;
+        }
+
+        let projection =
+            MinimapPlayfieldProjection::derive(grid, overlay_data, theater_name, playfield_bounds);
+        self.base_terrain_rgba = projection.base_rgba;
+        self.world_origin_x = projection.world_origin_x;
+        self.world_origin_y = projection.world_origin_y;
+        self.world_width = projection.world_width;
+        self.world_height = projection.world_height;
+        self.terrain_pixels = projection.terrain_pixels;
+        self.overlay_pixels = projection.overlay_pixels;
+        self.map_offset_x = projection.map_offset_x;
+        self.map_offset_y = projection.map_offset_y;
+        self.map_pixel_w = projection.map_pixel_w;
+        self.map_pixel_h = projection.map_pixel_h;
+        self.playfield_bounds = playfield_bounds;
+        self.installed_playfield_authority = Some(authority);
+        self.rgba_scratch.resize(self.base_terrain_rgba.len(), 0);
+        self.last_sim_tick = u64::MAX;
+        self.last_fog_generation = u64::MAX;
+        self.last_radar_terrain_dirty_generation = u64::MAX;
+
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.map_texture_raw,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &self.base_terrain_rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(MINIMAP_SIZE * 4),
+                rows_per_image: Some(MINIMAP_SIZE),
+            },
+            wgpu::Extent3d {
+                width: MINIMAP_SIZE,
+                height: MINIMAP_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        true
+    }
+
+    pub(crate) fn needs_playfield_reconcile(
+        &self,
+        playfield_bounds: Option<PlayfieldBounds>,
+        playfield_revision: u64,
+    ) -> bool {
+        playfield_authority_needs_reconcile(
+            self.installed_playfield_authority,
+            playfield_bounds,
+            playfield_revision,
+        )
     }
 
     /// Invalidate the dirty-gate so the next update redraws regardless of
@@ -232,6 +418,7 @@ impl MinimapRenderer {
         // timeline (destroyed-bridge cells) are not re-derived here because
         // the restored sim's dirty list is empty; see the load-path notes.
         self.last_radar_terrain_dirty_generation = u64::MAX;
+        self.installed_playfield_authority = None;
     }
 
     /// Update the minimap texture with unit dot overlays from the ECS world.
@@ -252,6 +439,7 @@ impl MinimapRenderer {
         radar_events: Option<&crate::sim::radar::RadarEventQueue>,
         interner: Option<&crate::sim::intern::StringInterner>,
         bridge_state: Option<&crate::sim::bridge_state::BridgeRuntimeState>,
+        resolved_terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         radar_terrain_dirty_cells: &[(u16, u16)],
         radar_terrain_dirty_generation: u64,
     ) {
@@ -322,6 +510,16 @@ impl MinimapRenderer {
                 continue;
             }
             let pos = &entity.position;
+            let entity_cell = resolved_terrain.and_then(|terrain| terrain.cell(pos.rx, pos.ry));
+            if !self
+                .playfield_bounds
+                .zip(entity_cell)
+                .is_some_and(|(bounds, cell)| {
+                    techno_cell_in_playfield(bounds, pos.rx, pos.ry, cell.level, cell.slope_type)
+                })
+            {
+                continue;
+            }
             let type_str = interner.map_or("", |i| i.resolve(entity.type_ref));
             let owner_str = interner.map_or("", |i| i.resolve(entity.owner));
             let obj = rules.and_then(|r| r.object(type_str));
@@ -391,6 +589,11 @@ impl MinimapRenderer {
             let config = rules.map(|r| &r.radar_event_config);
             for event in events.iter() {
                 if !event.event_type.draws_on_minimap() {
+                    continue;
+                }
+                if !self.playfield_bounds.is_some_and(|bounds| {
+                    bounds.contains_geometry_packed(i32::from(event.rx), i32::from(event.ry))
+                }) {
                     continue;
                 }
                 // Player-scoped events (BaseUnderAttack/HarvesterUnderAttack) draw
@@ -613,15 +816,24 @@ impl MinimapRenderer {
         rect_w: f32,
         rect_h: f32,
     ) -> (f32, f32) {
-        let size = MINIMAP_SIZE as f32;
-        // Screen click → texture pixel → world normalized via aspect-fit sub-region.
-        let tex_x = (screen_x - rect_x) / rect_w.max(1.0) * size;
-        let tex_y = (screen_y - rect_y) / rect_h.max(1.0) * size;
-        let nx = ((tex_x - self.map_offset_x) / self.map_pixel_w.max(1.0)).clamp(0.0, 1.0);
-        let ny = ((tex_y - self.map_offset_y) / self.map_pixel_h.max(1.0)).clamp(0.0, 1.0);
-        let world_x = self.world_origin_x + nx * self.world_width;
-        let world_y = self.world_origin_y + ny * self.world_height;
-        (world_x - screen_w * 0.5, world_y - screen_h * 0.5)
+        minimap_screen_point_to_camera_top_left(
+            screen_x,
+            screen_y,
+            screen_w,
+            screen_h,
+            rect_x,
+            rect_y,
+            rect_w,
+            rect_h,
+            self.world_origin_x,
+            self.world_origin_y,
+            self.world_width,
+            self.world_height,
+            self.map_offset_x,
+            self.map_offset_y,
+            self.map_pixel_w,
+            self.map_pixel_h,
+        )
     }
 
     /// Build SpriteInstances for the camera viewport rectangle on the minimap.

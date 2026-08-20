@@ -126,6 +126,12 @@ impl<'a> SimView<'a> {
         self.simulation.path_grid()
     }
 
+    pub(crate) fn resolved_terrain(
+        &self,
+    ) -> Option<&'a crate::map::resolved_terrain::ResolvedTerrainGrid> {
+        self.simulation.resolved_terrain.as_ref()
+    }
+
     pub fn radar_events(&self) -> &'a crate::sim::radar::RadarEventQueue {
         &self.simulation.radar_events
     }
@@ -144,6 +150,17 @@ impl<'a> SimView<'a> {
         (
             &self.simulation.radar_terrain_dirty_cells,
             self.simulation.radar_terrain_dirty_generation,
+        )
+    }
+
+    /// Current normalized MapClass LocalSize authority plus the generation of
+    /// successful trigger-action-40 writers that rebuilt radar/scroll state.
+    pub(crate) fn playfield_authority(
+        &self,
+    ) -> (Option<crate::map::playfield::PlayfieldBounds>, u64) {
+        (
+            self.simulation.playfield_bounds,
+            self.simulation.playfield_revision,
         )
     }
 }

@@ -117,6 +117,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_state.loaded_map_source = Some(result.scenario.map_source);
     state.match_state.loaded_map_hash = result.scenario.map_hash;
     state.match_state.match_presentation.terrain_grid = result.scenario.terrain_grid;
+    state.match_state.match_presentation.installed_playfield_authority = None;
     state.frontend.shell_preview_overlay_registry = Some(result.scenario.overlay_registry.clone());
     // F10 lifecycle: a new match install closes the outgoing diagnostic
     // segment before the runtime slot is overwritten — the old install
@@ -293,6 +294,12 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         .window
         .set_cursor_visible(state.match_state.match_presentation.software_cursor.is_none());
 
+    // Install current sim authority before the first camera/minimap frame. A
+    // campaign trigger may already have changed LocalSize before presentation
+    // objects exist; raw MapHeader LocalSize is not an acceptable substitute.
+    let (playfield_bounds, playfield_revision) =
+        crate::app::input::camera::sync_playfield_presentation_bounds(state);
+
     // Create minimap from terrain grid with overlay data.
     if let Some(grid) = &state.match_state.match_presentation.terrain_grid {
         let overlay_data: Vec<(
@@ -314,6 +321,8 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
             grid,
             &overlay_data,
             &state.match_state.match_presentation.theater_name,
+            playfield_bounds,
+            playfield_revision,
         ));
     }
     state.match_state.input.minimap_dragging = false;
@@ -598,7 +607,7 @@ pub(crate) fn load_eva_registry(
 ///
 /// Classifies each overlay by name pattern (TIB* = ore, GEM* = gem, WALL/FENCE = wall,
 /// BRIDGE/BRDG = bridge) and each terrain object as TerrainObject.
-fn build_minimap_overlay_data(
+pub(crate) fn build_minimap_overlay_data(
     overlays: &[crate::map::overlay::OverlayEntry],
     terrain_objects: &[crate::map::overlay::TerrainObject],
     overlay_names: &BTreeMap<u8, String>,

@@ -5,6 +5,8 @@
 
 use super::*;
 use crate::map::houses::HouseAllianceMap;
+use crate::map::playfield::PlayfieldBounds;
+use crate::map::terrain::{TerrainCell, TerrainGrid};
 use crate::render::minimap_helpers::*;
 use crate::rules::color_scheme::ColorSchemeEntry;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
@@ -12,6 +14,59 @@ use crate::sim::components::Position;
 use crate::sim::intern::test_intern;
 use crate::sim::vision::FogState;
 use std::collections::{BTreeMap, BTreeSet};
+
+fn playfield_projection_grid(side: u16) -> TerrainGrid {
+    let mut cells = Vec::new();
+    for ry in 0..side {
+        for rx in 0..side {
+            let (screen_x, screen_y) = crate::map::terrain::iso_to_screen(rx, ry, 0);
+            cells.push(TerrainCell {
+                screen_x,
+                screen_y,
+                tile_id: 1,
+                sub_tile: 0,
+                z: 0,
+                rx,
+                ry,
+                is_water: false,
+                variant: 0,
+                tint: [1.0; 3],
+                radar_left: [20, 80, 20],
+                radar_right: [40, 100, 40],
+                has_damaged_data: false,
+            });
+        }
+    }
+    TerrainGrid {
+        cells,
+        world_width: 1.0,
+        world_height: 1.0,
+        origin_x: 0.0,
+        origin_y: 0.0,
+        local_bounds: None,
+        anchor_variant_table: None,
+    }
+}
+
+fn expanded_playfield() -> PlayfieldBounds {
+    PlayfieldBounds {
+        base: 40,
+        off_fc: 2,
+        off_100: 2,
+        off_104: 36,
+        off_108: 30,
+    }
+}
+
+fn shrunken_playfield() -> PlayfieldBounds {
+    PlayfieldBounds {
+        base: 40,
+        off_fc: 10,
+        off_100: 10,
+        off_104: 10,
+        off_108: 8,
+    }
+}
 
 fn make_pixel(rx: u16, ry: u16, color: [u8; 4]) -> TerrainPixel {
     TerrainPixel {
@@ -276,4 +331,199 @@ fn test_degenerate_world_size_no_panic() {
     // Should clamp to max pixel.
     assert_eq!(px, 199);
     assert_eq!(py, 199);
+}
+
+#[test]
+fn playfield_projection_shrinks_and_reexpands_exact_mode_zero_membership() {
+    let grid = playfield_projection_grid(64);
+    let expanded = expanded_playfield();
+    let shrunken = shrunken_playfield();
+    let shared = grid
+        .cells
+        .iter()
+        .find(|cell| {
+            expanded.contains_geometry_packed(cell.rx.into(), cell.ry.into())
+                && shrunken.contains_geometry_packed(cell.rx.into(), cell.ry.into())
+        })
+        .map(|cell| (cell.rx, cell.ry))
+        .expect("shared valid cell");
+    let readded = grid
+        .cells
+        .iter()
+        .find(|cell| {
+            expanded.contains_geometry_packed(cell.rx.into(), cell.ry.into())
+                && !shrunken.contains_geometry_packed(cell.rx.into(), cell.ry.into())
+        })
+        .map(|cell| (cell.rx, cell.ry))
+        .expect("cell excluded by contraction");
+    let outside = grid
+        .cells
+        .iter()
+        .find(|cell| !expanded.contains_geometry_packed(cell.rx.into(), cell.ry.into()))
+        .map(|cell| (cell.rx, cell.ry))
+        .expect("diamond filler cell");
+    let overlays = [
+        (shared.0, shared.1, OverlayClassification::Ore, 5, None),
+        (readded.0, readded.1, OverlayClassification::Gem, 7, None),
+        (outside.0, outside.1, OverlayClassification::Wall, 0, None),
+    ];
+
+    let initial = MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(expanded));
+    let shrunk = MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(shrunken));
+    let reexpanded =
+        MinimapPlayfieldProjection::derive(&grid, &overlays, "TEMPERATE", Some(expanded));
+
+    let initial_cells: BTreeSet<_> = initial
+        .terrain_pixels
+        .iter()
+        .map(|pixel| (pixel.rx, pixel.ry))
+        .collect();
+    let expected_cells: BTreeSet<_> = grid
+        .cells
+        .iter()
+        .filter(|cell| expanded.contains_geometry_packed(cell.rx.into(), cell.ry.into()))
+        .map(|cell| (cell.rx, cell.ry))
+        .collect();
+    assert_eq!(
+        initial_cells, expected_cells,
+        "membership must be exact mode 0"
+    );
+    assert!(initial_cells.contains(&readded));
+    assert!(!initial_cells.contains(&outside));
+    assert!(
+        initial
+            .overlay_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == readded)
+    );
+    assert!(
+        !initial
+            .overlay_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == outside)
+    );
+    assert!(
+        !shrunk
+            .terrain_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == readded)
+    );
+    assert!(
+        !shrunk
+            .overlay_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == readded)
+    );
+    assert!(
+        reexpanded
+            .terrain_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == readded)
+    );
+    assert!(
+        reexpanded
+            .overlay_pixels
+            .iter()
+            .any(|p| (p.rx, p.ry) == readded)
+    );
+    assert!(shrunk.world_width < initial.world_width);
+    assert!(shrunk.world_height < initial.world_height);
+    assert_eq!(reexpanded.world_origin_x, initial.world_origin_x);
+    assert_eq!(reexpanded.world_origin_y, initial.world_origin_y);
+}
+
+#[test]
+fn playfield_revision_rebuild_gate_observes_two_successive_writers() {
+    let bounds = Some(expanded_playfield());
+    let initial = PlayfieldAuthorityStamp {
+        bounds,
+        revision: 0,
+    };
+    assert!(!playfield_authority_needs_reconcile(
+        Some(initial),
+        bounds,
+        0
+    ));
+    assert!(playfield_authority_needs_reconcile(
+        Some(initial),
+        bounds,
+        1
+    ));
+    let second = PlayfieldAuthorityStamp {
+        bounds,
+        revision: 1,
+    };
+    assert!(playfield_authority_needs_reconcile(Some(second), bounds, 2));
+    assert!(playfield_authority_needs_reconcile(None, bounds, 2));
+}
+
+#[test]
+fn minimap_techno_membership_is_height_aware_at_raised_slope_edge() {
+    let bounds = expanded_playfield();
+    let (rx, ry) = (0u16..64)
+        .flat_map(|ry| (0u16..64).map(move |rx| (rx, ry)))
+        .find(|&(rx, ry)| {
+            bounds.contains_geometry_packed(rx.into(), ry.into())
+                && !techno_cell_in_playfield(bounds, rx, ry, 10, 1)
+        })
+        .expect("raised/slope edge where native mode 0 and mode 1 differ");
+    assert!(bounds.contains_geometry_packed(rx.into(), ry.into()));
+    assert!(!techno_cell_in_playfield(bounds, rx, ry, 10, 1));
+    assert!(techno_cell_in_playfield(bounds, rx, ry, 0, 0));
+}
+
+#[test]
+fn playfield_projection_updates_camera_bounds_and_click_inverse_mapping() {
+    let mut grid = playfield_projection_grid(64);
+    let initial_geometry = PlayfieldPresentationGeometry::from_grid(&grid, expanded_playfield())
+        .expect("expanded geometry");
+    let shrunk_geometry = PlayfieldPresentationGeometry::from_grid(&grid, shrunken_playfield())
+        .expect("shrunken geometry");
+    let camera_bounds = shrunk_geometry.camera_local_bounds();
+    assert_eq!(
+        camera_bounds.pixel_x - crate::map::terrain::TILE_WIDTH / 2.0,
+        shrunk_geometry.origin_x
+    );
+    assert_eq!(camera_bounds.pixel_y, shrunk_geometry.origin_y);
+    assert_eq!(camera_bounds.pixel_w, shrunk_geometry.world_width);
+    assert_eq!(camera_bounds.pixel_h, shrunk_geometry.world_height);
+    grid.install_playfield_local_bounds(Some(expanded_playfield()));
+    let installed_initial = grid.local_bounds.expect("initial camera authority");
+    grid.install_playfield_local_bounds(Some(shrunken_playfield()));
+    assert_eq!(grid.local_bounds, Some(camera_bounds));
+    assert_ne!(grid.local_bounds, Some(installed_initial));
+
+    let projection =
+        MinimapPlayfieldProjection::derive(&grid, &[], "TEMPERATE", Some(shrunken_playfield()));
+    let rect = (10.0, 20.0, 300.0, 240.0);
+    let tex_x = projection.map_offset_x + projection.map_pixel_w * 0.5;
+    let tex_y = projection.map_offset_y + projection.map_pixel_h * 0.5;
+    let click_x = rect.0 + tex_x / MINIMAP_SIZE as f32 * rect.2;
+    let click_y = rect.1 + tex_y / MINIMAP_SIZE as f32 * rect.3;
+    let camera = minimap_screen_point_to_camera_top_left(
+        click_x,
+        click_y,
+        800.0,
+        600.0,
+        rect.0,
+        rect.1,
+        rect.2,
+        rect.3,
+        projection.world_origin_x,
+        projection.world_origin_y,
+        projection.world_width,
+        projection.world_height,
+        projection.map_offset_x,
+        projection.map_offset_y,
+        projection.map_pixel_w,
+        projection.map_pixel_h,
+    );
+    assert_eq!(
+        camera,
+        (
+            projection.world_origin_x + projection.world_width * 0.5 - 400.0,
+            projection.world_origin_y + projection.world_height * 0.5 - 300.0,
+        )
+    );
+    assert_ne!(initial_geometry.camera_local_bounds(), camera_bounds);
 }

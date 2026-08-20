@@ -1766,6 +1766,10 @@ fn commit_prepared_load(
     if let Some(minimap) = state.match_state.match_presentation.minimap.as_mut() {
         minimap.mark_stale();
     }
+    state
+        .match_state
+        .match_presentation
+        .installed_playfield_authority = None;
 
     // Rebuild sprite/unit atlases so all entity types in the loaded save have
     // atlas entries before the first render frame.

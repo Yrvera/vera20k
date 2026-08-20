@@ -758,6 +758,12 @@ pub struct Simulation {
     /// can rewrite the four LocalSize dwords repeatedly during a scenario.
     #[serde(default)]
     pub(crate) playfield_size_height: Option<i32>,
+    /// Monotonic visible-area writer generation. Every successful trigger
+    /// action 0x28 advances it, even when two writers normalize to the same
+    /// bounds. Presentation consumes this as the global radar/scroll rebuild
+    /// edge; cell-local bridge dirtiness is deliberately a separate channel.
+    #[serde(default)]
+    pub(crate) playfield_revision: u64,
     /// SHP interned IDs for bridge destruction explosions (from rules.ini BridgeExplosions=).
     #[serde(skip)]
     pub bridge_explosions: Vec<InternedId>,
@@ -2010,6 +2016,7 @@ impl Simulation {
             radiation: crate::sim::radiation::RadiationState::default(),
             playfield_bounds: None,
             playfield_size_height: None,
+            playfield_revision: 0,
             bridge_explosions: Vec::new(),
             metallic_debris: Vec::new(),
             bridge_anim_sounds: BTreeMap::new(),
@@ -2639,6 +2646,7 @@ impl Simulation {
         self.playfield_bounds = Some(
             crate::sim::cell_rect::PlayfieldBounds::from_map_header(header),
         );
+        self.playfield_revision = 0;
     }
 
     /// Apply YR trigger action 0x28's mutable visible-map-area authority.
@@ -2662,12 +2670,13 @@ impl Simulation {
             raw_local_size,
         );
         self.playfield_bounds = Some(bounds);
+        // FUN_006E21E0 runs the complete radar-surface rebuild on every
+        // execution. Do not deduplicate equal normalized writers.
+        self.playfield_revision = self.playfield_revision.wrapping_add(1);
 
-        let radar_cells = self
-            .resolved_terrain
-            .as_mut()
-            .map(|terrain| terrain.recalc_playfield_attributes(bounds))
-            .unwrap_or_default();
+        if let Some(terrain) = self.resolved_terrain.as_mut() {
+            terrain.recalc_playfield_attributes(bounds);
+        }
 
         // Rebuild from the retained structure-blocked PathGrid. PathGrid does
         // not cache the outside flag; ZoneGrid does, so a full rebuild covers
@@ -2677,10 +2686,9 @@ impl Simulation {
             self.rebuild_zone_grid_full(path_grid.as_ref());
         }
 
-        // Native calls RefreshRadar after the cell/zone rebuild. The renderer
-        // consumes this complete dirty generation as its exact Rust-owned
-        // terrain/minimap invalidation seam.
-        self.mark_radar_terrain_dirty_cells(radar_cells);
+        // Native calls RefreshRadar after the cell/zone rebuild. The distinct
+        // playfield revision is the global geometry invalidation seam; the
+        // persistent de-duplicated bridge-cell list remains cell-local.
         true
     }
 

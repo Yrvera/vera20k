@@ -447,6 +447,7 @@ impl App {
             cached_unit_instances: Vec::new(),
             cached_unit_pages: Vec::new(),
                 terrain_grid: None,
+                installed_playfield_authority: None,
                 overlays: Default::default(),
                 terrain_objects: Vec::new(),
                 waypoints: HashMap::new(),

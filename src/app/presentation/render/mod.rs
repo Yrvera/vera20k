@@ -74,6 +74,11 @@ pub(crate) fn render_game(
 ) -> Result<GameRenderOutput> {
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
+    // Trigger action 0x28 mutates scroll/radar authority inside the committed
+    // sim frame. Install and clamp it before constructing any world instances,
+    // so contraction/expansion is visible in this very presentation frame.
+    crate::app::input::camera::clamp_camera_to_playable_area(state, sw, sh);
+
     let local_owner = preferred_local_owner_name(state);
     // Effective viewport in world pixels — zoom shrinks what's visible.
     let z = state.match_state.input.zoom_level;

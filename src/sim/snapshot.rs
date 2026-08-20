@@ -261,7 +261,9 @@ use crate::sim::world::Simulation;
 // Bumped 84 -> 85: Simulation now retains the signed `[Map] Size=` height used
 // to normalize later trigger-action-40 LocalSize writers. Without the serialized
 // input, a second writer after load could diverge even though mutable bounds load.
-const SNAPSHOT_VERSION: u32 = 85;
+// Bumped 85 -> 86: every trigger-action-40 execution now serializes and hashes a
+// distinct playfield revision so repeated writers rebuild presentation after save/load.
+const SNAPSHOT_VERSION: u32 = 86;
 
 const SNAPSHOT_PRODUCT_MAGIC: [u8; 8] = *b"VERA20K\0";
 const SNAPSHOT_ENVELOPE_VERSION: u32 = 1;
@@ -2564,8 +2566,8 @@ mod tests {
     /// both the spawn gate and the removal predicate. A serialized field is
     /// gone, so old bytes no longer decode.
     #[test]
-    fn gsi_04_01_snapshot_version_is_85() {
-        assert_eq!(super::SNAPSHOT_VERSION, 85);
+    fn gsi_04_01_snapshot_version_is_86() {
+        assert_eq!(super::SNAPSHOT_VERSION, 86);
     }
 
     #[test]

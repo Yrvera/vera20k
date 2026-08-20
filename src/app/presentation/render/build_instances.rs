@@ -556,6 +556,39 @@ pub(super) fn build_debug_instances(state: &AppState, sw: f32, sh: f32) -> Debug
 
 /// Update minimap unit dots for the current frame.
 pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>) {
+    let (playfield_bounds, playfield_revision) =
+        crate::app::input::camera::sync_playfield_presentation_bounds(state);
+    let needs_playfield_reconcile = state
+        .match_state
+        .match_presentation
+        .minimap
+        .as_ref()
+        .is_some_and(|minimap| {
+            minimap.needs_playfield_reconcile(playfield_bounds, playfield_revision)
+        });
+    if needs_playfield_reconcile {
+        let overlay_data = crate::app::loading::transitions::build_minimap_overlay_data(
+            state.match_state.match_presentation.overlays.as_slice(),
+            &state.match_state.match_presentation.terrain_objects,
+            &state.match_state.match_presentation.overlay_names,
+            state.rules(),
+            &state.match_state.match_presentation.tiberium_radar_colors,
+        );
+        let presentation = &mut state.match_state.match_presentation;
+        if let (Some(minimap), Some(grid)) =
+            (presentation.minimap.as_mut(), presentation.terrain_grid.as_ref())
+        {
+            minimap.reconcile_playfield(
+                &state.renderer.gpu,
+                grid,
+                &overlay_data,
+                &presentation.theater_name,
+                playfield_bounds,
+                playfield_revision,
+            );
+        }
+    }
+
     if let (Some(minimap), Some(rt)) = (&mut state.match_state.match_presentation.minimap, state.match_state.sim_runtime.as_ref()) {
         // F10 cone: render-feed reads go through SimView getters (the split
         // borrow against `&mut state.minimap` keeps the field chain to `rt`).
@@ -578,6 +611,7 @@ pub(super) fn update_minimap(state: &mut AppState, local_owner: &Option<String>)
             Some(view.radar_events()),
             Some(view.interner()),
             view.bridge_state(),
+            view.resolved_terrain(),
             radar_dirty_cells,
             radar_dirty_generation,
         );

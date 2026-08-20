@@ -7,7 +7,6 @@
 //! - Part of render/ — depends on map/terrain, map/houses, rules/house_colors, sim/vision.
 
 use crate::map::houses::HouseColorMap;
-use crate::map::terrain::TerrainGrid;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 use crate::sim::intern::InternedId;
 use crate::sim::vision::FogState;
@@ -196,36 +195,6 @@ pub(super) fn world_to_minimap_pixel(
     let px: u32 = (nx * map_w + map_off_x).clamp(0.0, max_pixel as f32) as u32;
     let py: u32 = (ny * map_h + map_off_y).clamp(0.0, max_pixel as f32) as u32;
     (px, py)
-}
-
-/// Map an isometric cell (rx, ry) to a minimap pixel using the grid's world bounds.
-///
-/// Computes screen position via `iso_to_screen(rx, ry, z=0)` and normalizes within
-/// the grid's world extent. Used for overlay entries that only have cell coordinates.
-pub(super) fn world_to_minimap_pixel_from_cell(
-    rx: u16,
-    ry: u16,
-    grid: &TerrainGrid,
-    world_w: f32,
-    world_h: f32,
-    map_off_x: f32,
-    map_off_y: f32,
-    map_w: f32,
-    map_h: f32,
-) -> (u32, u32) {
-    let (sx, sy) = crate::map::terrain::iso_to_screen(rx, ry, 0);
-    world_to_minimap_pixel(
-        sx,
-        sy,
-        grid.origin_x,
-        grid.origin_y,
-        world_w,
-        world_h,
-        map_off_x,
-        map_off_y,
-        map_w,
-        map_h,
-    )
 }
 
 /// Set a pixel in an RGBA buffer. Bounds-checked; out-of-range writes are ignored.

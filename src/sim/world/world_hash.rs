@@ -62,8 +62,14 @@ mod playfield_authority_hash_tests {
         changed_size_height.playfield_bounds = Some(playfield());
         changed_size_height.playfield_size_height = Some(59);
 
+        let mut changed_revision = Simulation::new();
+        changed_revision.playfield_bounds = Some(playfield());
+        changed_revision.playfield_size_height = Some(58);
+        changed_revision.playfield_revision = 1;
+
         assert_ne!(baseline.state_hash(), changed_bounds.state_hash());
         assert_ne!(baseline.state_hash(), changed_size_height.state_hash());
+        assert_ne!(baseline.state_hash(), changed_revision.state_hash());
     }
 }
 
@@ -291,12 +297,15 @@ impl Simulation {
     /// lockstep hash that omitted them could accept divergent later placement,
     /// path-zone, and trigger behavior.
     fn hash_playfield_authority(&self, hasher: &mut impl Hasher) {
-        if self.playfield_bounds.is_none() && self.playfield_size_height.is_none() {
+        if self.playfield_bounds.is_none()
+            && self.playfield_size_height.is_none()
+            && self.playfield_revision == 0
+        {
             // Preserve the historical headless-fixture stream while still
             // distinguishing every configured authority from absence.
             return;
         }
-        b"playfield-authority-v1".hash(hasher);
+        b"playfield-authority-v2".hash(hasher);
         match self.playfield_bounds {
             None => 0u8.hash(hasher),
             Some(bounds) => {
@@ -309,6 +318,7 @@ impl Simulation {
             }
         }
         self.playfield_size_height.hash(hasher);
+        self.playfield_revision.hash(hasher);
     }
 
     fn hash_terminal_score_snapshot(&self, hasher: &mut impl Hasher) {
